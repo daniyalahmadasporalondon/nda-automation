@@ -471,6 +471,69 @@ class DriveV2IntegrationTests(unittest.TestCase):
         self.assertEqual(len(summary["artifacts"]), 1)
         self.assertEqual(summary["artifacts"][0]["drive_file_id"], "id_99")
         self.assertIn("workflow_state", summary)
+        # The durable facets block carries the schema_version (corpus_index keys
+        # facets_available off its presence) and every facet key.
+        self.assertIn("facets", summary)
+        facets = summary["facets"]
+        self.assertEqual(facets["schema_version"], 1)
+        for key in ("governing_law", "signed", "has_clauses", "term_years"):
+            self.assertIn(key, facets)
+
+    def test_matter_summary_facets_derived_from_review_data(self):
+        # A generated NDA (manifest governing law) + a term clause -> the durable
+        # summary carries the derived facet values, not just empty placeholders.
+        matter = {
+            "id": "m_facets",
+            "created_at": "2026-06-07T10:00:00+00:00",
+            "subject": "Acme DIFC NDA",
+            "artifacts": [
+                {
+                    "id": "a1", "actor": "aspora", "role": "generated", "version": 1, "ext": "docx",
+                    "metadata": {"generation": {"governing_law_value": "DIFC", "counterparty_name": "Acme"}},
+                }
+            ],
+            "review_result": {
+                "clauses": [
+                    {"id": "term_and_survival", "decision": "pass", "term_years": 4.0},
+                    {"id": "mutuality", "decision": "pass"},
+                ]
+            },
+        }
+        summary = drive_integration._matter_summary(
+            matter=matter,
+            matter_id="m_facets",
+            counterparty="Acme",
+            matter_folder_url="",
+            synced_at="2026-06-07T11:00:00+00:00",
+            artifact_records=[],
+        )
+        facets = summary["facets"]
+        self.assertEqual(facets["governing_law"], "difc")
+        self.assertIn("term_and_survival", facets["has_clauses"])
+        self.assertIn("mutuality", facets["has_clauses"])
+        self.assertEqual(facets["term_years"], 4.0)
+
+    def test_matter_summary_swallows_facet_failure_and_still_writes(self):
+        # A facet-derivation hiccup must never break the sync: a governing-law
+        # derivation that raises is swallowed by _summary_facets and the summary still
+        # writes with the facet degraded to "" (mirrors the workflow_state try/except).
+        with patch(
+            "nda_automation.governing_law_view.derive_governing_law",
+            side_effect=RuntimeError("glv boom"),
+        ):
+            summary = drive_integration._matter_summary(
+                matter={"id": "m_bad", "subject": "Bad NDA"},
+                matter_id="m_bad",
+                counterparty="Bad",
+                matter_folder_url="",
+                synced_at="2026-06-07T11:00:00+00:00",
+                artifact_records=[],
+            )
+        # The summary still wrote; the governing-law facet degraded to "".
+        self.assertEqual(summary["matter_id"], "m_bad")
+        self.assertIn("facets", summary)
+        self.assertEqual(summary["facets"]["governing_law"], "")
+        self.assertEqual(summary["facets"]["schema_version"], 1)
 
     def test_counterparty_prefers_generation_manifest(self):
         matter = {

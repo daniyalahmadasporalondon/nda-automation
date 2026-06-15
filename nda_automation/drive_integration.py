@@ -762,8 +762,104 @@ def _matter_summary(
         "workflow_state": workflow_state,
         "matter_folder_url": matter_folder_url,
         "synced_at": synced_at,
+        # Durable rich facets so a /tmp-wiped matter still searches by governing law,
+        # signed-state, clauses and term after a Drive re-sync (corpus_index reads
+        # this block; its presence is what flips facets_available true). Computed from
+        # the same matter; any derivation hiccup is swallowed (like workflow_state) so
+        # a facet failure never breaks the sync.
+        "facets": _summary_facets(matter, workflow_state),
         "artifacts": [_public_artifact_record(record) for record in artifact_records],
     }
+
+
+def _summary_facets(matter: dict[str, Any], workflow_state: dict[str, Any]) -> dict[str, Any]:
+    """Compute the durable ``facets`` block for matter_summary.json.
+
+    Mirrors corpus_index's app-state derivation but lands the values on disk so a
+    Drive-only matter (after a /tmp wipe) keeps them. Each facet degrades to its
+    empty/null value on failure; the whole block is best-effort.
+    """
+    governing_law = ""
+    try:
+        from . import governing_law_view
+
+        governing_law = governing_law_view.derive_governing_law(matter)
+    except Exception:
+        governing_law = ""
+    return {
+        "governing_law": governing_law,
+        "signed": _summary_signed(workflow_state),
+        "has_clauses": _summary_clause_ids(matter),
+        "term_years": _summary_term_years(matter),
+        "schema_version": 1,
+    }
+
+
+def _summary_signed(workflow_state: dict[str, Any]) -> bool | None:
+    """status -> signed bool/null. fully_signed=true; sent/awaiting/counter/sending=
+    false; pre-send=null (so a signed filter never silently includes it)."""
+    status = ""
+    if isinstance(workflow_state, dict):
+        status = str(workflow_state.get("status") or "").strip().lower()
+    if status == "fully_signed":
+        return True
+    if status in ("sent_awaiting_counterparty", "counter_received", "sending"):
+        return False
+    return None
+
+
+def _summary_clause_ids(matter: dict[str, Any]) -> list[str]:
+    """Flatten the matter's review_state clause_ids (pass+review+check), preferring a
+    stored review_state and re-deriving from review_result only when absent."""
+    try:
+        from . import review_state
+
+        clause_ids: dict[str, Any] | None = None
+        stored = matter.get("review_state")
+        if isinstance(stored, dict) and isinstance(stored.get("clause_ids"), dict):
+            clause_ids = stored["clause_ids"]
+        else:
+            review_result = matter.get("review_result")
+            if isinstance(review_result, dict):
+                derived = review_state.review_state_from_result(review_result)
+                if isinstance(derived, dict) and isinstance(derived.get("clause_ids"), dict):
+                    clause_ids = derived["clause_ids"]
+        if not isinstance(clause_ids, dict):
+            return []
+        seen: dict[str, None] = {}
+        for bucket in ("pass", "review", "check"):
+            ids = clause_ids.get(bucket)
+            if isinstance(ids, list):
+                for clause_id in ids:
+                    token = str(clause_id or "").strip()
+                    if token:
+                        seen.setdefault(token, None)
+        return list(seen)
+    except Exception:
+        return []
+
+
+def _summary_term_years(matter: dict[str, Any]) -> float | None:
+    """Best-effort ordinary term in years from the stored term_and_survival clause
+    result's persisted ``term_years`` scalar; absent/odd -> None."""
+    try:
+        review_result = matter.get("review_result")
+        if not isinstance(review_result, dict):
+            return None
+        clauses = review_result.get("clauses")
+        if not isinstance(clauses, list):
+            return None
+        for clause in clauses:
+            if not isinstance(clause, dict) or str(clause.get("id") or "") != "term_and_survival":
+                continue
+            value = clause.get("term_years")
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, (int, float)) and value > 0:
+                return float(value)
+        return None
+    except Exception:
+        return None
 
 
 def _json_bytes(payload: dict[str, Any]) -> bytes:

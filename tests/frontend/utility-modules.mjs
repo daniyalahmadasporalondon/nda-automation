@@ -52,14 +52,19 @@ import {
   NULL_FILTER_SPEC,
   SUMMARY_LABEL,
   SUMMARY_UNAVAILABLE_MESSAGE,
+  adaptCorpusMatter,
   applyFilterSpec,
   buildArtifactLineage,
   chipById,
   filterMattersByStatus,
   filterMattersByText,
   filterSpecIsEmpty,
+  flattenCorpusPayload,
   formatSummaryResult,
   groupMattersByCounterparty,
+  matterGoverningLaw,
+  matterHasClause,
+  matterSigned,
   matterStatus,
   matterStatusLabel,
   matterTitle,
@@ -1642,6 +1647,9 @@ assert.deepEqual(validSpec, {
   needs_attention: true,
   human_gate: false,
   has_issues: true,
+  has_clause: null,
+  signed: null,
+  governing_law: null,
   text: "Acme",
   min_age_days: 5,
   sort: "oldest",
@@ -1670,6 +1678,114 @@ assert.equal(validateFilterSpec({ text: "   " }).text, null);
 assert.deepEqual(validateFilterSpec("not a dict"), { ...NULL_FILTER_SPEC });
 assert.equal(filterSpecIsEmpty(validateFilterSpec(null)), true);
 assert.equal(filterSpecIsEmpty(validateFilterSpec({ status: "approved" })), false);
+
+// --- Corpus dimensions (demo): has_clause, signed, governing_law mirror the backend ---
+// The null spec carries the three new keys, and the validator gates each one.
+assert.equal("has_clause" in NULL_FILTER_SPEC, true);
+assert.equal("signed" in NULL_FILTER_SPEC, true);
+assert.equal("governing_law" in NULL_FILTER_SPEC, true);
+// has_clause: in-allowlist (incl. the demo dynamic clauses) passes; junk drops.
+assert.equal(validateFilterSpec({ has_clause: "non_solicitation" }).has_clause, "non_solicitation");
+assert.equal(validateFilterSpec({ has_clause: "non_compete" }).has_clause, "non_compete");
+assert.equal(validateFilterSpec({ has_clause: "governing_law" }).has_clause, "governing_law");
+assert.equal(validateFilterSpec({ has_clause: "not_a_clause" }).has_clause, null);
+// signed: strict bool like the other flags.
+assert.equal(validateFilterSpec({ signed: true }).signed, true);
+assert.equal(validateFilterSpec({ signed: false }).signed, false);
+assert.equal(validateFilterSpec({ signed: "yes" }).signed, null);
+// governing_law: case-insensitive against the approved-option allowlist; junk drops.
+assert.equal(validateFilterSpec({ governing_law: "DIFC" }).governing_law, "difc");
+assert.equal(validateFilterSpec({ governing_law: "england_and_wales" }).governing_law, "england_and_wales");
+assert.equal(validateFilterSpec({ governing_law: "narnia" }).governing_law, null);
+
+// matterHasClause: the corpus facet (facets.has_clauses) is the primary source...
+const corpusClauseMatter = { facets: { has_clauses: ["confidential_information", "non_solicitation"] } };
+assert.equal(matterHasClause(corpusClauseMatter, "non_solicitation"), true);
+assert.equal(matterHasClause(corpusClauseMatter, "confidential_information"), true);
+assert.equal(matterHasClause(corpusClauseMatter, "non_compete"), false);
+// ...and an app-state matter still resolves via review_state.clause_ids buckets.
+const appClauseMatter = {
+  review_state: { clause_ids: { pass: ["confidential_information"], review: ["non_solicitation"], check: ["governing_law"] } },
+};
+assert.equal(matterHasClause(appClauseMatter, "non_solicitation"), true); // review bucket
+assert.equal(matterHasClause(appClauseMatter, "confidential_information"), true); // pass bucket
+assert.equal(matterHasClause(appClauseMatter, "governing_law"), true); // check bucket
+assert.equal(matterHasClause(appClauseMatter, "non_compete"), false); // absent
+assert.equal(matterHasClause({}, "non_solicitation"), false); // neither shape -> false
+// matterSigned reads the corpus facet first (true/false/null)...
+assert.equal(matterSigned({ facets: { signed: true } }), true);
+assert.equal(matterSigned({ facets: { signed: false } }), false);
+assert.equal(matterSigned({ facets: { signed: null } }), null); // explicit unknown
+// ...and falls back to the workflow status for an app-state matter (no facets).
+assert.equal(matterSigned({ workflow_state: { status: "fully_signed" } }), true);
+assert.equal(matterSigned({ workflow_state: { status: "sent_awaiting_counterparty" } }), false);
+assert.equal(matterSigned({ workflow_state: { status: "ai_reviewing" } }), null);
+// matterGoverningLaw reads the corpus facet (or the legacy top-level field).
+assert.equal(matterGoverningLaw({ facets: { governing_law: "difc" } }), "difc");
+assert.equal(matterGoverningLaw({ governing_law: "delaware" }), "delaware");
+assert.equal(matterGoverningLaw({}), "");
+
+// --- Corpus adapter: flatten groups[].matters[] + map facets + open-link provenance ---
+const corpusPayload = {
+  groups: [
+    {
+      counterparty: "Acme",
+      matters: [
+        {
+          matter_id: "m_app",
+          title: "Acme DIFC NDA",
+          counterparty: "Acme",
+          created_at: "2026-01-01T00:00:00Z",
+          source: "both",
+          in_app: true,
+          open_matter_url: "/?tab=corpus&matter=m_app",
+          open_in_drive_url: "https://drive/folder/app",
+          facets: { governing_law: "difc", signed: true, has_clauses: ["governing_law"], phase: "executed", status: "fully_signed", facets_available: true },
+        },
+      ],
+    },
+    {
+      counterparty: "Old Co",
+      matters: [
+        {
+          matter_id: "m_drive",
+          title: "Legacy Drive NDA",
+          counterparty: "Old Co",
+          created_at: "2025-06-01T00:00:00Z",
+          source: "drive",
+          in_app: false,
+          open_matter_url: "",
+          open_in_drive_url: "https://drive/folder/legacy",
+          facets: { governing_law: "", signed: null, has_clauses: [], phase: "", status: "", facets_available: false },
+        },
+      ],
+    },
+  ],
+};
+const flatCorpus = flattenCorpusPayload(corpusPayload);
+assert.equal(flatCorpus.length, 2);
+assert.deepEqual(flatCorpus.map((m) => m.id), ["m_app", "m_drive"]);
+// The adapter maps matter_id -> id, title -> subject, and passes facets through.
+const adaptedApp = flatCorpus[0];
+assert.equal(adaptedApp.id, "m_app");
+assert.equal(adaptedApp.subject, "Acme DIFC NDA");
+assert.equal(adaptedApp.facets.governing_law, "difc");
+assert.equal(adaptedApp.in_app, true);
+// Open-link provenance: app/both matter has an in-app link; the Drive-only matter
+// has no in-app deep link but keeps its Drive folder url.
+const adaptedDrive = flatCorpus[1];
+assert.equal(adaptedDrive.in_app, false);
+assert.equal(adaptedDrive.open_matter_url, "");
+assert.equal(adaptedDrive.open_in_drive_url, "https://drive/folder/legacy");
+// A facet filter over the flattened corpus matches the app matter and NEVER the
+// legacy Drive matter (facets_available=false -> unknown facets never positive-match).
+assert.deepEqual(applyFilterSpec(flatCorpus, { governing_law: "difc" }).map((m) => m.id), ["m_app"]);
+assert.deepEqual(applyFilterSpec(flatCorpus, { signed: true }).map((m) => m.id), ["m_app"]);
+assert.deepEqual(applyFilterSpec(flatCorpus, { signed: false }).map((m) => m.id), []);
+// adaptCorpusMatter tolerates junk.
+assert.equal(adaptCorpusMatter(null), null);
+assert.deepEqual(flattenCorpusPayload({}), []);
+assert.deepEqual(flattenCorpusPayload(null), []);
 
 // --- Dashboard smart-search v2: applyFilterSpec (deterministic AND over matters) ---
 const NOW = Date.parse("2026-06-08T00:00:00Z");
@@ -1735,6 +1851,42 @@ assert.deepEqual(applyFilterSpec(specMatters, { status: "made_up_status" }, NOW)
 assert.deepEqual(applyFilterSpec([{ id: "undated", workflow_state: {} }], { min_age_days: 1 }, NOW), []);
 // Non-array input is tolerated.
 assert.deepEqual(applyFilterSpec(null, { status: "approved" }, NOW), []);
+
+// --- applyFilterSpec with the corpus dimensions (has_clause / signed / governing_law) ---
+// These corpus matters carry the facets block the corpus payload surfaces, exercising
+// the facets-aware matchers over the SAME applyFilterSpec the FE search uses.
+const corpusFacetMatters = [
+  {
+    id: "difc_signed",
+    subject: "Acme DIFC NDA",
+    facets: { governing_law: "difc", signed: true, has_clauses: ["governing_law", "confidential_information"], phase: "executed", status: "fully_signed", facets_available: true },
+  },
+  {
+    id: "difc_sent_unsigned",
+    subject: "Globex DIFC NDA",
+    facets: { governing_law: "difc", signed: false, has_clauses: ["governing_law", "non_solicitation"], phase: "sent", status: "sent_awaiting_counterparty", facets_available: true },
+  },
+  {
+    id: "india_review_nonsolicit",
+    subject: "Initech India NDA",
+    facets: { governing_law: "india", signed: null, has_clauses: ["non_solicitation", "non_compete"], phase: "review", status: "ai_reviewing", facets_available: true },
+  },
+];
+const cids = (list) => list.map((m) => m.id);
+// governing_law dimension.
+assert.deepEqual(cids(applyFilterSpec(corpusFacetMatters, { governing_law: "difc" }, NOW)), ["difc_signed", "difc_sent_unsigned"]);
+assert.deepEqual(cids(applyFilterSpec(corpusFacetMatters, { governing_law: "india" }, NOW)), ["india_review_nonsolicit"]);
+// signed dimension (derived from the facet; pre-send matters excluded either polarity).
+assert.deepEqual(cids(applyFilterSpec(corpusFacetMatters, { signed: true }, NOW)), ["difc_signed"]);
+assert.deepEqual(cids(applyFilterSpec(corpusFacetMatters, { signed: false }, NOW)), ["difc_sent_unsigned"]);
+// has_clause dimension (membership in the flattened facets.has_clauses).
+assert.deepEqual(cids(applyFilterSpec(corpusFacetMatters, { has_clause: "non_solicitation" }, NOW)), ["difc_sent_unsigned", "india_review_nonsolicit"]);
+assert.deepEqual(cids(applyFilterSpec(corpusFacetMatters, { has_clause: "non_compete" }, NOW)), ["india_review_nonsolicit"]);
+// The headline compound: DIFC AND sent phase AND unsigned -> just the one matter.
+assert.deepEqual(
+  cids(applyFilterSpec(corpusFacetMatters, { governing_law: "difc", phase: "sent", signed: false }, NOW)),
+  ["difc_sent_unsigned"],
+);
 
 // --- Dashboard smart-search v3: groupMattersByCounterparty (grouping view) ---
 // Each matter carries a derived `counterparty` (from public_matter). Grouping is

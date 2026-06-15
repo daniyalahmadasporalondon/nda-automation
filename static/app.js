@@ -114,9 +114,51 @@ const corpusController = createCorpusController({
     activateTab("repository");
   },
 });
-// Dashboard smart-search (v1, deterministic). Reads the same state.matters the
-// Repository tab loads and reuses repositoryController.openMatter so a result
-// click opens the matter exactly as the board does.
+// The dashboard search bar searches the FULL CORPUS (app-state + Drive-reconciled,
+// ~95 matters), not just the ~20 app-state matters. ensureSearchCorpus fetches
+// GET /api/corpus (reusing the shipped corpus fetch + its per-owner TTL cache) and
+// flattens groups[].matters[] into the flat, matcher-shaped list the search controller
+// filters client-side. On a failure (e.g. Drive disconnected) the corpus payload still
+// carries the app-state matters, so search degrades gracefully and never crashes.
+state.corpusSearchMatters = [];
+function dashboardSearchLib() {
+  return window.DashboardSearch || {};
+}
+function ensureSearchCorpus() {
+  const fetchCorpus = typeof CorpusView !== "undefined" && CorpusView && CorpusView.fetchCorpus;
+  if (typeof fetchCorpus !== "function") {
+    return Promise.resolve(state.corpusSearchMatters);
+  }
+  return fetchCorpus()
+    .then((payload) => {
+      const flatten = dashboardSearchLib().flattenCorpusPayload;
+      state.corpusSearchMatters = typeof flatten === "function" ? flatten(payload) : [];
+      return state.corpusSearchMatters;
+    })
+    .catch(() => {
+      // Keep the last good corpus list; the controller renders against it (possibly
+      // empty) rather than throwing. Search must always be graceful.
+      return state.corpusSearchMatters;
+    });
+}
+// Open a search result respecting CORPUS PROVENANCE: an app/both matter opens in-app
+// via the repository flow; a Drive-only matter (no app-state) links out to its Drive
+// folder in a new tab (no in-app deep link, no Summarize). Falls back to the in-app
+// flow for a bare matter id (e.g. the legacy app-state path).
+function openCorpusSearchResult(matterId) {
+  const match = Array.isArray(state.corpusSearchMatters)
+    ? state.corpusSearchMatters.find((candidate) => String(candidate?.id) === String(matterId))
+    : null;
+  if (match && match.in_app !== true && match.open_in_drive_url) {
+    window.open(match.open_in_drive_url, "_blank", "noopener");
+    return;
+  }
+  repositoryController.openMatter(matterId);
+  activateTab("repository");
+}
+// Dashboard smart-search. Searches the full corpus (see ensureSearchCorpus) and
+// reuses the provenance-aware open above so a result click opens an app matter in-app
+// and a Drive-only matter out to Drive.
 const dashboardSearchController = createDashboardSearchController({
   root: document.querySelector("[data-dashboard-search]"),
   input: document.querySelector("#dashboardSearchInput"),
@@ -125,16 +167,9 @@ const dashboardSearchController = createDashboardSearchController({
   resultsList: document.querySelector("#dashboardSearchResults"),
   resultsStatus: document.querySelector("#dashboardSearchResultsStatus"),
   interpretedLine: document.querySelector("#dashboardSearchInterpreted"),
-  getMatters: () => state.matters,
-  ensureMatters: () => Promise.resolve(repositoryController.loadMatters()).then(() => {
-    renderDashboardInboxTable();
-  }),
-  openMatter: (matterId) => {
-    // Reuse the repository open-matter flow, then surface the Repository tab so
-    // the opened matter's detail panel is visible.
-    repositoryController.openMatter(matterId);
-    activateTab("repository");
-  },
+  getMatters: () => state.corpusSearchMatters,
+  ensureMatters: () => ensureSearchCorpus(),
+  openMatter: (matterId) => openCorpusSearchResult(matterId),
   // Async seam for the per-row "Summarize" affordance: POST to the matter's
   // summary endpoint and hand the controller {ok, payload}. The endpoint is
   // grounded in the matter's real document + review findings; on AI degradation

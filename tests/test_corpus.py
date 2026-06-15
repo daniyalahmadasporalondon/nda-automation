@@ -437,6 +437,128 @@ class CorpusIndexTests(unittest.TestCase):
         self.assertEqual(names, sorted(names, key=lambda n: n.casefold()))
 
 
+def _only_matter(payload):
+    matters = [matter for group in payload["groups"] for matter in group["matters"]]
+    assert len(matters) == 1, matters
+    return matters[0]
+
+
+class CorpusFacetTests(unittest.TestCase):
+    """Rich-facet derivation on app-state matters + read from a Drive summary."""
+
+    def setUp(self):
+        corpus_index.invalidate_cache()
+        self.repo = InMemoryMatterRepository()
+
+    def tearDown(self):
+        corpus_index.invalidate_cache()
+
+    def test_app_state_matter_carries_derived_facets(self):
+        # A generated NDA (manifest governing law) + a term clause with a persisted
+        # term_years scalar, fully signed -> all facets resolve from live review data.
+        matter = self.repo.create_matter(
+            source_filename="Acme NDA.docx",
+            document_bytes=b"PK\x03\x04 fake docx",
+            extracted_text="This Agreement is mutual.",
+            review_result={
+                "clauses": [
+                    {
+                        "id": "governing_law",
+                        "decision": "pass",
+                        "governing_law_analysis": {
+                            "candidate_records": [{"value": "DIFC", "approved": True}]
+                        },
+                    },
+                    {"id": "term_and_survival", "decision": "pass", "term_years": 5.0},
+                    {"id": "mutuality", "decision": "pass"},
+                ]
+            },
+            triage={"triage_status": "review"},
+            source_type="manual_upload",
+            board_column="signed",
+            owner_user_id="owner-a",
+        )
+        self.repo.update_matter_fields(
+            matter["id"], {"signed_off_at": "2026-06-01T00:00:00Z"}, owner_user_id="owner-a"
+        )
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "")
+        facets = _only_matter(payload)["facets"]
+        self.assertTrue(facets["facets_available"])
+        self.assertEqual(facets["governing_law"], "difc")
+        self.assertIn("governing_law", facets["has_clauses"])
+        self.assertIn("term_and_survival", facets["has_clauses"])
+        self.assertEqual(facets["term_years"], 5.0)
+        # signed depends on the workflow status; assert the facet is bool-or-null (never
+        # an opposite-polarity guess) and carries the workflow enums for status/phase.
+        self.assertIn(facets["signed"], (True, False, None))
+        self.assertIn("phase", facets)
+        self.assertIn("status", facets)
+
+    def test_app_state_matter_without_review_degrades_per_facet_but_available(self):
+        # An intake-only matter (no governing law / term) still has facets_available
+        # true (it IS app-state) with empty per-facet values.
+        _seed_matter(self.repo, owner="owner-a", title="Plain NDA")
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "")
+        facets = _only_matter(payload)["facets"]
+        self.assertTrue(facets["facets_available"])
+        self.assertEqual(facets["governing_law"], "")
+        self.assertIsNone(facets["term_years"])
+
+    def test_drive_only_matter_reads_facets_from_enriched_summary(self):
+        fake = FakeDriveService()
+        summary = _summary_for("drive-only-1", counterparty="DriveCo")
+        summary["facets"] = {
+            "governing_law": "india",
+            "signed": True,
+            "has_clauses": ["mutuality", "governing_law"],
+            "term_years": 3,
+            "schema_version": 1,
+        }
+        summary["workflow_state"] = {"phase": "executed", "status": "fully_signed"}
+        _build_drive_tree(fake, counterparty="DriveCo", summary=summary)
+
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "owner-a", drive_service=fake)
+        facets = _only_matter(payload)["facets"]
+        self.assertTrue(facets["facets_available"])
+        self.assertEqual(facets["governing_law"], "india")
+        self.assertIs(facets["signed"], True)
+        self.assertEqual(facets["has_clauses"], ["mutuality", "governing_law"])
+        self.assertEqual(facets["term_years"], 3.0)
+        self.assertEqual(facets["phase"], "executed")
+        self.assertEqual(facets["status"], "fully_signed")
+
+    def test_legacy_drive_summary_without_facets_degrades_unavailable(self):
+        fake = FakeDriveService()
+        # A legacy summary written before the facets enrichment (no `facets` block).
+        summary = _summary_for("legacy-1", counterparty="LegacyCo")
+        _build_drive_tree(fake, counterparty="LegacyCo", summary=summary)
+
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "owner-a", drive_service=fake)
+        facets = _only_matter(payload)["facets"]
+        self.assertFalse(facets["facets_available"])
+        self.assertEqual(facets["governing_law"], "")
+        self.assertIsNone(facets["signed"])
+        self.assertEqual(facets["has_clauses"], [])
+
+    def test_unknown_facet_never_positively_matches_a_filter(self):
+        # The graceful-degradation linchpin, asserted via the corpus matcher: a legacy
+        # Drive matter (facets_available=false) is never a positive match for any facet
+        # filter, either polarity.
+        from nda_automation import dashboard_search_intent as dsi
+
+        fake = FakeDriveService()
+        summary = _summary_for("legacy-2", counterparty="LegacyCo")
+        _build_drive_tree(fake, counterparty="LegacyCo", summary=summary)
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "owner-a", drive_service=fake)
+        matter = _only_matter(payload)
+        for spec_in in ({"signed": True}, {"signed": False}, {"governing_law": "difc"}, {"has_clause": "mutuality"}):
+            spec = dsi.validate_filter_spec(spec_in)
+            self.assertFalse(
+                dsi.corpus_matter_matches_spec(matter, spec),
+                f"legacy matter should not match {spec_in}",
+            )
+
+
 class _RaisingDriveService:
     """A Drive ``service`` double whose first ``files().list`` raises.
 

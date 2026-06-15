@@ -44,7 +44,7 @@ import urllib.request
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
-from . import workflow
+from . import governing_law_view, workflow
 from .ai_review import (
     DEFAULT_OPENROUTER_MODEL,
     OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
@@ -100,6 +100,55 @@ ALLOWED_PHASES: frozenset[str] = frozenset(workflow.PHASE_ORDER)
 
 ALLOWED_SORTS: frozenset[str] = frozenset({"oldest", "newest"})
 
+# The clause ids a ``has_clause`` filter may name. Sourced from the active Playbook
+# clauses (the real set the reviewer can find) UNIONed with the demo dynamic clauses
+# the search bar advertises (``non_solicitation`` / ``non_compete``), which only the
+# AI-first engine emits -- the deterministic engine never produces them, so this
+# dimension only resolves on AI-reviewed matters. Lazily computed + cached so a
+# missing/broken Playbook degrades to the demo set rather than breaking import.
+_DEMO_DYNAMIC_CLAUSE_IDS: frozenset[str] = frozenset({"non_solicitation", "non_compete"})
+_ALLOWED_CLAUSE_IDS_CACHE: frozenset[str] | None = None
+
+
+def allowed_clause_ids() -> frozenset[str]:
+    global _ALLOWED_CLAUSE_IDS_CACHE
+    if _ALLOWED_CLAUSE_IDS_CACHE is None:
+        _ALLOWED_CLAUSE_IDS_CACHE = _load_playbook_clause_ids() | _DEMO_DYNAMIC_CLAUSE_IDS
+    return _ALLOWED_CLAUSE_IDS_CACHE
+
+
+def reset_clause_id_cache() -> None:
+    """Drop the cached Playbook clause-id allowlist (tests / a Playbook republish)."""
+    global _ALLOWED_CLAUSE_IDS_CACHE
+    _ALLOWED_CLAUSE_IDS_CACHE = None
+
+
+def _load_playbook_clause_ids() -> frozenset[str]:
+    try:
+        from . import playbook_runtime  # noqa: PLC0415 -- avoid import cycle at load.
+
+        bundle = playbook_runtime.ensure_active_playbook_bundle()
+        playbook = bundle.playbook if bundle is not None else {}
+        clauses = playbook.get("clauses") if isinstance(playbook, Mapping) else []
+    except Exception:  # noqa: BLE001 -- a missing/broken Playbook degrades to the demo set.
+        return frozenset()
+    ids: set[str] = set()
+    if isinstance(clauses, list):
+        for clause in clauses:
+            if isinstance(clause, Mapping):
+                clause_id = str(clause.get("id") or "").strip().lower()
+                if clause_id:
+                    ids.add(clause_id)
+    return frozenset(ids)
+
+
+# The governing-law approved-option ids (e.g. india / delaware / england_and_wales /
+# difc). Sourced from the Playbook approved options via governing_law_view, exactly
+# how ALLOWED_STATUSES is sourced from workflow.py, so the allowlist never drifts.
+def allowed_governing_laws() -> frozenset[str]:
+    return frozenset(governing_law_view.governing_law_option_ids())
+
+
 # A friendly, user-facing reason code the frontend keys off to fall back to v1
 # keyword search. Never a stack trace, never an internal error string.
 FALLBACK_REASON_AI_UNAVAILABLE = "ai_unavailable"
@@ -134,6 +183,9 @@ NULL_FILTER_SPEC: dict[str, Any] = {
     "needs_attention": None,
     "human_gate": None,
     "has_issues": None,
+    "has_clause": None,
+    "signed": None,
+    "governing_law": None,
     "text": None,
     "min_age_days": None,
     "sort": None,
@@ -160,6 +212,9 @@ def validate_filter_spec(spec: object) -> dict[str, Any]:
         "needs_attention": _validate_bool(spec.get("needs_attention")),
         "human_gate": _validate_bool(spec.get("human_gate")),
         "has_issues": _validate_bool(spec.get("has_issues")),
+        "has_clause": _validate_enum(spec.get("has_clause"), allowed_clause_ids()),
+        "signed": _validate_bool(spec.get("signed")),
+        "governing_law": _validate_enum(spec.get("governing_law"), allowed_governing_laws()),
         "text": _validate_text(spec.get("text")),
         "min_age_days": _validate_min_age_days(spec.get("min_age_days")),
         "sort": _validate_enum(spec.get("sort"), ALLOWED_SORTS),
@@ -169,6 +224,93 @@ def validate_filter_spec(spec: object) -> dict[str, Any]:
 def filter_spec_is_empty(spec: Mapping[str, Any]) -> bool:
     """True when every dimension is null (the query mapped to nothing)."""
     return all(spec.get(key) is None for key in NULL_FILTER_SPEC)
+
+
+# --------------------------------------------------------------------------- #
+# Server-side matcher over a flattened CORPUS list (analytical counts only)
+# --------------------------------------------------------------------------- #
+# The client (applyFilterSpec) is the authoritative search matcher. This Python twin
+# exists ONLY so the dashboard assistant can answer corpus-wide COUNT questions
+# ("how many unsigned DIFC NDAs") over the same flattened corpus the FE searches. It
+# mirrors the FE matcher's facet contract: a deterministic AND of non-null dimensions
+# read from a CorpusMatter's `facets` block, with the same graceful-degradation rule
+# (an unknown facet -> never a positive match). It is NOT a second search surface; the
+# corpus list it runs over is already owner-scoped (built from the same owner ids).
+def _matter_facets(matter: Mapping[str, Any]) -> Mapping[str, Any]:
+    facets = matter.get("facets") if isinstance(matter, Mapping) else None
+    return facets if isinstance(facets, Mapping) else {}
+
+
+def _corpus_matter_signed(matter: Mapping[str, Any]) -> bool | None:
+    signed = _matter_facets(matter).get("signed")
+    return signed if isinstance(signed, bool) else None
+
+
+def _corpus_matter_governing_law(matter: Mapping[str, Any]) -> str:
+    return str(_matter_facets(matter).get("governing_law") or "").strip().lower()
+
+
+def _corpus_matter_has_clause(matter: Mapping[str, Any], clause_id: str) -> bool:
+    target = str(clause_id or "").strip().lower()
+    if not target:
+        return False
+    clauses = _matter_facets(matter).get("has_clauses")
+    if not isinstance(clauses, (list, tuple)):
+        return False
+    return any(str(c).strip().lower() == target for c in clauses)
+
+
+def _corpus_matter_status(matter: Mapping[str, Any]) -> str:
+    return str(_matter_facets(matter).get("status") or "").strip().lower()
+
+
+def _corpus_matter_phase(matter: Mapping[str, Any]) -> str:
+    return str(_matter_facets(matter).get("phase") or "").strip().lower()
+
+
+def corpus_matter_matches_spec(matter: Mapping[str, Any], spec: Mapping[str, Any]) -> bool:
+    """True when one CorpusMatter satisfies every non-null dimension of ``spec``.
+
+    A deterministic AND mirroring the FE applyFilterSpec for the facet dimensions
+    (status / phase / has_clause / signed / governing_law / text). An unknown facet
+    (signed=None, governing_law="", empty clause list) is never a positive match, so
+    a legacy Drive matter (facets_available=false) drops out of facet-filtered counts
+    rather than being counted as the opposite.
+    """
+    if not isinstance(spec, Mapping):
+        return False
+    status = spec.get("status")
+    if status is not None and _corpus_matter_status(matter) != status:
+        return False
+    phase = spec.get("phase")
+    if phase is not None and _corpus_matter_phase(matter) != phase:
+        return False
+    has_clause = spec.get("has_clause")
+    if has_clause is not None and not _corpus_matter_has_clause(matter, has_clause):
+        return False
+    signed = spec.get("signed")
+    if signed is not None:
+        matter_signed = _corpus_matter_signed(matter)
+        if matter_signed is None or matter_signed != signed:
+            return False
+    governing_law = spec.get("governing_law")
+    if governing_law is not None and _corpus_matter_governing_law(matter) != governing_law:
+        return False
+    text = spec.get("text")
+    if isinstance(text, str) and text:
+        haystack = " ".join(
+            str(matter.get(key) or "")
+            for key in ("title", "counterparty")
+        ).lower()
+        terms = [term for term in text.lower().split() if term]
+        if not all(term in haystack for term in terms):
+            return False
+    return True
+
+
+def count_corpus_matches(matters: Sequence[Mapping[str, Any]], spec: Mapping[str, Any]) -> int:
+    """Count CorpusMatters in ``matters`` that satisfy ``spec`` (validated upstream)."""
+    return sum(1 for matter in matters if isinstance(matter, Mapping) and corpus_matter_matches_spec(matter, spec))
 
 
 # --------------------------------------------------------------------------- #
@@ -183,9 +325,12 @@ _TEXT_STOP_WORDS: frozenset[str] = frozenset(
     {
         "a",
         "about",
+        "agreement",
+        "agreements",
         "all",
         "and",
         "any",
+        "but",
         "by",
         "counterparty",
         "deal",
@@ -198,18 +343,27 @@ _TEXT_STOP_WORDS: frozenset[str] = frozenset(
         "find",
         "for",
         "from",
+        "have",
+        "haven't",
+        "havent",
+        "how",
         "in",
         "linked",
+        "many",
         "matter",
         "matters",
         "me",
         "nda",
         "ndas",
         "of",
+        "our",
         "please",
         "show",
+        "that",
         "the",
         "to",
+        "we",
+        "which",
         "with",
     }
 )
@@ -232,9 +386,11 @@ _FILTER_WORDS: frozenset[str] = frozenset(
         "human",
         "issue",
         "issues",
+        "latest",
         "machine",
         "more",
         "newest",
+        "recent",
         "old",
         "older",
         "oldest",
@@ -250,6 +406,67 @@ _FILTER_WORDS: frozenset[str] = frozenset(
         "than",
         "week",
         "weeks",
+    }
+)
+
+
+# Phrase -> clause id for the deterministic has_clause fallback. Ordered so a more
+# specific phrase wins; each entry is only applied when the clause id is in the
+# active allowlist (allowed_clause_ids).
+_DETERMINISTIC_CLAUSE_PHRASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("non_solicitation", ("non-solicit", "non solicit", "nonsolicit", "no-solicit", "no solicit", "non-solicitation", "non solicitation")),
+    ("non_compete", ("non-compete", "non compete", "noncompete", "no-compete", "no compete", "non-competition", "non competition")),
+    ("non_circumvention", ("non-circumvention", "non circumvention", "noncircumvention", "non-circumvent", "non circumvent")),
+    ("confidential_information", ("confidential information clause", "confidentiality clause")),
+    ("governing_law", ("governing law clause", "governing-law clause")),
+    ("term_and_survival", ("survival clause", "term and survival")),
+    ("signatures", ("signature block", "signatures clause")),
+    ("mutuality", ("mutuality clause", "mutual clause")),
+)
+
+# Phrase -> governing-law approved-option id for the deterministic fallback. Each
+# entry is only applied when the option id is a Playbook approved option
+# (allowed_governing_laws).
+_DETERMINISTIC_GOVERNING_LAW_PHRASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("difc", ("difc", "dubai international financial centre", "dubai international financial center")),
+    ("england_and_wales", ("england and wales", "english law", "england & wales", "laws of england")),
+    ("delaware", ("delaware",)),
+    ("india", ("india", "indian law")),
+    ("ontario_canada", ("ontario", "ontario, canada")),
+)
+
+# Keyword tokens the new corpus dimensions consume, kept out of the free-text field
+# so a structured query ("DIFC NDAs we sent but haven't signed") doesn't also try to
+# keyword-match "DIFC" against the haystack.
+_CORPUS_FILTER_WORDS: frozenset[str] = frozenset(
+    {
+        "compete",
+        "competition",
+        "circumvention",
+        "circumvent",
+        "delaware",
+        "difc",
+        "england",
+        "english",
+        "haven't",
+        "havent",
+        "india",
+        "indian",
+        "law",
+        "non-circumvent",
+        "non-circumvention",
+        "non-compete",
+        "non-competition",
+        "non-solicit",
+        "non-solicitation",
+        "noncompete",
+        "nonsolicit",
+        "ontario",
+        "signed",
+        "solicit",
+        "solicitation",
+        "unsigned",
+        "wales",
     }
 )
 
@@ -279,6 +496,7 @@ def deterministic_filter_spec(query: str) -> dict[str, Any]:
 
     lowered = cleaned.lower()
     _apply_deterministic_status_phase_flags(lowered, spec)
+    _apply_deterministic_corpus_flags(lowered, spec)
     spec["min_age_days"] = _deterministic_min_age_days(lowered)
     spec["sort"] = _deterministic_sort(lowered)
     spec["text"] = _deterministic_text_terms(cleaned)
@@ -320,6 +538,39 @@ def _apply_deterministic_status_phase_flags(lowered: str, spec: dict[str, Any]) 
         spec["has_issues"] = True
 
 
+def _apply_deterministic_corpus_flags(lowered: str, spec: dict[str, Any]) -> None:
+    """Map the v-demo corpus dimensions: has_clause, signed, governing_law.
+
+    Deterministic, app-state-only. Kept conservative: a word only sets a dimension
+    when the intent is unambiguous, so a query the AI would map more richly still
+    degrades to a sensible, real filter.
+    """
+    # signed / unsigned. "fully signed" / "executed" already imply the signed status
+    # upstream; here we surface the boolean dimension explicitly so a bare "signed
+    # NDAs" / "unsigned" / "not signed yet" query works without naming a status.
+    if _contains_any(lowered, ("unsigned", "not signed", "not yet signed", "haven't signed", "havent signed", "hasn't signed")):
+        spec["signed"] = False
+    elif _contains_any(lowered, ("fully signed", "fully executed", "executed", "countersigned")):
+        spec["signed"] = True
+    elif re.search(r"\bsigned\b", lowered) and not _contains_any(lowered, ("awaiting", "waiting", "pending", "to be", "not ")):
+        spec["signed"] = True
+
+    # has_clause: the demo dynamic clauses (only the AI engine emits them) plus the
+    # Playbook native clauses. Phrase -> clause id, longest/most specific first.
+    for clause_id, phrases in _DETERMINISTIC_CLAUSE_PHRASES:
+        if clause_id in allowed_clause_ids() and _contains_any(lowered, phrases):
+            spec["has_clause"] = clause_id
+            break
+
+    # governing_law: map a named jurisdiction to its approved-option id, but only when
+    # that id is actually a Playbook approved option.
+    allowed = allowed_governing_laws()
+    for option_id, phrases in _DETERMINISTIC_GOVERNING_LAW_PHRASES:
+        if option_id in allowed and _contains_any(lowered, phrases):
+            spec["governing_law"] = option_id
+            break
+
+
 def _deterministic_min_age_days(lowered: str) -> int | None:
     if re.search(r"\b(?:older than|over|more than|for more than|stuck for)\s+(?:a|one)\s+week\b", lowered):
         return 7
@@ -352,7 +603,7 @@ def _deterministic_text_terms(cleaned: str) -> str | None:
         lowered = token.lower().strip("'")
         if not lowered or lowered.isdigit():
             continue
-        if lowered in _TEXT_STOP_WORDS or lowered in _FILTER_WORDS:
+        if lowered in _TEXT_STOP_WORDS or lowered in _FILTER_WORDS or lowered in _CORPUS_FILTER_WORDS:
             continue
         terms.append(token)
     if not terms:
@@ -423,6 +674,15 @@ _PHASE_LABELS = {
     workflow.PHASE_NEGOTIATION: "Negotiation",
     workflow.PHASE_EXECUTED: "Executed",
 }
+# Friendly labels for the governing-law option ids (the interpreted line). Falls back
+# to a title-cased id for any future option not listed here.
+_GOVERNING_LAW_LABELS = {
+    "india": "India",
+    "delaware": "Delaware",
+    "england_and_wales": "England and Wales",
+    "difc": "DIFC",
+    "ontario_canada": "Ontario, Canada",
+}
 
 
 def describe_filter_spec(spec: Mapping[str, Any]) -> str:
@@ -451,6 +711,16 @@ def describe_filter_spec(spec: Mapping[str, Any]) -> str:
         parts.append("Has issues")
     elif spec.get("has_issues") is False:
         parts.append("No issues")
+    has_clause = spec.get("has_clause")
+    if isinstance(has_clause, str) and has_clause:
+        parts.append(f"Has {has_clause.replace('_', ' ')}")
+    if spec.get("signed") is True:
+        parts.append("Signed")
+    elif spec.get("signed") is False:
+        parts.append("Unsigned")
+    governing_law = spec.get("governing_law")
+    if isinstance(governing_law, str) and governing_law:
+        parts.append(f"Governed by {_GOVERNING_LAW_LABELS.get(governing_law, governing_law.replace('_', ' ').title())}")
     min_age_days = spec.get("min_age_days")
     if isinstance(min_age_days, int):
         day_word = "day" if min_age_days == 1 else "days"
@@ -475,6 +745,8 @@ def describe_filter_spec(spec: Mapping[str, Any]) -> str:
 def _system_prompt() -> str:
     statuses = ", ".join(sorted(ALLOWED_STATUSES))
     phases = ", ".join(workflow.PHASE_ORDER)
+    clause_ids = ", ".join(sorted(allowed_clause_ids()))
+    governing_laws = ", ".join(sorted(allowed_governing_laws()))
     return (
         "You translate a user's natural-language search query about their NDA "
         "documents into a STRUCTURED FILTER. You never see any documents; you only "
@@ -486,6 +758,9 @@ def _system_prompt() -> str:
         '  "needs_attention": true, false, or null  (the matter is flagged as stuck/failed)\n'
         '  "human_gate": true, false, or null  (waiting on a person, not a machine)\n'
         '  "has_issues": true, false, or null  (the review found failed or needs-review requirements)\n'
+        '  "has_clause": one of [' + clause_ids + "] or null  (the document contains that clause)\n"
+        '  "signed": true, false, or null  (true = fully signed/executed; false = unsigned/awaiting signature)\n'
+        '  "governing_law": one of [' + governing_laws + "] or null  (the agreement's governing law)\n"
         '  "text": a short keyword string (a counterparty or subject) or null\n'
         '  "min_age_days": an integer N for "older than N days" / "stuck", or null\n'
         '  "sort": "oldest", "newest", or null\n'

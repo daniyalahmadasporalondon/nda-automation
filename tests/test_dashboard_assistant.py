@@ -642,3 +642,74 @@ def test_clause_count_guard_does_not_hijack_playbook_or_generic_document_questio
         playbook_provider=lambda: {"clauses": [{"id": "mutuality"}]},
     )
     assert generic["intent"] == "unsupported"
+
+
+def _corpus_matter(matter_id, title, *, governing_law="", signed=None, has_clauses=None, status="", phase="", source="app", available=True):
+    return {
+        "matter_id": matter_id,
+        "title": title,
+        "counterparty": title.split()[0],
+        "source": source,
+        "facets": {
+            "governing_law": governing_law,
+            "signed": signed,
+            "has_clauses": list(has_clauses or []),
+            "term_years": None,
+            "phase": phase,
+            "status": status,
+            "facets_available": available,
+        },
+    }
+
+
+def test_count_unsigned_difc_ndas_over_the_flattened_corpus():
+    # The headline analytical answer: counts run over the OWNER-SCOPED CORPUS list
+    # (app-state + Drive-reconciled), not just app-state, via the injected provider.
+    corpus = [
+        _corpus_matter("1", "Acme DIFC NDA", governing_law="difc", signed=True, status="fully_signed", phase="executed"),
+        _corpus_matter("2", "Globex DIFC NDA", governing_law="difc", signed=False, status="sent_awaiting_counterparty", phase="sent", source="both"),
+        _corpus_matter("3", "Initech India NDA", governing_law="india", signed=False, status="sent_awaiting_counterparty", phase="sent"),
+        # A legacy Drive matter with no facets -> excluded from facet counts.
+        _corpus_matter("4", "Legacy NDA", source="drive", available=False),
+    ]
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "how many unsigned DIFC NDAs",
+        repository=InMemoryMatterRepository(),
+        owner_user_id="tenant-a",
+        corpus_provider=lambda: corpus,
+    )
+    assert response["intent"] == "repository_question"
+    assert response["question"] == "count_corpus_matches"
+    assert response["answer"]["count"] == 1
+    assert response["answer"]["filters"]["governing_law"] == "difc"
+    assert response["answer"]["filters"]["signed"] is False
+
+
+def test_count_difc_total_includes_signed_and_unsigned_but_not_legacy():
+    corpus = [
+        _corpus_matter("1", "Acme DIFC NDA", governing_law="difc", signed=True),
+        _corpus_matter("2", "Globex DIFC NDA", governing_law="difc", signed=False),
+        _corpus_matter("3", "Legacy DIFC?", source="drive", available=False),
+    ]
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "how many DIFC NDAs",
+        repository=InMemoryMatterRepository(),
+        owner_user_id="tenant-a",
+        corpus_provider=lambda: corpus,
+    )
+    assert response["answer"]["count"] == 2
+    # The legacy Drive matter (facets_available=false) is honestly excluded.
+    assert response["answer"]["corpus_total"] == 3
+
+
+def test_count_in_review_question_is_not_hijacked_by_corpus_counter():
+    # "how many in review" stays the existing count_in_review handler (app-state).
+    repo = InMemoryMatterRepository()
+    _create_matter(repo, owner_user_id="tenant-a")
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "how many are in review?",
+        repository=repo,
+        owner_user_id="tenant-a",
+        corpus_provider=lambda: [],
+    )
+    assert response["question"] == "count_in_review"

@@ -26,7 +26,7 @@ mutates a matter.
 """
 from __future__ import annotations
 
-from .. import dashboard_assistant, dashboard_search_intent, telemetry
+from .. import dashboard_assistant, dashboard_search_intent, google_connection, telemetry
 from ..matter_repository import DiskMatterRepository, MatterRepository, MatterRepositoryError
 from .common import request_owner_user_id
 
@@ -68,6 +68,10 @@ def handle_dashboard_assistant(handler) -> None:
             query,
             repository=repository,
             owner_user_id=request_owner_user_id(handler),
+            # The signed-in user's own Drive owner id so corpus-wide analytical counts
+            # read the same owner-scoped corpus the Corpus tab does (drive.file scope
+            # makes cross-tenant Drive leakage structurally impossible).
+            drive_owner_user_id=_google_owner_user_id(handler),
             search_resolver=lambda search_query: resolve_search_intent(
                 search_query,
                 transport=_search_intent_transport(handler),
@@ -106,6 +110,14 @@ def _repository(handler) -> MatterRepository:
     if repository is not None:
         return repository
     return DiskMatterRepository()
+
+
+def _google_owner_user_id(handler) -> str:
+    """The signed-in user's own Drive owner id (mirrors routes/corpus.py)."""
+    return google_connection.connected_owner_user_id(
+        getattr(handler, "current_user", None),
+        owner_user_id=request_owner_user_id(handler),
+    )
 
 
 def _search_intent_transport(handler):
