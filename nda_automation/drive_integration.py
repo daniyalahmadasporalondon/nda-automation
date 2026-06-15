@@ -633,8 +633,24 @@ def _matter_title(matter: dict[str, Any]) -> str:
         value = _drive_safe_name(matter.get(field)).replace("·", "-")
         value = " ".join(value.split())
         if value and value.casefold() not in _PLACEHOLDER_TITLES:
-            return value[:_MAX_TITLE_LENGTH].strip()
+            return _truncate_title(value)
     return "NDA"
+
+
+def _truncate_title(value: str) -> str:
+    """Cap a title at ``_MAX_TITLE_LENGTH`` without slicing a word in half.
+
+    A naive ``[:60]`` slice can leave a dangling fragment (e.g. ``"... 2025) ("``).
+    Instead we cut back to the last whole word inside the cap and strip any opening
+    bracket / separator left at the edge.
+    """
+    if len(value) <= _MAX_TITLE_LENGTH:
+        return value
+    cut = value[:_MAX_TITLE_LENGTH]
+    if " " in cut:
+        cut = cut[: cut.rindex(" ")]
+    cut = cut.rstrip(" -–—([{·/,;:")
+    return cut or value[:_MAX_TITLE_LENGTH].strip()
 
 
 def _matter_ref_code(key: str) -> str:

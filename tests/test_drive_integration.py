@@ -538,6 +538,19 @@ class DriveV2IntegrationTests(unittest.TestCase):
         )
         self.assertEqual(name, "Mutual NDA · 1234")
 
+    def test_long_title_truncates_at_word_boundary_without_dangling_punctuation(self):
+        long_title = "Air India - Mutual NDA Template (Updated as on 23.04.2025) (4)"
+        name = drive_integration.derive_matter_folder_name(
+            {"id": "matter_aaaabbbbc518", "created_at": "2026-06-12T09:00:00+00:00", "document_title": long_title},
+            "matter_aaaabbbbc518",
+            "Air India",
+        )
+        # No mid-word slice and no dangling opening bracket / separator at the end.
+        self.assertEqual(name, "2026-06-12 · Air India - Mutual NDA Template (Updated as on 23.04.2025) · c518")
+        title = name.split(" · ")[1]
+        self.assertLessEqual(len(title), 60)
+        self.assertFalse(title.rstrip().endswith(("(", "-", "·", ",")))
+
     def test_matter_ref_code_is_stable_and_fixed_length(self):
         # Same id -> same ref every time (folders stay stable across re-syncs).
         self.assertEqual(
