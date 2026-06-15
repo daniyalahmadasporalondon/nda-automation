@@ -110,7 +110,7 @@ class DriveLifecycleEndToEndTests(unittest.TestCase):
         # --- legal_review v1: the human-approved doc at the approval gate ------
         # (sent_v1's lineage is auto-derived from the latest reviewed doc by the
         # SENT hook, so this v1 handle is not referenced again directly.)
-        artifact_service.add_artifact(
+        legal_review_v1 = artifact_service.add_artifact(
             self.matter_id,
             source=SOURCE_GENERATED,
             actor=ACTOR_HUMAN,
@@ -199,6 +199,37 @@ class DriveLifecycleEndToEndTests(unittest.TestCase):
             ],
         )
 
+        # --- byte-content integrity: each version owns its OWN distinct bytes --
+        # The corruption this guards against (a v2 overwriting v1's stored bytes
+        # under a non-version-aware storage key) passes a filename-only check; so
+        # assert the EXACT bytes are retrievable per version through the registry
+        # service the Drive sync reads from.
+        expected_bytes = {
+            legal_review_v1.id: b"PK\x03\x04 legal-review-v1",
+            sent_v1.id: b"PK\x03\x04 sent-v1",
+            counter_v1.id: b"PK\x03\x04 counter-v1",
+            legal_review_v2.id: b"PK\x03\x04 legal-review-v2",
+            sent_v2.id: b"PK\x03\x04 sent-v2",
+            signed.id: b"%PDF-1.7 executed-signed-copy",
+        }
+        read_bytes = self._bytes_reader()
+        for artifact_id, want in expected_bytes.items():
+            self.assertEqual(
+                read_bytes(self.matter_id, artifact_id, owner_user_id=OWNER),
+                want,
+                f"artifact {artifact_id} returned the wrong bytes",
+            )
+        # v1 vs v2 of the SAME role are byte-distinct (the overwrite bug would make
+        # these identical) and stored under distinct keys.
+        self.assertNotEqual(
+            read_bytes(self.matter_id, legal_review_v1.id, owner_user_id=OWNER),
+            read_bytes(self.matter_id, legal_review_v2.id, owner_user_id=OWNER),
+        )
+        self.assertNotEqual(
+            read_bytes(self.matter_id, sent_v1.id, owner_user_id=OWNER),
+            read_bytes(self.matter_id, sent_v2.id, owner_user_id=OWNER),
+        )
+
         # --- sync to Drive and assert the numbered/versioned filenames --------
         fake = FakeDriveV2Service()
         result = drive_integration.sync_matter_folder(
@@ -227,6 +258,23 @@ class DriveLifecycleEndToEndTests(unittest.TestCase):
         self.assertEqual(synced_names, expected_filenames)
         # The Drive fake actually holds all eight files (plus the summary json).
         self.assertEqual(sorted(fake.file_names()), sorted(expected_filenames + ["matter_summary.json"]))
+
+        # The Drive-synced FILE for each version carries that version's own correct
+        # bytes — including the v1/v2 pairs that the overwrite bug would corrupt.
+        expected_drive_content = {
+            "01_received.docx": b"PK\x03\x04 received-counterparty-original",
+            "02_ai_redline_v1.docx": b"PK\x03\x04 ai-redline-v1",
+            "03_legal_review_v1.docx": b"PK\x03\x04 legal-review-v1",
+            "04_sent_v1.docx": b"PK\x03\x04 sent-v1",
+            "05_counter_v1.docx": b"PK\x03\x04 counter-v1",
+            "06_legal_review_v2.docx": b"PK\x03\x04 legal-review-v2",
+            "07_sent_v2.docx": b"PK\x03\x04 sent-v2",
+            "08_signed.pdf": b"%PDF-1.7 executed-signed-copy",
+        }
+        for filename, want in expected_drive_content.items():
+            self.assertEqual(
+                fake.content_for(filename), want, f"{filename} uploaded the wrong bytes"
+            )
 
         # The executed copy was uploaded exactly once under its terminal PDF name
         # (the .pdf -> application/pdf mimetype routing itself is covered by

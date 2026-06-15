@@ -36,7 +36,6 @@ from .artifact_registry import (
     ROLE_SENT,
     SOURCE_GENERATED,
     latest_artifact_for_role,
-    next_version_for_role,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -82,25 +81,16 @@ def capture_sent_artifact(
     if filename:
         metadata["sent_filename"] = filename
 
-    # Each SENT version must keep its OWN bytes. The default provisional storage
-    # key is keyed only by (matter, actor, role) — so a second send would
-    # overwrite v1's bytes. Stage the bytes under a version-unique key first;
-    # passing ``stored_filename`` makes ``add_artifact`` reuse it (skipping its
-    # provisional put) while still hashing the bytes for ``content_hash``.
-    version = next_version_for_role(matter, ROLE_SENT)
-    stored_bytes = bytes(sent_bytes)
-    stored_filename = repository.put_artifact_document(
-        f"{matter_id}-sent-v{version}.docx", stored_bytes
-    )
-
+    # Each SENT version keeps its OWN bytes. ``add_artifact`` now provisions a
+    # VERSION-AWARE storage key, so a plain ``document_bytes=`` is sufficient — a
+    # second send becomes ``sent`` v2 and stores under its own key (no overwrite
+    # of v1). The version is derived by the registry (next_version_for_role).
     return artifact_service.add_artifact(
         matter_id,
         source=SOURCE_GENERATED,
         actor=ACTOR_HUMAN,
         role=ROLE_SENT,
-        document_bytes=stored_bytes,
-        stored_filename=stored_filename,
-        version=version,
+        document_bytes=bytes(sent_bytes),
         based_on_artifact_id=(based_on.id if based_on is not None else ""),
         make_current=True,
         metadata=metadata,

@@ -42,6 +42,7 @@ from .artifact_registry import (
     SOURCE_UPLOAD,
     ArtifactRegistryError,
     latest_artifact_for_role,
+    next_version_for_role,
 )
 from .document_limits import DOCUMENT_TOO_LARGE_MESSAGE, DocumentSizeError, ensure_document_size
 from .matter_repository import DiskMatterRepository
@@ -98,15 +99,24 @@ def capture_signed_artifact(
     if cleaned_filename:
         metadata["source_filename"] = cleaned_filename
 
-    # Stage the executed bytes under a ``.pdf`` storage key so the registry
-    # derives the PDF extension from the stored filename (``add_artifact`` only
-    # auto-stores under a hardcoded ``.docx`` provisional name). Passing the key
-    # back as ``stored_filename`` reuses these exact bytes — no duplication — and
-    # records the content hash off them via ``add_artifact``'s own hashing.
+    # SIGNED is TERMINAL: a matter has exactly ONE signed copy (the latest). If a
+    # signed artifact already exists, the new upload REPLACES it rather than
+    # appending a duplicate. Capture the prior signed id before adding the new one
+    # (lineage precedence — counter/sent/reviewed/original — never anchors the new
+    # signed to the old one, so the prune below leaves no dangling reference).
+    existing_signed = latest_artifact_for_role(matter, ROLE_SIGNED)
+
+    # Stage the executed bytes under a version-aware ``.pdf`` storage key so the
+    # registry derives the PDF extension from the stored filename (``add_artifact``
+    # only auto-stores under a hardcoded ``.docx`` provisional name) and a replaced
+    # copy never overwrites the (about-to-be-pruned) prior signed bytes. Passing
+    # the key back as ``stored_filename`` reuses these exact bytes — no duplication
+    # — and records the content hash off them via ``add_artifact``'s own hashing.
+    signed_version = next_version_for_role(matter, ROLE_SIGNED)
     stored_filename = repository.put_artifact_document(
-        _signed_storage_name(matter_id), signed_bytes
+        _signed_storage_name(matter_id, signed_version), signed_bytes
     )
-    return artifact_service.add_artifact(
+    artifact = artifact_service.add_artifact(
         matter_id,
         source=SOURCE_UPLOAD,
         actor=ACTOR_HUMAN,
@@ -119,6 +129,15 @@ def capture_signed_artifact(
         repository=repository,
         owner_user_id=owner_user_id,
     )
+    if existing_signed is not None:
+        # Drop the prior signed copy so the matter keeps exactly one (the latest).
+        artifact_service.remove_artifact(
+            matter_id,
+            existing_signed.id,
+            repository=repository,
+            owner_user_id=owner_user_id,
+        )
+    return artifact
 
 
 def handle_signed_upload(handler, path: str) -> None:
@@ -211,12 +230,15 @@ def _is_signed_pdf_filename(filename: object) -> bool:
     return isinstance(filename, str) and filename.strip().casefold().endswith(SIGNED_EXTENSION)
 
 
-def _signed_storage_name(matter_id: str) -> str:
+def _signed_storage_name(matter_id: str, version: int) -> str:
     """Storage key for the executed copy, carrying the ``.pdf`` extension.
 
     The repository sanitises this into the actual storage key; the ``.pdf``
     suffix is what makes the registry stamp the artifact's extension (and Drive
-    name) as a PDF rather than the default DOCX.
+    name) as a PDF rather than the default DOCX. The ``-v{N}`` segment keeps a
+    REPLACED signed copy's bytes distinct from the prior one's (which is pruned),
+    so the storage key never collides even though SIGNED is a one-shot Drive name.
     """
     safe_matter = str(matter_id or "matter").strip() or "matter"
-    return f"{safe_matter}-signed{SIGNED_EXTENSION}"
+    version_label = max(int(version), 1)
+    return f"{safe_matter}-signed-v{version_label}{SIGNED_EXTENSION}"

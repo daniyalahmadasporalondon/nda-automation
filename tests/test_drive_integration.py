@@ -116,6 +116,9 @@ class _FakeFilesV2:
             "parent": parents[0],
             "web_link": f"https://drive.google.com/file/d/{file_id}/view",
             "is_folder": body.get("mimeType") == drive_integration.FOLDER_MIME,
+            # The exact bytes uploaded, so a test can assert each versioned file
+            # carries its own correct content (not just the right filename).
+            "content": _media_bytes(media_body),
         }
         self._store["files"][file_id] = record
         return _FakeExecutable({"id": file_id, "webViewLink": record["web_link"]})
@@ -151,6 +154,21 @@ def _escape(value):
     return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
+def _media_bytes(media_body):
+    """Extract the uploaded bytes from a ``MediaIoBaseUpload`` (or ``None``).
+
+    Folder creates carry no media; for a file upload the bytes are read back via
+    the media object's ``size()``/``getbytes()`` API so a test can verify the
+    exact content uploaded for each artifact version.
+    """
+    if media_body is None:
+        return None
+    try:
+        return media_body.getbytes(0, media_body.size())
+    except Exception:  # pragma: no cover - defensive, should not happen with real media
+        return None
+
+
 class FakeDriveV2Service:
     """A stateful fake Drive: folders + files, so idempotency is verifiable."""
 
@@ -177,6 +195,17 @@ class FakeDriveV2Service:
 
     def file_names(self):
         return sorted(rec["name"] for rec in self.file_records())
+
+    def content_for(self, filename):
+        """The uploaded bytes for the (single) file named ``filename``, or ``None``.
+
+        Lets a test assert that the Drive-synced file for each artifact version
+        carries that version's own distinct content.
+        """
+        for rec in self.file_records():
+            if rec["name"] == filename:
+                return rec.get("content")
+        return None
 
     def folder_create_count(self):
         return sum(

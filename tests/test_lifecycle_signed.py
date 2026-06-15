@@ -101,6 +101,56 @@ def test_capture_anchors_lineage_to_latest_in_flight_artifact():
     assert signed is not None and signed.id == artifact.id
 
 
+def test_second_signed_upload_replaces_rather_than_appends():
+    """SIGNED is terminal: a second executed PDF REPLACES the first.
+
+    A matter always carries exactly ONE signed artifact (the latest), and the
+    retrievable bytes are the second upload's — not the first's.
+    """
+    repo = InMemoryMatterRepository()
+    matter = _create_matter(repo)
+    first_bytes = b"%PDF-1.7 first executed copy"
+    second_bytes = b"%PDF-1.7 SECOND executed copy (corrected)"
+
+    first = lifecycle_signed.capture_signed_artifact(
+        repo, matter["id"], OWNER, first_bytes, "Executed NDA.pdf"
+    )
+    second = lifecycle_signed.capture_signed_artifact(
+        repo, matter["id"], OWNER, second_bytes, "Executed NDA v2.pdf"
+    )
+
+    assert first is not None and second is not None
+    assert first.id != second.id
+
+    # Exactly one signed artifact remains, and it is the second one.
+    signed_artifacts = [
+        a
+        for a in artifact_service.list_artifacts(matter["id"], repository=repo, owner_user_id=OWNER)
+        if a.role == ROLE_SIGNED
+    ]
+    assert len(signed_artifacts) == 1
+    assert signed_artifacts[0].id == second.id
+
+    # The first signed artifact is gone (no dangling record), and the retrievable
+    # signed bytes are the second upload's — not the first's.
+    assert (
+        artifact_service.get_artifact_bytes(
+            matter["id"], first.id, repository=repo, owner_user_id=OWNER
+        )
+        is None
+    )
+    assert (
+        artifact_service.get_artifact_bytes(
+            matter["id"], second.id, repository=repo, owner_user_id=OWNER
+        )
+        == second_bytes
+    )
+
+    # The current pointer follows the surviving (latest) signed artifact.
+    current = repo.get_matter(matter["id"], owner_user_id=OWNER).get("current_artifact_id")
+    assert current == second.id
+
+
 def test_capture_returns_none_without_bytes():
     repo = InMemoryMatterRepository()
     matter = _create_matter(repo)

@@ -186,6 +186,10 @@ def test_versions_increment_per_role():
     assert first.version == 1
     assert second.version == 2
     assert second.name == "02_ai_redline_v2.docx"  # versioned stage
+    # Each version owns its OWN bytes: the v2 storage key must not overwrite v1's
+    # (the version-aware provisional-storage-key regression guard).
+    assert artifact_service.get_artifact_bytes(matter["id"], first.id, repository=repo) == b"r1"
+    assert artifact_service.get_artifact_bytes(matter["id"], second.id, repository=repo) == b"r2"
 
 
 # --- lineage ---------------------------------------------------------------
@@ -565,6 +569,13 @@ def test_register_reviewed_docx_new_version_when_bytes_change():
     assert repo.get_matter(matter["id"])["current_artifact_id"] == second.id
     reviewed = [a for a in artifact_service.list_artifacts(matter["id"], repository=repo) if a.role == "reviewed"]
     assert len(reviewed) == 2
+    # The re-review must NOT have overwritten v1's stored bytes: each reviewed
+    # version retrieves its own distinct content (the corruption this guards).
+    assert artifact_service.get_artifact_bytes(matter["id"], first.id, repository=repo) == b"reviewed v1"
+    assert (
+        artifact_service.get_artifact_bytes(matter["id"], second.id, repository=repo)
+        == b"reviewed v2 (re-reviewed)"
+    )
 
 
 def test_register_reviewed_docx_missing_matter_raises():

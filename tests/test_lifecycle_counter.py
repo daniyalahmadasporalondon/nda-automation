@@ -112,11 +112,13 @@ def test_capture_second_counter_registers_v2(isolated_matter_store):
     matter = _create_matter()
     repository = DiskMatterRepository()
 
+    counter_v1_bytes = _make_docx("Counter 1.")
+    counter_v2_bytes = _make_docx("Counter 2.")
     first = lifecycle_counter.capture_counter_artifact(
-        repository, matter["id"], "", _make_docx("Counter 1."), "c1.docx"
+        repository, matter["id"], "", counter_v1_bytes, "c1.docx"
     )
     second = lifecycle_counter.capture_counter_artifact(
-        repository, matter["id"], "", _make_docx("Counter 2."), "c2.docx"
+        repository, matter["id"], "", counter_v2_bytes, "c2.docx"
     )
 
     assert first.version == 1
@@ -127,6 +129,18 @@ def test_capture_second_counter_registers_v2(isolated_matter_store):
     )
     assert latest.id == second.id
     assert latest.version == 2
+
+    # Each version keeps its OWN bytes: a v2 must NOT have overwritten v1's
+    # stored bytes (the version-aware storage-key regression guard).
+    assert counter_v1_bytes != counter_v2_bytes
+    assert (
+        artifact_service.get_artifact_bytes(matter["id"], first.id, repository=repository)
+        == counter_v1_bytes
+    )
+    assert (
+        artifact_service.get_artifact_bytes(matter["id"], second.id, repository=repository)
+        == counter_v2_bytes
+    )
 
 
 def test_capture_returns_none_for_empty_bytes(isolated_matter_store):
