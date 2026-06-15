@@ -167,6 +167,9 @@ def test_inbound_workflow_accepts_public_only_transport():
         "imported": [],
         "query": "in:inbox has:attachment",
         "skipped": [],
+        # AI intake telemetry is always present; all zero when the classifier is
+        # unconfigured (this public-only transport) and no call is attempted.
+        "ai_intake": {"ai_calls": 0, "ai_errors": 0, "ai_timeouts": 0, "ai_skipped_cap": 0},
     }
     assert transport.service.users_api.messages_api.max_results == 25
 

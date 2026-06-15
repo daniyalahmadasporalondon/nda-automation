@@ -178,6 +178,9 @@ class GmailTransport:
     def intake_classifier_configured(self) -> bool:
         return bool(gmail_intake_classifier.classifier_configured())
 
+    def intake_classifier_model(self) -> str:
+        return gmail_intake_classifier.configured_model()
+
     def gmail_intake_playbook(self) -> str:
         return gmail_intake_classifier.gmail_intake_playbook()
 

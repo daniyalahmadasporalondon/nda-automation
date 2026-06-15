@@ -135,8 +135,14 @@ def _deployment_status_for_host(host: str) -> dict[str, object]:
         {
             # Informational only (never fails the gate): the intake classifier reuses
             # OPENROUTER_API_KEY and falls open if NDA_GMAIL_INTAKE_MODEL is unset.
+            # This check reports only what it can verify WITHOUT a live API call --
+            # key presence and the resolved model slug. It deliberately does NOT
+            # assert the classifier is actually reachable / the model slug valid
+            # (a bad slug, rate-limit, or OpenRouter outage is observed at sync time
+            # via the per-sync ai_intake tallies, not here).
             "id": "gmail_intake_ai",
-            "ok": True,
+            "ok": gmail_intake_env["ok"],
+            "configured": gmail_intake_env["configured"],
             "message": gmail_intake_env["message"],
         },
         {

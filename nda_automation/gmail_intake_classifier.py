@@ -21,11 +21,14 @@ human triage -- never an auto-confident ingest (see ``resolve_intake_lane``).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
 from typing import Any
+
+LOGGER = logging.getLogger(__name__)
 
 from . import app_settings
 from .ai_review import OPENROUTER_API_KEY_ENV, OPENROUTER_CHAT_COMPLETIONS_ENDPOINT, _trusted_https_context
@@ -134,8 +137,20 @@ class GmailIntakeClassifierError(RuntimeError):
     pass
 
 
+class _ParseError(RuntimeError):
+    """Internal marker for a malformed model response (used only for log context)."""
+
+
 def classifier_configured() -> bool:
     return bool(_configured_api_key())
+
+
+def configured_model() -> str:
+    """The OpenRouter model slug the classifier resolves to (env knob or default).
+
+    Public accessor used for telemetry / health reporting -- carries no secret.
+    """
+    return _configured_model()
 
 
 def classify_intake_attachment(
@@ -176,10 +191,10 @@ def classify_intake_attachment(
         # urlopen surfaces a socket timeout as either bare TimeoutError or a
         # URLError wrapping one; both collapse to the timeout fallback.
         if isinstance(error, urllib.error.URLError) and not isinstance(error.reason, TimeoutError):
-            return _fallback_result("error")
-        return _fallback_result("timeout")
-    except (urllib.error.HTTPError, OSError, json.JSONDecodeError):
-        return _fallback_result("error")
+            return _fallback_result("error", error)
+        return _fallback_result("timeout", error)
+    except (urllib.error.HTTPError, OSError, json.JSONDecodeError) as error:
+        return _fallback_result("error", error)
 
     record_openrouter_usage(
         payload,
@@ -266,12 +281,26 @@ def _configured_model() -> str:
     return os.environ.get(GMAIL_INTAKE_MODEL_ENV, "").strip() or DEFAULT_GMAIL_INTAKE_MODEL
 
 
-def _fallback_result(status: str) -> dict[str, Any]:
+def _fallback_result(status: str, cause: BaseException | None = None) -> dict[str, Any]:
+    model = _configured_model()
+    # A degraded classifier (bad model slug, rate-limit, OpenRouter down/timeout)
+    # must not be silent: warn on every transport/parse failure so a fully-broken
+    # classifier is distinguishable from a healthy one. Include the failure class
+    # + resolved model only -- never the API key or any request/response bytes.
+    if status in ("error", "timeout"):
+        cause_class = type(cause).__name__ if cause is not None else "unknown"
+        LOGGER.warning(
+            "Gmail intake classifier degraded (status=%s, cause=%s, model=%s); "
+            "falling back to the deterministic intake lane.",
+            status,
+            cause_class,
+            model,
+        )
     return {
         "verdict": "",
         "confidence": 0.0,
         "reason": "",
-        "model": _configured_model(),
+        "model": model,
         "status": status,
     }
 
@@ -341,18 +370,18 @@ def _parse_response(payload: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(message, Mapping):
             content = str(message.get("content") or "")
     if not content:
-        return _fallback_result("error")
+        return _fallback_result("error", _ParseError("empty model content"))
     try:
         parsed = json.loads(content)
-    except json.JSONDecodeError:
-        return _fallback_result("error")
+    except json.JSONDecodeError as error:
+        return _fallback_result("error", error)
     if not isinstance(parsed, Mapping):
-        return _fallback_result("error")
+        return _fallback_result("error", _ParseError("model content was not a JSON object"))
 
     label = str(parsed.get("label") or "").strip().upper().replace("-", "_").replace(" ", "_")
     verdict = _LABEL_TO_VERDICT.get(label)
     if verdict is None:
-        return _fallback_result("error")
+        return _fallback_result("error", _ParseError("unknown or missing label"))
 
     try:
         confidence = float(parsed.get("confidence") or 0)

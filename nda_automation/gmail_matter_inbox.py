@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from typing import Any
 
 # Per-sync cost cap for the AI intake classifier. Imported here so the budget the
 # inbox loop hands down stays in lockstep with the classifier's own cap constant.
 from .gmail_intake_classifier import MAX_INTAKE_CALLS_PER_SYNC
+
+LOGGER = logging.getLogger(__name__)
+
+# When this fraction (or more) of the AI intake calls in a sync fail (error or
+# timeout), the classifier is likely degraded (bad model slug, rate-limit,
+# OpenRouter down) rather than hitting the occasional bad response, so the sync
+# emits a warn-log. Below this the silent per-call fallback is fine.
+_AI_DEGRADED_FRACTION = 0.5
 
 
 def import_inbound_matters(
@@ -74,6 +83,9 @@ def import_inbound_matters(
 
     imported: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
+    # Roll the per-message AI intake tallies up into a single per-sync total so the
+    # sync result carries an honest health signal for the classifier.
+    sync_tallies = _IntakeTallies()
     for message_stub in message_stubs:
         message_id = str(message_stub.get("id") or "")
         if not message_id:
@@ -122,12 +134,14 @@ def import_inbound_matters(
         )
         imported.extend(attachment_result["imported"])
         skipped.extend(attachment_result["skipped"])
+        sync_tallies.merge(attachment_result.get("ai_intake"))
 
     return {
         "account": account_email,
         "imported": imported,
         "query": inbound_query,
         "skipped": skipped,
+        "ai_intake": sync_tallies.as_dict(),
     }
 
 
@@ -151,6 +165,13 @@ def import_inbound_attachments(
     if intake_budget is None:
         intake_budget = _IntakeCallBudget(MAX_INTAKE_CALLS_PER_SYNC)
     intake_configured = _intake_classifier_configured(transport)
+
+    # Per-sync AI intake telemetry. A degraded classifier (bad model slug,
+    # rate-limit, OpenRouter down/timeout) silently falls back to the deterministic
+    # lane per-call; without these counts a fully-broken classifier is
+    # indistinguishable from a healthy one. Accumulated here and surfaced in the
+    # result (and merged across messages by import_inbound_matters).
+    tallies = _IntakeTallies()
 
     prepared: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
@@ -197,6 +218,7 @@ def import_inbound_attachments(
             intake_budget,
             configured=intake_configured,
         )
+        tallies.record(str(ai_result.get("status") or ""))
         lane, triage_reason = transport.resolve_intake_lane(det_lane, det_reason, ai_result)
         ai_ok = ai_result.get("status") == "ok"
         if lane == "skip":
@@ -249,7 +271,78 @@ def import_inbound_attachments(
             skipped.append(skip)
         elif matter is not None:
             imported.append(matter)
-    return {"imported": imported, "skipped": skipped}
+    tallies.warn_if_degraded(LOGGER, message_id, model=_intake_model(transport))
+    return {"imported": imported, "skipped": skipped, "ai_intake": tallies.as_dict()}
+
+
+class _IntakeTallies:
+    """Per-sync counters for the AI intake classifier's health.
+
+    ``ai_calls`` counts attempts that actually reached the model (``ok`` plus the
+    degraded ``error`` / ``timeout`` outcomes); ``ai_errors`` / ``ai_timeouts`` are
+    the degraded subsets, and ``ai_skipped_cap`` counts candidates that took the
+    deterministic lane because the per-sync budget was exhausted. ``not_configured``
+    is not counted (no call was attempted).
+    """
+
+    def __init__(self) -> None:
+        self.ai_calls = 0
+        self.ai_errors = 0
+        self.ai_timeouts = 0
+        self.ai_skipped_cap = 0
+
+    def record(self, status: str) -> None:
+        if status in ("ok", "error", "timeout"):
+            self.ai_calls += 1
+        if status == "error":
+            self.ai_errors += 1
+        elif status == "timeout":
+            self.ai_timeouts += 1
+        elif status == "skipped_cap":
+            self.ai_skipped_cap += 1
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "ai_calls": self.ai_calls,
+            "ai_errors": self.ai_errors,
+            "ai_timeouts": self.ai_timeouts,
+            "ai_skipped_cap": self.ai_skipped_cap,
+        }
+
+    def merge(self, other: "_IntakeTallies | dict[str, Any] | None") -> None:
+        if other is None:
+            return
+        data = other.as_dict() if isinstance(other, _IntakeTallies) else other
+        self.ai_calls += int(data.get("ai_calls") or 0)
+        self.ai_errors += int(data.get("ai_errors") or 0)
+        self.ai_timeouts += int(data.get("ai_timeouts") or 0)
+        self.ai_skipped_cap += int(data.get("ai_skipped_cap") or 0)
+
+    def warn_if_degraded(self, logger: logging.Logger, scope: str, *, model: str = "") -> None:
+        """Warn when failures are a high fraction of the calls actually attempted."""
+        degraded = self.ai_errors + self.ai_timeouts
+        if self.ai_calls > 0 and degraded >= self.ai_calls * _AI_DEGRADED_FRACTION:
+            logger.warning(
+                "Gmail intake classifier degraded over %s: %d/%d calls failed "
+                "(errors=%d, timeouts=%d, model=%s); deterministic intake lane used "
+                "for those candidates.",
+                scope or "sync",
+                degraded,
+                self.ai_calls,
+                self.ai_errors,
+                self.ai_timeouts,
+                model or "unknown",
+            )
+
+
+def _intake_model(transport: Any) -> str:
+    getter = getattr(transport, "intake_classifier_model", None)
+    if callable(getter):
+        try:
+            return str(getter() or "")
+        except Exception:  # pragma: no cover - model probe is best-effort
+            return ""
+    return ""
 
 
 class _IntakeCallBudget:

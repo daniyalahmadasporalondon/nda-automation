@@ -398,6 +398,37 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(deployment["google_oauth_configured"])
         self.assertFalse(deployment["basic_auth_configured"])
 
+    def test_gmail_intake_ai_health_check_reports_only_verifiable_facts(self):
+        # The intake health check must be HONEST: it reports key-presence and the
+        # resolved model (facts it can verify without a live API call) and surfaces
+        # a "configured" flag, rather than the old hardcoded ok:True that asserted
+        # health it could not verify.
+        with patch.dict(os.environ, {
+            "OPENROUTER_API_KEY": "router-key",
+            "NDA_GMAIL_INTAKE_MODEL": "deepseek/deepseek-v4-pro",
+        }):
+            with patch.object(server_module.app_settings, "stored_ai_api_key", return_value=""):
+                deployment = server_module._deployment_status_for_host("0.0.0.0")
+        checks = {check["id"]: check for check in deployment["checks"]}
+        intake = checks["gmail_intake_ai"]
+        # Key present -> configured true, model surfaced in the message.
+        self.assertTrue(intake["configured"])
+        self.assertIn("deepseek/deepseek-v4-pro", intake["message"])
+        self.assertTrue(deployment["gmail_intake_ai_configured"])
+
+        with patch.dict(os.environ, {
+            "OPENROUTER_API_KEY": "",
+            "NDA_GMAIL_INTAKE_MODEL": "",
+        }):
+            with patch.object(server_module.app_settings, "stored_ai_api_key", return_value=""):
+                deployment = server_module._deployment_status_for_host("0.0.0.0")
+        checks = {check["id"]: check for check in deployment["checks"]}
+        intake = checks["gmail_intake_ai"]
+        # No key -> not configured, but the optional check still does not fail the gate.
+        self.assertFalse(intake["configured"])
+        self.assertTrue(intake["ok"])
+        self.assertFalse(deployment["gmail_intake_ai_configured"])
+
     def test_required_auth_fails_closed_without_credentials(self):
         with patch.dict(os.environ, {
             "NDA_REQUIRE_AUTH": "true",
@@ -5479,6 +5510,11 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(result["imported"]), 1)
         self.assertNotIn("needs_triage", result["imported"][0])
         classify.assert_called_once()
+        # A healthy ok call is tallied as one ai_call with no errors/timeouts.
+        self.assertEqual(
+            result["ai_intake"],
+            {"ai_calls": 1, "ai_errors": 0, "ai_timeouts": 0, "ai_skipped_cap": 0},
+        )
 
     def test_intake_classifier_uncertain_imports_with_ai_triage(self):
         # C13 -- AI UNCERTAIN on a borderline doc -> imported with needs_triage,
@@ -5665,6 +5701,70 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(result["imported"]), 3)
         self.assertLessEqual(classify.call_count, 2)
         self.assertEqual(classify.call_count, 2)
+        # The per-sync ai_intake tallies are aggregated across all three messages:
+        # two ok calls and one candidate that took the deterministic lane because
+        # the per-sync cap was exhausted.
+        self.assertEqual(
+            result["ai_intake"],
+            {"ai_calls": 2, "ai_errors": 0, "ai_timeouts": 0, "ai_skipped_cap": 1},
+        )
+
+    def test_intake_classifier_degraded_calls_are_tallied_and_warned(self):
+        # The classifier is configured but every call fails (error/timeout). The
+        # per-sync tallies must count the failures (so a fully-degraded classifier
+        # is distinguishable from a healthy one) and a warn-log must fire because
+        # the failure fraction is high.
+        from nda_automation import gmail_intake_classifier, gmail_matter_inbox
+
+        statuses = iter(["error", "timeout"])
+
+        def _stub_classify(_message_metadata, _candidate, _playbook):
+            return {
+                "verdict": "",
+                "confidence": 0.0,
+                "reason": "",
+                "model": "deepseek/deepseek-v4-flash",
+                "status": next(statuses),
+            }
+
+        attachments = [
+            self._intake_attachment_payload([
+                "MUTUAL NON-DISCLOSURE AGREEMENT",
+                "Each Disclosing Party may disclose Confidential Information to a Receiving Party.",
+                "The Receiving Party shall not disclose the Disclosing Party's Confidential Information.",
+            ], "NDA-1.docx"),
+            self._intake_attachment_payload([
+                "MUTUAL NON-DISCLOSURE AGREEMENT",
+                "Each Disclosing Party may disclose Confidential Information to a Receiving Party.",
+                "The Receiving Party shall not disclose the Disclosing Party's Confidential Information.",
+            ], "NDA-2.docx"),
+        ]
+        metadata = {
+            "gmail_account": "legal@aspora.com",
+            "gmail_message_id": "msg_intake",
+            "subject": "Fwd: a document",
+            "sender": "ops@example.com",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
+                    with patch.object(gmail_integration.gmail_attachment_selector, "selector_configured", return_value=False):
+                        with patch.object(gmail_intake_classifier, "classifier_configured", return_value=True):
+                            with patch.object(gmail_intake_classifier, "classify_intake_attachment", side_effect=_stub_classify):
+                                with self.assertLogs(gmail_matter_inbox.LOGGER, level="WARNING") as logs:
+                                    result = gmail_integration._import_inbound_attachments(
+                                        None,
+                                        "msg_intake",
+                                        attachments,
+                                        metadata,
+                                    )
+        # Both degraded calls counted; deterministic fallback still imported them.
+        self.assertEqual(
+            result["ai_intake"],
+            {"ai_calls": 2, "ai_errors": 1, "ai_timeouts": 1, "ai_skipped_cap": 0},
+        )
+        self.assertTrue(any("degraded" in line for line in logs.output))
 
     def test_intake_playbook_round_trips_through_settings(self):
         # D17 -- intake_playbook round-trips, clamps over 8000, empty -> default,
