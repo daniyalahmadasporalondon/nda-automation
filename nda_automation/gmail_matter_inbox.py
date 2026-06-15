@@ -24,20 +24,34 @@ def import_inbound_matters(
     import_limit = max(1, min(requested_limit, transport.max_import_limit()))
 
     account_email = str(profile.get("emailAddress") or "")
-    selector_enabled = transport.selector_configured()
 
+    # Paginated fetch: a single list() call only returns one Gmail page and
+    # ignores nextPageToken, so a broadened (keyword-gate-free) fetch could be
+    # silently truncated below import_limit. Accumulate stubs across pages,
+    # capping each page at 100, until we reach import_limit or run out of pages.
+    # pageToken is passed only when non-empty so single-page transport fakes that
+    # do not accept the kwarg keep working.
+    message_stubs: list[dict[str, Any]] = []
+    page_token = ""
     try:
-        result = service.users().messages().list(
-            userId="me",
-            q=inbound_query,
-            maxResults=import_limit,
-        ).execute()
+        while len(message_stubs) < import_limit:
+            page = service.users().messages().list(
+                userId="me",
+                q=inbound_query,
+                maxResults=min(import_limit - len(message_stubs), 100),
+                **({"pageToken": page_token} if page_token else {}),
+            ).execute()
+            message_stubs.extend(page.get("messages") or [])
+            page_token = str(page.get("nextPageToken") or "")
+            if not page_token:
+                break
     except Exception as exc:
         transport.raise_gmail_api_error(exc, "Gmail inbound sync could not list messages.")
+    message_stubs = message_stubs[:import_limit]
 
     imported: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
-    for message_stub in result.get("messages") or []:
+    for message_stub in message_stubs:
         message_id = str(message_stub.get("id") or "")
         if not message_id:
             continue
@@ -58,12 +72,15 @@ def import_inbound_matters(
             skipped.append({"message_id": message_id, "reason": "no_reviewable_attachment"})
             continue
 
+        # Always make the per-message detection content-aware: if subject/body/
+        # snippet/filename carry no NDA signal, fall back to scanning attachment
+        # content. There is NO terminal drop here anymore -- the deterministic
+        # per-attachment band classifier (import_inbound_attachments) is the
+        # authoritative classifier, so an attachment-only NDA with a neutral
+        # subject is never dropped before its content is judged.
         detection = transport.message_nda_detection(message, attachments)
-        if not detection["matched"] and not selector_enabled:
+        if not detection["matched"]:
             detection = transport.attachment_nda_detection(service, message_id, attachments)
-        if not detection["matched"] and not selector_enabled:
-            skipped.append({"message_id": message_id, "reason": "no_nda_signal"})
-            continue
 
         metadata = message_selector_metadata(
             message,
@@ -100,7 +117,9 @@ def import_inbound_attachments(
 ) -> dict[str, list[dict[str, Any]]]:
     prepared: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
-    selector_enabled = transport.selector_configured()
+    # Always prepare with the deterministic validation computed (no
+    # require_deterministic_acceptance suppression). Classification is decided per
+    # candidate by the band classifier below, never short-circuited here.
     for attachment in attachments:
         candidate, skip = prepare_inbound_attachment(
             service,
@@ -109,7 +128,6 @@ def import_inbound_attachments(
             metadata,
             transport=transport,
             owner_user_id=owner_user_id,
-            require_deterministic_acceptance=not selector_enabled,
         )
         if skip is not None:
             skipped.append(skip)
@@ -117,29 +135,39 @@ def import_inbound_attachments(
             prepared.append(candidate)
 
     selected_ids, selector_metadata = selected_candidate_attachment_ids(metadata, prepared, transport=transport)
-    deterministic_fallback = selected_ids is None
+    triage_min_score = _triage_min_score(transport)
     imported: list[dict[str, Any]] = []
     for candidate in prepared:
         attachment_id = str(candidate.get("attachment_id") or "")
         validation = candidate.get("validation") if isinstance(candidate.get("validation"), dict) else {}
-        if deterministic_fallback and not validation.get("accepted"):
-            skipped.append(gmail_attachment_skip(
-                message_id,
-                str(candidate.get("filename") or ""),
-                "non_nda_attachment",
-                detail=str(validation.get("reason") or ""),
-                score=str(validation.get("score") or "0"),
-            ))
-            continue
-        if selected_ids is not None and attachment_id not in selected_ids:
-            skipped.append(gmail_attachment_skip(
-                message_id,
-                str(candidate.get("filename") or ""),
-                "ai_not_selected_attachment",
-                detail=selector_metadata.get("reason", ""),
-                model=selector_metadata.get("model", ""),
-                confidence=selector_metadata.get("confidence", ""),
-            ))
+        selector_selected = selected_ids is not None and attachment_id in selected_ids
+        lane, triage_reason = classify_attachment_lane(
+            validation,
+            selector_selected=selector_selected,
+            selector_configured=selected_ids is not None,
+            triage_min_score=triage_min_score,
+        )
+        if lane == "skip":
+            # Precision lane preserved: emit the same skip reasons as before so
+            # the skipped-list telemetry is unchanged for genuinely-irrelevant
+            # attachments.
+            if selected_ids is not None and not selector_selected:
+                skipped.append(gmail_attachment_skip(
+                    message_id,
+                    str(candidate.get("filename") or ""),
+                    "ai_not_selected_attachment",
+                    detail=selector_metadata.get("reason", ""),
+                    model=selector_metadata.get("model", ""),
+                    confidence=selector_metadata.get("confidence", ""),
+                ))
+            else:
+                skipped.append(gmail_attachment_skip(
+                    message_id,
+                    str(candidate.get("filename") or ""),
+                    "non_nda_attachment",
+                    detail=str(validation.get("reason") or ""),
+                    score=str(validation.get("score") or "0"),
+                ))
             continue
         matter, skip = create_matter_from_prepared_attachment(
             candidate,
@@ -147,12 +175,82 @@ def import_inbound_attachments(
             transport=transport,
             selector_metadata=selector_metadata if selected_ids is not None else None,
             owner_user_id=owner_user_id,
+            triage=lane == "triage",
+            triage_reason=triage_reason,
         )
         if skip is not None:
             skipped.append(skip)
         elif matter is not None:
             imported.append(matter)
     return {"imported": imported, "skipped": skipped}
+
+
+def _triage_min_score(transport: Any) -> int:
+    getter = getattr(transport, "triage_min_nda_score", None)
+    if callable(getter):
+        try:
+            return int(getter())
+        except (TypeError, ValueError):
+            pass
+    return 40
+
+
+def classify_attachment_lane(
+    validation: dict[str, Any],
+    *,
+    selector_selected: bool,
+    selector_configured: bool,
+    triage_min_score: int = 40,
+) -> tuple[str, str]:
+    """Band-classify a prepared attachment into one of three lanes.
+
+    Returns ``(lane, triage_reason)`` where ``lane`` is one of:
+
+    - ``"confident"``: auto-ingest, no flag. The deterministic validation
+      ``accepted`` bar (score >= MIN_ATTACHMENT_NDA_SCORE AND has_content_basis)
+      is met, OR the AI selector is configured and selected this attachment
+      (the selector promotes a below-confident attachment).
+    - ``"triage"``: import anyway but flag ``needs_triage``. Not accepted, but
+      there is a real NDA content basis that is merely uncertain
+      (``has_content_basis`` true OR ``triage_min_score <= score < confident``),
+      OR it reached here via selector-not-selected while still carrying a
+      content basis.
+    - ``"skip"``: clearly not an NDA (terminal precision lane).
+    """
+    score = _coerce_int(validation.get("score"))
+    accepted = bool(validation.get("accepted"))
+    has_content_basis = bool(validation.get("has_content_basis"))
+    deterministic_triage = has_content_basis or score >= triage_min_score
+
+    if selector_configured:
+        # The selector is the ranking authority over candidates that already
+        # cleared the deterministic floor: a selected attachment is promoted to
+        # confident (even below the deterministic confident band), while a
+        # non-selected attachment is demoted out of confident. A non-selected
+        # attachment with a content basis becomes a flagged-for-human triage
+        # matter rather than the old terminal ai_not_selected_attachment drop;
+        # one with no content basis stays skip.
+        if selector_selected:
+            return "confident", ""
+        if deterministic_triage:
+            return "triage", "ai_selector_not_selected"
+        return "skip", ""
+
+    # No selector authority: the deterministic acceptance bar governs the
+    # confident lane, the uncertain-but-content-bearing middle band is triaged,
+    # and the rest is terminally skipped.
+    if accepted:
+        return "confident", ""
+    if deterministic_triage:
+        return "triage", "low_confidence_nda_content"
+    return "skip", ""
+
+
+def _coerce_int(value: object) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
 
 
 def import_inbound_attachment(
@@ -177,7 +275,6 @@ def prepare_inbound_attachment(
     *,
     transport: Any,
     owner_user_id: str = "",
-    require_deterministic_acceptance: bool = True,
 ) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
     attachment_id = str(attachment.get("attachment_id") or "")
     attachment_filename = str(attachment.get("filename") or "")
@@ -231,19 +328,15 @@ def prepare_inbound_attachment(
             detail=str(error),
         )
 
+    # Always compute the deterministic validation and return it on the candidate;
+    # the caller band-classifies (confident / triage / skip). No terminal skip
+    # here, so a below-confident-but-content-bearing attachment is never dropped
+    # before classification.
     validation = transport.attachment_nda_validation(
         attachment_filename,
         paragraphs,
         message_metadata=metadata,
     )
-    if require_deterministic_acceptance and not validation["accepted"]:
-        return None, gmail_attachment_skip(
-            message_id,
-            attachment_filename,
-            "non_nda_attachment",
-            detail=str(validation.get("reason") or ""),
-            score=str(validation.get("score") or "0"),
-        )
 
     return {
         "attachment": attachment,
@@ -266,6 +359,8 @@ def create_matter_from_prepared_attachment(
     transport: Any,
     selector_metadata: dict[str, object] | None = None,
     owner_user_id: str = "",
+    triage: bool = False,
+    triage_reason: str = "",
 ) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
     message_id = str(candidate.get("message_id") or "")
     attachment_id = str(candidate.get("attachment_id") or "")
@@ -294,6 +389,11 @@ def create_matter_from_prepared_attachment(
                 "gmail_attachment_id": attachment_id,
                 "gmail_attachment_sha256": attachment_sha256,
                 "gmail_part_id": part_id,
+                **({
+                    "needs_triage": "true",
+                    "triage_confidence": str(validation.get("score") or "0"),
+                    "triage_reason": triage_reason,
+                } if triage else {}),
             },
             dedupe_gmail=True,
             owner_user_id=owner_user_id,

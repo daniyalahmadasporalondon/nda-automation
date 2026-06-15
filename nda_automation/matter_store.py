@@ -50,7 +50,10 @@ GMAIL_METADATA_FIELDS = (
     "gmail_message_id",
     "gmail_part_id",
     "gmail_thread_id",
+    "needs_triage",
     "reply_to",
+    "triage_confidence",
+    "triage_reason",
 )
 MATTER_UPDATE_FIELDS = {
     "board_column",

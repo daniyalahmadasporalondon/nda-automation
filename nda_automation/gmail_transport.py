@@ -80,6 +80,9 @@ class GmailTransport:
     def max_import_limit(self) -> int:
         return int(_legacy().MAX_GMAIL_IMPORT_LIMIT)
 
+    def triage_min_nda_score(self) -> int:
+        return int(_legacy().TRIAGE_MIN_NDA_SCORE)
+
     def body_preview_limit(self) -> int:
         return int(_legacy().GMAIL_BODY_PREVIEW_LIMIT)
 

@@ -92,6 +92,7 @@ PUBLIC_MATTER_FIELDS = {
     "last_outbound_to",
     "matter_timeline",
     "message_snippet",
+    "needs_triage",
     "next_action",
     "pdf_annotations",
     "received_at",
@@ -107,6 +108,8 @@ PUBLIC_MATTER_FIELDS = {
     "source_type",
     "status",
     "subject",
+    "triage_confidence",
+    "triage_reason",
     "triage_status",
     "updated_at",
 }

@@ -88,6 +88,12 @@ ATTACHMENT_COLLATERAL_SIGNALS = (
     ("questions answers", r"\bquestions\s+answers\b", 30),
 )
 MIN_ATTACHMENT_NDA_SCORE = 70
+# Attachments that fall below the confident bar but still carry a genuine (merely
+# uncertain) NDA content basis are routed to the human triage lane instead of
+# being silently dropped. 40 admits "has some NDA vocabulary but didn't clear the
+# strict bar" (the lowest single strong content signal is ~45) while a pure
+# proposal/invoice (collateral-penalised to ~0) stays in the terminal SKIP band.
+TRIAGE_MIN_NDA_SCORE = 40
 MIN_MESSAGE_BACKED_CONTENT_SCORE = 55
 
 
@@ -116,11 +122,25 @@ def _gmail_search_query_term(term: str) -> str:
     return cleaned
 
 
-GMAIL_INBOUND_BASE_QUERY = "in:inbox has:attachment (filename:docx OR filename:pdf) newer_than:30d -from:me"
+# The fetch window for the inbound scan. Extracted to a named constant so tests
+# and future tuning have a single source of truth.
+GMAIL_INBOUND_WINDOW_DAYS = 90
+# The structural envelope: every docx/pdf attachment in the inbox in-window that
+# was not sent by us. The NDA keyword group is intentionally NOT part of this
+# query -- it is only a scoring/ranking hint (see NDA_MESSAGE_QUERY), never a
+# fetch gate. Gmail only indexes subject/body/snippet/filename, so AND-appending
+# the keyword group would hide attachment-only NDAs with a neutral subject; the
+# deterministic content scorer is the real gate after the fetch.
+GMAIL_INBOUND_BASE_QUERY = f"in:inbox has:attachment (filename:docx OR filename:pdf) -from:me newer_than:{GMAIL_INBOUND_WINDOW_DAYS}d"
+# Retained as the scoring/ranking-hint vocabulary input (deterministic content
+# scorer + gmail_inbound_parsing_summary). NOT appended to the fetch query.
 NDA_MESSAGE_QUERY = _gmail_search_terms_query(app_settings.DEFAULT_GMAIL_INBOUND_SEARCH_TERMS)
-DEFAULT_INBOUND_QUERY = f"{GMAIL_INBOUND_BASE_QUERY} {NDA_MESSAGE_QUERY}"
+# The fetch query is now the structural envelope only; keyword terms never gate
+# the fetch. The "...WITH_AI_SELECTOR" alias stays so existing references keep
+# resolving to the same envelope.
+DEFAULT_INBOUND_QUERY = GMAIL_INBOUND_BASE_QUERY
 DEFAULT_INBOUND_QUERY_WITH_AI_SELECTOR = DEFAULT_INBOUND_QUERY
-MAX_GMAIL_IMPORT_LIMIT = 25
+MAX_GMAIL_IMPORT_LIMIT = 100
 GMAIL_BODY_PREVIEW_LIMIT = 5000
 GMAIL_PROFILE_CACHE_SECONDS = 15 * 60
 
@@ -229,7 +249,7 @@ def gmail_inbound_parsing_summary() -> dict[str, object]:
             "OpenRouter reviews subject, body, snippet, attachment names, extracted attachment text, and deterministic "
             "signals before selecting import attachments. Deterministic rules are used as fallback."
             if selector_enabled
-            else "Gmail query prefilters inbox attachments; local parsing verifies each message, then validates each attachment before import."
+            else "Gmail fetches the structural attachment envelope (no keyword prefilter); local parsing then judges every attachment by its content before import."
         ),
     }
 
@@ -244,7 +264,9 @@ def _global_gmail_sync_status(settings: dict[str, Any]) -> dict[str, Any]:
 
 
 def _default_inbound_query() -> str:
-    return f"{GMAIL_INBOUND_BASE_QUERY} {_gmail_search_terms_query(app_settings.gmail_inbound_search_terms())}"
+    # Only the structural envelope. The keyword terms are no longer a fetch gate;
+    # they live on as the deterministic content-scoring/ranking vocabulary.
+    return GMAIL_INBOUND_BASE_QUERY
 
 
 def gmail_role_setup_error(role: str, owner_user_id: str = "") -> str:
@@ -808,6 +830,7 @@ def _attachment_nda_validation(
     return {
         "accepted": accepted,
         "excerpt": _attachment_validation_excerpt(text, terms),
+        "has_content_basis": has_content_basis,
         "reason": ", ".join(_unique_strings(reasons)),
         "score": score,
         "sources": sources,

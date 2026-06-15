@@ -3964,9 +3964,13 @@ class ServerTests(unittest.TestCase):
         self.assertIn("mutual non-disclosure agreement", status["inbound"]["parsing"]["terms"])
         self.assertIn("mutual non disclosure agreement", status["inbound"]["parsing"]["terms"])
         self.assertIn("data processing agreement", status["inbound"]["parsing"]["terms"])
-        self.assertIn('"mutual NDA"', status["inbound"]["query"])
-        self.assertIn('"mutual non-disclosure agreement"', status["inbound"]["query"])
-        self.assertIn('"data processing agreement"', status["inbound"]["query"])
+        # The keyword group is no longer a fetch gate: the inbound query is the
+        # structural envelope only (no NDA terms). The keyword vocabulary lives
+        # on as the deterministic scoring/ranking hint, surfaced in parsing.terms.
+        self.assertNotIn("mutual NDA", status["inbound"]["query"])
+        self.assertNotIn("non-disclosure", status["inbound"]["query"])
+        self.assertIn("newer_than:90d", status["inbound"]["query"])
+        self.assertIn("has:attachment", status["inbound"]["query"])
         self.assertIn(gmail_integration.ROLE_TOKEN_ENV["inbound"], status["inbound"]["error"])
         self.assertIn("data/google/inbound-token.json", status["inbound"]["error"])
         self.assertFalse(status["inbound"]["token"]["configured"])
@@ -4115,10 +4119,14 @@ class ServerTests(unittest.TestCase):
             "confidentiality deed",
             "data processing agreement",
         ])
+        # Search terms are now the deterministic scoring/ranking vocabulary, NOT
+        # a fetch gate. Updating them must NOT change the structural fetch query
+        # (it stays the keyword-free envelope); the new vocabulary surfaces in
+        # parsing.terms instead.
         query = payload["gmail"]["inbound"]["query"]
-        self.assertIn('NDA OR "mutual NDA"', query)
-        self.assertIn('"confidentiality deed"', query)
-        self.assertIn('"data processing agreement"', query)
+        self.assertEqual(query, gmail_integration.DEFAULT_INBOUND_QUERY)
+        self.assertNotIn("mutual NDA", query)
+        self.assertNotIn("confidentiality deed", query)
         self.assertEqual(payload["gmail"]["inbound"]["parsing"]["terms"], [
             "NDA",
             "mutual NDA",
@@ -5080,7 +5088,11 @@ class ServerTests(unittest.TestCase):
                         with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
                             result = gmail_integration.import_inbound_matters(limit=25)
 
-        self.assertEqual([item["reason"] for item in result["skipped"]], ["no_nda_signal"])
+        # The message-level no_nda_signal early-drop is gone: the irrelevant SOW
+        # document is now judged by content at the attachment level and skipped as
+        # non_nda_attachment (score 0, no content basis), not silently dropped
+        # before its content is read.
+        self.assertEqual([item["reason"] for item in result["skipped"]], ["non_nda_attachment"])
         self.assertEqual(len(result["imported"]), 2)
         imported_by_id = {item["gmail_message_id"]: item for item in result["imported"]}
         self.assertEqual(imported_by_id["msg_plain_body"]["gmail_detection_sources"], "body, attachment_content")
@@ -5174,6 +5186,472 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(result["imported"][0]["gmail_detection_sources"], "attachment_content")
         self.assertIn("non-disclosure agreement", result["imported"][0]["gmail_detection_terms"])
 
+    def test_gmail_import_ingests_attachment_only_nda_with_neutral_subject(self):
+        # T1 -- the core fix. An attachment-only NDA with a fully neutral subject,
+        # body, snippet, and filename used to be invisible: the keyword group was
+        # AND-appended to the fetch query, so Gmail never listed it. The fetch
+        # query is now the structural envelope only (no keyword group), so it is
+        # listed, and the content detector reads the NDA wording inside the doc.
+        captured = {}
+
+        class FakeExecutable:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class FakeMessages:
+            def __init__(self, messages):
+                self.messages = messages
+
+            def list(self, userId, q, maxResults):
+                captured["query"] = q
+                return FakeExecutable({"messages": [{"id": message_id} for message_id in self.messages][:maxResults]})
+
+            def get(self, userId=None, messageId=None, id=None, format=None):
+                return FakeExecutable(self.messages[id])
+
+        class FakeUsers:
+            def __init__(self, messages):
+                self.messages_api = FakeMessages(messages)
+
+            def getProfile(self, userId):
+                return FakeExecutable({"emailAddress": "legal@aspora.com"})
+
+            def messages(self):
+                return self.messages_api
+
+        class FakeGmailService:
+            def __init__(self, messages):
+                self.users_api = FakeUsers(messages)
+
+            def users(self):
+                return self.users_api
+
+        def inline(value):
+            return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+        docx_bytes = make_docx([
+            "MUTUAL NON-DISCLOSURE AGREEMENT",
+            "Each Disclosing Party may disclose Confidential Information to a Receiving Party.",
+            "The Receiving Party shall not disclose the Disclosing Party's Confidential Information.",
+        ])
+        messages = {
+            "msg_neutral": {
+                "id": "msg_neutral",
+                "threadId": "thr_neutral",
+                "labelIds": ["INBOX"],
+                "snippet": "please review the attached document",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Ops <ops@example.com>"},
+                        {"name": "Subject", "value": "Fwd: shared with you"},
+                    ],
+                    "parts": [
+                        {"partId": "body", "mimeType": "text/plain", "body": {"data": inline(b"please review the attached document")}},
+                        {"partId": "doc", "filename": "Document.docx", "body": {"data": inline(docx_bytes)}},
+                    ],
+                },
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(app_settings, "gmail_role_enabled", return_value=True):
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
+                        with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
+                            result = gmail_integration.import_inbound_matters(limit=25)
+
+        self.assertEqual(result["skipped"], [])
+        self.assertEqual(len(result["imported"]), 1)
+        self.assertEqual(result["imported"][0]["gmail_detection_sources"], "attachment_content")
+        # The fetch query proves the keyword gate is gone.
+        self.assertEqual(captured["query"], gmail_integration.DEFAULT_INBOUND_QUERY)
+        self.assertNotIn("non-disclosure", captured["query"])
+        self.assertIn("newer_than:90d", captured["query"])
+
+    def test_gmail_import_flags_borderline_attachment_as_needs_triage(self):
+        # T3 -- an attachment whose content scores in [40, 70) with a weak basis is
+        # imported AND flagged needs_triage, never silently dropped.
+        class FakeExecutable:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class FakeMessages:
+            def __init__(self, messages):
+                self.messages = messages
+
+            def list(self, userId, q, maxResults):
+                return FakeExecutable({"messages": [{"id": message_id} for message_id in self.messages][:maxResults]})
+
+            def get(self, userId=None, messageId=None, id=None, format=None):
+                return FakeExecutable(self.messages[id])
+
+        class FakeUsers:
+            def __init__(self, messages):
+                self.messages_api = FakeMessages(messages)
+
+            def getProfile(self, userId):
+                return FakeExecutable({"emailAddress": "legal@aspora.com"})
+
+            def messages(self):
+                return self.messages_api
+
+        class FakeGmailService:
+            def __init__(self, messages):
+                self.users_api = FakeUsers(messages)
+
+            def users(self):
+                return self.users_api
+
+        def inline(value):
+            return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+        borderline_docx = make_docx([
+            "This document is shared in connection with our discussions.",
+            "The Receiving Party will handle the Confidential Information appropriately.",
+        ])
+        messages = {
+            "msg_borderline": {
+                "id": "msg_borderline",
+                "threadId": "thr_borderline",
+                "labelIds": ["INBOX"],
+                "snippet": "please take a look",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Ops <ops@example.com>"},
+                        {"name": "Subject", "value": "Fwd: a document"},
+                    ],
+                    "parts": [
+                        {"partId": "body", "mimeType": "text/plain", "body": {"data": inline(b"please take a look at the attached")}},
+                        {"partId": "doc", "filename": "Document.docx", "body": {"data": inline(borderline_docx)}},
+                    ],
+                },
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(app_settings, "gmail_role_enabled", return_value=True):
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
+                        with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
+                            result = gmail_integration.import_inbound_matters(limit=25)
+
+        self.assertEqual(result["skipped"], [])
+        self.assertEqual(len(result["imported"]), 1)
+        imported = result["imported"][0]
+        self.assertEqual(imported["needs_triage"], "true")
+        self.assertEqual(imported["triage_reason"], "low_confidence_nda_content")
+        self.assertEqual(imported["triage_confidence"], imported["gmail_attachment_score"])
+        self.assertTrue(40 <= int(imported["triage_confidence"]) < 70)
+        # public_matter must expose the triage flag (guards the PUBLIC_MATTER_FIELDS
+        # + GMAIL_METADATA_FIELDS allowlist wiring -- the easy-to-miss step).
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(app_settings, "gmail_role_enabled", return_value=True):
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
+                        with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
+                            gmail_integration.import_inbound_matters(limit=25)
+                stored = matter_store.list_matters()
+                public = matter_view.public_matter(stored[0])
+        self.assertEqual(public["needs_triage"], "true")
+        self.assertEqual(public["triage_reason"], "low_confidence_nda_content")
+
+    def test_classify_attachment_lane_bands(self):
+        # Unit test for the band classifier at scores 75 / 55 / 20.
+        from nda_automation import gmail_matter_inbox
+
+        confident = {"accepted": True, "has_content_basis": True, "score": 75}
+        triage = {"accepted": False, "has_content_basis": False, "score": 55}
+        skip = {"accepted": False, "has_content_basis": False, "score": 20}
+
+        self.assertEqual(
+            gmail_matter_inbox.classify_attachment_lane(
+                confident, selector_selected=False, selector_configured=False
+            ),
+            ("confident", ""),
+        )
+        self.assertEqual(
+            gmail_matter_inbox.classify_attachment_lane(
+                triage, selector_selected=False, selector_configured=False
+            ),
+            ("triage", "low_confidence_nda_content"),
+        )
+        self.assertEqual(
+            gmail_matter_inbox.classify_attachment_lane(
+                skip, selector_selected=False, selector_configured=False
+            ),
+            ("skip", ""),
+        )
+        # Selector authority: selected promotes to confident even below the bar;
+        # non-selected with content basis triages; non-selected without basis skips.
+        self.assertEqual(
+            gmail_matter_inbox.classify_attachment_lane(
+                skip, selector_selected=True, selector_configured=True
+            ),
+            ("confident", ""),
+        )
+        self.assertEqual(
+            gmail_matter_inbox.classify_attachment_lane(
+                {"accepted": True, "has_content_basis": True, "score": 75},
+                selector_selected=False,
+                selector_configured=True,
+            ),
+            ("triage", "ai_selector_not_selected"),
+        )
+        self.assertEqual(
+            gmail_matter_inbox.classify_attachment_lane(
+                skip, selector_selected=False, selector_configured=True
+            ),
+            ("skip", ""),
+        )
+
+    def test_gmail_import_paginates_beyond_single_page(self):
+        # T4 -- the listing follows nextPageToken and accumulates up to import_limit.
+        class FakeExecutable:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        def inline(value):
+            return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+        nda_docx = make_docx([
+            "MUTUAL NON-DISCLOSURE AGREEMENT",
+            "Each Disclosing Party may disclose Confidential Information to a Receiving Party.",
+            "The Receiving Party shall not disclose the Disclosing Party's Confidential Information.",
+        ])
+        message_ids = [f"msg_{i:03d}" for i in range(100)]
+        messages = {}
+        for message_id in message_ids:
+            messages[message_id] = {
+                "id": message_id,
+                "threadId": f"thr_{message_id}",
+                "labelIds": ["INBOX"],
+                "snippet": "please review",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": f"{message_id} <{message_id}@example.com>"},
+                        {"name": "Subject", "value": "Fwd: document"},
+                    ],
+                    "parts": [
+                        {"partId": "body", "mimeType": "text/plain", "body": {"data": inline(b"please review the attached document")}},
+                        {"partId": "doc", "filename": f"{message_id}.docx", "body": {"data": inline(nda_docx)}},
+                    ],
+                },
+            }
+
+        class FakeMessages:
+            def __init__(self, messages):
+                self.messages = messages
+                self.list_calls = []
+
+            def list(self, userId, q, maxResults, pageToken=""):
+                self.list_calls.append({"maxResults": maxResults, "pageToken": pageToken})
+                if not pageToken:
+                    page = [{"id": message_id} for message_id in message_ids[:50]]
+                    return FakeExecutable({"messages": page, "nextPageToken": "p2"})
+                page = [{"id": message_id} for message_id in message_ids[50:100]]
+                return FakeExecutable({"messages": page})
+
+            def get(self, userId=None, messageId=None, id=None, format=None):
+                return FakeExecutable(self.messages[id])
+
+        class FakeUsers:
+            def __init__(self, messages):
+                self.messages_api = FakeMessages(messages)
+
+            def getProfile(self, userId):
+                return FakeExecutable({"emailAddress": "legal@aspora.com"})
+
+            def messages(self):
+                return self.messages_api
+
+        class FakeGmailService:
+            def __init__(self, messages):
+                self.users_api = FakeUsers(messages)
+
+            def users(self):
+                return self.users_api
+
+        service = FakeGmailService(messages)
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(app_settings, "gmail_role_enabled", return_value=True):
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
+                        with patch.object(gmail_integration, "_gmail_service", return_value=service):
+                            result = gmail_integration.import_inbound_matters(limit=100)
+
+        self.assertEqual(len(result["imported"]), 100)
+        list_calls = service.users_api.messages_api.list_calls
+        self.assertEqual(len(list_calls), 2)
+        self.assertEqual(list_calls[0]["pageToken"], "")
+        self.assertEqual(list_calls[1]["pageToken"], "p2")
+
+    def test_max_gmail_import_limit_is_100(self):
+        self.assertEqual(gmail_integration.MAX_GMAIL_IMPORT_LIMIT, 100)
+
+    def test_triage_matter_still_dedupes_by_hash(self):
+        # T5 -- a triage matter goes through the same dedupe-on-create critical
+        # section as a confident one: importing the same borderline attachment
+        # twice yields a single matter and a duplicate_attachment skip.
+        class FakeExecutable:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class FakeMessages:
+            def __init__(self, messages):
+                self.messages = messages
+
+            def list(self, userId, q, maxResults):
+                return FakeExecutable({"messages": [{"id": message_id} for message_id in self.messages][:maxResults]})
+
+            def get(self, userId=None, messageId=None, id=None, format=None):
+                return FakeExecutable(self.messages[id])
+
+        class FakeUsers:
+            def __init__(self, messages):
+                self.messages_api = FakeMessages(messages)
+
+            def getProfile(self, userId):
+                return FakeExecutable({"emailAddress": "legal@aspora.com"})
+
+            def messages(self):
+                return self.messages_api
+
+        class FakeGmailService:
+            def __init__(self, messages):
+                self.users_api = FakeUsers(messages)
+
+            def users(self):
+                return self.users_api
+
+        def inline(value):
+            return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+        borderline_docx = make_docx([
+            "This document is shared in connection with our discussions.",
+            "The Receiving Party will handle the Confidential Information appropriately.",
+        ])
+        messages = {
+            "msg_borderline": {
+                "id": "msg_borderline",
+                "threadId": "thr_borderline",
+                "labelIds": ["INBOX"],
+                "snippet": "please take a look",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Ops <ops@example.com>"},
+                        {"name": "Subject", "value": "Fwd: a document"},
+                    ],
+                    "parts": [
+                        {"partId": "doc", "filename": "Document.docx", "body": {"attachmentId": "att_borderline", "data": inline(borderline_docx)}},
+                    ],
+                },
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(app_settings, "gmail_role_enabled", return_value=True):
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
+                        with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
+                            first = gmail_integration.import_inbound_matters(limit=25)
+                            second = gmail_integration.import_inbound_matters(limit=25)
+                matters = matter_store.list_matters()
+
+        self.assertEqual(len(first["imported"]), 1)
+        self.assertEqual(first["imported"][0]["needs_triage"], "true")
+        self.assertEqual(second["imported"], [])
+        self.assertEqual([item["reason"] for item in second["skipped"]], ["duplicate_attachment"])
+        self.assertEqual(len(matters), 1)
+
+    def test_selector_not_selected_attachment_becomes_triage_not_silently_imported(self):
+        # T6 -- with the selector configured, a non-selected attachment that still
+        # has a content basis becomes a needs_triage matter (reason
+        # ai_selector_not_selected), never the old silent ai_not_selected drop;
+        # a non-selected attachment with NO content basis is still skipped. The
+        # candidate-id intersection injection defense (test_gmail_attachment_selector)
+        # is structurally unchanged.
+        def inline(value):
+            return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+        selected_nda = make_docx([
+            "MUTUAL NON-DISCLOSURE AGREEMENT",
+            "Each Disclosing Party may disclose Confidential Information to a Receiving Party.",
+            "The Receiving Party shall not disclose Confidential Information.",
+        ])
+        unselected_nda = make_docx([
+            "Each Disclosing Party may share Confidential Information with the Receiving Party.",
+            "The Receiving Party shall keep the Confidential Information confidential.",
+        ])
+        unselected_collateral = make_docx([
+            "Project Proposal Form",
+            "Pricing and statement of work (SOW) overview for the engagement.",
+        ])
+        attachments = [
+            {"attachment_id": "att_nda", "data": inline(selected_nda), "filename": "Mutual NDA.docx", "part_id": "1"},
+            {"attachment_id": "att_other_nda", "data": inline(unselected_nda), "filename": "Side Agreement.docx", "part_id": "2"},
+            {"attachment_id": "att_proposal", "data": inline(unselected_collateral), "filename": "Proposal Form.docx", "part_id": "3"},
+        ]
+        metadata = {
+            "gmail_account": "legal@aspora.com",
+            "gmail_message_id": "msg_multi",
+            "message_snippet": "please review",
+            "sender": "Neha <neha@example.com>",
+            "subject": "Fwd: documents",
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
+                    with patch.object(gmail_integration.gmail_attachment_selector, "selector_configured", return_value=True):
+                        with patch.object(
+                            gmail_integration.gmail_attachment_selector,
+                            "select_nda_attachments",
+                            return_value={
+                                "status": "selected",
+                                # Includes a fabricated id the intersection must drop.
+                                "selected_attachment_ids": ["att_nda", "att_injected"],
+                                "confidence": 0.9,
+                                "reason": "The mutual NDA is the legal review document.",
+                                "model": "google/gemini-3.5-flash",
+                            },
+                        ):
+                            result = gmail_integration._import_inbound_attachments(
+                                None,
+                                "msg_multi",
+                                attachments,
+                                metadata,
+                            )
+
+        imported_by_filename = {item["source_filename"]: item for item in result["imported"]}
+        self.assertEqual(
+            sorted(imported_by_filename),
+            ["Mutual NDA.docx", "Side Agreement.docx"],
+        )
+        self.assertNotIn("needs_triage", imported_by_filename["Mutual NDA.docx"])
+        self.assertEqual(imported_by_filename["Side Agreement.docx"]["needs_triage"], "true")
+        self.assertEqual(imported_by_filename["Side Agreement.docx"]["triage_reason"], "ai_selector_not_selected")
+        self.assertEqual([item["attachment_filename"] for item in result["skipped"]], ["Proposal Form.docx"])
+        self.assertEqual(result["skipped"][0]["reason"], "ai_not_selected_attachment")
+
     @requires_pypdf
     def test_gmail_import_filters_non_nda_collateral_after_message_match(self):
         class FakeExecutable:
@@ -5237,6 +5715,10 @@ class ServerTests(unittest.TestCase):
             "Questions Answers Details",
             "Programme/product overview and summary of business plan.",
         ])
+        invoice_docx = make_docx([
+            "INVOICE",
+            "Amount due within 30 days. Total payable on receipt.",
+        ])
         body = inline(b"Hi legal, can you please help review and sign the NDA?")
         messages = {
             "msg_moorwand": {
@@ -5266,6 +5748,11 @@ class ServerTests(unittest.TestCase):
                             "filename": "Moorwand Project Proposal Form - 2026.docx",
                             "body": {"attachmentId": "att_proposal", "data": inline(proposal_docx)},
                         },
+                        {
+                            "partId": "4",
+                            "filename": "Moorwand Invoice - 2026.docx",
+                            "body": {"attachmentId": "att_invoice", "data": inline(invoice_docx)},
+                        },
                     ],
                 },
             },
@@ -5283,6 +5770,13 @@ class ServerTests(unittest.TestCase):
         skipped_by_filename = {item["attachment_filename"]: item["reason"] for item in result["skipped"]}
         self.assertEqual(skipped_by_filename["Moorwand - Programme Manager - Expectations.pdf"], "non_nda_attachment")
         self.assertEqual(skipped_by_filename["Moorwand Project Proposal Form - 2026.docx"], "non_nda_attachment")
+        # A pure invoice (score < 40, no content basis, collateral-penalised) is
+        # terminally skipped, not triaged.
+        self.assertEqual(skipped_by_filename["Moorwand Invoice - 2026.docx"], "non_nda_attachment")
+        # Precision intact: the genuine non-NDA collateral is skipped, never
+        # imported as a needs_triage matter.
+        self.assertNotIn("needs_triage", {item.get("needs_triage") for item in result["imported"]})
+        self.assertEqual(len(result["imported"]), 1)
         imported = result["imported"][0]
         self.assertEqual(imported["gmail_detection_sources"], "body, snippet, attachment_filename, attachment_content")
         self.assertIn("NDA", imported["gmail_detection_terms"])
@@ -5383,13 +5877,24 @@ class ServerTests(unittest.TestCase):
                                     metadata,
                                 )
 
-        self.assertEqual([item["source_filename"] for item in result["imported"]], ["Moorwand - Mutual NDA - 2026 v1.0.docx"])
-        self.assertEqual(len(result["skipped"]), 1)
-        self.assertEqual(result["skipped"][0]["attachment_filename"], "Moorwand Project Proposal Form - 2026.docx")
-        self.assertEqual(result["skipped"][0]["reason"], "ai_not_selected_attachment")
-        imported = result["imported"][0]
-        self.assertEqual(imported["gmail_attachment_selector"], "openrouter_gemini")
-        self.assertEqual(imported["gmail_attachment_selector_model"], "google/gemini-3.5-flash")
+        # The selector is now a RANKING authority, not a terminal gate: the
+        # selected NDA is imported confidently, while the non-selected proposal --
+        # which still carries a deterministic content basis -- is imported as a
+        # needs_triage matter (reason ai_selector_not_selected) rather than being
+        # silently dropped as ai_not_selected_attachment.
+        imported_by_filename = {item["source_filename"]: item for item in result["imported"]}
+        self.assertEqual(
+            sorted(imported_by_filename),
+            ["Moorwand - Mutual NDA - 2026 v1.0.docx", "Moorwand Project Proposal Form - 2026.docx"],
+        )
+        self.assertEqual(result["skipped"], [])
+        nda = imported_by_filename["Moorwand - Mutual NDA - 2026 v1.0.docx"]
+        self.assertNotIn("needs_triage", nda)
+        self.assertEqual(nda["gmail_attachment_selector"], "openrouter_gemini")
+        self.assertEqual(nda["gmail_attachment_selector_model"], "google/gemini-3.5-flash")
+        proposal = imported_by_filename["Moorwand Project Proposal Form - 2026.docx"]
+        self.assertEqual(proposal["needs_triage"], "true")
+        self.assertEqual(proposal["triage_reason"], "ai_selector_not_selected")
         select_nda_attachments.assert_called_once()
 
     def test_gmail_import_lets_qwen_select_generic_attachment_from_nda_adjacent_email(self):
