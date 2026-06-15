@@ -496,14 +496,58 @@ class DriveV2IntegrationTests(unittest.TestCase):
         )
 
     def test_matter_folder_name_grammar(self):
-        matter = {"id": "matter_z", "created_at": "2026-06-07T09:00:00+00:00", "gmail_thread_id": "thr_1"}
-        name = drive_integration.derive_matter_folder_name(matter, "matter_z", "Acme")
-        self.assertEqual(name, "2026-06-07 - Acme - thr_1")
-        # No thread id -> matter id keys the folder.
-        name2 = drive_integration.derive_matter_folder_name(
-            {"id": "matter_z", "created_at": "2026-06-07T09:00:00+00:00"}, "matter_z", "Acme"
+        # "{date} · {document title} · {ref}". The counterparty is the PARENT
+        # folder, so it is deliberately not repeated in the child name; the ref is
+        # the trailing 4 alphanumerics of the matter id.
+        matter = {
+            "id": "matter_3a8f2b1c9d0e",
+            "created_at": "2026-06-07T09:00:00+00:00",
+            "document_title": "Mutual NDA",
+            "subject": "RE: Mutual NDA thread",
+        }
+        name = drive_integration.derive_matter_folder_name(matter, "matter_3a8f2b1c9d0e", "Acme")
+        self.assertEqual(name, "2026-06-07 · Mutual NDA · 9d0e")
+
+    def test_matter_folder_name_falls_back_to_subject_then_nda(self):
+        # No usable document_title -> subject; the "Untitled NDA" placeholder is
+        # never treated as a real title.
+        subject_named = drive_integration.derive_matter_folder_name(
+            {
+                "id": "matter_aaaabbbbcccc",
+                "created_at": "2026-06-07T09:00:00+00:00",
+                "document_title": "Untitled NDA",
+                "subject": "Project Falcon NDA",
+            },
+            "matter_aaaabbbbcccc",
+            "Acme",
         )
-        self.assertEqual(name2, "2026-06-07 - Acme - matter_z")
+        self.assertEqual(subject_named, "2026-06-07 · Project Falcon NDA · cccc")
+        # Nothing human at all -> the literal "NDA" label, still date- and ref-keyed.
+        bare = drive_integration.derive_matter_folder_name(
+            {"id": "matter_0011223344ff", "created_at": "2026-06-07T09:00:00+00:00"},
+            "matter_0011223344ff",
+            "Acme",
+        )
+        self.assertEqual(bare, "2026-06-07 · NDA · 44ff")
+
+    def test_matter_folder_name_omits_date_when_unrecorded(self):
+        name = drive_integration.derive_matter_folder_name(
+            {"id": "matter_feedface1234", "document_title": "Mutual NDA"},
+            "matter_feedface1234",
+            "Acme",
+        )
+        self.assertEqual(name, "Mutual NDA · 1234")
+
+    def test_matter_ref_code_is_stable_and_fixed_length(self):
+        # Same id -> same ref every time (folders stay stable across re-syncs).
+        self.assertEqual(
+            drive_integration._matter_ref_code("matter_3a8f2b1c9d0e"),
+            drive_integration._matter_ref_code("matter_3a8f2b1c9d0e"),
+        )
+        self.assertEqual(len(drive_integration._matter_ref_code("matter_3a8f2b1c9d0e")), 4)
+        # Short/empty ids still yield a 4-char deterministic code.
+        self.assertEqual(len(drive_integration._matter_ref_code("x")), 4)
+        self.assertEqual(len(drive_integration._matter_ref_code("")), 4)
 
     def test_folder_names_are_drive_safe(self):
         # Slashes and control chars are neutralised so a name cannot escape the path.

@@ -16,7 +16,7 @@ Beyond the original flat single-file upload (``upload_docx_to_drive``), this
 module mirrors the matter's :mod:`artifact_registry` into a per-matter folder
 tree::
 
-    {root}/{counterparty}/{YYYY-MM-DD - counterparty - thread-or-matter-id}/
+    {root}/{counterparty}/{YYYY-MM-DD · document title · ref}/
         01_received.docx
         02_ai_redline_v1.docx
         03_legal_review_v1.docx
@@ -47,6 +47,7 @@ required, app-visible folder.
 
 from __future__ import annotations
 
+import hashlib
 from io import BytesIO
 from typing import Any
 
@@ -311,6 +312,136 @@ def folder_web_url(folder_id: str) -> str:
     return f"https://drive.google.com/drive/folders/{folder_id}" if folder_id else ""
 
 
+# --- Read-only / rename primitives (used by the folder-name migration) -------
+def find_folder(*, name: str, parent_id: str = "", owner_user_id: str = "", service: Any | None = None) -> str:
+    """Return the id of a non-trashed folder of this exact ``name``, or ``""``.
+
+    The read-only counterpart to :func:`find_or_create_folder`: it never creates.
+    Scoped to ``parent_id`` when given. Used to locate the existing NDAs tree for
+    the folder-name migration without writing anything.
+    """
+    folder_name = str(name or "").strip()
+    if not folder_name:
+        return ""
+    drive_service = service or _drive_service(owner_user_id)
+    query = (
+        f"mimeType='{FOLDER_MIME}' "
+        f"and name='{_escape_drive_query_value(folder_name)}' "
+        "and trashed=false"
+    )
+    if parent_id:
+        query += f" and '{_escape_drive_query_value(parent_id)}' in parents"
+    try:
+        listing = drive_service.files().list(
+            q=query, fields="files(id,name)", pageSize=1, spaces="drive"
+        ).execute()
+    except Exception as exc:
+        _raise_drive_api_error(exc, "Drive folder lookup failed.")
+    files = listing.get("files") if isinstance(listing, dict) else None
+    if isinstance(files, list) and files and isinstance(files[0], dict):
+        return str(files[0].get("id") or "")
+    return ""
+
+
+def list_child_folders(*, parent_id: str, owner_user_id: str = "", service: Any | None = None) -> list[dict[str, str]]:
+    """List the non-trashed sub*folders* of ``parent_id`` as ``[{"id","name"}]``.
+
+    Pages through all results so a large counterparty/matter tree is fully
+    enumerated. Returns ``[]`` when ``parent_id`` is empty.
+    """
+    if not parent_id:
+        return []
+    drive_service = service or _drive_service(owner_user_id)
+    query = (
+        f"mimeType='{FOLDER_MIME}' "
+        f"and '{_escape_drive_query_value(parent_id)}' in parents "
+        "and trashed=false"
+    )
+    folders: list[dict[str, str]] = []
+    page_token = ""
+    while True:
+        params: dict[str, Any] = {
+            "q": query,
+            "fields": "nextPageToken, files(id,name)",
+            "pageSize": 100,
+            "spaces": "drive",
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        try:
+            listing = drive_service.files().list(**params).execute()
+        except Exception as exc:
+            _raise_drive_api_error(exc, "Drive folder listing failed.")
+        if not isinstance(listing, dict):
+            break
+        for rec in listing.get("files") or []:
+            if isinstance(rec, dict) and rec.get("id"):
+                folders.append({"id": str(rec["id"]), "name": str(rec.get("name") or "")})
+        page_token = str(listing.get("nextPageToken") or "")
+        if not page_token:
+            break
+    return folders
+
+
+def find_child_file(*, name: str, parent_id: str, owner_user_id: str = "", service: Any | None = None) -> str:
+    """Return the id of a non-trashed, non-folder file named ``name`` under ``parent_id``."""
+    file_name = str(name or "").strip()
+    if not file_name or not parent_id:
+        return ""
+    drive_service = service or _drive_service(owner_user_id)
+    query = (
+        f"name='{_escape_drive_query_value(file_name)}' "
+        f"and '{_escape_drive_query_value(parent_id)}' in parents "
+        f"and mimeType!='{FOLDER_MIME}' "
+        "and trashed=false"
+    )
+    try:
+        listing = drive_service.files().list(
+            q=query, fields="files(id,name)", pageSize=1, spaces="drive"
+        ).execute()
+    except Exception as exc:
+        _raise_drive_api_error(exc, "Drive file lookup failed.")
+    files = listing.get("files") if isinstance(listing, dict) else None
+    if isinstance(files, list) and files and isinstance(files[0], dict):
+        return str(files[0].get("id") or "")
+    return ""
+
+
+def download_file_bytes(*, file_id: str, owner_user_id: str = "", service: Any | None = None) -> bytes:
+    """Download a Drive file's raw content. Returns ``b""`` when unavailable."""
+    if not file_id:
+        return b""
+    drive_service = service or _drive_service(owner_user_id)
+    try:
+        content = drive_service.files().get_media(fileId=file_id).execute()
+    except Exception as exc:
+        _raise_drive_api_error(exc, "Drive file download failed.")
+    if isinstance(content, (bytes, bytearray)):
+        return bytes(content)
+    if isinstance(content, str):
+        return content.encode("utf-8")
+    return b""
+
+
+def rename_file(*, file_id: str, new_name: str, owner_user_id: str = "", service: Any | None = None) -> dict[str, str]:
+    """Rename a Drive file/folder via ``files().update``. Returns ``{"id","name"}``."""
+    if not file_id:
+        raise DriveIntegrationError("A Drive file id is required to rename.")
+    rename_to = str(new_name or "").strip()
+    if not rename_to:
+        raise DriveIntegrationError("A new name is required to rename.")
+    drive_service = service or _drive_service(owner_user_id)
+    try:
+        updated = drive_service.files().update(
+            fileId=file_id, body={"name": rename_to}, fields="id,name"
+        ).execute()
+    except Exception as exc:
+        _raise_drive_api_error(exc, "Drive rename failed.")
+    if not isinstance(updated, dict):
+        updated = {}
+    return {"id": str(updated.get("id") or file_id), "name": str(updated.get("name") or rename_to)}
+
+
 def sync_matter_folder(
     *,
     matter: dict[str, Any],
@@ -452,18 +583,72 @@ def _resolve_root_folder(
 derive_counterparty = artifact_registry.derive_counterparty
 
 
-def derive_matter_folder_name(matter: dict[str, Any], matter_id: str, counterparty: str) -> str:
-    """``{YYYY-MM-DD} - {counterparty} - {gmail_thread_id or matter_id}``.
+# Human-readable per-matter folder name: ``{YYYY-MM-DD} · {title} · {ref}``.
+# The separator is a spaced middle dot; ``·`` survives ``_drive_safe_name`` (it is
+# neither a path separator nor a control char) and is a valid Drive/local filename
+# character. The leading date keeps folders chronologically sorted within a
+# counterparty; the short ref disambiguates same-day, same-title NDAs.
+FOLDER_NAME_SEPARATOR = " · "
+# A title longer than this is trimmed so folder names stay manageable.
+_MAX_TITLE_LENGTH = 60
+# Length of the short disambiguating ref code appended to a folder name.
+_REF_CODE_LENGTH = 4
+# Placeholder titles that upstream code emits when nothing better is known; these
+# must never leak into a folder name as if they were the document's real title.
+_PLACEHOLDER_TITLES = {"untitled nda"}
 
-    The date is the matter's ``created_at`` date (falling back to a bare matter id
-    when no date is recorded). The thread id keys the folder to the email thread
-    when one exists, else the matter id — both unique, so the folder is stable
-    across re-syncs.
+
+def derive_matter_folder_name(matter: dict[str, Any], matter_id: str, counterparty: str) -> str:
+    """``{YYYY-MM-DD} · {document title} · {ref}`` — a name a person can read.
+
+    ``counterparty`` is accepted for call-site compatibility but deliberately
+    excluded from the name: it is already the PARENT folder, so echoing it inside
+    adds no information. The pieces are:
+
+    * **date** — the matter's ``created_at`` date (omitted when unrecorded);
+    * **title** — the document title (the original filename stem), falling back to
+      the email subject, then ``"NDA"``;
+    * **ref** — a short, stable disambiguator derived from the matter id so two
+      same-day, same-title NDAs get distinct folders that never collide (Drive
+      matches folders by exact name, and a collision would merge two matters into
+      one folder).
     """
     date_part = _created_date(matter)
-    key = str(matter.get("gmail_thread_id") or "").strip() or str(matter_id or "").strip() or "matter"
-    name = f"{date_part} - {counterparty} - {key}" if date_part else f"{counterparty} - {key}"
-    return _drive_safe_name(name) or key
+    title = _matter_title(matter)
+    ref = _matter_ref_code(str(matter_id or "").strip() or str(matter.get("id") or "").strip())
+    parts = [part for part in (date_part, title, ref) if part]
+    return _drive_safe_name(FOLDER_NAME_SEPARATOR.join(parts)) or ref or "NDA"
+
+
+def _matter_title(matter: dict[str, Any]) -> str:
+    """The best human label for a matter: document title, else subject, else "NDA".
+
+    Both ``document_title`` (the original filename stem) and ``subject`` default to
+    a placeholder upstream when nothing better is known; that placeholder is treated
+    as "no title" so it never reaches a folder name.
+    """
+    for field in ("document_title", "subject"):
+        # Replace the field separator inside a title with a hyphen so it cannot be
+        # mistaken for a real field boundary in the folder name.
+        value = _drive_safe_name(matter.get(field)).replace("·", "-")
+        value = " ".join(value.split())
+        if value and value.casefold() not in _PLACEHOLDER_TITLES:
+            return value[:_MAX_TITLE_LENGTH].strip()
+    return "NDA"
+
+
+def _matter_ref_code(key: str) -> str:
+    """A short, stable, lowercase disambiguator derived from the matter id.
+
+    Uses the trailing alphanumerics of the id (the random part of ``matter_<hex>``);
+    for an empty or too-short id it falls back to a deterministic hash so the code is
+    always exactly ``_REF_CODE_LENGTH`` characters.
+    """
+    cleaned = "".join(ch for ch in str(key or "") if ch.isalnum()).lower()
+    if len(cleaned) >= _REF_CODE_LENGTH:
+        return cleaned[-_REF_CODE_LENGTH:]
+    digest = hashlib.sha1(str(key or "matter").encode("utf-8")).hexdigest()
+    return digest[:_REF_CODE_LENGTH]
 
 
 def _created_date(matter: dict[str, Any]) -> str:
