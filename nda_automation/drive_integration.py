@@ -17,16 +17,21 @@ module mirrors the matter's :mod:`artifact_registry` into a per-matter folder
 tree::
 
     {root}/{counterparty}/{YYYY-MM-DD - counterparty - thread-or-matter-id}/
-        01_counterparty_original_v1.docx
-        02_agent_redline_v1.docx
-        03_legal_reviewed_v1.docx
+        01_received.docx
+        02_ai_redline_v1.docx
+        03_legal_review_v1.docx
+        04_sent_v1.docx
+        05_counter_v1.docx
+        08_signed.pdf
         ...
         metadata/matter_summary.json
 
 Every artifact in :func:`artifact_registry.matter_artifacts` order becomes one
-file, named by the registry grammar (:func:`artifact_registry.artifact_name`).
-:func:`sync_matter_folder` is the orchestrator; it is idempotent — re-running it
-creates no duplicate folders or files.
+file, named by the lifecycle grammar ``{NN}_{stage}[_v{N}].{ext}`` (see
+:func:`artifact_registry.stage_for` for the role/actor -> stage map and
+:func:`artifact_registry.stage_filename`). ``NN`` is the chronological capture
+order at sync time. :func:`sync_matter_folder` is the orchestrator; it is
+idempotent — re-running it creates no duplicate folders or files.
 
 drive.file scope constraint
 ---------------------------
@@ -57,23 +62,11 @@ DEFAULT_ROOT_FOLDER_NAME = "NDAs"
 METADATA_FOLDER_NAME = "metadata"
 MATTER_SUMMARY_FILENAME = "matter_summary.json"
 
-# Presentation mapping from the registry's source-of-truth vocabulary to the
-# human-readable filename vocabulary. The registry stays authoritative; this is a
-# display layer only. ``ai`` -> ``agent`` (the AI redline agent), ``human`` ->
-# ``legal`` (the legal reviewer), an entity slug / generated producer -> ``aspora``
-# (our org), ``counterparty`` and ``system`` pass through unchanged.
-ACTOR_DISPLAY = {
-    artifact_registry.ACTOR_AI: "agent",
-    artifact_registry.ACTOR_HUMAN: "legal",
-    artifact_registry.ACTOR_COUNTERPARTY: "counterparty",
-    "system": "system",
-}
-# Roles map mostly 1:1. ``generated`` reads as ``draft`` in the filename (the
-# generated NDA is our first draft); ``counter`` stays ``counter`` (a counterparty
-# redline is meaningfully distinct from our own AI redline in the file listing).
-ROLE_DISPLAY = {
-    artifact_registry.ROLE_GENERATED: "draft",
-}
+# Drive filenames use the chronological lifecycle grammar ``{NN}_{stage}[_v{N}]``.
+# The ``stage`` is derived from each artifact's ``(role, actor)`` pair by
+# :func:`artifact_registry.stage_for` — the registry stays the single source of
+# truth for the role/actor vocabulary and the stage map; this module only renders
+# the filename via :func:`_drive_filename_for_artifact`.
 
 
 class DriveIntegrationError(RuntimeError):
@@ -502,25 +495,17 @@ def _drive_safe_name(value: object) -> str:
 
 
 def _drive_filename_for_artifact(sequence: int, artifact: artifact_registry.Artifact) -> str:
-    """Build the grammar filename for an artifact with the display vocabulary.
+    """Build the lifecycle-grammar filename ``{NN}_{stage}[_v{N}].{ext}``.
 
     The registry stays the source of truth for sequence/actor/role/version/ext;
-    this only maps the actor/role through the presentation table before handing to
-    :func:`artifact_registry.artifact_name`. An unmapped actor (e.g. an entity
-    slug for a generated NDA) is rendered as ``aspora`` (our org produced it).
+    the chronological ``stage`` is derived from the artifact's ``(role, actor)``
+    via :func:`artifact_registry.stage_for` (e.g. counterparty ``original`` ->
+    ``received``; our-org ``original``/``generated`` -> ``draft``). Repeatable
+    stages carry a ``_v{N}`` suffix; one-shot stages (received, draft, signed) do
+    not. The chronological ``sequence`` is the enumeration order at sync time.
     """
-    actor = _display_actor(artifact.actor)
-    role = ROLE_DISPLAY.get(artifact.role, artifact.role)
-    return artifact_registry.artifact_name(sequence, actor, role, artifact.version, artifact.ext)
-
-
-def _display_actor(actor: str) -> str:
-    mapped = ACTOR_DISPLAY.get(actor)
-    if mapped:
-        return mapped
-    # Any non-empty, non-standard actor is an entity slug / generated producer
-    # (a generated NDA names the producing entity) -> our org.
-    return "aspora" if actor else "actor"
+    stage = artifact_registry.stage_for(artifact.role, artifact.actor)
+    return artifact_registry.stage_filename(sequence, stage, artifact.version, artifact.ext)
 
 
 def _mimetype_for_ext(ext: str) -> str:

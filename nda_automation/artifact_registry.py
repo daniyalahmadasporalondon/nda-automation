@@ -41,7 +41,17 @@ ROLE_REDLINE = "redline"
 ROLE_REVIEWED = "reviewed"
 ROLE_GENERATED = "generated"
 ROLE_COUNTER = "counter"
-ROLES = (ROLE_ORIGINAL, ROLE_REDLINE, ROLE_REVIEWED, ROLE_GENERATED, ROLE_COUNTER)
+ROLE_SENT = "sent"
+ROLE_SIGNED = "signed"
+ROLES = (
+    ROLE_ORIGINAL,
+    ROLE_REDLINE,
+    ROLE_REVIEWED,
+    ROLE_GENERATED,
+    ROLE_COUNTER,
+    ROLE_SENT,
+    ROLE_SIGNED,
+)
 
 # ``actor`` — who produced it. ``counterparty``/``ai``/``human`` are the common
 # cases; any other non-empty entity slug (e.g. an entity id) is also accepted so
@@ -50,6 +60,35 @@ ACTOR_COUNTERPARTY = "counterparty"
 ACTOR_AI = "ai"
 ACTOR_HUMAN = "human"
 KNOWN_ACTORS = (ACTOR_COUNTERPARTY, ACTOR_AI, ACTOR_HUMAN)
+
+# ``stage`` — the chronological lifecycle phase a document occupies. This is the
+# Drive *naming* vocabulary (one stage per filename), derived from the (role,
+# actor) pair via :func:`stage_for`. The lifecycle, in order:
+#   received   — inbound counterparty paper (original + counterparty actor)
+#   draft      — our outbound generated/own NDA (original/generated + our actor)
+#   ai_redline — the AI review output (redline)
+#   legal_review — the human-approved doc at the approval gate (reviewed)
+#   sent <-> counter — the negotiation LOOP (each repeatable + versioned)
+#   signed     — the executed copy (terminal)
+STAGE_RECEIVED = "received"
+STAGE_DRAFT = "draft"
+STAGE_AI_REDLINE = "ai_redline"
+STAGE_LEGAL_REVIEW = "legal_review"
+STAGE_SENT = "sent"
+STAGE_COUNTER = "counter"
+STAGE_SIGNED = "signed"
+STAGES = (
+    STAGE_RECEIVED,
+    STAGE_DRAFT,
+    STAGE_AI_REDLINE,
+    STAGE_LEGAL_REVIEW,
+    STAGE_SENT,
+    STAGE_COUNTER,
+    STAGE_SIGNED,
+)
+# The REPEATABLE stages carry a ``_v{N}`` suffix from v1; the one-shot stages
+# (received, draft, signed) get no version suffix.
+VERSIONED_STAGES = frozenset({STAGE_AI_REDLINE, STAGE_LEGAL_REVIEW, STAGE_SENT, STAGE_COUNTER})
 
 ARTIFACTS_FIELD = "artifacts"
 CURRENT_ARTIFACT_FIELD = "current_artifact_id"
@@ -156,19 +195,73 @@ def latest_artifact_for_role(matter: dict[str, Any], role: str) -> Artifact | No
 
 
 # --- the naming grammar ----------------------------------------------------
-def artifact_name(sequence: int, actor: str, role: str, version: int, ext: str) -> str:
-    """Build ``{sequence}_{actor}_{role}_v{n}.{ext}`` (e.g. ``01_acme_original_v1.docx``).
+def stage_for(role: str, actor: str = "") -> str:
+    """Map a ``(role, actor)`` pair to its chronological lifecycle ``stage``.
 
-    ``sequence`` is the 1-based position of the artifact in the matter's
-    registration order, zero-padded to two digits. ``actor``/``role`` are
-    slugified so the name is filesystem-safe; ``ext`` is normalised to a known
-    document extension.
+    The stage is the Drive *naming* vocabulary (one stage per filename). The map:
+      * ``original`` + counterparty actor -> ``received`` (inbound counterparty paper)
+      * ``original``/``generated`` + our actor -> ``draft`` (our outbound NDA)
+      * ``redline`` -> ``ai_redline``
+      * ``reviewed`` -> ``legal_review``
+      * ``sent`` -> ``sent``; ``counter`` -> ``counter``; ``signed`` -> ``signed``
+
+    ``actor`` only matters for the ``original`` role (it decides received vs.
+    draft). A non-counterparty actor (``ai``/``human``/an entity slug — i.e. our
+    org) on an ``original`` means we authored it, so it reads as a ``draft``.
+    """
+    role_slug = str(role or "").strip().casefold()
+    actor_slug = str(actor or "").strip().casefold()
+    if role_slug == ROLE_ORIGINAL:
+        return STAGE_RECEIVED if actor_slug == ACTOR_COUNTERPARTY else STAGE_DRAFT
+    if role_slug == ROLE_GENERATED:
+        return STAGE_DRAFT
+    if role_slug == ROLE_REDLINE:
+        return STAGE_AI_REDLINE
+    if role_slug == ROLE_REVIEWED:
+        return STAGE_LEGAL_REVIEW
+    if role_slug == ROLE_SENT:
+        return STAGE_SENT
+    if role_slug == ROLE_COUNTER:
+        return STAGE_COUNTER
+    if role_slug == ROLE_SIGNED:
+        return STAGE_SIGNED
+    # Unknown role: fall back to a slug of the role so the name stays meaningful.
+    return _slug(role_slug) or "doc"
+
+
+def stage_is_versioned(stage: str) -> bool:
+    """Whether ``stage`` is a repeatable stage that carries a ``_v{N}`` suffix."""
+    return str(stage or "").strip().casefold() in VERSIONED_STAGES
+
+
+def artifact_name(sequence: int, actor: str, role: str, version: int, ext: str) -> str:
+    """Build the lifecycle filename ``{NN}_{stage}[_v{N}].{ext}``.
+
+    ``NN`` is the 1-based chronological position in the matter's registration
+    order, zero-padded to two digits. ``stage`` is derived from ``(role, actor)``
+    via :func:`stage_for`. The repeatable stages (ai_redline, legal_review, sent,
+    counter) carry a ``_v{N}`` suffix from v1; the one-shot stages (received,
+    draft, signed) get no version suffix. ``ext`` is normalised to a known
+    document extension. e.g. ``01_received.docx``, ``02_ai_redline_v1.docx``,
+    ``08_signed.pdf``.
+    """
+    stage = stage_for(role, actor)
+    return stage_filename(sequence, stage, version, ext)
+
+
+def stage_filename(sequence: int, stage: str, version: int, ext: str) -> str:
+    """Build ``{NN}_{stage}[_v{N}].{ext}`` from an already-resolved ``stage``.
+
+    The ``_v{N}`` suffix is appended only for the repeatable
+    (:data:`VERSIONED_STAGES`) stages. ``stage`` is slugified so the name is
+    filesystem-safe.
     """
     sequence_label = f"{max(int(sequence), 0):02d}"
-    actor_slug = _slug(actor) or "actor"
-    role_slug = _slug(role) or "doc"
-    version_label = max(int(version), 1)
-    return f"{sequence_label}_{actor_slug}_{role_slug}_v{version_label}.{_normalise_ext(ext)}"
+    stage_slug = _stage_slug(stage) or "doc"
+    body = f"{sequence_label}_{stage_slug}"
+    if stage_is_versioned(stage):
+        body = f"{body}_v{max(int(version), 1)}"
+    return f"{body}.{_normalise_ext(ext)}"
 
 
 def next_version_for_role(matter: dict[str, Any], role: str) -> int:
@@ -337,6 +430,17 @@ def _now() -> str:
 def _slug(value: object) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().casefold()).strip("-")
     return slug[:_MAX_SLUG_LENGTH].strip("-")
+
+
+def _stage_slug(value: object) -> str:
+    """Filesystem-safe slug for a lifecycle stage, PRESERVING underscores.
+
+    Unlike :func:`_slug`, the stage vocabulary keeps ``_`` as a word separator so
+    multi-word stages (``ai_redline``, ``legal_review``) survive intact. Any other
+    non-alphanumeric run still collapses to ``_``.
+    """
+    slug = re.sub(r"[^a-z0-9_]+", "_", str(value or "").strip().casefold()).strip("_")
+    return slug[:_MAX_SLUG_LENGTH].strip("_")
 
 
 def _clean_actor(actor: object) -> str:

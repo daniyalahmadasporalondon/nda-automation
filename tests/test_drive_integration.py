@@ -338,11 +338,11 @@ class DriveV2IntegrationTests(unittest.TestCase):
         fake = FakeDriveV2Service()
         folder = drive_integration.find_or_create_folder(name="NDAs", service=fake)
         first = drive_integration.upload_or_replace_file(
-            file_bytes=b"docx", filename="01_counterparty_original_v1.docx", parent_id=folder, service=fake
+            file_bytes=b"docx", filename="01_received.docx", parent_id=folder, service=fake
         )
         self.assertTrue(first["created"])
         second = drive_integration.upload_or_replace_file(
-            file_bytes=b"docx", filename="01_counterparty_original_v1.docx", parent_id=folder, service=fake
+            file_bytes=b"docx", filename="01_received.docx", parent_id=folder, service=fake
         )
         self.assertFalse(second["created"])
         self.assertEqual(first["file_id"], second["file_id"])
@@ -375,14 +375,17 @@ class DriveV2IntegrationTests(unittest.TestCase):
             get_artifact_bytes=fake_bytes,
         )
         names = fake.file_names()
-        self.assertIn("01_counterparty_original_v1.docx", names)
-        self.assertIn("02_agent_redline_v1.docx", names)   # ai -> agent
-        self.assertIn("03_legal_reviewed_v1.pdf", names)   # human -> legal, pdf ext
-        self.assertIn("04_aspora_draft_v1.docx", names)    # entity slug -> aspora, generated -> draft
+        # {NN}_{stage}[_v{N}]: counterparty original -> received (one-shot);
+        # ai redline -> ai_redline (versioned); human reviewed -> legal_review
+        # (versioned, pdf ext); our-org generated -> draft (one-shot).
+        self.assertIn("01_received.docx", names)
+        self.assertIn("02_ai_redline_v1.docx", names)
+        self.assertIn("03_legal_review_v1.pdf", names)
+        self.assertIn("04_draft.docx", names)
         # The pdf artifact was uploaded with the pdf mimetype.
         pdf_creates = [
             c for c in fake.store["create_calls"]
-            if c["body"].get("name") == "03_legal_reviewed_v1.pdf"
+            if c["body"].get("name") == "03_legal_review_v1.pdf"
         ]
         self.assertEqual(len(pdf_creates), 1)
         self.assertEqual(result["total_count"], 4)
@@ -427,7 +430,7 @@ class DriveV2IntegrationTests(unittest.TestCase):
                 {
                     "artifact_id": "a1", "sequence": 1, "actor": "counterparty",
                     "role": "original", "version": 1,
-                    "filename": "01_counterparty_original_v1.docx",
+                    "filename": "01_received.docx",
                     "drive_file_id": "id_99", "drive_file_url": "https://x/99",
                     "based_on_artifact_id": "", "created_at": "",
                 }
@@ -743,11 +746,11 @@ class DriveRouteTests(unittest.TestCase):
         # 3 artifacts + matter_summary.json = 4 files.
         self.assertEqual(fake.file_create_count(), 4)
         self.assertIn("matter_summary.json", fake.file_names())
-        # Grammar filenames with the display vocabulary (ai->agent, human->legal).
+        # Lifecycle-grammar filenames {NN}_{stage}[_v{N}].
         names = fake.file_names()
-        self.assertIn("01_counterparty_original_v1.docx", names)
-        self.assertIn("02_agent_redline_v1.docx", names)   # ai -> agent
-        self.assertIn("03_legal_reviewed_v1.docx", names)  # human -> legal
+        self.assertIn("01_received.docx", names)          # counterparty original
+        self.assertIn("02_ai_redline_v1.docx", names)     # ai redline (versioned)
+        self.assertIn("03_legal_review_v1.docx", names)   # human reviewed (versioned)
         self.assertEqual(telemetry.snapshot()["counters"].get("drive_upload_succeeded"), 1)
         self.assertEqual(telemetry.snapshot()["counters"].get("drive_files_synced"), 3)
 

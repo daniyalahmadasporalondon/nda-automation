@@ -52,7 +52,7 @@ def _fake_synced():
         "artifacts": [
             {
                 "artifact_id": "a1",
-                "filename": "01_counterparty_original_v1.docx",
+                "filename": "01_received.docx",
                 "drive_file_url": "https://drive.google.com/file/d/file_1/view",
             }
         ],
@@ -117,7 +117,7 @@ def test_auto_sync_persists_drive_block(in_memory_matters, _drive_on):
     assert isinstance(drive_block, dict)
     assert drive_block["matter_folder_id"] == "folder_123"
     assert drive_block["matter_folder_url"].endswith("folder_123")
-    assert drive_block["artifacts"][0]["filename"] == "01_counterparty_original_v1.docx"
+    assert drive_block["artifacts"][0]["filename"] == "01_received.docx"
     assert drive_block["synced_at"]  # stamped
 
 
