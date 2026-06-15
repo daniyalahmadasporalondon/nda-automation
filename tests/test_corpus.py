@@ -14,7 +14,7 @@ import json
 import re
 import unittest
 
-from nda_automation import artifact_registry, corpus_index, drive_integration
+from nda_automation import artifact_registry, corpus_index, drive_integration, workflow
 from nda_automation.matter_repository import InMemoryMatterRepository
 
 FOLDER_MIME = "application/vnd.google-apps.folder"
@@ -427,6 +427,55 @@ class CorpusIndexTests(unittest.TestCase):
         # The added matter remains visible (app-state authoritative), and X too.
         self.assertEqual(fifth["matter_count"], 2)
         self.assertTrue(any(m["matter_id"] == added["id"] for g in fifth["groups"] for m in g["matters"]))
+
+    # FIX A — the status field carries the Repository board column (the workflow
+    # axis), and the dead 6-phase phase_label is no longer surfaced as a `stage`
+    # field on the wire. The exact stored->derived column rollup is workflow's
+    # business; here we assert status IS the workflow-derived board column and is
+    # one of the 5 valid board columns (never a phantom phase).
+    def test_app_matter_status_is_board_column_and_no_phantom_stage(self):
+        matter = _seed_matter(self.repo, owner="owner-a", title="Reviewed NDA", subject="Acme", board_column="reviewed")
+        expected = workflow.workflow_state(matter).get("board_column")
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "")
+        surfaced = payload["groups"][0]["matters"][0]
+        # Workflow axis = the derived board column.
+        self.assertEqual(surfaced["status"], expected)
+        valid_columns = {
+            "generated",
+            "manual_upload",
+            "gmail_demo",
+            "in_review",
+            "reviewed",
+            "sent",
+        }
+        self.assertIn(surfaced["status"], valid_columns)
+        # No phantom phase_label field on the wire.
+        self.assertNotIn("stage", surfaced)
+
+    def test_drive_only_status_is_empty_when_no_board_column(self):
+        # A Drive-only summary with no workflow_state.board_column => status "",
+        # which the FE renders as "—" (NOT "On file"; that is a source state).
+        fake = FakeDriveService()
+        summary = _summary_for("matter_driveonly_nostatus", counterparty="Globex Inc")
+        _build_drive_tree(fake, counterparty="Globex Inc", summary=summary)
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "drive-owner", drive_service=fake)
+        matters = {m["matter_id"]: m for g in payload["groups"] for m in g["matters"]}
+        drive_only = matters["matter_driveonly_nostatus"]
+        self.assertEqual(drive_only["source"], "drive")
+        self.assertEqual(drive_only["status"], "")
+        self.assertNotIn("stage", drive_only)
+
+    def test_drive_only_status_reads_board_column_from_summary(self):
+        fake = FakeDriveService()
+        summary = _summary_for(
+            "matter_driveonly_sent",
+            counterparty="Globex Inc",
+            workflow_state={"board_column": "sent"},
+        )
+        _build_drive_tree(fake, counterparty="Globex Inc", summary=summary)
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "drive-owner", drive_service=fake)
+        matters = {m["matter_id"]: m for g in payload["groups"] for m in g["matters"]}
+        self.assertEqual(matters["matter_driveonly_sent"]["status"], "sent")
 
     # Groups sorted by counterparty casefold.
     def test_groups_sorted_by_counterparty_casefold(self):

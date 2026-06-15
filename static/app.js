@@ -106,14 +106,24 @@ const corpusController = createCorpusController({
   panel: document.querySelector("#corpusView"),
   listNode: document.querySelector("#corpusGroups"),
   emptyNode: document.querySelector("#corpusEmpty"),
+  noResultsNode: document.querySelector("#corpusNoResults"),
   statusNode: document.querySelector("#corpusDriveStatus"),
   summaryNode: document.querySelector("#corpusSummary"),
   refreshButton: document.querySelector("#corpusRefreshButton"),
+  searchForm: document.querySelector("#corpusSearchForm"),
+  searchInput: document.querySelector("#corpusSearchInput"),
+  tokenField: document.querySelector("#corpusTokenField"),
+  searchClear: document.querySelector("#corpusSearchClear"),
+  facetRail: document.querySelector("#corpusFacetRail"),
   openMatter: (matterId) => {
     repositoryController.openMatter(matterId);
     activateTab("repository");
   },
 });
+const corpusNoResultsReset = document.querySelector("#corpusNoResultsReset");
+if (corpusNoResultsReset) {
+  corpusNoResultsReset.addEventListener("click", () => corpusController.resetFilters());
+}
 // Dashboard smart-search (v1, deterministic). Reads the same state.matters the
 // Repository tab loads and reuses repositoryController.openMatter so a result
 // click opens the matter exactly as the board does.
