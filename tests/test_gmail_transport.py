@@ -80,6 +80,45 @@ class _PublicOnlyInboxTransport:
         return False
 
 
+class _ScriptedMessages:
+    """Returns a scripted sequence of list() pages, then repeats the last one.
+
+    Tracks how many list() calls were made so tests can assert the paginated
+    fetch actually terminates instead of looping unbounded.
+    """
+
+    def __init__(self, pages: list[dict[str, Any]]):
+        self.pages = pages
+        self.list_calls = 0
+
+    def list(self, *, userId: str, q: str, maxResults: int, pageToken: str = ""):
+        index = min(self.list_calls, len(self.pages) - 1)
+        self.list_calls += 1
+        return _Executable(self.pages[index])
+
+
+class _ScriptedUsers:
+    def __init__(self, messages_api: _ScriptedMessages) -> None:
+        self.messages_api = messages_api
+
+    def messages(self) -> _ScriptedMessages:
+        return self.messages_api
+
+
+class _ScriptedGmailService:
+    def __init__(self, pages: list[dict[str, Any]]) -> None:
+        self.users_api = _ScriptedUsers(_ScriptedMessages(pages))
+
+    def users(self) -> _ScriptedUsers:
+        return self.users_api
+
+
+class _ScriptedInboxTransport(_PublicOnlyInboxTransport):
+    def __init__(self, pages: list[dict[str, Any]]) -> None:
+        super().__init__()
+        self.service = _ScriptedGmailService(pages)
+
+
 class _PublicOnlyOutboxTransport:
     class GmailIntegrationError(Exception):
         pass
@@ -164,3 +203,66 @@ def test_default_transport_preserves_legacy_patch_points():
         assert transport.attachment_bytes(service, "msg_1", {"attachment_id": "att_1"}) == b"nda"
 
     service_for_owner.assert_called_once_with("outbound", "owner_1")
+
+
+def test_inbound_pagination_terminates_on_zero_progress_page():
+    # Reproduces the production hang: Gmail returns a NON-empty nextPageToken on
+    # a page that yielded ZERO messages. Without a zero-progress break, this
+    # loops forever (a reviewer saw ~5001 calls). The loop must terminate.
+    pages = [{"messages": [], "nextPageToken": "endless"}]
+    transport = _ScriptedInboxTransport(pages)
+
+    result = gmail_matter_inbox.import_inbound_matters(
+        transport=transport,
+        limit=999,
+        owner_user_id="owner_1",
+    )
+
+    messages_api = transport.service.users_api.messages_api
+    # A single zero-progress page is enough to stop; far below the hard cap.
+    assert messages_api.list_calls == 1
+    assert result["imported"] == []
+    assert result["skipped"] == []
+
+
+def test_inbound_pagination_accumulates_across_multiple_pages():
+    # Normal multi-page case: stubs carry no usable id so the per-message fetch
+    # is skipped, letting us assert pagination accumulation/termination directly.
+    pages = [
+        {"messages": [{}, {}], "nextPageToken": "page2"},
+        {"messages": [{}, {}], "nextPageToken": "page3"},
+        {"messages": [{}], "nextPageToken": ""},
+    ]
+    transport = _ScriptedInboxTransport(pages)
+
+    result = gmail_matter_inbox.import_inbound_matters(
+        transport=transport,
+        limit=999,
+        owner_user_id="owner_1",
+    )
+
+    messages_api = transport.service.users_api.messages_api
+    # All three pages were fetched (token ran out on the third), no extra calls.
+    assert messages_api.list_calls == 3
+    assert result["imported"] == []
+    assert result["skipped"] == []
+
+
+def test_inbound_pagination_stays_bounded_with_endless_token():
+    # Defense in depth: a transport that NEVER yields an empty token (always one
+    # message + non-empty nextPageToken) must still terminate. Here the import
+    # cap (max_import_limit == 25) bounds it; the hard page cap (import_limit+25)
+    # is the further backstop should that path ever change.
+    pages = [{"messages": [{}], "nextPageToken": "always-more"}]
+    transport = _ScriptedInboxTransport(pages)
+
+    gmail_matter_inbox.import_inbound_matters(
+        transport=transport,
+        limit=999,
+        owner_user_id="owner_1",
+    )
+
+    messages_api = transport.service.users_api.messages_api
+    # One stub per page, import_limit capped at 25 => stops after 25 calls,
+    # never spinning unbounded.
+    assert messages_api.list_calls == 25

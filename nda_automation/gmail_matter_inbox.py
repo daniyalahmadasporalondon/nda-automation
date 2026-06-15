@@ -31,19 +31,30 @@ def import_inbound_matters(
     # capping each page at 100, until we reach import_limit or run out of pages.
     # pageToken is passed only when non-empty so single-page transport fakes that
     # do not accept the kwarg keep working.
+    # Termination guards: Gmail can return a NON-empty nextPageToken on a page
+    # that yielded ZERO new messages, which (combined with the import cap never
+    # being reached) would spin this loop forever. Stop on a zero-progress page
+    # AND enforce a hard page cap that comfortably covers import_limit even if
+    # every page only returned a single message.
     message_stubs: list[dict[str, Any]] = []
     page_token = ""
+    max_pages = import_limit + 25
     try:
-        while len(message_stubs) < import_limit:
+        for _ in range(max_pages):
+            if len(message_stubs) >= import_limit:
+                break
             page = service.users().messages().list(
                 userId="me",
                 q=inbound_query,
                 maxResults=min(import_limit - len(message_stubs), 100),
                 **({"pageToken": page_token} if page_token else {}),
             ).execute()
-            message_stubs.extend(page.get("messages") or [])
+            new_stubs = page.get("messages") or []
+            message_stubs.extend(new_stubs)
             page_token = str(page.get("nextPageToken") or "")
-            if not page_token:
+            # Stop on an empty next-page token OR a zero-progress page (a page
+            # that advanced the token but returned no messages).
+            if not page_token or not new_stubs:
                 break
     except Exception as exc:
         transport.raise_gmail_api_error(exc, "Gmail inbound sync could not list messages.")
