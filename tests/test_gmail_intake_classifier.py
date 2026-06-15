@@ -107,10 +107,25 @@ class IntakeClassifierUnitTests(unittest.TestCase):
         result = self._classify(_model_reply({"label": "MAYBE", "reason": "x"}))
         self.assertEqual(result["status"], "error")
 
-    def test_confidence_parsed_defensively(self):
+    def test_output_contract_declares_confidence(self):
+        # The output contract instructs the model to return "confidence", so the
+        # number the dashboard triage card surfaces is a real model signal rather
+        # than a forbidden extra key. Guards against the contract silently dropping
+        # the field (which would revert every AI-triaged matter to 0% confidence).
+        self.assertIn('"confidence"', intake.INTAKE_OUTPUT_CONTRACT)
+        self.assertNotIn("extra keys", intake.INTAKE_OUTPUT_CONTRACT)
+        # The contract still forbids keys OTHER than the three it names.
+        self.assertIn("any other", intake.INTAKE_OUTPUT_CONTRACT.lower())
+
+    def test_confidence_from_contract_is_surfaced(self):
+        # The model returns "confidence" per the output contract; it flows through
+        # to the result verbatim (clamped to [0,1]).
         ok = self._classify(_model_reply({"label": "NDA", "reason": "x", "confidence": 0.83}))
         self.assertAlmostEqual(ok["confidence"], 0.83)
-        # Garbage / out-of-range confidence clamps to [0,1] / 0.
+        # Defensive parse: a model that omits/garbles confidence defaults to 0.0,
+        # and an out-of-range value clamps to [0,1].
+        missing = self._classify(_model_reply({"label": "NDA", "reason": "x"}))
+        self.assertEqual(missing["confidence"], 0.0)
         bad = self._classify(_model_reply({"label": "NDA", "reason": "x", "confidence": "nope"}))
         self.assertEqual(bad["confidence"], 0.0)
         over = self._classify(_model_reply({"label": "NDA", "reason": "x", "confidence": 5}))
@@ -133,8 +148,11 @@ class IntakeClassifierUnitTests(unittest.TestCase):
         # leaves the AI lane standing rather than clamping toward triage).
         det_for = {"NDA": "confident", "NOT_NDA": "skip", "UNCERTAIN": "triage"}
         for case_id, label in cases.items():
-            result = self._classify(_model_reply({"label": label, "reason": case_id}))
+            # Replies carry "confidence" per the output contract, so the replay
+            # mirrors the real model output shape rather than a forbidden subset.
+            result = self._classify(_model_reply({"label": label, "reason": case_id, "confidence": 0.9}))
             self.assertEqual(result["status"], "ok", case_id)
+            self.assertAlmostEqual(result["confidence"], 0.9, msg=case_id)
             lane, _reason = intake.resolve_intake_lane(det_for[label], "", result)
             self.assertEqual(lane, expected_lane[label], f"{case_id} ({label})")
 

@@ -77,7 +77,9 @@ INTAKE_DECISION_PROCEDURE = (
 INTAKE_OUTPUT_CONTRACT = (
     "Output contract: respond with a single line of strict JSON and nothing else, "
     'matching exactly {"label": "NDA" | "UNCERTAIN" | "NOT_NDA", "reason": "<short '
-    'explanation under 160 characters>"}. Do not add prose, code fences, or extra '
+    'explanation under 160 characters>", "confidence": <number between 0 and 1>}. '
+    'The "confidence" field is your self-reported certainty in the chosen label '
+    "(0 = a pure guess, 1 = certain). Do not add prose, code fences, or any other "
     "keys."
 )
 
