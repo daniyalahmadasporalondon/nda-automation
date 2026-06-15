@@ -1475,6 +1475,17 @@
                   </section>
 
                   <section class="integration-subsection">
+                    <h3>NDA intake criteria</h3>
+                    <form class="integration-search-form" id="adminGmailIntakeForm">
+                      <textarea id="adminGmailIntakeInput" rows="10" spellcheck="false" aria-label="NDA intake criteria"></textarea>
+                      <div class="integration-search-actions">
+                        <p data-admin-gmail="intake-copy">Leave empty to use the built-in default. Editing changes only the NDA/NOT_NDA criteria, not the security or output rules.</p>
+                        <button class="secondary" id="adminGmailIntakeSaveButton" type="submit">Save criteria</button>
+                      </div>
+                    </form>
+                  </section>
+
+                  <section class="integration-subsection">
                     <h3>Connection setup</h3>
                     <div class="integration-connection-list" id="adminGmailSetupPanel">
                       <div class="integration-connection-empty">Checking Gmail connection</div>
@@ -1916,7 +1927,7 @@
     <script src="/static/js/auth-session.js?v=20260615h"></script>
     <script src="/static/js/admin-ai.js"></script>
     <script src="/static/js/admin-health.js?v=20260607a"></script>
-    <script src="/static/js/admin-integrations.js?v=20260615i"></script>
+    <script src="/static/js/admin-integrations.js?v=20260615j"></script>
     <script src="/static/js/admin-drive.js?v=20260615j"></script>
     <script src="/static/js/admin-personalisation.js?v=20260611a"></script>
     <script src="/static/js/contract-structure-view.js?v=20260614b"></script>
@@ -1934,6 +1945,6 @@
     <script src="/static/js/dashboard-search.js?v=20260614a"></script>
     <script src="/static/js/notifications.js?v=20260615n"></script>
     <script src="/static/js/generator-editor.js?v=20260612c"></script>
-    <script src="/static/app.js?v=20260615c"></script>
+    <script src="/static/app.js?v=20260615d"></script>
   </body>
 </html>

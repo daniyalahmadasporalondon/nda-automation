@@ -16,6 +16,7 @@ from typing import Any
 from . import (
     app_settings,
     gmail_attachment_selector,
+    gmail_intake_classifier,
     gmail_matter_inbox,
     gmail_matter_outbox,
     gmail_transport,
@@ -177,6 +178,9 @@ def gmail_status(owner_user_id: str = "") -> dict[str, Any]:
         "connect_url": "/auth/gmail/start" if owner_user_id else "",
         "disconnect_url": "/api/gmail/disconnect" if owner_user_id else "",
         "settings": settings,
+        # The built-in NDA-intake criteria, surfaced so the admin textarea can show
+        # it as a placeholder when the editable setting is left empty.
+        "intake_playbook_default": gmail_intake_classifier.DEFAULT_INTAKE_PLAYBOOK,
         "sync": user_store.gmail_sync_status(owner_user_id) if owner_user_id else _global_gmail_sync_status(settings),
         "account_match": True,
         "user_scoped": bool(owner_user_id),

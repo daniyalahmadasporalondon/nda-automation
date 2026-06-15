@@ -91,6 +91,9 @@ const AdminIntegrationsView = (() => {
     gmailSearchForm,
     gmailSearchTermsInput,
     gmailSearchSaveButton,
+    gmailIntakeForm,
+    gmailIntakeInput,
+    gmailIntakeSaveButton,
     gmailSyncHistory,
     reviewErrorFromPayload,
   }) {
@@ -102,6 +105,10 @@ const AdminIntegrationsView = (() => {
     gmailSearchForm?.addEventListener("submit", (event) => {
       event.preventDefault();
       updateGmailSearchTerms();
+    });
+    gmailIntakeForm?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      updateGmailIntakePlaybook();
     });
     gmailSetupPanel?.addEventListener("click", (event) => {
       const disconnectButton = event.target.closest("[data-gmail-disconnect-role]");
@@ -220,6 +227,38 @@ const AdminIntegrationsView = (() => {
       }
     }
 
+    async function updateGmailIntakePlaybook() {
+      // Empty is a valid value (resets to the built-in default), so an empty
+      // textarea is allowed -- unlike the search terms, which require at least one.
+      const intakePlaybook = String(gmailIntakeInput?.value || "");
+      if (intakePlaybook.length > 8000) {
+        setOverall("Too long", "blocked");
+        setFact("intake-copy", "NDA intake criteria must be under 8000 characters.");
+        return;
+      }
+      setIntakeDisabled(true);
+      setOverall("Saving", "pending");
+      try {
+        const response = await fetch("/api/gmail/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ intake_playbook: intakePlaybook }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw reviewErrorFromPayload(payload, "NDA intake criteria could not save");
+        state.gmailStatus = payload.gmail || state.gmailStatus || {};
+        await load();
+      } catch (error) {
+        // Surface the 400 inline next to the textarea rather than only in the
+        // overall banner.
+        setOverall(error.message || "Save failed", "blocked");
+        setFact("intake-copy", error.message || "NDA intake criteria could not save.");
+        renderIntakePlaybook(state.gmailStatus || {});
+      } finally {
+        setIntakeDisabled(false);
+      }
+    }
+
     async function disconnectGmailRole(role, control) {
       if (!role) return;
       if (control) {
@@ -258,6 +297,7 @@ const AdminIntegrationsView = (() => {
       renderToggleControls(status);
       renderFrequencyControl(status.settings?.sync_frequency || DEFAULT_FREQUENCY);
       renderSearchTerms(status);
+      renderIntakePlaybook(status);
       setFact("inbound-email", accountLabel(inbound));
       setFact("outbound-email", accountLabel(outbound));
       setFact("inbound-configured", inbound.error || configuredLabel(inbound));
@@ -491,6 +531,22 @@ const AdminIntegrationsView = (() => {
     function setSearchTermsDisabled(disabled) {
       if (gmailSearchTermsInput) gmailSearchTermsInput.disabled = disabled;
       if (gmailSearchSaveButton) gmailSearchSaveButton.disabled = disabled;
+    }
+
+    function renderIntakePlaybook(status) {
+      if (!gmailIntakeInput) return;
+      // The effective playbook: the stored criteria when set, else the built-in
+      // default surfaced by the server status payload (empty stays empty so the
+      // operator can see they are on the default and the placeholder hint shows).
+      const stored = String(status?.settings?.intake_playbook || "");
+      const effective = stored || String(status?.intake_playbook_default || "");
+      gmailIntakeInput.value = stored;
+      if (effective) gmailIntakeInput.setAttribute("placeholder", effective);
+    }
+
+    function setIntakeDisabled(disabled) {
+      if (gmailIntakeInput) gmailIntakeInput.disabled = disabled;
+      if (gmailIntakeSaveButton) gmailIntakeSaveButton.disabled = disabled;
     }
 
     return { load, renderGmailStatus: (gmailStatus) => renderGmail(gmailStatus || {}, []) };

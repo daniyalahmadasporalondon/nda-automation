@@ -82,11 +82,17 @@ DEFAULT_GMAIL_INBOUND_SEARCH_TERMS = [
     "data processing agreement",
     "DPA",
 ]
+# The NDA-intake criteria block fed to the Gmail intake classifier. Empty is the
+# sentinel for "use the built-in DEFAULT_INTAKE_PLAYBOOK"; a non-empty value
+# overrides only the NDA/NOT_NDA/UNCERTAIN criteria, never the fixed security
+# preamble or output contract.
+MAX_GMAIL_INTAKE_PLAYBOOK_LENGTH = 8000
 DEFAULT_GMAIL_SETTINGS = {
     "inbound_enabled": True,
     "inbound_search_terms": DEFAULT_GMAIL_INBOUND_SEARCH_TERMS,
     "outbound_enabled": True,
     "sync_frequency": "10_minutes",
+    "intake_playbook": "",
     "last_sync_at": "",
     "last_sync_imported_count": 0,
     "last_sync_skipped_count": 0,
@@ -267,6 +273,19 @@ def gmail_inbound_search_terms() -> list[str]:
     return gmail_settings()["inbound_search_terms"]
 
 
+def gmail_intake_playbook() -> str:
+    """The effective NDA-intake criteria block.
+
+    Returns the stored ``intake_playbook`` setting, or the built-in
+    ``gmail_intake_classifier.DEFAULT_INTAKE_PLAYBOOK`` when the setting is empty
+    (the empty-string sentinel means "use the default"). Imported lazily so the
+    settings layer stays free of the classifier/transport dependency graph.
+    """
+    from .gmail_intake_classifier import DEFAULT_INTAKE_PLAYBOOK
+
+    return gmail_settings().get("intake_playbook") or DEFAULT_INTAKE_PLAYBOOK
+
+
 def gmail_sync_interval_seconds(frequency: object | None = None) -> int:
     frequency_key = frequency if isinstance(frequency, str) else gmail_settings()["sync_frequency"]
     return GMAIL_SYNC_FREQUENCIES.get(frequency_key, GMAIL_SYNC_FREQUENCIES[DEFAULT_GMAIL_SETTINGS["sync_frequency"]])
@@ -340,6 +359,7 @@ def gmail_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "inbound_search_terms": inbound_search_terms,
         "outbound_enabled": bool(payload.get("outbound_enabled", DEFAULT_GMAIL_SETTINGS["outbound_enabled"])),
         "sync_frequency": sync_frequency,
+        "intake_playbook": _clamp_intake_playbook(payload.get("intake_playbook")),
         "last_sync_at": str(payload.get("last_sync_at") or DEFAULT_GMAIL_SETTINGS["last_sync_at"]),
         "last_sync_imported_count": _nonnegative_int(
             payload.get("last_sync_imported_count"),
@@ -476,7 +496,21 @@ def _valid_gmail_setting(key: str, value: Any) -> bool:
         return bool(gmail_search_terms_from_payload(value, fallback=[]))
     if key == "sync_frequency":
         return isinstance(value, str) and value in GMAIL_SYNC_FREQUENCIES
+    if key == "intake_playbook":
+        # Accept empty (reset-to-default) up to the clamp length.
+        return isinstance(value, str) and len(value) <= MAX_GMAIL_INTAKE_PLAYBOOK_LENGTH
     return False
+
+
+def _clamp_intake_playbook(value: object) -> str:
+    """Coerce + clamp the NDA-intake criteria block.
+
+    The intake playbook is trusted admin config, not email content, so it is NOT
+    neutralized -- only coerced to a stripped string and clamped to the max length.
+    Empty stays empty (the sentinel for "use the built-in default").
+    """
+    text = str(value or "").strip()
+    return text[:MAX_GMAIL_INTAKE_PLAYBOOK_LENGTH]
 
 
 def _valid_drive_setting(key: str, value: Any) -> bool:

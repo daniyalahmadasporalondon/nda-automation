@@ -31,6 +31,8 @@ AI_MODEL_ENV = "NDA_AI_MODEL"
 ACTIVE_REVIEW_ENGINE_ENV = "NDA_ACTIVE_REVIEW_ENGINE"
 OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 GMAIL_TRIAGE_MODEL_ENV = "NDA_GMAIL_TRIAGE_MODEL"
+GMAIL_INTAKE_MODEL_ENV = "NDA_GMAIL_INTAKE_MODEL"
+DEFAULT_GMAIL_INTAKE_MODEL = "deepseek/deepseek-v4-flash"
 
 
 def _validate_public_auth(host: str) -> None:
@@ -74,6 +76,7 @@ def _deployment_status_for_host(host: str) -> dict[str, object]:
     legacy_gmail_token_paths_configured = any(os.environ.get(env_name, "").strip() for env_name in GMAIL_LEGACY_TOKEN_PATH_ENVS)
     ai_env = _deployment_ai_env_status()
     gmail_triage_env = _deployment_gmail_triage_env_status(public_host)
+    gmail_intake_env = _deployment_gmail_intake_env_status()
     checks = [
         {
             "id": "auth",
@@ -130,6 +133,13 @@ def _deployment_status_for_host(host: str) -> dict[str, object]:
             "message": gmail_triage_env["message"],
         },
         {
+            # Informational only (never fails the gate): the intake classifier reuses
+            # OPENROUTER_API_KEY and falls open if NDA_GMAIL_INTAKE_MODEL is unset.
+            "id": "gmail_intake_ai",
+            "ok": True,
+            "message": gmail_intake_env["message"],
+        },
+        {
             "id": "rate_limit",
             "ok": rate_limit_per_minute > 0,
             "message": "Expensive endpoint rate limiting is enabled." if rate_limit_per_minute > 0 else "Expensive endpoint rate limiting is disabled.",
@@ -154,6 +164,7 @@ def _deployment_status_for_host(host: str) -> dict[str, object]:
         "legacy_gmail_token_paths_configured": legacy_gmail_token_paths_configured,
         "ai_review_env_configured": ai_env["configured"],
         "gmail_triage_ai_configured": gmail_triage_env["configured"],
+        "gmail_intake_ai_configured": gmail_intake_env["configured"],
         "rate_limit_per_minute": rate_limit_per_minute,
         "health_check_path": "/healthz",
         "status": "ok" if all(bool(check["ok"]) for check in checks) else "needs_attention",
@@ -271,6 +282,31 @@ def _deployment_gmail_triage_env_status(public_host: bool) -> dict[str, object]:
         "ok": False,
         "configured": False,
         "message": "Set OPENROUTER_API_KEY and NDA_GMAIL_TRIAGE_MODEL for AI-assisted Gmail attachment selection.",
+    }
+
+
+def _deployment_gmail_intake_env_status() -> dict[str, object]:
+    # The intake classifier reuses OPENROUTER_API_KEY (same precedence as triage) and
+    # defaults the model to deepseek/deepseek-v4-flash, so it is non-blocking and
+    # fails open if the env knob is unset.
+    key_configured = bool(
+        os.environ.get(OPENROUTER_API_KEY_ENV, "").strip()
+        or _stored_key_configured(app_settings.stored_ai_api_key)
+    )
+    model = os.environ.get(GMAIL_INTAKE_MODEL_ENV, "").strip() or DEFAULT_GMAIL_INTAKE_MODEL
+    if key_configured:
+        return {
+            "ok": True,
+            "configured": True,
+            "message": f"Gmail NDA-intake classifier uses OpenRouter model {model}.",
+        }
+    return {
+        "ok": True,
+        "configured": False,
+        "message": (
+            "Gmail NDA-intake classifier is optional; it reuses OPENROUTER_API_KEY and "
+            f"defaults NDA_GMAIL_INTAKE_MODEL to {DEFAULT_GMAIL_INTAKE_MODEL}."
+        ),
     }
 
 

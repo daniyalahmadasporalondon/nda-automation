@@ -229,6 +229,15 @@ def handle_gmail_settings_update(handler) -> None:
             handler._send_json({"error": "Provide at least one Gmail inbound search term."}, status=400)
             return
         updates["inbound_search_terms"] = inbound_search_terms
+    if "intake_playbook" in payload:
+        intake_playbook = payload.get("intake_playbook")
+        if not isinstance(intake_playbook, str) or len(intake_playbook) > app_settings.MAX_GMAIL_INTAKE_PLAYBOOK_LENGTH:
+            handler._send_json(
+                {"error": "NDA intake criteria must be text under 8000 characters."},
+                status=400,
+            )
+            return
+        updates["intake_playbook"] = intake_playbook
     if not updates:
         handler._send_json({"error": "Provide a Gmail setting to update."}, status=400)
         return
