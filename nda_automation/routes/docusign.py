@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from .. import (
     docusign_connection,
@@ -75,12 +75,45 @@ def handle_docusign_status(handler, *, send_body: bool = True) -> None:
     handler._send_json(status, send_body=send_body)
 
 
-def handle_docusign_connect(handler) -> None:
-    """Start the REAL DocuSign OAuth consent flow; return the authorization URL.
+def handle_docusign_connect_start(handler, *, send_body: bool = True) -> None:
+    """GET /api/docusign/connect — 302-redirect the browser to DocuSign consent.
 
-    The browser POSTs here (CSRF-protected), receives ``{authorization_url}``, and
-    redirects the user to DocuSign to grant consent. The callback below completes
-    the token exchange.
+    This is the PRIMARY connect path the frontend navigates to: the admin button
+    sets ``window.location.href`` to ``status.connect_url`` (``/api/docusign/connect``
+    with ``?next=`` appended), exactly like the Google connect button hits
+    ``GET /auth/google/start``. So this must be a GET that 302s to the DocuSign
+    consent URL (mirrors :func:`routes.auth.handle_google_start`), not a JSON POST.
+
+    Honors ``?next`` for where the callback returns the user. Auth/owner is
+    enforced like every sibling endpoint (a signed-in user is required). When
+    OAuth is not configured it redirects back to ``next`` with a clear error flag
+    rather than 404-ing, so the admin sees a message instead of a dead end.
+    """
+    query = parse_qs(urlparse(handler.path).query)
+    next_path = query.get("next", ["/"])[0] or "/"
+
+    owner_user_id = request_owner_user_id(handler)
+    if not owner_user_id:
+        handler._send_redirect(_error_next(next_path, "signin_required"), send_body=send_body)
+        return
+    if not docusign_connection.oauth_configured():
+        handler._send_redirect(_error_next(next_path, "docusign_not_configured"), send_body=send_body)
+        return
+    try:
+        authorization_url = _build_consent_url(handler, owner_user_id, next_path)
+    except docusign_connection.DocuSignConnectionError:
+        handler._send_redirect(_error_next(next_path, "docusign_connect_failed"), send_body=send_body)
+        return
+    handler._send_redirect(authorization_url, send_body=send_body)
+
+
+def handle_docusign_connect(handler) -> None:
+    """POST /api/docusign/connect — JSON fallback that returns the consent URL.
+
+    Kept for any frontend that prefers a CSRF-protected POST + client-side
+    redirect: it returns ``{authorization_url}`` (the SAME URL the GET path 302s
+    to) instead of redirecting server-side. The GET handler above is the path the
+    current frontend actually navigates to.
     """
     owner_user_id = request_owner_user_id(handler)
     if not owner_user_id:
@@ -104,21 +137,31 @@ def handle_docusign_connect(handler) -> None:
         return
     next_path = str(payload.get("next") or "/")
     try:
-        state = user_store.create_oauth_state(
-            purpose="docusign",
-            user_id=owner_user_id,
-            next_path=next_path,
-            metadata={"role": "docusign"},
-        )
-        authorization_url = docusign_connection.build_authorization_url(
-            redirect_uri=_redirect_uri(handler),
-            state=state,
-            login_hint=google_connection.login_hint(getattr(handler, "current_user", None)),
-        )
+        authorization_url = _build_consent_url(handler, owner_user_id, next_path)
     except docusign_connection.DocuSignConnectionError as error:
         handler._send_json({"error": str(error)}, status=400)
         return
     handler._send_json({"authorization_url": authorization_url})
+
+
+def _build_consent_url(handler, owner_user_id: str, next_path: str) -> str:
+    """Construct the DocuSign authorization URL (shared by the GET + POST paths).
+
+    Mints a single-use OAuth state carrying ``next_path`` (so the callback returns
+    the user where they started) and builds the consent URL with the configured
+    client id + redirect uri + scopes on the configured auth server.
+    """
+    state = user_store.create_oauth_state(
+        purpose="docusign",
+        user_id=owner_user_id,
+        next_path=next_path,
+        metadata={"role": "docusign"},
+    )
+    return docusign_connection.build_authorization_url(
+        redirect_uri=_redirect_uri(handler),
+        state=state,
+        login_hint=google_connection.login_hint(getattr(handler, "current_user", None)),
+    )
 
 
 def handle_docusign_callback(handler, *, send_body: bool = True) -> None:
@@ -390,6 +433,22 @@ def _redirect_uri(handler) -> str:
     if configured:
         return configured
     return f"{google_connection.request_base_url(handler)}/auth/docusign/callback"
+
+
+def _error_next(next_path: str, error_code: str) -> str:
+    """Return a SAME-ORIGIN relative path appended with ``?docusign_error=<code>``.
+
+    Used by the GET connect-start path to bounce the user back to where they came
+    from with a clear error flag instead of a 404. ``next_path`` is forced to a
+    safe relative path (leading ``/``, no scheme/host) so it can never become an
+    open redirect to an external site; anything unsafe falls back to ``/``.
+    """
+    safe = str(next_path or "/")
+    # Reject absolute URLs, scheme-relative URLs, and anything not rooted at "/".
+    if not safe.startswith("/") or safe.startswith("//"):
+        safe = "/"
+    separator = "&" if "?" in safe else "?"
+    return f"{safe}{separator}docusign_error={quote(error_code, safe='')}"
 
 
 def _signed_artifact_bytes(matter, matter_id, owner_user_id, repository) -> bytes:

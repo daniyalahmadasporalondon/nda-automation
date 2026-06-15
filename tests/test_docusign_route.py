@@ -14,10 +14,11 @@ import hashlib
 import hmac
 import io
 import json
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from nda_automation import docusign_connection, docusign_integration
+from nda_automation import docusign_connection, docusign_integration, user_store
 from nda_automation.docusign_test_double import FakeDocuSignClient
 from nda_automation.matter_repository import InMemoryMatterRepository
 from nda_automation.routes import docusign as docusign_routes
@@ -131,7 +132,61 @@ def test_status_reports_needs_config_when_unconfigured(repo, monkeypatch):
     assert handler.response["needs_config"] is True
 
 
-def test_connect_returns_authorization_url(repo, monkeypatch):
+def test_connect_get_redirects_to_docusign_consent(repo, monkeypatch):
+    """GET /api/docusign/connect 302s to DocuSign consent (the FE's primary path)."""
+    monkeypatch.setenv(docusign_connection.CLIENT_ID_ENV, "int-key")
+    monkeypatch.setenv(docusign_connection.CLIENT_SECRET_ENV, "secret")
+    monkeypatch.delenv(docusign_connection.AUTH_SERVER_ENV, raising=False)
+    handler = _FakeHandler(repo, path="/api/docusign/connect?next=%2Fadmin")
+    docusign_routes.handle_docusign_connect_start(handler)
+    assert handler.status == 302
+    location = handler.redirect_to
+    assert location.startswith("https://account-d.docusign.com/oauth/auth?")
+    parsed = parse_qs(urlsplit(location).query)
+    assert parsed["client_id"][0] == "int-key"
+    assert parsed["redirect_uri"][0].endswith("/auth/docusign/callback")
+    assert parsed["state"][0]
+
+
+def test_connect_get_next_round_trips_into_oauth_state(repo, monkeypatch):
+    monkeypatch.setenv(docusign_connection.CLIENT_ID_ENV, "int-key")
+    monkeypatch.setenv(docusign_connection.CLIENT_SECRET_ENV, "secret")
+    handler = _FakeHandler(repo, path="/api/docusign/connect?next=%2Fadmin%3Ftab%3Dintegrations")
+    docusign_routes.handle_docusign_connect_start(handler)
+    state = parse_qs(urlsplit(handler.redirect_to).query)["state"][0]
+    record = user_store.consume_oauth_state(state, purpose="docusign", user_id=OWNER)
+    assert record is not None
+    assert record["next_path"] == "/admin?tab=integrations"
+
+
+def test_connect_get_unauthenticated_redirects_with_error_not_404(repo, monkeypatch):
+    monkeypatch.setenv(docusign_connection.CLIENT_ID_ENV, "int-key")
+    monkeypatch.setenv(docusign_connection.CLIENT_SECRET_ENV, "secret")
+    handler = _FakeHandler(repo, owner="", path="/api/docusign/connect?next=%2Fadmin")
+    docusign_routes.handle_docusign_connect_start(handler)
+    assert handler.status == 302
+    assert handler.redirect_to == "/admin?docusign_error=signin_required"
+
+
+def test_connect_get_unconfigured_redirects_with_error_not_404(repo, monkeypatch):
+    monkeypatch.delenv(docusign_connection.CLIENT_ID_ENV, raising=False)
+    monkeypatch.delenv(docusign_connection.CLIENT_SECRET_ENV, raising=False)
+    handler = _FakeHandler(repo, path="/api/docusign/connect?next=%2Fadmin")
+    docusign_routes.handle_docusign_connect_start(handler)
+    assert handler.status == 302
+    assert handler.redirect_to == "/admin?docusign_error=docusign_not_configured"
+
+
+def test_connect_get_rejects_open_redirect_next(repo, monkeypatch):
+    monkeypatch.delenv(docusign_connection.CLIENT_ID_ENV, raising=False)
+    handler = _FakeHandler(repo, path="/api/docusign/connect?next=https%3A%2F%2Fevil.com")
+    docusign_routes.handle_docusign_connect_start(handler)
+    # An absolute/external next is forced back to a safe relative root.
+    assert handler.redirect_to == "/?docusign_error=docusign_not_configured"
+
+
+def test_connect_post_returns_authorization_url(repo, monkeypatch):
+    """POST fallback still returns the consent URL as JSON."""
     monkeypatch.setenv(docusign_connection.CLIENT_ID_ENV, "int-key")
     monkeypatch.setenv(docusign_connection.CLIENT_SECRET_ENV, "secret")
     handler = _FakeHandler(repo, payload={"next": "/dashboard"})
@@ -139,7 +194,7 @@ def test_connect_returns_authorization_url(repo, monkeypatch):
     assert handler.response["authorization_url"].startswith("https://account-d.docusign.com/oauth/auth?")
 
 
-def test_connect_blocked_when_unconfigured(repo, monkeypatch):
+def test_connect_post_blocked_when_unconfigured(repo, monkeypatch):
     monkeypatch.delenv(docusign_connection.CLIENT_ID_ENV, raising=False)
     monkeypatch.delenv(docusign_connection.CLIENT_SECRET_ENV, raising=False)
     handler = _FakeHandler(repo, payload={})
@@ -307,6 +362,9 @@ def test_routes_registered_in_server():
     from nda_automation import server
 
     assert server._GET_EXACT_ROUTES["/api/docusign/status"] is docusign_routes.handle_docusign_status
+    # GET /api/docusign/connect is the primary connect path (302-redirect to consent);
+    # the POST variant is a JSON fallback that returns the same authorization URL.
+    assert server._GET_EXACT_ROUTES["/api/docusign/connect"] is docusign_routes.handle_docusign_connect_start
     assert server._POST_EXACT_ROUTES["/api/docusign/connect"] is docusign_routes.handle_docusign_connect
     assert server._POST_EXACT_ROUTES["/api/docusign/disconnect"] is docusign_routes.handle_docusign_disconnect
     # The OAuth callback is an authenticated GET (carries the app session cookie).

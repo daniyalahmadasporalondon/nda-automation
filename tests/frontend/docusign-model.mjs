@@ -15,6 +15,9 @@ import {
   buildSendForSignaturePayload,
   connectionView,
   defaultSigners,
+  matterEnvelopeId,
+  matterSignatureStatus,
+  matterSignatureView,
   normalizeSignatureStatus,
   signatureView,
   validateSigners,
@@ -116,6 +119,68 @@ test("signatureView: declined/voided -> blocked + terminal, never downloadable",
     assert.equal(view.canDownloadSigned, false, status);
     assert.equal(view.terminal, true, status);
   }
+});
+
+// --- F1 regression: read the CANONICAL nested matter.docusign field ---------
+// The backend persists + exposes the envelope state nested under
+// matter.docusign = {envelope_id, status, ...} (the durable, server-exposed
+// source that survives a reload / a freshly-fetched matter). The flat
+// matter.signature_* fields only exist in the in-session merge after a live
+// send/poll. Reading flat-only reset a reloaded matter to "not sent" — the bug.
+test("matterSignatureStatus: reads nested matter.docusign.status (server-exposed) first", () => {
+  assert.equal(matterSignatureStatus({ docusign: { status: "sent" } }), "sent");
+  assert.equal(matterSignatureStatus({ docusign: { status: "completed" } }), "completed");
+});
+
+test("matterSignatureStatus: falls back to the flat in-session field when nested is absent", () => {
+  assert.equal(matterSignatureStatus({ signature_status: "sent" }), "sent");
+  assert.equal(matterSignatureStatus({}), "");
+  assert.equal(matterSignatureStatus(null), "");
+});
+
+test("matterSignatureStatus: nested wins over a stale flat field", () => {
+  // A freshly-fetched matter carries the canonical nested status; any stale flat
+  // value left in the in-session object must not override it.
+  assert.equal(matterSignatureStatus({ docusign: { status: "completed" }, signature_status: "sent" }), "completed");
+});
+
+test("matterEnvelopeId: nested-first, flat fallback", () => {
+  assert.equal(matterEnvelopeId({ docusign: { envelope_id: "env-123" } }), "env-123");
+  assert.equal(matterEnvelopeId({ signature_envelope_id: "env-flat" }), "env-flat");
+  assert.equal(matterEnvelopeId({ docusign: { envelope_id: "env-nested" }, signature_envelope_id: "env-flat" }), "env-nested");
+  assert.equal(matterEnvelopeId({}), "");
+});
+
+test("matterSignatureView: a freshly-fetched 'sent' matter shows the awaiting badge (no reset)", () => {
+  // The exact reload scenario from the bug report: matter.docusign.status="sent",
+  // no flat fields. Must show the awaiting badge + read as already-sent.
+  const view = matterSignatureView({ id: "m1", docusign: { envelope_id: "env-1", status: "sent" } });
+  assert.equal(view.sent, true);
+  assert.equal(view.tone, "pending");
+  assert.equal(view.label, "Awaiting signature");
+  assert.equal(view.badge, "Sent for signature");
+  assert.equal(view.canDownloadSigned, false);
+});
+
+test("matterSignatureView: a freshly-fetched 'completed' matter shows the signed badge + download", () => {
+  const view = matterSignatureView({ id: "m1", docusign: { envelope_id: "env-1", status: "completed" } });
+  assert.equal(view.completed, true);
+  assert.equal(view.tone, "ready");
+  assert.equal(view.badge, "Signed");
+  assert.equal(view.canDownloadSigned, true);
+});
+
+test("matterSignatureView: a never-sent matter (no docusign, no flat) stays idle / no badge", () => {
+  const view = matterSignatureView({ id: "m1" });
+  assert.equal(view.sent, false);
+  assert.equal(view.badge, "");
+  assert.equal(view.canDownloadSigned, false);
+});
+
+test("DocuSignModel namespace re-exports the nested accessors", () => {
+  assert.equal(typeof DocuSignModel.matterSignatureStatus, "function");
+  assert.equal(typeof DocuSignModel.matterEnvelopeId, "function");
+  assert.equal(DocuSignModel.matterSignatureView({ docusign: { status: "completed" } }).canDownloadSigned, true);
 });
 
 // --- prefilled signer rows + signing order ---------------------------------

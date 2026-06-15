@@ -224,6 +224,10 @@ _GET_EXACT_ROUTES = {
     "/auth/gmail/callback": gmail_routes.handle_gmail_connect_callback,
     "/api/drive/status": drive_routes.handle_drive_status,
     "/api/docusign/status": docusign_routes.handle_docusign_status,
+    # GET /api/docusign/connect 302-redirects the browser to DocuSign consent (the
+    # primary connect path the admin button navigates to, mirroring
+    # /auth/google/start). The POST variant in _POST_EXACT_ROUTES is a JSON fallback.
+    "/api/docusign/connect": docusign_routes.handle_docusign_connect_start,
     "/api/pdf-export/status": lambda handler, *, send_body=True: handler._send_json(
         {"pdf_export": pdf_export_service.converter_health()},
         send_body=send_body,

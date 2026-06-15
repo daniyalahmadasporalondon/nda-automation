@@ -21,6 +21,7 @@ function createDocuSignSendController({
   signingOrderControl,
   statusNode,
   badgeNode,
+  headerBadgeNode,
   envelopeNode,
   downloadSignedLink,
   submitButton,
@@ -31,7 +32,14 @@ function createDocuSignSendController({
   downloadUrl,
   onMatterUpdated,
 }) {
-  const model = (typeof window !== "undefined" && window.DocuSignModel) || (typeof DocuSignModel !== "undefined" ? DocuSignModel : null);
+  // Resolve the shared model LAZILY on each use, not once at construction. The
+  // model is exposed on window by the deferred global-bridge module, which runs
+  // AFTER this classic controller is constructed in app.js — capturing it here
+  // once would freeze a null reference and silently disable status rendering.
+  function model() {
+    if (typeof window !== "undefined" && window.DocuSignModel) return window.DocuSignModel;
+    return typeof DocuSignModel !== "undefined" ? DocuSignModel : null;
+  }
   let busy = false;
   let previousFocus = null;
   let pollTimer = null;
@@ -75,8 +83,9 @@ function createDocuSignSendController({
   function renderSignerRows() {
     if (!signerRows) return;
     const matter = currentMatter();
-    const signers = model
-      ? model.defaultSigners(matter || {}, { asporaSignatory: asporaSignatory() })
+    const m = model();
+    const signers = m
+      ? m.defaultSigners(matter || {}, { asporaSignatory: asporaSignatory() })
       : [];
     signerRows.innerHTML = signers.map((signer, index) => `
       <div class="docusign-signer-row" data-docusign-signer="${index}">
@@ -152,15 +161,16 @@ function createDocuSignSendController({
       setStatus("Save this review as a matter before sending for signature.", "error");
       return;
     }
-    const validation = model
-      ? model.validateSigners(collectSigners())
+    const m = model();
+    const validation = m
+      ? m.validateSigners(collectSigners())
       : { ok: true, signers: collectSigners(), error: "" };
     if (!validation.ok) {
       setStatus(validation.error, "error");
       return;
     }
-    const payload = model
-      ? model.buildSendForSignaturePayload(validation.signers, selectedSigningOrder())
+    const payload = m
+      ? m.buildSendForSignaturePayload(validation.signers, selectedSigningOrder())
       : { signers: validation.signers, signing_order: selectedSigningOrder() };
 
     busy = true;
@@ -174,14 +184,20 @@ function createDocuSignSendController({
       });
       const result = await response.json();
       if (!response.ok) throw reviewErrorFromPayload(result, "Could not send for signature");
+      const envelopeId = result.envelope_id || matterEnvelopeId(matter) || "";
+      const status = result.status || "sent";
       const merged = {
         ...matter,
-        signature_envelope_id: result.envelope_id || matter.signature_envelope_id || "",
-        signature_status: result.status || "sent",
+        // Write the canonical nested field the backend persists/exposes so this
+        // in-session matter matches a freshly-fetched one. Keep the flat fields
+        // as an in-session fallback for any consumer not yet on the nested path.
+        docusign: { ...(matter.docusign || {}), envelope_id: envelopeId, status },
+        signature_envelope_id: envelopeId,
+        signature_status: status,
       };
       applyMatterUpdate(merged);
       renderSignatureState(merged);
-      setStatus(`Sent for signature. Envelope ${result.envelope_id || ""}.`.trim(), "success");
+      setStatus(`Sent for signature. Envelope ${envelopeId}.`.trim(), "success");
       // Begin polling the live status so the badge advances to Signed without a reload.
       startPolling(matter.id);
     } catch (error) {
@@ -213,10 +229,17 @@ function createDocuSignSendController({
       if (!response.ok) return;
       const matter = currentMatter();
       if (!matter?.id || matter.id !== matterId) return;
-      const merged = { ...matter, signature_status: payload.status || matter.signature_status };
+      const nextStatus = payload.status || matterView(matter).status;
+      const merged = {
+        ...matter,
+        // Keep the canonical nested field in sync on each poll, not just the flat one.
+        docusign: { ...(matter.docusign || {}), status: nextStatus },
+        signature_status: nextStatus,
+      };
       applyMatterUpdate(merged);
       renderSignatureState(merged);
-      const view = model ? model.signatureView(payload) : null;
+      const m = model();
+      const view = m ? m.signatureView(payload) : null;
       if (view?.terminal) stopPolling();
     } catch (error) {
       // Transient network errors are ignored; the next tick retries.
@@ -227,22 +250,50 @@ function createDocuSignSendController({
     if (typeof onMatterUpdated === "function") onMatterUpdated(matter);
   }
 
-  // Render the badge + envelope id + download-signed visibility for a matter's
-  // signature state. Reused on open, after send, and on each poll.
-  function renderSignatureState(matter) {
-    const view = model
-      ? model.signatureView(matter?.signature_status)
+  // The canonical signature view/envelope-id for a matter: the backend persists
+  // the envelope state NESTED at matter.docusign = {envelope_id, status} (the
+  // durable, server-exposed source that survives a reload), with the flat
+  // in-session matter.signature_* fields as a fallback. Route every read through
+  // the model's nested-first accessors so a freshly-fetched matter renders its
+  // real state instead of resetting to "not sent".
+  function matterView(matter) {
+    const m = model();
+    if (m?.matterSignatureView) return m.matterSignatureView(matter);
+    const status = m?.matterSignatureStatus
+      ? m.matterSignatureStatus(matter)
+      : String(matter?.docusign?.status || matter?.signature_status || "");
+    return m
+      ? m.signatureView(status)
       : { badge: "", tone: "idle", completed: false, canDownloadSigned: false, sent: false };
-    if (badgeNode) {
-      badgeNode.textContent = view.badge || "";
-      badgeNode.hidden = !view.badge;
-      badgeNode.classList.remove("ready", "pending", "blocked");
-      if (view.tone === "ready") badgeNode.classList.add("ready");
-      else if (view.tone === "pending") badgeNode.classList.add("pending");
-      else if (view.tone === "blocked") badgeNode.classList.add("blocked");
-    }
+  }
+
+  function matterEnvelopeId(matter) {
+    const m = model();
+    if (m?.matterEnvelopeId) return m.matterEnvelopeId(matter);
+    return String(matter?.docusign?.envelope_id || matter?.signature_envelope_id || "");
+  }
+
+  // Apply the badge view (text + tone classes + visibility) to one badge node.
+  function applyBadge(node, view) {
+    if (!node) return;
+    node.textContent = view.badge || "";
+    node.hidden = !view.badge;
+    node.classList.remove("ready", "pending", "blocked");
+    if (view.tone === "ready") node.classList.add("ready");
+    else if (view.tone === "pending") node.classList.add("pending");
+    else if (view.tone === "blocked") node.classList.add("blocked");
+  }
+
+  // Render the badge + envelope id + download-signed visibility for a matter's
+  // signature state. Reused on open, after send, and on each poll. Drives BOTH
+  // the in-modal badge and the always-visible header badge in the matter-actions
+  // group so the status shows even with the composer closed (e.g. on reload).
+  function renderSignatureState(matter) {
+    const view = matterView(matter);
+    applyBadge(badgeNode, view);
+    applyBadge(headerBadgeNode, view);
     if (envelopeNode) {
-      const envelopeId = String(matter?.signature_envelope_id || "");
+      const envelopeId = matterEnvelopeId(matter);
       envelopeNode.textContent = envelopeId ? `Envelope ${envelopeId}` : "";
       envelopeNode.hidden = !envelopeId;
     }
@@ -301,7 +352,10 @@ function createDocuSignSendController({
     const hasMatter = Boolean(matter?.id);
     triggerButton.hidden = !hasMatter;
     if (!hasMatter) return;
-    const view = model ? model.signatureView(matter?.signature_status) : null;
+    // Read the canonical nested status (matter.docusign.status), flat as fallback,
+    // so a reloaded/freshly-fetched matter that is already out for signature keeps
+    // its "already sent" label instead of resetting to "Send for signature".
+    const view = matterView(matter);
     // Update any inline badge that lives outside the modal too.
     renderSignatureState(matter);
     if (view?.sent) {

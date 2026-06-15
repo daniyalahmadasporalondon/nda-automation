@@ -471,6 +471,10 @@ docusignSendController = createDocuSignSendController({
   signingOrderControl: document.querySelector("#docusignSigningOrder"),
   statusNode: document.querySelector("#docusignSendStatus"),
   badgeNode: document.querySelector("#docusignSignatureBadge"),
+  // The always-visible status badge in the studio matter-actions group, driven
+  // alongside the in-modal badge so a reloaded matter shows its signature state
+  // without opening the composer.
+  headerBadgeNode: document.querySelector("#studioSignatureBadge"),
   envelopeNode: document.querySelector("#docusignEnvelopeId"),
   downloadSignedLink: document.querySelector("#docusignDownloadSignedLink"),
   submitButton: document.querySelector("#docusignSendSubmitButton"),

@@ -66,6 +66,36 @@ export function signatureView(statusOrPayload) {
   };
 }
 
+// The canonical signature status for a matter. The backend persists + exposes
+// the envelope state NESTED under matter.docusign = {envelope_id, status, ...}
+// (public_matter exposes `docusign`), which is the durable source that survives
+// a reload / a freshly-fetched matter. The flat matter.signature_status only
+// exists in the in-session merge after a live send/poll, so it is a fallback —
+// read nested first, fall back to flat.
+export function matterSignatureStatus(matter) {
+  const nested = matter?.docusign;
+  if (nested && typeof nested === "object" && nested.status != null && nested.status !== "") {
+    return String(nested.status);
+  }
+  return String(matter?.signature_status || "");
+}
+
+// The canonical envelope id for a matter, with the same nested-first / flat-
+// fallback rule as matterSignatureStatus.
+export function matterEnvelopeId(matter) {
+  const nested = matter?.docusign;
+  if (nested && typeof nested === "object" && nested.envelope_id != null && nested.envelope_id !== "") {
+    return String(nested.envelope_id);
+  }
+  return String(matter?.signature_envelope_id || "");
+}
+
+// Map a matter directly to its signature badge view, reading the canonical
+// nested field (matter.docusign.status) before the in-session flat field.
+export function matterSignatureView(matter) {
+  return signatureView(matterSignatureStatus(matter));
+}
+
 // Shape GET /api/docusign/status -> { connected, account } into the admin
 // panel's tone/label. Connect is a real DocuSign OAuth redirect (mirroring the
 // Drive/Gmail Connect button): when not connected the control hands off to the
@@ -163,6 +193,9 @@ export const DocuSignModel = {
   buildSendForSignaturePayload,
   connectionView,
   defaultSigners,
+  matterEnvelopeId,
+  matterSignatureStatus,
+  matterSignatureView,
   normalizeSignatureStatus,
   signatureView,
   validateSigners,
@@ -175,6 +208,9 @@ if (typeof module !== "undefined" && module.exports) {
     buildSendForSignaturePayload,
     connectionView,
     defaultSigners,
+    matterEnvelopeId,
+    matterSignatureStatus,
+    matterSignatureView,
     normalizeSignatureStatus,
     signatureView,
     validateSigners,
