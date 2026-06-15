@@ -5413,6 +5413,337 @@ class ServerTests(unittest.TestCase):
             ("skip", ""),
         )
 
+    def _intake_attachments(self, attachments, metadata, *, verdicts):
+        # Drive _import_inbound_attachments with the AI intake classifier configured
+        # and a stub that returns the next verdict from ``verdicts`` per call. The
+        # AI selector stays unconfigured so the classifier overlays the pure
+        # deterministic band lane (not the selector lane).
+        from nda_automation import gmail_intake_classifier
+
+        verdict_iter = iter(verdicts)
+
+        def _stub_classify(_message_metadata, _candidate, _playbook):
+            verdict, confidence, reason = next(verdict_iter)
+            return {
+                "verdict": verdict,
+                "confidence": confidence,
+                "reason": reason,
+                "model": "deepseek/deepseek-v4-flash",
+                "status": "ok",
+            }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
+                    with patch.object(gmail_integration.gmail_attachment_selector, "selector_configured", return_value=False):
+                        with patch.object(gmail_intake_classifier, "classifier_configured", return_value=True):
+                            with patch.object(gmail_intake_classifier, "classify_intake_attachment", side_effect=_stub_classify) as classify:
+                                result = gmail_integration._import_inbound_attachments(
+                                    None,
+                                    "msg_intake",
+                                    attachments,
+                                    metadata,
+                                )
+        return result, classify
+
+    def _intake_attachment_payload(self, paragraphs, filename):
+        def inline(value):
+            return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+        return {
+            "attachment_id": f"att_{filename}",
+            "data": inline(make_docx(paragraphs)),
+            "filename": filename,
+            "part_id": "1",
+        }
+
+    def test_intake_classifier_nda_imports_without_triage(self):
+        # C12 -- attachment-only NDA, neutral subject, AI verdict NDA -> imported, no
+        # needs_triage flag (deterministic confident + AI NDA agree -> confident).
+        attachments = [self._intake_attachment_payload([
+            "MUTUAL NON-DISCLOSURE AGREEMENT",
+            "Each Disclosing Party may disclose Confidential Information to a Receiving Party.",
+            "The Receiving Party shall not disclose the Disclosing Party's Confidential Information.",
+        ], "Mutual NDA.docx")]
+        metadata = {
+            "gmail_account": "legal@aspora.com",
+            "gmail_message_id": "msg_intake",
+            "subject": "Fwd: a document",
+            "sender": "ops@example.com",
+        }
+        result, classify = self._intake_attachments(
+            attachments, metadata, verdicts=[("NDA", 0.95, "mutual nda")]
+        )
+        self.assertEqual(result["skipped"], [])
+        self.assertEqual(len(result["imported"]), 1)
+        self.assertNotIn("needs_triage", result["imported"][0])
+        classify.assert_called_once()
+
+    def test_intake_classifier_uncertain_imports_with_ai_triage(self):
+        # C13 -- AI UNCERTAIN on a borderline doc -> imported with needs_triage,
+        # triage_reason ai_intake_uncertain, triage_confidence from the AI confidence.
+        attachments = [self._intake_attachment_payload([
+            "MUTUAL NON-DISCLOSURE AGREEMENT",
+            "Each Disclosing Party may disclose Confidential Information to a Receiving Party.",
+            "The Receiving Party shall not disclose Confidential Information.",
+        ], "Maybe NDA.docx")]
+        metadata = {
+            "gmail_account": "legal@aspora.com",
+            "gmail_message_id": "msg_intake",
+            "subject": "Fwd: a document",
+            "sender": "ops@example.com",
+        }
+        result, _classify = self._intake_attachments(
+            attachments, metadata, verdicts=[("UNCERTAIN", 0.42, "ambiguous")]
+        )
+        self.assertEqual(result["skipped"], [])
+        self.assertEqual(len(result["imported"]), 1)
+        imported = result["imported"][0]
+        self.assertEqual(imported["needs_triage"], "true")
+        self.assertEqual(imported["triage_reason"], "ai_intake_uncertain")
+        # AI confidence 0.42 -> "42" (the model's number overrides the deterministic score).
+        self.assertEqual(imported["triage_confidence"], "42")
+
+    def test_intake_classifier_not_nda_skips_with_ai_detail(self):
+        # C14 -- AI NOT_NDA on a doc with no deterministic NDA basis -> skipped with
+        # non_nda_attachment carrying the AI reason/model; no matter created.
+        attachments = [self._intake_attachment_payload([
+            "MASTER SERVICES AGREEMENT",
+            "The Supplier shall provide the services described in each statement of work.",
+            "Fees are payable within thirty days of invoice.",
+        ], "MSA.docx")]
+        metadata = {
+            "gmail_account": "legal@aspora.com",
+            "gmail_message_id": "msg_intake",
+            "subject": "Fwd: a document",
+            "sender": "ops@example.com",
+        }
+        result, _classify = self._intake_attachments(
+            attachments, metadata, verdicts=[("NOT_NDA", 0.9, "this is an MSA not an NDA")]
+        )
+        self.assertEqual(result["imported"], [])
+        self.assertEqual(len(result["skipped"]), 1)
+        skip = result["skipped"][0]
+        self.assertEqual(skip["reason"], "non_nda_attachment")
+        self.assertEqual(skip["model"], "deepseek/deepseek-v4-flash")
+        self.assertEqual(skip["detail"], "this is an MSA not an NDA")
+
+    def test_intake_classifier_unconfigured_is_byte_identical_to_deterministic(self):
+        # C15 -- with the classifier unconfigured, the inbox flow is identical to the
+        # deterministic classify_attachment_lane path (regression lock). The same
+        # borderline doc lands as a low_confidence_nda_content triage, exactly as the
+        # deterministic-only T3 test asserts.
+        from nda_automation import gmail_intake_classifier
+
+        attachments = [self._intake_attachment_payload([
+            "This document is shared in connection with our discussions.",
+            "The Receiving Party will handle the Confidential Information appropriately.",
+        ], "Document.docx")]
+        metadata = {
+            "gmail_account": "legal@aspora.com",
+            "gmail_message_id": "msg_intake",
+            "subject": "Fwd: a document",
+            "sender": "ops@example.com",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
+                    with patch.object(gmail_integration.gmail_attachment_selector, "selector_configured", return_value=False):
+                        with patch.object(gmail_intake_classifier, "classifier_configured", return_value=False):
+                            with patch.object(gmail_intake_classifier, "classify_intake_attachment") as classify:
+                                result = gmail_integration._import_inbound_attachments(
+                                    None,
+                                    "msg_intake",
+                                    attachments,
+                                    metadata,
+                                )
+        # The classifier is never called when unconfigured.
+        classify.assert_not_called()
+        self.assertEqual(result["skipped"], [])
+        self.assertEqual(len(result["imported"]), 1)
+        imported = result["imported"][0]
+        self.assertEqual(imported["needs_triage"], "true")
+        self.assertEqual(imported["triage_reason"], "low_confidence_nda_content")
+        # Deterministic score-derived confidence (NOT an AI override).
+        self.assertEqual(imported["triage_confidence"], imported["gmail_attachment_score"])
+
+    def test_intake_classifier_per_sync_cap_falls_back_to_deterministic(self):
+        # C16 -- with the per-sync cap forced low, only the first N attachments hit
+        # the AI; the overflow takes the deterministic lane (skipped_cap) and the AI
+        # is called at most the cap number of times.
+        from nda_automation import gmail_intake_classifier, gmail_matter_inbox
+
+        def inline(value):
+            return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+        class FakeExecutable:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class FakeMessages:
+            def __init__(self, messages):
+                self.messages = messages
+
+            def list(self, userId, q, maxResults, pageToken=""):
+                return FakeExecutable({"messages": [{"id": message_id} for message_id in self.messages][:maxResults]})
+
+            def get(self, userId=None, messageId=None, id=None, format=None):
+                return FakeExecutable(self.messages[id])
+
+        class FakeUsers:
+            def __init__(self, messages):
+                self.messages_api = FakeMessages(messages)
+
+            def getProfile(self, userId):
+                return FakeExecutable({"emailAddress": "legal@aspora.com"})
+
+            def messages(self):
+                return self.messages_api
+
+        class FakeGmailService:
+            def __init__(self, messages):
+                self.users_api = FakeUsers(messages)
+
+            def users(self):
+                return self.users_api
+
+        nda_docx = make_docx([
+            "MUTUAL NON-DISCLOSURE AGREEMENT",
+            "Each Disclosing Party may disclose Confidential Information to a Receiving Party.",
+            "The Receiving Party shall not disclose the Disclosing Party's Confidential Information.",
+        ])
+        # Three messages, each a single NDA attachment; cap forced to 2.
+        message_ids = ["msg_a", "msg_b", "msg_c"]
+        messages = {}
+        for message_id in message_ids:
+            messages[message_id] = {
+                "id": message_id,
+                "threadId": f"thr_{message_id}",
+                "labelIds": ["INBOX"],
+                "snippet": "please review",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": f"{message_id} <{message_id}@example.com>"},
+                        {"name": "Subject", "value": "Fwd: document"},
+                    ],
+                    "parts": [
+                        {"partId": "body", "mimeType": "text/plain", "body": {"data": inline(b"please review the attached document")}},
+                        {"partId": "doc", "filename": f"{message_id}.docx", "body": {"data": inline(nda_docx)}},
+                    ],
+                },
+            }
+
+        def _stub_classify(_message_metadata, _candidate, _playbook):
+            return {
+                "verdict": "NDA",
+                "confidence": 0.95,
+                "reason": "nda",
+                "model": "deepseek/deepseek-v4-flash",
+                "status": "ok",
+            }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(app_settings, "gmail_role_enabled", return_value=True):
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
+                        with patch.object(gmail_matter_inbox, "MAX_INTAKE_CALLS_PER_SYNC", 2):
+                            with patch.object(gmail_integration.gmail_attachment_selector, "selector_configured", return_value=False):
+                                with patch.object(gmail_intake_classifier, "classifier_configured", return_value=True):
+                                    with patch.object(gmail_intake_classifier, "classify_intake_attachment", side_effect=_stub_classify) as classify:
+                                        with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
+                                            result = gmail_integration.import_inbound_matters(limit=25)
+
+        # All three NDAs are imported (overflow falls back to the deterministic
+        # confident lane, which also imports the NDA), but the AI was called at most
+        # the cap number of times.
+        self.assertEqual(len(result["imported"]), 3)
+        self.assertLessEqual(classify.call_count, 2)
+        self.assertEqual(classify.call_count, 2)
+
+    def test_intake_playbook_round_trips_through_settings(self):
+        # D17 -- intake_playbook round-trips, clamps over 8000, empty -> default,
+        # non-empty -> verbatim.
+        from nda_automation import gmail_intake_classifier
+
+        empty = app_settings.gmail_settings_from_payload({"intake_playbook": ""})
+        self.assertEqual(empty["intake_playbook"], "")
+
+        verbatim = app_settings.gmail_settings_from_payload({"intake_playbook": "only deeds count"})
+        self.assertEqual(verbatim["intake_playbook"], "only deeds count")
+
+        long_value = "x" * 9000
+        clamped = app_settings.gmail_settings_from_payload({"intake_playbook": long_value})
+        self.assertEqual(len(clamped["intake_playbook"]), 8000)
+
+        # gmail_intake_playbook(): empty -> default, non-empty -> verbatim.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(app_settings, "gmail_settings", return_value={"intake_playbook": ""}):
+                    self.assertEqual(
+                        gmail_intake_classifier.gmail_intake_playbook(),
+                        gmail_intake_classifier.DEFAULT_INTAKE_PLAYBOOK,
+                    )
+                with patch.object(app_settings, "gmail_settings", return_value={"intake_playbook": "custom criteria"}):
+                    self.assertEqual(
+                        gmail_intake_classifier.gmail_intake_playbook(),
+                        "custom criteria",
+                    )
+
+    def test_gmail_settings_patch_accepts_and_rejects_intake_playbook(self):
+        # D18 -- PATCH /api/gmail/settings with valid intake_playbook -> persisted;
+        # non-str / over-8000 -> 400; unchanged keys untouched.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                # Valid value persists.
+                ok = self._patch_gmail_settings({"intake_playbook": "deeds of confidentiality only"})
+                self.assertEqual(ok.status, 200)
+                body = json.loads(ok.read().decode("utf-8"))
+                self.assertEqual(body["gmail_settings"]["intake_playbook"], "deeds of confidentiality only")
+
+                # Over-length is rejected and the stored value is untouched.
+                too_long = self._patch_gmail_settings({"intake_playbook": "y" * 9000})
+                self.assertEqual(too_long.status, 400)
+                self.assertIn("error", json.loads(too_long.read().decode("utf-8")))
+                self.assertEqual(
+                    app_settings.gmail_settings()["intake_playbook"],
+                    "deeds of confidentiality only",
+                )
+
+                # Non-string is rejected.
+                non_str = self._patch_gmail_settings({"intake_playbook": 123})
+                self.assertEqual(non_str.status, 400)
+
+    def _patch_gmail_settings(self, payload):
+        from nda_automation.routes import gmail as gmail_routes
+
+        class _FakeHandler:
+            def __init__(self, payload):
+                self._payload = payload
+                self.status = None
+                self._chunks = []
+
+            def _read_json_payload(self):
+                return self._payload
+
+            def _send_json(self, body, status=200, send_body=True):
+                self.status = status
+                self._body = json.dumps(body).encode("utf-8")
+
+            def read(self):
+                return getattr(self, "_body", b"{}")
+
+        handler = _FakeHandler(payload)
+        gmail_routes.handle_gmail_settings_update(handler)
+        return handler
+
     def test_gmail_import_paginates_beyond_single_page(self):
         # T4 -- the listing follows nextPageToken and accumulates up to import_limit.
         class FakeExecutable:

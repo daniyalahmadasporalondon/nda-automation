@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import app_settings, gmail_attachment_selector
+from . import app_settings, gmail_attachment_selector, gmail_intake_classifier
 from .matter_repository import DiskMatterRepository
 
 
@@ -174,6 +174,32 @@ class GmailTransport:
             message_metadata=message_metadata,
             candidates=candidates,
         )
+
+    def intake_classifier_configured(self) -> bool:
+        return bool(gmail_intake_classifier.classifier_configured())
+
+    def gmail_intake_playbook(self) -> str:
+        return gmail_intake_classifier.gmail_intake_playbook()
+
+    def classify_intake_attachment(
+        self,
+        message_metadata: dict[str, Any],
+        candidate: dict[str, Any],
+        intake_playbook: str,
+    ) -> dict[str, Any]:
+        return gmail_intake_classifier.classify_intake_attachment(
+            message_metadata,
+            candidate,
+            intake_playbook,
+        )
+
+    def resolve_intake_lane(
+        self,
+        det_lane: str,
+        det_reason: str,
+        ai_result: dict[str, Any],
+    ) -> tuple[str, str]:
+        return gmail_intake_classifier.resolve_intake_lane(det_lane, det_reason, ai_result)
 
     def message_body_text(self, payload: dict[str, Any]) -> str:
         return _legacy()._message_body_text(payload)

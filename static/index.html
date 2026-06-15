@@ -6,7 +6,7 @@
     <title>nda automation</title>
     <link rel="stylesheet" href="/static/styles.css?v=20260615a">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260615c">
-    <link rel="stylesheet" href="/static/css/corpus.css?v=20260615d">
+    <link rel="stylesheet" href="/static/css/corpus.css?v=20260615q">
   </head>
   <body>
     <div class="app-shell">
@@ -1494,6 +1494,17 @@
                   </section>
 
                   <section class="integration-subsection">
+                    <h3>NDA intake criteria</h3>
+                    <form class="integration-search-form" id="adminGmailIntakeForm">
+                      <textarea id="adminGmailIntakeInput" rows="10" spellcheck="false" aria-label="NDA intake criteria"></textarea>
+                      <div class="integration-search-actions">
+                        <p data-admin-gmail="intake-copy">Leave empty to use the built-in default. Editing changes only the NDA/NOT_NDA criteria, not the security or output rules.</p>
+                        <button class="secondary" id="adminGmailIntakeSaveButton" type="submit">Save criteria</button>
+                      </div>
+                    </form>
+                  </section>
+
+                  <section class="integration-subsection">
                     <h3>Connection setup</h3>
                     <div class="integration-connection-list" id="adminGmailSetupPanel">
                       <div class="integration-connection-empty">Checking Gmail connection</div>
@@ -1918,7 +1929,7 @@
       no divergent untested .js duplicate. Module scripts are deferred, so this
       runs before any user interaction; all consumers call these at runtime.
     -->
-    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260615o"></script>
+    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260615q"></script>
     <script src="/static/js/redline-rendering.js?v=20260612c"></script>
     <script src="/static/js/repository-api.js?v=20260607c"></script>
     <script src="/static/js/repository-model.js?v=20260615b"></script>
@@ -1928,14 +1939,14 @@
     <script src="/static/js/repository-detail.js?v=20260615f"></script>
     <script src="/static/js/repository-actions.js?v=20260612c"></script>
     <script src="/static/js/repository.js?v=20260615g"></script>
-    <script src="/static/js/corpus.js?v=20260615d"></script>
+    <script src="/static/js/corpus.js?v=20260615q"></script>
     <script src="/static/js/manual-upload.js"></script>
     <script src="/static/js/send-document.js?v=20260606i"></script>
     <script src="/static/js/draft-intake.js?v=20260614b"></script>
     <script src="/static/js/auth-session.js?v=20260615h"></script>
     <script src="/static/js/admin-ai.js"></script>
     <script src="/static/js/admin-health.js?v=20260607a"></script>
-    <script src="/static/js/admin-integrations.js?v=20260615i"></script>
+    <script src="/static/js/admin-integrations.js?v=20260615q"></script>
     <script src="/static/js/admin-drive.js?v=20260615j"></script>
     <script src="/static/js/admin-personalisation.js?v=20260611a"></script>
     <script src="/static/js/contract-structure-view.js?v=20260614b"></script>
@@ -1953,6 +1964,6 @@
     <script src="/static/js/dashboard-search.js?v=20260614a"></script>
     <script src="/static/js/notifications.js?v=20260615n"></script>
     <script src="/static/js/generator-editor.js?v=20260612c"></script>
-    <script src="/static/app.js?v=20260615o"></script>
+    <script src="/static/app.js?v=20260615q"></script>
   </body>
 </html>

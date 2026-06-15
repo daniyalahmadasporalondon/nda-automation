@@ -3,6 +3,10 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+# Per-sync cost cap for the AI intake classifier. Imported here so the budget the
+# inbox loop hands down stays in lockstep with the classifier's own cap constant.
+from .gmail_intake_classifier import MAX_INTAKE_CALLS_PER_SYNC
+
 
 def import_inbound_matters(
     *,
@@ -60,6 +64,14 @@ def import_inbound_matters(
         transport.raise_gmail_api_error(exc, "Gmail inbound sync could not list messages.")
     message_stubs = message_stubs[:import_limit]
 
+    # The AI intake classifier reads its criteria block once per sync and shares a
+    # single per-sync call budget across every message/attachment so the cost cap
+    # bounds the whole sync, not each message. Both are computed defensively: if the
+    # classifier transport is unavailable the playbook stays empty and the budget is
+    # never drawn down, leaving the deterministic path byte-identical to today.
+    intake_playbook = _intake_playbook(transport)
+    intake_budget = _IntakeCallBudget(MAX_INTAKE_CALLS_PER_SYNC)
+
     imported: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
     for message_stub in message_stubs:
@@ -105,6 +117,8 @@ def import_inbound_matters(
             metadata,
             transport=transport,
             owner_user_id=owner_user_id,
+            intake_playbook=intake_playbook,
+            intake_budget=intake_budget,
         )
         imported.extend(attachment_result["imported"])
         skipped.extend(attachment_result["skipped"])
@@ -125,7 +139,19 @@ def import_inbound_attachments(
     *,
     transport: Any,
     owner_user_id: str = "",
+    intake_playbook: str | None = None,
+    intake_budget: "_IntakeCallBudget | None" = None,
 ) -> dict[str, list[dict[str, Any]]]:
+    # The AI intake classifier (when configured) overlays the deterministic band
+    # lane below. Compute the playbook/budget defensively so that, when called
+    # standalone (e.g. tests, or the classifier transport being absent), the path
+    # collapses to the deterministic-only behaviour.
+    if intake_playbook is None:
+        intake_playbook = _intake_playbook(transport)
+    if intake_budget is None:
+        intake_budget = _IntakeCallBudget(MAX_INTAKE_CALLS_PER_SYNC)
+    intake_configured = _intake_classifier_configured(transport)
+
     prepared: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
     # Always prepare with the deterministic validation computed (no
@@ -152,17 +178,40 @@ def import_inbound_attachments(
         attachment_id = str(candidate.get("attachment_id") or "")
         validation = candidate.get("validation") if isinstance(candidate.get("validation"), dict) else {}
         selector_selected = selected_ids is not None and attachment_id in selected_ids
-        lane, triage_reason = classify_attachment_lane(
+        # 1. The deterministic lane is the FALLBACK and the floor (pure + unit-tested).
+        det_lane, det_reason = classify_attachment_lane(
             validation,
             selector_selected=selector_selected,
             selector_configured=selected_ids is not None,
             triage_min_score=triage_min_score,
         )
+        # 2. + 3. AI overlay: run the classifier when configured and the per-sync cap
+        # is not yet exhausted, then reconcile (fail toward triage on ambiguity). Any
+        # unconfigured/error/timeout/overflow yields a non-ok status, and
+        # resolve_intake_lane returns the deterministic lane verbatim.
+        ai_result = _maybe_classify_intake(
+            transport,
+            metadata,
+            candidate,
+            intake_playbook,
+            intake_budget,
+            configured=intake_configured,
+        )
+        lane, triage_reason = transport.resolve_intake_lane(det_lane, det_reason, ai_result)
+        ai_ok = ai_result.get("status") == "ok"
         if lane == "skip":
-            # Precision lane preserved: emit the same skip reasons as before so
-            # the skipped-list telemetry is unchanged for genuinely-irrelevant
-            # attachments.
-            if selected_ids is not None and not selector_selected:
+            # An AI NOT_NDA terminal skip carries the AI reason/model so the
+            # skipped-list telemetry explains the drop; otherwise the deterministic
+            # / selector skip reasons are emitted byte-identically to before.
+            if ai_ok and ai_result.get("verdict") == "NOT_NDA":
+                skipped.append(gmail_attachment_skip(
+                    message_id,
+                    str(candidate.get("filename") or ""),
+                    "non_nda_attachment",
+                    detail=str(ai_result.get("reason") or ""),
+                    model=str(ai_result.get("model") or ""),
+                ))
+            elif selected_ids is not None and not selector_selected:
                 skipped.append(gmail_attachment_skip(
                     message_id,
                     str(candidate.get("filename") or ""),
@@ -180,6 +229,12 @@ def import_inbound_attachments(
                     score=str(validation.get("score") or "0"),
                 ))
             continue
+        # When the AI is what put this candidate into triage, surface the model's
+        # confidence on the matter (overriding the deterministic score) so the
+        # dashboard triage card shows the model's confidence.
+        triage_confidence_override = (
+            _ai_triage_confidence(ai_result, triage_reason) if lane == "triage" else None
+        )
         matter, skip = create_matter_from_prepared_attachment(
             candidate,
             metadata,
@@ -188,12 +243,111 @@ def import_inbound_attachments(
             owner_user_id=owner_user_id,
             triage=lane == "triage",
             triage_reason=triage_reason,
+            triage_confidence=triage_confidence_override,
         )
         if skip is not None:
             skipped.append(skip)
         elif matter is not None:
             imported.append(matter)
     return {"imported": imported, "skipped": skipped}
+
+
+class _IntakeCallBudget:
+    """A mutable per-sync counter that caps how many AI intake calls are made.
+
+    Shared across every message in a single sync so the cost cap bounds the whole
+    sync rather than each message. Once exhausted, candidates take the deterministic
+    lane (the classifier is reported as ``skipped_cap``).
+    """
+
+    def __init__(self, limit: int) -> None:
+        self.limit = max(0, int(limit))
+        self.used = 0
+
+    def consume(self) -> bool:
+        if self.used >= self.limit:
+            return False
+        self.used += 1
+        return True
+
+
+def _intake_playbook(transport: Any) -> str:
+    getter = getattr(transport, "gmail_intake_playbook", None)
+    if callable(getter):
+        try:
+            return str(getter() or "")
+        except Exception:  # pragma: no cover - playbook read is best-effort
+            return ""
+    return ""
+
+
+def _intake_classifier_configured(transport: Any) -> bool:
+    getter = getattr(transport, "intake_classifier_configured", None)
+    if callable(getter):
+        try:
+            return bool(getter())
+        except Exception:  # pragma: no cover - configuration probe is best-effort
+            return False
+    return False
+
+
+def _maybe_classify_intake(
+    transport: Any,
+    metadata: dict[str, str],
+    candidate: dict[str, Any],
+    intake_playbook: str,
+    intake_budget: "_IntakeCallBudget",
+    *,
+    configured: bool,
+) -> dict[str, Any]:
+    """Run the AI intake classifier, honouring the configuration + per-sync budget.
+
+    Returns the classifier result dict (``status`` ``ok`` / ``not_configured`` /
+    ``error`` / ``timeout`` / ``skipped_cap``). The reconciliation in
+    :func:`gmail_intake_classifier.resolve_intake_lane` only acts on ``ok``, so any
+    other status transparently falls back to the deterministic lane.
+    """
+    if not configured:
+        return {"status": "not_configured"}
+    classify = getattr(transport, "classify_intake_attachment", None)
+    if not callable(classify):
+        return {"status": "not_configured"}
+    if not intake_budget.consume():
+        return {"status": "skipped_cap"}
+    try:
+        result = classify(metadata, candidate, intake_playbook)
+    except Exception:  # pragma: no cover - any classifier failure -> deterministic
+        return {"status": "error"}
+    if not isinstance(result, dict):
+        return {"status": "error"}
+    return result
+
+
+def _ai_triage_confidence(ai_result: dict[str, Any], triage_reason: str) -> str | None:
+    """The model confidence (0-100, as a string) when the AI drove the triage.
+
+    Only the AI-originated triage reasons override the deterministic score; a
+    deterministic/selector triage keeps its own score-derived confidence.
+    """
+    from .gmail_intake_classifier import (
+        REASON_AI_NDA_NO_DET_BASIS,
+        REASON_AI_NOT_NDA_VS_DET_NDA,
+        REASON_AI_UNCERTAIN,
+    )
+
+    if ai_result.get("status") != "ok":
+        return None
+    if triage_reason not in {
+        REASON_AI_UNCERTAIN,
+        REASON_AI_NOT_NDA_VS_DET_NDA,
+        REASON_AI_NDA_NO_DET_BASIS,
+    }:
+        return None
+    try:
+        confidence = float(ai_result.get("confidence") or 0)
+    except (TypeError, ValueError):
+        return None
+    return str(int(round(max(0.0, min(1.0, confidence)) * 100)))
 
 
 def _triage_min_score(transport: Any) -> int:
@@ -372,6 +526,7 @@ def create_matter_from_prepared_attachment(
     owner_user_id: str = "",
     triage: bool = False,
     triage_reason: str = "",
+    triage_confidence: str | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
     message_id = str(candidate.get("message_id") or "")
     attachment_id = str(candidate.get("attachment_id") or "")
@@ -402,7 +557,14 @@ def create_matter_from_prepared_attachment(
                 "gmail_part_id": part_id,
                 **({
                     "needs_triage": "true",
-                    "triage_confidence": str(validation.get("score") or "0"),
+                    # When the AI drove the triage its confidence overrides the
+                    # deterministic score so the dashboard card shows the model's
+                    # number; otherwise the deterministic score stands.
+                    "triage_confidence": (
+                        triage_confidence
+                        if triage_confidence is not None
+                        else str(validation.get("score") or "0")
+                    ),
                     "triage_reason": triage_reason,
                 } if triage else {}),
             },

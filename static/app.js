@@ -325,6 +325,9 @@ adminIntegrationsController = createAdminIntegrationsController({
   gmailSearchForm: document.querySelector("#adminGmailSearchForm"),
   gmailSearchTermsInput: document.querySelector("#adminGmailSearchTermsInput"),
   gmailSearchSaveButton: document.querySelector("#adminGmailSearchSaveButton"),
+  gmailIntakeForm: document.querySelector("#adminGmailIntakeForm"),
+  gmailIntakeInput: document.querySelector("#adminGmailIntakeInput"),
+  gmailIntakeSaveButton: document.querySelector("#adminGmailIntakeSaveButton"),
   gmailSyncHistory: document.querySelector("#adminGmailSyncHistory"),
   reviewErrorFromPayload,
 });
