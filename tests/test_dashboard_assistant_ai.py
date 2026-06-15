@@ -352,6 +352,148 @@ def test_ai_unavailable_falls_back_to_deterministic_catalog():
     assert response["requires_confirmation"] is True
 
 
+def test_tool_handler_generic_exception_degrades_gracefully_not_500(monkeypatch):
+    # A tool handler that raises a generic (non-MatterRepositoryError,
+    # non-DashboardAssistantAIUnavailableError) exception must NOT escape the
+    # orchestrator and route as a 500. The single failing tool is neutralized
+    # into a benign tool output and the assistant degrades to the deterministic
+    # catalog instead of crashing.
+    def boom(_args):
+        raise RuntimeError("handler exploded")
+
+    def exploding_registry(context):
+        return {
+            "get_repository_facts": dashboard_assistant_ai.DashboardAssistantTool(
+                name="get_repository_facts",
+                domain="repository",
+                description="boom",
+                parameters=dashboard_assistant_ai._strict_schema({}),
+                handler=boom,
+            ),
+        }
+
+    monkeypatch.setattr(
+        dashboard_assistant_ai,
+        "dashboard_assistant_tool_registry",
+        exploding_registry,
+    )
+
+    class ToolCallingModel:
+        def __init__(self):
+            self.requests = []
+
+        def __call__(self, request_body):
+            self.requests.append(request_body)
+            if len(self.requests) == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "id": "call_repo",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "get_repository_facts",
+                                            "arguments": "{}",
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            # The orchestrator survived the failing handler and made the
+            # follow-up call; the failing tool surfaced only as a safe error.
+            output = json.loads(self.requests[1]["messages"][-1]["content"])
+            assert output["error"] == "tool_failed"
+            return {
+                "assistant_response": {
+                    "intent": "system_question",
+                    "domain": "repository",
+                    "answer": {"text": "I could not read that just now."},
+                }
+            }
+
+    model = ToolCallingModel()
+
+    # End-to-end through the command handler (the route's call site): a graceful
+    # typed response, never a raised exception that would become a 500.
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "How many matters are in review?",
+        repository=InMemoryMatterRepository(),
+        ai_model=model,
+    )
+
+    assert isinstance(response, dict)
+    assert response["intent"] in dashboard_assistant_ai.SUPPORTED_INTENTS
+
+
+def test_tool_handler_generic_exception_with_no_followup_falls_back_to_catalog(monkeypatch):
+    # If the model only emits the failing tool call and then goes quiet (no usable
+    # final response), the orchestrator returns None and the deterministic catalog
+    # answers instead of bubbling the exception out as a 500.
+    def boom(_args):
+        raise ValueError("kaboom")
+
+    def exploding_registry(context):
+        return {
+            "get_repository_facts": dashboard_assistant_ai.DashboardAssistantTool(
+                name="get_repository_facts",
+                domain="repository",
+                description="boom",
+                parameters=dashboard_assistant_ai._strict_schema({}),
+                handler=boom,
+            ),
+        }
+
+    monkeypatch.setattr(
+        dashboard_assistant_ai,
+        "dashboard_assistant_tool_registry",
+        exploding_registry,
+    )
+
+    class ToolThenSilentModel:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, _request_body):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "id": "call_repo",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "get_repository_facts",
+                                            "arguments": "{}",
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            return {"choices": [{"message": {"content": ""}}]}
+
+    # This query bypasses the deterministic guards and reaches the AI; with the
+    # failing tool the orchestrator yields no AI response and the command handler
+    # falls through to the deterministic capability catalog -> a typed response,
+    # never a raised exception that would surface as a 500.
+    response = dashboard_assistant.handle_dashboard_assistant_command(
+        "How many matters are in review?",
+        repository=InMemoryMatterRepository(),
+        ai_model=ToolThenSilentModel(),
+    )
+
+    assert isinstance(response, dict)
+    assert response["intent"] in dashboard_assistant_ai.SUPPORTED_INTENTS
+
+
 def _action_model(action, *, requires_confirmation=False, side_effects=None):
     plan = {
         "intent": "action_request",

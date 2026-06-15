@@ -554,7 +554,18 @@ def _execute_tool_call(
         args = parsed_args if isinstance(parsed_args, Mapping) else {}
     if not isinstance(args, Mapping):
         args = {}
-    return tool.handler(args)
+    try:
+        return tool.handler(args)
+    except DashboardAssistantAIUnavailableError:
+        # Provider-availability failures stay on the existing degrade path so the
+        # orchestrator can fall back to the deterministic catalog.
+        raise
+    except Exception:  # noqa: BLE001 - a single tool failure must not 500 the assistant.
+        # An unexpected handler error (anything other than a provider hiccup) is
+        # neutralized into a benign tool output rather than escaping all the way to
+        # the route as a 500. The orchestrator continues with this safe output and
+        # ultimately degrades to the deterministic catalog / a safe answer.
+        return {"error": "tool_failed", "tool": name}
 
 
 def _direct_tool_response(tool_outputs: Sequence[Mapping[str, Any]], *, context: Any) -> dict[str, Any] | None:
