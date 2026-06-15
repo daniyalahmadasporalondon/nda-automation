@@ -58,6 +58,8 @@ def handle_personalisation_settings(handler, *, send_body: bool = True) -> None:
 
 
 def handle_personalisation_settings_update(handler) -> None:
+    if not require_admin(handler):
+        return
     payload = handler._read_json_payload()
     if payload is None:
         return
@@ -87,6 +89,8 @@ def handle_personalisation_settings_update(handler) -> None:
 
 
 def handle_ai_settings_update(handler) -> None:
+    if not require_admin(handler):
+        return
     payload = handler._read_json_payload()
     if payload is None:
         return
@@ -140,6 +144,8 @@ def handle_ai_settings_update(handler) -> None:
 
 
 def handle_ai_api_key_update(handler) -> None:
+    if not require_admin(handler):
+        return
     payload = handler._read_json_payload()
     if payload is None:
         return
@@ -174,6 +180,8 @@ def handle_ai_api_key_update(handler) -> None:
 
 
 def handle_ai_api_key_clear(handler) -> None:
+    if not require_admin(handler):
+        return
     telemetry.increment("ai_api_key_clear_requests")
     previous_ai_settings = app_settings.ai_settings()
     previous_runtime_settings = app_settings.review_runtime_settings()

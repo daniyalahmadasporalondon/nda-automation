@@ -753,6 +753,102 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertEqual(payload["error"], server_module.ADMIN_REQUIRED_MESSAGE)
 
+    # --- Admin-only AI/personalisation settings mutators ---------------------
+    # These endpoints overwrite the SHARED OpenRouter API key, flip the global
+    # AI provider/engine, or change global personalisation, so a per-user
+    # (non-admin) Google account must be refused even though it is authenticated.
+
+    # Mutating settings endpoints that must be admin-gated, with a valid payload
+    # so a non-admin denial is proven by authorization (403) rather than a 400.
+    ADMIN_SETTINGS_MUTATORS = (
+        ("POST", "/api/ai/api-key", {"api_key": "local-secret-key"}),
+        ("DELETE", "/api/ai/api-key", None),
+        ("POST", "/api/ai/settings", {"enabled": True}),
+        ("POST", "/api/admin/personalisation-settings", {"sign_off": "Best,"}),
+    )
+
+    def _google_oauth_auth_env(self, **overrides):
+        env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "google-client",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
+        }
+        env.update(overrides)
+        return env
+
+    def test_ai_settings_mutators_deny_non_admin_google_user(self):
+        # NDA_ADMIN_USERS empty + Google OAuth caller => authenticated, not admin.
+        auth_env = self._google_oauth_auth_env(NDA_ADMIN_USERS="")
+        for method, path, body in self.ADMIN_SETTINGS_MUTATORS:
+            with self.subTest(method=method, path=path):
+                with tempfile.TemporaryDirectory() as data_dir:
+                    patches = self.matter_store_patches(data_dir)
+                    with patches[0], patches[1], patches[2]:
+                        session_headers, _user = self.google_session_headers()
+                        with patch.dict(os.environ, auth_env):
+                            status, payload = self.request(
+                                method, path, body, headers=session_headers
+                            )
+                self.assertEqual(status, 403, f"{method} {path} should be admin-gated")
+                self.assertEqual(payload["error"], server_module.ADMIN_REQUIRED_MESSAGE)
+
+    def test_ai_settings_mutators_deny_google_user_not_in_admin_list(self):
+        auth_env = self._google_oauth_auth_env(NDA_ADMIN_USERS="someone-else@example.com")
+        for method, path, body in self.ADMIN_SETTINGS_MUTATORS:
+            with self.subTest(method=method, path=path):
+                with tempfile.TemporaryDirectory() as data_dir:
+                    patches = self.matter_store_patches(data_dir)
+                    with patches[0], patches[1], patches[2]:
+                        session_headers, _user = self.google_session_headers()
+                        with patch.dict(os.environ, auth_env):
+                            status, payload = self.request(
+                                method, path, body, headers=session_headers
+                            )
+                self.assertEqual(status, 403, f"{method} {path} should be admin-gated")
+                self.assertEqual(payload["error"], server_module.ADMIN_REQUIRED_MESSAGE)
+
+    def test_ai_settings_mutators_allow_listed_admin_google_user(self):
+        for method, path, body in self.ADMIN_SETTINGS_MUTATORS:
+            with self.subTest(method=method, path=path):
+                with tempfile.TemporaryDirectory() as data_dir:
+                    patches = self.matter_store_patches(data_dir)
+                    with patches[0], patches[1], patches[2]:
+                        session_headers, user = self.google_session_headers()
+                        admin_env = self._google_oauth_auth_env(
+                            NDA_ADMIN_USERS=f"{user['id']}, other@example.com"
+                        )
+                        with patch.dict(os.environ, admin_env):
+                            status, _payload = self.request(
+                                method, path, body, headers=session_headers
+                            )
+                # A listed admin clears the gate; the handler then succeeds (200).
+                self.assertEqual(status, 200, f"{method} {path} should allow a listed admin")
+
+    def test_ai_settings_mutators_allow_single_operator_basic_auth(self):
+        # CRITICAL: a solo deployment with NO NDA_ADMIN_USERS configured must NOT
+        # be locked out. The historical break-glass operator is HTTP Basic auth,
+        # which request_is_admin treats as admin when no admin list is set.
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "nda-admin",
+            "NDA_AUTH_PASSWORD": "secret",
+            "NDA_ADMIN_USERS": "",
+        }
+        for method, path, body in self.ADMIN_SETTINGS_MUTATORS:
+            with self.subTest(method=method, path=path):
+                with tempfile.TemporaryDirectory() as data_dir:
+                    patches = self.matter_store_patches(data_dir)
+                    with patches[0], patches[1], patches[2]:
+                        with patch.dict(os.environ, auth_env):
+                            status, _payload = self.request(
+                                method, path, body, headers=self.basic_auth_headers()
+                            )
+                self.assertEqual(
+                    status, 200, f"{method} {path} must not lock out a solo Basic-auth operator"
+                )
+
     def test_authenticated_matter_routes_are_owner_scoped(self):
         source_docx = make_docx([
             "This Agreement shall be governed by the laws of California.",
