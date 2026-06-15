@@ -55,6 +55,120 @@ function setCounterpartyMeta(counterparty) {
   studioCounterpartyMeta.title = value;
 }
 
+// --- counterparty human-confirmation field ---------------------------------
+// The AI extracts the counterparty from the NDA preamble; when the verifier
+// refutes it or confidence is low the matter is flagged needs_confirmation. This
+// field shows the current name + confidence and lets a human confirm (accept the
+// shown name) or edit (type the real one), POSTing the override and refreshing.
+
+function renderCounterpartyConfirmation(matter) {
+  if (!studioCounterpartyField) return;
+  if (!matter || !matter.id) {
+    studioCounterpartyField.hidden = true;
+    return;
+  }
+  studioCounterpartyField.hidden = false;
+  const name = String(matter.counterparty || "").trim();
+  if (studioCounterpartyName) {
+    studioCounterpartyName.textContent = name || "Unknown Counterparty";
+    studioCounterpartyName.title = name;
+  }
+  const needsConfirmation = matter.counterparty_needs_confirmation !== false;
+  if (studioCounterpartyUnconfirmed) studioCounterpartyUnconfirmed.hidden = !needsConfirmation;
+  if (studioCounterpartyField.classList) {
+    studioCounterpartyField.classList.toggle("is-unconfirmed", needsConfirmation);
+  }
+  if (studioCounterpartyConfidence) {
+    const raw = Number(matter.counterparty_confidence);
+    const source = String(matter.counterparty_source || "");
+    if (source === "human") {
+      studioCounterpartyConfidence.textContent = "confirmed by you";
+      studioCounterpartyConfidence.hidden = false;
+    } else if (Number.isFinite(raw) && raw > 0) {
+      studioCounterpartyConfidence.textContent = `${Math.round(raw * 100)}% confidence`;
+      studioCounterpartyConfidence.hidden = false;
+    } else {
+      studioCounterpartyConfidence.textContent = "";
+      studioCounterpartyConfidence.hidden = true;
+    }
+  }
+  // The Confirm button accepts the shown name; disable it when there is nothing
+  // confident to accept (no extracted name to confirm).
+  if (studioCounterpartyConfirmButton) studioCounterpartyConfirmButton.disabled = !name;
+  closeCounterpartyEdit();
+  setCounterpartyStatus("");
+}
+
+function setCounterpartyStatus(message, { error = false } = {}) {
+  if (!studioCounterpartyStatus) return;
+  studioCounterpartyStatus.textContent = message || "";
+  studioCounterpartyStatus.hidden = !message;
+  if (studioCounterpartyStatus.classList) {
+    studioCounterpartyStatus.classList.toggle("is-error", Boolean(error));
+  }
+}
+
+function openCounterpartyEdit() {
+  if (!studioCounterpartyEditForm) return;
+  studioCounterpartyEditForm.hidden = false;
+  if (studioCounterpartyEditInput) {
+    studioCounterpartyEditInput.value = String(state.selectedMatter?.counterparty || "").trim();
+    studioCounterpartyEditInput.focus();
+    studioCounterpartyEditInput.select?.();
+  }
+}
+
+function closeCounterpartyEdit() {
+  if (studioCounterpartyEditForm) studioCounterpartyEditForm.hidden = true;
+}
+
+async function submitCounterpartyOverride(name) {
+  const matterId = state.selectedMatter?.id;
+  const cleaned = String(name || "").trim();
+  if (!matterId || !cleaned) {
+    setCounterpartyStatus("Enter a counterparty name to confirm.", { error: true });
+    return;
+  }
+  setCounterpartyStatus("Saving...");
+  if (studioCounterpartyConfirmButton) studioCounterpartyConfirmButton.disabled = true;
+  try {
+    const response = await fetch(`/api/matters/${encodeURIComponent(matterId)}/counterparty`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: cleaned }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.error || "Could not confirm the counterparty.");
+    }
+    const updated = payload?.matter;
+    if (updated && updated.id) {
+      state.selectedMatter = { ...state.selectedMatter, ...updated };
+      // Reload so the meta + badge + any name-derived UI reflect the confirmed value.
+      loadMatterIntoReview(state.selectedMatter);
+    }
+    setCounterpartyStatus("Counterparty confirmed.");
+  } catch (error) {
+    setCounterpartyStatus(error?.message || "Could not confirm the counterparty.", { error: true });
+    if (studioCounterpartyConfirmButton) studioCounterpartyConfirmButton.disabled = false;
+  }
+}
+
+function setupCounterpartyConfirmation() {
+  studioCounterpartyConfirmButton?.addEventListener("click", () => {
+    submitCounterpartyOverride(state.selectedMatter?.counterparty);
+  });
+  studioCounterpartyEditButton?.addEventListener("click", openCounterpartyEdit);
+  studioCounterpartyEditCancel?.addEventListener("click", () => {
+    closeCounterpartyEdit();
+    setCounterpartyStatus("");
+  });
+  studioCounterpartyEditForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitCounterpartyOverride(studioCounterpartyEditInput?.value);
+  });
+}
+
 function setDocumentTitle(title) {
   studioDocTitle.textContent = title;
 }

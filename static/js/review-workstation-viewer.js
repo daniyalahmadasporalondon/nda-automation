@@ -867,6 +867,7 @@ function loadMatterIntoReview(matter) {
   setSourcePlaceholder(SOURCE_PLACEHOLDER);
   setDocumentTitle(matter.document_title || matter.source_filename || DEFAULT_DOCUMENT_TITLE);
   setCounterpartyMeta(MatterUtils.counterpartyEmail(matter, state.gmailStatus));
+  renderCounterpartyConfirmation(matter);
   renderResult(reviewResult, matter.extracted_text || reviewResult.extracted_text || "");
   applyMatterRedlineDraft(matter.redline_draft);
   renderReviewRefreshNotice(matter.review_refresh);
@@ -892,6 +893,7 @@ function prepareMatterReviewLoad(matter) {
   setSourcePlaceholder(SOURCE_PLACEHOLDER);
   setDocumentTitle(matter.document_title || matter.source_filename || DEFAULT_DOCUMENT_TITLE);
   setCounterpartyMeta(MatterUtils.counterpartyEmail(matter, state.gmailStatus));
+  renderCounterpartyConfirmation(matter);
   renderStudioEmpty();
   setFileMeta(`${RepositoryView.sourceTypeLabel(matter.source_type)} matter loading review`);
   activateTab("review");

@@ -149,6 +149,10 @@ Common environment variables:
 | `NDA_GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` | Google login credentials for per-user identity. |
 | `NDA_GOOGLE_OAUTH_REDIRECT_URI` | Fixed redirect, e.g. `https://your-service.onrender.com/auth/google/callback`. |
 | `NDA_GMAIL_OAUTH_REDIRECT_URI` | Fixed Gmail redirect, e.g. `.../auth/gmail/callback`. |
+| `NDA_DOCUSIGN_CLIENT_ID` / `NDA_DOCUSIGN_CLIENT_SECRET` | DocuSign **integration key** (OAuth client id) + secret key (Apps & Keys). Required for "Connect DocuSign". |
+| `NDA_DOCUSIGN_OAUTH_REDIRECT_URI` | Fixed DocuSign redirect, e.g. `.../auth/docusign/callback`. Must match the URI registered on the integration key. |
+| `NDA_DOCUSIGN_AUTH_SERVER` | `demo` (default → `account-d.docusign.com`, free dev accounts) or `production` (`account.docusign.com`). |
+| `NDA_DOCUSIGN_CONNECT_HMAC_KEY` | Optional. DocuSign Connect webhook HMAC secret; when set, the `/api/docusign/webhook` callback is signature-verified. |
 | `NDA_AUTH_USERNAME` / `_PASSWORD` | Optional HTTP Basic fallback. |
 | `NDA_RATE_LIMIT_PER_MINUTE` | Request cap for expensive endpoints (`0` for trusted local testing). |
 | `NDA_AI_REVIEW_ENABLED` | Enables provider-backed AI review. |
@@ -181,6 +185,46 @@ Inbound import and outbound send share a **single Gmail login**. One **Connect G
 
 For local shared-token development you can still point at token files (`NDA_GMAIL_INBOUND_TOKEN_PATH` / `_OUTBOUND_TOKEN_PATH`, or ignored `data/gmail/{inbound,outbound}-token.json`). For hosted deployments, leave those unset so one user's token never becomes a shared mailbox fallback.
 
+## DocuSign: send for signature (real e-signature)
+
+After a matter is approved, the finalized NDA can be sent for signature through the **real DocuSign eSignature API** — the user clicks **Connect DocuSign**, completes a real DocuSign login (OAuth Authorization Code Grant), and from then on envelopes, status, the executed PDF and voids are all live DocuSign calls. There is no simulated/demo client in the running app; the only test double lives in the unit tests.
+
+By default both signers are added at the **same routing order (parallel signing)** — either side can sign in any order. Pass `signing_order: "sequential"` in the request to enforce a sequence.
+
+### Free developer-account quickstart
+
+The auth server defaults to the **DocuSign demo environment** (`account-d.docusign.com` for auth; the eSignature API base URI, e.g. `https://demo.docusign.net`, is resolved per-account from `/oauth/userinfo`), so a **free DocuSign developer account works out of the box**. Demo-account envelopes are watermarked but fully functional end to end.
+
+1. Create a **free DocuSign developer account** at <https://developers.docusign.com>.
+2. In **Apps & Keys**, create an **integration key** (this is your OAuth client id) and generate a **secret key**. Add your **redirect URI** (e.g. `https://your-host/auth/docusign/callback`) to the integration key's list of redirect URIs.
+3. Set the env vars:
+   ```bash
+   export NDA_DOCUSIGN_CLIENT_ID=<integration key>
+   export NDA_DOCUSIGN_CLIENT_SECRET=<secret key>
+   export NDA_DOCUSIGN_OAUTH_REDIRECT_URI=https://your-host/auth/docusign/callback
+   export NDA_DOCUSIGN_AUTH_SERVER=demo            # default; flip to `production` for live
+   # optional, recommended when you wire the Connect webhook:
+   export NDA_DOCUSIGN_CONNECT_HMAC_KEY=<connect hmac secret>
+   ```
+4. Restart the app, click **Connect DocuSign**, complete the real DocuSign login, then send a matter for signature → a real (demo-watermarked) envelope is created.
+
+**Going to production:** flip `NDA_DOCUSIGN_AUTH_SERVER=production` (uses `account.docusign.com`; the live API base URI is again resolved per-account from userinfo), promote your integration key through DocuSign's Go-Live review, and reconnect.
+
+### Endpoints
+
+| Method + path | Purpose |
+| --- | --- |
+| `GET /api/docusign/status` | Connection state: `connected`, `configured`, `production`, `account_label`. |
+| `POST /api/docusign/connect` | Start real OAuth; returns `{authorization_url}` to redirect to. |
+| `GET /auth/docusign/callback` | OAuth callback: exchanges the code, resolves account id + base URI, stores the token. |
+| `POST /api/docusign/disconnect` | Removes the signed-in user's DocuSign token. |
+| `POST /api/matters/<id>/send-for-signature` | Body `{signers?, signing_order?}` → creates + sends a real envelope; returns `{envelope_id, status}`. |
+| `GET /api/matters/<id>/signature-status` | Live envelope status; on `completed` captures the executed PDF as the matter's `signed` artifact. |
+| `GET /api/matters/<id>/signed-document` | Downloads the executed combined PDF. |
+| `POST /api/docusign/webhook` | DocuSign Connect callback (HMAC-verified when a key is set); on `completed` stores the signed artifact and marks the matter fully signed. |
+
+> **Note:** the integration is built and unit-tested against fakes, but the final live click-login → real-envelope round trip requires your DocuSign developer credentials and is the user's verification step.
+
 ## Deployment
 
 The app needs a Python web service because the static frontend calls API routes served by `nda_automation.server`. This repo ships a Render blueprint (`render.yaml`).
@@ -198,8 +242,8 @@ python -m nda_automation.server --host 0.0.0.0 --port $PORT
 ```
 
 - Public deployments require authentication. Non-loopback binds auto-require auth; if auth is required but no login method is configured, the server refuses to start.
-- Unauthenticated routes are limited to `/healthz`, `/login`, `/api/auth/status`, `/auth/google/start`, `/auth/google/callback`, and `/api/auth/logout`.
-- Configure these redirect URIs in the Google Cloud OAuth client (and matching env vars): `.../auth/google/callback` and `.../auth/gmail/callback`.
+- Unauthenticated routes are limited to `/healthz`, `/login`, `/api/auth/status`, `/auth/google/start`, `/auth/google/callback`, `/api/auth/logout`, and the DocuSign Connect webhook `/api/docusign/webhook` (a server-to-server callback authenticated by its HMAC signature, not a session).
+- Configure these redirect URIs in the Google Cloud OAuth client (and matching env vars): `.../auth/google/callback` and `.../auth/gmail/callback`. Configure `.../auth/docusign/callback` on the DocuSign integration key.
 - The server refuses to start on non-loopback hosts when `NDA_DATA_DIR` is missing or points at ephemeral storage, unless `NDA_ALLOW_EPHEMERAL_DATA=true`.
 
 Authenticated admins can inspect `/api/deployment/status`, `/api/auth/status`, `/api/telemetry`, and download `/api/matters/export` (metadata + stored-document manifest; no embedded source bytes).

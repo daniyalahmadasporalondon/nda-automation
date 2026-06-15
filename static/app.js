@@ -3,6 +3,16 @@ const studioNdaText = document.querySelector("#studioNdaText");
 const studioDocumentRender = document.querySelector("#studioDocumentRender");
 const studioFileMeta = document.querySelector("#studioFileMeta");
 const studioCounterpartyMeta = document.querySelector("#studioCounterpartyMeta");
+const studioCounterpartyField = document.querySelector("#studioCounterpartyField");
+const studioCounterpartyName = document.querySelector("#studioCounterpartyName");
+const studioCounterpartyConfidence = document.querySelector("#studioCounterpartyConfidence");
+const studioCounterpartyUnconfirmed = document.querySelector("#studioCounterpartyUnconfirmed");
+const studioCounterpartyConfirmButton = document.querySelector("#studioCounterpartyConfirmButton");
+const studioCounterpartyEditButton = document.querySelector("#studioCounterpartyEditButton");
+const studioCounterpartyEditForm = document.querySelector("#studioCounterpartyEditForm");
+const studioCounterpartyEditInput = document.querySelector("#studioCounterpartyEditInput");
+const studioCounterpartyEditCancel = document.querySelector("#studioCounterpartyEditCancel");
+const studioCounterpartyStatus = document.querySelector("#studioCounterpartyStatus");
 const studioSaveDraftButton = document.querySelector("#studioSaveDraftButton");
 const studioDiscardDraftButton = document.querySelector("#studioDiscardDraftButton");
 const studioExportButton = document.querySelector("#studioExportButton");
@@ -82,7 +92,9 @@ let adminAiController;
 let adminHealthController;
 let adminIntegrationsController;
 let adminDriveController;
+let adminDocuSignController;
 let adminPersonalisationController;
+let docusignSendController;
 
 const repositoryController = createRepositoryController({
   state,
@@ -345,6 +357,16 @@ adminDriveController = createAdminDriveController({
   driveFolderSaveButton: document.querySelector("#adminDriveFolderSaveButton"),
   reviewErrorFromPayload,
 });
+adminDocuSignController = createAdminDocuSignController({
+  state,
+  docusignCard: document.querySelector("#adminDocuSignCard"),
+  docusignFacts: document.querySelector("#adminDocuSignFacts"),
+  docusignOverall: document.querySelector("#adminDocuSignOverall"),
+  docusignRefreshButton: document.querySelector("#adminDocuSignRefreshButton"),
+  docusignConnectPanel: document.querySelector("#adminDocuSignConnectPanel"),
+  docusignConnectToggle: document.querySelector("#adminDocuSignConnectToggle"),
+  reviewErrorFromPayload,
+});
 adminPersonalisationController = createAdminPersonalisationController({
   card: document.querySelector("#adminPersonalisationCard"),
   form: document.querySelector("#adminPersonalisationForm"),
@@ -435,6 +457,47 @@ const pdfMarkupController = createPdfMarkupController({
   matterIsPdf: () => Boolean(state.selectedMatter?.id),
 });
 
+// "Send for signature" — the DocuSign e-signature action on a reviewed/approved
+// matter. The trigger button + signature badge live in the studio matter-actions
+// group; the chooser is a modal. The Aspora signatory name defaults to the
+// personalisation signature ("Aspora Legal" fallback) and its email to the
+// outbound Gmail account — both editable in the chooser.
+docusignSendController = createDocuSignSendController({
+  modalNode: document.querySelector("#docusignSendModal"),
+  closeButton: document.querySelector("#docusignSendModalClose"),
+  cancelButton: document.querySelector("#docusignSendCancelButton"),
+  form: document.querySelector("#docusignSendForm"),
+  signerRows: document.querySelector("#docusignSignerRows"),
+  signingOrderControl: document.querySelector("#docusignSigningOrder"),
+  statusNode: document.querySelector("#docusignSendStatus"),
+  badgeNode: document.querySelector("#docusignSignatureBadge"),
+  envelopeNode: document.querySelector("#docusignEnvelopeId"),
+  downloadSignedLink: document.querySelector("#docusignDownloadSignedLink"),
+  submitButton: document.querySelector("#docusignSendSubmitButton"),
+  triggerButton: document.querySelector("#studioSendForSignatureButton"),
+  getMatter: () => state.selectedMatter || null,
+  getAsporaSignatory: () => ({
+    name: String(state.personalisationSettings?.signature || "").trim() || "Aspora Legal",
+    email: String(state.gmailStatus?.outbound?.email || "").trim(),
+  }),
+  reviewErrorFromPayload,
+  downloadUrl,
+  onMatterUpdated: (matter) => {
+    if (!matter?.id) return;
+    state.selectedMatter = matter;
+    // Reflect the new signature state on the header badge immediately.
+    if (typeof syncDocuSignTriggerButton === "function") syncDocuSignTriggerButton();
+  },
+});
+
+// Thin global hook the review-workstation render funnel calls whenever the
+// selected matter/review state changes (see updateExportButtonState), so the
+// "Send for signature" trigger + signature badge stay in sync without the
+// rendering module importing the controller directly.
+function syncDocuSignTriggerButton() {
+  docusignSendController?.syncTriggerButton?.();
+}
+
 // Clicking an AI-referenced paragraph (e.g. "p15") in a clause assessment jumps the
 // document to that paragraph and flashes it. Delegated at document level so it fires
 // no matter which panel re-rendered the reference (jumpToParagraph lives in the viewer).
@@ -454,6 +517,7 @@ document.addEventListener("click", (event) => {
 
 setupSourceEditors();
 setupReviewWorkstationActions();
+setupCounterpartyConfirmation();
 setActiveTab("dashboard");
 setupDocumentViewModes();
 setupReviewUndoControls();
@@ -1509,6 +1573,9 @@ function activateAdminSection(sectionName) {
   }
   if (sectionName === "drive") {
     adminDriveController.load();
+  }
+  if (sectionName === "docusign") {
+    adminDocuSignController.load();
   }
   if (sectionName === "personalisation") {
     adminPersonalisationController.load();

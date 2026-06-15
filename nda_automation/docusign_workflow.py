@@ -1,0 +1,479 @@
+"""Send-for-signature workflow — wire a matter's finalized NDA to DocuSign.
+
+Two domain operations sit above :mod:`docusign_integration`:
+
+* :func:`send_for_signature` — pull the matter's finalized NDA (reviewed/approved,
+  else generated, else original), convert DOCX -> PDF when a converter is
+  available (DocuSign signs a PDF best), derive the signers (counterparty contact
+  from the matter + the Aspora signatory from the entity registry, both
+  overridable), create + send the envelope, persist the envelope id/status on the
+  matter, and transition the lifecycle to "sent, awaiting signature".
+* :func:`sync_signature_status` — fetch the live envelope status; on ``completed``
+  download the executed combined PDF, register it as the matter's ``signed``
+  artifact (reusing :mod:`lifecycle_signed`), and transition the matter to
+  executed/fully-signed. Best-effort + idempotent: a transient provider error
+  never corrupts the matter.
+
+The real :class:`docusign_integration.HttpDocuSignClient` is the default client
+(via the factory). Tests inject the test double explicitly through ``client=``.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable
+
+from . import (
+    artifact_registry,
+    artifact_service,
+    docusign_integration,
+    entity_registry,
+    gmail_integration,
+)
+from .artifact_registry import (
+    ROLE_GENERATED,
+    ROLE_ORIGINAL,
+    ROLE_REVIEWED,
+    ROLE_SENT,
+    latest_artifact_for_role,
+)
+from .docusign_integration import (
+    DEFAULT_SIGNING_ORDER,
+    STATUS_COMPLETED,
+    Signer,
+    DocuSignError,
+    DocuSignNotConnectedError,
+)
+from .matter_repository import DiskMatterRepository, MatterRepository
+
+# Where the signature envelope state lives on the matter (durable, owner-scoped).
+SIGNATURE_FIELD = "docusign"
+
+# Precedence for "the document we send to sign": the most-finalized version that
+# exists. reviewed (post-approval) -> generated (a drafted NDA) -> sent (already
+# emailed) -> original (the inbound copy).
+_DOCUMENT_PRECEDENCE = (ROLE_REVIEWED, ROLE_GENERATED, ROLE_SENT, ROLE_ORIGINAL)
+
+# The Aspora signatory placeholder needs a real email to receive the envelope.
+# Falls back to this when the entity bundle has no concrete signatory email and
+# the caller did not override; surfaced as a clear error rather than guessed.
+_ASPORA_SIGNER_ROLE = "aspora"
+_COUNTERPARTY_SIGNER_ROLE = "counterparty"
+
+ClientFactory = Callable[..., docusign_integration.DocuSignClient]
+
+
+class DocuSignWorkflowError(RuntimeError):
+    """A send-for-signature workflow step could not be completed."""
+
+
+class MatterNotFoundError(DocuSignWorkflowError):
+    pass
+
+
+class NoSignableDocumentError(DocuSignWorkflowError):
+    pass
+
+
+class SignerResolutionError(DocuSignWorkflowError):
+    pass
+
+
+@dataclass(frozen=True)
+class SendForSignatureResult:
+    matter: dict[str, Any]
+    envelope_id: str
+    status: str
+    signers: list[dict[str, Any]]
+    document_filename: str
+
+
+@dataclass(frozen=True)
+class SignatureStatusResult:
+    matter: dict[str, Any]
+    envelope_id: str
+    status: str
+    completed: bool
+    signed_artifact_id: str = ""
+
+
+def send_for_signature(
+    matter: dict[str, Any] | None,
+    matter_id: str,
+    owner_user_id: str = "",
+    *,
+    signers: Any | None = None,
+    signing_order: str = DEFAULT_SIGNING_ORDER,
+    email_subject: str = "",
+    repository: MatterRepository | None = None,
+    client: docusign_integration.DocuSignClient | None = None,
+    client_factory: ClientFactory | None = None,
+) -> SendForSignatureResult:
+    """Create + send a DocuSign envelope for a matter's finalized NDA.
+
+    Resolves the document (most-finalized artifact, DOCX converted to PDF when a
+    converter is available), the signers (override > counterparty contact + Aspora
+    signatory), creates the envelope via the (real, by default) client, persists
+    the envelope id/status under ``matter["docusign"]``, and flips the matter to
+    "sent, awaiting signature".
+
+    ``client`` lets a test inject the test double; otherwise the real eSignature
+    client is built for ``owner_user_id`` via the factory.
+    """
+    repository = repository or DiskMatterRepository()
+    matter = _load_matter(matter, matter_id, owner_user_id, repository)
+
+    document_bytes, document_filename = _resolve_signable_document(
+        matter, matter_id, owner_user_id, repository
+    )
+    resolved_signers = _resolve_signers(matter, signers)
+    subject = str(email_subject or "").strip() or _default_subject(matter)
+
+    docusign_client = _client(client, client_factory, owner_user_id)
+    try:
+        created = docusign_client.create_envelope(
+            document_bytes,
+            document_filename,
+            resolved_signers,
+            signing_order=signing_order if signing_order in docusign_integration.SIGNING_ORDERS else DEFAULT_SIGNING_ORDER,
+            email_subject=subject,
+        )
+    except DocuSignNotConnectedError:
+        raise
+    except DocuSignError as error:
+        raise DocuSignWorkflowError(str(error)) from error
+
+    envelope_id = str(created.get("envelope_id") or "")
+    status = str(created.get("status") or "")
+    if not envelope_id:
+        raise DocuSignWorkflowError("DocuSign did not return an envelope id.")
+
+    signature_block = {
+        "envelope_id": envelope_id,
+        "status": status,
+        "signing_order": signing_order,
+        "email_subject": subject,
+        "document_filename": document_filename,
+        "signers": [signer.to_dict() for signer in resolved_signers],
+        "sent_at": _now_iso(),
+        "last_synced_at": _now_iso(),
+        "provider": "docusign",
+    }
+    updated = repository.update_matter_fields(
+        matter_id,
+        {
+            SIGNATURE_FIELD: signature_block,
+            # Drive the workflow "sent, awaiting signature" state: a recorded
+            # outbound + the sent board column read as sent_awaiting_counterparty
+            # in workflow.py without inventing a new status.
+            "board_column": "sent",
+            "awaiting_signature": True,
+        },
+        owner_user_id=owner_user_id,
+    )
+    if updated is None:
+        # The envelope is already out; persisting state failed. Surface the live
+        # state rather than pretend it did not send.
+        updated = {**matter, SIGNATURE_FIELD: signature_block}
+
+    return SendForSignatureResult(
+        matter=updated,
+        envelope_id=envelope_id,
+        status=status,
+        signers=[signer.to_dict() for signer in resolved_signers],
+        document_filename=document_filename,
+    )
+
+
+def sync_signature_status(
+    matter: dict[str, Any] | None,
+    matter_id: str,
+    owner_user_id: str = "",
+    *,
+    repository: MatterRepository | None = None,
+    client: docusign_integration.DocuSignClient | None = None,
+    client_factory: ClientFactory | None = None,
+) -> SignatureStatusResult:
+    """Fetch the envelope status; on completion store the signed artifact.
+
+    Reads the persisted envelope id, fetches the live status, and updates the
+    stored status. When DocuSign reports ``completed`` it downloads the executed
+    combined PDF, registers it as the matter's ``signed`` artifact (via
+    :mod:`lifecycle_signed`, eager + best-effort), and flips the matter to
+    fully-signed (``executed`` / ``executed_at`` — the markers
+    :func:`workflow._is_executed` reads). Idempotent: re-syncing a completed
+    matter re-points to the same signed artifact without duplicating it.
+    """
+    repository = repository or DiskMatterRepository()
+    matter = _load_matter(matter, matter_id, owner_user_id, repository)
+
+    signature = matter.get(SIGNATURE_FIELD)
+    if not isinstance(signature, dict) or not signature.get("envelope_id"):
+        raise DocuSignWorkflowError("Matter has no DocuSign envelope to sync.")
+    envelope_id = str(signature.get("envelope_id") or "")
+
+    docusign_client = _client(client, client_factory, owner_user_id)
+    try:
+        status = str(docusign_client.get_envelope_status(envelope_id) or "")
+    except DocuSignNotConnectedError:
+        raise
+    except DocuSignError as error:
+        raise DocuSignWorkflowError(str(error)) from error
+
+    completed = status == STATUS_COMPLETED
+    signed_artifact_id = ""
+    fields: dict[str, Any] = {SIGNATURE_FIELD: {**signature, "status": status, "last_synced_at": _now_iso()}}
+
+    if completed:
+        signed_artifact_id = _capture_executed_document(
+            docusign_client,
+            envelope_id,
+            matter,
+            matter_id,
+            owner_user_id,
+            repository,
+            signature,
+        )
+        fields["awaiting_signature"] = False
+        fields["executed"] = True
+        fields["executed_at"] = _now_iso()
+        fields["status"] = "fully_signed"
+        if signed_artifact_id:
+            fields[SIGNATURE_FIELD]["signed_artifact_id"] = signed_artifact_id
+
+    updated = repository.update_matter_fields(matter_id, fields, owner_user_id=owner_user_id)
+    if updated is None:
+        updated = {**matter, **fields}
+
+    return SignatureStatusResult(
+        matter=updated,
+        envelope_id=envelope_id,
+        status=status,
+        completed=completed,
+        signed_artifact_id=signed_artifact_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Document resolution
+# ---------------------------------------------------------------------------
+def _resolve_signable_document(
+    matter: dict[str, Any],
+    matter_id: str,
+    owner_user_id: str,
+    repository: MatterRepository,
+) -> tuple[bytes, str]:
+    """The most-finalized NDA bytes + a filename, PDF-preferred for signing.
+
+    Walks the artifact precedence (reviewed -> generated -> sent -> original) for
+    the first artifact with retrievable bytes. DOCX is converted to PDF when a
+    converter is available (DocuSign tabs anchor reliably on a PDF); if conversion
+    is unavailable we send the bytes we have so the flow never hard-blocks.
+    """
+    artifact, file_bytes = _latest_artifact_with_bytes(matter, matter_id, owner_user_id, repository)
+    if artifact is None or not file_bytes:
+        # Fall back to the matter's raw source document if the registry is empty.
+        source_bytes = repository.get_source_document_bytes(matter)
+        source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "NDA.docx")
+        if not source_bytes:
+            raise NoSignableDocumentError("Matter has no finalized NDA document to send for signature.")
+        return _as_pdf(source_bytes, source_filename, owner_user_id)
+
+    ext = (artifact.ext or "").lower()
+    base_filename = str(matter.get("source_filename") or matter.get("document_title") or "NDA")
+    stem = Path(base_filename).stem or "NDA"
+    filename = f"{stem}.{ext or 'docx'}"
+    return _as_pdf(file_bytes, filename, owner_user_id)
+
+
+def _latest_artifact_with_bytes(
+    matter: dict[str, Any],
+    matter_id: str,
+    owner_user_id: str,
+    repository: MatterRepository,
+):
+    for role in _DOCUMENT_PRECEDENCE:
+        artifact = latest_artifact_for_role(matter, role)
+        if artifact is None:
+            continue
+        file_bytes = artifact_service.get_artifact_bytes(
+            matter_id, artifact.id, repository=repository, owner_user_id=owner_user_id
+        )
+        if file_bytes:
+            return artifact, file_bytes
+    return None, b""
+
+
+def _as_pdf(file_bytes: bytes, filename: str, owner_user_id: str) -> tuple[bytes, str]:
+    """Return PDF bytes + a .pdf filename, converting from DOCX when possible.
+
+    Already-PDF bytes pass through. DOCX is converted via the existing PDF export
+    helper when LibreOffice is available; if conversion is unavailable we return
+    the original bytes (the real DocuSign API still accepts a DOCX document — it
+    just renders less reliably for anchor tabs).
+    """
+    ext = Path(filename).suffix.lower()
+    if ext == ".pdf" or file_bytes[:5] == b"%PDF-":
+        return file_bytes, _with_ext(filename, "pdf")
+    try:
+        from . import pdf_export_service
+
+        export = pdf_export_service.build_docx_pdf_export(file_bytes, filename, owner_user_id=owner_user_id)
+        pdf_bytes = Path(export.path).read_bytes()
+        if pdf_bytes:
+            return pdf_bytes, _with_ext(filename, "pdf")
+    except Exception:
+        # Converter unavailable / conversion failed — send the source bytes so the
+        # signature flow degrades gracefully instead of hard-blocking.
+        pass
+    return file_bytes, filename
+
+
+def _with_ext(filename: str, ext: str) -> str:
+    stem = Path(str(filename or "NDA")).stem or "NDA"
+    return f"{stem}.{ext}"
+
+
+# ---------------------------------------------------------------------------
+# Signer resolution
+# ---------------------------------------------------------------------------
+def _resolve_signers(matter: dict[str, Any], override: Any | None) -> list[Signer]:
+    """Derive the envelope's recipients.
+
+    When ``override`` is supplied (a non-empty list of {name,email[,anchor,role]})
+    it is used verbatim. Otherwise we build the two-party signer set: the
+    counterparty contact (from the matter's reply/sender + derived counterparty
+    name) and the Aspora signatory (from the entity registry bundle, when one is
+    selected on the matter). Each side is parallel (any order) by default.
+    """
+    if isinstance(override, list) and override:
+        return docusign_integration.normalize_signers(override)
+
+    signers: list[dict[str, Any]] = []
+
+    counterparty = _counterparty_signer(matter)
+    if counterparty is not None:
+        signers.append(counterparty)
+
+    aspora = _aspora_signer(matter)
+    if aspora is not None:
+        signers.append(aspora)
+
+    if not signers:
+        raise SignerResolutionError(
+            "Could not resolve any signers; provide signers explicitly "
+            "({name, email}) to send this matter for signature."
+        )
+    return docusign_integration.normalize_signers(signers)
+
+
+def _counterparty_signer(matter: dict[str, Any]) -> dict[str, Any] | None:
+    email = gmail_integration.matter_reply_recipient(matter)
+    if not email:
+        return None
+    name = artifact_registry.derive_counterparty(matter) or email
+    return {"name": name, "email": email, "role": _COUNTERPARTY_SIGNER_ROLE, "anchor": ""}
+
+
+def _aspora_signer(matter: dict[str, Any]) -> dict[str, Any] | None:
+    """The Aspora signatory from the selected entity bundle, when resolvable.
+
+    Reads ``matter["signing_entity_id"]`` (set when an NDA was generated) and
+    pulls that entity's signatory. The placeholder ``[Authorised Signatory]`` /
+    missing email means we cannot route to a real inbox, so we OMIT the Aspora
+    signer rather than send to a fake address — the caller can pass an explicit
+    override to include a concrete Aspora signatory.
+    """
+    entity_id = str(matter.get("signing_entity_id") or "").strip()
+    if not entity_id:
+        return None
+    entity = entity_registry.get_entity(entity_id)
+    if not isinstance(entity, dict):
+        return None
+    signatory = entity.get("signatory") if isinstance(entity.get("signatory"), dict) else {}
+    name = str(signatory.get("name") or "").strip()
+    email = str(signatory.get("email") or "").strip()
+    if not email or name.startswith("[") or "@" not in email:
+        # No concrete, routable signatory — omit (parallel signing means the
+        # counterparty can still sign; Aspora is added via override when known).
+        return None
+    return {"name": name, "email": email, "role": _ASPORA_SIGNER_ROLE, "anchor": name}
+
+
+# ---------------------------------------------------------------------------
+# Executed-document capture
+# ---------------------------------------------------------------------------
+def _capture_executed_document(
+    docusign_client: docusign_integration.DocuSignClient,
+    envelope_id: str,
+    matter: dict[str, Any],
+    matter_id: str,
+    owner_user_id: str,
+    repository: MatterRepository,
+    signature: dict[str, Any],
+) -> str:
+    """Download the executed PDF and register it as the matter's signed artifact.
+
+    Best-effort: a download or capture hiccup must never block the
+    "completed" transition (the envelope IS done at DocuSign). Reuses
+    :func:`lifecycle_signed.capture_signed_artifact` so the executed copy lands as
+    a terminal ``signed`` artifact exactly like a manual upload would.
+    """
+    try:
+        pdf_bytes = docusign_client.download_completed(envelope_id)
+    except DocuSignError:
+        return ""
+    if not pdf_bytes:
+        return ""
+    filename = f"{Path(str(signature.get('document_filename') or 'NDA')).stem or 'NDA'}-executed.pdf"
+    try:
+        from . import lifecycle_signed
+
+        artifact = lifecycle_signed.capture_signed_artifact(
+            repository, matter_id, owner_user_id, pdf_bytes, filename
+        )
+    except Exception:
+        return ""
+    return artifact.id if artifact is not None else ""
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+def _client(
+    client: docusign_integration.DocuSignClient | None,
+    client_factory: ClientFactory | None,
+    owner_user_id: str,
+) -> docusign_integration.DocuSignClient:
+    if client is not None:
+        return client
+    factory = client_factory or docusign_integration.get_client
+    return factory(owner_user_id=owner_user_id)
+
+
+def _load_matter(
+    matter: dict[str, Any] | None,
+    matter_id: str,
+    owner_user_id: str,
+    repository: MatterRepository,
+) -> dict[str, Any]:
+    if isinstance(matter, dict):
+        return matter
+    loaded = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+    if loaded is None:
+        raise MatterNotFoundError("Matter not found.")
+    return loaded
+
+
+def _default_subject(matter: dict[str, Any]) -> str:
+    counterparty = artifact_registry.derive_counterparty(matter)
+    title = str(matter.get("document_title") or matter.get("subject") or "NDA").strip() or "NDA"
+    if counterparty and counterparty.lower() != "unknown counterparty":
+        return f"Please sign: {title} — {counterparty}"
+    return f"Please sign: {title}"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()

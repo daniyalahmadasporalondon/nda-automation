@@ -14,12 +14,57 @@ from .redline_edit_contract import normalize_redline_edits, redline_inserted_tex
 from .review_document import EvidenceProvenanceError, validate_clause_evidence_trust
 from .source_fidelity import source_fidelity_payload
 
+COUNTERPARTY_SOURCE = "ai_review_preamble"
+
 PROPOSED_CHANGE_CONTRACT_VERSION = 1
 PROPOSED_CHANGE_REPLACE = "replace"
 PROPOSED_CHANGE_INSERT = "insert"
 PROPOSED_CHANGE_DELETE = "delete"
 PROPOSED_CHANGE_COMMENT_ONLY = "comment_only"
 PROPOSED_CHANGE_NEEDS_HUMAN_CHOICE = "needs_human_choice"
+
+
+def empty_counterparty_block() -> dict[str, Any]:
+    """The default, unverified top-level counterparty block.
+
+    Used when no extraction ran (deterministic engine, a direct caller) so every
+    built review result carries the counterparty key in a stable shape.
+    """
+    return {
+        "name": "",
+        "confidence": 0.0,
+        "verified": False,
+        "first_party": "",
+        "second_party": "",
+        "source": COUNTERPARTY_SOURCE,
+    }
+
+
+def _normalize_counterparty_block(value: object) -> dict[str, Any]:
+    """Coerce a supplied counterparty block into the canonical shape (fail-safe).
+
+    A missing/malformed override degrades to the empty block; a well-formed one is
+    normalized field-by-field so a partial dict (or hostile types) can never ship a
+    confident-but-broken counterparty.
+    """
+    block = empty_counterparty_block()
+    if not isinstance(value, dict):
+        return block
+    name = str(value.get("name") or "").strip()
+    block["name"] = name
+    block["first_party"] = str(value.get("first_party") or "").strip()
+    block["second_party"] = str(value.get("second_party") or "").strip()
+    block["source"] = str(value.get("source") or COUNTERPARTY_SOURCE).strip() or COUNTERPARTY_SOURCE
+    try:
+        confidence = float(value.get("confidence"))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence != confidence or confidence in (float("inf"), float("-inf")):
+        confidence = 0.0
+    block["confidence"] = max(0.0, min(1.0, confidence))
+    # A verified counterparty must have a name; never mark an empty name verified.
+    block["verified"] = bool(value.get("verified")) and bool(name)
+    return block
 
 
 def review_result_clause_counts(clauses: Sequence[dict[str, Any]]) -> dict[str, int]:
@@ -89,6 +134,13 @@ def build_review_result(
     })
     if result_fields:
         result.update(result_fields)
+    # Every built review result carries a top-level counterparty block. The AI-first
+    # review supplies the extracted/verified one via result_fields; every other path
+    # (deterministic engine, a direct caller) defaults to the empty, unverified block
+    # so downstream readers (the matter view, the persisted matter) always find the
+    # key in the same shape. Normalized defensively so a malformed override can never
+    # ship a half-built block.
+    result["counterparty"] = _normalize_counterparty_block(result.get("counterparty"))
 
     evidence_errors = validate_clause_evidence_trust(result, source_text)
     if evidence_errors:

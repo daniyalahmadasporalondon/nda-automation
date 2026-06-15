@@ -141,6 +141,7 @@ const RepositoryBoard = (() => {
           <span class="repository-card-badges">
             <span class="repository-source-badge ${html(RepositoryModel.sourceBadgeClass(matter.source_type))}">${html(RepositoryModel.sourceTypeLabel(matter.source_type))}</span>
             ${MatterUtils.reviewStale(matter) ? `<span class="repository-stale-badge" title="${html(MatterUtils.reviewStaleLabel(matter))}">Stale</span>` : ""}
+            ${RepositoryModel.counterpartyNeedsConfirmation(matter) ? `<span class="repository-counterparty-badge" title="The counterparty could not be confirmed automatically. Open the matter to confirm who this NDA is with.">Counterparty unconfirmed</span>` : ""}
           </span>
           <span class="repository-card-top-actions">
             <span>${html(date)}</span>
@@ -175,3 +176,7 @@ const RepositoryBoard = (() => {
 
   return { renderBoard, renderMatterCard, renderSyncStatus };
 })();
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { RepositoryBoard };
+}

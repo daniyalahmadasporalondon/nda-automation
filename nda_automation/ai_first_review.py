@@ -64,6 +64,7 @@ from .review_state import (
     clause_review_state,
 )
 from .ai_verifier import apply_ai_verifier, refinalize_clause_grounding
+from .counterparty_extraction import empty_counterparty, extract_counterparty
 from .review_result_contract import build_review_result, review_result_clause_counts
 
 AI_FIRST_REVIEW_MODE = "ai_first_compat"
@@ -362,6 +363,17 @@ def build_ai_first_review_result(
     # wolf on a PDF or a structure parse that failed to find section boundaries.
     reference_integrity = build_reference_integrity_signal(reference_resolver, contract_structure)
     concept_classifier = classify_document_concepts(document_paragraphs, contract_structure)
+    # Identify the counterparty from the isolated preamble section (the parties live
+    # there, but the per-clause assessment packets never see it). ONE focused
+    # reviewer call + an independent adversarial cross-check, run once per review.
+    # FAIL-OPEN: any error returns the empty/unverified block, so this never blocks
+    # review and never finalizes a wrong confident name. Gated on ``verify`` so the
+    # direct-caller "normalize only" path (and tests) can switch it off.
+    counterparty = _extract_preamble_counterparty(
+        contract_structure,
+        document_paragraphs,
+        enabled=verify,
+    )
     review_context = {
         "contract_structure": contract_structure,
         "reference_resolver": reference_resolver,
@@ -440,9 +452,72 @@ def build_ai_first_review_result(
         ai_verifier=ai_verifier_review,
         clauses=clause_results,
         redline_edits=redline_edits,
-        result_fields={"reference_integrity": reference_integrity},
+        result_fields={
+            "reference_integrity": reference_integrity,
+            "counterparty": counterparty,
+        },
         evidence_error_prefix="AI-first review evidence validation failed",
     )
+
+
+def _extract_preamble_counterparty(
+    contract_structure: Mapping[str, Any] | None,
+    document_paragraphs: Sequence[Paragraph],
+    *,
+    enabled: bool,
+) -> dict[str, Any]:
+    """Run the preamble counterparty extraction for this review (fail-open wrapper).
+
+    Resolves the isolated ``kind="preamble"`` section's paragraphs from the
+    contract structure and hands them to ``counterparty_extraction``. Returns the
+    empty/unverified block when extraction is disabled, there is no preamble, or
+    anything raises -- it must NEVER break the review.
+    """
+    if not enabled:
+        return empty_counterparty()
+    try:
+        preamble_paragraphs = _preamble_section_paragraphs(contract_structure, document_paragraphs)
+        if not preamble_paragraphs:
+            return empty_counterparty()
+        return extract_counterparty(preamble_paragraphs)
+    except Exception:  # noqa: BLE001 -- counterparty extraction must never break review.
+        return empty_counterparty()
+
+
+def _preamble_section_paragraphs(
+    contract_structure: Mapping[str, Any] | None,
+    document_paragraphs: Sequence[Paragraph],
+) -> list[Paragraph]:
+    """Return the paragraph dicts of the isolated ``kind="preamble"`` section.
+
+    contract_structure already isolates a ``kind="preamble"`` section whose
+    ``paragraph_ids`` point at the blocks where the parties are named. Map those ids
+    back to the live paragraph dicts (so the extractor sees the real text). Returns
+    ``[]`` when there is no preamble section.
+    """
+    if not isinstance(contract_structure, Mapping):
+        return []
+    sections = contract_structure.get("sections")
+    if not isinstance(sections, Sequence):
+        return []
+    preamble_ids: list[str] = []
+    for section in sections:
+        if not isinstance(section, Mapping) or str(section.get("kind") or "") != "preamble":
+            continue
+        raw_ids = section.get("paragraph_ids")
+        if isinstance(raw_ids, Sequence) and not isinstance(raw_ids, (str, bytes)):
+            preamble_ids = [str(paragraph_id) for paragraph_id in raw_ids if str(paragraph_id)]
+        break
+    if not preamble_ids:
+        return []
+    paragraphs_by_id = {
+        str(paragraph.get("id") or ""): paragraph for paragraph in document_paragraphs
+    }
+    return [
+        paragraphs_by_id[paragraph_id]
+        for paragraph_id in preamble_ids
+        if paragraph_id in paragraphs_by_id
+    ]
 
 
 def _content_playbook_version(playbook: Mapping[str, Any]) -> dict[str, str]:

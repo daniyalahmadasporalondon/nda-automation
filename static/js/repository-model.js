@@ -129,12 +129,26 @@ const RepositoryModel = (() => {
     return parts.join(" / ");
   }
 
+  function counterpartyNeedsConfirmation(matter) {
+    // The backend derives the authoritative flag (missing extraction OR
+    // unverified OR confidence < 0.75 -> true). Trust it when present; only when
+    // absent do we fail open to "needs confirmation" (an unconfirmed name should
+    // never silently look confirmed). A non-flag/undefined value is treated as
+    // present-and-false only when it is an explicit boolean false.
+    if (!matter || typeof matter !== "object") return true;
+    const flag = matter.counterparty_needs_confirmation;
+    if (flag === true) return true;
+    if (flag === false) return false;
+    return true;
+  }
+
   return {
     BOARD_COLUMNS,
     BOARD_COLUMN_IDS,
     boardColumnLabel,
     canonicalBoardColumn,
     compareMatterRecency,
+    counterpartyNeedsConfirmation,
     formatMatterDate,
     formatMatterDateTime,
     manualUploadSubmissionColumn,
@@ -150,3 +164,7 @@ const RepositoryModel = (() => {
     triageLabel,
   };
 })();
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { RepositoryModel };
+}

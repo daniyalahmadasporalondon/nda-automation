@@ -81,6 +81,7 @@ from .routes import approval as approval_routes
 from .routes import auth as auth_routes
 from .routes import corpus as corpus_routes
 from .routes import dashboard as dashboard_routes
+from .routes import docusign as docusign_routes
 from .routes import drive as drive_routes
 from .routes import entities as entity_routes
 from .routes import generation as generation_routes
@@ -222,12 +223,14 @@ _GET_EXACT_ROUTES = {
     "/auth/gmail/start": gmail_routes.handle_gmail_connect_start,
     "/auth/gmail/callback": gmail_routes.handle_gmail_connect_callback,
     "/api/drive/status": drive_routes.handle_drive_status,
+    "/api/docusign/status": docusign_routes.handle_docusign_status,
     "/api/pdf-export/status": lambda handler, *, send_body=True: handler._send_json(
         {"pdf_export": pdf_export_service.converter_health()},
         send_body=send_body,
     ),
     "/auth/drive/start": drive_routes.handle_drive_connect_start,
     "/auth/drive/callback": drive_routes.handle_drive_connect_callback,
+    "/auth/docusign/callback": docusign_routes.handle_docusign_callback,
     "/api/admin/personalisation-settings": admin_routes.handle_personalisation_settings,
     "/api/ai/settings": admin_routes.handle_ai_settings,
     "/api/matters": matter_routes.handle_matter_list,
@@ -261,6 +264,8 @@ _POST_EXACT_ROUTES = {
     "/api/gmail/disconnect": gmail_routes.handle_gmail_disconnect,
     "/api/drive/disconnect": drive_routes.handle_drive_disconnect,
     "/api/drive/upload-matter": drive_routes.handle_drive_upload_matter,
+    "/api/docusign/connect": docusign_routes.handle_docusign_connect,
+    "/api/docusign/disconnect": docusign_routes.handle_docusign_disconnect,
     "/api/admin/drive-settings": drive_routes.handle_drive_settings_update,
     "/api/admin/personalisation-settings": admin_routes.handle_personalisation_settings_update,
     "/api/ai/api-key": admin_routes.handle_ai_api_key_update,
@@ -348,6 +353,12 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if path.startswith("/api/matters/") and path.endswith("/source"):
             matter_routes.handle_matter_source(self, path, send_body=send_body)
             return
+        if path.startswith("/api/matters/") and path.endswith("/signature-status"):
+            docusign_routes.handle_signature_status(self, path, send_body=send_body)
+            return
+        if path.startswith("/api/matters/") and path.endswith("/signed-document"):
+            docusign_routes.handle_signed_document(self, path, send_body=send_body)
+            return
         if path.startswith("/api/matters/") and path.endswith("/reviewed-docx"):
             approval_routes.handle_matter_reviewed_docx(self, path, send_body=send_body)
             return
@@ -383,6 +394,19 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if not self._authorize_host():
             return
+        # The DocuSign Connect webhook is a server-to-server callback (no browser
+        # session, no Origin header) authenticated by its HMAC signature, not by
+        # CSRF/session. It must therefore bypass the CSRF + session gates, but is
+        # still host-checked above and rate-limited here. The handler verifies the
+        # HMAC signature before touching any matter.
+        if path == "/api/docusign/webhook":
+            if not self._rate_limit_request("POST", path):
+                return
+            try:
+                docusign_routes.handle_docusign_webhook(self)
+            except (matter_store.MatterStoreError, app_settings.AppSettingsError) as error:
+                self._send_json({"error": str(error)}, status=500)
+            return
         if not self._authorize_csrf("POST"):
             return
         public_handler = _PUBLIC_POST_EXACT_ROUTES.get(path)
@@ -416,11 +440,17 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             if path.startswith("/api/matters/") and path.endswith("/redline-draft"):
                 matter_routes.handle_matter_redline_draft_update(self, path)
                 return
+            if path.startswith("/api/matters/") and path.endswith("/counterparty"):
+                matter_routes.handle_matter_counterparty_confirm(self, path)
+                return
             if path.startswith("/api/matters/") and "/clauses/" in path and path.endswith("/decision"):
                 approval_routes.handle_clause_decision(self, path)
                 return
             if path.startswith("/api/matters/") and path.endswith("/approve"):
                 approval_routes.handle_matter_approve(self, path)
+                return
+            if path.startswith("/api/matters/") and path.endswith("/send-for-signature"):
+                docusign_routes.handle_send_for_signature(self, path)
                 return
             if path.startswith("/api/matters/") and path.endswith("/signed"):
                 lifecycle_signed.handle_signed_upload(self, path)

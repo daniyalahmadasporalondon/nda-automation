@@ -4,7 +4,7 @@ import base64
 import binascii
 from pathlib import Path
 
-from .. import gmail_integration, matter_render_job, matter_summary, matter_view, pdf_export_service, telemetry
+from .. import gmail_integration, matter_render_job, matter_store, matter_summary, matter_view, pdf_export_service, telemetry
 from ..ai_assessor import AIAssessorError
 from ..checker import EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError
 from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
@@ -506,6 +506,59 @@ def handle_matter_reviewed_update(handler, path: str) -> None:
         _send_repository_board_error(handler, error)
         return
     handler._send_json(response)
+
+
+def handle_matter_counterparty_confirm(handler, path: str) -> None:
+    """POST /api/matters/<id>/counterparty -- persist a HUMAN override of the counterparty.
+
+    The AI extracts the counterparty from the NDA preamble and a verifier double-checks
+    it; when that is refuted or low-confidence the UI surfaces a "confirm who this is"
+    affordance. This endpoint records the human's answer as the authoritative value:
+    ``{"name": <given>, "confidence": 1.0, "verified": true, "source": "human"}`` at the
+    durable ``matter["intake_metadata"]["counterparty"]`` location, which flips
+    ``counterparty_needs_confirmation`` to false in ``public_matter``.
+
+    Auth/CSRF/Origin/host/rate-limit are enforced centrally in server.do_POST before
+    dispatch (this route is registered in _POST_EXACT_ROUTES, like every sibling write).
+    The owner is taken from the AUTHENTICATED request -- never a client-supplied owner --
+    so a caller can never confirm another tenant's matter. A missing/owner-mismatched
+    matter returns 404 (the writer returns None) with no write performed.
+    """
+    matter_id = parse_matter_id(path, suffix="/counterparty")
+    if matter_id is None:
+        handler._send_json({"error": "Matter not found."}, status=404)
+        return
+
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+
+    name = payload.get("name")
+    if not isinstance(name, str) or not name.strip():
+        handler._send_json({"error": "Provide a counterparty name to confirm."}, status=400)
+        return
+
+    counterparty = {
+        "name": name.strip(),
+        "confidence": 1.0,
+        "verified": True,
+        "source": "human",
+    }
+    try:
+        matter = matter_store.update_matter_counterparty(
+            matter_id,
+            counterparty,
+            owner_user_id=request_owner_user_id(handler),
+        )
+    except matter_store.MatterStoreError as error:
+        handler._send_json({"error": str(error)}, status=500)
+        return
+    if matter is None:
+        handler._send_json({"error": "Matter not found."}, status=404)
+        return
+
+    telemetry.increment("matter_counterparty_confirmations")
+    handler._send_json({"matter": matter_view.public_matter(matter)})
 
 
 def handle_matter_ai_first_review(handler, path: str) -> None:

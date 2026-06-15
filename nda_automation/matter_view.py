@@ -23,6 +23,10 @@ class PublicMatter(TypedDict, total=False):
     board_column: str
     can_send_redline: bool
     counterparty: str
+    counterparty_confidence: float
+    counterparty_needs_confirmation: bool
+    counterparty_source: str
+    counterparty_verified: bool
     created_at: str
     current_artifact_id: str
     document_downloads: dict[str, Any]
@@ -73,6 +77,7 @@ PUBLIC_MATTER_FIELDS = {
     "attachment_filename",
     "board_column",
     "created_at",
+    "docusign",
     "document_title",
     "drive",
     "gmail_account",
@@ -158,6 +163,13 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
     # "Unknown Counterparty". One source of truth: artifact_registry.derive_counterparty
     # (the same name drive_integration files under), so the UI and Drive never drift.
     public["counterparty"] = artifact_registry.derive_counterparty(matter)
+    # Surface the AI-extracted-counterparty provenance the human-confirmation UI
+    # needs alongside the display name: the raw confidence/verified/source from the
+    # stored extraction dict, plus a single derived needs_confirmation flag. The
+    # display name above still comes from derive_counterparty (a verified extraction
+    # OR a cleaned subject fallback), so the UI shows a usable name even while the
+    # extraction is unconfirmed.
+    public.update(_counterparty_confirmation_fields(matter))
     public["document_downloads"] = public_matter_document_downloads(matter)
     # The artifact registry view: the tracked documents on the matter plus the
     # current_artifact_id pointer ("the version that matters now"). A compact
@@ -196,6 +208,59 @@ def matter_artifacts_view(matter: dict[str, Any]) -> list[dict[str, Any]]:
             "is_current": bool(current_id) and artifact.id == current_id,
         })
     return view
+
+
+COUNTERPARTY_CONFIRMATION_THRESHOLD = 0.75
+
+
+def _counterparty_confirmation_fields(matter: dict[str, Any]) -> dict[str, Any]:
+    """Project the stored AI-extracted-counterparty dict into the public shape.
+
+    Reads DEFENSIVELY from ``matter["intake_metadata"]["counterparty"]`` (the shared
+    storage contract): the matter may lack the key entirely, ``intake_metadata`` may
+    be absent or not a dict, and the value may not be a dict. Any of those degrade
+    to ``needs_confirmation = True`` (fail-open: an absent/unparseable extraction is
+    treated as unconfirmed, never a crash).
+
+    ``needs_confirmation`` is True when the stored dict is missing, ``verified`` is
+    falsey, OR ``confidence`` < 0.75 -- so the UI prompts a human to confirm exactly
+    when we should not silently trust the extraction.
+    """
+    record = _stored_counterparty_record(matter)
+    if record is None:
+        return {
+            "counterparty_confidence": 0.0,
+            "counterparty_verified": False,
+            "counterparty_source": "",
+            "counterparty_needs_confirmation": True,
+        }
+    verified = bool(record.get("verified"))
+    confidence = _safe_confidence(record.get("confidence"))
+    source = str(record.get("source") or "")
+    needs_confirmation = not verified or confidence < COUNTERPARTY_CONFIRMATION_THRESHOLD
+    return {
+        "counterparty_confidence": confidence,
+        "counterparty_verified": verified,
+        "counterparty_source": source,
+        "counterparty_needs_confirmation": needs_confirmation,
+    }
+
+
+def _stored_counterparty_record(matter: dict[str, Any]) -> dict[str, Any] | None:
+    intake = matter.get("intake_metadata")
+    if not isinstance(intake, dict):
+        return None
+    record = intake.get("counterparty")
+    if not isinstance(record, dict):
+        return None
+    return record
+
+
+def _safe_confidence(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _matter_review_block_resolved(matter: dict[str, Any]) -> bool:

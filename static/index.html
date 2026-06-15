@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260615a">
-    <link rel="stylesheet" href="/static/css/repository.css?v=20260615c">
+    <link rel="stylesheet" href="/static/styles.css?v=20260615ds1">
+    <link rel="stylesheet" href="/static/css/repository.css?v=20260615cp1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260615r">
   </head>
   <body>
@@ -415,10 +415,31 @@
                   <dd>30/05/2026</dd>
                 </div>
               </dl>
+              <div id="studioCounterpartyField" class="studio-counterparty-field" hidden>
+                <div class="studio-counterparty-row">
+                  <span class="studio-counterparty-label">Counterparty</span>
+                  <span id="studioCounterpartyName" class="studio-counterparty-name">-</span>
+                  <span id="studioCounterpartyConfidence" class="studio-counterparty-confidence" hidden></span>
+                  <span id="studioCounterpartyUnconfirmed" class="studio-counterparty-flag" hidden title="The counterparty could not be confirmed automatically. Confirm who this NDA is with.">Unconfirmed</span>
+                </div>
+                <div class="studio-counterparty-controls actions" role="group" aria-label="Confirm counterparty">
+                  <button id="studioCounterpartyConfirmButton" class="studio-counterparty-confirm" type="button">Confirm</button>
+                  <button id="studioCounterpartyEditButton" class="secondary studio-counterparty-edit" type="button">Edit</button>
+                </div>
+                <form id="studioCounterpartyEditForm" class="studio-counterparty-edit-form" hidden>
+                  <label class="sr-only" for="studioCounterpartyEditInput">Counterparty name</label>
+                  <input id="studioCounterpartyEditInput" type="text" autocomplete="organization" placeholder="Counterparty name" required>
+                  <button id="studioCounterpartyEditSave" class="studio-counterparty-save" type="submit">Save</button>
+                  <button id="studioCounterpartyEditCancel" class="secondary" type="button">Cancel</button>
+                </form>
+                <p id="studioCounterpartyStatus" class="studio-counterparty-status" role="status" aria-live="polite" hidden></p>
+              </div>
               <div class="studio-matter-actions actions" role="group" aria-label="Matter actions">
                 <button id="studioRefreshReviewButton" class="studio-refresh-review" type="button" hidden>Refresh Review</button>
                 <button id="studioReviewedButton" class="studio-reviewed-btn" type="button" hidden title="Confirm you've checked the flagged clauses — this enables Send Redline">Reviewed</button>
                 <button id="studioApproveReviewButton" class="studio-approve-review" type="button" hidden title="Approve this review">Approve Review</button>
+                <span id="studioSignatureBadge" class="docusign-status-badge" hidden aria-live="polite"></span>
+                <button id="studioSendForSignatureButton" class="studio-send-signature" type="button" hidden title="Send this NDA for e-signature via DocuSign">Send for signature</button>
                 <button id="studioSaveDraftButton" class="secondary" type="button" disabled>Save Draft</button>
                 <button id="studioDiscardDraftButton" class="secondary" type="button" disabled>Reset Draft</button>
                 <button id="studioClearButton" class="secondary" type="button">Clear</button>
@@ -747,6 +768,10 @@
               <button class="admin-section-button" type="button" data-admin-section="drive" data-admin-surface="admin" aria-pressed="false">
                 <strong>Drive</strong>
                 <span>Google Drive uploads</span>
+              </button>
+              <button class="admin-section-button" type="button" data-admin-section="docusign" data-admin-surface="admin" aria-pressed="false">
+                <strong>DocuSign</strong>
+                <span>E-signature connection</span>
               </button>
               <button class="admin-section-button" type="button" data-admin-section="document" data-admin-surface="guide" aria-pressed="false">
                 <strong>Document</strong>
@@ -1700,6 +1725,60 @@
                 </article>
               </section>
             </section>
+
+            <section class="admin-section-panel" id="adminDocuSignPanel" data-admin-panel="docusign" hidden>
+              <header class="admin-section-head">
+                <div>
+                  <p class="eyebrow">docusign</p>
+                  <h1>DocuSign e-signature</h1>
+                </div>
+                <div class="admin-section-actions">
+                  <button class="secondary" id="adminDocuSignRefreshButton" type="button">Refresh</button>
+                </div>
+              </header>
+
+              <section class="integrations-grid">
+                <article class="integration-card" id="adminDocuSignCard" aria-live="polite">
+                  <header class="integration-card-head">
+                    <div>
+                      <p class="eyebrow">e-signature</p>
+                      <h2>DocuSign</h2>
+                    </div>
+                    <span class="integration-status" id="adminDocuSignOverall">Checking</span>
+                  </header>
+
+                  <div class="integration-toggle-grid">
+                    <div class="integration-toggle-row">
+                      <div>
+                        <strong>DocuSign connection</strong>
+                        <span data-admin-docusign="enabled-copy">Checking</span>
+                      </div>
+                      <button class="integration-switch" id="adminDocuSignConnectToggle" type="button" role="switch" aria-checked="false" aria-label="Connect DocuSign">
+                        <span></span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <section class="integration-subsection">
+                    <h3>Connection setup</h3>
+                    <div class="integration-connection-list" id="adminDocuSignConnectPanel">
+                      <div class="integration-connection-empty">Checking DocuSign connection</div>
+                    </div>
+                  </section>
+
+                  <dl class="integration-facts" id="adminDocuSignFacts">
+                    <div>
+                      <dt>Connection</dt>
+                      <dd data-admin-docusign="connection">Checking</dd>
+                    </div>
+                    <div>
+                      <dt>Account</dt>
+                      <dd data-admin-docusign="account">Checking</dd>
+                    </div>
+                  </dl>
+                </article>
+              </section>
+            </section>
           </section>
         </main>
       </section>
@@ -1917,6 +1996,54 @@
       </div>
     </div>
 
+    <div class="send-modal" id="docusignSendModal" role="dialog" aria-modal="true" aria-labelledby="docusignSendModalTitle" hidden>
+      <div class="send-modal-dialog">
+        <form class="send-modal-form" id="docusignSendForm">
+          <header class="send-modal-head">
+            <div>
+              <p class="send-modal-eyebrow">E-signature</p>
+              <h2 id="docusignSendModalTitle">Send for signature</h2>
+            </div>
+            <button class="send-modal-close" id="docusignSendModalClose" type="button" aria-label="Close send for signature dialog">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M18 6 6 18M6 6l12 12"/>
+              </svg>
+            </button>
+          </header>
+
+          <section class="docusign-signers" aria-label="Signers">
+            <h3>Signers</h3>
+            <div class="docusign-signer-rows" id="docusignSignerRows"></div>
+          </section>
+
+          <fieldset class="docusign-signing-order" id="docusignSigningOrder">
+            <legend>Signing order</legend>
+            <label>
+              <input type="radio" name="docusignSigningOrder" value="sequential" data-docusign-signing-order checked>
+              <span>Sequential — counterparty signs first, then Aspora</span>
+            </label>
+            <label>
+              <input type="radio" name="docusignSigningOrder" value="parallel" data-docusign-signing-order>
+              <span>Parallel — both signers notified at once</span>
+            </label>
+          </fieldset>
+
+          <div class="docusign-envelope-state">
+            <span id="docusignSignatureBadge" class="docusign-status-badge" hidden aria-live="polite"></span>
+            <span id="docusignEnvelopeId" class="docusign-envelope-id" hidden></span>
+            <a id="docusignDownloadSignedLink" class="docusign-download-signed" href="#" hidden>Download signed</a>
+          </div>
+
+          <p class="send-modal-status" id="docusignSendStatus" aria-live="polite"></p>
+
+          <footer class="send-modal-actions">
+            <button class="secondary" id="docusignSendCancelButton" type="button">Cancel</button>
+            <button id="docusignSendSubmitButton" type="submit">Send for signature</button>
+          </footer>
+        </form>
+      </div>
+    </div>
+
     <!-- In-app notification toasts for new inbound NDAs; populated by notifications.js. -->
     <div class="toast-stack" id="toastStack" aria-live="polite" aria-atomic="false"></div>
 
@@ -1929,11 +2056,11 @@
       no divergent untested .js duplicate. Module scripts are deferred, so this
       runs before any user interaction; all consumers call these at runtime.
     -->
-    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260615s"></script>
+    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260615ds1"></script>
     <script src="/static/js/redline-rendering.js?v=20260612c"></script>
     <script src="/static/js/repository-api.js?v=20260607c"></script>
-    <script src="/static/js/repository-model.js?v=20260615b"></script>
-    <script src="/static/js/repository-board.js?v=20260615e"></script>
+    <script src="/static/js/repository-model.js?v=20260615cp1"></script>
+    <script src="/static/js/repository-board.js?v=20260615cp1"></script>
     <script src="/static/js/repository-send.js?v=20260612c"></script>
     <script src="/static/js/document-download-menu.js?v=20260612c"></script>
     <script src="/static/js/repository-detail.js?v=20260615f"></script>
@@ -1949,21 +2076,23 @@
     <script src="/static/js/admin-integrations.js?v=20260615q"></script>
     <script src="/static/js/admin-drive.js?v=20260615j"></script>
     <script src="/static/js/admin-personalisation.js?v=20260611a"></script>
+    <script src="/static/js/admin-docusign.js?v=20260615ds1"></script>
+    <script src="/static/js/docusign-send.js?v=20260615ds1"></script>
     <script src="/static/js/contract-structure-view.js?v=20260614b"></script>
     <script src="/static/js/review-fill.js?v=20260610c"></script>
     <script src="/static/js/playbook-draft-runtime.js?v=20260614c"></script>
     <script src="/static/js/playbook-view.js?v=20260614c"></script>
-    <script src="/static/js/review-workstation-actions.js?v=20260612c"></script>
-    <script src="/static/js/review-workstation-source.js?v=20260615k"></script>
-    <script src="/static/js/review-workstation-rendering.js?v=20260615s"></script>
+    <script src="/static/js/review-workstation-actions.js?v=20260615cp1"></script>
+    <script src="/static/js/review-workstation-source.js?v=20260615cp1"></script>
+    <script src="/static/js/review-workstation-rendering.js?v=20260615ds1"></script>
     <script src="/static/js/review-workstation-format.js?v=20260610d"></script>
-    <script src="/static/js/review-workstation-viewer.js?v=20260612a"></script>
+    <script src="/static/js/review-workstation-viewer.js?v=20260615cp1"></script>
     <script src="/static/js/viewer-controls.js"></script>
     <script src="/static/js/pdf-markup.js?v=20260615l"></script>
     <script src="/static/js/app-state.js?v=20260615m"></script>
     <script src="/static/js/dashboard-search.js?v=20260614a"></script>
     <script src="/static/js/notifications.js?v=20260615n"></script>
     <script src="/static/js/generator-editor.js?v=20260612c"></script>
-    <script src="/static/app.js?v=20260615q"></script>
+    <script src="/static/app.js?v=20260615ds1"></script>
   </body>
 </html>

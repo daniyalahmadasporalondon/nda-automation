@@ -487,6 +487,113 @@ def test_public_matter_counterparty_unknown_fallback():
     assert public["counterparty"] == "Unknown Counterparty"
 
 
+# --- derive_counterparty precedence (generation > verified AI > normalized subject) ---
+def test_derive_counterparty_prefers_verified_review_over_subject():
+    # A VERIFIED AI extraction beats the (mangled) raw subject.
+    matter = {
+        "id": "m1",
+        "subject": "Fwd: Air India <> Aspora",
+        "intake_metadata": {
+            "counterparty": {
+                "name": "Air India Limited",
+                "confidence": 0.99,
+                "verified": True,
+                "first_party": "Aspora",
+                "second_party": "Air India Limited",
+                "source": "preamble",
+            }
+        },
+    }
+    assert artifact_registry.derive_counterparty(matter) == "Air India Limited"
+
+
+def test_derive_counterparty_unverified_falls_through_to_normalized_subject():
+    # An UNVERIFIED (and below-threshold) AI value is ignored; the deterministic
+    # subject normalizer drops the 'Aspora' side and the 'Fwd:' prefix.
+    matter = {
+        "id": "m2",
+        "subject": "Fwd: Air India <> Aspora",
+        "intake_metadata": {
+            "counterparty": {
+                "name": "Guessed Co",
+                "confidence": 0.40,
+                "verified": False,
+            }
+        },
+    }
+    assert artifact_registry.derive_counterparty(matter) == "Air India"
+
+
+def test_derive_counterparty_high_confidence_without_verified_flag_is_used():
+    # When 'verified' is absent, confidence >= 0.75 is treated as usable.
+    matter = {
+        "id": "m3",
+        "subject": "Fwd: Air India <> Aspora",
+        "intake_metadata": {
+            "counterparty": {"name": "Air India Pvt Ltd", "confidence": 0.80}
+        },
+    }
+    assert artifact_registry.derive_counterparty(matter) == "Air India Pvt Ltd"
+
+
+def test_derive_counterparty_low_confidence_without_verified_flag_falls_through():
+    matter = {
+        "id": "m4",
+        "subject": "Fwd: Aspora <> Coverstack",
+        "intake_metadata": {
+            "counterparty": {"name": "Maybe Co", "confidence": 0.50}
+        },
+    }
+    assert artifact_registry.derive_counterparty(matter) == "Coverstack"
+
+
+def test_derive_counterparty_normalizes_subject_when_no_stored_value():
+    # No stored AI value at all -> the deterministic normalizer cleans the subject.
+    matter = {"id": "m5", "subject": "Fwd: Stark Industries / Aspora"}
+    # The '/' connector only survives because normalize runs before the Drive
+    # sanitizer turns '/' into a space.
+    assert artifact_registry.derive_counterparty(matter) == "Stark Industries"
+
+
+def test_derive_counterparty_generation_manifest_still_wins():
+    # The generation manifest is the most authoritative; it beats even a verified
+    # AI review extraction.
+    repo = InMemoryMatterRepository()
+    matter = _seed_matter(
+        repo,
+        intake_metadata={
+            "subject": "Fwd: Air India <> Aspora",
+            "counterparty": {"name": "Air India Limited", "verified": True},
+        },
+    )
+    artifact_service.add_artifact(
+        matter["id"], source="generated", actor="ai", role="generated",
+        document_bytes=b"gen", repository=repo,
+        metadata={"generation": {"counterparty_name": "Acme Robotics Ltd"}},
+    )
+    stored = repo.get_matter(matter["id"])
+    assert artifact_registry.derive_counterparty(stored) == "Acme Robotics Ltd"
+
+
+def test_counterparty_from_review_defensive_on_missing_or_bad_shape():
+    # Missing key, non-dict intake_metadata, and non-dict counterparty all -> "".
+    assert artifact_registry.counterparty_from_review({"id": "x"}) == ""
+    assert artifact_registry.counterparty_from_review({"intake_metadata": "nope"}) == ""
+    assert (
+        artifact_registry.counterparty_from_review(
+            {"intake_metadata": {"counterparty": "nope"}}
+        )
+        == ""
+    )
+    # Verified-but-empty-name -> "".
+    assert (
+        artifact_registry.counterparty_from_review(
+            {"intake_metadata": {"counterparty": {"name": "", "verified": True}}}
+        )
+        == ""
+    )
+
+
 def test_public_matter_omits_artifact_keys_when_no_registry():
     from nda_automation.matter_view import public_matter
 

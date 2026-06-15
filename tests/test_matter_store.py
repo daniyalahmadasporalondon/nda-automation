@@ -612,5 +612,145 @@ class MatterStoreLockTimeoutTests(unittest.TestCase):
                 matter_store._MATTERS_LOCK.release()
 
 
+class UpdateMatterCounterpartyTests(unittest.TestCase):
+    def matter_store_patches(self, data_dir: str):
+        root = Path(data_dir)
+        return (
+            patch.object(matter_store, "DATA_DIR", root),
+            patch.object(matter_store, "MATTERS_PATH", root / "matters.json"),
+            patch.object(matter_store, "UPLOADS_DIR", root / "uploads"),
+        )
+
+    def test_override_persists_and_round_trips_after_reload(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                matter = repo.create_matter(**_create_kwargs())
+                override = {
+                    "name": "Globex Industries Ltd",
+                    "confidence": 0.95,
+                    "verified": True,
+                    "first_party": "Aspora",
+                    "second_party": "Globex Industries Ltd",
+                    "source": "human_override",
+                }
+                updated = matter_store.update_matter_counterparty(matter["id"], override)
+                self.assertIsNotNone(updated)
+                self.assertEqual(
+                    updated["intake_metadata"]["counterparty"]["name"],
+                    "Globex Industries Ltd",
+                )
+
+                # Round-trip: a fresh load from disk must carry the override.
+                reloaded = repo.get_matter(matter["id"])
+                stored = reloaded["intake_metadata"]["counterparty"]
+                self.assertEqual(stored["name"], "Globex Industries Ltd")
+                self.assertTrue(stored["verified"])
+                self.assertEqual(stored["confidence"], 0.95)
+                self.assertEqual(stored["second_party"], "Globex Industries Ltd")
+                self.assertEqual(stored["source"], "human_override")
+
+    def test_malformed_override_is_coerced_and_empty_name_never_verified(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                matter = repo.create_matter(**_create_kwargs())
+                # Hostile/partial override: empty name but verified=True, junk confidence.
+                updated = matter_store.update_matter_counterparty(
+                    matter["id"],
+                    {"name": "", "verified": True, "confidence": "not-a-number", "extra": "drop me"},
+                )
+                stored = updated["intake_metadata"]["counterparty"]
+                self.assertEqual(stored["name"], "")
+                self.assertFalse(stored["verified"])
+                self.assertEqual(stored["confidence"], 0.0)
+                # Coerced to exactly the canonical shape (no junk keys leak through).
+                self.assertEqual(
+                    set(stored.keys()),
+                    {"name", "confidence", "verified", "first_party", "second_party", "source"},
+                )
+
+    def test_owner_scoping_wrong_owner_returns_none_and_does_not_write(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                matter = repo.create_matter(**_create_kwargs(owner_user_id="user-a"))
+                # Seed a known counterparty as the rightful owner.
+                matter_store.update_matter_counterparty(
+                    matter["id"],
+                    {"name": "Rightful Co", "verified": True, "confidence": 0.9},
+                    owner_user_id="user-a",
+                )
+
+                # A different authenticated tenant must not be able to overwrite it.
+                result = matter_store.update_matter_counterparty(
+                    matter["id"],
+                    {"name": "Attacker Co", "verified": True, "confidence": 1.0},
+                    owner_user_id="user-b",
+                )
+                self.assertIsNone(result)
+
+                # The stored value is untouched (no cross-tenant write happened).
+                stored = repo.get_matter(matter["id"], owner_user_id="user-a")[
+                    "intake_metadata"
+                ]["counterparty"]
+                self.assertEqual(stored["name"], "Rightful Co")
+
+    def test_missing_matter_returns_none(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                DiskMatterRepository()  # initialize the records dir
+                result = matter_store.update_matter_counterparty(
+                    "matter_does_not_exist",
+                    {"name": "Nobody", "confidence": 0.5},
+                )
+                self.assertIsNone(result)
+
+    def test_override_preserves_existing_nested_intake_metadata(self):
+        # When a matter already carries a nested intake_metadata dict (e.g. the AI
+        # extraction wrote one at intake), the counterparty override must merge into
+        # it rather than clobbering sibling keys.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                # Seed a review_result that carries a counterparty so _attach_intake_
+                # counterparty creates matter["intake_metadata"] at create time, then
+                # add a sibling key to the stored record to prove it is preserved.
+                matter = repo.create_matter(**_create_kwargs(
+                    review_result={
+                        "clauses": [],
+                        "counterparty": {
+                            "name": "Original Co",
+                            "confidence": 0.4,
+                            "verified": False,
+                            "first_party": "",
+                            "second_party": "",
+                            "source": "ai_review_preamble",
+                        },
+                    },
+                ))
+                # Sanity: the nested intake_metadata exists from intake.
+                self.assertIn("intake_metadata", matter)
+                record = matter_store._load_matter_record_by_id(matter["id"])
+                record["intake_metadata"]["custom_marker"] = "keep-me"
+                matter_store._save_matter_record(record)
+
+                matter_store.update_matter_counterparty(
+                    matter["id"],
+                    {"name": "Acme Corp", "verified": True, "confidence": 0.9},
+                )
+                reloaded = repo.get_matter(matter["id"])
+                intake = reloaded["intake_metadata"]
+                # The sibling key survives; the counterparty is replaced with the override.
+                self.assertEqual(intake["custom_marker"], "keep-me")
+                self.assertEqual(intake["counterparty"]["name"], "Acme Corp")
+                self.assertTrue(intake["counterparty"]["verified"])
+
+
 if __name__ == "__main__":
     unittest.main()

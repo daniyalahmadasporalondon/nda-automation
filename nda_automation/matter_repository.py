@@ -22,6 +22,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from . import matter_store
 from .matter_store import (
+    _attach_intake_counterparty,
     _clean_source_filename,
     _clean_owner_user_id,
     _find_gmail_duplicate_unlocked,
@@ -367,6 +368,11 @@ class InMemoryMatterRepository:
                 "review_result": review_result,
                 **triage,
             }
+            # Parity with matter_store.create_matter: persist the AI-extracted
+            # counterparty block at matter["intake_metadata"]["counterparty"] so the
+            # in-memory double does not silently drop it (fail-open, no-op when the
+            # review result carries no counterparty).
+            _attach_intake_counterparty(matter, review_result)
             self._documents[stored_filename] = document_bytes
             self._matters.append(matter)
             kept_matters, pruned_matters = _prune_stored_matters(

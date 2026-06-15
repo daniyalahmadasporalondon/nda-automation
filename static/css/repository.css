@@ -391,6 +391,18 @@
   white-space: nowrap;
 }
 
+.repository-counterparty-badge {
+  background: var(--amber-bg, #fef3c7);
+  border: 1px solid var(--amber-border, #fde68a);
+  border-radius: var(--r-pill);
+  color: var(--amber-ink, #92400e);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 4px 7px;
+  white-space: nowrap;
+}
+
 .repository-stale-notice {
   align-items: center;
   background: var(--amber-bg, #fef3c7);

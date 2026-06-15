@@ -8,20 +8,44 @@ human name — ``{YYYY-MM-DD} · {document title} · {ref}`` — and this module
 back-fills that name onto folders already in the user's Drive.
 
 It is deliberately split into two phases so nothing in Drive changes without an
-explicit go-ahead:
+explicit go-ahead. Every plan entry carries a ``tier`` discriminator
+(``"matter"`` or ``"counterparty"``):
 
 * :func:`plan_folder_renames` is **read-only**. It walks the existing
-  ``NDAs/{counterparty}/{matter}/`` tree, resolves each matter folder back to its
+  ``NDAs/{counterparty}/{matter}/`` tree at both tiers:
+
+  **Matter tier** (``tier == "matter"``) — resolves each matter folder back to its
   matter (authoritatively via the ``metadata/matter_summary.json`` the sync
   writes, else best-effort from the folder name), computes the new name, and
-  returns a plan with a per-folder ``action``:
+  emits a per-folder ``action``:
 
     - ``rename``           — will be renamed (carries ``match_source``);
     - ``already_current``  — name already matches the grammar; left alone;
     - ``unmatched``        — could not be tied to a known matter; left alone;
+    - ``review``           — matched only by name; surfaced, never auto-applied;
     - ``conflict``         — the new name collides with another folder; left alone.
 
-* :func:`apply_folder_renames` executes ONLY the ``rename`` entries of a plan.
+  **Counterparty tier** (``tier == "counterparty"``) — for each counterparty
+  folder directly under the ``NDAs`` root, computes
+  ``new = normalize_counterparty(folder_name)`` and emits:
+
+    - ``rename``           — ``new`` differs and no other counterparty folder uses it;
+    - ``already_current``  — ``new`` equals the current name (idempotent re-runs);
+    - ``skip``             — ``normalize_counterparty`` returned ``""`` (Unknown):
+      left untouched, because downgrading a real name to "Unknown" is data loss;
+    - ``collision``        — ``new`` is already used by ANOTHER counterparty folder.
+      Per the authoritative merge policy the migration NEVER merges folders, moves
+      children, or deletes anything: Drive folder identity is the stable id, not the
+      name, so sibling folders may safely share a display name. The 2nd-and-later
+      collided folder is given a STABLE de-collision suffix (``"<new> (<code>)"``,
+      derived from the folder id so re-runs are idempotent) and flagged
+      ``collision: True`` so a human can decide whether to MERGE the two folders
+      manually in the product UI.
+
+* :func:`apply_folder_renames` executes the ``rename`` entries of either tier and
+  the counterparty-tier ``collision`` entries — both are pure
+  :func:`drive_integration.rename_file` calls keyed on the stable folder id. It
+  NEVER moves children, trashes, or deletes anything.
 
 The Drive calls live in :mod:`drive_integration`; this module owns the
 matching/planning logic. A small ``main`` CLI prints the plan and, with
@@ -32,11 +56,12 @@ the environment where Drive is connected.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from typing import Any, Callable
 
-from . import app_settings, drive_integration, matter_store
+from . import app_settings, counterparty_naming, drive_integration, matter_store
 
 # Separators legacy folder names used between fields; the trailing token after the
 # last of these is the matter key candidate for the name-based fallback.
@@ -44,6 +69,10 @@ _LEGACY_SEPARATORS = (" · ", " - ", "_")
 # A name-parsed key shorter than this is too ambiguous to trust (a 1-2 char tail
 # could coincidentally equal some unrelated short matter id), so it is ignored.
 _MIN_NAME_KEY_LENGTH = 6
+# Length of the stable de-collision suffix appended to a 2nd-and-later collided
+# counterparty folder (``"Air India (a1b2)"``). Derived from the stable folder id
+# so the SAME folder always gets the SAME suffix on every re-run (idempotent).
+_COLLISION_CODE_LENGTH = 4
 
 MatterLookup = Callable[[str], "dict[str, Any] | None"]
 
@@ -175,6 +204,14 @@ def plan_folder_renames(
     counterparty_folders = drive_integration.list_child_folders(
         parent_id=ndas_root, service=drive_service
     )
+
+    # Counterparty tier: plan the counterparty folders' own names (additive; the
+    # matter-tier pass below is unchanged). Done first so its entries lead the plan,
+    # but the two tiers are independent.
+    entries.extend(_plan_counterparty_tier(counterparty_folders))
+
+    # Matter tier: plan the matter folders inside each counterparty (existing
+    # behavior, now tagged ``tier == "matter"``).
     for cp in counterparty_folders:
         entries.extend(
             _plan_counterparty(
@@ -208,6 +245,7 @@ def _plan_counterparty(
 
     for folder in matter_folders:
         entry: dict[str, Any] = {
+            "tier": "matter",
             "folder_id": folder["id"],
             "counterparty": counterparty["name"],
             "old_name": folder["name"],
@@ -252,24 +290,157 @@ def _plan_counterparty(
     return entries
 
 
+# Counterparty-tier actions that ``apply_folder_renames`` mutates. Both resolve to
+# a single ``rename_file`` keyed on the stable folder id: a plain ``rename`` (clean
+# normalized name) and a ``collision`` (the normalized name plus a stable
+# de-collision suffix). NEITHER moves children, trashes, nor deletes — that is the
+# whole point of the authoritative non-destructive merge policy.
+_APPLY_ACTIONS = frozenset({"rename", "collision"})
+
+
+def _collision_suffix(folder_id: str) -> str:
+    """A short, stable de-collision code derived from the stable Drive folder id.
+
+    Keying the suffix on the folder ID (not a list ordinal) is what makes a re-run
+    idempotent: the SAME folder always resolves to the SAME ``"<new> (<code>)"``
+    name regardless of enumeration order, so a second migration pass sees the
+    already-suffixed name as ``already_current`` and makes zero further changes.
+    """
+    digest = hashlib.sha1(str(folder_id or "").encode("utf-8")).hexdigest()
+    return digest[:_COLLISION_CODE_LENGTH]
+
+
+def _plan_counterparty_tier(
+    counterparty_folders: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    """Plan the COUNTERPARTY-tier folder renames (additive to the matter tier).
+
+    For each counterparty folder under the ``NDAs`` root computes
+    ``new = normalize_counterparty(old_name)`` and assigns one ``action``:
+
+    * ``already_current`` — ``new == old`` (incl. an idempotent re-run of an
+      already-cleaned name, which passes through ``normalize_counterparty``
+      unchanged);
+    * ``skip``            — ``new == ""`` (Unknown): the folder is LEFT UNTOUCHED,
+      because renaming a real name to "Unknown Counterparty" would be data loss;
+    * ``rename``          — ``new`` differs and no OTHER counterparty folder claims
+      ``new``;
+    * ``collision``       — ``new`` is already owned by another counterparty folder.
+      The migration NEVER merges/moves/deletes: the collided folder gets a STABLE
+      suffix ``"<new> (<code>)"`` (and that suffixed name is itself checked for a
+      further collision) and is flagged ``collision: True`` for a human to merge
+      manually in the product UI.
+
+    Two passes make the OWNERSHIP of a contested name deterministic and correct:
+
+    * **Pass 1 — immovable owners.** ``already_current`` (already bears the name)
+      and ``skip`` (left at its existing name) folders cannot be renamed, so they
+      are the authoritative owners of the names they sit on and are registered in
+      ``taken`` first. This is what stops a ``rename`` from silently colliding INTO
+      an already_current folder of the same name (the ordering trap:
+      ``["Fwd: Air India <> Aspora", "Air India"]`` must NOT rename the first INTO
+      the second's occupied "Air India" — the second owns it, the first is suffixed).
+    * **Pass 2 — renames.** Each folder that must change name takes the bare ``new``
+      if still free, else the stable de-collision suffix. Within pass 2 the FIRST
+      folder (in Drive list order) to want a free name keeps it bare; later ones
+      collide. Re-run-stable because a bare name, once applied, normalizes back to
+      itself and re-classifies as ``already_current`` in pass 1.
+    """
+    # Resolve each folder's normalized target once (pure + cheap), then split into
+    # the immovable (already_current / skip) and the movable (rename) groups.
+    resolved: list[tuple[dict[str, str], str]] = [
+        (folder, counterparty_naming.normalize_counterparty(folder["name"]))
+        for folder in counterparty_folders
+    ]
+
+    entries_by_folder_id: dict[str, dict[str, Any]] = {}
+    taken: set[str] = set()
+
+    def _base_entry(folder: dict[str, str]) -> dict[str, Any]:
+        return {
+            "tier": "counterparty",
+            "folder_id": folder["id"],
+            "counterparty": folder["name"],
+            "old_name": folder["name"],
+            "new_name": "",
+            "action": "skip",
+            "collision": False,
+            "reason": "",
+        }
+
+    movable: list[tuple[dict[str, str], str]] = []
+
+    # --- Pass 1: immovable owners (already_current / skip) claim their names -----
+    for folder, new_name in resolved:
+        entry = _base_entry(folder)
+        if not new_name:
+            entry["action"] = "skip"
+            entry["new_name"] = folder["name"]
+            entry["reason"] = (
+                "normalize_counterparty returned '' (Unknown) — left untouched to avoid data loss"
+            )
+            taken.add(folder["name"])
+            entries_by_folder_id[folder["id"]] = entry
+        elif new_name == folder["name"]:
+            entry["action"] = "already_current"
+            entry["new_name"] = new_name
+            taken.add(new_name)
+            entries_by_folder_id[folder["id"]] = entry
+        else:
+            movable.append((folder, new_name))
+
+    # --- Pass 2: renames take a free name, else a stable de-collision suffix -----
+    for folder, new_name in movable:
+        entry = _base_entry(folder)
+        if new_name not in taken:
+            entry["action"] = "rename"
+            entry["new_name"] = new_name
+            taken.add(new_name)
+        else:
+            entry["action"] = "collision"
+            entry["collision"] = True
+            suffixed = f"{new_name} ({_collision_suffix(folder['id'])})"
+            if suffixed in taken:
+                ordinal = 2
+                while f"{new_name} ({ordinal})" in taken:
+                    ordinal += 1
+                suffixed = f"{new_name} ({ordinal})"
+            entry["new_name"] = suffixed
+            entry["reason"] = (
+                f"another counterparty folder already normalizes to {new_name!r}; "
+                "de-collision suffix applied — review for a MANUAL merge in the product UI"
+            )
+            taken.add(suffixed)
+        entries_by_folder_id[folder["id"]] = entry
+
+    # Preserve the original Drive list order in the emitted plan.
+    return [entries_by_folder_id[folder["id"]] for folder in counterparty_folders]
+
+
 def apply_folder_renames(
     entries: list[dict[str, Any]],
     *,
     owner_user_id: str = "",
     service: Any | None = None,
 ) -> dict[str, Any]:
-    """Execute ONLY the ``action == "rename"`` entries of a plan.
+    """Execute the mutating entries of a plan via :func:`rename_file` ONLY.
 
-    Returns ``{"renamed": n, "failed": n, "results": [...]}``. Each result records
-    the outcome per folder; a single failed rename is captured and does not abort
-    the rest.
+    Applies matter-tier and counterparty-tier ``rename`` entries plus
+    counterparty-tier ``collision`` entries (a rename to the de-collision-suffixed
+    name). Every applied entry is a single ``rename_file`` keyed on the stable
+    folder id — NOTHING here moves a folder to a new parent, moves children,
+    trashes, or deletes. ``already_current`` / ``skip`` / ``review`` / ``conflict``
+    / ``unmatched`` entries are left strictly untouched.
+
+    Returns ``{"renamed": n, "failed": n, "results": [...]}``. A single failed
+    rename is captured per-folder and does not abort the rest.
     """
     drive_service = service or drive_integration._drive_service(owner_user_id)
     results: list[dict[str, Any]] = []
     renamed = 0
     failed = 0
     for entry in entries:
-        if entry.get("action") != "rename":
+        if entry.get("action") not in _APPLY_ACTIONS:
             continue
         try:
             drive_integration.rename_file(
@@ -295,21 +466,44 @@ def _configured_root_parent() -> str:
 
 
 # --- CLI -------------------------------------------------------------------
-def format_plan(plan: dict[str, Any]) -> str:
-    """Render a plan as a readable text table for the dry-run output."""
-    if not plan.get("root_found"):
-        return "No 'NDAs' folder found in Drive — nothing to migrate."
-    entries = plan.get("entries") or []
-    if not entries:
-        return "The NDAs folder has no matter folders — nothing to migrate."
+# Action display order within each tier.
+_COUNTERPARTY_ACTION_ORDER = ["rename", "collision", "already_current", "skip"]
+_MATTER_ACTION_ORDER = ["rename", "review", "already_current", "conflict", "unmatched"]
 
-    lines: list[str] = []
-    order = ["rename", "review", "already_current", "conflict", "unmatched"]
+
+def _format_counterparty_section(entries: list[dict[str, Any]]) -> list[str]:
+    """Render the counterparty-tier (top-level folder rename) section."""
+    lines: list[str] = ["\n=== Counterparty folders ==="]
     by_action: dict[str, list[dict[str, Any]]] = {}
     for entry in entries:
         by_action.setdefault(entry["action"], []).append(entry)
+    for action in _COUNTERPARTY_ACTION_ORDER:
+        group = by_action.get(action) or []
+        if not group:
+            continue
+        lines.append(f"\n[{action}] ({len(group)})")
+        for entry in group:
+            old = entry["old_name"]
+            if action == "rename":
+                lines.append(f"  {old}")
+                lines.append(f"       -> {entry['new_name']}")
+            elif action == "collision":
+                lines.append(f"  {old}")
+                lines.append(f"       -> {entry['new_name']}   (COLLISION — review for a manual merge)")
+            elif action == "already_current":
+                lines.append(f"  {old}  (already current)")
+            else:  # skip
+                lines.append(f"  {old}  -- {entry.get('reason') or action}")
+    return lines
 
-    for action in order:
+
+def _format_matter_section(entries: list[dict[str, Any]]) -> list[str]:
+    """Render the matter-tier (inner folder rename) section."""
+    lines: list[str] = ["\n=== Matter folders ==="]
+    by_action: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        by_action.setdefault(entry["action"], []).append(entry)
+    for action in _MATTER_ACTION_ORDER:
         group = by_action.get(action) or []
         if not group:
             continue
@@ -324,6 +518,29 @@ def format_plan(plan: dict[str, Any]) -> str:
                 lines.append(f"  {cp}/  {entry['old_name']}  (already current)")
             else:
                 lines.append(f"  {cp}/  {entry['old_name']}  -- {entry.get('reason') or action}")
+    return lines
+
+
+def format_plan(plan: dict[str, Any]) -> str:
+    """Render a plan as a readable text table for the dry-run output.
+
+    Splits the output into a counterparty-folder section and a matter-folder
+    section (keyed off each entry's ``tier``), so the two tiers read distinctly.
+    """
+    if not plan.get("root_found"):
+        return "No 'NDAs' folder found in Drive — nothing to migrate."
+    entries = plan.get("entries") or []
+    if not entries:
+        return "The NDAs folder has no matter folders — nothing to migrate."
+
+    counterparty_entries = [e for e in entries if e.get("tier") == "counterparty"]
+    matter_entries = [e for e in entries if e.get("tier") != "counterparty"]
+
+    lines: list[str] = []
+    if counterparty_entries:
+        lines.extend(_format_counterparty_section(counterparty_entries))
+    if matter_entries:
+        lines.extend(_format_matter_section(matter_entries))
 
     counts = plan.get("counts") or {}
     summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
@@ -363,10 +580,26 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.apply:
         counts = plan.get("counts") or {}
+        # ``rename`` + ``collision`` are the actions --apply will mutate (both are
+        # rename_file calls; collision additionally carries a de-collision suffix).
         rename_count = counts.get("rename", 0)
+        collision_count = counts.get("collision", 0)
         review_count = counts.get("review", 0)
-        if rename_count:
-            print(f"\nDry run only. Re-run with --apply to rename {rename_count} folder(s).")
+        skip_count = counts.get("skip", 0)
+        applyable = rename_count + collision_count
+        if applyable:
+            print(f"\nDry run only. Re-run with --apply to rename {applyable} folder(s).")
+        if collision_count:
+            print(
+                f"{collision_count} counterparty folder(s) COLLIDE on the normalized name -> "
+                "a stable de-collision suffix is applied; NO folders are merged, moved, or deleted. "
+                "Review each for a manual merge in the product UI."
+            )
+        if skip_count:
+            print(
+                f"{skip_count} counterparty folder(s) normalize to Unknown ('') -> left untouched "
+                "(renaming a real name to 'Unknown' would be data loss)."
+            )
         if review_count:
             print(f"{review_count} folder(s) matched only by name -> listed under [review], NOT auto-renamed.")
         return 0

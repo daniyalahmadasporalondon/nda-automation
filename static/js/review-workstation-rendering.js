@@ -179,6 +179,9 @@ function updateExportButtonState() {
   }
   updateApproveReviewControl();
   updateRedlineDraftControls();
+  // Keep the DocuSign "Send for signature" trigger + signature badge in sync with
+  // the selected matter's state (visibility + sent/awaiting/signed label).
+  if (typeof syncDocuSignTriggerButton === "function") syncDocuSignTriggerButton();
 }
 
 // Surface the header "Reviewed" button's scope: it flips EVERY needs-review

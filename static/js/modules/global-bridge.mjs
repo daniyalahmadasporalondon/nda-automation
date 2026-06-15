@@ -33,6 +33,7 @@ import { createGenerationApi, GenerationUnavailableError } from "./generation-ap
 import { PdfMarkupWorkstation } from "./pdf-markup-workstation.mjs";
 import { RedlineEditContract } from "./redline-edit-contract.mjs";
 import { ReviewWorkstationModel } from "./review-workstation-model.mjs";
+import { DocuSignModel } from "./docusign-model.mjs";
 import {
   DASHBOARD_SEARCH_CHIPS,
   NULL_FILTER_SPEC,
@@ -90,6 +91,10 @@ Object.assign(window, {
   PdfMarkupWorkstation,
   RedlineEditContract,
   ReviewWorkstationModel,
+  // DocuSign view-model. The admin-docusign + docusign-send controllers are
+  // classic scripts built at app.js load time; they call this model only at
+  // runtime (inside render/handler functions), so deferred availability is safe.
+  DocuSignModel,
   // Dashboard smart-search (v1, deterministic). The DOM controller is a classic
   // script built at app.js load time; it reads these pure filters lazily at
   // runtime (inside handlers), so the deferred-module availability is safe.

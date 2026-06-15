@@ -16,6 +16,7 @@ function clearReview() {
   AppState.clearSourceSelection(state);
   setFileMeta("");
   setCounterpartyMeta("");
+  renderCounterpartyConfirmation(null);
   setDocumentTitle(DEFAULT_DOCUMENT_TITLE);
   resetReviewResults();
   emptyState();

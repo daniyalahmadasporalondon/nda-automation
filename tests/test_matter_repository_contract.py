@@ -76,6 +76,38 @@ def test_create_get_list_roundtrip(repository):
     assert [m["id"] for m in listed] == [matter["id"]]
 
 
+def test_create_matter_attaches_counterparty_block_on_both_adapters(repository):
+    """Both adapters persist a review_result counterparty block at the shared
+    intake_metadata location (parity: the in-memory double must not silently drop
+    what the disk store keeps)."""
+    block = {
+        "name": "Globex Industries Ltd",
+        "confidence": 0.9,
+        "verified": True,
+        "first_party": "Aspora",
+        "second_party": "Globex Industries Ltd",
+        "source": "ai_review_preamble",
+    }
+    matter = repository.create_matter(
+        **_create_kwargs(
+            review_result={"clauses": [], "counterparty": block},
+        )
+    )
+    fetched = repository.get_matter(matter["id"])
+    assert fetched["intake_metadata"]["counterparty"] == block
+
+
+def test_create_matter_without_counterparty_leaves_no_stray_block(repository):
+    """A review result that carries no counterparty block does not synthesize one
+    (fail-open, no empty-key churn) on either adapter."""
+    matter = repository.create_matter(
+        **_create_kwargs(review_result={"clauses": []})
+    )
+    fetched = repository.get_matter(matter["id"])
+    intake = fetched.get("intake_metadata") or {}
+    assert "counterparty" not in intake
+
+
 def test_source_document_bytes_roundtrip(repository):
     matter = repository.create_matter(**_create_kwargs(document_bytes=b"the original docx"))
     assert repository.get_source_document_bytes(matter) == b"the original docx"

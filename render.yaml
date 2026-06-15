@@ -32,6 +32,21 @@ services:
         sync: false
       - key: NDA_GMAIL_OAUTH_REDIRECT_URI
         sync: false
+      # DocuSign e-signature OAuth (Authorization Code Grant) — same shape as the
+      # Google OAuth above. In the Render dashboard set the integration key, the
+      # secret, and the redirect URI (https://<your-render-host>/auth/docusign/callback,
+      # registered on the DocuSign integration key). NDA_DOCUSIGN_AUTH_SERVER picks
+      # the DocuSign environment: "demo" (free developer sandbox) or "production".
+      - key: NDA_DOCUSIGN_CLIENT_ID
+        sync: false
+      - key: NDA_DOCUSIGN_CLIENT_SECRET
+        sync: false
+      - key: NDA_DOCUSIGN_OAUTH_REDIRECT_URI
+        sync: false
+      - key: NDA_DOCUSIGN_AUTH_SERVER
+        value: demo
+      - key: NDA_DOCUSIGN_CONNECT_HMAC_KEY
+        sync: false
       - key: NDA_DATA_DIR
         value: /tmp/nda-automation/data
       - key: NDA_USERS_PATH

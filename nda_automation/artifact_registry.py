@@ -370,17 +370,74 @@ COUNTERPARTY_UNKNOWN = "Unknown Counterparty"
 def derive_counterparty(matter: dict[str, Any]) -> str:
     """Best-available counterparty name for a matter, display/Drive-safe.
 
-    Preference: (1) a generated NDA's manifest ``counterparty_name`` (stored on the
-    generated artifact's metadata), (2) the matter's cleaned ``subject``, (3)
-    ``"Unknown Counterparty"``. The result is sanitised (control chars and path
-    separators stripped) but kept human-readable (spaces preserved). For inbound
-    matters this is a best-effort name derived from the email subject, not an exact
-    legal entity — callers should present it as-is and not imply false precision.
+    Preference:
+      1. a generated NDA's manifest ``counterparty_name`` (exact, stored on the
+         generated artifact's metadata);
+      2. a VERIFIED AI-extracted counterparty (from the contract preamble, stored
+         on ``intake_metadata['counterparty']``);
+      3. the matter's email ``subject`` run through the deterministic
+         :func:`~nda_automation.counterparty_naming.normalize_counterparty`
+         fallback (strips Fwd/Re prefixes, drops the first-party side of an
+         ``A <> Aspora`` subject, etc.);
+      4. ``"Unknown Counterparty"``.
+
+    The chosen name is sanitised (control chars and path separators stripped) but
+    kept human-readable (spaces preserved). Both the manifest name and the AI
+    value BYPASS normalization — they are already exact. ``normalize_counterparty``
+    runs BEFORE ``_counterparty_safe_name``, so a residual ``/`` it keeps as a
+    connector is still a real ``/`` at split time and the sanitizer converts any
+    surviving ``/`` to a space afterward. (If a future refactor sanitizes the
+    subject first, the slash-as-connector rule silently dies — see the
+    'Fwd: Stark Industries / Aspora' regression test.)
+
+    For inbound matters this is a best-effort name, not an exact legal entity —
+    callers should present it as-is and not imply false precision.
     """
+    # Local import keeps the leaf module dependency one-directional and avoids any
+    # import cycle through entity_registry.
+    from .counterparty_naming import normalize_counterparty
+
     manifest_name = counterparty_from_generation(matter)
-    candidate = manifest_name or str(matter.get("subject") or "").strip()
+    review_name = counterparty_from_review(matter)
+    candidate = (
+        manifest_name
+        or review_name
+        or normalize_counterparty(str(matter.get("subject") or ""))
+    )
     cleaned = _counterparty_safe_name(candidate)
     return cleaned or COUNTERPARTY_UNKNOWN
+
+
+def counterparty_from_review(matter: dict[str, Any]) -> str:
+    """The AI-extracted, VERIFIED counterparty name stored on the matter, else ``""``.
+
+    This is the SINGLE place that knows the storage location. Per the shared
+    contract the AI value lives at ``matter['intake_metadata']['counterparty']`` as
+    a dict ``{"name", "confidence", "verified", "first_party", "second_party",
+    "source"}``. Read DEFENSIVELY — the matter may lack the key entirely,
+    ``intake_metadata`` may be absent or not a dict, and the value may not be a
+    dict.
+
+    Returns the name ONLY when ``verified`` is true, or — when ``verified`` is
+    absent — when ``confidence`` >= 0.75. Otherwise ``""`` so the caller falls
+    through to the deterministic subject normalizer.
+    """
+    intake = matter.get("intake_metadata")
+    if not isinstance(intake, dict):
+        return ""
+    record = intake.get("counterparty")
+    if not isinstance(record, dict):
+        return ""
+    name = str(record.get("name") or "").strip()
+    if not name:
+        return ""
+    if "verified" in record:
+        return name if bool(record.get("verified")) else ""
+    try:
+        confidence = float(record.get("confidence"))
+    except (TypeError, ValueError):
+        return ""
+    return name if confidence >= 0.75 else ""
 
 
 def counterparty_from_generation(matter: dict[str, Any]) -> str:

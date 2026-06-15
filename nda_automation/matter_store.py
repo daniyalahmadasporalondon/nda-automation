@@ -56,8 +56,12 @@ GMAIL_METADATA_FIELDS = (
     "triage_reason",
 )
 MATTER_UPDATE_FIELDS = {
+    "awaiting_signature",
     "board_column",
+    "docusign",
     "drive",
+    "executed",
+    "executed_at",
     "human_reviewed",
     "last_outbound_account",
     "last_outbound_at",
@@ -252,6 +256,84 @@ def update_matter_review(
         updated_matter.pop("redline_draft", None)
         _save_matter_record(updated_matter)
         return updated_matter
+
+
+def update_matter_counterparty(
+    matter_id: str,
+    counterparty: dict[str, Any],
+    owner_user_id: str = "",
+) -> dict[str, Any] | None:
+    """Persist a human override of the matter's counterparty (locked R-M-W).
+
+    Writes the coerced block to ``matter["intake_metadata"]["counterparty"]`` -- the
+    durable nested storage location (the whole matter dict is json-persisted with no
+    field whitelist, so the nested dict round-trips faithfully). This is a NARROW,
+    shape-controlled writer: it never routes through ``MATTER_UPDATE_FIELDS`` (which
+    excludes ``intake_metadata`` and would silently drop the write), so the only way
+    to mutate the counterparty is through this validated path.
+
+    OWNER-SCOPED: returns ``None`` when the matter is missing or not owned by
+    ``owner_user_id`` (no cross-tenant writes). The incoming dict is COERCED to the
+    canonical ``{name, confidence, verified, first_party, second_party, source}``
+    shape before storage, so a malformed override cannot poison the field; an empty
+    name can never be ``verified``.
+    """
+    coerced = _coerce_counterparty_block(counterparty)
+    now = datetime.now(timezone.utc).isoformat()
+    with _locked_store():
+        _ensure_matter_records_from_legacy()
+        matter = _load_matter_record_by_id(matter_id)
+        if matter is None or not _matter_owner_matches(matter, owner_user_id):
+            return None
+        intake_metadata = matter.get("intake_metadata")
+        intake_metadata = dict(intake_metadata) if isinstance(intake_metadata, dict) else {}
+        intake_metadata["counterparty"] = coerced
+        updated_matter = {
+            **matter,
+            "intake_metadata": intake_metadata,
+            "updated_at": now,
+        }
+        _save_matter_record(updated_matter)
+        return updated_matter
+
+
+def _coerce_counterparty_block(counterparty: object) -> dict[str, Any]:
+    """Coerce an incoming counterparty override to the canonical stored shape.
+
+    Reuses ``review_result_contract._normalize_counterparty_block`` (the single
+    source of truth for the block shape) when importable; falls back to a minimal
+    inline guard otherwise. Either way the result is the canonical dict, and an
+    empty name is never ``verified``.
+    """
+    try:
+        from .review_result_contract import _normalize_counterparty_block
+
+        return _normalize_counterparty_block(counterparty)
+    except Exception:  # noqa: BLE001 -- never let a shape-helper import break the write.
+        block = {
+            "name": "",
+            "confidence": 0.0,
+            "verified": False,
+            "first_party": "",
+            "second_party": "",
+            "source": "ai_review_preamble",
+        }
+        if not isinstance(counterparty, dict):
+            return block
+        name = str(counterparty.get("name") or "").strip()
+        block["name"] = name
+        block["first_party"] = str(counterparty.get("first_party") or "").strip()
+        block["second_party"] = str(counterparty.get("second_party") or "").strip()
+        block["source"] = str(counterparty.get("source") or "ai_review_preamble").strip() or "ai_review_preamble"
+        try:
+            confidence = float(counterparty.get("confidence"))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence != confidence or confidence in (float("inf"), float("-inf")):
+            confidence = 0.0
+        block["confidence"] = max(0.0, min(1.0, confidence))
+        block["verified"] = bool(counterparty.get("verified")) and bool(name)
+        return block
 
 
 def set_clause_reviewer_decision(
@@ -699,6 +781,14 @@ def create_matter(
         "review_result": review_result,
         **triage,
     }
+    # SHARED CONTRACT: persist the AI-extracted counterparty at the durable nested
+    # location matter["intake_metadata"]["counterparty"] (other teammates read it via
+    # an accessor keyed to exactly this path). It is set directly on the matter dict
+    # -- NOT routed through the intake_metadata PARAMETER -- because _intake_metadata()
+    # flattens that parameter into top-level STRING fields and drops nested dicts. The
+    # whole matter dict is json.dump/json.load round-tripped with no field whitelist,
+    # so a nested dict written here persists + reloads faithfully.
+    _attach_intake_counterparty(matter, review_result)
     pruned_matters: list[dict[str, Any]] = []
     duplicate_matter: dict[str, Any] | None = None
     saved_new_record = False
@@ -1265,6 +1355,29 @@ def _intake_metadata(source_filename: str, received_at: str, metadata: dict[str,
         if value:
             intake[field] = value
     return intake
+
+
+def _attach_intake_counterparty(matter: dict[str, Any], review_result: object) -> None:
+    """Persist the AI-extracted counterparty at matter["intake_metadata"]["counterparty"].
+
+    SHARED CONTRACT: this exact nested location is what other teammates' accessor
+    reads. The counterparty block is produced by the AI-first review and rides on
+    review_result["counterparty"]; copy it onto the matter's intake_metadata so it is
+    durable (the matter dict is json-persisted whole) and reloads in the same shape.
+
+    Best-effort + fail-open: when the review result carries no counterparty block the
+    intake_metadata is left untouched (no empty key churn), and this never raises.
+    """
+    if not isinstance(review_result, dict):
+        return
+    counterparty = review_result.get("counterparty")
+    if not isinstance(counterparty, dict):
+        return
+    intake_metadata = matter.get("intake_metadata")
+    if not isinstance(intake_metadata, dict):
+        intake_metadata = {}
+        matter["intake_metadata"] = intake_metadata
+    intake_metadata["counterparty"] = copy.deepcopy(counterparty)
 
 
 def _clean_metadata_value(value: object, max_length: int = 500) -> str:

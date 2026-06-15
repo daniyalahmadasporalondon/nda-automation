@@ -17,6 +17,29 @@ from nda_automation import drive_folder_migration, drive_integration
 FOLDER_MIME = drive_integration.FOLDER_MIME
 
 
+def _matter_entries(plan):
+    """Matter-tier entries only (the migration now also plans the counterparty tier).
+
+    Matter-tier tests assert on these so an additive counterparty-tier entry — e.g.
+    the no-anchor parent folder ``Acme Fintech`` normalizing to itself
+    (``already_current``) — never perturbs a matter-tier expectation.
+    """
+    return [e for e in plan["entries"] if e.get("tier") == "matter"]
+
+
+def _counterparty_entries(plan):
+    """Counterparty-tier entries only (top-level NDAs/<counterparty>/ folders)."""
+    return [e for e in plan["entries"] if e.get("tier") == "counterparty"]
+
+
+def _counts_by_tier(plan, tier):
+    counts = {}
+    for entry in plan["entries"]:
+        if entry.get("tier") == tier:
+            counts[entry["action"]] = counts.get(entry["action"], 0) + 1
+    return counts
+
+
 def _unescape(value: str) -> str:
     return value.replace("\\'", "'").replace("\\\\", "\\")
 
@@ -143,8 +166,8 @@ class FolderMigrationPlanTests(unittest.TestCase):
             root_folder_id="root", service=drive, lookup_matter=matters.get
         )
         self.assertTrue(plan["root_found"])
-        self.assertEqual(plan["counts"], {"rename": 1})
-        entry = plan["entries"][0]
+        self.assertEqual(_counts_by_tier(plan, "matter"), {"rename": 1})
+        entry = _matter_entries(plan)[0]
         self.assertEqual(entry["action"], "rename")
         self.assertEqual(entry["new_name"], "2026-05-30 · Mutual NDA · 9d0e")
         self.assertEqual(entry["match_source"], "summary")
@@ -167,7 +190,7 @@ class FolderMigrationPlanTests(unittest.TestCase):
         plan = drive_folder_migration.plan_folder_renames(
             root_folder_id="root", service=drive, lookup_matter=matters.get
         )
-        self.assertEqual(plan["counts"], {"already_current": 1})
+        self.assertEqual(_counts_by_tier(plan, "matter"), {"already_current": 1})
 
     def test_unmatched_folder_is_reported_not_renamed(self):
         drive, _ = self._drive_with_matter_folder(
@@ -176,8 +199,8 @@ class FolderMigrationPlanTests(unittest.TestCase):
         plan = drive_folder_migration.plan_folder_renames(
             root_folder_id="root", service=drive, lookup_matter=lambda _mid: None
         )
-        self.assertEqual(plan["counts"], {"unmatched": 1})
-        self.assertEqual(plan["entries"][0]["action"], "unmatched")
+        self.assertEqual(_counts_by_tier(plan, "matter"), {"unmatched": 1})
+        self.assertEqual(_matter_entries(plan)[0]["action"], "unmatched")
 
     def test_name_fallback_is_review_only_never_auto_renamed(self):
         # A folder with no summary that only matches by parsed name must NOT be
@@ -195,7 +218,7 @@ class FolderMigrationPlanTests(unittest.TestCase):
         plan = drive_folder_migration.plan_folder_renames(
             root_folder_id="root", service=drive, lookup_matter=matters.get
         )
-        entry = plan["entries"][0]
+        entry = _matter_entries(plan)[0]
         self.assertEqual(entry["action"], "review")
         self.assertEqual(entry["match_source"], "name")
         self.assertEqual(entry["new_name"], "2026-05-30 · Old NDA · ykey")
@@ -214,7 +237,7 @@ class FolderMigrationPlanTests(unittest.TestCase):
         plan = drive_folder_migration.plan_folder_renames(
             root_folder_id="root", service=drive, lookup_matter=matters.get
         )
-        self.assertEqual(plan["entries"][0]["action"], "unmatched")
+        self.assertEqual(_matter_entries(plan)[0]["action"], "unmatched")
 
     def test_invalid_summary_falls_through_to_unmatched(self):
         drive = FakeDrive()
@@ -226,7 +249,7 @@ class FolderMigrationPlanTests(unittest.TestCase):
         plan = drive_folder_migration.plan_folder_renames(
             root_folder_id="root", service=drive, lookup_matter=lambda _mid: None
         )
-        self.assertEqual(plan["entries"][0]["action"], "unmatched")
+        self.assertEqual(_matter_entries(plan)[0]["action"], "unmatched")
 
     def test_distinct_refs_yield_two_clean_renames(self):
         # Same date + title but DIFFERENT ref codes -> no false collision.
@@ -245,8 +268,9 @@ class FolderMigrationPlanTests(unittest.TestCase):
         plan = drive_folder_migration.plan_folder_renames(
             root_folder_id="root", service=drive, lookup_matter=matters.get
         )
-        self.assertEqual(sorted(e["action"] for e in plan["entries"]), ["rename", "rename"])
-        self.assertEqual({e["new_name"] for e in plan["entries"]}, {"2026-05-30 · NDA · 0011", "2026-05-30 · NDA · 0022"})
+        matter_entries = _matter_entries(plan)
+        self.assertEqual(sorted(e["action"] for e in matter_entries), ["rename", "rename"])
+        self.assertEqual({e["new_name"] for e in matter_entries}, {"2026-05-30 · NDA · 0011", "2026-05-30 · NDA · 0022"})
 
     def test_two_folders_colliding_on_ref_mark_second_conflict(self):
         # Two ids ending in the SAME 4 alnum chars -> same ref -> same new name.
@@ -266,7 +290,7 @@ class FolderMigrationPlanTests(unittest.TestCase):
         plan = drive_folder_migration.plan_folder_renames(
             root_folder_id="root", service=drive, lookup_matter=matters.get
         )
-        actions = sorted(e["action"] for e in plan["entries"])
+        actions = sorted(e["action"] for e in _matter_entries(plan))
         self.assertEqual(actions, ["conflict", "rename"])
 
     def test_true_collision_against_existing_folder(self):
@@ -385,6 +409,191 @@ class FolderMigrationFormatTests(unittest.TestCase):
         text = drive_folder_migration.format_plan(plan)
         self.assertIn("2026-05-30 · Mutual NDA · 9d0e", text)
         self.assertIn("matched by summary", text)
+
+
+class CounterpartyTierPlanTests(unittest.TestCase):
+    """Counterparty-tier planning: rename / already_current / skip / collision.
+
+    The non-destructive merge policy is the load-bearing contract here: a name
+    collision NEVER moves children or trashes a folder — it suffixes the 2nd folder
+    and flags it for a manual human merge. These tests assert that no destructive
+    Drive call is ever issued.
+    """
+
+    def _drive_with_counterparties(self, names):
+        drive = FakeDrive()
+        root = drive.add_folder("NDAs", "root")
+        ids = {name: drive.add_folder(name, root) for name in names}
+        return drive, ids
+
+    def _plan(self, drive):
+        # lookup_matter is irrelevant to the counterparty tier (no matter folders
+        # here), but the signature requires it.
+        return drive_folder_migration.plan_folder_renames(
+            root_folder_id="root", service=drive, lookup_matter=lambda _mid: None
+        )
+
+    def test_counterparty_rename_strips_subject_cruft(self):
+        # "Fwd: Air India <> Aspora" -> "Air India".
+        drive, ids = self._drive_with_counterparties(["Fwd: Air India <> Aspora"])
+        plan = self._plan(drive)
+        cp = _counterparty_entries(plan)
+        self.assertEqual(len(cp), 1)
+        entry = cp[0]
+        self.assertEqual(entry["tier"], "counterparty")
+        self.assertEqual(entry["action"], "rename")
+        self.assertEqual(entry["old_name"], "Fwd: Air India <> Aspora")
+        self.assertEqual(entry["new_name"], "Air India")
+        self.assertFalse(entry["collision"])
+        self.assertEqual(entry["folder_id"], ids["Fwd: Air India <> Aspora"])
+        # The plan is READ-ONLY.
+        self.assertEqual(drive.store["update_calls"], [])
+
+    def test_counterparty_no_anchor_is_left_unchanged(self):
+        # No first-party token -> normalize_counterparty returns it unchanged ->
+        # already_current. "Acme_Fintech" must never be mangled.
+        drive, _ = self._drive_with_counterparties(["Acme_Fintech"])
+        plan = self._plan(drive)
+        entry = _counterparty_entries(plan)[0]
+        self.assertEqual(entry["action"], "already_current")
+        self.assertEqual(entry["new_name"], "Acme_Fintech")
+
+    def test_counterparty_unknown_is_skipped_untouched(self):
+        # A lone-prefix subject normalizes to "" (Unknown). The folder is SKIPPED,
+        # never renamed to "Unknown" (which would be data loss).
+        drive, _ = self._drive_with_counterparties(["Fwd:"])
+        plan = self._plan(drive)
+        entry = _counterparty_entries(plan)[0]
+        self.assertEqual(entry["action"], "skip")
+        # new_name echoes the untouched old name; nothing is queued to apply.
+        self.assertEqual(entry["new_name"], "Fwd:")
+        result = drive_folder_migration.apply_folder_renames(plan["entries"], service=drive)
+        self.assertEqual(result["renamed"], 0)
+        self.assertEqual(drive.store["update_calls"], [])
+
+    def test_counterparty_idempotent_rerun_no_churn(self):
+        # After a first apply, a SECOND plan on the resulting names must produce zero
+        # renames: the cleaned names normalize to themselves -> already_current.
+        drive, _ = self._drive_with_counterparties(
+            ["Fwd: Air India <> Aspora", "Fwd: Aspora <> Coverstack"]
+        )
+        plan1 = self._plan(drive)
+        cp1 = _counterparty_entries(plan1)
+        self.assertEqual(sorted(e["action"] for e in cp1), ["rename", "rename"])
+        result1 = drive_folder_migration.apply_folder_renames(plan1["entries"], service=drive)
+        self.assertEqual(result1["renamed"], 2)
+        self.assertEqual(result1["failed"], 0)
+
+        plan2 = self._plan(drive)
+        cp2 = _counterparty_entries(plan2)
+        self.assertEqual(sorted(e["action"] for e in cp2), ["already_current", "already_current"])
+        before = list(drive.store["update_calls"])
+        result2 = drive_folder_migration.apply_folder_renames(plan2["entries"], service=drive)
+        self.assertEqual(result2["renamed"], 0)
+        # No additional Drive writes on the idempotent re-run.
+        self.assertEqual(drive.store["update_calls"], before)
+
+    def test_counterparty_collision_suffixes_second_never_merges(self):
+        # Both folders normalize to "Air India". The FIRST keeps the bare name; the
+        # SECOND is suffixed and flagged collision. NO children are moved and NO
+        # folder is trashed/deleted — only two name-only rename_file calls happen.
+        drive, ids = self._drive_with_counterparties(
+            ["Fwd: Air India <> Aspora", "Air India"]
+        )
+        # Give each counterparty a child matter folder so we can prove children are
+        # never moved between parents.
+        child_a = drive.add_folder("matter-A", ids["Fwd: Air India <> Aspora"])
+        child_b = drive.add_folder("matter-B", ids["Air India"])
+
+        plan = self._plan(drive)
+        cp = _counterparty_entries(plan)
+        actions = sorted(e["action"] for e in cp)
+        self.assertEqual(actions, ["already_current", "collision"])
+
+        collision = next(e for e in cp if e["action"] == "collision")
+        self.assertTrue(collision["collision"])
+        # Suffixed, deterministic, and distinct from the bare canonical name.
+        self.assertTrue(collision["new_name"].startswith("Air India ("))
+        self.assertNotEqual(collision["new_name"], "Air India")
+        self.assertIn("manual merge", collision["reason"].lower())
+
+        # Apply: exactly the collision folder is renamed (the other is
+        # already_current). Children stay under their ORIGINAL parents.
+        result = drive_folder_migration.apply_folder_renames(plan["entries"], service=drive)
+        self.assertEqual(result["renamed"], 1)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(drive.store["files"][child_a]["parent"], ids["Fwd: Air India <> Aspora"])
+        self.assertEqual(drive.store["files"][child_b]["parent"], ids["Air India"])
+        # NO folder was trashed/deleted: every folder still present and non-trashed.
+        for rec in drive.store["files"].values():
+            self.assertFalse(rec["trashed"])
+        self.assertEqual(len(drive.store["files"]), 5)  # NDAs + 2 cp + 2 children
+
+    def test_counterparty_collision_suffix_is_stable_across_reruns(self):
+        # The de-collision suffix is derived from the stable folder id, so a re-run
+        # produces the SAME suffixed name -> the collided folder is already_current
+        # on the second pass (idempotent, no re-churn).
+        drive, _ = self._drive_with_counterparties(
+            ["Air India", "Fwd: Air India <> Aspora"]
+        )
+        plan1 = self._plan(drive)
+        collision1 = next(e for e in _counterparty_entries(plan1) if e["action"] == "collision")
+        suffixed_name = collision1["new_name"]
+        drive_folder_migration.apply_folder_renames(plan1["entries"], service=drive)
+
+        plan2 = self._plan(drive)
+        cp2 = _counterparty_entries(plan2)
+        # Both are now already_current (bare "Air India" + the stable suffixed one).
+        self.assertEqual(sorted(e["action"] for e in cp2), ["already_current", "already_current"])
+        self.assertIn(suffixed_name, {e["new_name"] for e in cp2})
+
+    def test_apply_skips_skip_and_already_current_counterparty_actions(self):
+        # Only rename + collision mutate; skip / already_current are never applied.
+        drive = FakeDrive()
+        entries = [
+            {"tier": "counterparty", "action": "skip", "folder_id": "f1", "new_name": "Fwd:", "old_name": "Fwd:", "counterparty": "Fwd:"},
+            {"tier": "counterparty", "action": "already_current", "folder_id": "f2", "new_name": "Acme", "old_name": "Acme", "counterparty": "Acme"},
+        ]
+        result = drive_folder_migration.apply_folder_renames(entries, service=drive)
+        self.assertEqual(result["renamed"], 0)
+        self.assertEqual(drive.store["update_calls"], [])
+
+    def test_apply_executes_counterparty_rename_and_collision(self):
+        # Both the rename and collision counterparty actions resolve to a
+        # rename_file keyed on folder_id.
+        drive = FakeDrive()
+        root = drive.add_folder("NDAs", "root")
+        f_rename = drive.add_folder("Fwd: Air India <> Aspora", root)
+        f_coll = drive.add_folder("Air India", root)
+        entries = [
+            {"tier": "counterparty", "action": "rename", "folder_id": f_rename, "new_name": "Air India", "old_name": "Fwd: Air India <> Aspora", "counterparty": "Fwd: Air India <> Aspora"},
+            {"tier": "counterparty", "action": "collision", "collision": True, "folder_id": f_coll, "new_name": "Air India (abcd)", "old_name": "Air India", "counterparty": "Air India"},
+        ]
+        result = drive_folder_migration.apply_folder_renames(entries, service=drive)
+        self.assertEqual(result["renamed"], 2)
+        self.assertEqual(drive.name_of(f_rename), "Air India")
+        self.assertEqual(drive.name_of(f_coll), "Air India (abcd)")
+        # Both writes were renames (name-only updates); no parent change recorded.
+        self.assertEqual(len(drive.store["update_calls"]), 2)
+
+
+class CounterpartyTierFormatTests(unittest.TestCase):
+    def test_format_plan_renders_counterparty_section(self):
+        plan = {
+            "root_found": True,
+            "counts": {"rename": 1, "collision": 1, "skip": 1},
+            "entries": [
+                {"tier": "counterparty", "action": "rename", "old_name": "Fwd: Air India <> Aspora", "new_name": "Air India", "counterparty": "Fwd: Air India <> Aspora"},
+                {"tier": "counterparty", "action": "collision", "collision": True, "old_name": "Air India", "new_name": "Air India (a1b2)", "reason": "review for a MANUAL merge", "counterparty": "Air India"},
+                {"tier": "counterparty", "action": "skip", "old_name": "Fwd:", "new_name": "Fwd:", "reason": "Unknown — untouched", "counterparty": "Fwd:"},
+            ],
+        }
+        text = drive_folder_migration.format_plan(plan)
+        self.assertIn("Counterparty folders", text)
+        self.assertIn("Air India", text)
+        self.assertIn("COLLISION", text)
+        self.assertIn("Air India (a1b2)", text)
+        self.assertIn("skip", text)
 
 
 if __name__ == "__main__":
