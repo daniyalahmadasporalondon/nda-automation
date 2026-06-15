@@ -6,6 +6,7 @@
     <title>nda automation</title>
     <link rel="stylesheet" href="/static/styles.css?v=20260615a">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260615c">
+    <link rel="stylesheet" href="/static/css/corpus.css?v=20260615c">
   </head>
   <body>
     <div class="app-shell">
@@ -23,6 +24,9 @@
             </button>
             <button class="tab-button" id="repositoryTab" type="button" role="tab" aria-selected="false" aria-controls="repositoryView" data-tab="repository">
               <span>Repository</span>
+            </button>
+            <button class="tab-button" id="corpusTab" type="button" role="tab" aria-selected="false" aria-controls="corpusView" data-tab="corpus">
+              <span>Corpus</span>
             </button>
             <button class="tab-button" id="reviewTab" type="button" role="tab" aria-selected="false" aria-controls="reviewView" data-tab="review">
               <span>Review</span>
@@ -674,6 +678,23 @@
                 <div class="repository-detail-empty">Select a matter</div>
               </aside>
             </section>
+          </section>
+        </main>
+
+        <main class="corpus-view view" id="corpusView" role="tabpanel" aria-labelledby="corpusTab" data-view="corpus" hidden>
+          <section class="corpus-shell">
+            <header class="corpus-header">
+              <div class="corpus-title">
+                <h1>Corpus</h1>
+                <span class="corpus-summary" id="corpusSummary"></span>
+              </div>
+              <div class="corpus-header-actions">
+                <span class="corpus-drive-status" id="corpusDriveStatus" data-corpus-drive-status>Loading</span>
+                <button class="corpus-refresh" type="button" id="corpusRefreshButton" title="Re-list Drive and rebuild the corpus">Refresh</button>
+              </div>
+            </header>
+            <div class="corpus-empty" id="corpusEmpty" hidden></div>
+            <div class="corpus-groups" id="corpusGroups" data-corpus-groups></div>
           </section>
         </main>
 
@@ -1888,6 +1909,7 @@
     <script src="/static/js/repository-detail.js?v=20260615f"></script>
     <script src="/static/js/repository-actions.js?v=20260612c"></script>
     <script src="/static/js/repository.js?v=20260615g"></script>
+    <script src="/static/js/corpus.js?v=20260615c"></script>
     <script src="/static/js/manual-upload.js"></script>
     <script src="/static/js/send-document.js?v=20260606i"></script>
     <script src="/static/js/draft-intake.js?v=20260614b"></script>
@@ -1912,6 +1934,6 @@
     <script src="/static/js/dashboard-search.js?v=20260614a"></script>
     <script src="/static/js/notifications.js?v=20260615n"></script>
     <script src="/static/js/generator-editor.js?v=20260612c"></script>
-    <script src="/static/app.js?v=20260612c"></script>
+    <script src="/static/app.js?v=20260615c"></script>
   </body>
 </html>

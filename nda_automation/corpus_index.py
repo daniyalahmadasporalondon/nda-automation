@@ -1,0 +1,616 @@
+"""Corpus index — a read-only filing-cabinet view of a user's whole NDA corpus.
+
+The Corpus tab groups a user's NDAs **Counterparty -> Contract (matter) ->
+lifecycle artifacts**. There is no search, no AI, and no write/send/delete action
+here; this module only *reads* and *reconciles* two sources of truth:
+
+* **App-state (rich/fast):** ``repository.list_matters`` + :mod:`artifact_registry`
+  + :mod:`workflow` — the authoritative, tenant-filtered live state.
+* **Drive (durable/complete):** the app-owned ``NDAs`` tree, crawled read-only via
+  the four :mod:`drive_integration` listing helpers, with each matter folder's
+  ``metadata/matter_summary.json`` as the reconciliation record.
+
+The two are merged by ``matter_id`` so a matter that survives only in Drive (after
+a ``/tmp`` wipe wiped app-state) still appears — that is the whole point of the
+Drive pass. The app-state pass is the tenant filter and runs every request; only
+the (heavier) Drive listing is cached, per-owner, behind a short TTL.
+
+drive.file scope keeps this safe across tenants: the Drive token is the signed-in
+user's own, and ``drive.file`` only exposes folders THIS app created for THIS user,
+so the Drive crawl can never surface another tenant's documents.
+
+This module is a pure leaf (like ``matter_summary`` / ``workflow``): it takes a
+repository + ids + an optional injected ``drive_service`` and ``clock``, so it is
+fully testable without HTTP or a live Drive.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+from datetime import datetime, timezone
+from typing import Any, Callable, Optional
+
+from . import app_settings, artifact_registry, drive_integration, workflow
+
+# How long a per-owner Drive listing stays warm before a fresh crawl. The
+# app-state pass is always cheap and runs every request; only the Drive crawl is
+# cached so the tab does not hammer Drive on every load.
+CORPUS_DRIVE_CACHE_TTL_SECONDS = 300
+
+# drive.reason codes the frontend keys off when reconciled=false.
+REASON_NOT_CONNECTED = "not_connected"
+REASON_DRIVE_ERROR = "drive_error"
+REASON_RATE_LIMITED = "rate_limited"
+REASON_DRIVE_SKIPPED = "drive_skipped"
+
+# Reconciliation provenance for a matter.
+SOURCE_APP = "app"
+SOURCE_DRIVE = "drive"
+SOURCE_BOTH = "both"
+
+# role -> lifecycle stage label for an artifact. Mirrors artifact_registry.stage_for
+# but is kept simple/stable for display (the FE shows it verbatim). An outbound
+# artifact (role "sent") reads as "sent".
+_ROLE_STAGE_LABELS = {
+    artifact_registry.ROLE_ORIGINAL: "received",
+    artifact_registry.ROLE_REDLINE: "ai_redline",
+    artifact_registry.ROLE_REVIEWED: "legal_review",
+    artifact_registry.ROLE_GENERATED: "draft",
+    artifact_registry.ROLE_COUNTER: "counter",
+    artifact_registry.ROLE_SENT: "sent",
+    artifact_registry.ROLE_SIGNED: "signed",
+}
+
+DRIVE_ONLY_STAGE = "On file"
+
+# --- per-owner Drive-listing cache ----------------------------------------
+_CACHE_LOCK = threading.Lock()
+# owner_user_id -> {"built_at": float (monotonic-ish epoch), "built_at_iso": str,
+#                   "drive": {...}, "drive_matters": {matter_id: {...}},
+#                   "drive_orphans": [ {...} ]}
+_DRIVE_CACHE: dict[str, dict[str, Any]] = {}
+
+
+def invalidate_cache(owner_user_id: str = "") -> None:
+    """Drop the cached Drive listing for one owner, or the whole cache when empty."""
+    with _CACHE_LOCK:
+        if owner_user_id:
+            _DRIVE_CACHE.pop(owner_user_id, None)
+        else:
+            _DRIVE_CACHE.clear()
+
+
+def _now_epoch(clock: Optional[Callable[[], float]]) -> float:
+    if clock is not None:
+        return float(clock())
+    return datetime.now(timezone.utc).timestamp()
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# --- public entrypoint -----------------------------------------------------
+def build_corpus(
+    repository,
+    owner_user_id: str,
+    drive_owner_user_id: str,
+    *,
+    drive_service: Any | None = None,
+    force_refresh: bool = False,
+    clock: Optional[Callable[[], float]] = None,
+) -> dict[str, Any]:
+    """Build the corpus index payload for one owner (see module docstring).
+
+    Reads app-state every call (the authoritative tenant filter); the Drive crawl
+    is cached per owner under a short TTL. ``force_refresh`` bypasses the cache.
+    ``drive_service``/``clock`` are injectable for tests. A Drive hiccup never
+    raises out of here — it degrades to an app-state-only corpus with
+    ``drive.reconciled=false`` and a ``drive.reason`` code.
+    """
+    # 1. App-state pass — always runs; it is the tenant filter and the rich source.
+    app_matters = _build_app_state_matters(repository, owner_user_id)
+
+    # 2. Drive pass — cached per owner; only when Drive is connected.
+    drive_result = _drive_pass(
+        drive_owner_user_id,
+        drive_service=drive_service,
+        force_refresh=force_refresh,
+        clock=clock,
+    )
+
+    # 3. Merge by matter_id + 4. group/sort.
+    return _assemble(app_matters, drive_result)
+
+
+# --- app-state pass --------------------------------------------------------
+def _build_app_state_matters(repository, owner_user_id: str) -> dict[str, dict[str, Any]]:
+    """Map matter_id -> a partially-built CorpusMatter from app-state."""
+    matters: dict[str, dict[str, Any]] = {}
+    for matter in repository.list_matters(owner_user_id=owner_user_id):
+        matter_id = str(matter.get("id") or "")
+        if not matter_id:
+            continue
+        counterparty = artifact_registry.derive_counterparty(matter)
+        state = workflow.workflow_state(matter)
+        artifacts = artifact_registry.matter_artifacts(matter)
+        drive_block = matter.get("drive") if isinstance(matter.get("drive"), dict) else {}
+        synced_url = str(drive_block.get("matter_folder_url") or "")
+
+        matters[matter_id] = {
+            "matter_id": matter_id,
+            "counterparty": counterparty,
+            "title": _app_title(matter),
+            "created_at": str(matter.get("created_at") or ""),
+            "stage": str(state.get("phase_label") or "Intake"),
+            "status": str(state.get("board_column") or ""),
+            "source": SOURCE_APP,
+            "in_app": True,
+            "open_matter_url": _open_matter_url(matter_id),
+            "open_in_drive_url": synced_url,
+            "duplicate": False,
+            "duplicate_folder_urls": [],
+            "artifacts": [
+                _app_artifact(matter_id, sequence, artifact)
+                for sequence, artifact in enumerate(artifacts, start=1)
+            ],
+        }
+    return matters
+
+
+def _app_title(matter: dict[str, Any]) -> str:
+    for key in ("document_title", "subject"):
+        value = str(matter.get(key) or "").strip()
+        if value:
+            return value
+    return "NDA"
+
+
+def _app_artifact(matter_id: str, sequence: int, artifact: artifact_registry.Artifact) -> dict[str, Any]:
+    return {
+        "artifact_id": artifact.id,
+        "sequence": sequence,
+        "role": artifact.role,
+        "actor": artifact.actor,
+        "version": artifact.version,
+        "filename": artifact.name,
+        "stage_label": _stage_label(artifact.role),
+        "created_at": artifact.created_at,
+        "drive_file_url": "",
+        "download_url": _artifact_download_url(matter_id, artifact.id),
+    }
+
+
+def _stage_label(role: str) -> str:
+    return _ROLE_STAGE_LABELS.get(str(role or "").strip().casefold(), str(role or "") or "doc")
+
+
+# --- Drive pass ------------------------------------------------------------
+def _drive_pass(
+    drive_owner_user_id: str,
+    *,
+    drive_service: Any | None,
+    force_refresh: bool,
+    clock: Optional[Callable[[], float]],
+) -> dict[str, Any]:
+    """Return ``{drive, drive_matters, drive_orphans}`` for the merge step.
+
+    ``drive`` is the response ``drive`` block. ``drive_matters`` maps a Drive
+    ``matter_id`` to its reconciliation record + folder bookkeeping;
+    ``drive_orphans`` are summary-less folders (degraded entries). On any Drive
+    error/disconnection the maps are empty and ``drive.reconciled=false``.
+    """
+    connected = drive_service is not None or drive_integration.drive_connected(drive_owner_user_id)
+    if not connected:
+        return {
+            "drive": _drive_block(connected=False, reconciled=False, reason=REASON_NOT_CONNECTED),
+            "drive_matters": {},
+            "drive_orphans": [],
+        }
+
+    # Serve from a warm cache unless a refresh is forced.
+    if not force_refresh:
+        cached = _cached_drive(drive_owner_user_id, clock)
+        if cached is not None:
+            return cached
+
+    try:
+        crawl = _crawl_drive(drive_owner_user_id, drive_service=drive_service)
+    except drive_integration.DriveRateLimitError:
+        return {
+            "drive": _drive_block(connected=True, reconciled=False, reason=REASON_RATE_LIMITED),
+            "drive_matters": {},
+            "drive_orphans": [],
+        }
+    except drive_integration.DriveNotConnectedError:
+        return {
+            "drive": _drive_block(connected=False, reconciled=False, reason=REASON_NOT_CONNECTED),
+            "drive_matters": {},
+            "drive_orphans": [],
+        }
+    except drive_integration.DriveIntegrationError:
+        return {
+            "drive": _drive_block(connected=True, reconciled=False, reason=REASON_DRIVE_ERROR),
+            "drive_matters": {},
+            "drive_orphans": [],
+        }
+
+    built_at_iso = _now_iso()
+    result = {
+        "drive": _drive_block(
+            connected=True,
+            reconciled=True,
+            reason="",
+            built_at=built_at_iso,
+            from_cache=False,
+            stale=False,
+        ),
+        "drive_matters": crawl["drive_matters"],
+        "drive_orphans": crawl["drive_orphans"],
+    }
+    _store_drive_cache(drive_owner_user_id, result, built_at_iso, clock)
+    return result
+
+
+def _cached_drive(
+    drive_owner_user_id: str,
+    clock: Optional[Callable[[], float]],
+) -> dict[str, Any] | None:
+    now = _now_epoch(clock)
+    with _CACHE_LOCK:
+        entry = _DRIVE_CACHE.get(drive_owner_user_id)
+        if entry is None:
+            return None
+        if (now - float(entry.get("built_at", 0.0))) > CORPUS_DRIVE_CACHE_TTL_SECONDS:
+            return None
+        # Return a copy so callers cannot mutate the cached entry in place.
+        return {
+            "drive": {**entry["drive"], "from_cache": True},
+            "drive_matters": entry["drive_matters"],
+            "drive_orphans": entry["drive_orphans"],
+        }
+
+
+def _store_drive_cache(
+    drive_owner_user_id: str,
+    result: dict[str, Any],
+    built_at_iso: str,
+    clock: Optional[Callable[[], float]],
+) -> None:
+    with _CACHE_LOCK:
+        _DRIVE_CACHE[drive_owner_user_id] = {
+            "built_at": _now_epoch(clock),
+            "drive": dict(result["drive"]),
+            "drive_matters": result["drive_matters"],
+            "drive_orphans": result["drive_orphans"],
+        }
+
+
+def _crawl_drive(drive_owner_user_id: str, *, drive_service: Any | None) -> dict[str, Any]:
+    """Read-only crawl of the app-owned ``NDAs`` tree -> reconciliation records.
+
+    Layout: ``{root_parent}/NDAs/{counterparty}/{matter}/metadata/matter_summary.json``.
+    Each matter folder's summary is the reconciliation record. Folders without a
+    parseable summary become degraded "orphan" entries naming the folder.
+    """
+    settings = app_settings.drive_settings()
+    parent_id = str(settings.get("folder_id") or "")
+    root_id = drive_integration.find_folder(
+        name=drive_integration.DEFAULT_ROOT_FOLDER_NAME,
+        parent_id=parent_id,
+        owner_user_id=drive_owner_user_id,
+        service=drive_service,
+    )
+    drive_matters: dict[str, dict[str, Any]] = {}
+    drive_orphans: list[dict[str, Any]] = []
+    if not root_id:
+        return {"drive_matters": drive_matters, "drive_orphans": drive_orphans}
+
+    counterparty_folders = drive_integration.list_child_folders(
+        parent_id=root_id, owner_user_id=drive_owner_user_id, service=drive_service
+    )
+    for cp_folder in counterparty_folders:
+        cp_name = str(cp_folder.get("name") or "")
+        cp_id = str(cp_folder.get("id") or "")
+        if not cp_id:
+            continue
+        matter_folders = drive_integration.list_child_folders(
+            parent_id=cp_id, owner_user_id=drive_owner_user_id, service=drive_service
+        )
+        for matter_folder in matter_folders:
+            folder_id = str(matter_folder.get("id") or "")
+            folder_name = str(matter_folder.get("name") or "")
+            if not folder_id:
+                continue
+            folder_url = drive_integration.folder_web_url(folder_id)
+            summary = _read_matter_summary(
+                folder_id, drive_owner_user_id, drive_service=drive_service
+            )
+            if summary is None:
+                drive_orphans.append(
+                    {
+                        "counterparty": cp_name,
+                        "folder_name": folder_name,
+                        "folder_id": folder_id,
+                        "folder_url": folder_url,
+                    }
+                )
+                continue
+            matter_id = str(summary.get("matter_id") or "")
+            record = {
+                "summary": summary,
+                "counterparty": cp_name,
+                "folder_id": folder_id,
+                "folder_url": folder_url,
+                "folder_name": folder_name,
+            }
+            if not matter_id:
+                # A summary without a matter_id cannot be a join key; treat the
+                # folder as an orphan so it still surfaces (named by the folder).
+                drive_orphans.append(
+                    {
+                        "counterparty": cp_name,
+                        "folder_name": folder_name,
+                        "folder_id": folder_id,
+                        "folder_url": folder_url,
+                        "summary": summary,
+                    }
+                )
+                continue
+            existing = drive_matters.get(matter_id)
+            if existing is None:
+                record["duplicate_folder_urls"] = []
+                drive_matters[matter_id] = record
+            else:
+                # Same matter_id in a second Drive folder => duplicate. Keep the
+                # first as the canonical folder; list the rest.
+                existing["duplicate_folder_urls"].append(folder_url)
+    return {"drive_matters": drive_matters, "drive_orphans": drive_orphans}
+
+
+def _read_matter_summary(
+    matter_folder_id: str,
+    drive_owner_user_id: str,
+    *,
+    drive_service: Any | None,
+) -> dict[str, Any] | None:
+    metadata_id = drive_integration.find_folder(
+        name=drive_integration.METADATA_FOLDER_NAME,
+        parent_id=matter_folder_id,
+        owner_user_id=drive_owner_user_id,
+        service=drive_service,
+    )
+    if not metadata_id:
+        return None
+    summary_file_id = drive_integration.find_child_file(
+        name=drive_integration.MATTER_SUMMARY_FILENAME,
+        parent_id=metadata_id,
+        owner_user_id=drive_owner_user_id,
+        service=drive_service,
+    )
+    if not summary_file_id:
+        return None
+    raw = drive_integration.download_file_bytes(
+        file_id=summary_file_id, owner_user_id=drive_owner_user_id, service=drive_service
+    )
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return parsed
+
+
+# --- merge + group ---------------------------------------------------------
+def _assemble(
+    app_matters: dict[str, dict[str, Any]],
+    drive_result: dict[str, Any],
+) -> dict[str, Any]:
+    drive_matters: dict[str, dict[str, Any]] = drive_result["drive_matters"]
+    drive_orphans: list[dict[str, Any]] = drive_result["drive_orphans"]
+
+    merged: list[dict[str, Any]] = []
+
+    # App-state matters, enriched with Drive when the matter_id matches.
+    for matter_id, matter in app_matters.items():
+        drive_record = drive_matters.get(matter_id)
+        if drive_record is not None:
+            _merge_drive_into_app(matter, drive_record)
+        merged.append(matter)
+
+    # Drive-only matters: a summary matter_id not present in app-state.
+    for matter_id, drive_record in drive_matters.items():
+        if matter_id in app_matters:
+            continue
+        merged.append(_drive_only_matter(matter_id, drive_record))
+
+    # Summary-less folders: degraded single entries naming the folder.
+    for orphan in drive_orphans:
+        merged.append(_orphan_matter(orphan))
+
+    return _group_and_wrap(merged, drive_result["drive"])
+
+
+def _merge_drive_into_app(matter: dict[str, Any], drive_record: dict[str, Any]) -> None:
+    """In-both: prefer app-state fields, fill gaps from the summary, add Drive links."""
+    matter["source"] = SOURCE_BOTH
+    matter["open_in_drive_url"] = drive_record["folder_url"]
+    summary = drive_record.get("summary") or {}
+
+    if not matter.get("created_at"):
+        matter["created_at"] = str(summary.get("created_at") or "")
+    if not matter.get("counterparty"):
+        matter["counterparty"] = str(summary.get("counterparty") or "")
+
+    duplicate_urls = list(drive_record.get("duplicate_folder_urls") or [])
+    if duplicate_urls:
+        matter["duplicate"] = True
+        matter["duplicate_folder_urls"] = duplicate_urls
+
+    # Backfill drive_file_url onto app artifacts by artifact_id where the summary
+    # carries a Drive URL (a download still goes through the app-state route).
+    drive_urls = _summary_artifact_urls(summary)
+    if drive_urls:
+        for artifact in matter["artifacts"]:
+            url = drive_urls.get(artifact["artifact_id"])
+            if url:
+                artifact["drive_file_url"] = url
+
+
+def _drive_only_matter(matter_id: str, drive_record: dict[str, Any]) -> dict[str, Any]:
+    summary = drive_record.get("summary") or {}
+    workflow_state = summary.get("workflow_state") if isinstance(summary.get("workflow_state"), dict) else {}
+    duplicate_urls = list(drive_record.get("duplicate_folder_urls") or [])
+    counterparty = str(summary.get("counterparty") or "") or str(drive_record.get("counterparty") or "")
+    return {
+        "matter_id": str(summary.get("matter_id") or ""),
+        "counterparty": counterparty or artifact_registry.COUNTERPARTY_UNKNOWN,
+        "title": _drive_only_title(summary, drive_record),
+        "created_at": str(summary.get("created_at") or ""),
+        "stage": str((workflow_state or {}).get("phase_label") or "") or DRIVE_ONLY_STAGE,
+        "status": str((workflow_state or {}).get("board_column") or ""),
+        "source": SOURCE_DRIVE,
+        "in_app": False,
+        "open_matter_url": "",
+        "open_in_drive_url": drive_record["folder_url"],
+        "duplicate": bool(duplicate_urls),
+        "duplicate_folder_urls": duplicate_urls,
+        "artifacts": _drive_only_artifacts(summary),
+    }
+
+
+def _drive_only_title(summary: dict[str, Any], drive_record: dict[str, Any]) -> str:
+    for key in ("document_title", "subject"):
+        value = str(summary.get(key) or "").strip()
+        if value:
+            return value
+    folder_name = str(drive_record.get("folder_name") or "").strip()
+    return folder_name or "NDA"
+
+
+def _drive_only_artifacts(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
+    raw = summary.get("artifacts")
+    if not isinstance(raw, list):
+        return artifacts
+    for record in raw:
+        if not isinstance(record, dict):
+            continue
+        role = str(record.get("role") or "")
+        artifacts.append(
+            {
+                "artifact_id": str(record.get("artifact_id") or ""),
+                "sequence": int(record.get("sequence") or 0),
+                "role": role,
+                "actor": str(record.get("actor") or ""),
+                "version": int(record.get("version") or 1),
+                "filename": str(record.get("filename") or ""),
+                "stage_label": _stage_label(role),
+                "created_at": str(record.get("created_at") or ""),
+                "drive_file_url": str(record.get("drive_file_url") or ""),
+                # Drive-only artifacts have no app-state bytes to download.
+                "download_url": "",
+            }
+        )
+    return artifacts
+
+
+def _orphan_matter(orphan: dict[str, Any]) -> dict[str, Any]:
+    folder_name = str(orphan.get("folder_name") or "").strip() or "NDA"
+    summary = orphan.get("summary") if isinstance(orphan.get("summary"), dict) else {}
+    return {
+        "matter_id": str(summary.get("matter_id") or ""),
+        "counterparty": str(orphan.get("counterparty") or "") or artifact_registry.COUNTERPARTY_UNKNOWN,
+        "title": folder_name,
+        "created_at": str(summary.get("created_at") or ""),
+        "stage": DRIVE_ONLY_STAGE,
+        "status": "",
+        "source": SOURCE_DRIVE,
+        "in_app": False,
+        "open_matter_url": "",
+        "open_in_drive_url": str(orphan.get("folder_url") or ""),
+        "duplicate": False,
+        "duplicate_folder_urls": [],
+        "artifacts": _drive_only_artifacts(summary),
+    }
+
+
+def _summary_artifact_urls(summary: dict[str, Any]) -> dict[str, str]:
+    urls: dict[str, str] = {}
+    raw = summary.get("artifacts")
+    if not isinstance(raw, list):
+        return urls
+    for record in raw:
+        if not isinstance(record, dict):
+            continue
+        artifact_id = str(record.get("artifact_id") or "")
+        url = str(record.get("drive_file_url") or "")
+        if artifact_id and url:
+            urls[artifact_id] = url
+    return urls
+
+
+def _group_and_wrap(matters: list[dict[str, Any]], drive_block: dict[str, Any]) -> dict[str, Any]:
+    groups_by_cp: dict[str, list[dict[str, Any]]] = {}
+    for matter in matters:
+        counterparty = str(matter.get("counterparty") or "") or artifact_registry.COUNTERPARTY_UNKNOWN
+        matter["counterparty"] = counterparty
+        matter["artifact_count"] = len(matter["artifacts"])
+        groups_by_cp.setdefault(counterparty, []).append(matter)
+
+    groups: list[dict[str, Any]] = []
+    for counterparty in sorted(groups_by_cp, key=lambda name: name.casefold()):
+        cp_matters = sorted(
+            groups_by_cp[counterparty],
+            key=lambda matter: str(matter.get("created_at") or ""),
+            reverse=True,
+        )
+        groups.append(
+            {
+                "counterparty": counterparty,
+                "matter_count": len(cp_matters),
+                "matters": cp_matters,
+            }
+        )
+
+    matter_count = sum(group["matter_count"] for group in groups)
+    return {
+        "groups": groups,
+        "matter_count": matter_count,
+        "counterparty_count": len(groups),
+        "drive": drive_block,
+    }
+
+
+# --- url builders ----------------------------------------------------------
+def _open_matter_url(matter_id: str) -> str:
+    return f"/?tab=corpus&matter={matter_id}" if matter_id else ""
+
+
+def _artifact_download_url(matter_id: str, artifact_id: str) -> str:
+    if not matter_id or not artifact_id:
+        return ""
+    return f"/api/corpus/artifacts/{matter_id}/{artifact_id}"
+
+
+def _drive_block(
+    *,
+    connected: bool,
+    reconciled: bool,
+    reason: str,
+    built_at: str = "",
+    from_cache: bool = False,
+    stale: bool = False,
+) -> dict[str, Any]:
+    return {
+        "connected": connected,
+        "reconciled": reconciled,
+        "reason": reason,
+        "built_at": built_at,
+        "from_cache": from_cache,
+        "stale": stale,
+    }

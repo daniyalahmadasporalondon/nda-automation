@@ -79,6 +79,7 @@ from .review_engine import review_nda_with_active_engine
 from .routes import admin as admin_routes
 from .routes import approval as approval_routes
 from .routes import auth as auth_routes
+from .routes import corpus as corpus_routes
 from .routes import dashboard as dashboard_routes
 from .routes import drive as drive_routes
 from .routes import entities as entity_routes
@@ -231,6 +232,7 @@ _GET_EXACT_ROUTES = {
     "/api/ai/settings": admin_routes.handle_ai_settings,
     "/api/matters": matter_routes.handle_matter_list,
     "/api/matters/export": admin_routes.handle_matter_backup,
+    "/api/corpus": corpus_routes.handle_corpus,
     "/api/signing-entities": entity_routes.handle_signing_entities,
     "/api/telemetry": admin_routes.handle_telemetry,
 }
@@ -357,6 +359,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith("/api/matters/") and path.endswith("/marked-up-pdf"):
             pdf_markup_routes.handle_marked_up_pdf(self, path, send_body=send_body)
+            return
+        if path.startswith("/api/corpus/artifacts/"):
+            corpus_routes.handle_corpus_artifact_download(self, self.path, send_body=send_body)
             return
         if path.startswith("/api/matters/"):
             matter_routes.handle_matter_detail(self, path, send_body=send_body)

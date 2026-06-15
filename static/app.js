@@ -98,6 +98,22 @@ const repositoryController = createRepositoryController({
   showMatterReviewLoadError,
   reviewErrorFromPayload,
 });
+// Corpus tab (read-only filing-cabinet view). Fetches GET /api/corpus and paints
+// the Counterparty -> Contract -> artifact tree. "Open matter" reuses the
+// Repository open-matter flow then surfaces the Repository tab, mirroring the
+// dashboard-search openMatter seam below.
+const corpusController = createCorpusController({
+  panel: document.querySelector("#corpusView"),
+  listNode: document.querySelector("#corpusGroups"),
+  emptyNode: document.querySelector("#corpusEmpty"),
+  statusNode: document.querySelector("#corpusDriveStatus"),
+  summaryNode: document.querySelector("#corpusSummary"),
+  refreshButton: document.querySelector("#corpusRefreshButton"),
+  openMatter: (matterId) => {
+    repositoryController.openMatter(matterId);
+    activateTab("repository");
+  },
+});
 // Dashboard smart-search (v1, deterministic). Reads the same state.matters the
 // Repository tab loads and reuses repositoryController.openMatter so a result
 // click opens the matter exactly as the board does.
@@ -835,6 +851,12 @@ function activateTab(tabName) {
       notificationsController.observe(state.matters);
     });
     repositoryController.loadGmailStatus();
+  }
+  if (tabName === "corpus") {
+    // Lazy-load on activation; the controller serves a warm cache when the Drive
+    // pass is fresh, so re-activating the tab is cheap (mirrors repository's
+    // load-on-activate).
+    corpusController.load();
   }
   if (tabName === "playbook") {
     activateAdminSurface("playbook");
