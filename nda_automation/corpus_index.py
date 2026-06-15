@@ -31,7 +31,14 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
-from . import app_settings, artifact_registry, drive_integration, workflow
+from . import (
+    app_settings,
+    artifact_registry,
+    drive_integration,
+    governing_law_view,
+    review_state,
+    workflow,
+)
 
 # How long a per-owner Drive listing stays warm before a fresh crawl. The
 # app-state pass is always cheap and runs every request; only the Drive crawl is
@@ -61,6 +68,175 @@ _ROLE_STAGE_LABELS = {
     artifact_registry.ROLE_SENT: "sent",
     artifact_registry.ROLE_SIGNED: "signed",
 }
+
+# The schema version stamped on a matter_summary.json ``facets`` block. corpus_index
+# keys ``facets_available`` off the PRESENCE of this block, so a legacy summary
+# written before the facets enrichment degrades gracefully (see _drive_facets).
+FACETS_SCHEMA_VERSION = 1
+
+# Workflow statuses that resolve the ``signed`` facet. Anything else (intake /
+# review / approval, pre-send) resolves to ``None`` -> "unknown", so a signed
+# filter never silently includes or excludes a pre-send matter. Mirrors the FE
+# ``matterSigned`` polarity exactly.
+_SIGNED_TRUE_STATUSES: frozenset[str] = frozenset({workflow.STATUS_FULLY_SIGNED})
+_SIGNED_FALSE_STATUSES: frozenset[str] = frozenset(
+    {
+        workflow.STATUS_SENT_AWAITING_COUNTERPARTY,
+        workflow.STATUS_COUNTER_RECEIVED,
+        workflow.STATUS_SENDING,
+    }
+)
+
+
+def _empty_facets(*, available: bool) -> dict[str, Any]:
+    """The all-empty facet block. With ``available=False`` it is the legacy/degraded
+    shape: every facet at its empty/null value so a facet filter never positively
+    matches (the graceful-degradation linchpin)."""
+    return {
+        "governing_law": "",
+        "signed": None,
+        "has_clauses": [],
+        "term_years": None,
+        # The workflow enums (phase/status) the existing status/phase search
+        # dimensions filter on, surfaced here so the FE adapter can reconstruct a
+        # workflow_state over a corpus matter (which otherwise only carries the
+        # board_column + phase_label display strings). "" -> won't match any enum.
+        "phase": "",
+        "status": "",
+        "facets_available": available,
+    }
+
+
+def _signed_from_status(status: str) -> bool | None:
+    token = str(status or "").strip().lower()
+    if token in _SIGNED_TRUE_STATUSES:
+        return True
+    if token in _SIGNED_FALSE_STATUSES:
+        return False
+    return None
+
+
+def _flatten_clause_ids(clause_ids: dict[str, Any]) -> list[str]:
+    """Union of the pass/review/check clause-id buckets, de-duplicated + ordered.
+
+    Caveat (carry from memory): ``non_solicitation``/``non_compete`` are dynamic
+    clauses only the AI-first engine emits -- a deterministically-reviewed matter
+    never lists them, so ``has_clause`` for those resolves only on AI-reviewed
+    matters. Not fixed here; the matcher comment flags it.
+    """
+    seen: dict[str, None] = {}
+    if isinstance(clause_ids, dict):
+        for bucket in ("pass", "review", "check"):
+            ids = clause_ids.get(bucket)
+            if isinstance(ids, list):
+                for clause_id in ids:
+                    token = str(clause_id or "").strip()
+                    if token:
+                        seen.setdefault(token, None)
+    return list(seen)
+
+
+def _app_clause_ids(matter: dict[str, Any]) -> list[str]:
+    """The matter's clause-id buckets, preferring the stored ``review_state`` and
+    re-deriving from ``review_result`` clauses only when the stored block is absent."""
+    stored = matter.get("review_state")
+    if isinstance(stored, dict) and isinstance(stored.get("clause_ids"), dict):
+        return _flatten_clause_ids(stored["clause_ids"])
+    review_result = matter.get("review_result")
+    if isinstance(review_result, dict):
+        try:
+            derived = review_state.review_state_from_result(review_result)
+        except Exception:  # noqa: BLE001 -- an odd review shape never breaks the index.
+            return []
+        if isinstance(derived, dict) and isinstance(derived.get("clause_ids"), dict):
+            return _flatten_clause_ids(derived["clause_ids"])
+    return []
+
+
+def _app_term_years(matter: dict[str, Any]) -> float | None:
+    """Best-effort term in years from the stored ``term_and_survival`` clause result.
+
+    Reads the clean ``term_years`` scalar the checker persists; absent -> None (the
+    term facet degrades to "unknown" rather than guessing). Never raises.
+    """
+    review_result = matter.get("review_result")
+    if not isinstance(review_result, dict):
+        return None
+    clauses = review_result.get("clauses")
+    if not isinstance(clauses, list):
+        return None
+    for clause in clauses:
+        if not isinstance(clause, dict) or str(clause.get("id") or "") != "term_and_survival":
+            continue
+        value = clause.get("term_years")
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)) and value > 0:
+            return float(value)
+    return None
+
+
+def _app_facets(matter: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    """Derive the rich-facet block for an app-state matter (live, from review data).
+
+    Any single derivation failure degrades to the empty value for that facet rather
+    than breaking the corpus index; ``facets_available`` stays true because the
+    matter IS in app-state (it just may carry sparse review data).
+    """
+    facets = _empty_facets(available=True)
+    try:
+        facets["governing_law"] = governing_law_view.derive_governing_law(matter)
+    except Exception:  # noqa: BLE001
+        facets["governing_law"] = ""
+    try:
+        facets["signed"] = _signed_from_status(str(state.get("status") or ""))
+    except Exception:  # noqa: BLE001
+        facets["signed"] = None
+    try:
+        facets["has_clauses"] = _app_clause_ids(matter)
+    except Exception:  # noqa: BLE001
+        facets["has_clauses"] = []
+    try:
+        facets["term_years"] = _app_term_years(matter)
+    except Exception:  # noqa: BLE001
+        facets["term_years"] = None
+    facets["phase"] = str(state.get("phase") or "")
+    facets["status"] = str(state.get("status") or "")
+    return facets
+
+
+def _drive_facets(summary: dict[str, Any]) -> dict[str, Any]:
+    """Read the durable ``facets`` block from a matter_summary.json (see §2).
+
+    A legacy summary written before the facets enrichment has no ``facets`` block;
+    that matter degrades to ``facets_available=False`` so a facet filter skips it
+    (text/counterparty/date search still works). The values are read defensively so
+    a hand-edited durable summary can never break the index.
+    """
+    raw = summary.get("facets") if isinstance(summary, dict) else None
+    if not isinstance(raw, dict) or raw.get("schema_version") is None:
+        return _empty_facets(available=False)
+    signed = raw.get("signed")
+    has_clauses = raw.get("has_clauses")
+    term_years = raw.get("term_years")
+    # phase/status come from the durable workflow_state block, not the facets block
+    # (drive_integration writes them there); read defensively so a hand-edited summary
+    # can never break the index.
+    workflow_state = summary.get("workflow_state") if isinstance(summary.get("workflow_state"), dict) else {}
+    return {
+        "governing_law": str(raw.get("governing_law") or ""),
+        "signed": signed if isinstance(signed, bool) else None,
+        "has_clauses": [str(c).strip() for c in has_clauses if str(c or "").strip()]
+        if isinstance(has_clauses, list)
+        else [],
+        "term_years": float(term_years)
+        if isinstance(term_years, (int, float)) and not isinstance(term_years, bool) and term_years > 0
+        else None,
+        "phase": str((workflow_state or {}).get("phase") or ""),
+        "status": str((workflow_state or {}).get("status") or ""),
+        "facets_available": True,
+    }
+
 
 # --- per-owner Drive-listing cache ----------------------------------------
 _CACHE_LOCK = threading.Lock()
@@ -122,6 +298,26 @@ def build_corpus(
     return _assemble(app_matters, drive_result)
 
 
+def flatten_corpus(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Flatten a ``build_corpus`` payload's ``groups[].matters[]`` into a flat list.
+
+    The single place the grouped corpus payload is unfolded into the flat matter
+    list the search matcher / analytical counts consume, so the FE adapter and the
+    assistant share one contract. Tolerant of a malformed payload (returns []).
+    """
+    groups = payload.get("groups") if isinstance(payload, dict) else None
+    if not isinstance(groups, list):
+        return []
+    flat: list[dict[str, Any]] = []
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        matters = group.get("matters")
+        if isinstance(matters, list):
+            flat.extend(matter for matter in matters if isinstance(matter, dict))
+    return flat
+
+
 # --- app-state pass --------------------------------------------------------
 def _build_app_state_matters(repository, owner_user_id: str) -> dict[str, dict[str, Any]]:
     """Map matter_id -> a partially-built CorpusMatter from app-state."""
@@ -151,6 +347,7 @@ def _build_app_state_matters(repository, owner_user_id: str) -> dict[str, dict[s
             "open_in_drive_url": synced_url,
             "duplicate": False,
             "duplicate_folder_urls": [],
+            "facets": _app_facets(matter, state),
             "artifacts": [
                 _app_artifact(matter_id, sequence, artifact)
                 for sequence, artifact in enumerate(artifacts, start=1)
@@ -494,6 +691,7 @@ def _drive_only_matter(matter_id: str, drive_record: dict[str, Any]) -> dict[str
         "open_in_drive_url": drive_record["folder_url"],
         "duplicate": bool(duplicate_urls),
         "duplicate_folder_urls": duplicate_urls,
+        "facets": _drive_facets(summary),
         "artifacts": _drive_only_artifacts(summary),
     }
 
@@ -550,6 +748,7 @@ def _orphan_matter(orphan: dict[str, Any]) -> dict[str, Any]:
         "open_in_drive_url": str(orphan.get("folder_url") or ""),
         "duplicate": False,
         "duplicate_folder_urls": [],
+        "facets": _drive_facets(summary),
         "artifacts": _drive_only_artifacts(summary),
     }
 

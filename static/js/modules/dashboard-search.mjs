@@ -65,6 +65,10 @@ const DASHBOARD_SEARCH_CHIPS = [
 function matterStatus(matter) {
   const fromWorkflow = matter?.workflow_state?.status;
   if (fromWorkflow) return String(fromWorkflow).trim().toLowerCase();
+  // Corpus matters carry the workflow status enum on facets.status (their top-level
+  // `status` is the board_column display string, not the enum).
+  const fromFacet = matter?.facets?.status;
+  if (fromFacet) return String(fromFacet).trim().toLowerCase();
   return String(matter?.status || "").trim().toLowerCase();
 }
 
@@ -249,6 +253,29 @@ const FILTER_SPEC_PHASES = new Set([
   "executed",
 ]);
 const FILTER_SPEC_SORTS = new Set(["oldest", "newest"]);
+// The clause ids a has_clause filter may name. MIRRORS the backend
+// (dashboard_search_intent.allowed_clause_ids): the Playbook native clauses plus the
+// demo dynamic clauses (non_solicitation / non_compete) that ONLY the AI-first engine
+// emits — so has_clause for those only resolves on AI-reviewed matters.
+const FILTER_SPEC_CLAUSE_IDS = new Set([
+  "mutuality",
+  "confidential_information",
+  "governing_law",
+  "term_and_survival",
+  "non_circumvention",
+  "signatures",
+  "non_solicitation",
+  "non_compete",
+]);
+// The governing-law approved-option ids. MIRRORS the Playbook approved_options
+// (dashboard_search_intent.allowed_governing_laws / governing_law_view).
+const FILTER_SPEC_GOVERNING_LAWS = new Set([
+  "india",
+  "delaware",
+  "england_and_wales",
+  "difc",
+  "ontario_canada",
+]);
 const FILTER_SPEC_MAX_TEXT_CHARS = 200;
 const FILTER_SPEC_MAX_MIN_AGE_DAYS = 365;
 
@@ -259,6 +286,9 @@ const NULL_FILTER_SPEC = Object.freeze({
   needs_attention: null,
   human_gate: null,
   has_issues: null,
+  has_clause: null,
+  signed: null,
+  governing_law: null,
   text: null,
   min_age_days: null,
   sort: null,
@@ -308,6 +338,9 @@ function validateFilterSpec(spec) {
     needs_attention: validateBoolValue(spec.needs_attention),
     human_gate: validateBoolValue(spec.human_gate),
     has_issues: validateBoolValue(spec.has_issues),
+    has_clause: validateEnumValue(spec.has_clause, FILTER_SPEC_CLAUSE_IDS),
+    signed: validateBoolValue(spec.signed),
+    governing_law: validateEnumValue(spec.governing_law, FILTER_SPEC_GOVERNING_LAWS),
     text: validateTextValue(spec.text),
     min_age_days: validateMinAgeDays(spec.min_age_days),
     sort: validateEnumValue(spec.sort, FILTER_SPEC_SORTS),
@@ -323,7 +356,10 @@ function filterSpecIsEmpty(spec) {
 // --- per-dimension matchers (read REAL matter fields) ----------------------
 
 function matterPhase(matter) {
-  return String(matter?.workflow_state?.phase || "").trim().toLowerCase();
+  const fromWorkflow = matter?.workflow_state?.phase;
+  if (fromWorkflow) return String(fromWorkflow).trim().toLowerCase();
+  // Corpus matters carry the workflow phase enum on facets.phase.
+  return String(matter?.facets?.phase || "").trim().toLowerCase();
 }
 
 function matterNeedsAttention(matter) {
@@ -339,6 +375,60 @@ function matterHasIssues(matter) {
   const failed = Number(matter?.requirements_failed || 0);
   const needsReview = Number(matter?.requirements_needs_review || 0);
   return (Number.isFinite(failed) && failed > 0) || (Number.isFinite(needsReview) && needsReview > 0);
+}
+
+// "Has this clause" — true when the clause id appears in the matter's clause-id
+// buckets. The corpus payload pre-flattens them onto matter.facets.has_clauses; an
+// app-state matter carries matter.review_state.clause_ids.{pass,review,check}. We read
+// the corpus facet first, then fall back to the app-state buckets, so the SAME matcher
+// works over both shapes. Note: the demo dynamic clauses (non_solicitation /
+// non_compete) are only emitted by the AI-first engine, so this resolves only on
+// AI-reviewed matters; a deterministically-reviewed matter never lists them. A matter
+// with neither shape (legacy Drive, facets_available=false) returns false — never a
+// false positive.
+function matterHasClause(matter, clauseId) {
+  const target = String(clauseId || "").trim().toLowerCase();
+  if (!target) return false;
+  const flattened = matter?.facets?.has_clauses;
+  if (Array.isArray(flattened)) {
+    return flattened.some((id) => String(id).trim().toLowerCase() === target);
+  }
+  const buckets = matter?.review_state?.clause_ids;
+  if (!buckets || typeof buckets !== "object") return false;
+  for (const key of ["pass", "review", "check"]) {
+    const ids = buckets[key];
+    if (Array.isArray(ids) && ids.some((id) => String(id).trim().toLowerCase() === target)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// "Is this signed?" — true=fully signed, false=sent/awaiting/counter/sending,
+// null=pre-send/unknown. The corpus payload pre-computes it on matter.facets.signed
+// (true|false|null); an app-state matter derives it from the workflow status. A matter
+// whose signed state is unknown (null) is NEVER included by a signed:true|false filter,
+// either polarity — we only match a matter whose signed state is known.
+function matterSigned(matter) {
+  const facetSigned = matter?.facets?.signed;
+  if (facetSigned === true || facetSigned === false) return facetSigned;
+  if (matter?.facets && "signed" in matter.facets) return null; // corpus shape, explicit unknown
+  const status = matterStatus(matter);
+  if (status === "fully_signed") return true;
+  if (status === "sent_awaiting_counterparty" || status === "counter_received" || status === "sending") {
+    return false;
+  }
+  return null;
+}
+
+// The matter's governing-law approved-option id. The corpus payload surfaces it on
+// matter.facets.governing_law; an app-state matter (if the backend ever surfaces it)
+// carries matter.governing_law. "" when no approved law is determinable, so a
+// governing_law filter never positively matches an unknown.
+function matterGoverningLaw(matter) {
+  const fromFacet = matter?.facets?.governing_law;
+  if (fromFacet != null && String(fromFacet).trim()) return String(fromFacet).trim().toLowerCase();
+  return String(matter?.governing_law || "").trim().toLowerCase();
 }
 
 // The matter's age in whole days, from created_at (fallback updated_at) vs `now`.
@@ -369,6 +459,14 @@ function applyFilterSpec(matters, rawSpec, now = Date.now()) {
     if (spec.needs_attention !== null && matterNeedsAttention(matter) !== spec.needs_attention) return false;
     if (spec.human_gate !== null && matterHumanGate(matter) !== spec.human_gate) return false;
     if (spec.has_issues !== null && matterHasIssues(matter) !== spec.has_issues) return false;
+    if (spec.has_clause !== null && !matterHasClause(matter, spec.has_clause)) return false;
+    if (spec.signed !== null) {
+      const signed = matterSigned(matter);
+      // A pre-send/unknown matter (signed === null) is never included by a signed
+      // filter, either polarity — we only match a matter whose signed state is known.
+      if (signed === null || signed !== spec.signed) return false;
+    }
+    if (spec.governing_law !== null && matterGoverningLaw(matter) !== spec.governing_law) return false;
     if (spec.text !== null) {
       const haystack = matterHaystack(matter);
       const terms = queryTerms(spec.text);
@@ -578,6 +676,55 @@ function stripLineageInternal(node) {
   return rest;
 }
 
+// --------------------------------------------------------------------------- //
+// Corpus adapter — map the GET /api/corpus payload into the matcher shape.
+// --------------------------------------------------------------------------- //
+
+// Adapt ONE CorpusMatter (counterparty -> matter -> facets) into the flat shape the
+// matchers + result rows read. The CorpusMatter already carries `facets`, which the
+// facets-aware matchers (matterSigned / matterHasClause / matterGoverningLaw /
+// matterStatus / matterPhase) read directly, so this is a thin remap: `matter_id` ->
+// `id`, `title` -> `subject`, and the provenance fields the open link / Summarize
+// affordance respect (in_app, source, open_matter_url, open_in_drive_url). The facet
+// block is passed through untouched; a legacy Drive matter (facets_available=false)
+// simply never positively matches a facet filter.
+function adaptCorpusMatter(corpusMatter) {
+  if (!corpusMatter || typeof corpusMatter !== "object") return null;
+  const facets = corpusMatter.facets && typeof corpusMatter.facets === "object" ? corpusMatter.facets : {};
+  return {
+    id: String(corpusMatter.matter_id || ""),
+    subject: String(corpusMatter.title || ""),
+    counterparty: String(corpusMatter.counterparty || ""),
+    created_at: String(corpusMatter.created_at || ""),
+    artifacts: Array.isArray(corpusMatter.artifacts) ? corpusMatter.artifacts : [],
+    facets,
+    // Provenance for the open link + Summarize affordance: an app/both matter opens
+    // in-app and can be summarized; a Drive-only matter links out to Drive with no
+    // in-app deep link and no Summarize (there is no app-state to summarize).
+    in_app: corpusMatter.in_app === true,
+    source: String(corpusMatter.source || ""),
+    open_matter_url: String(corpusMatter.open_matter_url || ""),
+    open_in_drive_url: String(corpusMatter.open_in_drive_url || ""),
+  };
+}
+
+// Flatten a GET /api/corpus payload's groups[].matters[] into a flat, adapted matter
+// list (the single place the grouped corpus payload is unfolded for search). Tolerant
+// of a malformed payload (returns []). Mirrors corpus_index.flatten_corpus on the
+// backend so the FE search and the analytical counts share one contract.
+function flattenCorpusPayload(payload) {
+  const groups = payload && Array.isArray(payload.groups) ? payload.groups : [];
+  const flat = [];
+  for (const group of groups) {
+    const matters = group && Array.isArray(group.matters) ? group.matters : [];
+    for (const corpusMatter of matters) {
+      const adapted = adaptCorpusMatter(corpusMatter);
+      if (adapted && adapted.id) flat.push(adapted);
+    }
+  }
+  return flat;
+}
+
 export {
   COUNTERPARTY_UNKNOWN,
   DASHBOARD_ASSISTANT_ENDPOINT,
@@ -586,16 +733,21 @@ export {
   SEARCH_INTENT_ENDPOINT,
   SUMMARY_LABEL,
   SUMMARY_UNAVAILABLE_MESSAGE,
+  adaptCorpusMatter,
   applyFilterSpec,
   buildArtifactLineage,
   chipById,
   filterMattersByStatus,
   filterMattersByText,
   filterSpecIsEmpty,
+  flattenCorpusPayload,
   formatSummaryResult,
   groupMattersByCounterparty,
   matterCounterparty,
+  matterGoverningLaw,
+  matterHasClause,
   matterHaystack,
+  matterSigned,
   matterStatus,
   matterStatusLabel,
   matterTitle,

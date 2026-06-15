@@ -92,6 +92,11 @@ def _check_term_and_survival(
         if _year_term_has_required_scope(term_normalized, term, clause)
     ]
     has_term_within_cap = any(0 < term["years"] <= max_years for term in scoped_year_terms)
+    # The detected ordinary term in years, as a clean scalar (the largest scoped
+    # year-term found, or None). This is best-effort provenance for the corpus
+    # ``term_years`` facet -- it never affects the verdict, only surfaces what the
+    # check already computed so a "5-year NDA" search can match deterministically.
+    detected_term_years = _detected_term_years(scoped_year_terms)
     ordinary_over_cap_terms = [
         term
         for term in scoped_year_terms
@@ -121,6 +126,8 @@ def _check_term_and_survival(
                 f"to a fixed period of {cap_label} or less."
             ),
         )
+        if detected_term_years is not None:
+            result["term_years"] = detected_term_years
         _attach_survival_analysis(result, reference_analysis)
         return attach_structure_context(result, review_context, context_concepts)
     if ordinary_indefinite_matches:
@@ -133,6 +140,8 @@ def _check_term_and_survival(
                 f"with a fixed period of {cap_label} or less."
             ),
         )
+        if detected_term_years is not None:
+            result["term_years"] = detected_term_years
         _attach_survival_analysis(result, reference_analysis)
         return attach_structure_context(result, review_context, context_concepts)
     if has_term_within_cap:
@@ -163,6 +172,8 @@ def _check_term_and_survival(
         else:
             reason = f"Term or survival period is within the cap of {cap_label}."
             result = _match(clause, reason, evidence_paragraphs)
+        if detected_term_years is not None:
+            result["term_years"] = detected_term_years
         _attach_survival_analysis(result, reference_analysis)
         return attach_structure_context(result, review_context, context_concepts)
     result = _not_present(
@@ -420,6 +431,23 @@ def _paragraphs_with_scoped_year_terms(
         if terms:
             matches.append(paragraph)
     return matches
+
+
+def _detected_term_years(scoped_year_terms: List[Dict[str, object]]) -> float | None:
+    """The largest scoped ordinary year-term as a clean scalar (or None).
+
+    Pure provenance for the corpus ``term_years`` facet: it reads what the check
+    already extracted and never influences the verdict. None when no scoped term
+    was found, so a term search degrades to "unknown" rather than a wrong match.
+    """
+    years = [
+        float(term["years"])
+        for term in scoped_year_terms
+        if isinstance(term, dict) and isinstance(term.get("years"), (int, float)) and float(term["years"]) > 0
+    ]
+    if not years:
+        return None
+    return max(years)
 
 
 def _attach_survival_analysis(result: ClauseResult, reference_analysis: Dict[str, object]) -> None:

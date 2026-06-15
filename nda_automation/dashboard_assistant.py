@@ -25,6 +25,10 @@ MAX_SNIPPET_CHARS = 220
 
 AssistantSearchResolver = Callable[[str], dict[str, Any]]
 PlaybookProvider = Callable[[], Mapping[str, Any]]
+# Returns the flattened, owner-scoped CORPUS matter list (app-state + Drive-reconciled)
+# the corpus-wide analytical counts run over. Defaults to building it from the
+# repository + owner ids via corpus_index; tests inject a stub list.
+CorpusProvider = Callable[[], Sequence[dict[str, Any]]]
 CapabilityMatcher = Callable[["AssistantContext"], bool]
 CapabilityHandler = Callable[["AssistantContext"], dict[str, Any]]
 
@@ -49,15 +53,20 @@ class AssistantContext:
         owner_user_id: str = "",
         search_resolver: AssistantSearchResolver | None = None,
         playbook_provider: PlaybookProvider | None = None,
+        corpus_provider: CorpusProvider | None = None,
+        drive_owner_user_id: str = "",
     ) -> None:
         self.query = query
         self.lowered = query.lower()
         self.repository = repository
         self.owner_user_id = owner_user_id
+        self.drive_owner_user_id = drive_owner_user_id or owner_user_id
         self.search_resolver = search_resolver
         self.playbook_provider = playbook_provider or _active_playbook
+        self.corpus_provider = corpus_provider
         self._owner_matters: list[dict[str, Any]] | None = None
         self._public_matters: list[dict[str, Any]] | None = None
+        self._corpus_matters: list[dict[str, Any]] | None = None
         self._playbook: Mapping[str, Any] | None = None
 
     @property
@@ -73,6 +82,40 @@ class AssistantContext:
         return self._public_matters
 
     @property
+    def corpus_matters(self) -> list[dict[str, Any]]:
+        """The flattened, owner-scoped CORPUS matter list for analytical counts.
+
+        Built once per context: via the injected provider, else from the repository
+        + owner ids through corpus_index (app-state + Drive reconciliation), flattened
+        with corpus_index.flatten_corpus. A Drive hiccup never raises here (build_corpus
+        degrades to app-state-only), and any failure falls back to the app-state public
+        matters so a count is always answerable.
+        """
+        if self._corpus_matters is None:
+            self._corpus_matters = self._build_corpus_matters()
+        return self._corpus_matters
+
+    def _build_corpus_matters(self) -> list[dict[str, Any]]:
+        if self.corpus_provider is not None:
+            try:
+                provided = self.corpus_provider()
+            except Exception:  # noqa: BLE001 - a provider hiccup must not break counts.
+                provided = None
+            if provided is not None:
+                return [matter for matter in provided if isinstance(matter, dict)]
+        try:
+            from . import corpus_index  # noqa: PLC0415 - avoid an import cycle at load.
+
+            payload = corpus_index.build_corpus(
+                self.repository,
+                self.owner_user_id,
+                self.drive_owner_user_id,
+            )
+            return corpus_index.flatten_corpus(payload)
+        except Exception:  # noqa: BLE001 - degrade to app-state so a count still works.
+            return list(self.public_matters)
+
+    @property
     def playbook(self) -> Mapping[str, Any]:
         if self._playbook is None:
             self._playbook = self.playbook_provider()
@@ -86,6 +129,8 @@ def handle_dashboard_assistant_command(
     owner_user_id: str = "",
     search_resolver: AssistantSearchResolver | None = None,
     playbook_provider: PlaybookProvider | None = None,
+    corpus_provider: CorpusProvider | None = None,
+    drive_owner_user_id: str = "",
     ai_model: Any | None = None,
 ) -> dict[str, Any]:
     """Return a typed, side-effect-free Dashboard assistant response."""
@@ -99,6 +144,8 @@ def handle_dashboard_assistant_command(
         owner_user_id=owner_user_id,
         search_resolver=search_resolver,
         playbook_provider=playbook_provider,
+        corpus_provider=corpus_provider,
+        drive_owner_user_id=drive_owner_user_id,
     )
 
     # High-confidence deterministic guards take precedence over the inconsistent
@@ -190,6 +237,63 @@ def count_in_review_response(context: AssistantContext) -> dict[str, Any]:
         },
         "citations": _matter_citations(matches),
     }
+
+
+def count_corpus_matches_response(context: AssistantContext) -> dict[str, Any]:
+    """Answer a corpus-wide facet COUNT question ("how many unsigned DIFC NDAs").
+
+    Maps the query to a validated filter spec (deterministic, no matter data), applies
+    it to the flattened owner-scoped CORPUS list, and returns ``len(matches)``. This
+    gives correct corpus-wide counts (app-state + Drive-reconciled) for free, reusing
+    the same matcher contract the FE search uses. Legacy Drive matters with no facets
+    are honestly excluded from facet counts (an unknown facet never positively matches),
+    matching the filter semantics.
+    """
+    spec = dashboard_search_intent.deterministic_filter_spec(context.query)
+    matters = context.corpus_matters
+    matches = [
+        matter
+        for matter in matters
+        if isinstance(matter, Mapping) and dashboard_search_intent.corpus_matter_matches_spec(matter, spec)
+    ]
+    count = len(matches)
+    noun = "NDA matches" if count == 1 else "NDAs match"
+    interpreted = dashboard_search_intent.describe_filter_spec(spec)
+    if interpreted and interpreted != "All documents":
+        text = f"{count} {noun} {interpreted}."
+    else:
+        text = f"{count} {noun} your filter."
+    return {
+        "intent": "repository_question",
+        "version": DASHBOARD_ASSISTANT_VERSION,
+        "query": context.query,
+        "domain": "repository",
+        "question": "count_corpus_matches",
+        "answer": {
+            "text": text,
+            "count": count,
+            "filters": dict(spec),
+            "interpreted": interpreted,
+            "corpus_total": len(matters),
+        },
+        "citations": _corpus_matter_citations(matches),
+    }
+
+
+def _corpus_matter_citations(matters: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    citations: list[dict[str, Any]] = []
+    for matter in matters[:MAX_CITATIONS]:
+        facets = matter.get("facets") if isinstance(matter.get("facets"), Mapping) else {}
+        citation = {
+            "matter_id": str(matter.get("matter_id") or matter.get("id") or ""),
+            "title": str(matter.get("title") or matter.get("subject") or "Untitled NDA"),
+            "source": str(matter.get("source") or ""),
+        }
+        governing_law = str((facets or {}).get("governing_law") or "")
+        if governing_law:
+            citation["governing_law"] = governing_law
+        citations.append(citation)
+    return citations
 
 
 def last_sent_response(context: AssistantContext) -> dict[str, Any]:
@@ -1513,6 +1617,54 @@ def _looks_like_count_in_review_question(lowered: str) -> bool:
     )
 
 
+def _looks_like_corpus_facet_count_question(lowered: str) -> bool:
+    """A "how many" question scoped to a CORPUS FACET (signed / governing law / clause).
+
+    Routes corpus-wide facet counts ("how many unsigned DIFC NDAs", "how many signed
+    India agreements", "how many NDAs have a non-solicit") to the corpus matcher. Kept
+    narrow so it never hijacks the in-review count (count_in_review), the playbook
+    clause count, or a matter-scoped clause count: it requires a count cue AND a facet
+    cue AND must NOT be an in-review / playbook / clause-count question.
+    """
+    if not _contains_any(lowered, ("how many", "number of", "count")):
+        return False
+    if _looks_like_count_in_review_question(lowered):
+        return False
+    if "playbook" in lowered:
+        return False
+    # A clause-COUNT question ("how many clauses") is matter/playbook-scoped, not a
+    # corpus facet filter; leave it to the clause-count handlers.
+    if _contains_any(lowered, ("clause", "clauses")) and not _contains_any(
+        lowered,
+        ("non-solicit", "non solicit", "nonsolicit", "non-compete", "non compete", "noncompete", "non-circumvention", "non circumvention"),
+    ):
+        return False
+    facet_cue = _contains_any(
+        lowered,
+        (
+            "signed",
+            "unsigned",
+            "executed",
+            "difc",
+            "india",
+            "delaware",
+            "england",
+            "english law",
+            "ontario",
+            "governing law",
+            "non-solicit",
+            "non solicit",
+            "nonsolicit",
+            "non-compete",
+            "non compete",
+            "noncompete",
+            "non-circumvention",
+            "non circumvention",
+        ),
+    )
+    return facet_cue
+
+
 def _looks_like_last_sent_question(lowered: str) -> bool:
     return _contains_any(lowered, ("last", "latest", "most recent", "recent")) and _contains_any(
         lowered,
@@ -1900,6 +2052,14 @@ ASSISTANT_CAPABILITIES: tuple[AssistantCapability, ...] = (
         description="Search owner-scoped matter contents, review clauses, and the trusted Playbook.",
         matcher=lambda context: _looks_like_search_system_request(context.lowered),
         handler=search_system_response,
+    ),
+    AssistantCapability(
+        name="count_corpus_matches",
+        domain="repository",
+        intent="repository_question",
+        description="Count NDAs across the whole corpus by facet (signed, governing law, clause).",
+        matcher=lambda context: _looks_like_corpus_facet_count_question(context.lowered),
+        handler=count_corpus_matches_response,
     ),
     AssistantCapability(
         name="count_in_review",
