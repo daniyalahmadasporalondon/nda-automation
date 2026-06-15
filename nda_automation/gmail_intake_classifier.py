@@ -28,12 +28,12 @@ import urllib.request
 from collections.abc import Mapping
 from typing import Any
 
-LOGGER = logging.getLogger(__name__)
-
 from . import app_settings
 from .ai_review import OPENROUTER_API_KEY_ENV, OPENROUTER_CHAT_COMPLETIONS_ENDPOINT, _trusted_https_context
 from .openrouter_usage import record_openrouter_usage
 from .untrusted_text import neutralize_untrusted_text as _neutralize_shared_untrusted_text
+
+LOGGER = logging.getLogger(__name__)
 
 GMAIL_INTAKE_MODEL_ENV = "NDA_GMAIL_INTAKE_MODEL"
 # Tournament winner; the slug resolves to deepseek-v4-flash-20260423 on OpenRouter.
