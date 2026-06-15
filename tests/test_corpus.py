@@ -272,6 +272,43 @@ class CorpusIndexTests(unittest.TestCase):
         self.assertEqual(y["artifacts"][0]["download_url"], "")
         self.assertEqual(y["artifacts"][0]["drive_file_url"], "https://drive.google.com/file/d/y_art/view")
 
+    # 2b. Regression: non-numeric sequence/version in a hand-edited
+    # matter_summary.json must NOT raise out of the Drive pass (it ran outside the
+    # _crawl_drive try/except, so a bad value surfaced as an unhandled 500 that
+    # broke the whole Corpus tab). The value coerces to the existing default.
+    def test_non_numeric_artifact_version_sequence_does_not_raise(self):
+        fake = FakeDriveService()
+        bad_summary = _summary_for(
+            "matter_badmeta01",
+            counterparty="Acme Corp",
+            artifacts=[
+                {
+                    "artifact_id": "artifact_bad",
+                    "sequence": "v2",  # hand-edited, non-numeric
+                    "role": "signed",
+                    "actor": "human",
+                    "version": "v2",  # hand-edited, non-numeric
+                    "filename": "08_signed.pdf",
+                    "drive_file_url": "https://drive.google.com/file/d/bad_art/view",
+                    "created_at": "2026-04-01T09:00:00Z",
+                }
+            ],
+        )
+        _build_drive_tree(fake, counterparty="Acme Corp", summary=bad_summary)
+
+        # Must not raise; the Drive pass stays reconciled.
+        payload = corpus_index.build_corpus(
+            self.repo, "owner-a", "drive-owner", drive_service=fake
+        )
+
+        self.assertTrue(payload["drive"]["reconciled"])
+        matters = {m["matter_id"]: m for g in payload["groups"] for m in g["matters"]}
+        # The matter still appears, just with coerced defaults.
+        self.assertIn("matter_badmeta01", matters)
+        artifact = matters["matter_badmeta01"]["artifacts"][0]
+        self.assertEqual(artifact["sequence"], 0)
+        self.assertEqual(artifact["version"], 1)
+
     # 3. Duplicate detection.
     def test_duplicate_detection_flags_repeated_matter_id(self):
         matter = _seed_matter(self.repo, owner="owner-a", title="Dup NDA", subject="Dup NDA")

@@ -186,6 +186,20 @@ def _stage_label(role: str) -> str:
     return _ROLE_STAGE_LABELS.get(str(role or "").strip().casefold(), str(role or "") or "doc")
 
 
+def _safe_int(value: object, default: int) -> int:
+    """Coerce a Drive summary integer field, falling back to ``default``.
+
+    ``matter_summary.json`` is durable, hand-editable Drive data, so a record may
+    carry a non-numeric ``sequence``/``version`` (e.g. ``"v2"``). Mirrors
+    :func:`artifact_registry._coerce_version`: a bad value must never raise out of
+    the Drive pass — it degrades to a sane default instead.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 # --- Drive pass ------------------------------------------------------------
 def _drive_pass(
     drive_owner_user_id: str,
@@ -504,10 +518,10 @@ def _drive_only_artifacts(summary: dict[str, Any]) -> list[dict[str, Any]]:
         artifacts.append(
             {
                 "artifact_id": str(record.get("artifact_id") or ""),
-                "sequence": int(record.get("sequence") or 0),
+                "sequence": _safe_int(record.get("sequence") or 0, 0),
                 "role": role,
                 "actor": str(record.get("actor") or ""),
-                "version": int(record.get("version") or 1),
+                "version": _safe_int(record.get("version") or 1, 1),
                 "filename": str(record.get("filename") or ""),
                 "stage_label": _stage_label(role),
                 "created_at": str(record.get("created_at") or ""),
