@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Pre-commit hook: block commits that change a static asset without bumping its
+# ?v= cache-bust token in static/index.html.
+#
+# Install (from the repo root):
+#   ln -sf ../../scripts/hooks/pre-commit .git/hooks/pre-commit
+# or, to point git at the tracked hooks dir for all hooks:
+#   git config core.hooksPath scripts/hooks
+#
+# Bypass for an intentional commit (rare): git commit --no-verify
+set -euo pipefail
+
+# Resolve the repo root so the hook works regardless of where git invokes it.
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+python3 "${REPO_ROOT}/scripts/cache_bust_guard.py" --staged

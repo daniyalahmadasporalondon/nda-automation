@@ -58,6 +58,22 @@ jobs:
       - name: Run Python tests
         run: python -m pytest -q
 
+      - name: Guard static cache-bust tokens
+        # Fail if a static asset changed without bumping its ?v= token in
+        # static/index.html. On PRs, diff against the merge base; on pushes,
+        # diff against the previous commit.
+        run: |
+          if [ -n "${GITHUB_BASE_REF:-}" ]; then
+            git fetch --no-tags --depth=1 origin "${GITHUB_BASE_REF}"
+            BASE="origin/${GITHUB_BASE_REF}"
+          else
+            BASE="${{ github.event.before }}"
+            if [ -z "${BASE}" ] || ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+              BASE="HEAD~1"
+            fi
+          fi
+          python3 scripts/cache_bust_guard.py --base "${BASE}"
+
       - name: Check JavaScript syntax
         run: |
           find static -name '*.js' -print0 | xargs -0 -n1 node --check
