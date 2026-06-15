@@ -280,6 +280,51 @@ def count_corpus_matches_response(context: AssistantContext) -> dict[str, Any]:
     }
 
 
+def corpus_query_tool_facts(context: AssistantContext, args: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Run an exact, owner-scoped facet COUNT/SEARCH over the FULL corpus for the AI tool.
+
+    The thin-tool seam the AI assistant calls so it can answer corpus-wide count AND
+    search questions ("how many unsigned DIFC NDAs", "which signed India NDAs do we
+    have") over the WHOLE corpus (app-state + Drive-reconciled), not just the desk.
+
+    The AI parses the NL question into a ``filter_spec``; this tool VALIDATES it through
+    ``validate_filter_spec`` (the authoritative schema gate — anything off-schema is
+    dropped) and matches it deterministically over the owner-scoped
+    ``context.corpus_matters`` with the same ``corpus_matter_matches_spec`` the FE search
+    and the deterministic counter use. The corpus list is already owner-scoped exactly as
+    /api/corpus scopes it (built from the same owner ids), so no cross-tenant matter can
+    enter the match. Only thin, capped facts (a count + a small list of matching matter
+    titles/governing-law) are returned — the whole corpus is NEVER dumped into the prompt;
+    the tool does the matching and the model phrases the answer.
+    """
+    args = args or {}
+    raw_spec = args.get("filter_spec")
+    # If the model gives no/empty spec, fall back to parsing the NL query
+    # deterministically so the tool still answers rather than counting everything.
+    if isinstance(raw_spec, Mapping) and not dashboard_search_intent.filter_spec_is_empty(
+        dashboard_search_intent.validate_filter_spec(raw_spec)
+    ):
+        spec = dashboard_search_intent.validate_filter_spec(raw_spec)
+    else:
+        spec = dashboard_search_intent.deterministic_filter_spec(context.query)
+    matters = context.corpus_matters
+    matches = [
+        matter
+        for matter in matters
+        if isinstance(matter, Mapping) and dashboard_search_intent.corpus_matter_matches_spec(matter, spec)
+    ]
+    interpreted = dashboard_search_intent.describe_filter_spec(spec)
+    return {
+        "domain": "repository",
+        "question": "count_corpus_matches",
+        "count": len(matches),
+        "corpus_total": len(matters),
+        "filters": dict(spec),
+        "interpreted": interpreted,
+        "matches": _corpus_matter_citations(matches),
+    }
+
+
 def _corpus_matter_citations(matters: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     citations: list[dict[str, Any]] = []
     for matter in matters[:MAX_CITATIONS]:
