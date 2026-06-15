@@ -630,6 +630,14 @@
   text-align: center;
 }
 
+/* The `display: flex` above overrides the UA `[hidden] { display: none }`, so the
+   banner stayed visible even when corpus.js set hidden=true. Make the hidden
+   attribute authoritative so the empty-state only shows when a filter/search
+   yields zero results. */
+.corpus-noresults[hidden] {
+  display: none;
+}
+
 .corpus-skeleton {
   pointer-events: none;
 }
