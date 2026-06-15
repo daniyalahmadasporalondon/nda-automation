@@ -4765,8 +4765,13 @@ async function testReviewOutboundSendModal(page) {
   await page.waitForSelector("#studioSendButton:not(:disabled):not(.blocked)");
   assert.equal(await page.locator("#studioExportPdfButton").count(), 0);
   await assertTextContains(page.locator("#studioSendButton"), "Send Redline");
+  // The Send button was intentionally restyled from a wide text pill to a compact
+  // 32px-square icon-only action (commit 395c819 "Fix oversized Send button in the
+  // review toolbar") so it matches the sibling icon controls in the viewer toolbar.
+  // The "Send Redline" label lives in an sr-only span for accessibility; visually it
+  // is a square icon button. Assert it keeps that stable icon-button footprint.
   const initialSendButtonBox = await page.locator("#studioSendButton").boundingBox();
-  assert.ok(initialSendButtonBox && initialSendButtonBox.width >= 96, "send button should keep a stable text-button width");
+  assert.ok(initialSendButtonBox && initialSendButtonBox.width >= 28 && initialSendButtonBox.width <= 48, "send button should keep a stable icon-button width");
 
   await page.locator("#studioSendButton").click();
   await page.waitForSelector("#studioSendModal:not([hidden])");
@@ -4791,9 +4796,12 @@ async function testReviewOutboundSendModal(page) {
   await page.waitForSelector("#studioSendModal:not([hidden])");
   await waitForText(page, "#studioSendStatus", "Gmail send unavailable.");
   await assertTextContains(page.locator("#studioSendButton"), "Send Redline");
-  assert.equal(await page.locator("#studioSendButton.icon-only").count(), 0);
+  // After a failed send the toolbar button stays the compact icon-only action it
+  // always is (commit 395c819); it never reverts to a wide text pill. It should
+  // remain visible and keep its stable icon-button footprint.
+  assert.equal(await page.locator("#studioSendButton.icon-only").count(), 1);
   const failedSendButtonBox = await page.locator("#studioSendButton").boundingBox();
-  assert.ok(failedSendButtonBox && failedSendButtonBox.width >= 96, "send button should remain visible after a failed send");
+  assert.ok(failedSendButtonBox && failedSendButtonBox.width >= 28 && failedSendButtonBox.width <= 48, "send button should remain visible after a failed send");
 
   const sendRequest = page.waitForRequest((request) => request.url().endsWith("/api/gmail/send-redline"));
   await page.locator("#studioSendConfirmButton").click();
@@ -8350,14 +8358,18 @@ async function testReasoningTrailCollapse(page) {
   await assertTextContains(detailPanel.locator(".reasoning-trail-summary"), "REASONING TRAIL");
   assert.equal(await trail.locator(".audit-trace-block").count(), 1);
 
-  // Full audit history is retained. Read textContent (not innerText) since the
-  // trail body is hidden while the <details> is collapsed.
+  // The trail holds the DEEPER reasoning only. Read textContent (not innerText)
+  // since the trail body is hidden while the <details> is collapsed. The
+  // "AI assessment normalization" and "Decision" steps are contract plumbing and
+  // are excluded by AUDIT_TRACE_PLUMBING_STEP_NAMES (review-workstation-rendering.js,
+  // commit 30f7777 "Surface model per-clause reasoning steps in the Reasoning trail"),
+  // so they must NOT appear in the trail.
   assert.equal(await detailPanel.locator(".reason-code-block").count(), 0);
   const trailText = await trail.evaluate((node) => node.textContent);
   assert.equal(trailText.includes("ai_first_fail"), false);
   assert.equal(trailText.includes("unapproved_governing_law"), false);
-  assert.match(trailText, /AI assessment normalization/);
-  assert.match(trailText, /Decision/);
+  assert.equal(trailText.includes("AI assessment normalization"), false);
+  assert.equal(trailText.includes("Decision"), false);
   assert.match(trailText, /Locate clause/);
   assert.match(trailText, /Compare to approved set/);
 
@@ -8808,6 +8820,8 @@ async function testDashboardSmartSearch(page) {
     },
   ];
   const openedMatterIds = [];
+  // The dashboard search reads the corpus (GET /api/corpus), not /api/matters.
+  await routeCorpusFromMatters(page, matters);
   await page.route("**/api/matters", async (route) => {
     // Glob also matches /api/matters/<id>; only the bare list path is served here.
     const url = new URL(route.request().url());
@@ -9220,6 +9234,8 @@ async function testDashboardSmartSearchV2(page) {
       workflow_state: { status: "sent_awaiting_counterparty", phase: "sent", label: "Awaiting signature", needs_attention: false, human_gate: true },
     },
   ];
+  // The dashboard search reads the corpus (GET /api/corpus), not /api/matters.
+  await routeCorpusFromMatters(page, matters);
   await page.route("**/api/matters", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname !== "/api/matters") {
@@ -9937,6 +9953,52 @@ async function testClauseReassessOnParagraphEdit(page) {
 async function assertTextContains(locator, expected) {
   const text = await locator.innerText();
   assert.ok(text.includes(expected), `expected "${text}" to include "${expected}"`);
+}
+
+// The dashboard search bar reads the FULL CORPUS via GET /api/corpus (app.js
+// ensureSearchCorpus -> CorpusView.fetchCorpus -> flattenCorpusPayload), NOT
+// /api/matters. Build the grouped corpus payload the search feeds on from the
+// same app-matter fixtures a test already declares, mirroring adaptCorpusMatter's
+// inverse: matter.id -> matter_id, matter.subject -> title, and workflow_state +
+// requirement counts -> the facets block the matchers read.
+function corpusPayloadFromMatters(matters) {
+  const corpusMatters = (Array.isArray(matters) ? matters : []).map((matter) => {
+    const workflow = matter.workflow_state && typeof matter.workflow_state === "object" ? matter.workflow_state : {};
+    return {
+      matter_id: matter.id,
+      title: matter.subject || matter.document_title || "",
+      counterparty: matter.counterparty || matter.counterparty_name || "",
+      created_at: matter.created_at || "",
+      artifacts: Array.isArray(matter.artifacts) ? matter.artifacts : [],
+      in_app: true,
+      source: "app",
+      open_matter_url: "",
+      open_in_drive_url: "",
+      facets: {
+        facets_available: true,
+        status: workflow.status || "",
+        phase: workflow.phase || "",
+        needs_attention: workflow.needs_attention === true,
+        human_gate: workflow.human_gate === true,
+        requirements_failed: Number(matter.requirements_failed || 0),
+        requirements_needs_review: Number(matter.requirements_needs_review || 0),
+      },
+    };
+  });
+  return { groups: [{ counterparty: "All matters", matters: corpusMatters }] };
+}
+
+// Install the GET /api/corpus route the dashboard search depends on, derived from
+// the test's app-matter fixtures. Kept beside the /api/matters mock each dashboard
+// search test already sets up.
+async function routeCorpusFromMatters(page, matters) {
+  await page.route("**/api/corpus**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(corpusPayloadFromMatters(matters)),
+    });
+  });
 }
 
 async function assertTextNotContains(locator, unexpected) {
