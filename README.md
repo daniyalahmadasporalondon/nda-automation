@@ -155,7 +155,8 @@ Common environment variables:
 | `OPENROUTER_API_KEY` | Server-side OpenRouter key for review + Gmail attachment selection. |
 | `NDA_AI_PROVIDER` / `NDA_AI_MODEL` | `openrouter` / `x-ai/grok-4.3`. |
 | `NDA_AI_VERIFIER` / `NDA_AI_VERIFIER_MODEL` | Optional independent adversarial verifier; default model is `deepseek/deepseek-v4-pro` and it uses the same OpenRouter key. |
-| `NDA_GMAIL_TRIAGE_MODEL` | Gmail triage model (e.g. `x-ai/grok-4.3`). |
+| `NDA_GMAIL_TRIAGE_MODEL` | Gmail attachment-selector model (picks the NDA attachment, e.g. `x-ai/grok-4.3`). |
+| `NDA_GMAIL_INTAKE_MODEL` | Gmail NDA-intake classifier model; default `deepseek/deepseek-v4-flash`. Optional and reuses `OPENROUTER_API_KEY`; with no key it falls back to the deterministic intake gate. |
 | `NDA_ACTIVE_REVIEW_ENGINE` | Review runtime pin; inbound review resolves to `ai_first`. Deterministic remains internal-only for explicit generation `force_engine` paths. |
 | `NDA_AI_FIRST_REVIEW_ENABLED` | Store AI-first shadow/comparison output. |
 | `NDA_ADMIN_USERS` | Comma-separated emails granted admin. |
