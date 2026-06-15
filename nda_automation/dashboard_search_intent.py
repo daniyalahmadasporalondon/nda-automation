@@ -268,14 +268,37 @@ def _corpus_matter_phase(matter: Mapping[str, Any]) -> str:
     return str(_matter_facets(matter).get("phase") or "").strip().lower()
 
 
+def _corpus_matter_needs_attention(matter: Mapping[str, Any]) -> bool:
+    return _matter_facets(matter).get("needs_attention") is True
+
+
+def _corpus_matter_human_gate(matter: Mapping[str, Any]) -> bool:
+    return _matter_facets(matter).get("human_gate") is True
+
+
+def _corpus_matter_has_issues(matter: Mapping[str, Any]) -> bool:
+    facets = _matter_facets(matter)
+    failed = _coerce_count(facets.get("requirements_failed"))
+    needs_review = _coerce_count(facets.get("requirements_needs_review"))
+    return failed > 0 or needs_review > 0
+
+
+def _coerce_count(value: object) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
 def corpus_matter_matches_spec(matter: Mapping[str, Any], spec: Mapping[str, Any]) -> bool:
     """True when one CorpusMatter satisfies every non-null dimension of ``spec``.
 
     A deterministic AND mirroring the FE applyFilterSpec for the facet dimensions
-    (status / phase / has_clause / signed / governing_law / text). An unknown facet
-    (signed=None, governing_law="", empty clause list) is never a positive match, so
-    a legacy Drive matter (facets_available=false) drops out of facet-filtered counts
-    rather than being counted as the opposite.
+    (status / phase / has_clause / signed / governing_law / needs_attention /
+    human_gate / has_issues / text). An unknown facet (signed=None, governing_law="",
+    empty clause list, the workflow-state axes at their False/0 defaults) is never a
+    positive match, so a legacy Drive matter (facets_available=false) drops out of
+    facet-filtered counts rather than being counted as the opposite.
     """
     if not isinstance(spec, Mapping):
         return False
@@ -295,6 +318,15 @@ def corpus_matter_matches_spec(matter: Mapping[str, Any], spec: Mapping[str, Any
             return False
     governing_law = spec.get("governing_law")
     if governing_law is not None and _corpus_matter_governing_law(matter) != governing_law:
+        return False
+    needs_attention = spec.get("needs_attention")
+    if needs_attention is not None and _corpus_matter_needs_attention(matter) != needs_attention:
+        return False
+    human_gate = spec.get("human_gate")
+    if human_gate is not None and _corpus_matter_human_gate(matter) != human_gate:
+        return False
+    has_issues = spec.get("has_issues")
+    if has_issues is not None and _corpus_matter_has_issues(matter) != has_issues:
         return False
     text = spec.get("text")
     if isinstance(text, str) and text:

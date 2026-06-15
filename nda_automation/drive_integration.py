@@ -786,13 +786,39 @@ def _summary_facets(matter: dict[str, Any], workflow_state: dict[str, Any]) -> d
         governing_law = governing_law_view.derive_governing_law(matter)
     except Exception:
         governing_law = ""
+    failed, needs_review = _summary_requirement_counts(matter)
     return {
         "governing_law": governing_law,
         "signed": _summary_signed(workflow_state),
         "has_clauses": _summary_clause_ids(matter),
         "term_years": _summary_term_years(matter),
+        # The review requirement counts the has_issues facet reads. Persisted here so
+        # a Drive-only matter (after a /tmp wipe) keeps the signal; corpus_index's
+        # _drive_facets reads them back from this block.
+        "requirements_failed": failed,
+        "requirements_needs_review": needs_review,
         "schema_version": 1,
     }
+
+
+def _summary_requirement_counts(matter: dict[str, Any]) -> tuple[int, int]:
+    """The (failed, needs_review) requirement counts from the stored review result.
+
+    Best-effort, mirroring corpus_index's app-state derivation; absent/odd shapes
+    degrade to (0, 0). Never raises.
+    """
+    review_result = matter.get("review_result")
+    if not isinstance(review_result, dict):
+        return 0, 0
+
+    def _coerce(value: object) -> int:
+        try:
+            result = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 0
+        return result if result > 0 else 0
+
+    return _coerce(review_result.get("requirements_failed")), _coerce(review_result.get("requirements_needs_review"))
 
 
 def _summary_signed(workflow_state: dict[str, Any]) -> bool | None:

@@ -103,6 +103,16 @@ def _empty_facets(*, available: bool) -> dict[str, Any]:
         # board_column + phase_label display strings). "" -> won't match any enum.
         "phase": "",
         "status": "",
+        # The workflow_state failure/gate axes + the review requirement counts the
+        # FE matchers (matterNeedsAttention / matterHumanGate / matterHasIssues)
+        # read, surfaced here so the FE adapter can reconstruct them over a corpus
+        # matter. Without them those filters could NEVER positively match on screen
+        # even though the Python twin matches over the same source. False/0 ->
+        # won't match any of those filters (graceful-degradation default).
+        "needs_attention": False,
+        "human_gate": False,
+        "requirements_failed": 0,
+        "requirements_needs_review": 0,
         "facets_available": available,
     }
 
@@ -202,7 +212,35 @@ def _app_facets(matter: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]
         facets["term_years"] = None
     facets["phase"] = str(state.get("phase") or "")
     facets["status"] = str(state.get("status") or "")
+    # The failure/gate axes come straight from the same workflow_state the Python
+    # twin reads, so the FE matcher (after adaptCorpusMatter reconstructs them)
+    # mirrors the backend matcher exactly.
+    facets["needs_attention"] = state.get("needs_attention") is True
+    facets["human_gate"] = state.get("human_gate") is True
+    failed, needs_review = _app_requirement_counts(matter)
+    facets["requirements_failed"] = failed
+    facets["requirements_needs_review"] = needs_review
     return facets
+
+
+def _app_requirement_counts(matter: dict[str, Any]) -> tuple[int, int]:
+    """The (failed, needs_review) requirement counts from the stored review result.
+
+    Same source matter_summary's review digest reads; absent/odd shapes degrade to
+    (0, 0) so the has_issues facet never falsely matches. Never raises.
+    """
+    review_result = matter.get("review_result")
+    if not isinstance(review_result, dict):
+        return 0, 0
+    return (
+        _safe_count(review_result.get("requirements_failed")),
+        _safe_count(review_result.get("requirements_needs_review")),
+    )
+
+
+def _safe_count(value: object) -> int:
+    """Coerce a requirement-count field to a non-negative int (0 on a bad value)."""
+    return max(0, _safe_int(value, 0))
 
 
 def _drive_facets(summary: dict[str, Any]) -> dict[str, Any]:
@@ -223,6 +261,10 @@ def _drive_facets(summary: dict[str, Any]) -> dict[str, Any]:
     # (drive_integration writes them there); read defensively so a hand-edited summary
     # can never break the index.
     workflow_state = summary.get("workflow_state") if isinstance(summary.get("workflow_state"), dict) else {}
+    # The durable workflow_state already carries the failure/gate axes (it is a full
+    # workflow.workflow_state() snapshot). The requirement counts are persisted in the
+    # durable facets block; a summary written before they existed degrades to 0
+    # (has_issues never falsely matches), mirroring the other facets.
     return {
         "governing_law": str(raw.get("governing_law") or ""),
         "signed": signed if isinstance(signed, bool) else None,
@@ -234,6 +276,10 @@ def _drive_facets(summary: dict[str, Any]) -> dict[str, Any]:
         else None,
         "phase": str((workflow_state or {}).get("phase") or ""),
         "status": str((workflow_state or {}).get("status") or ""),
+        "needs_attention": (workflow_state or {}).get("needs_attention") is True,
+        "human_gate": (workflow_state or {}).get("human_gate") is True,
+        "requirements_failed": _safe_count(raw.get("requirements_failed")),
+        "requirements_needs_review": _safe_count(raw.get("requirements_needs_review")),
         "facets_available": True,
     }
 

@@ -542,6 +542,51 @@ class CorpusFacetTests(unittest.TestCase):
         self.assertIn(facets["signed"], (True, False, None))
         self.assertIn("phase", facets)
         self.assertIn("status", facets)
+        # The workflow-state failure/gate axes + requirement counts are always present
+        # so the FE adapter can reconstruct workflow_state for the human_gate /
+        # needs_attention / has_issues filters (parity with the Python matcher).
+        self.assertIn("needs_attention", facets)
+        self.assertIn("human_gate", facets)
+        self.assertIn("requirements_failed", facets)
+        self.assertIn("requirements_needs_review", facets)
+
+    def test_app_state_facets_carry_workflow_state_axes_and_counts(self):
+        # A matter with a stored review result that failed a requirement AND is parked
+        # at a human gate surfaces those signals on the corpus facets, so the FE
+        # human_gate / has_issues filters can positively match it (the divergence this
+        # fix closes). The axes come from the SAME workflow_state the Python twin reads.
+        matter = self.repo.create_matter(
+            source_filename="Stuck NDA.docx",
+            document_bytes=b"PK\x03\x04 fake docx",
+            extracted_text="This Agreement is mutual.",
+            review_result={
+                "requirements_failed": 2,
+                "requirements_needs_review": 1,
+                "clauses": [{"id": "mutuality", "decision": "check"}],
+            },
+            triage={"triage_status": "review"},
+            source_type="manual_upload",
+            board_column="awaiting_approval",
+            owner_user_id="owner-a",
+        )
+        self.repo.update_matter_fields(
+            matter["id"], {"status": "awaiting_approval"}, owner_user_id="owner-a"
+        )
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "")
+        facets = _only_matter(payload)["facets"]
+        self.assertEqual(facets["requirements_failed"], 2)
+        self.assertEqual(facets["requirements_needs_review"], 1)
+        # human_gate / needs_attention are booleans straight off workflow_state.
+        self.assertIsInstance(facets["human_gate"], bool)
+        self.assertIsInstance(facets["needs_attention"], bool)
+        # The corpus matcher (Python twin) now positively matches has_issues over this
+        # matter (was silently ignored before the parity fix).
+        from nda_automation import dashboard_search_intent as dsi
+
+        corpus_matter = _only_matter(payload)
+        self.assertTrue(
+            dsi.corpus_matter_matches_spec(corpus_matter, dsi.validate_filter_spec({"has_issues": True}))
+        )
 
     def test_app_state_matter_without_review_degrades_per_facet_but_available(self):
         # An intake-only matter (no governing law / term) still has facets_available

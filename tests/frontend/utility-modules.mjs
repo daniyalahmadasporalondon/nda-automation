@@ -1888,6 +1888,53 @@ assert.deepEqual(
   ["difc_sent_unsigned"],
 );
 
+// --- Corpus FE/backend parity: workflow-state facets through adaptCorpusMatter ---
+// A corpus payload (GET /api/corpus shape) carries the workflow-state failure/gate
+// axes + requirement counts on the facets block. adaptCorpusMatter must reconstruct
+// workflow_state.{needs_attention,human_gate} + the top-level requirements_* counts
+// so the human_gate / needs_attention / has_issues filters positively match the SAME
+// set the Python twin (corpus_matter facets, derived from workflow_state) matches.
+// Regression guard for the prior divergence where the FE returned 0 for these facets.
+const corpusWorkflowMatters = [
+  {
+    matter_id: "cw_human_gate",
+    title: "Acme NDA awaiting human review",
+    facets: { phase: "approval", status: "awaiting_approval", needs_attention: false, human_gate: true, requirements_failed: 0, requirements_needs_review: 0, facets_available: true },
+  },
+  {
+    matter_id: "cw_stuck",
+    title: "Globex NDA stuck",
+    facets: { phase: "review", status: "review_failed", needs_attention: true, human_gate: false, requirements_failed: 0, requirements_needs_review: 1, facets_available: true },
+  },
+  {
+    matter_id: "cw_clean",
+    title: "Initech NDA clean",
+    facets: { phase: "review", status: "ai_reviewing", needs_attention: false, human_gate: false, requirements_failed: 0, requirements_needs_review: 0, facets_available: true },
+  },
+  {
+    // A legacy/degraded matter: facets_available=false, all signals at their
+    // defaults, so it never positively matches any of these facets (graceful
+    // degradation — exactly as the Python twin drops it from facet-filtered counts).
+    matter_id: "cw_legacy",
+    title: "Legacy Drive doc",
+    facets: { phase: "", status: "", needs_attention: false, human_gate: false, requirements_failed: 0, requirements_needs_review: 0, facets_available: false },
+  },
+];
+const adaptedCorpus = corpusWorkflowMatters.map((m) => adaptCorpusMatter(m));
+const acids = (list) => list.map((m) => m.id);
+// adaptCorpusMatter reconstructs the workflow_state the matchers read.
+assert.equal(adaptedCorpus[0].workflow_state.human_gate, true);
+assert.equal(adaptedCorpus[1].workflow_state.needs_attention, true);
+assert.equal(adaptedCorpus[1].requirements_needs_review, 1);
+// human_gate filter now positively matches the corpus matter (was 0 before the fix).
+assert.deepEqual(acids(applyFilterSpec(adaptedCorpus, { human_gate: true }, NOW)), ["cw_human_gate"]);
+// needs_attention + has_issues mirror the backend matcher over the same source.
+assert.deepEqual(acids(applyFilterSpec(adaptedCorpus, { needs_attention: true }, NOW)), ["cw_stuck"]);
+assert.deepEqual(acids(applyFilterSpec(adaptedCorpus, { has_issues: true }, NOW)), ["cw_stuck"]);
+// The legacy/degraded matter never positively matches any of these facets.
+assert.equal(acids(applyFilterSpec(adaptedCorpus, { human_gate: true }, NOW)).includes("cw_legacy"), false);
+assert.equal(acids(applyFilterSpec(adaptedCorpus, { needs_attention: true }, NOW)).includes("cw_legacy"), false);
+
 // --- Dashboard smart-search v3: groupMattersByCounterparty (grouping view) ---
 // Each matter carries a derived `counterparty` (from public_matter). Grouping is
 // exact on that best-available name; group order is by first appearance, and the

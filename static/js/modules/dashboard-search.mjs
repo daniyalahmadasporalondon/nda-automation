@@ -698,6 +698,22 @@ function adaptCorpusMatter(corpusMatter) {
     created_at: String(corpusMatter.created_at || ""),
     artifacts: Array.isArray(corpusMatter.artifacts) ? corpusMatter.artifacts : [],
     facets,
+    // Reconstruct the minimal workflow_state + requirement counts the matchers read
+    // (matterNeedsAttention / matterHumanGate read workflow_state.{needs_attention,
+    // human_gate}; matterHasIssues reads the top-level requirements_* counts). The
+    // corpus payload surfaces these on the facets block from the SAME source the
+    // Python twin (corpus_matter / workflow_state) reads, so the FE matcher mirrors
+    // the backend matcher exactly rather than NEVER positively matching these facets.
+    // A legacy/degraded matter (facets_available=false) carries the all-false/0
+    // defaults, so those filters skip it just like the other facet dimensions.
+    workflow_state: {
+      phase: String(facets.phase || ""),
+      status: String(facets.status || ""),
+      needs_attention: facets.needs_attention === true,
+      human_gate: facets.human_gate === true,
+    },
+    requirements_failed: Number(facets.requirements_failed || 0),
+    requirements_needs_review: Number(facets.requirements_needs_review || 0),
     // Provenance for the open link + Summarize affordance: an app/both matter opens
     // in-app and can be summarized; a Drive-only matter links out to Drive with no
     // in-app deep link and no Summarize (there is no app-state to summarize).

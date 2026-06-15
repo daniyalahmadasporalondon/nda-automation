@@ -235,7 +235,18 @@ class CorpusMatcherTests(unittest.TestCase):
 
     @staticmethod
     def _matter(**facets):
-        base = {"governing_law": "", "signed": None, "has_clauses": [], "phase": "", "status": "", "facets_available": True}
+        base = {
+            "governing_law": "",
+            "signed": None,
+            "has_clauses": [],
+            "phase": "",
+            "status": "",
+            "needs_attention": False,
+            "human_gate": False,
+            "requirements_failed": 0,
+            "requirements_needs_review": 0,
+            "facets_available": True,
+        }
         base.update(facets)
         return {"matter_id": "m", "title": "Acme NDA", "counterparty": "Acme", "facets": base}
 
@@ -243,6 +254,36 @@ class CorpusMatcherTests(unittest.TestCase):
         matter = self._matter(governing_law="difc", signed=True)
         spec = dsi.validate_filter_spec({"governing_law": "difc", "signed": True})
         self.assertTrue(dsi.corpus_matter_matches_spec(matter, spec))
+
+    def test_human_gate_matches_from_facet(self):
+        # The workflow-state failure/gate axes are now first-class corpus facets, so
+        # the corpus matcher mirrors the FE matcher (which reads the reconstructed
+        # workflow_state) instead of silently ignoring these dimensions.
+        gated = self._matter(human_gate=True)
+        self.assertTrue(dsi.corpus_matter_matches_spec(gated, dsi.validate_filter_spec({"human_gate": True})))
+        self.assertFalse(dsi.corpus_matter_matches_spec(gated, dsi.validate_filter_spec({"human_gate": False})))
+        ungated = self._matter(human_gate=False)
+        self.assertFalse(dsi.corpus_matter_matches_spec(ungated, dsi.validate_filter_spec({"human_gate": True})))
+
+    def test_needs_attention_and_has_issues_match_from_facets(self):
+        stuck = self._matter(needs_attention=True, requirements_needs_review=1)
+        self.assertTrue(dsi.corpus_matter_matches_spec(stuck, dsi.validate_filter_spec({"needs_attention": True})))
+        self.assertTrue(dsi.corpus_matter_matches_spec(stuck, dsi.validate_filter_spec({"has_issues": True})))
+        clean = self._matter()
+        self.assertFalse(dsi.corpus_matter_matches_spec(clean, dsi.validate_filter_spec({"needs_attention": True})))
+        self.assertFalse(dsi.corpus_matter_matches_spec(clean, dsi.validate_filter_spec({"has_issues": True})))
+        failed = self._matter(requirements_failed=2)
+        self.assertTrue(dsi.corpus_matter_matches_spec(failed, dsi.validate_filter_spec({"has_issues": True})))
+
+    def test_human_gate_count_matches_fe_set(self):
+        # Parity check: the human_gate filter matches the SAME set the FE matcher
+        # would over the adapted corpus matters (the divergence this fix closes).
+        matters = [
+            self._matter(human_gate=True),
+            self._matter(human_gate=False),
+            self._matter(human_gate=False, facets_available=False),
+        ]
+        self.assertEqual(dsi.count_corpus_matches(matters, dsi.validate_filter_spec({"human_gate": True})), 1)
 
     def test_unknown_facet_never_positively_matches(self):
         # A legacy Drive matter (facets_available=false, all facets empty/null) must
@@ -252,6 +293,10 @@ class CorpusMatcherTests(unittest.TestCase):
         self.assertFalse(dsi.corpus_matter_matches_spec(legacy, dsi.validate_filter_spec({"signed": False})))
         self.assertFalse(dsi.corpus_matter_matches_spec(legacy, dsi.validate_filter_spec({"governing_law": "difc"})))
         self.assertFalse(dsi.corpus_matter_matches_spec(legacy, dsi.validate_filter_spec({"has_clause": "non_solicitation"})))
+        # The new workflow-state axes also never positively match a degraded matter.
+        self.assertFalse(dsi.corpus_matter_matches_spec(legacy, dsi.validate_filter_spec({"human_gate": True})))
+        self.assertFalse(dsi.corpus_matter_matches_spec(legacy, dsi.validate_filter_spec({"needs_attention": True})))
+        self.assertFalse(dsi.corpus_matter_matches_spec(legacy, dsi.validate_filter_spec({"has_issues": True})))
 
     def test_count_corpus_matches(self):
         matters = [
