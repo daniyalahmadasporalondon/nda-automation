@@ -547,6 +547,7 @@ adminAiController.load();
 loadPersonalisationSettings();
 loadDashboardAiHealth();
 loadDashboardDriveHealth();
+loadDashboardDocuSignHealth();
 adminIntegrationsController.load();
 window.setInterval(() => {
   if (document.querySelector('[data-view="repository"]')?.classList.contains("active")) {
@@ -939,6 +940,7 @@ function activateTab(tabName) {
   if (tabName === "dashboard") {
     loadDashboardAiHealth();
     loadDashboardDriveHealth();
+    loadDashboardDocuSignHealth();
     renderDashboardEmailHealth(state.gmailStatus);
     renderDashboardInboxTable();
     // Re-run any active search against the freshest matters when returning to
@@ -1418,6 +1420,32 @@ function renderDashboardDriveHealth(status = {}) {
   });
 }
 
+async function loadDashboardDocuSignHealth() {
+  if (!dashboardHealthItems.length) return;
+  renderDashboardHealth("docusign", { tone: "checking", detail: "Checking DocuSign" });
+  try {
+    const response = await fetch("/api/docusign/status");
+    const payload = await response.json();
+    if (!response.ok) throw new Error("DocuSign status could not load");
+    renderDashboardDocuSignHealth(payload);
+  } catch (error) {
+    renderDashboardHealth("docusign", { tone: "blocked", detail: "DocuSign status unavailable" });
+  }
+}
+
+function renderDashboardDocuSignHealth(status = {}) {
+  if (!dashboardHealthItems.length) return;
+  // DocuSign is an OPTIONAL e-signature integration, mirroring Drive: connected
+  // -> ready (green); not connected -> warning (amber, "available but not set
+  // up") rather than blocked, since an unconfigured optional feature is not an
+  // error. The light is driven by the `connected` boolean from
+  // GET /api/docusign/status — the same status the admin DocuSign panel reads.
+  renderDashboardHealth("docusign", {
+    tone: status.connected === true ? "ready" : "warning",
+    detail: status.connected === true ? "DocuSign connected" : "DocuSign not connected",
+  });
+}
+
 function renderDashboardHealth(kind, { tone, detail }) {
   const item = document.querySelector(`[data-dashboard-health="${kind}"]`);
   if (!item) return;
@@ -1443,6 +1471,7 @@ function defaultDashboardHealthDetail(kind, tone) {
   if (kind === "ai") return tone === "ready" ? "AI review ready" : "AI review needs setup";
   if (kind === "email") return tone === "ready" ? "Gmail ready" : "Gmail needs setup";
   if (kind === "drive") return tone === "ready" ? "Drive connected" : "Drive needs setup";
+  if (kind === "docusign") return tone === "ready" ? "DocuSign connected" : "DocuSign needs setup";
   return tone;
 }
 

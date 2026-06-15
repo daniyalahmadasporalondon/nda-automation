@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260615ds1">
+    <link rel="stylesheet" href="/static/styles.css?v=20260616ds3">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260615cp1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260615r">
   </head>
@@ -75,21 +75,6 @@
           <section class="dashboard-hero" aria-labelledby="dashboardHeroTitle">
             <div class="dashboard-hero-copy">
               <h1 id="dashboardHeroTitle">Welcome back</h1>
-            </div>
-            <div class="dashboard-hero-actions">
-              <button class="dashboard-submit-button" type="button" data-dashboard-submit>
-                <span aria-hidden="true">+</span>
-                <span>Submit for Review</span>
-              </button>
-              <button class="dashboard-send-document-button" type="button" data-dashboard-send-document title="Send a document to a counterparty">
-                <span class="send-plane-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" focusable="false">
-                    <path d="M21 3 10.8 13.2"/>
-                    <path d="M21 3 14.5 21 10.8 13.2 3 10.5 21 3Z"/>
-                  </svg>
-                </span>
-                <span>Send Document</span>
-              </button>
               <div class="dashboard-health-list" aria-label="Pipeline health">
                 <div class="dashboard-health-item checking" data-dashboard-health="ai">
                   <div class="dashboard-health-head">
@@ -112,7 +97,29 @@
                   </div>
                   <span class="dashboard-health-detail" data-dashboard-health-detail>Checking</span>
                 </div>
+                <div class="dashboard-health-item checking" data-dashboard-health="docusign">
+                  <div class="dashboard-health-head">
+                    <span class="dashboard-health-dot" aria-hidden="true"></span>
+                    <span class="dashboard-health-name">DocuSign</span>
+                  </div>
+                  <span class="dashboard-health-detail" data-dashboard-health-detail>Checking</span>
+                </div>
               </div>
+            </div>
+            <div class="dashboard-hero-actions">
+              <button class="dashboard-submit-button" type="button" data-dashboard-submit>
+                <span aria-hidden="true">+</span>
+                <span>Submit for Review</span>
+              </button>
+              <button class="dashboard-send-document-button" type="button" data-dashboard-send-document title="Send a document to a counterparty">
+                <span class="send-plane-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false">
+                    <path d="M21 3 10.8 13.2"/>
+                    <path d="M21 3 14.5 21 10.8 13.2 3 10.5 21 3Z"/>
+                  </svg>
+                </span>
+                <span>Send Document</span>
+              </button>
             </div>
           </section>
 
@@ -2093,6 +2100,6 @@
     <script src="/static/js/dashboard-search.js?v=20260614a"></script>
     <script src="/static/js/notifications.js?v=20260615n"></script>
     <script src="/static/js/generator-editor.js?v=20260612c"></script>
-    <script src="/static/app.js?v=20260615ds2"></script>
+    <script src="/static/app.js?v=20260616ds3"></script>
   </body>
 </html>

@@ -1690,8 +1690,11 @@ h3 {
   column-gap: 22px;
   row-gap: 8px;
   flex-wrap: wrap;
-  justify-content: center;
-  margin-top: 8px;
+  /* Left-aligned under the greeting (the lights now sit below the "Welcome,
+     {name}" heading inside .dashboard-hero-copy, not in the right-hand actions
+     column), so they line up with the heading's left edge. */
+  justify-content: flex-start;
+  margin-top: 10px;
   padding: 0;
 }
 
