@@ -6380,6 +6380,303 @@ class ServerTests(unittest.TestCase):
         gmail_routes.handle_gmail_settings_update(handler)
         return handler
 
+    # --- Gmail sync controls: sync_enabled master gate + import_limit -----------
+
+    def test_gmail_scheduler_step_skips_whole_step_when_sync_disabled(self):
+        # The master pause gate: with sync_enabled False the scheduler must skip the
+        # ENTIRE step (no poll) and bump the skip telemetry, even though
+        # inbound_enabled is still True. It must also be re-enable-safe: reset
+        # last_run and idle SHORT (not a full cadence) so resuming polls promptly.
+        telemetry.reset()
+        with patch.object(
+            server_module.app_settings,
+            "gmail_settings",
+            return_value={
+                "sync_enabled": False,
+                "inbound_enabled": True,
+                "sync_frequency": "2_hours",
+            },
+        ):
+            with patch.object(server_module.app_settings, "gmail_sync_interval_seconds", return_value=7200):
+                with patch.object(server_module.time, "monotonic", return_value=500.0):
+                    with patch.object(server_module, "_run_scheduled_gmail_sync") as run_sync:
+                        last_run, last_frequency, sleep_seconds = server_module._gmail_sync_scheduler_step(
+                            480.0,
+                            "2_hours",
+                        )
+
+        run_sync.assert_not_called()
+        # last_run reset + short idle => re-enabling the toggle polls within ~30s,
+        # not after a 2-hour cadence.
+        self.assertEqual(last_run, 0.0)
+        self.assertEqual(last_frequency, "2_hours")
+        self.assertEqual(sleep_seconds, server_module.MAX_GMAIL_SYNC_IDLE_SECONDS)
+        self.assertEqual(
+            telemetry.snapshot()["counters"].get("gmail_sync_skipped_disabled"),
+            1,
+        )
+
+    def test_gmail_scheduler_step_env_kill_switch_stops_before_settings(self):
+        # The NDA_GMAIL_SYNC_ENABLED env kill switch is the absolute override: it
+        # must short-circuit BEFORE settings are read (works even if settings are
+        # unreachable) and be re-enable-safe.
+        telemetry.reset()
+        with patch.dict(os.environ, {"NDA_GMAIL_SYNC_ENABLED": "false"}, clear=False):
+            with patch.object(
+                server_module.app_settings, "gmail_settings", side_effect=AssertionError("settings read")
+            ):
+                with patch.object(server_module, "_run_scheduled_gmail_sync") as run_sync:
+                    last_run, last_frequency, sleep_seconds = server_module._gmail_sync_scheduler_step(
+                        999.0,
+                        "10_minutes",
+                    )
+
+        run_sync.assert_not_called()
+        self.assertEqual(last_run, 0.0)
+        self.assertEqual(last_frequency, "10_minutes")
+        self.assertEqual(sleep_seconds, server_module.MAX_GMAIL_SYNC_IDLE_SECONDS)
+        self.assertEqual(
+            telemetry.snapshot()["counters"].get("gmail_sync_skipped_disabled"),
+            1,
+        )
+
+    def test_gmail_sync_enabled_env_parses_falsey_values(self):
+        for raw in ("false", "0", "no", "off", "FALSE", " Off "):
+            with patch.dict(os.environ, {"NDA_GMAIL_SYNC_ENABLED": raw}, clear=False):
+                self.assertFalse(server_module._gmail_sync_enabled(), raw)
+        for raw in ("", "true", "1", "yes", "on", "anything"):
+            with patch.dict(os.environ, {"NDA_GMAIL_SYNC_ENABLED": raw}, clear=False):
+                self.assertTrue(server_module._gmail_sync_enabled(), raw)
+
+    def test_gmail_scheduler_step_runs_when_sync_enabled_default_absent(self):
+        # Backward-compat: a settings blob with no sync_enabled key (written before
+        # this control existed) must keep polling -- the gate defaults to True.
+        with patch.dict(os.environ, {"NDA_GMAIL_SERVER_INBOUND": "1"}, clear=False):
+            with patch.object(
+                server_module.app_settings,
+                "gmail_settings",
+                return_value={"inbound_enabled": True, "sync_frequency": "always_on"},
+            ):
+                with patch.object(server_module.app_settings, "gmail_sync_interval_seconds", return_value=60):
+                    with patch.object(server_module.gmail_integration, "gmail_role_setup_error", return_value=""):
+                        with patch.object(server_module.time, "monotonic", return_value=120.0):
+                            with patch.object(server_module, "_gmail_sync_process_lock", self.acquired_gmail_sync_lock):
+                                with patch.object(server_module, "_run_scheduled_gmail_sync") as run_sync:
+                                    server_module._gmail_sync_scheduler_step(0.0, "always_on")
+
+        run_sync.assert_called_once_with()
+
+    def test_scheduled_gmail_sync_uses_configured_import_limit(self):
+        # The scheduler must use the admin-configured import_limit (clamped), NOT a
+        # hardcoded value. Set a custom limit and assert it flows into the import.
+        result = {
+            "account": "inbound@aspora.com",
+            "imported": [{"id": "matter_1"}],
+            "query": gmail_integration.DEFAULT_INBOUND_QUERY,
+            "skipped": [],
+        }
+        with patch.dict(os.environ, {"NDA_GMAIL_SERVER_INBOUND": "1"}, clear=False):
+            with patch.object(
+                server_module.app_settings, "gmail_import_limit", return_value=33
+            ) as import_limit:
+                with patch.object(
+                    server_module.gmail_integration, "import_inbound_matters", return_value=result
+                ) as import_inbound:
+                    with patch.object(
+                        server_module.matter_store, "deduplicate_gmail_matters", return_value=0
+                    ):
+                        with patch.object(server_module.app_settings, "record_gmail_sync"):
+                            server_module._run_scheduled_gmail_sync()
+
+        import_limit.assert_called_once_with()
+        import_inbound.assert_called_once_with(limit=33)
+
+    def test_scheduled_user_gmail_sync_uses_configured_import_limit(self):
+        # The per-connected-user path must also honour the configured limit.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                user = user_store.upsert_google_user({
+                    "sub": "google-user-limit",
+                    "email": "limit@example.com",
+                    "name": "Limit",
+                    "picture": "",
+                })
+                token_dir = matter_store.DATA_DIR / "users" / "gmail" / user["id"]
+                token_dir.mkdir(parents=True, exist_ok=True)
+                (token_dir / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["inbound"]).write_text(
+                    "{}\n",
+                    encoding="utf-8",
+                )
+
+                captured: dict[str, object] = {}
+
+                def import_side_effect(*, limit, query=None, owner_user_id=""):
+                    captured["limit"] = limit
+                    return {
+                        "account": f"{owner_user_id}@example.com",
+                        "imported": [],
+                        "query": "in:inbox has:attachment",
+                        "skipped": [],
+                    }
+
+                with patch.object(
+                    server_module.app_settings, "gmail_import_limit", return_value=37
+                ):
+                    with patch.object(
+                        server_module.gmail_integration,
+                        "import_inbound_matters",
+                        side_effect=import_side_effect,
+                    ):
+                        with patch.object(
+                            server_module.matter_store, "deduplicate_gmail_matters", return_value=0
+                        ):
+                            with patch.object(server_module.app_settings, "record_gmail_sync"):
+                                server_module._run_scheduled_gmail_sync()
+
+        self.assertEqual(captured["limit"], 37)
+
+    def test_gmail_settings_endpoint_accepts_sync_enabled_and_import_limit(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                status, payload = self.request(
+                    "POST",
+                    "/api/gmail/settings",
+                    {"sync_enabled": False, "import_limit": 25},
+                )
+                settings = app_settings.gmail_settings()
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["gmail_settings"]["sync_enabled"], False)
+        self.assertEqual(payload["gmail_settings"]["import_limit"], 25)
+        self.assertEqual(payload["gmail"]["settings"]["sync_enabled"], False)
+        self.assertEqual(payload["gmail"]["settings"]["import_limit"], 25)
+        self.assertEqual(settings["sync_enabled"], False)
+        self.assertEqual(settings["import_limit"], 25)
+
+    def test_gmail_settings_endpoint_clamps_import_limit_to_ceiling(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                status, payload = self.request(
+                    "POST",
+                    "/api/gmail/settings",
+                    {"import_limit": 1000},
+                )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            payload["gmail_settings"]["import_limit"],
+            app_settings.MAX_GMAIL_IMPORT_LIMIT_CLAMP,
+        )
+        self.assertEqual(app_settings.MAX_GMAIL_IMPORT_LIMIT_CLAMP, 40)
+
+    def test_gmail_settings_endpoint_rejects_non_bool_sync_enabled(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                status, payload = self.request(
+                    "POST",
+                    "/api/gmail/settings",
+                    {"sync_enabled": "off"},
+                )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "Gmail enabled settings must be true or false.")
+
+    def test_gmail_settings_endpoint_rejects_non_numeric_import_limit(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                status, payload = self.request(
+                    "POST",
+                    "/api/gmail/settings",
+                    {"import_limit": "lots"},
+                )
+                bool_status, _ = self.request(
+                    "POST",
+                    "/api/gmail/settings",
+                    {"import_limit": True},
+                )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "Gmail import limit must be a whole number.")
+        self.assertEqual(bool_status, 400)
+
+    def test_gmail_settings_partial_update_preserves_other_settings(self):
+        # A partial update must touch ONLY the supplied keys and leave the rest
+        # (sync_frequency, inbound_enabled, import_limit, search terms) intact.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                # Seed a non-default baseline.
+                self.request(
+                    "POST",
+                    "/api/gmail/settings",
+                    {
+                        "sync_frequency": "30_minutes",
+                        "inbound_enabled": False,
+                        "import_limit": 15,
+                        "inbound_search_terms": ["custom term"],
+                    },
+                )
+                # Now flip ONLY the master gate.
+                status, payload = self.request(
+                    "POST",
+                    "/api/gmail/settings",
+                    {"sync_enabled": False},
+                )
+                settings = app_settings.gmail_settings()
+
+        self.assertEqual(status, 200)
+        self.assertEqual(settings["sync_enabled"], False)
+        # Everything else from the baseline survives untouched.
+        self.assertEqual(settings["sync_frequency"], "30_minutes")
+        self.assertEqual(settings["inbound_enabled"], False)
+        self.assertEqual(settings["import_limit"], 15)
+        self.assertEqual(settings["inbound_search_terms"], ["custom term"])
+
+    def test_gmail_import_limit_helper_setting_wins_over_env(self):
+        # The stored setting is the source of truth; the env is only the fallback.
+        with patch.dict(os.environ, {"NDA_GMAIL_IMPORT_LIMIT": "20"}, clear=False):
+            with patch.object(gmail_integration, "MAX_GMAIL_IMPORT_LIMIT", 20):
+                # Stored positive value wins (and is clamped).
+                self.assertEqual(app_settings.gmail_import_limit({"import_limit": 12}), 12)
+                self.assertEqual(app_settings.gmail_import_limit({"import_limit": 999}), 40)
+                # Unset (0) falls back to the env default.
+                self.assertEqual(app_settings.gmail_import_limit({"import_limit": 0}), 20)
+                # Missing key also falls back.
+                self.assertEqual(app_settings.gmail_import_limit({}), 20)
+
+    def test_gmail_import_limit_from_payload_parses_and_clamps(self):
+        self.assertEqual(app_settings.gmail_import_limit_from_payload(10), 10)
+        self.assertEqual(app_settings.gmail_import_limit_from_payload("8"), 8)
+        self.assertEqual(app_settings.gmail_import_limit_from_payload(500), 40)
+        # Unset / invalid -> the unset sentinel (env fallback applies downstream).
+        self.assertEqual(app_settings.gmail_import_limit_from_payload(None), 0)
+        self.assertEqual(app_settings.gmail_import_limit_from_payload(""), 0)
+        self.assertEqual(app_settings.gmail_import_limit_from_payload("nope"), 0)
+        self.assertEqual(app_settings.gmail_import_limit_from_payload(0), 0)
+        self.assertEqual(app_settings.gmail_import_limit_from_payload(-5), 0)
+
+    def test_gmail_settings_from_payload_parses_sync_enabled_and_import_limit(self):
+        # Defaults when absent.
+        defaults = app_settings.gmail_settings_from_payload({})
+        self.assertEqual(defaults["sync_enabled"], True)
+        self.assertEqual(defaults["import_limit"], 0)
+        # Stored False survives; import_limit is clamped on read.
+        parsed = app_settings.gmail_settings_from_payload(
+            {"sync_enabled": False, "import_limit": 250}
+        )
+        self.assertEqual(parsed["sync_enabled"], False)
+        self.assertEqual(parsed["import_limit"], 40)
+
+    def test_gmail_scheduler_enabled_defaults_true(self):
+        self.assertTrue(app_settings.gmail_scheduler_enabled({}))
+        self.assertTrue(app_settings.gmail_scheduler_enabled({"sync_enabled": True}))
+        self.assertFalse(app_settings.gmail_scheduler_enabled({"sync_enabled": False}))
+
     def test_gmail_import_paginates_beyond_single_page(self):
         # T4 -- the listing follows nextPageToken and accumulates up to import_limit.
         class FakeExecutable:
