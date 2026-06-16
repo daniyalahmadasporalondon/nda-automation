@@ -446,6 +446,142 @@ class PdfTextTests(unittest.TestCase):
         self.assertEqual(str(context.exception), PDF_SUPPORT_NOT_INSTALLED_MESSAGE)
 
 
+class PdfVisualProfileMemoryGuardTests(unittest.TestCase):
+    """Behavioral-contract guard for the PDF visual-profile memory fix.
+
+    These tests verify that ``_fitz_visual_text_flags`` strips
+    ``TEXT_PRESERVE_IMAGES`` from the per-page text-dict call so that image
+    pixel bytes are never materialised into the per-page dict, while still
+    signalling image and coloured-text presence via the lightweight
+    ``get_image_info()`` path.  They are written as BEHAVIORAL contracts (not
+    RSS/tracemalloc ceilings) so they are deterministic and C-layer-visible.
+    """
+
+    def setUp(self):
+        # Reset the module-level cache so each test starts from scratch and
+        # cannot be contaminated by a stale ``int`` left by a previous test or
+        # by import-time initialisation.
+        pdf_text._FITZ_VISUAL_TEXT_FLAGS_NO_IMAGES = None
+
+    def tearDown(self):
+        # Restore the sentinel so later tests get a clean state too.
+        pdf_text._FITZ_VISUAL_TEXT_FLAGS_NO_IMAGES = None
+
+    @requires_pymupdf
+    def test_flag_level_text_preserve_images_is_stripped(self):
+        """_fitz_visual_text_flags() returns a non-None int with TEXT_PRESERVE_IMAGES cleared.
+
+        This is the lowest-level contract: the helper must exist, must
+        successfully compute a value from the running PyMuPDF build, and the
+        value must NOT include the TEXT_PRESERVE_IMAGES bit.  If this bit were
+        present, the per-page ``get_text("dict", flags=...)`` call would
+        materialise full image pixel bytes into the in-process heap on every
+        page, undoing the memory fix entirely.
+        """
+        import fitz
+
+        flags = pdf_text._fitz_visual_text_flags(fitz)
+
+        self.assertIsNotNone(
+            flags,
+            "_fitz_visual_text_flags() returned None on a PyMuPDF build that has "
+            "TEXTFLAGS_DICT and TEXT_PRESERVE_IMAGES -- the memory guard is inactive",
+        )
+        self.assertFalse(
+            flags & fitz.TEXT_PRESERVE_IMAGES,
+            f"TEXT_PRESERVE_IMAGES bit (0x{fitz.TEXT_PRESERVE_IMAGES:x}) is set in "
+            f"_fitz_visual_text_flags() result 0x{flags:x} -- image pixels would still "
+            "be materialised into the per-page text dict",
+        )
+
+    @requires_pymupdf
+    def test_behavioral_text_dict_carries_zero_image_payload_bytes(self):
+        """With the no-image flags, the per-page text dict carries zero image payload bytes.
+
+        The text dict produced under ``_fitz_visual_text_flags()`` must contain
+        NO type-1 image blocks and therefore zero bytes in any ``"image"`` key.
+        Simultaneously, ``get_image_info()`` must still report at least one
+        image -- proving that image *presence* is retained via the lightweight
+        path even though the pixel bytes were never materialised.
+        """
+        import fitz
+
+        data = make_image_pdf()
+        flags = pdf_text._fitz_visual_text_flags(fitz)
+        self.assertIsNotNone(flags, "flags must be non-None for this test to be meaningful")
+
+        document = fitz.open(stream=data, filetype="pdf")
+        try:
+            page = document[0]
+            # Image-payload bytes in the text dict (zero is the contract).
+            blocks = page.get_text("dict", flags=flags).get("blocks", [])
+            image_payload_bytes = sum(
+                len(b.get("image") or b"")
+                for b in blocks
+                if isinstance(b, dict) and b.get("type") == 1
+            )
+            self.assertEqual(
+                image_payload_bytes,
+                0,
+                f"text dict produced {image_payload_bytes} image-payload bytes under the "
+                "no-image flags -- pixel bytes are still being materialised",
+            )
+            # Image presence via the lightweight path (must be >= 1).
+            image_info = page.get_image_info()
+        finally:
+            document.close()
+
+        self.assertGreaterEqual(
+            len(image_info),
+            1,
+            "get_image_info() reported no images on a PDF that contains an embedded "
+            "raster -- the visual profile would silently miss images",
+        )
+
+    @requires_pypdf
+    @requires_pymupdf
+    def test_signal_survives_image_and_colored_text_both_reported(self):
+        """extract_pdf_document() still reports image_count>=1 and colored_text.
+
+        Stripping image bytes from the text-dict call must not blind the visual
+        profile to either signal.  ``make_image_pdf()`` contains one embedded
+        raster and one red text span; the profile must flag both.
+        """
+        data = make_image_pdf()
+
+        extraction = extract_pdf_document(data)
+        visual_profile = extraction.quality["visual_profile"]
+
+        self.assertEqual(
+            visual_profile["status"],
+            "ready",
+            f"visual profile status was {visual_profile.get('status')!r}, "
+            f"reason: {visual_profile.get('reason')!r}",
+        )
+        self.assertGreaterEqual(
+            visual_profile["image_count"],
+            1,
+            "visual profile reported zero images on a PDF that contains an embedded "
+            "raster -- the memory-safe image-counting path is broken",
+        )
+        self.assertIn(
+            "images",
+            visual_profile["visual_features"],
+            "visual_features does not include 'images' even though image_count >= 1",
+        )
+        self.assertIn(
+            "colored_text",
+            visual_profile["visual_features"],
+            "visual_features does not include 'colored_text' even though the PDF "
+            "contains a red text span -- stripping image flags must not affect "
+            "colour detection",
+        )
+        self.assertTrue(
+            visual_profile["requires_source_preview"],
+            "requires_source_preview should be True when images or colored_text are present",
+        )
+
+
 BODY_LINE_HEIGHT = 14.0
 PARAGRAPH_GAP = 30.0
 
@@ -2151,20 +2287,27 @@ def make_visual_pdf():
 
 
 def make_image_pdf():
-    """A one-page PDF with body text plus a small embedded raster image.
+    """A one-page PDF with a raster image and a red text span.
 
     Built with PyMuPDF (requires fitz) so the embedded image is a real image
     XObject -- exercising the visual profile's image-detection path that, after
     the memory trim, runs through get_image_info() rather than the text dict.
+    The red text span (color=(1,0,0)) ensures the visual profile also emits
+    ``colored_text`` so the signal-survives assertion can check both features.
     """
     import fitz
 
     document = fitz.open()
     page = document.new_page(width=612, height=792)
+    # Black body text that pypdf can extract (exercises signal-survives path).
     page.insert_text((72, 720), "Confidential Information means all data.", fontsize=12)
+    # Red span -- non-zero colour -> visual profile must report colored_text.
+    page.insert_text((72, 700), "Red clause heading.", fontsize=12, color=(1, 0, 0))
+    # 2x2 raster image XObject -- presence detected via get_image_info(), not
+    # via pixel bytes materialised into the text dict.
     pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 2, 2), False)
     pixmap.set_rect(pixmap.irect, (255, 0, 0))
-    page.insert_image(fitz.Rect(400, 700, 440, 740), pixmap=pixmap)
+    page.insert_image(fitz.Rect(400, 600, 440, 640), pixmap=pixmap)
     data = document.tobytes()
     document.close()
     return data
