@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import re
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 from .ai_assessment_contract import (
@@ -138,6 +139,11 @@ def reassess_single_clause(
     if not clause_id:
         raise ReassessClauseError("clause_id is required.")
 
+    # Per-job phase timing for the on-demand single-clause re-review (best-effort).
+    from .phase_observability import REVIEW_PHASE_EVENT, PhaseTimer
+
+    timer = PhaseTimer(REVIEW_PHASE_EVENT)
+
     text = source_text or ""
     review_playbook = deepcopy(playbook) if isinstance(playbook, Mapping) else load_playbook()
     validate_playbook(review_playbook)
@@ -205,7 +211,8 @@ def reassess_single_clause(
         clause_localization=clause_localization,
     )
     try:
-        raw_response = configured_reviewer(packet)
+        with _timed_phase(timer, "assessor"):
+            raw_response = configured_reviewer(packet)
     except Exception as error:
         raise ReassessClauseError(f"AI single-clause assessment failed: {error}", status=502) from error
 
@@ -256,13 +263,14 @@ def reassess_single_clause(
         else text
     )
     clause_results_list: list[ClauseResult] = [clause_result]
-    clause_results_list, ai_verifier_review = apply_ai_verifier(
-        clause_results_list,
-        source_text=verifier_source_text,
-        verifier=ai_verifier,
-        enabled=verify,
-        contract_structure=contract_structure,
-    )
+    with _timed_phase(timer, "verifier"):
+        clause_results_list, ai_verifier_review = apply_ai_verifier(
+            clause_results_list,
+            source_text=verifier_source_text,
+            verifier=ai_verifier,
+            enabled=verify,
+            contract_structure=contract_structure,
+        )
     _refinalize_ai_first_verifier_changes(clause_results_list, ai_verifier_review, document_paragraphs)
     # Build redline for just this clause.
     redline_edits = _build_redline_edits(clause_results_list, document_paragraphs)
@@ -278,7 +286,35 @@ def reassess_single_clause(
         "has_edited_paragraphs": bool(edited_paragraphs),
         "ai_verifier_ran": bool(verify),
     }
+    timer.total()
     return updated_clause
+
+
+@contextmanager
+def _timed_phase(phase_timer: Any | None, name: str) -> Iterator[None]:
+    """Time ``name`` on ``phase_timer`` when one is supplied, else a no-op.
+
+    Best-effort: a timer that is the wrong shape (no ``.phase``) or whose context
+    manager raises must never break the review, so any failure degrades to an
+    untimed pass-through.
+    """
+    if phase_timer is None:
+        with nullcontext():
+            yield
+        return
+    phase_cm = getattr(phase_timer, "phase", None)
+    if not callable(phase_cm):
+        with nullcontext():
+            yield
+        return
+    try:
+        manager = phase_cm(name)
+    except Exception:  # noqa: BLE001 - timing must never break the review
+        with nullcontext():
+            yield
+        return
+    with manager:
+        yield
 
 
 def build_ai_first_review_result(
@@ -292,6 +328,7 @@ def build_ai_first_review_result(
     structure_validator: Any | None = None,
     verify: bool = True,
     contract_structure: Mapping[str, Any] | None = None,
+    phase_timer: Any | None = None,
 ) -> dict[str, Any]:
     """Build the existing review_result contract from AI-first clause assessments.
 
@@ -351,11 +388,12 @@ def build_ai_first_review_result(
         and structure_validation_enabled()
         and should_validate_structure(contract_structure, document_paragraphs)
     ):
-        contract_structure = validate_structure(
-            contract_structure,
-            document_paragraphs,
-            validator=structure_validator,
-        )
+        with _timed_phase(phase_timer, "structure_validation"):
+            contract_structure = validate_structure(
+                contract_structure,
+                document_paragraphs,
+                validator=structure_validator,
+            )
     reference_resolver = resolve_document_references(document_paragraphs, contract_structure)
     # Document-level reference-integrity signal (additive): roll the resolver's
     # otherwise-discarded dangling/ambiguous cross-references up into one surfaceable
@@ -392,13 +430,14 @@ def build_ai_first_review_result(
     # Additive overlay: justify-or-refute each escalated finding, then re-finalize
     # the derived structures (reason codes, structured evidence, audit trace) for any
     # clause it rewrote so the evidence-trust contract still holds.
-    clause_results, ai_verifier_review = apply_ai_verifier(
-        clause_results,
-        source_text=text,
-        verifier=ai_verifier,
-        enabled=verify,
-        contract_structure=contract_structure,
-    )
+    with _timed_phase(phase_timer, "verifier"):
+        clause_results, ai_verifier_review = apply_ai_verifier(
+            clause_results,
+            source_text=text,
+            verifier=ai_verifier,
+            enabled=verify,
+            contract_structure=contract_structure,
+        )
     _refinalize_ai_first_verifier_changes(clause_results, ai_verifier_review, document_paragraphs)
     counts = review_result_clause_counts(clause_results)
     review_state = aggregate_review_state(
