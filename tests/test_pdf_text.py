@@ -503,7 +503,12 @@ class PdfTextTests(unittest.TestCase):
         extraction = extract_pdf_document(data)
 
         self.assertTrue(extraction.paragraphs)
-        self.assertIn("Confidential Information", extraction.paragraphs[0]["text"])
+        # The legitimate body text must survive extraction. Assert against the
+        # joined paragraph text rather than paragraphs[0] specifically: the shared
+        # make_image_pdf() fixture lays out a red heading at a lower y-coordinate,
+        # so the body clause is not guaranteed to be the first paragraph.
+        extracted_text = "\n".join(p["text"] for p in extraction.paragraphs)
+        self.assertIn("Confidential Information", extracted_text)
         self.assertGreaterEqual(extraction.quality["visual_profile"]["image_count"], 1)
 
     @requires_pypdf
