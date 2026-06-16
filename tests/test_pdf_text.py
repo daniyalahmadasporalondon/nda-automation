@@ -376,6 +376,74 @@ class PdfTextTests(unittest.TestCase):
         self.assertIn("pdf_visual_fidelity_requires_source_preview", warning_types)
 
     @requires_pypdf
+    @requires_pymupdf
+    def test_rejects_image_decompression_bomb_before_decoding_pixels(self):
+        # A single 6000x6000 (36 MP) embedded image exceeds the 30 MP pixel budget
+        # and must be rejected. The guard reads dimensions via get_image_info()
+        # (no pixel decode), so rejection happens BEFORE pypdf decodes anything. We
+        # patch get_image_info to REPORT a 6000x6000 image on a tiny real PDF (no
+        # 100+ MB bomb file, no pixel decode) and assert that pypdf text extraction
+        # is never reached -- proving the guard fires on reported dimensions
+        # pre-decode, with no RSS spike.
+        import fitz
+
+        data = make_pdf("Confidential Information means all data disclosed.")
+
+        def fake_get_image_info(self, *args, **kwargs):
+            return [{"width": 6000, "height": 6000}]
+
+        original_extract = pdf_text._extract_geo_lines
+        text_decoded = {"called": False}
+
+        def tracking_extract(page):
+            text_decoded["called"] = True
+            return original_extract(page)
+
+        with patch.object(fitz.Page, "get_image_info", fake_get_image_info):
+            with patch.object(pdf_text, "_extract_geo_lines", side_effect=tracking_extract):
+                with self.assertRaisesRegex(
+                    PdfExtractionError, "decompression bomb|too large to decode"
+                ):
+                    extract_pdf_document(data)
+
+        self.assertFalse(
+            text_decoded["called"],
+            "the bomb guard must reject BEFORE any page text is decoded",
+        )
+
+    @requires_pypdf
+    @requires_pymupdf
+    def test_real_36mp_image_is_rejected_before_decode(self):
+        # End-to-end with a genuine 6000x6000 image XObject (no mocks): the summed
+        # pixel area (36 MP) exceeds the 30 MP budget and the document is rejected.
+        import fitz
+
+        document = fitz.open()
+        page = document.new_page(width=612, height=792)
+        page.insert_text((72, 720), "Confidential Information means all data.", fontsize=12)
+        pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 6000, 6000), False)
+        page.insert_image(fitz.Rect(0, 0, 612, 792), pixmap=pixmap)
+        data = document.tobytes()
+        document.close()
+
+        with self.assertRaisesRegex(
+            PdfExtractionError, "decompression bomb|too large to decode"
+        ):
+            extract_pdf_document(data)
+
+    @requires_pypdf
+    @requires_pymupdf
+    def test_normal_small_image_pdf_still_extracts(self):
+        # A normal PDF with a tiny embedded image (well under the pixel budget) must
+        # still extract cleanly -- the guard must not block legitimate documents.
+        data = make_image_pdf()
+
+        extraction = extract_pdf_document(data)
+
+        self.assertTrue(extraction.paragraphs)
+        self.assertIn("Confidential Information", extraction.paragraphs[0]["text"])
+
+    @requires_pypdf
     def test_rejects_pdf_with_too_many_pages(self):
         data = make_pdf_pages([
             ["This Agreement shall be governed by the laws of California."],

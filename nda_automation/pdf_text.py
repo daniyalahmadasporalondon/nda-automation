@@ -35,6 +35,17 @@ PDF_SUPPORT_NOT_INSTALLED_MESSAGE = "PDF support is not installed. Install the p
 MAX_PDF_PAGES = 100
 MAX_PDF_EXTRACTED_CHARACTERS = 500_000
 
+# Image-decompression-bomb guard. ``page.get_image_info()`` reports each embedded
+# image's width/height WITHOUT decoding any pixels, so we can sum the total embedded
+# pixel area cheaply and reject a bomb BEFORE pypdf decodes anything. An edge-case
+# probe measured a 6000x6000 image (36 MP) inflating to ~274 MB RSS once decoded
+# (~7.6 bytes/decoded-pixel with pypdf overhead). We cap the total embedded pixel
+# area at 30 MP so the worst-case decoded transient stays around ~228 MB -- well
+# under the 2 GB worker -- while still rejecting the 36 MP single-image bomb. The
+# cap is on SUMMED area across the page-capped pages, so many smaller images that
+# would together blow the budget are caught too.
+MAX_PDF_IMAGE_PIXELS = 30_000_000
+
 # Memory guard for the fitz visual profile. ``page.get_text("dict")`` with the
 # default flags MATERIALIZES every embedded image's decoded bytes into the per-page
 # dict — on an image-heavy PDF that single transient dominates the whole review's
@@ -125,6 +136,10 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
     page_count = len(reader.pages)
     if page_count > MAX_PDF_PAGES:
         raise PdfExtractionError(f"The PDF has {page_count} pages, which exceeds the {MAX_PDF_PAGES} page review limit.")
+    # Reject an image-decompression bomb BEFORE any text/pixel decode runs. Uses the
+    # cheap, no-decode get_image_info() over the page-capped pages; fail-safe (no block)
+    # if the cheap probe is unavailable so we never regress current behaviour.
+    _reject_image_decompression_bomb(data, page_count)
     pages_without_text = 0
     pages_with_text = 0
     extracted_character_count = 0
@@ -807,6 +822,54 @@ def _pdf_quality_report(
     if visual_profile:
         quality["visual_profile"] = visual_profile
     return quality
+
+
+def _reject_image_decompression_bomb(data: bytes, page_count: int) -> None:
+    """Reject a PDF whose embedded images would decode to too much memory.
+
+    Sums each embedded image's pixel area (``width * height``) via PyMuPDF's
+    ``page.get_image_info()`` -- which reports dimensions WITHOUT decoding any
+    pixels -- across the page-capped pages (respecting ``MAX_PDF_PAGES``). If the
+    total exceeds ``MAX_PDF_IMAGE_PIXELS`` we raise ``PdfExtractionError`` BEFORE
+    any caller decodes text or pixels, bounding the decoded-memory transient.
+
+    Fail-safe: any failure of the cheap probe (PyMuPDF absent, an unexpected
+    build, a malformed image dict) degrades to current behaviour (no block) rather
+    than rejecting a document we could not measure.
+    """
+
+    try:
+        import fitz
+    except Exception:
+        return
+
+    try:
+        document = fitz.open(stream=data, filetype="pdf")
+    except Exception:
+        return
+
+    try:
+        profiled_pages = min(document.page_count, MAX_PDF_PAGES)
+        total_pixels = 0
+        for page_index in range(profiled_pages):
+            try:
+                images = document[page_index].get_image_info()
+            except Exception:
+                # Cannot cheaply measure this page -> do not block on it.
+                continue
+            for image in images or []:
+                width = _safe_int((image or {}).get("width"))
+                height = _safe_int((image or {}).get("height"))
+                if width and height and width > 0 and height > 0:
+                    total_pixels += width * height
+                    if total_pixels > MAX_PDF_IMAGE_PIXELS:
+                        raise PdfExtractionError(
+                            "The PDF embeds an image too large to decode safely "
+                            f"({total_pixels:,} pixels exceeds the {MAX_PDF_IMAGE_PIXELS:,} "
+                            "pixel limit). This looks like an image decompression bomb."
+                        )
+    finally:
+        document.close()
 
 
 def _pdf_visual_profile(data: bytes) -> dict[str, object]:
