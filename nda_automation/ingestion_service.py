@@ -414,6 +414,18 @@ def _perform_inbound_ai_review(
 
     from contextlib import nullcontext
 
+    # Kill-switch RE-CHECK at DRAIN time, authoritative at the lowest-level review
+    # entry. The pool handler also gates before calling here, but the explicit
+    # runner path and any direct caller drain through this function -- re-reading
+    # the flag here means flipping NDA_INBOUND_AI_REVIEW_ENABLED=false stops an
+    # already-queued item from being reviewed no matter which path drains it, not
+    # just new enqueues. The item is dropped (no re-queue) because the feature is off.
+    if not inbound_ai_review_enabled():
+        LOGGER.info(
+            "Inbound AI review kill-switch off at drain; skipping matter %s", matter_id
+        )
+        return
+
     gate = _INBOUND_REVIEW_SEMAPHORE if use_semaphore else nullcontext()
     with gate:
         _perform_inbound_ai_review_locked(
