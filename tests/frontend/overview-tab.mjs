@@ -18,13 +18,19 @@
 //   1. Roster renders clauses sorted problems-first (fail, then review, then pass).
 //   2. Clicking a roster row selects that clause AND switches to the Clause tab
 //      (the onClauseClick seam fires with the clause id; NO AI re-review request).
-//   3. Progress line reads "{reviewed} of {total} clauses reviewed".
-//   4. Approve is disabled until reviewed === total; enabled + invokes onApprove
-//      when every clause is reviewed.
-//   5. Empty state (no AI review yet): the tab shows "No review yet" + a
+//   3. Footer renders an Approve button + a Send-for-signature button, both wired
+//      to their seams. (Approve's disabled state is owned by the existing
+//      stale-playbook gate, not a reviewed count — not asserted here.)
+//   4. Empty state (no AI review yet): the tab shows "No review yet" + a
 //      "Refresh with AI" button, and rendering the tab does NOT auto-fire AI.
-//   6. The Overview tab is FIRST in the inspector tab order (before Clause /
+//   5. The Overview tab is FIRST in the inspector tab order (before Clause /
 //      Structure) and is named "Overview" — asserted against the real index.html.
+//   6. renderOverviewFacts renders the counterparty + a confirm/entity-fill
+//      affordance.
+//
+// SCOPE CUT: the "how many reviewed" feature was dropped — the "{X} of {N}
+// clauses reviewed" progress line and the reviewed-count Approve gate are no
+// longer tested.
 //
 // Run: node tests/frontend/overview-tab.mjs
 
@@ -470,28 +476,11 @@ await test("2. clicking a roster row invokes onClauseClick(clauseId) and fires n
 });
 
 // ===========================================================================
-// Case 3 — progress line reads "{reviewed} of {total} clauses reviewed".
-// ===========================================================================
-await test("3. footer progress line reads '{reviewed} of {total} clauses reviewed'", async () => {
-  const { renderOverviewFooter } = requireOverview();
-  const el = new FakeElement("div");
-  installFetch();
-  renderOverviewFooter(
-    el,
-    { reviewedCount: 3, totalCount: 7, anyFail: true },
-    { onApprove() {}, onSend() {} },
-  );
-  const text = (el.textContent || "") + " " + (el.innerHTML || "");
-  assert.match(
-    text,
-    /3\s+of\s+7\s+clauses\s+reviewed/i,
-    `progress line missing or malformed; rendered text was: ${JSON.stringify(text.trim())}`,
-  );
-});
-
-// ===========================================================================
-// Case 4 — Approve disabled until reviewed === total; enabled + calls onApprove
-//          when all reviewed.
+// Case 3 — footer renders an Approve button AND a Send-for-signature button.
+//          NOTE: the "{reviewed} of {total} reviewed" progress line and the
+//          reviewed-count Approve gate were CUT from scope. Approve's disabled
+//          state is driven by the existing stale-playbook gate, NOT a reviewed
+//          count, so this test only asserts both controls render + are wired.
 // ===========================================================================
 function approveButton(el) {
   return (
@@ -502,45 +491,47 @@ function approveButton(el) {
   );
 }
 
-await test("4a. Approve is DISABLED while reviewed < total", async () => {
-  const { renderOverviewFooter } = requireOverview();
-  const el = new FakeElement("div");
-  installFetch();
-  renderOverviewFooter(
-    el,
-    { reviewedCount: 4, totalCount: 7, anyFail: false },
-    { onApprove() {}, onSend() {} },
+function sendButton(el) {
+  return (
+    el.querySelector("[data-overview-send]") ||
+    el.querySelector("[data-send-for-signature]") ||
+    el.querySelectorAll("button").find((b) => /send( for)?( signature)?|signature/i.test(b.textContent || "")) ||
+    null
   );
-  const btn = approveButton(el);
-  assert.ok(btn, "no Approve control was rendered in the footer");
-  assert.ok(
-    btn.disabled === true || btn.hasAttribute("disabled"),
-    "Approve must be disabled until every clause is reviewed",
-  );
-});
+}
 
-await test("4b. Approve is ENABLED and invokes onApprove once reviewed === total", async () => {
+await test("3. footer renders an Approve button and a Send-for-signature button (both wired)", async () => {
   const { renderOverviewFooter } = requireOverview();
   const el = new FakeElement("div");
   installFetch();
   let approvedCalls = 0;
+  let sendCalls = 0;
   renderOverviewFooter(
     el,
-    { reviewedCount: 7, totalCount: 7, anyFail: false },
-    { onApprove: () => { approvedCalls += 1; }, onSend() {} },
+    { reviewedCount: 5, totalCount: 7, anyFail: true },
+    { onApprove: () => { approvedCalls += 1; }, onSend: () => { sendCalls += 1; } },
   );
-  const btn = approveButton(el);
-  assert.ok(btn, "no Approve control was rendered in the footer");
-  assert.ok(
-    btn.disabled === false && !btn.hasAttribute("disabled"),
-    "Approve must be enabled once reviewed === total",
-  );
-  btn.click();
-  assert.equal(approvedCalls, 1, "clicking an enabled Approve must invoke the onApprove action exactly once");
+
+  const approve = approveButton(el);
+  const send = sendButton(el);
+  assert.ok(approve, "footer must render an Approve button");
+  assert.ok(send, "footer must render a Send-for-signature button");
+
+  // Both are wired to their seams. (Approve's enabled/disabled state is owned by
+  // the stale-playbook gate elsewhere, not asserted here.) Only click the buttons
+  // the host left enabled so the test does not assume a particular gate verdict.
+  if (!approve.disabled) {
+    approve.click();
+    assert.equal(approvedCalls, 1, "an enabled Approve must invoke onApprove");
+  }
+  if (!send.disabled) {
+    send.click();
+    assert.equal(sendCalls, 1, "an enabled Send-for-signature must invoke onSend");
+  }
 });
 
 // ===========================================================================
-// Case 5 — empty state: no review yet -> "No review yet" + "Refresh with AI",
+// Case 4 — empty state: no review yet -> "No review yet" + "Refresh with AI",
 //          and rendering the empty tab does NOT auto-fire AI.
 // ===========================================================================
 function refreshButton(el) {
@@ -552,7 +543,7 @@ function refreshButton(el) {
   );
 }
 
-await test("5. empty state shows 'No review yet' + 'Refresh with AI' and does NOT auto-fire AI", async () => {
+await test("4. empty state shows 'No review yet' + 'Refresh with AI' and does NOT auto-fire AI", async () => {
   const { renderOverviewRoster, renderOverviewFooter } = requireOverview();
   const calls = installFetch();
 
@@ -586,10 +577,10 @@ await test("5. empty state shows 'No review yet' + 'Refresh with AI' and does NO
 });
 
 // ===========================================================================
-// Case 6 — Overview is FIRST in the inspector tab order and named "Overview".
+// Case 5 — Overview is FIRST in the inspector tab order and named "Overview".
 //          Asserted against the real shipped index.html (the integrated whole).
 // ===========================================================================
-await test("6. Overview is the FIRST inspector tab (before Clause/Structure) and is named 'Overview'", async () => {
+await test("5. Overview is the FIRST inspector tab (before Clause/Structure) and is named 'Overview'", async () => {
   const html = fs.readFileSync(path.join(ROOT, "static", "index.html"), "utf8");
 
   // Isolate the inspector tablist block, then read its buttons in document order.
@@ -623,11 +614,11 @@ await test("6. Overview is the FIRST inspector tab (before Clause/Structure) and
 });
 
 // ===========================================================================
-// Bonus — renderOverviewFacts surface exists and renders the counterparty +
+// Case 6 — renderOverviewFacts surface exists and renders the counterparty +
 //          a confirm/entity-fill affordance (the third documented interface).
 //          Asserted lightly so it fails clear if the symbol is absent.
 // ===========================================================================
-await test("7. renderOverviewFacts renders the counterparty + confirm/entity-fill affordance", async () => {
+await test("6. renderOverviewFacts renders the counterparty + confirm/entity-fill affordance", async () => {
   const { renderOverviewFacts } = requireOverview();
   const el = new FakeElement("div");
   installFetch();
