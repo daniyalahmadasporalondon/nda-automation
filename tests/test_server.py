@@ -1748,6 +1748,25 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(payload, expected)
         active_review.assert_called_once_with("NDA text")
 
+    def test_text_review_offline_flag_pins_deterministic_engine_no_ai(self):
+        # The live editor's keystroke-debounced clause detection sends offline:true
+        # so it NEVER runs the AI reviewer/verifier. The route must force the
+        # deterministic (no-AI) engine -- here proven by the force_engine kwarg.
+        expected = {
+            "active_review_engine": {"engine": "deterministic"},
+            "clauses": [],
+            "redline_edits": [],
+        }
+        with (
+            patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first"}),
+            patch.object(server_module, "review_nda_with_active_engine", return_value=expected) as active_review,
+        ):
+            status, payload = self.request("POST", "/api/review", {"text": "NDA text", "offline": True})
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, expected)
+        active_review.assert_called_once_with("NDA text", force_engine="deterministic")
+
     def test_text_review_reports_active_ai_first_failure(self):
         with (
             patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first"}),
