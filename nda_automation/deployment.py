@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -33,6 +35,112 @@ OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 GMAIL_TRIAGE_MODEL_ENV = "NDA_GMAIL_TRIAGE_MODEL"
 GMAIL_INTAKE_MODEL_ENV = "NDA_GMAIL_INTAKE_MODEL"
 DEFAULT_GMAIL_INTAKE_MODEL = "deepseek/deepseek-v4-flash"
+
+# Boot-sentinel filename written under NDA_DATA_DIR to prove durability across
+# restarts.  An UNMOUNTED /var/data (a fresh container dir) is not on a denylisted
+# ephemeral root, so the path-string checks above cannot catch it -- only a value
+# that survives a restart can.  See `record_data_dir_boot`.
+DATA_DIR_SENTINEL_FILENAME = ".nda_boot_sentinel.json"
+NON_PERSISTENT_DATA_DIR_WARNING = (
+    "NDA_DATA_DIR boot sentinel did not survive a restart; storage may NOT be "
+    "persistent (an unmounted disk wipes matters/users/sessions on every restart). "
+    "Verify the persistent disk is actually mounted at NDA_DATA_DIR."
+)
+
+# Persistence verdicts (distinct from the path-string `data_dir_ephemeral` flag).
+DATA_DIR_PERSISTED = "persisted"  # a prior boot's sentinel survived a restart
+DATA_DIR_NOT_PERSISTED = "not_persisted"  # first boot OR every boot starts empty
+DATA_DIR_PERSISTENCE_UNKNOWN = "unknown"  # sentinel I/O failed / boot not recorded yet
+
+# Module-level verdict recorded once at boot by `record_data_dir_boot` and read by
+# the deployment-status endpoint.  Defaults to "unknown" until a boot is recorded
+# (e.g. local/test imports that never call the boot hook).
+_data_dir_persistence_state: str = DATA_DIR_PERSISTENCE_UNKNOWN
+_data_dir_boot_count: int = 0
+
+
+def record_data_dir_boot(data_dir: Path) -> str:
+    """Write/read the boot sentinel under ``data_dir`` to prove durability.
+
+    Called once at startup.  Reads any sentinel left by a PRIOR boot, increments a
+    persisted boot counter, and writes it back.  If a prior boot's sentinel survives
+    a restart the dir is genuinely persistent; if every boot finds an empty dir the
+    storage is not persisting and we flag it loudly.
+
+    Returns one of ``DATA_DIR_PERSISTED`` / ``DATA_DIR_NOT_PERSISTED`` /
+    ``DATA_DIR_PERSISTENCE_UNKNOWN`` and records it module-globally for the
+    deployment-status endpoint.  NEVER raises -- a storage hiccup here must not
+    crash a healthy deploy; on any I/O error the verdict is ``unknown``.
+    """
+    global _data_dir_persistence_state, _data_dir_boot_count
+    sentinel_path = data_dir / DATA_DIR_SENTINEL_FILENAME
+    prior = _read_data_dir_sentinel(sentinel_path)
+    prior_boot_count = prior.get("boot_count") if isinstance(prior, dict) else None
+    first_seen = prior.get("first_seen") if isinstance(prior, dict) else None
+    now = time.time()
+    if not isinstance(prior_boot_count, int) or prior_boot_count < 0:
+        prior_boot_count = 0
+    if not isinstance(first_seen, (int, float)):
+        first_seen = now
+    boot_count = prior_boot_count + 1
+    persisted = prior_boot_count >= 1
+    _write_data_dir_sentinel(
+        sentinel_path,
+        {"boot_count": boot_count, "first_seen": first_seen, "last_seen": now},
+    )
+    _data_dir_boot_count = boot_count
+    if persisted:
+        _data_dir_persistence_state = DATA_DIR_PERSISTED
+    elif prior is None:
+        # Could not even read the dir / sentinel -- do not assert non-persistence.
+        _data_dir_persistence_state = DATA_DIR_PERSISTENCE_UNKNOWN
+    else:
+        _data_dir_persistence_state = DATA_DIR_NOT_PERSISTED
+    return _data_dir_persistence_state
+
+
+def data_dir_persistence_state() -> str:
+    return _data_dir_persistence_state
+
+
+def _reset_data_dir_persistence_state_for_tests() -> None:
+    global _data_dir_persistence_state, _data_dir_boot_count
+    _data_dir_persistence_state = DATA_DIR_PERSISTENCE_UNKNOWN
+    _data_dir_boot_count = 0
+
+
+def _read_data_dir_sentinel(sentinel_path: Path) -> dict[str, object] | None:
+    """Return the prior sentinel dict, ``{}`` for the empty-at-boot signal (no
+    sentinel present -- including a not-yet-created data dir), or ``None`` only when
+    an EXISTING sentinel could not be read/parsed (treated as unknown, never as a
+    false non-persistence claim)."""
+    try:
+        if not sentinel_path.exists():
+            # No prior sentinel survives: this IS the empty-at-boot signal that a
+            # wipe (or genuine first boot) produces.  Return {} (not None) so the
+            # caller flags non-persistence rather than degrading to "unknown".
+            return {}
+        with sentinel_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, ValueError):
+        return None
+
+
+def _write_data_dir_sentinel(sentinel_path: Path, payload: dict[str, object]) -> None:
+    try:
+        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = sentinel_path.with_name(f"{sentinel_path.name}.tmp")
+        with temporary_path.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary_path.replace(sentinel_path)
+    except OSError:
+        # Best-effort: a write failure leaves the prior verdict intact and never
+        # propagates.  Detection degrades to "unknown", it does not crash boot.
+        pass
 
 
 def _validate_public_auth(host: str) -> None:
@@ -67,7 +175,9 @@ def _deployment_status_for_host(host: str) -> dict[str, object]:
     users_path_configured = bool(os.environ.get("NDA_USERS_PATH"))
     users_path_ephemeral = users_path_configured and _is_ephemeral_storage_path(user_store.users_path())
     rate_limit_per_minute = _rate_limit_per_window()
+    data_dir_persisted = data_dir_persistence_state()
     data_dir_check = _deployment_data_dir_check(host, data_dir_configured, data_dir_ephemeral)
+    data_dir_persistence_check = _deployment_data_dir_persistence_check(host, data_dir_persisted)
     users_path_check = _deployment_users_path_check(host, users_path_configured, users_path_ephemeral)
     public_host = not _is_loopback_host(host)
     allowed_hosts_configured = bool(os.environ.get(AUTH_ALLOWED_HOSTS_ENV, "").strip())
@@ -102,6 +212,16 @@ def _deployment_status_for_host(host: str) -> dict[str, object]:
             "id": "data_dir",
             "ok": data_dir_check["ok"],
             "message": data_dir_check["message"],
+        },
+        {
+            # Mount-liveness proof (boot sentinel): distinct from `data_dir` which
+            # only path-string-denylists ephemeral roots.  Advisory -- it reports
+            # "unknown" on first boot / failed I/O and only WARNS (never fails the
+            # gate) so a healthy first deploy is not blocked.
+            "id": "data_dir_persistence",
+            "ok": data_dir_persistence_check["ok"],
+            "persisted": data_dir_persistence_check["persisted"],
+            "message": data_dir_persistence_check["message"],
         },
         {
             "id": "users_path",
@@ -163,6 +283,7 @@ def _deployment_status_for_host(host: str) -> dict[str, object]:
         "gmail_oauth_redirect_uri_configured": bool(gmail_redirect_uri),
         "data_dir_configured": data_dir_configured,
         "data_dir_ephemeral": data_dir_ephemeral,
+        "data_dir_persisted": data_dir_persisted,
         "users_path_configured": users_path_configured,
         "users_path_ephemeral": users_path_ephemeral,
         "exports_dir_configured": exports_dir is not None,
@@ -196,6 +317,23 @@ def _deployment_data_dir_check(host: str, data_dir_configured: bool, data_dir_ep
     if _env_flag_enabled("NDA_ALLOW_EPHEMERAL_DATA"):
         return {"ok": True, "message": "Ephemeral matter data is explicitly allowed."}
     return {"ok": False, "message": "Matter data is not on configured durable storage."}
+
+
+def _deployment_data_dir_persistence_check(host: str, data_dir_persisted: str) -> dict[str, object]:
+    # `ok` only goes False when we have POSITIVE evidence of non-persistence (a
+    # prior-boot sentinel that did not survive).  First boot / unknown stays ok so
+    # a healthy fresh deploy is never flagged red.
+    if data_dir_persisted == DATA_DIR_PERSISTED:
+        return {"ok": True, "persisted": True, "message": "NDA_DATA_DIR boot sentinel survived a restart; storage is durable."}
+    if data_dir_persisted == DATA_DIR_NOT_PERSISTED:
+        if _is_loopback_host(host):
+            return {"ok": True, "persisted": False, "message": "Local deployment data dir may reset between runs."}
+        return {"ok": False, "persisted": False, "message": NON_PERSISTENT_DATA_DIR_WARNING}
+    return {
+        "ok": True,
+        "persisted": None,
+        "message": "NDA_DATA_DIR persistence not yet proven (first boot or sentinel unreadable); confirmed once a restart preserves it.",
+    }
 
 
 def _deployment_users_path_check(host: str, users_path_configured: bool, users_path_ephemeral: bool) -> dict[str, object]:

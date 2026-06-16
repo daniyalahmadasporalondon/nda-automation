@@ -32,14 +32,17 @@ from .checker import (
     ai_second_opinion_for_clause,
 )
 from .deployment import (
+    DATA_DIR_NOT_PERSISTED as DATA_DIR_NOT_PERSISTED,
     DURABLE_DATA_DIR_REQUIRED_MESSAGE as DURABLE_DATA_DIR_REQUIRED_MESSAGE,
     EPHEMERAL_DATA_DIR_MESSAGE as EPHEMERAL_DATA_DIR_MESSAGE,
     EPHEMERAL_EXPORTS_DIR_MESSAGE as EPHEMERAL_EXPORTS_DIR_MESSAGE,
     EPHEMERAL_USERS_PATH_MESSAGE as EPHEMERAL_USERS_PATH_MESSAGE,
+    NON_PERSISTENT_DATA_DIR_WARNING as NON_PERSISTENT_DATA_DIR_WARNING,
     _deployment_status_for_host as _deployment_status_for_host,
     _is_ephemeral_storage_path as _is_ephemeral_storage_path,
     _validate_public_auth,
     _validate_public_storage,
+    record_data_dir_boot,
 )
 from .csrf import (
     CSRF_REJECTED_MESSAGE,
@@ -788,10 +791,28 @@ def main() -> None:
     except RuntimeError as error:
         parser.error(str(error))
 
+    _record_data_dir_boot_sentinel()
+
     server = ThreadingHTTPServer((args.host, args.port), NdaAutomationHandler)
     _start_gmail_sync_scheduler()
     print(f"nda-automation running at http://{args.host}:{args.port}")
     server.serve_forever()
+
+
+def _record_data_dir_boot_sentinel() -> None:
+    """Prove NDA_DATA_DIR durability at boot and WARN loudly if it isn't persisting.
+
+    Detection only -- never refuses to boot (avoid prod-down).  An UNMOUNTED
+    /var/data passes the path-string ephemeral denylist silently; the boot sentinel
+    is the cross-platform proof that something actually survived a restart.
+    """
+    try:
+        verdict = record_data_dir_boot(matter_store.DATA_DIR)
+    except Exception as error:  # pragma: no cover - defensive: detection must not crash boot.
+        _log_background_error("Data dir boot-sentinel check failed", error)
+        return
+    if verdict == DATA_DIR_NOT_PERSISTED:
+        print(f"WARNING: {NON_PERSISTENT_DATA_DIR_WARNING}")
 
 
 def _start_gmail_sync_scheduler() -> None:
