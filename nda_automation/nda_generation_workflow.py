@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
-from . import nda_generation, pdf_export_service, playbook_runtime
+from . import generation_timing, nda_generation, pdf_export_service, playbook_runtime
 from .nda_generation import CounterpartyIntake
 
 
@@ -65,6 +65,7 @@ def generate_nda_for_matter(
 
     repository = DiskMatterRepository()
     active_playbook = playbook_runtime.ensure_active_playbook_bundle()
+    generation_timing.mark_phase("playbook loaded")
     result = nda_generation.generate_nda_for_entity(
         entity_id,
         intake,
@@ -72,6 +73,7 @@ def generate_nda_for_matter(
         governing_law_override=governing_law_override,
         address_id=address_id,
     )
+    generation_timing.mark_phase("docx built")
 
     # Hard safety gate on the actual matter-creation path. Nothing is persisted
     # before this passes.
@@ -89,6 +91,7 @@ def generate_nda_for_matter(
         defer_ai_review=True,
         playbook_runtime_func=lambda: active_playbook,
     )
+    generation_timing.mark_phase("matter persisted")
 
     original = latest_artifact_for_role(matter, ROLE_ORIGINAL)
     artifact = nda_generation.save_generated_nda(
