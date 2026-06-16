@@ -29,7 +29,7 @@ import {
 } from "./send-document.mjs";
 import { createDraftIntake } from "./draft-intake.mjs";
 import { GeneratorWorkstationModel } from "./generator-workstation-model.mjs";
-import { createGenerationApi, GenerationUnavailableError } from "./generation-api.mjs";
+import { createGenerationApi, GenerationUnavailableError, GenerationTimeoutError } from "./generation-api.mjs";
 import { PdfMarkupWorkstation } from "./pdf-markup-workstation.mjs";
 import { RedlineEditContract } from "./redline-edit-contract.mjs";
 import { ReviewWorkstationModel } from "./review-workstation-model.mjs";
@@ -87,6 +87,7 @@ Object.assign(window, {
   // load time, so the deferred-module availability is safe.
   createGenerationApi,
   GenerationUnavailableError,
+  GenerationTimeoutError,
   GeneratorWorkstationModel,
   PdfMarkupWorkstation,
   RedlineEditContract,

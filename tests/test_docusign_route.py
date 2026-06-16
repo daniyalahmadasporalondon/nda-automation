@@ -30,6 +30,21 @@ OTHER = "google:other-owner"
 PDF_BYTES = b"%PDF-1.4 reviewed body"
 
 
+@pytest.fixture(autouse=True)
+def _isolated_user_store(tmp_path, monkeypatch):
+    """Pin the user store to a per-test tmp file.
+
+    These tests exercise user_store.create_oauth_state / consume_oauth_state via
+    the DocuSign connect flow, which read and rewrite the on-disk store. Without
+    isolation those writes land on NDA_USERS_PATH / NDA_DATA_DIR/users.json — the
+    operator's real ./data when a developer runs pytest with .env loaded — and a
+    store loaded empty is saved back empty, wiping their session. The global
+    conftest already redirects this, but isolating here too keeps the file safe
+    even if it is ever collected without that conftest.
+    """
+    monkeypatch.setenv("NDA_USERS_PATH", str(tmp_path / "users.json"))
+
+
 class _FakeHandler:
     def __init__(self, repo, *, owner=OWNER, payload=None, path="/", raw_body=b"", headers=None):
         self.matter_repository = repo

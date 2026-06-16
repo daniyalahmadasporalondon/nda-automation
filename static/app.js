@@ -791,6 +791,13 @@ async function generateNdaFromDraft(payload) {
   const counterpartyEmail = payload?.counterparty?.email || "";
   const counterpartyName = payload?.counterparty?.name || "";
   const subject = payload?.counterparty?.name ? `NDA — ${payload.counterparty.name}` : "NDA";
+  // Snapshot the generated matters that already exist BEFORE we fire the request.
+  // Generation is synchronous and (with the AI clause adapter active) makes live
+  // model calls, so a slow/cold host or proxy can make the POST time out AFTER the
+  // backend already finished and SAVED the matter — the "spinner stuck, but the
+  // NDA is in the Repository" failure. If that happens we self-heal by finding the
+  // matter that appeared since this snapshot, so we never spin forever.
+  const knownGeneratedIds = await generatedMatterIdSnapshot();
   try {
     const result = await api.generateNda(payload);
     if (result.kind === "blob") {
@@ -853,8 +860,123 @@ async function generateNdaFromDraft(payload) {
         tone: "success",
       };
     }
+    // The POST timed out (or the connection dropped mid-flight). The backend may
+    // still have generated and saved the NDA, so before reporting failure, poll
+    // the repository for a generated matter that appeared since we started. If we
+    // find it, the spinner clears into the normal generated-result state — the
+    // known "backend finished but the request hung" case self-heals.
+    if (error instanceof window.GenerationTimeoutError || error?.code === "generation_timeout") {
+      const recovered = await recoverGeneratedMatter(knownGeneratedIds, {
+        counterpartyEmail,
+        counterpartyName,
+        subject,
+      });
+      if (recovered) {
+        const savedFor = counterpartyName ? ` for ${counterpartyName}` : "";
+        return {
+          message: `NDA generated and saved${savedFor} (the request was slow to respond, so it was recovered from the Repository). Use Download or Send.`,
+          tone: "success",
+          generated: recovered,
+        };
+      }
+      // No matter surfaced in the recovery window — surface a clear, non-spinning
+      // error with retry guidance rather than leaving "Generating…" up forever.
+      return {
+        message:
+          "Generation is taking longer than expected and the request timed out. The NDA may still appear in the Repository shortly — check there, or try Generate again.",
+        tone: "error",
+      };
+    }
     throw error;
   }
+}
+
+// The ids of every generated matter currently in the repository. Used as the
+// "before" baseline for the timeout self-heal so we can tell which matter the
+// hung request created. Best-effort: a failed/empty fetch returns an empty set,
+// which simply means the recovery treats any generated matter as a candidate.
+async function generatedMatterIdSnapshot() {
+  try {
+    const matters = await generatorRepositoryApi().listMatters();
+    return new Set(
+      (Array.isArray(matters) ? matters : [])
+        .filter(isGeneratedMatter)
+        .map((matter) => String(matter.id)),
+    );
+  } catch (error) {
+    return new Set();
+  }
+}
+
+// True for a matter produced by the Generator (POST /api/generate-nda persists it
+// with source_type/board_column "generated"). Either marker qualifies so a future
+// board rename of one doesn't silently break recovery.
+function isGeneratedMatter(matter) {
+  if (!matter || matter.id === undefined || matter.id === null) return false;
+  return matter.source_type === "generated" || matter.board_column === "generated";
+}
+
+// Polls the repository for a generated matter that wasn't present in `knownIds`,
+// for a short window, and maps it into the `generated` handle the Download/Send/
+// Edit actions consume. Returns null if none appears within the budget. The
+// matters list is sorted newest-first by the backend, so the first unseen
+// generated matter is the one this generation just created.
+async function recoverGeneratedMatter(knownIds, { counterpartyEmail, counterpartyName, subject }) {
+  const baseline = knownIds instanceof Set ? knownIds : new Set();
+  const ATTEMPTS = 6;
+  const INTERVAL_MS = 2000;
+  for (let attempt = 0; attempt < ATTEMPTS; attempt += 1) {
+    let matters;
+    try {
+      matters = await generatorRepositoryApi().listMatters();
+    } catch (error) {
+      matters = null;
+    }
+    const fresh = (Array.isArray(matters) ? matters : []).find(
+      (matter) => isGeneratedMatter(matter) && !baseline.has(String(matter.id)),
+    );
+    if (fresh) {
+      return generatedHandleFromMatter(fresh, { counterpartyEmail, counterpartyName, subject });
+    }
+    if (attempt < ATTEMPTS - 1) {
+      await new Promise((resolve) => setTimeout(resolve, INTERVAL_MS));
+    }
+  }
+  return null;
+}
+
+// Builds the same `generated` handle generateNdaFromDraft returns on the happy
+// path, but from a public matter object (the /api/matters shape) instead of the
+// generate response. The public matter carries document_downloads + id, which is
+// everything Download/Send/Edit need; the counterparty name/email/subject come
+// from the intake we already have. Mirrors derive_counterparty's fallback so the
+// label is never blank.
+function generatedHandleFromMatter(matter, { counterpartyEmail, counterpartyName, subject }) {
+  const documentDownloads = matter.document_downloads || null;
+  const generatedDocx = window.DocumentDownloadMenu?.option(documentDownloads, "source", "docx");
+  const sourcePdf = window.DocumentDownloadMenu?.option(documentDownloads, "source", "pdf");
+  const matterId = matter.id ? String(matter.id) : null;
+  return {
+    documentDownloads,
+    downloadUrl: matterId ? `/api/matters/${encodeURIComponent(matterId)}/source` : null,
+    filename: generatedDocx?.filename || draftNdaDownloadFilename({ counterparty: { name: counterpartyName } }),
+    matterId,
+    pdfDownloadUrl: sourcePdf?.download_url || null,
+    counterpartyEmail,
+    counterpartyName: String(matter.counterparty || counterpartyName || "").trim(),
+    subject,
+  };
+}
+
+// A repository API instance for the generator's timeout self-heal. The global
+// RepositoryApi factory is the same one the repository controller uses; we build
+// our own thin handle so the recovery doesn't reach into the controller's state.
+let generatorRepositoryApiInstance = null;
+function generatorRepositoryApi() {
+  if (!generatorRepositoryApiInstance) {
+    generatorRepositoryApiInstance = RepositoryApi.create({ reviewErrorFromPayload });
+  }
+  return generatorRepositoryApiInstance;
 }
 
 // Download the last generated NDA — from the in-memory blob or the saved matter

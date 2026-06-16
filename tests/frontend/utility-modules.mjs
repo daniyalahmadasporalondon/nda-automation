@@ -99,6 +99,8 @@ import {
   validateDraftIntake,
 } from "../../static/js/modules/draft-intake.mjs";
 import {
+  DEFAULT_GENERATE_TIMEOUT_MS,
+  GenerationTimeoutError,
   GenerationUnavailableError,
   createGenerationApi,
 } from "../../static/js/modules/generation-api.mjs";
@@ -1510,6 +1512,94 @@ await createGenerationApi({
   },
 }).generateNda(generationPayload);
 assert.equal(customUrlCalls[0], "/api/v2/generate-nda");
+
+// Client timeout: generation is synchronous and the AI clause adapter adds live
+// model calls, so a hung POST must NOT pin the caller forever. A fetchImpl that
+// never resolves (until aborted) must reject with GenerationTimeoutError once the
+// short timeout fires — this is what lets the controller self-heal instead of
+// spinning. The fetchImpl honours the AbortSignal the wrapper passes so the
+// pending promise rejects promptly when the timer aborts it.
+const timeoutApi = createGenerationApi({
+  timeoutMs: 25,
+  fetchImpl: (url, options) =>
+    new Promise((resolve, reject) => {
+      const signal = options?.signal;
+      if (signal) {
+        signal.addEventListener("abort", () => {
+          const abortError = new Error("aborted");
+          abortError.name = "AbortError";
+          reject(abortError);
+        });
+      }
+      // Never resolves on its own -> only the abort path settles it.
+    }),
+});
+await assert.rejects(timeoutApi.generateNda(generationPayload), (error) => {
+  assert.ok(error instanceof GenerationTimeoutError);
+  assert.equal(error.code, "generation_timeout");
+  return true;
+});
+
+// A network drop mid-flight (an AbortError NOT triggered by our timer, e.g. the
+// connection died) also maps to the recoverable timeout signal, because it has
+// the same "backend may have finished" ambiguity.
+const dropApi = createGenerationApi({
+  fetchImpl: async () => {
+    const abortError = new Error("network dropped");
+    abortError.name = "AbortError";
+    throw abortError;
+  },
+});
+await assert.rejects(dropApi.generateNda(generationPayload), (error) => {
+  assert.ok(error instanceof GenerationTimeoutError);
+  return true;
+});
+
+// A non-abort network error (e.g. DNS failure) is NOT swallowed as a timeout — it
+// propagates so a genuine connection failure still surfaces as an error.
+const netErrApi = createGenerationApi({
+  fetchImpl: async () => {
+    throw new TypeError("Failed to fetch");
+  },
+});
+await assert.rejects(netErrApi.generateNda(generationPayload), (error) => {
+  assert.ok(!(error instanceof GenerationTimeoutError));
+  assert.ok(error instanceof TypeError);
+  return true;
+});
+
+// timeoutMs <= 0 disables the client ceiling (the old unbounded behaviour, kept
+// for callers/tests that drive a controlled fetchImpl): no AbortSignal is passed
+// and a slow-but-eventually-resolving fetch still succeeds.
+const noTimeoutCalls = [];
+const noTimeoutApi = createGenerationApi({
+  timeoutMs: 0,
+  fetchImpl: async (url, options) => {
+    noTimeoutCalls.push(options);
+    return generationResponse({ headers: { "Content-Type": "application/json" }, json: { ok: true } });
+  },
+});
+const noTimeoutResult = await noTimeoutApi.generateNda(generationPayload);
+assert.equal(noTimeoutResult.kind, "json");
+assert.equal(noTimeoutResult.ok, true);
+assert.equal(noTimeoutCalls[0].signal, undefined);
+
+// The default ceiling is exported and sane (well above a normal AI generation but
+// bounded so a hung request can't spin forever).
+assert.equal(typeof DEFAULT_GENERATE_TIMEOUT_MS, "number");
+assert.ok(DEFAULT_GENERATE_TIMEOUT_MS >= 10000 && DEFAULT_GENERATE_TIMEOUT_MS <= 120000);
+
+// A successful generate within the timeout still passes the AbortSignal AND clears
+// the timer (no dangling handle): a normal JSON response resolves cleanly.
+const withinApi = createGenerationApi({
+  timeoutMs: 5000,
+  fetchImpl: async (url, options) => {
+    assert.ok(options.signal, "an AbortSignal is passed when the timeout is active");
+    return generationResponse({ status: 201, headers: { "Content-Type": "application/json" }, json: { matter_id: "m9" } });
+  },
+});
+const withinResult = await withinApi.generateNda(generationPayload);
+assert.equal(withinResult.matter_id, "m9");
 
 // --- Dashboard smart-search (v1, deterministic) -----------------------------
 const dashboardMatters = [

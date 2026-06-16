@@ -54,7 +54,7 @@ class DeploymentConfigTests(unittest.TestCase):
         blueprint = (ROOT / "render.yaml").read_text(encoding="utf-8")
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
-        self.assertIn("plan: free", blueprint)
+        self.assertIn("plan: standard", blueprint)
         self.assertIn("runtime: docker", blueprint)
         self.assertIn('CMD ["sh", "-c", "python -m nda_automation.server --host 0.0.0.0 --port ${PORT:-8787}"]', dockerfile)
         self.assertIn("healthCheckPath: /healthz", blueprint)
@@ -72,10 +72,17 @@ class DeploymentConfigTests(unittest.TestCase):
         self.assertRegex(blueprint, r"key:\s+NDA_GOOGLE_OAUTH_CLIENT_SECRET\s+sync:\s+false")
         self.assertRegex(blueprint, r"key:\s+NDA_GOOGLE_OAUTH_REDIRECT_URI\s+sync:\s+false")
         self.assertRegex(blueprint, r"key:\s+NDA_GMAIL_OAUTH_REDIRECT_URI\s+sync:\s+false")
-        self.assertRegex(blueprint, r"key:\s+NDA_DATA_DIR\s+value:\s+/tmp/nda-automation/data")
-        self.assertRegex(blueprint, r"key:\s+NDA_USERS_PATH\s+value:\s+/tmp/nda-automation/data/users.json")
-        self.assertRegex(blueprint, r"key:\s+NDA_EXPORTS_DIR\s+value:\s+/tmp/nda-automation/exports")
-        self.assertRegex(blueprint, r"key:\s+NDA_ALLOW_EPHEMERAL_DATA\s+value:\s+\"true\"")
+        # Durable state now lives on the persistent disk at /var/data (Render
+        # Standard plan). The startup storage guard treats /var/data as
+        # non-ephemeral, so the NDA_ALLOW_EPHEMERAL_DATA escape hatch is removed
+        # entirely and the guard is active: assert the flag is ABSENT rather than
+        # "true", which is the stronger durability guarantee.
+        self.assertRegex(blueprint, r"key:\s+NDA_DATA_DIR\s+value:\s+/var/data")
+        self.assertRegex(blueprint, r"key:\s+NDA_USERS_PATH\s+value:\s+/var/data/users.json")
+        self.assertRegex(blueprint, r"key:\s+NDA_EXPORTS_DIR\s+value:\s+/var/data/exports")
+        # No `key: NDA_ALLOW_EPHEMERAL_DATA` env-var entry (a mention in an
+        # explanatory comment documenting its removal is fine and expected).
+        self.assertNotRegex(blueprint, r"key:\s+NDA_ALLOW_EPHEMERAL_DATA")
         self.assertRegex(blueprint, r"key:\s+NDA_RATE_LIMIT_PER_MINUTE\s+value:\s+\"120\"")
         self.assertRegex(blueprint, r"key:\s+NDA_AI_REVIEW_ENABLED\s+value:\s+\"true\"")
         self.assertRegex(blueprint, r"key:\s+NDA_AI_PROVIDER\s+value:\s+openrouter")
@@ -83,4 +90,6 @@ class DeploymentConfigTests(unittest.TestCase):
         self.assertRegex(blueprint, r"key:\s+OPENROUTER_API_KEY\s+sync:\s+false")
         self.assertNotRegex(blueprint, r"key:\s+GROQ_API_KEY")
         self.assertRegex(blueprint, r"key:\s+NDA_GMAIL_TRIAGE_MODEL\s+value:\s+anthropic/claude-opus-4.8")
-        self.assertNotRegex(blueprint, r"disk:\s+name:\s+nda-automation-data\s+mountPath:\s+/var/data")
+        # A persistent disk is mounted at /var/data so users.json, matters, and
+        # exports survive restarts/redeploys (the whole point of the Standard plan).
+        self.assertRegex(blueprint, r"disk:\s+name:\s+nda-data\s+mountPath:\s+/var/data\s+sizeGB:\s+1")

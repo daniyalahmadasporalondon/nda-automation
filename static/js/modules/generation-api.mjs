@@ -43,6 +43,28 @@ export class GenerationUnavailableError extends Error {
   }
 }
 
+// Raised when the POST exceeds the client timeout (or the connection is aborted
+// before a response). Generation is synchronous and, when the AI clause adapter
+// is active, makes several live model calls — on a cold/slow host the request can
+// outlast a sane client wait (or a proxy can hold the socket open after the
+// backend already finished and SAVED the matter). The controller catches this by
+// `code` to SELF-HEAL: poll the repository for the matter the backend may have
+// created, instead of spinning on "Generating…" forever. Distinct from a hard
+// failure so a real 4xx/5xx still surfaces as an error.
+export class GenerationTimeoutError extends Error {
+  constructor(message = "NDA generation timed out.") {
+    super(message);
+    this.name = "GenerationTimeoutError";
+    this.code = "generation_timeout";
+  }
+}
+
+// Default client-side ceiling for the synchronous generate POST. Comfortably
+// above a normal AI-adapted generation (~10–15s warm) yet bounded so a hung
+// request/proxy can't pin the spinner — past this the controller switches to the
+// repository self-heal. Overridable via createGenerationApi({ timeoutMs }).
+export const DEFAULT_GENERATE_TIMEOUT_MS = 45000;
+
 function isDocxResponse(response) {
   const contentType = (response.headers?.get?.("Content-Type") || "").toLowerCase();
   return DOCX_CONTENT_TYPES.some((type) => contentType.includes(type));
@@ -72,19 +94,56 @@ async function errorMessageFromResponse(response, fallback) {
 export function createGenerationApi({
   fetchImpl = globalThis.fetch,
   url = "/api/generate-nda",
+  // Client timeout for the synchronous generate POST. <= 0 disables it (the old
+  // unbounded behaviour, kept for tests that drive a controlled fetchImpl).
+  timeoutMs = DEFAULT_GENERATE_TIMEOUT_MS,
 } = {}) {
   // POSTs the buildDraftPayload output and normalises the response. Throws
-  // GenerationUnavailableError on 404 (degrade) and a plain Error with the
-  // backend message on any other failure.
+  // GenerationUnavailableError on 404 (degrade), GenerationTimeoutError when the
+  // request outlasts `timeoutMs` or is aborted (the controller self-heals from
+  // the repository), and a plain Error with the backend message on any other
+  // failure.
   async function generateNda(payload) {
-    const response = await fetchImpl(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json, application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      },
-      body: JSON.stringify(payload),
-    });
+    // AbortController bounds the wait: generation is synchronous and the AI
+    // adapter adds live model calls, so without this a stalled socket (or a proxy
+    // holding the connection after the backend already saved the matter) would
+    // leave the caller awaiting forever — the exact "spinner stuck, NDA in repo"
+    // failure. On timeout we abort and raise GenerationTimeoutError so the caller
+    // can recover rather than hang. Guard for environments/tests without
+    // AbortController.
+    const canAbort = typeof AbortController === "function" && timeoutMs > 0;
+    const controller = canAbort ? new AbortController() : null;
+    let timedOut = false;
+    let timer = null;
+    if (controller) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs);
+    }
+
+    let response;
+    try {
+      response = await fetchImpl(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        },
+        body: JSON.stringify(payload),
+        ...(controller ? { signal: controller.signal } : {}),
+      });
+    } catch (error) {
+      // An abort (our timeout) OR a network drop mid-flight both land here. Both
+      // can leave a backend-completed-but-unacknowledged generation, so both map
+      // to the recoverable timeout signal rather than a hard error.
+      if (timedOut || error?.name === "AbortError") {
+        throw new GenerationTimeoutError();
+      }
+      throw error;
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
 
     if (response.status === 404) {
       throw new GenerationUnavailableError();

@@ -2,8 +2,12 @@ services:
   - type: web
     name: nda-automation
     runtime: docker
-    plan: free
+    plan: standard
     healthCheckPath: /healthz
+    disk:
+      name: nda-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
@@ -55,14 +59,18 @@ services:
         sync: false
       - key: NDA_DOCUSIGN_ASPORA_SIGNER_EMAIL
         sync: false
+      # Durable application state lives on the persistent disk mounted at
+      # /var/data (the `disk:` block above). The startup storage guard
+      # (_validate_public_storage in deployment.py) treats /var/data as
+      # non-ephemeral, so NDA_ALLOW_EPHEMERAL_DATA is intentionally removed —
+      # the guard is now ACTIVE and will refuse to boot if these ever regress
+      # back to /tmp, which is exactly the protection the persistent disk buys.
       - key: NDA_DATA_DIR
-        value: /tmp/nda-automation/data
+        value: /var/data
       - key: NDA_USERS_PATH
-        value: /tmp/nda-automation/data/users.json
+        value: /var/data/users.json
       - key: NDA_EXPORTS_DIR
-        value: /tmp/nda-automation/exports
-      - key: NDA_ALLOW_EPHEMERAL_DATA
-        value: "true"
+        value: /var/data/exports
       # Render terminates TLS at one proxy in front of the app, so trust a
       # single X-Forwarded-For hop to rate-limit by real client IP instead of
       # the shared proxy peer. Enforce same-site Origin/Referer on state-changing

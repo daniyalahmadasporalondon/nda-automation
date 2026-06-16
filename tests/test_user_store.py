@@ -16,12 +16,17 @@ class UserStoreTests(unittest.TestCase):
             patch.object(matter_store, "DATA_DIR", root),
             patch.object(matter_store, "MATTERS_PATH", root / "matters.json"),
             patch.object(matter_store, "UPLOADS_DIR", root / "uploads"),
+            # The user store resolves NDA_USERS_PATH before falling back to
+            # DATA_DIR/users.json, and the test harness (conftest) sets it to its
+            # own tmp file. Pin it to this test's data_dir so patching DATA_DIR is
+            # authoritative and the assertions below read the file we wrote.
+            patch.dict("os.environ", {"NDA_USERS_PATH": str(root / "users.json")}),
         )
 
     def test_google_user_session_and_login_state_are_persisted_without_raw_tokens(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.user_store_patches(data_dir)
-            with patches[0], patches[1], patches[2]:
+            with patches[0], patches[1], patches[2], patches[3]:
                 state = user_store.create_login_state(next_path="/api/matters")
                 first_state = user_store.consume_login_state(state)
                 second_state = user_store.consume_login_state(state)

@@ -390,8 +390,13 @@ def _nonnegative_int(value: Any, fallback: int) -> int:
 @contextmanager
 def _locked_user_store():
     with _USER_STORE_LOCK:
-        matter_store.DATA_DIR.mkdir(parents=True, exist_ok=True)
-        with (matter_store.DATA_DIR / "users.lock").open("a+", encoding="utf-8") as lock_file:
+        # Lock alongside the resolved store file, not always matter_store.DATA_DIR.
+        # When NDA_USERS_PATH redirects the store (e.g. test isolation), the lock
+        # and any directory creation must follow it so we neither serialize on the
+        # wrong directory nor scatter a stray users.lock into the real data dir.
+        lock_dir = _users_path().parent
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        with (lock_dir / "users.lock").open("a+", encoding="utf-8") as lock_file:
             if fcntl is not None:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
             try:

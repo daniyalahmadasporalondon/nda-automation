@@ -524,9 +524,27 @@ def generate_nda(
     intake = _sanitize_intake(intake, manifest)
 
     _fill_variable_slots(document, entity, intake, agreement_date, manifest)
-    _align_mutuality(document, playbook, clause_adapter, intake, manifest)
-    _align_confidential_information(document, playbook, clause_adapter, intake, manifest)
-    _align_term_and_survival(document, playbook, term_years, clause_adapter, intake, manifest)
+
+    # When the AI clause adapter is active, adapt the three clauses CONCURRENTLY
+    # rather than back-to-back. Each adaptation is independent and individually
+    # guarded (a failure/timeout/drift degrades to that clause's deterministic
+    # Playbook base text), so overlapping the network waits cuts the AI portion of
+    # a generate from ~the sum of three calls to ~the slowest single call — and the
+    # tightened per-call timeout bounds that. With no adapter this resolves to an
+    # empty map and each clause uses its deterministic base text exactly as before.
+    adapted = _prefetch_clause_adaptations(playbook, clause_adapter, intake)
+    _align_mutuality(
+        document, playbook, clause_adapter, intake, manifest,
+        adapted_text=adapted.get("mutuality"),
+    )
+    _align_confidential_information(
+        document, playbook, clause_adapter, intake, manifest,
+        adapted_text=adapted.get(CLAUSE_CONFIDENTIAL),
+    )
+    _align_term_and_survival(
+        document, playbook, term_years, clause_adapter, intake, manifest,
+        adapted_text=adapted.get(CLAUSE_TERM),
+    )
 
     # Unassigned signatories render as blank fill-lines (not bracketed text), so
     # no bracketed values are ever legitimately retained — the guard is strict.
@@ -1134,12 +1152,53 @@ def _append_hidden_anchor_run(paragraph: Any, anchor: str) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _mutuality_base_statement(playbook: Mapping[str, Any]) -> str:
+    """The Playbook's deterministic mutuality statement (pre-adaptation)."""
+
+    clause = _playbook_clause(playbook, "mutuality")
+    return str(clause.get("redline_template") or "").strip() or (
+        "Each party acts as both a Disclosing Party and a Receiving Party with respect to "
+        "Confidential Information it discloses or receives, and the confidentiality obligations "
+        "under this Agreement bind each party reciprocally."
+    )
+
+
+def _prefetch_clause_adaptations(
+    playbook: Mapping[str, Any],
+    clause_adapter: ClauseAdapter | None,
+    intake: CounterpartyIntake,
+) -> dict[str, str]:
+    """Adapt the three realigned clauses concurrently; ``{}`` with no adapter.
+
+    Computes each clause's deterministic base text the same way the per-clause
+    alignment does, then hands all three to the AI module's parallel runner so the
+    network waits overlap. The returned ``{clause_id: adapted_text}`` is consumed by
+    the alignment functions (which fall back to recomputing the base text for any
+    clause absent from the map), so behaviour is identical to the old serial path —
+    only the wall-clock changes. With no adapter we skip the work entirely.
+    """
+
+    if clause_adapter is None:
+        return {}
+    from .nda_generation_ai import adapt_clauses_in_parallel  # noqa: PLC0415
+
+    context = _adapter_context(intake)
+    jobs = [
+        ("mutuality", _mutuality_base_statement(playbook), context),
+        (CLAUSE_CONFIDENTIAL, _independent_development_base(playbook), context),
+        (CLAUSE_TERM, _survival_base(playbook), context),
+    ]
+    return adapt_clauses_in_parallel(clause_adapter, jobs)
+
+
 def _align_mutuality(
     document: DocxDocument,
     playbook: Mapping[str, Any],
     clause_adapter: ClauseAdapter | None,
     intake: CounterpartyIntake,
     manifest: GenerationManifest,
+    *,
+    adapted_text: str | None = None,
 ) -> None:
     """Make the reciprocal-obligation language explicit per the Playbook.
 
@@ -1148,15 +1207,17 @@ def _align_mutuality(
     flags for review. We insert the Playbook's mutuality statement ("each party
     acts as both a Disclosing Party and a Receiving Party ...") right after the
     role-definition recital so both parties are bound symmetrically.
+
+    ``adapted_text`` carries the pre-resolved (parallel-prefetched) adaptation when
+    the engine adapted the clauses up front; absent, the clause is adapted inline
+    (or left deterministic when there is no adapter), so this function is correct
+    whether or not the prefetch ran.
     """
 
-    clause = _playbook_clause(playbook, "mutuality")
-    statement = str(clause.get("redline_template") or "").strip() or (
-        "Each party acts as both a Disclosing Party and a Receiving Party with respect to "
-        "Confidential Information it discloses or receives, and the confidentiality obligations "
-        "under this Agreement bind each party reciprocally."
-    )
-    if clause_adapter is not None:
+    statement = _mutuality_base_statement(playbook)
+    if adapted_text is not None:
+        statement = adapted_text.strip() or statement
+    elif clause_adapter is not None:
         adapted = clause_adapter.adapt("mutuality", statement, _adapter_context(intake)).strip()
         statement = adapted or statement
 
@@ -1179,6 +1240,8 @@ def _align_confidential_information(
     clause_adapter: ClauseAdapter | None,
     intake: CounterpartyIntake,
     manifest: GenerationManifest,
+    *,
+    adapted_text: str | None = None,
 ) -> None:
     """Add the Playbook's missing exclusion so CI carve-outs match the standard.
 
@@ -1187,9 +1250,16 @@ def _align_confidential_information(
     "independently developed without use of Confidential Information" exclusion.
     We append it as a new sub-item to the exception list, in the template's own
     list style, so the definition stays template-shaped but Playbook-complete.
+
+    ``adapted_text`` carries the pre-resolved (parallel-prefetched) adaptation; when
+    absent the carve-out is adapted inline, so the function is correct with or
+    without the prefetch.
     """
 
-    independent = _independent_development_sentence(playbook, clause_adapter, intake)
+    if adapted_text is not None:
+        independent = adapted_text.strip() or _independent_development_base(playbook)
+    else:
+        independent = _independent_development_sentence(playbook, clause_adapter, intake)
 
     # Find the last sub-item of the exceptions list (the prior-possession item).
     anchor_index = None
@@ -1223,6 +1293,8 @@ def _align_term_and_survival(
     clause_adapter: ClauseAdapter | None,
     intake: CounterpartyIntake,
     manifest: GenerationManifest,
+    *,
+    adapted_text: str | None = None,
 ) -> None:
     """Rewrite the TERM clause to the Playbook term cap + survival carve-out.
 
@@ -1230,9 +1302,16 @@ def _align_term_and_survival(
     We rewrite the clause body to a fixed term of ``term_years`` (already capped
     at the Playbook ``max_term_years``) and append the Playbook's trade-secret /
     legal / data-protection survival carve-out so it passes ``term_and_survival``.
+
+    ``adapted_text`` carries the pre-resolved (parallel-prefetched) survival
+    adaptation; when absent it is adapted inline, so the function is correct with
+    or without the prefetch.
     """
 
-    survival = _survival_sentence(playbook, clause_adapter, intake)
+    if adapted_text is not None:
+        survival = adapted_text.strip() or _survival_base(playbook)
+    else:
+        survival = _survival_sentence(playbook, clause_adapter, intake)
 
     body = (
         "This Agreement shall become effective on the date of signing of this Agreement and shall "
@@ -1267,6 +1346,22 @@ _SURVIVAL_FALLBACK = (
 )
 
 
+def _independent_development_base(playbook: Mapping[str, Any]) -> str:
+    """The CI independent-development carve-out, deterministic (pre-adaptation)."""
+
+    clause = _playbook_clause(playbook, CLAUSE_CONFIDENTIAL)
+    template = str(clause.get("standard_exclusions_template") or "").strip()
+    return _independent_development_item_from_template(template) or _INDEPENDENT_DEVELOPMENT_FALLBACK
+
+
+def _survival_base(playbook: Mapping[str, Any]) -> str:
+    """The survival carve-out statement, deterministic (pre-adaptation)."""
+
+    clause = _playbook_clause(playbook, CLAUSE_TERM)
+    template = str(clause.get("redline_template") or "").strip()
+    return _survival_statement_from_template(template) or _SURVIVAL_FALLBACK
+
+
 def _independent_development_sentence(
     playbook: Mapping[str, Any],
     clause_adapter: ClauseAdapter | None,
@@ -1280,9 +1375,7 @@ def _independent_development_sentence(
     generated clause. Falls back to the literal only when the template is blank.
     """
 
-    clause = _playbook_clause(playbook, CLAUSE_CONFIDENTIAL)
-    template = str(clause.get("standard_exclusions_template") or "").strip()
-    base = _independent_development_item_from_template(template) or _INDEPENDENT_DEVELOPMENT_FALLBACK
+    base = _independent_development_base(playbook)
     if clause_adapter is None:
         return base
     adapted = clause_adapter.adapt(CLAUSE_CONFIDENTIAL, base, _adapter_context(intake))
@@ -1303,9 +1396,7 @@ def _survival_sentence(
     survival carve-out flows through; falls back to the literal only when blank.
     """
 
-    clause = _playbook_clause(playbook, CLAUSE_TERM)
-    template = str(clause.get("redline_template") or "").strip()
-    base = _survival_statement_from_template(template) or _SURVIVAL_FALLBACK
+    base = _survival_base(playbook)
     if clause_adapter is None:
         return base
     adapted = clause_adapter.adapt(CLAUSE_TERM, base, _adapter_context(intake))

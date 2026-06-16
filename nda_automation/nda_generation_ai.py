@@ -38,7 +38,15 @@ from .openrouter_usage import record_openrouter_usage
 from .prohibited_positions import ANY_PROHIBITED_POSITION
 
 OPENROUTER_CHAT_COMPLETIONS_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_ADAPT_TIMEOUT_SECONDS = 30
+# Per-call ceiling for a single clause adaptation. Generation is synchronous and
+# adapts three clauses, so this is the unit that bounds how long a slow model can
+# hold the request: a call that exceeds it raises ClauseAdaptationError, which the
+# GuardedClauseAdapter degrades to the deterministic Playbook wording (a timeout
+# is just another adapter failure, and the Playbook text is always on-position).
+# Kept tight (was 30s) so one slow clause can't stall the whole generate request —
+# the three calls also run in parallel (``adapt_clauses_in_parallel``), so the
+# worst-case AI wall-time is roughly this ceiling, not 3x it.
+DEFAULT_ADAPT_TIMEOUT_SECONDS = 12
 
 # Per-clause load-bearing terms. The adapted text MUST still contain these (case-
 # insensitive substring) or it is treated as drift and the deterministic Playbook
@@ -152,6 +160,60 @@ def build_clause_adapter(
     return GuardedClauseAdapter(
         OpenRouterClauseAdapter(api_key=resolved_key, model=model or DEFAULT_OPENROUTER_MODEL)
     )
+
+
+def adapt_clauses_in_parallel(
+    adapter: Any,
+    jobs: "list[tuple[str, str, Mapping[str, Any]]]",
+    *,
+    max_workers: int = 3,
+) -> dict[str, str]:
+    """Adapt several clauses CONCURRENTLY, returning ``{clause_id: adapted_text}``.
+
+    The generation engine adapts three independent clauses; called serially that is
+    three round-trips back-to-back (the dominant cost of an AI-on generate). Each
+    clause's ``adapt`` is already self-contained and individually guarded (it falls
+    back to its own ``base_text`` on any failure, timeout, or drift), so running
+    them in parallel only overlaps the network waits — it changes timing, never the
+    per-clause outcome. The result for ``clause_id`` is the adapter's output for
+    that clause (already the deterministic base text when the adapter declined it).
+
+    Robustness: a worker that raises despite the guard (it shouldn't — the guard
+    swallows adapter errors) degrades to that clause's ``base_text`` rather than
+    failing the whole generation. With a single job (or ``max_workers <= 1``) this
+    runs inline, so the common test path stays synchronous and deterministic.
+    """
+
+    resolved: dict[str, str] = {}
+    if not jobs:
+        return resolved
+    base_by_id = {clause_id: base_text for clause_id, base_text, _ in jobs}
+
+    def _one(job: "tuple[str, str, Mapping[str, Any]]") -> "tuple[str, str]":
+        clause_id, base_text, context = job
+        try:
+            out = adapter.adapt(clause_id, base_text, context)
+        except Exception:  # noqa: BLE001 - defensive: the guard already handles this, but never fail the batch
+            return clause_id, base_text
+        text = (out or "").strip()
+        return clause_id, (text or base_text)
+
+    if len(jobs) == 1 or max_workers <= 1:
+        for job in jobs:
+            clause_id, text = _one(job)
+            resolved[clause_id] = text
+        return resolved
+
+    import concurrent.futures as _futures  # noqa: PLC0415
+
+    try:
+        with _futures.ThreadPoolExecutor(max_workers=min(max_workers, len(jobs))) as executor:
+            for clause_id, text in executor.map(_one, jobs):
+                resolved[clause_id] = text
+    except Exception:  # noqa: BLE001 - if the pool itself fails, fall back to base text for all
+        for clause_id, base_text in base_by_id.items():
+            resolved.setdefault(clause_id, base_text)
+    return resolved
 
 
 # --------------------------------------------------------------------------- #

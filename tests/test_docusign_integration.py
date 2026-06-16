@@ -186,6 +186,125 @@ def test_real_client_maps_401_to_not_connected(fake_token):
         client.get_envelope_status("env-123")
 
 
+def test_400_body_surfaces_docusign_error_code_and_message(fake_token):
+    """A 400 with DocuSign's {errorCode, message} body is no longer a bare
+    'HTTP 400' — the real reason rides along in the raised error so prod can be
+    diagnosed (this is what unblocks the 'Send for signature' 400)."""
+    transport = _FakeTransport()
+    transport.json_response = (
+        400,
+        {
+            "errorCode": "ENVELOPE_HAS_INVALID_RECIPIENTS",
+            "message": "The recipient you have specified has no tabs assigned.",
+        },
+    )
+    client = _client(transport)
+    with pytest.raises(DocuSignError) as excinfo:
+        client.create_envelope(
+            b"%PDF-1.4 data", "nda.pdf", normalize_signers([{"name": "A", "email": "a@x.com"}])
+        )
+    text = str(excinfo.value)
+    assert "HTTP 400" in text
+    assert "ENVELOPE_HAS_INVALID_RECIPIENTS" in text
+    assert "has no tabs assigned" in text
+
+
+def test_400_folds_nested_error_details_into_message(fake_token):
+    """When the offender is only in errorDetails (a common DocuSign 400 shape),
+    that nested message is folded in too."""
+    transport = _FakeTransport()
+    transport.json_response = (
+        400,
+        {
+            "errorCode": "INVALID_TAB_DEFINITION",
+            "message": "A tab definition is invalid.",
+            "errorDetails": [
+                {"errorCode": "ANCHOR_TAB_STRING_NOT_FOUND", "message": "Anchor string not found for recipient 2."}
+            ],
+        },
+    )
+    client = _client(transport)
+    with pytest.raises(DocuSignError) as excinfo:
+        client.create_envelope(
+            b"%PDF-1.4 data", "nda.pdf", normalize_signers([{"name": "A", "email": "a@x.com"}])
+        )
+    text = str(excinfo.value)
+    assert "INVALID_TAB_DEFINITION" in text
+    assert "Anchor string not found for recipient 2." in text
+
+
+def test_400_detail_logged_to_stderr_sanitized(fake_token, capsys):
+    """The detail is also logged as a single sanitized line for prod triage."""
+    transport = _FakeTransport()
+    transport.json_response = (
+        400,
+        {"errorCode": "USER_LACKS_PERMISSIONS", "message": "Line one.\nLine two."},
+    )
+    client = _client(transport)
+    with pytest.raises(DocuSignError):
+        client.create_envelope(
+            b"%PDF-1.4 data", "nda.pdf", normalize_signers([{"name": "A", "email": "a@x.com"}])
+        )
+    err = capsys.readouterr().err
+    assert "USER_LACKS_PERMISSIONS" in err
+    assert "status=400" in err
+    # Collapsed to one physical line (no raw newline from the message body).
+    assert "Line one. Line two." in err
+    # The bearer token must never appear in the log line.
+    assert "tok-abc" not in err
+    assert "Bearer" not in err
+
+
+def test_400_without_body_still_raises_generic(fake_token):
+    """A 400 with an empty/unparseable body degrades to the bare status (no crash)."""
+    transport = _FakeTransport()
+    transport.json_response = (400, {})
+    client = _client(transport)
+    with pytest.raises(DocuSignError) as excinfo:
+        client.get_envelope_status("env-123")
+    assert "HTTP 400" in str(excinfo.value)
+
+
+def test_generated_matter_envelope_is_well_formed():
+    """End-to-end well-formedness of the envelope built for a GENERATED NDA:
+    every recipient has both signHere + dateSigned tabs, a unique recipientId, the
+    document carries non-empty base64, and each recipient's anchor references that
+    party's token (so neither side is tabless — the classic envelope-create 400)."""
+    counterparty = {
+        "name": "Acme Innovations",
+        "email": "cp@acme.com",
+        "role": "counterparty",
+        "anchor": "\\sig_party_counterparty\\",
+    }
+    aspora = {
+        "name": "Priya Nair",
+        "email": "priya@aspora.com",
+        "role": "aspora",
+        "anchor": "\\sig_party_aspora\\",
+    }
+    signers = normalize_signers([counterparty, aspora])
+    definition = build_envelope_definition(b"%PDF-1.4 generated nda body", "NDA.pdf", signers)
+
+    document = definition["documents"][0]
+    assert base64.b64decode(document["documentBase64"])  # non-empty
+    assert document["fileExtension"] == "pdf"
+    assert document["documentId"] == "1"
+
+    recipients = definition["recipients"]["signers"]
+    assert len(recipients) == 2
+    # Unique recipientIds.
+    assert len({r["recipientId"] for r in recipients}) == 2
+    by_email = {r["email"]: r for r in recipients}
+    for recipient in recipients:
+        tabs = recipient["tabs"]
+        # No signer is tabless — both a signHere and a dateSigned tab are present.
+        assert tabs["signHereTabs"], "recipient has no signHere tab (DocuSign 400s on this)"
+        assert tabs["dateSignedTabs"], "recipient has no dateSigned tab"
+    # Each recipient's tabs anchor to ITS party's token, not the other party's.
+    assert by_email["cp@acme.com"]["tabs"]["signHereTabs"][0]["anchorString"] == "\\sig_party_counterparty\\"
+    assert by_email["priya@aspora.com"]["tabs"]["signHereTabs"][0]["anchorString"] == "\\sig_party_aspora\\"
+
+
 def test_real_client_segment_escaping_blocks_path_injection(fake_token):
     transport = _FakeTransport()
     transport.json_response = (200, {"status": "sent"})

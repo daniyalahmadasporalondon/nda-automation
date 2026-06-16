@@ -33,6 +33,7 @@ NDA_DOCUSIGN_AUTH_SERVER (demo|production), NDA_DOCUSIGN_CONNECT_HMAC_KEY.
 from __future__ import annotations
 
 import json
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -357,22 +358,34 @@ class HttpDocuSignClient:
         if body is not None:
             headers["Content-Type"] = "application/json"
         status_code, payload = self._http.request_json(method, self._url(path), headers=headers, json_body=body)
-        self._raise_for_status(status_code, envelope=path)
+        self._raise_for_status(status_code, path=path, payload=payload)
         return payload if isinstance(payload, dict) else {}
 
     def _request_bytes(self, method: str, path: str) -> bytes:
         status_code, content = self._http.request_bytes(method, self._url(path), headers=self._auth_headers())
-        self._raise_for_status(status_code, envelope=path)
+        self._raise_for_status(status_code, path=path, payload=content)
         return content
 
     @staticmethod
-    def _raise_for_status(status_code: int, *, envelope: str) -> None:
+    def _raise_for_status(status_code: int, *, path: str, payload: Any = None) -> None:
+        if status_code < 400:
+            return
+        # DocuSign returns the real reason (errorCode + message) in the JSON body of
+        # a 4xx/5xx — e.g. ENVELOPE_HAS_INVALID_RECIPIENTS, ANCHOR_TAB_STRING_NOT_FOUND,
+        # the dreaded "recipient has no tabs". The generic "HTTP 400" alone makes the
+        # failure undiagnosable on prod, so extract that detail, fold it into the
+        # raised message, and log a single sanitized (secret-free, capped) line.
+        # Mirrors google_identity._json_request for Google OAuth 4xx bodies.
+        detail = _docusign_error_detail(payload)
         if status_code == 404:
-            raise DocuSignEnvelopeNotFoundError("DocuSign envelope not found.")
+            raise DocuSignEnvelopeNotFoundError(_with_detail("DocuSign envelope not found.", detail))
         if status_code == 401:
-            raise DocuSignNotConnectedError("DocuSign authorization was rejected; reconnect DocuSign.")
-        if status_code >= 400:
-            raise DocuSignError(f"DocuSign API request failed (HTTP {status_code}).")
+            message = _with_detail("DocuSign authorization was rejected; reconnect DocuSign.", detail)
+            _log_docusign_failure("DocuSign authorization rejected", status=status_code, path=path, detail=detail)
+            raise DocuSignNotConnectedError(message)
+        message = _with_detail(f"DocuSign API request failed (HTTP {status_code}).", detail)
+        _log_docusign_failure("DocuSign API request failed", status=status_code, path=path, detail=detail)
+        raise DocuSignError(message)
 
 
 class _UrllibTransport:
@@ -399,7 +412,9 @@ class _UrllibTransport:
             with urllib.request.urlopen(request, timeout=60) as response:
                 return int(response.status), response.read()
         except urllib.error.HTTPError as error:
-            return int(error.code), b""
+            # Keep the error body so a 4xx download surfaces DocuSign's real reason
+            # (it is JSON even on the bytes endpoint) instead of a bare status code.
+            return int(error.code), error.read()
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise DocuSignError("DocuSign document download failed.") from exc
 
@@ -410,6 +425,59 @@ def _safe_json(raw: bytes) -> dict[str, Any]:
     except (json.JSONDecodeError, UnicodeDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _docusign_error_detail(payload: Any) -> str:
+    """Pull DocuSign's ``errorCode``/``message`` out of a 4xx/5xx response body.
+
+    ``payload`` is whatever the transport handed back for the failed call: the
+    JSON-decoded dict from :meth:`request_json`, or the raw bytes from
+    :meth:`request_bytes` (the document endpoints). DocuSign's error body is
+    ``{"errorCode": "...", "message": "..."}``; some validation errors nest the
+    real cause under ``errorDetails``. Returns a short, single-line, secret-free
+    description for both the raised message and the log, or "" if unreadable.
+    """
+    body: Any = payload
+    if isinstance(payload, (bytes, bytearray)):
+        body = _safe_json(bytes(payload))
+    if not isinstance(body, dict):
+        return ""
+    error_code = str(body.get("errorCode") or "").strip()
+    message = str(body.get("message") or "").strip()
+    # Some 400s carry the specific offender (e.g. the recipient/tab) only in the
+    # first nested errorDetails entry; fold its message in when the top-level one
+    # is generic or missing.
+    details = body.get("errorDetails")
+    if isinstance(details, list) and details and isinstance(details[0], dict):
+        nested = str(details[0].get("message") or "").strip()
+        if nested and nested != message:
+            message = f"{message}: {nested}" if message else nested
+    detail = error_code
+    if message and message != error_code:
+        detail = f"{error_code}: {message}" if error_code else message
+    return _sanitize_detail(detail)
+
+
+def _sanitize_detail(detail: str) -> str:
+    """Collapse to a single capped line so nothing multi-line/huge leaks to logs."""
+    collapsed = " ".join(str(detail or "").split())
+    return collapsed[:300]
+
+
+def _with_detail(message: str, detail: str) -> str:
+    return f"{message} ({detail})" if detail else message
+
+
+def _log_docusign_failure(label: str, *, status: int, path: str, detail: str) -> None:
+    """One sanitized stderr line per failure.
+
+    Carries the status, the API path (which holds no token/secret — ids are already
+    percent-escaped path segments), and DocuSign's errorCode/message. The bearer
+    token lives only in a request header and is never part of any of these, so the
+    line is safe to emit.
+    """
+    detail_part = f" detail={detail}" if detail else ""
+    print(f"{label} status={status} path={path}{detail_part}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
