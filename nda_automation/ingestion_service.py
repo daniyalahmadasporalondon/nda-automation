@@ -5,6 +5,7 @@ import os
 import queue
 import threading
 from collections.abc import Callable
+from types import ModuleType
 from typing import Any
 
 from .checker import ParagraphAlignmentError
@@ -193,6 +194,29 @@ class _InboundReviewWorkerPool:
                     self._pending.discard(key)
                 self._queue.task_done()
 
+    # -- public observability accessors ------------------------------------- #
+    def pending_count(self) -> int:
+        """How many distinct review jobs are pending (dedup set size).
+
+        Public, fail-safe read for the deployment-status / telemetry surface: a
+        rising pending count means inbound reviews are backing up faster than the
+        fixed worker pool drains them -- a saturation / OOM-pressure signal.
+        """
+        with self._lock:
+            return len(self._pending)
+
+    def queue_depth(self) -> int:
+        """Approximate depth of the bounded review queue (items awaiting a worker).
+
+        Uses ``Queue.qsize`` (approximate but lock-free and never blocking); on the
+        rare platform where ``qsize`` is unsupported, falls back to the pending-set
+        size so the surface always has a number. Read-only, never raises.
+        """
+        try:
+            return self._queue.qsize()
+        except NotImplementedError:  # pragma: no cover - qsize unsupported on some OSes
+            return self.pending_count()
+
     # -- test helpers ------------------------------------------------------- #
     def _pending_count(self) -> int:
         with self._lock:
@@ -271,6 +295,41 @@ def _perform_inbound_ai_review(
         )
 
 
+def _log_inbound_review_memory(matter_id: str) -> None:
+    """Emit one structured peak-RSS / headroom line for an inbound review.
+
+    The OOM firefight's "measure don't guess" probe at the per-review grain: log
+    the worker's current RSS (the peak after this review's allocations) and the
+    remaining container headroom, and mirror the same numbers into telemetry gauges
+    so they surface in the snapshot. Fully fail-safe -- a probe failure logs nothing
+    and never touches the review's own success/failure path.
+    """
+
+    from . import process_memory, telemetry
+
+    try:
+        rss = process_memory.current_rss_bytes()
+        limit = process_memory.container_memory_limit_bytes()
+        if rss is None:
+            return
+        peak_rss_mb = rss / (1024 * 1024)
+        headroom_mb: float | None = None
+        if limit is not None and limit > 0:
+            headroom_mb = (limit - rss) / (1024 * 1024)
+        telemetry.set_gauge("inbound_ai_review_last_peak_rss_mb", peak_rss_mb)
+        telemetry.gauge_max("inbound_ai_review_max_peak_rss_mb", peak_rss_mb)
+        if headroom_mb is not None:
+            telemetry.set_gauge("inbound_ai_review_last_headroom_mb", headroom_mb)
+        LOGGER.info(
+            "Inbound AI review memory matter=%s peak_rss_mb=%.1f headroom_mb=%s",
+            matter_id,
+            peak_rss_mb,
+            f"{headroom_mb:.1f}" if headroom_mb is not None else "unknown",
+        )
+    except Exception:  # pragma: no cover - observability must never break a review
+        return
+
+
 def _perform_inbound_ai_review_locked(
     matter_id: str,
     *,
@@ -281,6 +340,30 @@ def _perform_inbound_ai_review_locked(
     """The review body, assuming the concurrency bound is already held."""
 
     from . import telemetry
+
+    try:
+        _perform_inbound_ai_review_body(
+            matter_id,
+            repository=repository,
+            owner_user_id=owner_user_id,
+            review_engine_func=review_engine_func,
+            telemetry=telemetry,
+        )
+    finally:
+        # Sample peak RSS AFTER the review's allocations, whether it succeeded or
+        # failed, so even an OOM-adjacent failing review is measured.
+        _log_inbound_review_memory(matter_id)
+
+
+def _perform_inbound_ai_review_body(
+    matter_id: str,
+    *,
+    repository: MatterRepository,
+    owner_user_id: str,
+    review_engine_func: ReviewEngineFn,
+    telemetry: ModuleType,
+) -> None:
+    """The actual review work; split out so the locked wrapper can time its memory."""
 
     try:
         matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
