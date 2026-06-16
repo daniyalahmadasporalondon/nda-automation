@@ -128,8 +128,8 @@ const tests = [
   ["filters dashboard matters with the smart-search chips and opens a result", testDashboardSmartSearch],
   ["translates a natural-language query into a filter and falls back to keyword search", testDashboardSmartSearchV2],
   ["pops an in-app toast when a new inbound NDA arrives", testInboundNotificationToast],
-  ["live-updates a clause verdict from reassess-clause on picker commit", testClauseReassessOnPickerCommit],
-  ["live-updates a clause verdict from reassess-clause on paragraph edit commit", testClauseReassessOnParagraphEdit],
+  ["marks the review stale (no auto AI reassess) on picker commit", testClauseReassessOnPickerCommit],
+  ["marks the review stale (no auto AI reassess) on paragraph edit commit", testClauseReassessOnParagraphEdit],
 ];
 
 // Tests that run against the AI-first + stub-reviewer server (AI_FIRST_BASE_URL),
@@ -3406,10 +3406,9 @@ async function testRepositoryOpenReviewRepeatedly(page) {
     buildMatter("matter_beta_review", "Beta Review NDA", "Beta document text for the second review opening."),
   ];
   const matterById = new Map(matters.map((matter) => [matter.id, matter]));
-  let releaseBetaReview = () => {};
-  const betaReviewGate = new Promise((resolve) => {
-    releaseBetaReview = resolve;
-  });
+  // Opening a matter must NOT run the AI review. Count any POST /review-refresh so
+  // the test can assert the open path never triggers one.
+  let openRefreshPosts = 0;
 
   await page.route("**/api/gmail/status", async (route) => {
     await route.fulfill({
@@ -3447,29 +3446,30 @@ async function testRepositoryOpenReviewRepeatedly(page) {
       return;
     }
     if (requestUrl.pathname.endsWith("/review-refresh")) {
-      if (matter.id === "matter_beta_review") {
-        await betaReviewGate;
-      }
+      openRefreshPosts += 1;
       await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
           extracted_text: matter.extracted_text,
           matter,
+          review_may_be_stale: false,
           review_refresh: { refreshed: true, stale: false },
           review_result: matter.review_result,
         }),
       });
       return;
     }
-    if (requestUrl.pathname.endsWith("/review") || requestUrl.pathname.endsWith("/review-refresh")) {
+    if (requestUrl.pathname.endsWith("/review")) {
+      // Opening a matter returns the STORED review plus review_may_be_stale, and
+      // does NOT run the AI (no review_refresh side effects here).
       await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
           extracted_text: matter.extracted_text,
           matter,
-          review_refresh: { stale: true },
+          review_may_be_stale: true,
           review_result: matter.review_result,
         }),
       });
@@ -3495,20 +3495,16 @@ async function testRepositoryOpenReviewRepeatedly(page) {
   await page.locator(".repository-card").filter({ hasText: "Beta Review NDA" }).click();
   await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "Beta Review NDA");
-  const betaReviewRequest = page.waitForRequest((request) => (
-    request.method() === "POST" && request.url().includes("/api/matters/matter_beta_review/review-refresh")
-  ));
   await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#reviewView:not([hidden])");
   assert.equal(await page.locator("#reviewTab").getAttribute("aria-selected"), "true");
   await assertTextContains(page.locator("#studioDocTitle"), "Beta Review NDA");
-  await assertTextContains(page.locator("#studioFileMeta"), "Manual Upload matter loading review");
-  await betaReviewRequest;
-  releaseBetaReview();
-  await assertTextContains(page.locator("#studioDocTitle"), "Beta Review NDA");
   await waitForText(page, "#studioDocumentRender", "Beta document text for the second review opening.");
-  const betaRefresh = await page.evaluate(() => state.selectedMatter?.review_refresh || null);
-  assert.deepEqual(betaRefresh, { refreshed: true, stale: false });
+  // Opening a matter loads the STORED review without running the AI: the open
+  // path must never POST /review-refresh.
+  assert.equal(openRefreshPosts, 0);
+  const betaMayBeStale = await page.evaluate(() => Boolean(state.selectedMatter?.review_may_be_stale));
+  assert.equal(betaMayBeStale, true);
 
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/matters**");
@@ -3588,25 +3584,34 @@ async function testStaleReviewRefreshWiring(page) {
       return;
     }
     if (requestUrl.pathname.endsWith("/review-refresh")) {
+      // The explicit "Refresh with AI" button is the ONLY caller of this route.
       refreshCount += 1;
-      const stale = refreshCount === 1;
       await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
           extracted_text: reviewText,
           matter,
-          review_refresh: stale
-            ? {
-                stale: true,
-                stale_message: "Active Playbook changed. Refresh review before exporting or sending.",
-                stale_reasons: ["playbook_changed"],
-              }
-            : {
-                refreshed: true,
-                stale: false,
-                stale_reasons: [],
-              },
+          review_may_be_stale: false,
+          review_refresh: {
+            refreshed: true,
+            stale: false,
+            stale_reasons: [],
+          },
+          review_result: reviewResult,
+        }),
+      });
+      return;
+    }
+    if (requestUrl.pathname.endsWith("/review")) {
+      // Open path: stored review + review_may_be_stale, no AI run.
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          extracted_text: reviewText,
+          matter,
+          review_may_be_stale: true,
           review_result: reviewResult,
         }),
       });
@@ -3626,17 +3631,20 @@ async function testStaleReviewRefreshWiring(page) {
   await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
   await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#reviewView:not([hidden])");
-  await waitForText(page, "#studioFileMeta", "Active Playbook changed");
+  // Opening the matter shows the stale indicator + the Refresh with AI button,
+  // and does NOT run the AI (no /review-refresh POST yet).
+  await page.waitForSelector("#studioReviewStaleIndicator:not([hidden])");
   await page.waitForSelector("#studioRefreshReviewButton:not([hidden])");
-  assert.equal(await page.locator("#studioExportButton").isDisabled(), true);
-  assert.equal(await page.locator("#studioSendButton").isDisabled(), true);
+  await assertTextContains(page.locator("#studioReviewStaleIndicator"), "Review may be stale");
+  assert.equal(refreshCount, 0);
 
-  await page.getByRole("button", { name: "Refresh Review" }).click();
+  await page.getByRole("button", { name: "Refresh with AI" }).click();
   await waitForText(page, "#studioFileMeta", "Review refreshed against the active Playbook.");
   await page.waitForSelector("#studioRefreshReviewButton[hidden]", { state: "attached" });
+  await page.waitForSelector("#studioReviewStaleIndicator[hidden]", { state: "attached" });
   assert.equal(await page.locator("#studioExportButton").isEnabled(), true);
   assert.equal(await page.locator("#studioSendButton").isEnabled(), true);
-  assert.equal(refreshCount, 2);
+  assert.equal(refreshCount, 1);
 
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/matters**");
@@ -9758,31 +9766,18 @@ async function testInboundNotificationToast(page) {
 // Live clause re-assessment tests
 // ---------------------------------------------------------------------------
 
-// Test 1: selecting a jurisdiction picker option triggers reassess-clause and
-// updates the clause card from the response (pass -> fail -> updated verdict).
+// Test 1: selecting a jurisdiction picker option must NOT auto-run the AI
+// reassess. AI review is gated behind the explicit "Refresh with AI" action;
+// committing a picker option instead marks the review as possibly stale so the
+// indicator + Refresh button surface.
 async function testClauseReassessOnPickerCommit(page) {
-  let reassessRequest = null;
+  let reassessCalls = 0;
   await page.route("**/api/review/reassess-clause", async (route) => {
-    reassessRequest = route.request().postDataJSON();
+    reassessCalls += 1;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        clause: {
-          decision: "fail",
-          id: "governing_law",
-          issue_label: "Fail",
-          name: "Governing Law",
-          needs_review: false,
-          passes: false,
-          reason: "California is not an approved governing law.",
-          review_state: { state: "check" },
-          status: "check",
-        },
-        clause_id: "governing_law",
-        matter_id: "matter_review_panel",
-        reassess_metadata: { clause_id: "governing_law", feature: "reassess_clause" },
-      }),
+      body: JSON.stringify({ clause: {}, clause_id: "governing_law", matter_id: "matter_review_panel" }),
     });
   });
 
@@ -9835,68 +9830,37 @@ async function testClauseReassessOnPickerCommit(page) {
   const picker = page.locator('#studioDetailPanel .detail-redline-edit:has([data-export-redline-id="rl_govlaw"]) .redline-options');
   await picker.waitFor({ state: "visible" });
 
-  // Select the England option — this commits the picker choice and should
-  // schedule a per-clause reassess.
+  // Select the England option — this commits the picker choice. Under the
+  // explicit-refresh contract it must NOT auto-fire the AI reassess; instead it
+  // marks the review possibly stale.
   await picker.locator('[data-redline-option-id="opt_england"]').click();
 
-  // Wait for the reassess call to arrive and for the clause verdict to update.
-  await page.waitForFunction(() => {
-    const clause = state.reviewClauses.find((c) => c.id === "governing_law");
-    return clause && (clause.decision === "fail" || clause.status === "check");
-  }, undefined, { timeout: 5000 });
-
-  // Verify the request payload was correct.
-  assert.ok(reassessRequest, "reassess-clause request should have been sent");
-  assert.equal(reassessRequest.matter_id, "matter_review_panel", "request should include matter_id");
-  assert.equal(reassessRequest.clause_id, "governing_law", "request should include clause_id");
-
-  // The reassess must evaluate the PROPOSED text (England and Wales), not the
-  // stale source text (California).  edited_paragraphs must be present and the
-  // target paragraph must carry the selected option's replacement_text.
-  assert.ok(
-    Array.isArray(reassessRequest.edited_paragraphs) && reassessRequest.edited_paragraphs.length > 0,
-    "reassess request should include edited_paragraphs (not fall back to stale edited_text)",
-  );
-  const targetPara = reassessRequest.edited_paragraphs.find((p) => p.id === "p2");
-  assert.ok(targetPara, "edited_paragraphs should contain the target paragraph p2");
+  // The review is now flagged possibly stale: indicator + Refresh with AI button.
+  await page.waitForSelector("#studioReviewStaleIndicator:not([hidden])");
+  await page.waitForSelector("#studioRefreshReviewButton:not([hidden])");
   assert.equal(
-    targetPara.text,
-    "This Agreement shall be governed by the laws of England and Wales.",
-    "target paragraph text should be the selected option's replacement_text, not the stale source",
+    await page.evaluate(() => Boolean(state.selectedMatter?.review_may_be_stale)),
+    true,
+    "committing a picker option should mark the review as possibly stale",
   );
 
-  // The lane card should reflect the updated verdict (fail dot).
-  const laneCard = page.locator('.studio-clause-item[class*="check"]');
-  assert.ok(await laneCard.count() > 0, "governing_law clause lane card should show fail (check) tone after reassess");
+  // The expensive AI reassess endpoint must never be auto-called.
+  assert.equal(reassessCalls, 0, "picker commit must not auto-trigger AI reassess");
 
   await page.unroute("**/api/review/reassess-clause");
 }
 
-// Test 2: editing a paragraph in the viewer (that belongs to a clause) triggers
-// reassess-clause with edited_paragraphs and updates the card verdict.
+// Test 2: editing a paragraph in the viewer must NOT auto-run the AI reassess.
+// The edit marks the review possibly stale (indicator + Refresh with AI button);
+// the AI re-run happens only via the explicit refresh action.
 async function testClauseReassessOnParagraphEdit(page) {
-  let reassessRequest = null;
+  let reassessCalls = 0;
   await page.route("**/api/review/reassess-clause", async (route) => {
-    reassessRequest = route.request().postDataJSON();
+    reassessCalls += 1;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        clause: {
-          decision: "pass",
-          id: "confidential_information",
-          issue_label: "Pass",
-          name: "Confidential Information",
-          needs_review: false,
-          passes: true,
-          reason: "Confidential information is appropriately defined.",
-          review_state: { state: "pass" },
-          status: "pass",
-        },
-        clause_id: "confidential_information",
-        matter_id: "matter_review_panel",
-        reassess_metadata: { clause_id: "confidential_information", feature: "reassess_clause" },
-      }),
+      body: JSON.stringify({ clause: {}, clause_id: "confidential_information", matter_id: "matter_review_panel" }),
     });
   });
 
@@ -9932,10 +9896,10 @@ async function testClauseReassessOnParagraphEdit(page) {
     },
   });
 
-  // Edit the paragraph directly via state mutation and trigger the sync path
-  // (mirrors what syncViewerParagraphEdit does after a viewer input event).
+  // Simulate a viewer paragraph edit through the real edit-staleness hook that
+  // syncViewerParagraphEdit now calls (markReviewMayBeStaleFromEdit) instead of
+  // auto-scheduling an AI reassess.
   await page.evaluate(() => {
-    // Simulate the paragraph text change as syncViewerParagraphEdit would do.
     const paragraph = state.reviewParagraphs.find((p) => p.id === "p1");
     if (paragraph) {
       paragraph.text = "Confidential Information means specifically identified non-public information.";
@@ -9943,36 +9907,22 @@ async function testClauseReassessOnParagraphEdit(page) {
     if (typeof syncReviewSourceFromParagraphs === "function") {
       syncReviewSourceFromParagraphs();
     }
-    // Directly call scheduleClauseReassessForParagraph which is the internal hook.
-    if (typeof scheduleClauseReassessForParagraph === "function") {
-      scheduleClauseReassessForParagraph("p1");
-    } else if (typeof scheduleClauseReassess === "function") {
-      // Fallback: schedule manually.
-      const editedParagraphs = state.reviewParagraphs.map((p) => ({
-        id: p.id, index: p.index, source_index: p.source_index, text: p.text,
-      }));
-      scheduleClauseReassess("confidential_information", editedParagraphs);
-    }
+    markReviewMayBeStaleFromEdit();
   });
 
-  // Wait for reassess to fire and verdict to update.
-  await page.waitForFunction(() => {
-    const clause = state.reviewClauses.find((c) => c.id === "confidential_information");
-    return clause && (clause.decision === "pass" || clause.passes === true);
-  }, undefined, { timeout: 5000 });
-
-  // Verify the request included edited_paragraphs.
-  assert.ok(reassessRequest, "reassess-clause request should have been sent");
-  assert.equal(reassessRequest.matter_id, "matter_review_panel", "request should include matter_id");
-  assert.equal(reassessRequest.clause_id, "confidential_information", "request should include clause_id");
-  assert.ok(
-    Array.isArray(reassessRequest.edited_paragraphs) && reassessRequest.edited_paragraphs.length > 0,
-    "request should include edited_paragraphs",
+  // The edit flags the review possibly stale: indicator + Refresh with AI button.
+  await page.waitForSelector("#studioReviewStaleIndicator:not([hidden])");
+  await page.waitForSelector("#studioRefreshReviewButton:not([hidden])");
+  assert.equal(
+    await page.evaluate(() => Boolean(state.selectedMatter?.review_may_be_stale)),
+    true,
+    "a viewer paragraph edit should mark the review as possibly stale",
   );
 
-  // The updated clause verdict (pass) should be reflected in state.
-  const updatedClause = await page.evaluate(() => state.reviewClauses.find((c) => c.id === "confidential_information"));
-  assert.equal(updatedClause?.decision, "pass", "clause decision should be updated to pass after reassess");
+  // Give any (incorrectly wired) debounced reassess a chance to fire, then assert
+  // the expensive AI endpoint was never auto-called.
+  await page.waitForTimeout(800);
+  assert.equal(reassessCalls, 0, "a viewer paragraph edit must not auto-trigger AI reassess");
 
   await page.unroute("**/api/review/reassess-clause");
 }

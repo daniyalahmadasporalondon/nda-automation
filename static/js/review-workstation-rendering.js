@@ -809,14 +809,13 @@ function setRedlineTemplateSelection(editId, optionId) {
   state.redlineTemplateSelections[editId] = optionId;
   markRedlineDraftDirty();
   renderStudioResult({ clauses: state.reviewClauses });
-  // Live re-assessment: when the reviewer picks a different template option,
-  // re-run the single-clause check against the PROPOSED text so the verdict
-  // reflects the selected wording, not the stale source text.
+  // Picking a different template option changes the proposed wording, which can
+  // change the clause verdict. We no longer auto-run the AI single-clause check
+  // here: AI review is gated behind the explicit "Refresh with AI" action. Flag
+  // the review as possibly stale so the indicator + button surface instead.
   const edit = state.reviewRedlines.find((item) => item.id === editId);
-  if (edit?.clause_id && state.selectedMatter?.id) {
-    if (typeof scheduleClauseReassess === "function") {
-      scheduleClauseReassess(edit.clause_id, _buildEditedParagraphsForTemplateOption(edit, optionId));
-    }
+  if (edit?.clause_id && state.selectedMatter?.id && typeof markReviewMayBeStaleFromEdit === "function") {
+    markReviewMayBeStaleFromEdit();
   }
 }
 

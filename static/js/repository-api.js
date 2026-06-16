@@ -1,5 +1,5 @@
 const RepositoryApi = (() => {
-  const repositoryApiModule = import("./modules/repository-api.mjs?v=20260607c");
+  const repositoryApiModule = import("./modules/repository-api.mjs?v=20260616xr1");
   const methodNames = [
     "deleteMatter",
     "driveStatus",
