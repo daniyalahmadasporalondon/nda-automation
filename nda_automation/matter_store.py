@@ -71,6 +71,13 @@ MATTER_UPDATE_FIELDS = {
     "executed",
     "executed_at",
     "human_reviewed",
+    # Inbound AI-review poison-pill guard (P1-2): how many times the background
+    # AI review has FAILED for this matter, and when it last failed. The recovery
+    # sweep stops re-enqueuing a matter once the count reaches the cap, so a
+    # permanently-failing review (no deterministic fallback) cannot loop forever
+    # burning paid assessor+verifier calls.
+    "inbound_review_failures",
+    "inbound_review_failed_at",
     "last_outbound_account",
     "last_outbound_at",
     "last_outbound_filename",

@@ -5,6 +5,7 @@ import os
 import queue
 import threading
 from collections.abc import Callable
+from datetime import datetime, timezone
 from types import ModuleType
 from typing import Any
 
@@ -67,6 +68,35 @@ _INBOUND_REVIEW_QUEUE_MAXSIZE = 256
 # matters per call so a large historical backlog drains over several poll
 # cycles instead of flooding the queue at once.
 _INBOUND_REVIEW_SWEEP_LIMIT = 50
+
+# Poison-pill guard (P1-2): the maximum number of times the background AI review
+# may FAIL for one matter before the recovery sweep gives up re-enqueuing it. A
+# permanently-failing review (e.g. ActiveReviewEngineError with no deterministic
+# fallback) otherwise stays un-stamped forever and the sweep re-enqueues it every
+# poll, looping endless paid assessor+verifier calls -- the verifier storm. After
+# this many attempts the matter is left needs-attention (deterministic first-pass
+# intact) instead of looping. Transient failures still retry up to the cap; a true
+# poison pill stops. Overridable via env for ops.
+INBOUND_REVIEW_MAX_FAILURES_ENV = "NDA_INBOUND_REVIEW_MAX_FAILURES"
+_DEFAULT_INBOUND_REVIEW_MAX_FAILURES = 3
+
+
+def inbound_review_max_failures() -> int:
+    """Per-matter AI-review failure cap before the recovery sweep gives up.
+
+    Defaults to ``_DEFAULT_INBOUND_REVIEW_MAX_FAILURES`` (3); a non-positive or
+    unparseable override is ignored (the cap is always >= 1 so a single transient
+    blip never permanently parks a matter).
+    """
+
+    raw = os.environ.get(INBOUND_REVIEW_MAX_FAILURES_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_INBOUND_REVIEW_MAX_FAILURES
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_INBOUND_REVIEW_MAX_FAILURES
+    return max(1, value)
 
 
 def inbound_review_concurrency() -> int:
@@ -258,6 +288,46 @@ def _matter_already_ai_reviewed(matter: dict[str, Any]) -> bool:
     return str(engine.get("executed_engine") or "") == "ai_first"
 
 
+def _matter_review_failure_count(matter: dict[str, Any]) -> int:
+    """How many times the background AI review has failed for this matter so far."""
+    try:
+        return max(0, int(matter.get("inbound_review_failures") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _record_inbound_review_failure(
+    matter_id: str,
+    *,
+    repository: MatterRepository,
+    owner_user_id: str,
+) -> None:
+    """Persist an incremented per-matter AI-review failure count (poison-pill guard).
+
+    Best-effort: re-reads the matter for the current count, bumps it, and stamps the
+    failure time via the allowlisted ``update_matter_fields`` writer. Any failure
+    here is logged and swallowed -- failing to RECORD a failure must never crash the
+    worker (the matter simply gets one more retry than the cap, not an infinite
+    loop). When the count reaches the cap the recovery sweep stops re-enqueuing it.
+    """
+
+    try:
+        current = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+        previous = _matter_review_failure_count(current) if isinstance(current, dict) else 0
+        repository.update_matter_fields(
+            matter_id,
+            {
+                "inbound_review_failures": previous + 1,
+                "inbound_review_failed_at": datetime.now(timezone.utc).isoformat(),
+            },
+            owner_user_id=owner_user_id,
+        )
+    except Exception:  # pragma: no cover - failure-recording is itself best-effort
+        LOGGER.warning(
+            "Failed to record inbound AI review failure for matter %s", matter_id, exc_info=True
+        )
+
+
 def _perform_inbound_ai_review(
     matter_id: str,
     *,
@@ -370,11 +440,21 @@ def _perform_inbound_ai_review_body(
         if not isinstance(matter, dict):
             return
         if _matter_already_ai_reviewed(matter):
+            LOGGER.info(
+                "Skipping inbound AI review for matter %s owner=%s: already ai_first reviewed",
+                matter_id,
+                str(owner_user_id or ""),
+            )
             telemetry.increment("inbound_ai_review_skipped_already_reviewed")
             return
         extracted_text = str(matter.get("extracted_text") or "")
         if not extracted_text.strip():
             return
+        LOGGER.info(
+            "Running inbound AI review for matter %s owner=%s",
+            matter_id,
+            str(owner_user_id or ""),
+        )
         paragraphs = review_result_paragraphs(matter.get("review_result"))
         review_result = review_engine_func(extracted_text, paragraphs=paragraphs)
     except ParagraphAlignmentError:
@@ -384,10 +464,12 @@ def _perform_inbound_ai_review_body(
             review_result = review_engine_func(extracted_text)
         except Exception:
             telemetry.increment("inbound_ai_review_failed")
+            _record_inbound_review_failure(matter_id, repository=repository, owner_user_id=owner_user_id)
             LOGGER.warning("Inbound AI review failed for matter %s", matter_id, exc_info=True)
             return
     except Exception:
         telemetry.increment("inbound_ai_review_failed")
+        _record_inbound_review_failure(matter_id, repository=repository, owner_user_id=owner_user_id)
         LOGGER.warning("Inbound AI review failed for matter %s", matter_id, exc_info=True)
         return
 
@@ -400,6 +482,7 @@ def _perform_inbound_ai_review_body(
         )
     except Exception:
         telemetry.increment("inbound_ai_review_failed")
+        _record_inbound_review_failure(matter_id, repository=repository, owner_user_id=owner_user_id)
         LOGGER.warning("Inbound AI review persist failed for matter %s", matter_id, exc_info=True)
         return
     if updated is None:
@@ -464,6 +547,20 @@ def schedule_inbound_ai_review(
         return False
     if _matter_already_ai_reviewed(matter):
         return False
+
+    # This is an accepted schedule request (the matter is real, not a duplicate, and
+    # not already AI-reviewed): record it BEFORE the enqueue so the count reflects
+    # demand on the review pool regardless of which enqueue path runs below. The
+    # pre-existing inbound_ai_review_{completed,failed,queue_full,schedule_failed}
+    # counters measure the downstream outcomes; this is the matching intake signal.
+    from . import telemetry
+
+    telemetry.increment("inbound_ai_review_scheduled")
+    LOGGER.info(
+        "Scheduling inbound AI review for matter %s owner=%s",
+        matter_id,
+        str(owner_user_id or ""),
+    )
 
     # Production: enqueue onto the persistent worker pool. The pool is the
     # serialization (its fixed size == concurrency bound), so a burst can never
@@ -549,6 +646,7 @@ def recover_unreviewed_inbound_matters(
         return 0
 
     enqueued = 0
+    gave_up = 0  # matters skipped because they hit the per-matter failure cap (P1-2)
     for matter in matters:
         if enqueued >= max(0, int(limit)):
             break
@@ -565,6 +663,15 @@ def recover_unreviewed_inbound_matters(
         matter_id = str(matter.get("id") or "")
         if not matter_id:
             continue
+        # Poison-pill guard (P1-2): a matter whose background AI review has already
+        # failed at least the cap number of times is GIVEN UP -- not re-enqueued --
+        # so a permanently-failing review (no deterministic fallback) cannot loop the
+        # sweep forever burning paid assessor+verifier calls. The matter keeps its
+        # deterministic first-pass and stays reviewable on-demand; transient failures
+        # still retried up to the cap.
+        if _matter_review_failure_count(matter) >= inbound_review_max_failures():
+            gave_up += 1
+            continue
         matter_owner = str(matter.get("owner_user_id") or owner_user_id or "")
         try:
             if _INBOUND_REVIEW_POOL.enqueue(matter_id, matter_owner):
@@ -576,10 +683,22 @@ def recover_unreviewed_inbound_matters(
                 exc_info=True,
             )
             continue
-    if enqueued:
+    if enqueued or gave_up:
         from . import telemetry
 
-        telemetry.increment("inbound_ai_review_recovery_enqueued", amount=enqueued)
+        if enqueued:
+            telemetry.increment("inbound_ai_review_recovery_enqueued", amount=enqueued)
+        if gave_up:
+            # The poison-pill counter: matters the sweep stopped retrying because they
+            # hit the per-matter failure cap. A non-zero value is the verifier-storm
+            # signal (a review that fails permanently) for operators.
+            telemetry.increment("inbound_ai_review_gave_up", amount=gave_up)
+            LOGGER.warning(
+                "Inbound AI review recovery sweep gave up on %d matter(s) at the "
+                "per-matter failure cap (%d); they keep their deterministic first-pass.",
+                gave_up,
+                inbound_review_max_failures(),
+            )
     return enqueued
 
 
