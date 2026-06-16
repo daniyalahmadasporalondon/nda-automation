@@ -818,7 +818,25 @@ def _run_startup_inbound_review_recovery() -> None:
 
     Per-owner when user-scoped sync is configured, else a single global sweep.
     Fail-soft.
+
+    Right of way: if a foreground NDA generation is in flight when this fires,
+    REFUSE to start the sweep now (it would enqueue a burst of heavy reviews that
+    contend for the single worker's GIL/CPU) and retry shortly. The sweep is
+    idempotent and runs again on the next poll cycle, so deferring never drops
+    work. The drain-time gate in the review worker is the backstop; this is the
+    cheaper "don't even start the burst" front gate. Fail-open via the guard.
     """
+    from . import generation_priority
+
+    if generation_priority.should_defer_background_ai():
+        print(
+            "Startup inbound-review recovery deferred: a foreground generation has "
+            "the right of way; retrying shortly."
+        )
+        _timer = threading.Timer(2.0, _run_startup_inbound_review_recovery)
+        _timer.daemon = True
+        _timer.start()
+        return
     try:
         owner_user_ids = gmail_integration.gmail_sync_owner_user_ids()
     except Exception:
