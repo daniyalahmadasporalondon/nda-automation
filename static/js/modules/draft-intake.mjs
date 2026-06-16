@@ -186,9 +186,12 @@ export function lawOptionId(law) {
   return law?.playbook_option_id || law?.id || null;
 }
 
-// The dropdown label for an entity: its short_name if present, else legal_name.
+// The dropdown label for an entity: its full legal_name if present, else the
+// short_name. The full legal name is what travels into the generated NDA, so the
+// Generator's Signing Entity dropdown shows it verbatim (the option's value stays
+// the entity id, so selection/generation wiring is unaffected).
 export function entityLabel(entity) {
-  return entity?.short_name || entity?.legal_name || entity?.id || "";
+  return entity?.legal_name || entity?.short_name || entity?.id || "";
 }
 
 // The governing-law choices offered in the independent-override dropdown.
