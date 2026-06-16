@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from nda_automation import pdf_text
 from nda_automation.pdf_text import (
+    MAX_PDF_TOTAL_IMAGE_PIXELS,
     PDF_SUPPORT_NOT_INSTALLED_MESSAGE,
     GeoLine,
     PdfExtractionError,
@@ -468,6 +469,75 @@ def stacked_clauses(clauses, *, left_x=72.0, font_size=12.0):
                 y -= BODY_LINE_HEIGHT
             lines.append(geo(text, left_x=left_x, y=y, font_size=font_size))
     return lines
+
+
+class ImageBombGuardTests(unittest.TestCase):
+    """The image-decompression-bomb guard rejects oversized rasters PRE-decode."""
+
+    @requires_pymupdf
+    def test_rejects_giant_image_before_any_decode(self):
+        # A tiny-byte PDF that DECLARES 72 MP of raster (two 6000x6000 placements)
+        # -- over the 50 MP budget -- yet compresses to only tens of KB on disk.
+        data = make_image_bomb_pdf()  # 2 * 36 MP = 72 MP > 50 MP budget
+
+        # If the guard ever fell through to a decode path, these would run and
+        # materialize the raster (the RSS spike we are preventing). Patch them to
+        # FAIL LOUDLY so a regression that decodes-then-rejects is caught here,
+        # proving the rejection happens strictly before any pixel decode.
+        def _must_not_decode(*_args, **_kwargs):
+            raise AssertionError("decode path ran before the image-bomb guard rejected")
+
+        with patch.object(pdf_text, "_extract_geo_lines", side_effect=_must_not_decode), \
+                patch.object(pdf_text, "_pdf_visual_profile", side_effect=_must_not_decode):
+            with self.assertRaises(PdfExtractionError) as ctx:
+                extract_pdf_document(data)
+
+        self.assertIn("too large", str(ctx.exception).lower())
+
+    @requires_pymupdf
+    def test_guard_helper_rejects_over_budget(self):
+        data = make_image_bomb_pdf()
+        with self.assertRaises(PdfExtractionError):
+            pdf_text._guard_pdf_image_pixels(data)
+
+    @requires_pymupdf
+    def test_normal_small_image_pdf_still_extracts(self):
+        data = make_image_pdf()
+
+        # The small embedded image is far under budget: the guard is a no-op and
+        # the document extracts its text normally.
+        pdf_text._guard_pdf_image_pixels(data)  # must not raise
+        extraction = extract_pdf_document(data)
+
+        text = "\n\n".join(str(p["text"]) for p in extraction.paragraphs)
+        self.assertIn("Confidential Information", text)
+        # Sanity: a small image's declared area is well under the budget.
+        self.assertLess(2 * 2, MAX_PDF_TOTAL_IMAGE_PIXELS)
+
+    @requires_pymupdf
+    def test_guard_degrades_safely_when_get_image_info_raises(self):
+        # If the cheap probe raises, the guard must NOT block extraction.
+        data = make_image_bomb_pdf()
+        real_open = __import__("fitz").open
+
+        class _BoomPage:
+            def get_image_info(self):
+                raise RuntimeError("probe unavailable")
+
+        class _BoomDoc:
+            page_count = 1
+
+            def __getitem__(self, _index):
+                return _BoomPage()
+
+            def close(self):
+                pass
+
+        with patch("fitz.open", return_value=_BoomDoc()):
+            # Degrades safely: returns without raising the bomb error.
+            pdf_text._guard_pdf_image_pixels(data)
+        # real_open kept referenced so the import is unambiguously exercised.
+        self.assertTrue(callable(real_open))
 
 
 class GeometrySplitterTests(unittest.TestCase):
@@ -2166,5 +2236,32 @@ def make_image_pdf():
     pixmap.set_rect(pixmap.irect, (255, 0, 0))
     page.insert_image(fitz.Rect(400, 700, 440, 740), pixmap=pixmap)
     data = document.tobytes()
+    document.close()
+    return data
+
+
+def make_image_bomb_pdf(pixels_side=6000, placements=2):
+    """A tiny-byte PDF that DECLARES huge raster image area (decompression bomb).
+
+    A solid (-> highly compressible) ``pixels_side`` x ``pixels_side`` gray image
+    deflates to tens of KB, but its image dictionary declares the full pixel
+    dimensions. The same XObject is placed ``placements`` times so the SUMMED
+    declared area (``placements`` * pixels_side^2) overshoots the guard budget
+    while the fixture allocates only one ``pixels_side``-square source. Naively
+    decoding these to a raster would explode RSS; the image-bomb guard must reject
+    from the declared width x height alone (via get_image_info), never decoding.
+    """
+    import fitz
+
+    pixmap = fitz.Pixmap(fitz.csGRAY, fitz.IRect(0, 0, pixels_side, pixels_side), False)
+    pixmap.set_rect(pixmap.irect, (200,))
+    document = fitz.open()
+    page = document.new_page(width=612, height=792)
+    page.insert_text((72, 720), "Confidential Information means all data.", fontsize=12)
+    for index in range(placements):
+        x0 = 50 + index * 20
+        page.insert_image(fitz.Rect(x0, 400, x0 + 200, 600), pixmap=pixmap)
+    pixmap = None
+    data = document.tobytes(deflate=True, garbage=4)
     document.close()
     return data

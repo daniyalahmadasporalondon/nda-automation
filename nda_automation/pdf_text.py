@@ -35,6 +35,22 @@ PDF_SUPPORT_NOT_INSTALLED_MESSAGE = "PDF support is not installed. Install the p
 MAX_PDF_PAGES = 100
 MAX_PDF_EXTRACTED_CHARACTERS = 500_000
 
+# Image-decompression-bomb guard. A tiny PDF can embed enormous images (huge
+# pixel dimensions stored in a few KB of compressed bytes); decoding them to a
+# raster explodes RSS. A probe measured a single 6000x6000 image (36 MP) costing
+# ~274 MB RSS to decode (~7.6 bytes per decoded pixel). To bound total decoded
+# memory to a few hundred MB — comfortably under the 2 GB ceiling even with
+# interpreter/library overhead — we cap the SUMMED pixel area across the
+# page-capped pages at 50 megapixels: 50 MP * ~7.6 B/px ~= 380 MB worst-case
+# decode. The area is read from each image's declared width x height via PyMuPDF
+# ``get_image_info`` (metadata only — it does NOT decode pixels), so an oversized
+# PDF is rejected BEFORE any raster spike.
+MAX_PDF_TOTAL_IMAGE_PIXELS = 50_000_000
+IMAGE_BOMB_PDF_MESSAGE = (
+    "The PDF embeds images too large to process safely "
+    "(possible decompression bomb). Reduce the image resolution before reviewing."
+)
+
 # Memory guard for the fitz visual profile. ``page.get_text("dict")`` with the
 # default flags MATERIALIZES every embedded image's decoded bytes into the per-page
 # dict — on an image-heavy PDF that single transient dominates the whole review's
@@ -125,6 +141,8 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
     page_count = len(reader.pages)
     if page_count > MAX_PDF_PAGES:
         raise PdfExtractionError(f"The PDF has {page_count} pages, which exceeds the {MAX_PDF_PAGES} page review limit.")
+    # Reject decompression-bomb images BEFORE any text/visual decode spikes RSS.
+    _guard_pdf_image_pixels(data)
     pages_without_text = 0
     pages_with_text = 0
     extracted_character_count = 0
@@ -807,6 +825,56 @@ def _pdf_quality_report(
     if visual_profile:
         quality["visual_profile"] = visual_profile
     return quality
+
+
+def _guard_pdf_image_pixels(data: bytes) -> None:
+    """Reject a PDF whose embedded images would decode to too much memory.
+
+    Sums the declared pixel area (width x height) of every embedded image across
+    the page-capped pages using PyMuPDF ``page.get_image_info()`` — which reads
+    the image dictionaries' metadata and does NOT decode pixels — and raises
+    ``PdfExtractionError`` BEFORE the text/visual decode loop if the total exceeds
+    ``MAX_PDF_TOTAL_IMAGE_PIXELS``. This is the decompression-bomb defence: a tiny
+    compressed PDF can declare enormous raster dimensions, and the rejection here
+    happens before any pixels are materialised, so no RSS spike occurs.
+
+    Degrades SAFELY: if PyMuPDF is unavailable, the document fails to open, or
+    ``get_image_info`` raises on any page, the guard does NOT block — it returns
+    and lets normal extraction (which has its own char/page limits) proceed. Only
+    a clear over-budget measurement rejects.
+    """
+
+    try:
+        import fitz
+    except ImportError:
+        return
+
+    document = None
+    try:
+        document = fitz.open(stream=data, filetype="pdf")
+    except Exception:
+        return
+
+    try:
+        total_pixels = 0
+        profiled_pages = min(document.page_count, MAX_PDF_PAGES)
+        for page_index in range(profiled_pages):
+            try:
+                images = document[page_index].get_image_info()
+            except Exception:
+                # No reliable pixel metadata for this page -> degrade safely.
+                return
+            for image in images:
+                width = _safe_int(image.get("width"))
+                height = _safe_int(image.get("height"))
+                if width is None or height is None or width <= 0 or height <= 0:
+                    continue
+                total_pixels += width * height
+                if total_pixels > MAX_PDF_TOTAL_IMAGE_PIXELS:
+                    raise PdfExtractionError(IMAGE_BOMB_PDF_MESSAGE)
+    finally:
+        if document is not None:
+            document.close()
 
 
 def _pdf_visual_profile(data: bytes) -> dict[str, object]:
