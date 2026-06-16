@@ -880,6 +880,19 @@ def _gmail_sync_process_lock():
         _GMAIL_SYNC_LOCK.release()
 
 
+# Render-level EMERGENCY kill switch for the scheduled Gmail sync. This works even
+# when the admin UI / settings store is unreachable, so it is the absolute override
+# and is checked BEFORE the settings are read. It is complementary to the
+# `sync_enabled` admin setting (the normal pause/resume control): set
+# NDA_GMAIL_SYNC_ENABLED to a falsey value (false/0/no/off) to hard-stop polling.
+GMAIL_SYNC_ENABLED_ENV = "NDA_GMAIL_SYNC_ENABLED"
+
+
+def _gmail_sync_enabled() -> bool:
+    raw = os.environ.get(GMAIL_SYNC_ENABLED_ENV, "").strip().lower()
+    return not raw or raw not in {"false", "0", "no", "off"}
+
+
 def _gmail_sync_scheduler_loop() -> None:
     last_run = 0.0
     last_frequency = ""
@@ -893,6 +906,12 @@ def _gmail_sync_scheduler_loop() -> None:
 
 
 def _gmail_sync_scheduler_step(last_run: float, last_frequency: str) -> tuple[float, str, int]:
+    # Env-level emergency kill switch FIRST, before touching settings, so it stops
+    # polling even if the settings store is unreachable. Reset last_run + idle short
+    # so flipping it back on resumes promptly (no up-to-a-full-cadence wait).
+    if not _gmail_sync_enabled():
+        telemetry.increment("gmail_sync_skipped_disabled")
+        return 0.0, last_frequency, MAX_GMAIL_SYNC_IDLE_SECONDS
     settings = app_settings.gmail_settings()
     frequency = str(settings.get("sync_frequency") or app_settings.DEFAULT_GMAIL_SETTINGS["sync_frequency"])
     interval_seconds = app_settings.gmail_sync_interval_seconds(frequency)
@@ -900,6 +919,15 @@ def _gmail_sync_scheduler_step(last_run: float, last_frequency: str) -> tuple[fl
     if frequency != last_frequency:
         last_run = 0.0
         last_frequency = frequency
+    # Master pause gate (admin setting): when an admin pauses the sync, skip the
+    # WHOLE scheduled step (no poll, no inbound work). This is the real stop that
+    # "Disconnect Gmail" used to fake -- the scheduler obeys it. Checked before
+    # inbound_enabled, which remains the narrower inbound-only gate. Reset last_run
+    # and idle short so resuming the toggle polls promptly rather than waiting up to
+    # a full cadence (10 min / 2 h).
+    if not app_settings.gmail_scheduler_enabled(settings):
+        telemetry.increment("gmail_sync_skipped_disabled")
+        return 0.0, last_frequency, MAX_GMAIL_SYNC_IDLE_SECONDS
     if settings.get("inbound_enabled", True):
         now = time.monotonic()
         if last_run and now - last_run < interval_seconds:
@@ -981,10 +1009,14 @@ def _gmail_sync_scheduler_remaining_sleep_seconds(last_run: float, now: float, i
 def _run_scheduled_gmail_sync() -> None:
     started_at = datetime.now(timezone.utc).isoformat()
     telemetry.increment("gmail_sync_runs")
+    # The admin-configurable per-poll limit (setting, falling back to the
+    # NDA_GMAIL_IMPORT_LIMIT env default), re-clamped to the safe ceiling. One
+    # effective limit for every import_inbound_matters call in this sync.
+    import_limit = app_settings.gmail_import_limit()
     try:
         owner_user_ids = gmail_integration.gmail_sync_owner_user_ids()
         if owner_user_ids:
-            result = _run_scheduled_user_gmail_sync(owner_user_ids)
+            result = _run_scheduled_user_gmail_sync(owner_user_ids, import_limit=import_limit)
         elif not _gmail_server_inbound_fallback_enabled():
             # Defense-in-depth: never touch a leftover server/env token from the
             # scheduled path unless the operator explicitly opted in. With no
@@ -993,7 +1025,7 @@ def _run_scheduled_gmail_sync() -> None:
             telemetry.increment("gmail_sync_skipped_no_connected_user")
             return
         else:
-            result = gmail_integration.import_inbound_matters(limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT)
+            result = gmail_integration.import_inbound_matters(limit=import_limit)
             result = {**result, "deduplicated_count": DiskMatterRepository().deduplicate_gmail_matters()}
             # Recovery sweep: re-enqueue inbound NDAs that never got their AI
             # review (worker restart / OOM / deploy mid-batch, transient AI
@@ -1016,19 +1048,28 @@ def _run_scheduled_gmail_sync() -> None:
         time.sleep(5)
 
 
-def _run_scheduled_user_gmail_sync(owner_user_ids: list[str]) -> dict[str, object]:
+def _run_scheduled_user_gmail_sync(
+    owner_user_ids: list[str],
+    *,
+    import_limit: int | None = None,
+) -> dict[str, object]:
     imported: list[dict[str, object]] = []
     skipped: list[dict[str, object]] = []
     accounts: list[str] = []
     queries: list[str] = []
     per_user: list[dict[str, object]] = []
     deduplicated_count = 0
+    # Resolve the effective per-poll limit when not supplied by the caller (e.g. a
+    # direct/legacy call): setting first, env default as fallback.
+    effective_import_limit = (
+        import_limit if import_limit is not None else app_settings.gmail_import_limit()
+    )
 
     for owner_user_id in owner_user_ids:
         user_started_at = datetime.now(timezone.utc).isoformat()
         try:
             result = gmail_integration.import_inbound_matters(
-                limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT,
+                limit=effective_import_limit,
                 owner_user_id=owner_user_id,
             )
             owner_deduplicated_count = DiskMatterRepository().deduplicate_gmail_matters(

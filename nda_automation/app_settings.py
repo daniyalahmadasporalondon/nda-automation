@@ -87,11 +87,31 @@ DEFAULT_GMAIL_INBOUND_SEARCH_TERMS = [
 # overrides only the NDA/NOT_NDA/UNCERTAIN criteria, never the fixed security
 # preamble or output contract.
 MAX_GMAIL_INTAKE_PLAYBOOK_LENGTH = 8000
+# Upper clamp on the admin-configurable per-poll import limit. This deliberately
+# mirrors gmail_integration._MAX_GMAIL_IMPORT_LIMIT_CLAMP: the quota audit chose 40
+# to keep even the heaviest poll inside Gmail's ~6,000 units/minute budget, so the
+# UI knob must never be pushed past it (100 risks 429s). It is defined here (not
+# imported from gmail_integration) so the settings layer stays free of the
+# integration import graph and the clamp runs without a circular import on the hot
+# scheduler path.
+MAX_GMAIL_IMPORT_LIMIT_CLAMP = 40
+MIN_GMAIL_IMPORT_LIMIT = 1
+# Sentinel for "import limit not configured". When the stored setting is 0 the
+# effective limit falls back to the NDA_GMAIL_IMPORT_LIMIT env default
+# (gmail_integration.MAX_GMAIL_IMPORT_LIMIT); a stored, positive value is the
+# single source of truth and wins over the env.
+GMAIL_IMPORT_LIMIT_UNSET = 0
 DEFAULT_GMAIL_SETTINGS = {
+    # Master kill-switch the scheduler obeys: when False the WHOLE scheduled sync
+    # step is skipped (not just inbound). inbound_enabled stays the inbound-specific
+    # gate beneath it.
+    "sync_enabled": True,
     "inbound_enabled": True,
     "inbound_search_terms": DEFAULT_GMAIL_INBOUND_SEARCH_TERMS,
     "outbound_enabled": True,
     "sync_frequency": "10_minutes",
+    # Per-poll NEW-work import limit. 0 (unset) => fall back to the env default.
+    "import_limit": GMAIL_IMPORT_LIMIT_UNSET,
     "intake_playbook": "",
     "last_sync_at": "",
     "last_sync_imported_count": 0,
@@ -291,6 +311,56 @@ def gmail_sync_interval_seconds(frequency: object | None = None) -> int:
     return GMAIL_SYNC_FREQUENCIES.get(frequency_key, GMAIL_SYNC_FREQUENCIES[DEFAULT_GMAIL_SETTINGS["sync_frequency"]])
 
 
+def gmail_scheduler_enabled(settings: dict[str, Any] | None = None) -> bool:
+    """Whether the scheduled Gmail sync is allowed to run at all.
+
+    The ``sync_enabled`` master gate. Defaults to True when absent so a settings
+    blob written before this control existed keeps polling. The scheduler checks
+    this BEFORE anything else; ``inbound_enabled`` is a separate, narrower gate.
+    """
+    current = settings if isinstance(settings, dict) else gmail_settings()
+    return bool(current.get("sync_enabled", DEFAULT_GMAIL_SETTINGS["sync_enabled"]))
+
+
+def gmail_import_limit_from_payload(value: object) -> int:
+    """Parse + clamp a per-poll import limit from raw payload/stored input.
+
+    Returns a value in ``[MIN_GMAIL_IMPORT_LIMIT, MAX_GMAIL_IMPORT_LIMIT_CLAMP]``,
+    or ``GMAIL_IMPORT_LIMIT_UNSET`` (0) when the input is absent/blank so the
+    effective limit falls back to the env default. A non-positive or unparseable
+    value is treated as "unset" rather than wedging the drain at zero.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return GMAIL_IMPORT_LIMIT_UNSET
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return GMAIL_IMPORT_LIMIT_UNSET
+    if parsed < MIN_GMAIL_IMPORT_LIMIT:
+        return GMAIL_IMPORT_LIMIT_UNSET
+    return min(parsed, MAX_GMAIL_IMPORT_LIMIT_CLAMP)
+
+
+def gmail_import_limit(settings: dict[str, Any] | None = None) -> int:
+    """The single effective per-poll import limit.
+
+    The stored ``import_limit`` setting is the source of truth; when it is unset
+    (0) the limit falls back to the ``NDA_GMAIL_IMPORT_LIMIT`` env default
+    (``gmail_integration.MAX_GMAIL_IMPORT_LIMIT``). Either way the result is
+    re-clamped to the safe ceiling. ``gmail_integration`` is imported lazily to
+    avoid a circular import (it imports this module at load time).
+    """
+    current = settings if isinstance(settings, dict) else gmail_settings()
+    stored = gmail_import_limit_from_payload(current.get("import_limit"))
+    if stored != GMAIL_IMPORT_LIMIT_UNSET:
+        return stored
+
+    from . import gmail_integration
+
+    env_default = int(getattr(gmail_integration, "MAX_GMAIL_IMPORT_LIMIT", MAX_GMAIL_IMPORT_LIMIT_CLAMP))
+    return max(MIN_GMAIL_IMPORT_LIMIT, min(env_default, MAX_GMAIL_IMPORT_LIMIT_CLAMP))
+
+
 def record_gmail_sync(
     result: dict[str, Any],
     *,
@@ -355,10 +425,12 @@ def gmail_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if _is_legacy_default_gmail_search_terms(inbound_search_terms):
         inbound_search_terms = list(DEFAULT_GMAIL_INBOUND_SEARCH_TERMS)
     return {
+        "sync_enabled": bool(payload.get("sync_enabled", DEFAULT_GMAIL_SETTINGS["sync_enabled"])),
         "inbound_enabled": bool(payload.get("inbound_enabled", DEFAULT_GMAIL_SETTINGS["inbound_enabled"])),
         "inbound_search_terms": inbound_search_terms,
         "outbound_enabled": bool(payload.get("outbound_enabled", DEFAULT_GMAIL_SETTINGS["outbound_enabled"])),
         "sync_frequency": sync_frequency,
+        "import_limit": gmail_import_limit_from_payload(payload.get("import_limit")),
         "intake_playbook": _clamp_intake_playbook(payload.get("intake_playbook")),
         "last_sync_at": str(payload.get("last_sync_at") or DEFAULT_GMAIL_SETTINGS["last_sync_at"]),
         "last_sync_imported_count": _nonnegative_int(
@@ -490,8 +562,15 @@ def _normalized_runtime_value(value: Any) -> str:
 
 
 def _valid_gmail_setting(key: str, value: Any) -> bool:
-    if key in ("inbound_enabled", "outbound_enabled"):
+    if key in ("sync_enabled", "inbound_enabled", "outbound_enabled"):
+        # bool only -- reject "off"/"true"/1 so the API surfaces a clear 400 rather
+        # than silently coercing a truthy/falsy value into the wrong gate state.
         return isinstance(value, bool)
+    if key == "import_limit":
+        # Always normalizable (0/blank/invalid => unset => env fallback; positive =>
+        # clamped). The normalizer clamps on write; strict request validation that
+        # surfaces a 400 lives in the route handler.
+        return True
     if key == "inbound_search_terms":
         return bool(gmail_search_terms_from_payload(value, fallback=[]))
     if key == "sync_frequency":

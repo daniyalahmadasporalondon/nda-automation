@@ -197,13 +197,36 @@ def _manual_import_limit(value: object) -> int:
         return gmail_integration.MAX_GMAIL_IMPORT_LIMIT
 
 
+def _is_int_like(value: object) -> bool:
+    """Whether ``value`` cleanly denotes a whole number for the import-limit knob.
+
+    Accepts ``int`` and int-coercible numeric strings; rejects ``bool`` (caller
+    handles that), ``None``, collections, and non-numeric junk so the route can
+    return a clear 400 instead of silently coercing.
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    if isinstance(value, str):
+        try:
+            int(value.strip())
+        except (TypeError, ValueError):
+            return False
+        return True
+    return False
+
+
 def handle_gmail_settings_update(handler) -> None:
     payload = handler._read_json_payload()
     if payload is None:
         return
 
     updates: dict[str, object] = {}
-    for key in ("inbound_enabled", "outbound_enabled"):
+    # sync_enabled is the master pause/resume gate; inbound/outbound stay the
+    # role-specific gates. All three are strictly boolean -- reject "off"/1 so a
+    # malformed payload can't silently flip the wrong switch.
+    for key in ("sync_enabled", "inbound_enabled", "outbound_enabled"):
         if key not in payload:
             continue
         value = payload.get(key)
@@ -211,6 +234,18 @@ def handle_gmail_settings_update(handler) -> None:
             handler._send_json({"error": "Gmail enabled settings must be true or false."}, status=400)
             return
         updates[key] = value
+    if "import_limit" in payload:
+        import_limit_value = payload.get("import_limit")
+        # Accept an int (or int-coercible numeric/string), reject bool and anything
+        # non-numeric; then clamp to the safe per-poll ceiling. 0 / blank resets to
+        # the env default.
+        if isinstance(import_limit_value, bool) or not _is_int_like(import_limit_value):
+            handler._send_json(
+                {"error": "Gmail import limit must be a whole number."},
+                status=400,
+            )
+            return
+        updates["import_limit"] = app_settings.gmail_import_limit_from_payload(import_limit_value)
     if "sync_cadence" in payload:
         handler._send_json({"error": "Use sync_frequency for Gmail sync frequency."}, status=400)
         return
