@@ -32,6 +32,7 @@ from .ingestion_service import (
     create_matter_from_document,  # noqa: F401 - transport dependency for gmail_matter_inbox
     extract_document_paragraphs,
     is_supported_document_filename,
+    schedule_inbound_ai_review,  # noqa: F401 - transport dependency for gmail_matter_inbox
 )
 from .pdf_text import PdfExtractionError
 from .review_engine import ActiveReviewEngineError  # noqa: F401 - transport dependency for gmail_matter_inbox

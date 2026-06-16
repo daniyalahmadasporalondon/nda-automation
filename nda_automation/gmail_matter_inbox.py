@@ -696,6 +696,23 @@ def create_matter_from_prepared_attachment(
 
     if matter.get("_existing_gmail_duplicate"):
         return None, gmail_attachment_skip(message_id, attachment_filename, "duplicate_attachment")
+
+    # Import is done and FAST (deterministic first-pass only, defer_ai_review=True).
+    # Now restore the core feature -- auto-review -- by SCHEDULING the full ai_first
+    # review (assessor + verifier) to run ASYNCHRONOUSLY off this poll thread and
+    # SERIALIZED behind a process-wide semaphore (limit 1 by default). A batch of N
+    # new NDAs reviews sequentially in the background, never N-at-once, never
+    # blocking the poll/generation/requests. Best-effort: scheduling never raises
+    # into the import, and each matter is reviewed at most once (dedup + idempotent
+    # already-reviewed guard inside the scheduler).
+    schedule_review = getattr(transport, "schedule_inbound_ai_review", None)
+    if callable(schedule_review):
+        try:
+            schedule_review(matter, owner_user_id=owner_user_id)
+        except Exception:
+            LOGGER.warning(
+                "Failed to schedule inbound AI review for message %s", message_id, exc_info=True
+            )
     return matter, None
 
 
