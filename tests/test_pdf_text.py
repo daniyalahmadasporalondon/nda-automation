@@ -321,6 +321,40 @@ class PdfTextTests(unittest.TestCase):
         self.assertIn("pdf_visual_fidelity_requires_source_preview", warning_types)
 
     @requires_pypdf
+    @requires_pymupdf
+    def test_visual_profile_detects_embedded_images_without_materializing_pixels(self):
+        # The visual profile strips TEXT_PRESERVE_IMAGES from the fitz text-dict flags
+        # so image pixel bytes are never materialized (the per-review peak-RSS hog).
+        # Image *presence* must still be detected -- now via the lightweight
+        # get_image_info() path -- so this guards that the memory trim did not blind
+        # the profile to images.
+        import fitz
+
+        data = make_image_pdf()
+
+        extraction = extract_pdf_document(data)
+        visual_profile = extraction.quality["visual_profile"]
+
+        self.assertEqual(visual_profile["status"], "ready")
+        self.assertGreaterEqual(visual_profile["image_count"], 1)
+        self.assertGreaterEqual(visual_profile["pages_with_images"], 1)
+        self.assertIn("images", visual_profile["visual_features"])
+        self.assertTrue(visual_profile["requires_source_preview"])
+        # The text dict produced under the no-images flags must carry no image (type==1)
+        # blocks, proving the pixel-bearing branch is genuinely suppressed.
+        flags = pdf_text._fitz_visual_text_flags(fitz)
+        self.assertIsNotNone(flags)
+        document = fitz.open(stream=data, filetype="pdf")
+        try:
+            blocks = document[0].get_text("dict", flags=flags).get("blocks", [])
+        finally:
+            document.close()
+        self.assertFalse(
+            any(isinstance(block, dict) and block.get("type") == 1 for block in blocks),
+            "image bytes were still materialized in the text dict",
+        )
+
+    @requires_pypdf
     def test_quality_report_requires_source_preview_when_visual_profiler_missing(self):
         real_import = builtins.__import__
 
@@ -2114,3 +2148,23 @@ def make_visual_pdf():
         f"{object_count} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n",
     ]
     return _pdf_package(objects)
+
+
+def make_image_pdf():
+    """A one-page PDF with body text plus a small embedded raster image.
+
+    Built with PyMuPDF (requires fitz) so the embedded image is a real image
+    XObject -- exercising the visual profile's image-detection path that, after
+    the memory trim, runs through get_image_info() rather than the text dict.
+    """
+    import fitz
+
+    document = fitz.open()
+    page = document.new_page(width=612, height=792)
+    page.insert_text((72, 720), "Confidential Information means all data.", fontsize=12)
+    pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 2, 2), False)
+    pixmap.set_rect(pixmap.irect, (255, 0, 0))
+    page.insert_image(fitz.Rect(400, 700, 440, 740), pixmap=pixmap)
+    data = document.tobytes()
+    document.close()
+    return data
