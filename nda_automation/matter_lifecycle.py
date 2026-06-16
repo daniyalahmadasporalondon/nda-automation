@@ -178,6 +178,16 @@ class RepositoryMatterLifecycle:
         triage = triage_review_result(review_result)
         matter_id = str(matter.get("id") or "")
         owner_user_id = str(matter.get("owner_user_id") or "")
+        # PERSIST-POINT RIGHT OF WAY for the user-initiated refresh too. We do NOT
+        # hard-error a deliberate Refresh click (that reads as broken); the refresh
+        # still runs and returns a fresh review. But its store WRITE stands back so
+        # a concurrent foreground generate's save wins the single global store lock.
+        # Bounded + fail-open: the write always lands, just a beat later if a
+        # generate is mid-save. (The verifier itself also defers while a generate is
+        # active, so the refresh's AI burst is light during that window.)
+        from . import generation_priority  # noqa: PLC0415 - keep the dep light/local.
+
+        generation_priority.yield_store_to_generation()
         updated_matter = self._repository.update_matter_review(
             matter_id,
             review_result,
