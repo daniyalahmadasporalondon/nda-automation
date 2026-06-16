@@ -1,5 +1,6 @@
 import builtins
 import importlib.util
+import resource
 import unittest
 from io import BytesIO
 from unittest.mock import patch
@@ -444,6 +445,149 @@ class PdfTextTests(unittest.TestCase):
                 extract_pdf_paragraphs(b"not a pdf")
 
         self.assertEqual(str(context.exception), PDF_SUPPORT_NOT_INSTALLED_MESSAGE)
+
+    # --- Decompression-bomb / decoded-pixel-area guard (P1) ---
+
+    @requires_pypdf
+    @requires_pymupdf
+    def test_rejects_image_decompression_bomb_before_any_decode(self):
+        # The adversarial probe: a single 6000x6000 image in a ~108 KB file. It
+        # passes the byte cap (10 MB), the page cap (1 page) and the char cap
+        # (little text), but its image would decode to ~144 MB of pixels and drove
+        # peak RSS to ~274 MB. The guard must reject it from the CHEAP
+        # get_image_info() dimensions BEFORE pypdf's extract_text() decodes anything,
+        # so the RSS spike never happens.
+        data = make_image_bomb_pdf(6000, 6000)
+        self.assertLess(len(data), 10 * 1024 * 1024, "bomb fixture must pass the 10 MB byte cap")
+
+        # Assert NO image decode is reached: extract_text() is what triggers the
+        # decode, so it must NOT be called once the pre-extraction guard fires.
+        with patch.object(pdf_text, "_extract_geo_lines") as extract_spy:
+            with self.assertRaisesRegex(PdfExtractionError, "decompression bomb"):
+                extract_pdf_document(data)
+        extract_spy.assert_not_called()
+
+    @requires_pypdf
+    @requires_pymupdf
+    def test_image_bomb_rejected_without_rss_spike(self):
+        # Behavioural proof the bomb is rejected PRE-decode: measure peak RSS growth
+        # while extracting the 6000x6000 bomb. With the pre-decode guard the image
+        # stream is never decoded, so the ~144 MB pixel buffer (which previously
+        # spiked RSS to ~274 MB) is never allocated.
+        data = make_image_bomb_pdf(6000, 6000)
+
+        before_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        with self.assertRaisesRegex(PdfExtractionError, "decompression bomb"):
+            extract_pdf_document(data)
+        after_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # ru_maxrss is bytes on macOS, kilobytes on Linux; normalize to bytes.
+        import sys
+
+        scale = 1 if sys.platform == "darwin" else 1024
+        growth_bytes = max(0, after_kb - before_kb) * scale
+        # The decoded buffer alone would be ~144 MB. Allow generous slack for
+        # interpreter churn but stay far below the decode cost: 60 MB.
+        self.assertLess(
+            growth_bytes,
+            60 * 1024 * 1024,
+            f"peak RSS grew {growth_bytes} bytes — the image stream was likely decoded",
+        )
+
+    @requires_pypdf
+    @requires_pymupdf
+    def test_normal_image_pdf_passes_the_pixel_guard(self):
+        # A normal embedded image (a tiny logo) is well under the 24 Mpix budget and
+        # must extract successfully — the guard rejects bombs, not legitimate images.
+        data = make_image_pdf()
+
+        extraction = extract_pdf_document(data)
+
+        self.assertTrue(extraction.paragraphs)
+        self.assertIn("Confidential Information", extraction.paragraphs[0]["text"])
+        self.assertGreaterEqual(extraction.quality["visual_profile"]["image_count"], 1)
+
+    @requires_pypdf
+    @requires_pymupdf
+    def test_image_just_under_budget_passes_just_over_rejects(self):
+        # Boundary check around MAX_PDF_IMAGE_PIXELS. A 4000x4000 image = 16 Mpix is
+        # under the 24 Mpix budget and must pass; a 5000x5000 = 25 Mpix is over and
+        # must be rejected. Both are tiny single-color files (well under the byte cap).
+        under = make_image_bomb_pdf(4000, 4000)  # 16 Mpix < 24 Mpix
+        self.assertEqual(extract_pdf_document(under).quality["visual_profile"]["image_count"], 1)
+
+        over = make_image_bomb_pdf(5000, 5000)  # 25 Mpix > 24 Mpix
+        with self.assertRaisesRegex(PdfExtractionError, "decompression bomb"):
+            extract_pdf_document(over)
+
+    @requires_pypdf
+    @requires_pymupdf
+    def test_pixel_guard_fails_open_when_pymupdf_missing(self):
+        # The guard must FAIL OPEN: if PyMuPDF is unavailable it cannot probe image
+        # dimensions, so it must NOT reject — a reviewable PDF is never blocked on the
+        # guard's own infrastructure gap. (A normal small image PDF still extracts.)
+        data = make_image_pdf()
+        real_import = builtins.__import__
+
+        def import_without_fitz(name, *args, **kwargs):
+            if name == "fitz":
+                raise ModuleNotFoundError("No module named 'fitz'")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=import_without_fitz):
+            extraction = extract_pdf_document(data)
+        self.assertTrue(extraction.paragraphs)
+
+    @requires_pypdf
+    def test_extract_reasserts_byte_size_limit_internally(self):
+        # Belt-and-suspenders (P3): extract_pdf_document re-asserts the byte ceiling
+        # itself rather than trusting an upstream ensure_document_size. A blob over the
+        # (here patched-tiny) cap is rejected before any PDF parsing.
+        data = make_pdf("This Agreement shall be governed by the laws of California.")
+
+        with patch.object(pdf_text, "MAX_PDF_DOCUMENT_BYTES", 50):
+            with patch("pypdf.PdfReader") as reader:
+                with self.assertRaisesRegex(PdfExtractionError, "exceeds the 50 byte review limit"):
+                    extract_pdf_document(data)
+            reader.assert_not_called()
+
+    # --- Drawings-bomb cap in the visual profile (P2) ---
+
+    @requires_pypdf
+    @requires_pymupdf
+    def test_visual_profile_caps_drawings_count(self):
+        # A "drawings bomb": many vector paths on one page. With the per-page cap
+        # patched low, the profile must STOP counting at the cap (rather than letting
+        # an unbounded get_drawings() materialization dominate memory), still report
+        # drawing PRESENCE, and flag drawings_count_capped.
+        data = make_drawings_pdf(40)
+
+        with patch.object(pdf_text, "MAX_PDF_DRAWINGS_PER_PAGE", 5), patch.object(
+            pdf_text, "MAX_PDF_DRAWINGS_TOTAL", 5
+        ):
+            extraction = extract_pdf_document(data)
+
+        visual_profile = extraction.quality["visual_profile"]
+        self.assertEqual(visual_profile["status"], "ready")
+        # The clamp holds the count at the cap, never the true (larger) number.
+        self.assertLessEqual(visual_profile["drawing_count"], 5)
+        self.assertTrue(visual_profile["drawings_count_capped"])
+        # Presence is preserved even though the exact count was clamped.
+        self.assertTrue(visual_profile["pages_with_drawings"] >= 1)
+        self.assertIn("drawings_or_borders", visual_profile["visual_features"])
+
+    @requires_pypdf
+    @requires_pymupdf
+    def test_visual_profile_does_not_flag_capped_under_normal_load(self):
+        # A handful of borders is well under the cap: drawings_count_capped is False
+        # and the true count is reported.
+        data = make_drawings_pdf(3)
+
+        extraction = extract_pdf_document(data)
+
+        visual_profile = extraction.quality["visual_profile"]
+        self.assertEqual(visual_profile["status"], "ready")
+        self.assertFalse(visual_profile["drawings_count_capped"])
+        self.assertGreaterEqual(visual_profile["drawing_count"], 1)
 
 
 BODY_LINE_HEIGHT = 14.0
@@ -2168,3 +2312,52 @@ def make_image_pdf():
     data = document.tobytes()
     document.close()
     return data
+
+
+def make_image_bomb_pdf(width, height):
+    """A one-page PDF embedding a single ``width`` x ``height`` raster image.
+
+    The image is a solid colour so it compresses to a tiny on-disk stream (a 6000x6000
+    image lands at ~108 KB, matching the adversarial probe) — but its DECODED pixel
+    area is ``width * height``. The body text keeps the page reviewable. Used to drive
+    the pre-decode pixel-area guard with a file that passes the byte/page/char caps.
+    """
+    import fitz
+
+    document = fitz.open()
+    page = document.new_page(width=612, height=792)
+    page.insert_text((72, 720), "Confidential Information means all data disclosed here.", fontsize=12)
+    pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, width, height), False)
+    pixmap.set_rect(pixmap.irect, (200, 200, 200))
+    page.insert_image(fitz.Rect(50, 50, 560, 742), pixmap=pixmap)
+    # deflate+garbage-collect so the solid image compresses to a small on-disk stream.
+    data = document.tobytes(deflate=True, garbage=4)
+    document.close()
+    return data
+
+
+def make_drawings_pdf(path_count):
+    """A one-page PDF with ``path_count`` stroked rectangles (vector paths).
+
+    Each ``re S`` operator is one vector path that ``get_drawings()`` reports as a
+    separate drawing dict — so this fixture drives the drawings-bomb cap. The body
+    text keeps the page reviewable.
+    """
+    rects = " ".join(
+        f"{72 + (index % 8) * 60} {680 - (index // 8) * 20} 40 12 re S" for index in range(path_count)
+    )
+    stream = (
+        "q 0 0 0 RG "
+        + rects
+        + " Q BT /F1 12 Tf 14 TL 72 740 Td (Confidential Information means all data.) Tj ET\n"
+    )
+    object_count = 5
+    objects = [
+        "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n",
+        "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n",
+        "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        f"/Resources << /Font << /F1 {object_count} 0 R >> >> /Contents 4 0 R >> endobj\n",
+        f"4 0 obj << /Length {len(stream.encode('latin-1'))} >> stream\n{stream}endstream endobj\n",
+        f"{object_count} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n",
+    ]
+    return _pdf_package(objects)
