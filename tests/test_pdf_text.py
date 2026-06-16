@@ -446,6 +446,280 @@ class PdfTextTests(unittest.TestCase):
         self.assertEqual(str(context.exception), PDF_SUPPORT_NOT_INSTALLED_MESSAGE)
 
 
+class PdfVisualProfileMemoryGuardTests(unittest.TestCase):
+    """Behavioral-contract guard for the PDF visual-profile memory fix.
+
+    These tests verify that ``_fitz_visual_text_flags`` strips
+    ``TEXT_PRESERVE_IMAGES`` from the per-page text-dict call so that image
+    pixel bytes are never materialised into the per-page dict, while still
+    signalling image and coloured-text presence via the lightweight
+    ``get_image_info()`` path.  They are written as BEHAVIORAL contracts (not
+    RSS/tracemalloc ceilings) so they are deterministic and C-layer-visible.
+    """
+
+    def setUp(self):
+        # Reset the module-level cache so each test starts from scratch and
+        # cannot be contaminated by a stale ``int`` left by a previous test or
+        # by import-time initialisation.
+        pdf_text._FITZ_VISUAL_TEXT_FLAGS_NO_IMAGES = None
+
+    def tearDown(self):
+        # Restore the sentinel so later tests get a clean state too.
+        pdf_text._FITZ_VISUAL_TEXT_FLAGS_NO_IMAGES = None
+
+    @requires_pymupdf
+    def test_flag_level_text_preserve_images_is_stripped(self):
+        """_fitz_visual_text_flags() returns a non-None int with TEXT_PRESERVE_IMAGES cleared.
+
+        This is the lowest-level contract: the helper must exist, must
+        successfully compute a value from the running PyMuPDF build, and the
+        value must NOT include the TEXT_PRESERVE_IMAGES bit.  If this bit were
+        present, the per-page ``get_text("dict", flags=...)`` call would
+        materialise full image pixel bytes into the in-process heap on every
+        page, undoing the memory fix entirely.
+        """
+        import fitz
+
+        flags = pdf_text._fitz_visual_text_flags(fitz)
+
+        self.assertIsNotNone(
+            flags,
+            "_fitz_visual_text_flags() returned None on a PyMuPDF build that has "
+            "TEXTFLAGS_DICT and TEXT_PRESERVE_IMAGES -- the memory guard is inactive",
+        )
+        self.assertFalse(
+            flags & fitz.TEXT_PRESERVE_IMAGES,
+            f"TEXT_PRESERVE_IMAGES bit (0x{fitz.TEXT_PRESERVE_IMAGES:x}) is set in "
+            f"_fitz_visual_text_flags() result 0x{flags:x} -- image pixels would still "
+            "be materialised into the per-page text dict",
+        )
+
+    @requires_pymupdf
+    def test_behavioral_text_dict_carries_zero_image_payload_bytes(self):
+        """With the no-image flags, the per-page text dict carries zero image payload bytes.
+
+        The text dict produced under ``_fitz_visual_text_flags()`` must contain
+        NO type-1 image blocks and therefore zero bytes in any ``"image"`` key.
+        Simultaneously, ``get_image_info()`` must still report at least one
+        image -- proving that image *presence* is retained via the lightweight
+        path even though the pixel bytes were never materialised.
+        """
+        import fitz
+
+        data = make_image_pdf()
+        flags = pdf_text._fitz_visual_text_flags(fitz)
+        self.assertIsNotNone(flags, "flags must be non-None for this test to be meaningful")
+
+        document = fitz.open(stream=data, filetype="pdf")
+        try:
+            page = document[0]
+            # Image-payload bytes in the text dict (zero is the contract).
+            blocks = page.get_text("dict", flags=flags).get("blocks", [])
+            image_payload_bytes = sum(
+                len(b.get("image") or b"")
+                for b in blocks
+                if isinstance(b, dict) and b.get("type") == 1
+            )
+            self.assertEqual(
+                image_payload_bytes,
+                0,
+                f"text dict produced {image_payload_bytes} image-payload bytes under the "
+                "no-image flags -- pixel bytes are still being materialised",
+            )
+            # Image presence via the lightweight path (must be >= 1).
+            image_info = page.get_image_info()
+        finally:
+            document.close()
+
+        self.assertGreaterEqual(
+            len(image_info),
+            1,
+            "get_image_info() reported no images on a PDF that contains an embedded "
+            "raster -- the visual profile would silently miss images",
+        )
+
+    @requires_pypdf
+    @requires_pymupdf
+    def test_signal_survives_image_and_colored_text_both_reported(self):
+        """extract_pdf_document() still reports image_count>=1 and colored_text.
+
+        Stripping image bytes from the text-dict call must not blind the visual
+        profile to either signal.  ``make_image_pdf()`` contains one embedded
+        raster and one red text span; the profile must flag both.
+        """
+        data = make_image_pdf()
+
+        extraction = extract_pdf_document(data)
+        visual_profile = extraction.quality["visual_profile"]
+
+        self.assertEqual(
+            visual_profile["status"],
+            "ready",
+            f"visual profile status was {visual_profile.get('status')!r}, "
+            f"reason: {visual_profile.get('reason')!r}",
+        )
+        self.assertGreaterEqual(
+            visual_profile["image_count"],
+            1,
+            "visual profile reported zero images on a PDF that contains an embedded "
+            "raster -- the memory-safe image-counting path is broken",
+        )
+        self.assertIn(
+            "images",
+            visual_profile["visual_features"],
+            "visual_features does not include 'images' even though image_count >= 1",
+        )
+        self.assertIn(
+            "colored_text",
+            visual_profile["visual_features"],
+            "visual_features does not include 'colored_text' even though the PDF "
+            "contains a red text span -- stripping image flags must not affect "
+            "colour detection",
+        )
+        self.assertTrue(
+            visual_profile["requires_source_preview"],
+            "requires_source_preview should be True when images or colored_text are present",
+        )
+
+    @requires_pymupdf
+    def test_old_pymupdf_fallback_path_still_detects_images(self):
+        """The default-flags fallback (old PyMuPDF) still counts images via type==1 blocks.
+
+        On a PyMuPDF build that lacks the flag constants, ``_fitz_visual_text_flags``
+        returns None and the profile takes the legacy path: the default text dict
+        (which preserves image blocks) plus type==1 block counting, with NO
+        get_image_info() call. We force that branch by monkeypatching the helper to
+        return None, and assert the profile still reports image_count>=1 and flags
+        'images' -- the load-bearing "no correctness change on the old path" claim.
+        """
+        data = make_image_pdf()
+
+        with patch.object(pdf_text, "_fitz_visual_text_flags", return_value=None):
+            extraction = extract_pdf_document(data)
+
+        visual_profile = extraction.quality["visual_profile"]
+        self.assertEqual(
+            visual_profile["status"],
+            "ready",
+            f"visual profile status was {visual_profile.get('status')!r}, "
+            f"reason: {visual_profile.get('reason')!r}",
+        )
+        self.assertGreaterEqual(
+            visual_profile["image_count"],
+            1,
+            "old-PyMuPDF fallback (default flags + type==1 counting) failed to count "
+            "the embedded image -- the legacy path regressed",
+        )
+        self.assertIn(
+            "images",
+            visual_profile["visual_features"],
+            "old-PyMuPDF fallback did not flag 'images' even though image_count >= 1",
+        )
+
+    @requires_pymupdf
+    def test_resolved_and_fallback_image_counting_are_identical(self):
+        """get_image_info() and the legacy type==1 path agree on every image signal.
+
+        For each fixture, profile it twice: once with the resolved no-image flags
+        (get_image_info() counting) and once with the helper forced to None (default
+        flags + type==1 counting). image_count, pages_with_images, and the
+        image-related visual_features must be byte-identical across both paths -- this
+        is the core "byte-identical, no correctness change" equivalence claim.
+
+        Cases: (a) one image XObject reused/placed N times, (b) a no-image PDF
+        (count==0, no 'images' flag), (c) two distinct images on each of two pages.
+        """
+        cases = {
+            "reused_xobject_x3": (make_reused_xobject_pdf(3), 3, 1, True),
+            "no_image": (make_pdf("This Agreement is governed by California law."), 0, 0, False),
+            "multi_image_multi_page": (make_multi_image_multi_page_pdf(), 4, 2, True),
+        }
+        for label, (data, expected_count, expected_pages, expects_images) in cases.items():
+            with self.subTest(fixture=label):
+                # Resolved no-image flags path (get_image_info()).
+                pdf_text._FITZ_VISUAL_TEXT_FLAGS_NO_IMAGES = None
+                resolved = pdf_text._pdf_visual_profile(data)
+                # Forced-None fallback path (default flags + type==1 counting).
+                pdf_text._FITZ_VISUAL_TEXT_FLAGS_NO_IMAGES = None
+                with patch.object(pdf_text, "_fitz_visual_text_flags", return_value=None):
+                    fallback = pdf_text._pdf_visual_profile(data)
+
+                # Both paths must agree with each other...
+                self.assertEqual(
+                    resolved["image_count"],
+                    fallback["image_count"],
+                    f"{label}: image_count differs between resolved ({resolved['image_count']}) "
+                    f"and fallback ({fallback['image_count']}) paths",
+                )
+                self.assertEqual(
+                    resolved["pages_with_images"],
+                    fallback["pages_with_images"],
+                    f"{label}: pages_with_images differs between resolved "
+                    f"({resolved['pages_with_images']}) and fallback "
+                    f"({fallback['pages_with_images']}) paths",
+                )
+                self.assertEqual(
+                    "images" in resolved["visual_features"],
+                    "images" in fallback["visual_features"],
+                    f"{label}: 'images' feature presence differs between the two paths",
+                )
+
+                # ...and both must match the fixture's known image geometry.
+                self.assertEqual(resolved["image_count"], expected_count, label)
+                self.assertEqual(resolved["pages_with_images"], expected_pages, label)
+                self.assertEqual(
+                    "images" in resolved["visual_features"],
+                    expects_images,
+                    f"{label}: expected 'images' feature presence {expects_images}",
+                )
+
+    @requires_pymupdf
+    def test_flags_helper_caches_after_first_call(self):
+        """_fitz_visual_text_flags() computes once, then serves from the module cache.
+
+        First call must populate ``_FITZ_VISUAL_TEXT_FLAGS_NO_IMAGES`` with a non-None
+        int; the second call must return the same value WITHOUT recomputing from the
+        fitz constants. We prove "cache-served" by sabotaging ``fitz.TEXTFLAGS_DICT``
+        after the first call: a recompute would raise, so a clean equal result proves
+        the value came from the cache, not a fresh bitwise computation.
+        """
+        import fitz
+
+        # The class setUp already nulls the global; addCleanup guarantees it is reset
+        # even if an assertion below raises, so a populated cache cannot poison the
+        # forced-None fallback tests in this class.
+        pdf_text._FITZ_VISUAL_TEXT_FLAGS_NO_IMAGES = None
+        self.addCleanup(
+            setattr, pdf_text, "_FITZ_VISUAL_TEXT_FLAGS_NO_IMAGES", None
+        )
+
+        first = pdf_text._fitz_visual_text_flags(fitz)
+        self.assertIsNotNone(first, "first call did not compute a flags value")
+        self.assertEqual(
+            pdf_text._FITZ_VISUAL_TEXT_FLAGS_NO_IMAGES,
+            first,
+            "the module cache was not populated after the first call",
+        )
+
+        class _Exploding:
+            # Any attempt to recompute flags from this would raise immediately.
+            def __index__(self):
+                raise AssertionError("flags were recomputed -- cache was not served")
+
+            def __and__(self, other):
+                raise AssertionError("flags were recomputed -- cache was not served")
+
+        with patch.object(fitz, "TEXTFLAGS_DICT", _Exploding()):
+            second = pdf_text._fitz_visual_text_flags(fitz)
+
+        self.assertEqual(
+            second,
+            first,
+            "second call returned a different value than the first -- cache is broken",
+        )
+        self.assertIsNotNone(second)
+
+
 BODY_LINE_HEIGHT = 14.0
 PARAGRAPH_GAP = 30.0
 
@@ -2151,11 +2425,39 @@ def make_visual_pdf():
 
 
 def make_image_pdf():
-    """A one-page PDF with body text plus a small embedded raster image.
+    """A one-page PDF with a raster image and a red text span.
 
     Built with PyMuPDF (requires fitz) so the embedded image is a real image
     XObject -- exercising the visual profile's image-detection path that, after
     the memory trim, runs through get_image_info() rather than the text dict.
+    The red text span (color=(1,0,0)) ensures the visual profile also emits
+    ``colored_text`` so the signal-survives assertion can check both features.
+    """
+    import fitz
+
+    document = fitz.open()
+    page = document.new_page(width=612, height=792)
+    # Black body text that pypdf can extract (exercises signal-survives path).
+    page.insert_text((72, 720), "Confidential Information means all data.", fontsize=12)
+    # Red span -- non-zero colour -> visual profile must report colored_text.
+    page.insert_text((72, 700), "Red clause heading.", fontsize=12, color=(1, 0, 0))
+    # 2x2 raster image XObject -- presence detected via get_image_info(), not
+    # via pixel bytes materialised into the text dict.
+    pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 2, 2), False)
+    pixmap.set_rect(pixmap.irect, (255, 0, 0))
+    page.insert_image(fitz.Rect(400, 600, 440, 640), pixmap=pixmap)
+    data = document.tobytes()
+    document.close()
+    return data
+
+
+def make_reused_xobject_pdf(placements=3):
+    """A one-page PDF that places the SAME raster image XObject ``placements`` times.
+
+    Word/InDesign reuse a single image XObject for a repeated logo/watermark. Both
+    the get_image_info() path and the legacy type==1 text-dict path report ONE
+    entry per placement (not per distinct XObject), so this fixture pins that the
+    two counting paths agree on the placement count for a reused image.
     """
     import fitz
 
@@ -2163,8 +2465,33 @@ def make_image_pdf():
     page = document.new_page(width=612, height=792)
     page.insert_text((72, 720), "Confidential Information means all data.", fontsize=12)
     pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 2, 2), False)
-    pixmap.set_rect(pixmap.irect, (255, 0, 0))
-    page.insert_image(fitz.Rect(400, 700, 440, 740), pixmap=pixmap)
+    pixmap.set_rect(pixmap.irect, (0, 0, 255))
+    for index in range(placements):
+        left = 100 + index * 50
+        page.insert_image(fitz.Rect(left, 600, left + 40, 640), pixmap=pixmap)
+    data = document.tobytes()
+    document.close()
+    return data
+
+
+def make_multi_image_multi_page_pdf():
+    """A two-page PDF with two distinct raster images on EACH page (4 images total).
+
+    Exercises the per-page accumulation of both image_count and pages_with_images
+    across multiple pages, so the get_image_info() vs type==1 equivalence is pinned
+    beyond the single-image / single-page case.
+    """
+    import fitz
+
+    document = fitz.open()
+    for _page_index in range(2):
+        page = document.new_page(width=612, height=792)
+        page.insert_text((72, 720), "Page body text.", fontsize=12)
+        for image_index in range(2):
+            pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 2, 2), False)
+            pixmap.set_rect(pixmap.irect, (image_index * 120, 0, 255))
+            left = 100 + image_index * 60
+            page.insert_image(fitz.Rect(left, 600, left + 40, 640), pixmap=pixmap)
     data = document.tobytes()
     document.close()
     return data
