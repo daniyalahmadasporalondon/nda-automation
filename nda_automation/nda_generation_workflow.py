@@ -78,6 +78,7 @@ def generate_nda_for_matter(
     # Hard safety gate on the actual matter-creation path. Nothing is persisted
     # before this passes.
     nda_generation.assert_generated_nda_is_on_position(result, playbook=active_playbook.playbook)
+    generation_timing.mark_phase("safety gate passed")
 
     filename = generated_filename(intake)
     matter = create_matter_from_document(
@@ -91,9 +92,10 @@ def generate_nda_for_matter(
         defer_ai_review=True,
         playbook_runtime_func=lambda: active_playbook,
     )
-    generation_timing.mark_phase("matter persisted")
+    generation_timing.mark_phase("matter created")
 
     original = latest_artifact_for_role(matter, ROLE_ORIGINAL)
+    generation_timing.mark_phase("source artifact located")
     artifact = nda_generation.save_generated_nda(
         result,
         str(matter.get("id") or ""),
@@ -101,7 +103,9 @@ def generate_nda_for_matter(
         based_on_artifact_id=(original.id if original else ""),
         owner_user_id=owner_user_id,
     )
+    generation_timing.mark_phase("generated artifact saved")
     self_check = nda_generation.self_check_generated_nda(result.docx_bytes, playbook=active_playbook.playbook)
+    generation_timing.mark_phase("self check completed")
     return GeneratedNdaWorkflowResult(
         result=result,
         matter=matter,

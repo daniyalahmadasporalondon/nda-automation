@@ -10,7 +10,9 @@ This route also owns the request-level observability for generate: a per-request
 visible at the HTTP boundary — ``generate started``, ``waited for slot`` (the
 foreground-priority guard acquisition wait), and ``response sent`` (total) — and
 binds itself as the *current* stopwatch so the deterministic workflow can record
-its own phases (``playbook loaded`` / ``docx built`` / ``matter persisted``) via
+its own phases (``playbook loaded`` / ``docx built`` / ``safety gate passed`` /
+``matter created`` / ``source artifact located`` / ``generated artifact saved`` /
+``self check completed``) via
 ``generation_timing.mark_phase`` without depending on this route. The WAIT time
 is the headline metric: tonight a slow generate's time was lost queued behind a
 background CPU burst, invisibly — now it is a logged phase.
@@ -69,7 +71,9 @@ def handle_generate_nda(handler) -> None:
             guard.__enter__()
         try:
             # Bind the stopwatch so the deterministic workflow can record its own
-            # phases (playbook loaded / docx built / matter persisted) via
+            # phases (playbook loaded / docx built / safety gate passed /
+            # matter created / source artifact located / generated artifact saved /
+            # self check completed) via
             # generation_timing.mark_phase without importing this route.
             with generation_timing.bind_stopwatch(stopwatch):
                 generated = nda_generation_workflow.generate_nda_from_payload(
