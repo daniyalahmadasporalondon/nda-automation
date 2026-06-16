@@ -121,6 +121,17 @@ services:
       # change; NDAs keep their deterministic first-pass + stay reviewable on-demand.
       - key: NDA_INBOUND_AI_REVIEW_ENABLED
         value: "true"
+      # Gentle catch-up knob (code default 20). Caps how many inbound messages a
+      # SINGLE poll cycle downloads + triages (NDA_GMAIL_TRIAGE_MODEL) + classifies
+      # (intake) + text-extracts on the poll thread before queuing AI reviews. When
+      # Gmail is (re)connected the first poll would otherwise catch up the whole
+      # 90-day backlog at once -- a one-time burst that can OOM the single 2 GB
+      # worker. Keeping this small drains the backlog a batch per poll: the
+      # PERSISTENT dedup index skips already-imported messages BEFORE any
+      # download/extract, so each cycle makes real progress until the backlog is
+      # empty. Raise to drain faster at the cost of a larger per-poll burst.
+      - key: NDA_GMAIL_IMPORT_LIMIT
+        value: "20"
       # Independent adversarial second-opinion verifier on OpenRouter. It uses a
       # different model family from the main reviewer on purpose.
       - key: NDA_AI_VERIFIER

@@ -38,41 +38,6 @@ def import_inbound_matters(
 
     account_email = str(profile.get("emailAddress") or "")
 
-    # Paginated fetch: a single list() call only returns one Gmail page and
-    # ignores nextPageToken, so a broadened (keyword-gate-free) fetch could be
-    # silently truncated below import_limit. Accumulate stubs across pages,
-    # capping each page at 100, until we reach import_limit or run out of pages.
-    # pageToken is passed only when non-empty so single-page transport fakes that
-    # do not accept the kwarg keep working.
-    # Termination guards: Gmail can return a NON-empty nextPageToken on a page
-    # that yielded ZERO new messages, which (combined with the import cap never
-    # being reached) would spin this loop forever. Stop on a zero-progress page
-    # AND enforce a hard page cap that comfortably covers import_limit even if
-    # every page only returned a single message.
-    message_stubs: list[dict[str, Any]] = []
-    page_token = ""
-    max_pages = import_limit + 25
-    try:
-        for _ in range(max_pages):
-            if len(message_stubs) >= import_limit:
-                break
-            page = service.users().messages().list(
-                userId="me",
-                q=inbound_query,
-                maxResults=min(import_limit - len(message_stubs), 100),
-                **({"pageToken": page_token} if page_token else {}),
-            ).execute()
-            new_stubs = page.get("messages") or []
-            message_stubs.extend(new_stubs)
-            page_token = str(page.get("nextPageToken") or "")
-            # Stop on an empty next-page token OR a zero-progress page (a page
-            # that advanced the token but returned no messages).
-            if not page_token or not new_stubs:
-                break
-    except Exception as exc:
-        transport.raise_gmail_api_error(exc, "Gmail inbound sync could not list messages.")
-    message_stubs = message_stubs[:import_limit]
-
     # The AI intake classifier reads its criteria block once per sync and shares a
     # single per-sync call budget across every message/attachment so the cost cap
     # bounds the whole sync, not each message. Both are computed defensively: if the
@@ -86,71 +51,133 @@ def import_inbound_matters(
     # Roll the per-message AI intake tallies up into a single per-sync total so the
     # sync result carries an honest health signal for the classifier.
     sync_tallies = _IntakeTallies()
-    for message_stub in message_stubs:
-        message_id = str(message_stub.get("id") or "")
-        if not message_id:
-            continue
+
+    # Gentle catch-up via an INTERLEAVED paged scan. The inbound query has no
+    # already-imported exclusion and applies no label/archive, so it re-surfaces the
+    # SAME newest messages on every poll. If we capped the *fetch* at import_limit
+    # and the newest import_limit messages were already imported, every poll would
+    # re-fetch those same slots and make ZERO forward progress -- the catch-up would
+    # stall after the first batch. So import_limit instead caps the number of NEW
+    # (dedup-miss) messages handed to the heavy import path per poll (the Pro
+    # attachment selector + Flash intake + PyMuPDF extraction + attachment download
+    # -- the work that strains the 2 GB worker). The cheap per-stub probe (list +
+    # metadata get + pre-download identity dedup) pages PAST the already-imported
+    # newest messages so each poll advances to the next un-imported batch, draining
+    # the backlog a bounded slice at a time until it is empty.
+    #
+    # Termination guards (unchanged in spirit): stop once import_limit NEW messages
+    # are processed; stop on an empty next-page token or a zero-progress page (Gmail
+    # can return a non-empty token on a page that yielded no messages); and enforce
+    # a hard SCAN cap so a backlog of many already-imported messages can never make
+    # one poll probe unboundedly. The scan cap comfortably exceeds import_limit so a
+    # full new batch is always reachable past a screenful of already-imported ones.
+    # pageToken is passed only when non-empty so single-page transport fakes that do
+    # not accept the kwarg keep working.
+    new_processed = 0
+    stubs_scanned = 0
+    page_token = ""
+    max_scan = max(import_limit * 5, import_limit + 100)
+    page_size = min(import_limit, 100) or 1
+    scanning = True
+    while scanning and new_processed < import_limit and stubs_scanned < max_scan:
+        # Only the list() call is guarded as a "list" error: the per-message work
+        # below keeps its own narrow error handling (matching the pre-refactor
+        # structure) so a genuine processing bug is never mislabeled as a Gmail
+        # listing failure.
         try:
-            message = service.users().messages().get(userId="me", id=message_id, format="full").execute()
+            page = service.users().messages().list(
+                userId="me",
+                q=inbound_query,
+                maxResults=page_size,
+                **({"pageToken": page_token} if page_token else {}),
+            ).execute()
         except Exception as exc:
-            if transport.gmail_retry_after_epoch(exc):
-                transport.raise_gmail_api_error(exc, "Gmail inbound sync could not load a message.")
-            skipped.append({"message_id": message_id, "reason": "message_unavailable"})
-            continue
+            transport.raise_gmail_api_error(exc, "Gmail inbound sync could not list messages.")
+            raise  # unreachable: raise_gmail_api_error always raises; satisfies type/flow
+        new_stubs = page.get("messages") or []
+        page_token = str(page.get("nextPageToken") or "")
+        for message_stub in new_stubs:
+            if new_processed >= import_limit or stubs_scanned >= max_scan:
+                scanning = False
+                break
+            stubs_scanned += 1
+            message_id = str(message_stub.get("id") or "")
+            if not message_id:
+                continue
+            try:
+                message = service.users().messages().get(userId="me", id=message_id, format="full").execute()
+            except Exception as exc:
+                if transport.gmail_retry_after_epoch(exc):
+                    transport.raise_gmail_api_error(exc, "Gmail inbound sync could not load a message.")
+                skipped.append({"message_id": message_id, "reason": "message_unavailable"})
+                continue
 
-        if transport.is_self_or_outbound_message(message, account_email):
-            skipped.append({"message_id": message_id, "reason": "self_sent_or_outbound"})
-            continue
+            if transport.is_self_or_outbound_message(message, account_email):
+                skipped.append({"message_id": message_id, "reason": "self_sent_or_outbound"})
+                continue
 
-        attachments = list(transport.reviewable_attachments(message.get("payload") or {}))
-        if not attachments:
-            skipped.append({"message_id": message_id, "reason": "no_reviewable_attachment"})
-            continue
+            attachments = list(transport.reviewable_attachments(message.get("payload") or {}))
+            if not attachments:
+                skipped.append({"message_id": message_id, "reason": "no_reviewable_attachment"})
+                continue
 
-        # Dedup short-circuit AHEAD of any download/extract: a previously-imported
-        # forward (re-surfaced by the inbox query on every poll) is skipped here so
-        # the content-scan PDF/DOCX extraction below never re-downloads + re-parses
-        # its attachments. Only genuinely already-imported messages (every
-        # attachment matched on a pre-download identity key) are short-circuited;
-        # anything not provably imported falls through to the authoritative
-        # per-attachment path, preserving the false-negative protection.
-        if message_attachments_all_already_imported(
-            message_id,
-            attachments,
-            transport=transport,
-            owner_user_id=owner_user_id,
-        ):
-            skipped.append({"message_id": message_id, "reason": "already_imported"})
-            continue
+            # Dedup short-circuit AHEAD of any download/extract: a previously-
+            # imported forward (re-surfaced by the inbox query on every poll) is
+            # skipped here so the content-scan PDF/DOCX extraction below never
+            # re-downloads + re-parses its attachments. Crucially this does NOT
+            # count toward import_limit -- the scan pages past these to reach the
+            # next un-imported batch. Only genuinely already-imported messages
+            # (every attachment matched on a pre-download identity key) are
+            # short-circuited; anything not provably imported falls through to the
+            # authoritative per-attachment path, preserving the false-negative
+            # protection.
+            if message_attachments_all_already_imported(
+                message_id,
+                attachments,
+                transport=transport,
+                owner_user_id=owner_user_id,
+            ):
+                skipped.append({"message_id": message_id, "reason": "already_imported"})
+                continue
 
-        # Always make the per-message detection content-aware: if subject/body/
-        # snippet/filename carry no NDA signal, fall back to scanning attachment
-        # content. There is NO terminal drop here anymore -- the deterministic
-        # per-attachment band classifier (import_inbound_attachments) is the
-        # authoritative classifier, so an attachment-only NDA with a neutral
-        # subject is never dropped before its content is judged.
-        detection = transport.message_nda_detection(message, attachments)
-        if not detection["matched"]:
-            detection = transport.attachment_nda_detection(service, message_id, attachments)
+            # This message will hit the heavy import path: count it against the
+            # per-poll NEW-work budget that bounds load on the 2 GB worker.
+            new_processed += 1
 
-        metadata = message_selector_metadata(
-            message,
-            transport.message_metadata(message, account_email, detection=detection if detection["matched"] else None),
-            transport=transport,
-        )
-        attachment_result = import_inbound_attachments(
-            service,
-            message_id,
-            attachments,
-            metadata,
-            transport=transport,
-            owner_user_id=owner_user_id,
-            intake_playbook=intake_playbook,
-            intake_budget=intake_budget,
-        )
-        imported.extend(attachment_result["imported"])
-        skipped.extend(attachment_result["skipped"])
-        sync_tallies.merge(attachment_result.get("ai_intake"))
+            # Always make the per-message detection content-aware: if subject/
+            # body/snippet/filename carry no NDA signal, fall back to scanning
+            # attachment content. There is NO terminal drop here anymore -- the
+            # deterministic per-attachment band classifier
+            # (import_inbound_attachments) is the authoritative classifier, so an
+            # attachment-only NDA with a neutral subject is never dropped before
+            # its content is judged.
+            detection = transport.message_nda_detection(message, attachments)
+            if not detection["matched"]:
+                detection = transport.attachment_nda_detection(service, message_id, attachments)
+
+            metadata = message_selector_metadata(
+                message,
+                transport.message_metadata(message, account_email, detection=detection if detection["matched"] else None),
+                transport=transport,
+            )
+            attachment_result = import_inbound_attachments(
+                service,
+                message_id,
+                attachments,
+                metadata,
+                transport=transport,
+                owner_user_id=owner_user_id,
+                intake_playbook=intake_playbook,
+                intake_budget=intake_budget,
+            )
+            imported.extend(attachment_result["imported"])
+            skipped.extend(attachment_result["skipped"])
+            sync_tallies.merge(attachment_result.get("ai_intake"))
+        # Stop on an empty next-page token OR a zero-progress page (a page that
+        # advanced the token but returned no messages), mirroring the original
+        # paged-fetch termination guards.
+        if not page_token or not new_stubs:
+            break
 
     return {
         "account": account_email,

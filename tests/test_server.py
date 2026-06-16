@@ -6456,9 +6456,13 @@ class ServerTests(unittest.TestCase):
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
                 with patch.object(app_settings, "gmail_role_enabled", return_value=True):
-                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
-                        with patch.object(gmail_integration, "_gmail_service", return_value=service):
-                            result = gmail_integration.import_inbound_matters(limit=100)
+                    # Raise the per-poll catch-up cap to 100 so this pagination
+                    # assertion spans BOTH 50-stub pages; the default (20) would be
+                    # satisfied within the first page and never follow nextPageToken.
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1", gmail_integration.NDA_GMAIL_IMPORT_LIMIT_ENV: "100"}):
+                        with patch.object(gmail_integration, "MAX_GMAIL_IMPORT_LIMIT", 100):
+                            with patch.object(gmail_integration, "_gmail_service", return_value=service):
+                                result = gmail_integration.import_inbound_matters(limit=100)
 
         self.assertEqual(len(result["imported"]), 100)
         list_calls = service.users_api.messages_api.list_calls
@@ -6466,8 +6470,26 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(list_calls[0]["pageToken"], "")
         self.assertEqual(list_calls[1]["pageToken"], "p2")
 
-    def test_max_gmail_import_limit_is_100(self):
-        self.assertEqual(gmail_integration.MAX_GMAIL_IMPORT_LIMIT, 100)
+    def test_gmail_import_limit_defaults_low_and_is_env_configurable(self):
+        # The gentle catch-up knob: the default is deliberately modest so
+        # re-enabling Gmail cannot burst the single 2 GB worker, and an operator can
+        # raise it via NDA_GMAIL_IMPORT_LIMIT to drain the backlog faster.
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(gmail_integration.NDA_GMAIL_IMPORT_LIMIT_ENV, None)
+            self.assertEqual(gmail_integration._gmail_import_limit_from_env(), 20)
+            os.environ[gmail_integration.NDA_GMAIL_IMPORT_LIMIT_ENV] = "40"
+            self.assertEqual(gmail_integration._gmail_import_limit_from_env(), 40)
+            # Garbage / non-positive overrides fall back to the safe default.
+            for bad in ("", "nope", "0", "-1"):
+                os.environ[gmail_integration.NDA_GMAIL_IMPORT_LIMIT_ENV] = bad
+                self.assertEqual(gmail_integration._gmail_import_limit_from_env(), 20)
+            # The module constant was resolved from the env at import time; with the
+            # knob unset it is the modest default.
+            os.environ.pop(gmail_integration.NDA_GMAIL_IMPORT_LIMIT_ENV, None)
+            self.assertEqual(
+                gmail_integration.MAX_GMAIL_IMPORT_LIMIT,
+                gmail_integration._gmail_import_limit_from_env(),
+            )
 
     def test_triage_matter_still_dedupes_by_hash(self):
         # T5 -- a triage matter goes through the same dedupe-on-create critical
