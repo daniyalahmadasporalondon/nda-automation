@@ -34,6 +34,15 @@ ENCRYPTED_PDF_MESSAGE = "The PDF is encrypted or password-protected. Remove the 
 PDF_SUPPORT_NOT_INSTALLED_MESSAGE = "PDF support is not installed. Install the pypdf dependency before reviewing PDF files."
 MAX_PDF_PAGES = 100
 MAX_PDF_EXTRACTED_CHARACTERS = 500_000
+# Decompression-bomb guard: a tiny PDF can declare enormous embedded images that
+# only blow up when their pixels are decoded. ``page.extract_text`` (pypdf) and the
+# fitz visual profile both decode image pixels, so a single 6000x6000 image (~36
+# megapixels) materialises ~274MB of RSS, and a handful trivially OOMs the worker.
+# We sum the DECLARED image area (width*height, read WITHOUT decoding via fitz's
+# ``get_image_info``) across the page-capped pages and reject before any decode if
+# it exceeds this budget. ~50 megapixels total ≈ ~380MB decoded RGBA — a generous
+# ceiling for a legitimate scanned/figure-heavy NDA, well below a worker OOM.
+MAX_PDF_IMAGE_MEGAPIXELS = 50.0
 
 # Memory guard for the fitz visual profile. ``page.get_text("dict")`` with the
 # default flags MATERIALIZES every embedded image's decoded bytes into the per-page
@@ -125,6 +134,7 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
     page_count = len(reader.pages)
     if page_count > MAX_PDF_PAGES:
         raise PdfExtractionError(f"The PDF has {page_count} pages, which exceeds the {MAX_PDF_PAGES} page review limit.")
+    _reject_image_decompression_bomb(data, page_count)
     pages_without_text = 0
     pages_with_text = 0
     extracted_character_count = 0
@@ -176,6 +186,50 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
             visual_profile=visual_profile,
         ),
     )
+
+
+def _reject_image_decompression_bomb(data: bytes, page_count: int) -> None:
+    """Reject a PDF whose declared embedded-image area would OOM the worker on decode.
+
+    Uses fitz's ``page.get_image_info()``, which returns each image's stored
+    ``width``/``height`` WITHOUT decoding any pixels, so the check itself is cheap and
+    cannot trigger the very blow-up it guards against. We sum the declared pixel area
+    across the page-capped pages (``MAX_PDF_PAGES``) and raise ``PdfExtractionError``
+    BEFORE any text extraction / visual profiling decodes a single image.
+
+    Degrades SAFELY: if PyMuPDF is unavailable or ``get_image_info`` raises (exotic or
+    old build), we do not block — the downstream per-page guards remain the backstop.
+    """
+
+    try:
+        import fitz
+    except ImportError:
+        return
+
+    document = None
+    try:
+        document = fitz.open(stream=data, filetype="pdf")
+        budget_pixels = MAX_PDF_IMAGE_MEGAPIXELS * 1_000_000
+        total_pixels = 0.0
+        for page_index in range(min(document.page_count, MAX_PDF_PAGES)):
+            for info in document[page_index].get_image_info():
+                width = info.get("width") or 0
+                height = info.get("height") or 0
+                total_pixels += float(width) * float(height)
+            if total_pixels > budget_pixels:
+                raise PdfExtractionError(
+                    "The PDF embeds an image too large to process safely "
+                    f"(declared image area exceeds the {MAX_PDF_IMAGE_MEGAPIXELS:g} megapixel "
+                    "limit; possible decompression bomb)."
+                )
+    except PdfExtractionError:
+        raise
+    except Exception:
+        # Any probing failure degrades safely: do not block a reviewable PDF.
+        return
+    finally:
+        if document is not None:
+            document.close()
 
 
 def _extract_geo_lines(page: Any) -> list[GeoLine]:

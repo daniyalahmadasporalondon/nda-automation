@@ -445,6 +445,39 @@ class PdfTextTests(unittest.TestCase):
 
         self.assertEqual(str(context.exception), PDF_SUPPORT_NOT_INSTALLED_MESSAGE)
 
+    @requires_pypdf
+    @requires_pymupdf
+    def test_rejects_image_decompression_bomb_before_decode(self):
+        # A tiny PDF that declares two 6000x6000 images (72 megapixels total > the
+        # 50MP budget) is a decompression bomb: the file is ~100KB but decoding the
+        # pixels would materialise hundreds of MB of RSS. The guard reads the declared
+        # image dimensions via get_image_info WITHOUT decoding and rejects pre-decode.
+        data = make_pdf_with_images([(6000, 6000), (6000, 6000)])
+        self.assertLess(len(data), 2_000_000)  # genuinely small file -> a real bomb
+
+        with patch("nda_automation.pdf_text._extract_geo_lines") as extract_geo_lines:
+            with self.assertRaisesRegex(PdfExtractionError, "decompression bomb"):
+                extract_pdf_document(data)
+        # The rejection happened BEFORE any per-page text/pixel decode.
+        extract_geo_lines.assert_not_called()
+
+    @requires_pypdf
+    @requires_pymupdf
+    def test_normal_small_image_pdf_still_extracts(self):
+        # A normal small (200x200, 0.04MP) embedded image is well under budget and
+        # must NOT trip the guard; the page text still extracts.
+        data = make_pdf_with_images(
+            [(200, 200)],
+            text="This Agreement shall be governed by the laws of California.",
+        )
+
+        extraction = extract_pdf_document(data)
+
+        self.assertIn(
+            "California",
+            "\n".join(str(p["text"]) for p in extraction.paragraphs),
+        )
+
 
 BODY_LINE_HEIGHT = 14.0
 PARAGRAPH_GAP = 30.0
@@ -2130,6 +2163,33 @@ def _pdf_package_bytes(objects):
             output.write(f"{offset:010d} 00000 n \n".encode("latin-1"))
         output.write(f"trailer << /Root 1 0 R /Size {len(objects) + 1} >>\nstartxref\n{xref_offset}\n%%EOF\n".encode("latin-1"))
         return output.getvalue()
+
+
+def make_pdf_with_images(dimensions, text=None):
+    """Build a tiny single-page PDF embedding one image per (width, height) pair.
+
+    Each image is a solid-colour bitmap, so it FLATE-compresses to almost nothing —
+    the file stays small while the declared image dimensions are large. This is the
+    decompression-bomb shape: tiny on disk, enormous when decoded. Built with fitz so
+    the embedded image carries real declared ``width``/``height`` that the production
+    guard reads back via ``get_image_info`` without decoding.
+    """
+
+    import fitz
+
+    document = fitz.open()
+    page = document.new_page(width=612, height=792)
+    x = 0
+    for width, height in dimensions:
+        pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, width, height))
+        pixmap.clear_with(255)  # solid white -> compresses to a tiny stream
+        page.insert_image(fitz.Rect(x, 0, x + 100, 100), stream=pixmap.tobytes("png"))
+        x += 110
+    if text:
+        page.insert_text((72, 720), text)
+    data = document.tobytes(deflate=True, deflate_images=True, garbage=4)
+    document.close()
+    return data
 
 
 def make_visual_pdf():
