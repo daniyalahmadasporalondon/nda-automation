@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import math
@@ -397,45 +398,54 @@ class PyMuPdfPageRenderer:
             raise PdfPageRendererUnavailable()
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        document = self._fitz.open(str(pdf_path))
-        try:
-            page_count = getattr(document, "page_count", None)
-            if page_count is None:
-                page_count = len(document)
-            page_count = int(page_count)
-            if page_count > MAX_RASTERIZED_PAGES:
-                raise PdfPageTooLargeToRasterize(
-                    f"PDF has {page_count} pages, exceeding the {MAX_RASTERIZED_PAGES}-page rasterization cap."
-                )
-            pages: list[RenderedPdfPageImage] = []
-            for page_index in range(page_count):
-                page = document.load_page(page_index)
-                # Clamp the DPI per page so the pixmap stays within the byte
-                # budget; an attacker-sized MediaBox is rendered at a reduced DPI
-                # rather than blowing up the pixmap, and is rejected outright if
-                # even MIN_PAGE_IMAGE_DPI would not fit.
-                width_pts, height_pts = _page_rect_points(page)
-                effective_dpi = _budgeted_page_dpi(width_pts, height_pts, requested_dpi=dpi)
-                scale = _page_image_scale(effective_dpi)
-                matrix = self._fitz.Matrix(scale, scale)
-                pixmap = page.get_pixmap(matrix=matrix, alpha=False)
-                image_path = output_dir / _page_image_filename(page_index + 1)
-                _write_bytes_atomic(image_path, pixmap.tobytes("png"))
-                pages.append(
-                    RenderedPdfPageImage(
-                        page_number=page_index + 1,
-                        image_path=image_path,
-                        width=int(pixmap.width),
-                        height=int(pixmap.height),
-                        dpi=effective_dpi,
-                        scale=scale,
+        # soffice-produced (DOCX->PDF) PDFs carry a tagged-PDF structure tree that
+        # is frequently malformed (e.g. "No common ancestor in structure tree").
+        # MuPDF walks that tree while opening and rasterizing and prints a
+        # non-fatal "MuPDF error: ..." line to stderr for each defect, which is
+        # harmless (the pixmap still renders byte-identically) but floods the prod
+        # logs. We silence MuPDF's stderr printing only for the duration of the
+        # open+rasterize, then restore it, so genuine MuPDF errors elsewhere still
+        # surface. The rendered image bytes are unaffected by this toggle.
+        with _suppressed_mupdf_errors(self._fitz):
+            document = self._fitz.open(str(pdf_path))
+            try:
+                page_count = getattr(document, "page_count", None)
+                if page_count is None:
+                    page_count = len(document)
+                page_count = int(page_count)
+                if page_count > MAX_RASTERIZED_PAGES:
+                    raise PdfPageTooLargeToRasterize(
+                        f"PDF has {page_count} pages, exceeding the {MAX_RASTERIZED_PAGES}-page rasterization cap."
                     )
-                )
-            return pages
-        finally:
-            close = getattr(document, "close", None)
-            if close is not None:
-                close()
+                pages: list[RenderedPdfPageImage] = []
+                for page_index in range(page_count):
+                    page = document.load_page(page_index)
+                    # Clamp the DPI per page so the pixmap stays within the byte
+                    # budget; an attacker-sized MediaBox is rendered at a reduced
+                    # DPI rather than blowing up the pixmap, and is rejected
+                    # outright if even MIN_PAGE_IMAGE_DPI would not fit.
+                    width_pts, height_pts = _page_rect_points(page)
+                    effective_dpi = _budgeted_page_dpi(width_pts, height_pts, requested_dpi=dpi)
+                    scale = _page_image_scale(effective_dpi)
+                    matrix = self._fitz.Matrix(scale, scale)
+                    pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+                    image_path = output_dir / _page_image_filename(page_index + 1)
+                    _write_bytes_atomic(image_path, pixmap.tobytes("png"))
+                    pages.append(
+                        RenderedPdfPageImage(
+                            page_number=page_index + 1,
+                            image_path=image_path,
+                            width=int(pixmap.width),
+                            height=int(pixmap.height),
+                            dpi=effective_dpi,
+                            scale=scale,
+                        )
+                    )
+                return pages
+            finally:
+                close = getattr(document, "close", None)
+                if close is not None:
+                    close()
 
 
 def render_source_path_to_pdf(
@@ -1536,6 +1546,43 @@ def _load_fitz_module() -> Any | None:
     except Exception:
         return None
     return fitz
+
+
+@contextlib.contextmanager
+def _suppressed_mupdf_errors(fitz_module: Any):
+    """Silence MuPDF's non-fatal stderr error printing for the wrapped scope.
+
+    MuPDF prints lines like ``MuPDF error: format error: No common ancestor in
+    structure tree`` to stderr when it walks the malformed tagged-PDF structure
+    tree that LibreOffice/soffice emits. These are non-fatal (the render still
+    completes) but flood the logs. We toggle ``fitz.TOOLS.mupdf_display_errors``
+    off for the duration and restore the prior value afterwards, so genuine
+    MuPDF errors raised outside this scope still surface.
+
+    Fail-open: if the fitz build lacks the toggle (or it raises), we yield
+    without changing anything rather than break rendering.
+    """
+    tools = getattr(fitz_module, "TOOLS", None)
+    toggle = getattr(tools, "mupdf_display_errors", None)
+    if toggle is None:
+        yield
+        return
+    try:
+        previous = toggle()  # read current state (no-arg getter)
+    except Exception:
+        # Unexpected signature/build; don't risk rendering on a logging tweak.
+        yield
+        return
+    try:
+        toggle(False)
+    except Exception:
+        yield
+        return
+    try:
+        yield
+    finally:
+        with contextlib.suppress(Exception):
+            toggle(previous)
 
 
 def _page_image_filename(page_number: int) -> str:

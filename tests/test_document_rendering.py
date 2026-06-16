@@ -27,6 +27,7 @@ from nda_automation.document_rendering import (
     _budgeted_page_dpi,
     _enforce_render_cache_bound,
     _run_soffice_command,
+    _suppressed_mupdf_errors,
     cache_entry_dir,
     document_render_cache_key,
     purge_render_cache_for_source,
@@ -500,6 +501,85 @@ class PyMuPdfRasterizationBoundsTests(unittest.TestCase):
             manifest = render_pdf_page_image_manifest(rendered, renderer=renderer, dpi=192)
         self.assertEqual(manifest.error_code, "page_too_large_to_rasterize")
         self.assertEqual(manifest.pages, ())
+
+
+class _RecordingMupdfTools:
+    """Mimics fitz.TOOLS.mupdf_display_errors with a settable/gettable flag."""
+
+    def __init__(self) -> None:
+        self.state = True  # MuPDF default: errors displayed
+        self.history: list[bool] = []
+
+    def mupdf_display_errors(self, on=None):  # noqa: ANN001 - mirrors fitz signature
+        if on is None:
+            return self.state
+        self.state = bool(on)
+        self.history.append(self.state)
+        return self.state
+
+
+class _RecordingFitzModule(_FakeFitzModule):
+    """Fake fitz that also exposes a TOOLS object and records the toggle state
+    that was live at pixmap time, so tests can prove the suppression scope."""
+
+    def __init__(self, pages: list[_FakePage]) -> None:
+        super().__init__(pages)
+        self.TOOLS = _RecordingMupdfTools()
+        self.display_during_pixmap: list[bool] = []
+        tools = self.TOOLS
+        observed = self.display_during_pixmap
+        for page in pages:
+            original_get_pixmap = page.get_pixmap
+
+            def get_pixmap(*args, _orig=original_get_pixmap, **kwargs):
+                observed.append(tools.state)
+                return _orig(*args, **kwargs)
+
+            page.get_pixmap = get_pixmap  # type: ignore[method-assign]
+
+
+class MupdfErrorSuppressionTests(unittest.TestCase):
+    def test_mupdf_errors_silenced_during_rasterize_and_restored_after(self):
+        page = _FakePage(612, 792)
+        fitz = _RecordingFitzModule([page])
+        renderer = PyMuPdfPageRenderer(fitz_module=fitz)
+        with tempfile.TemporaryDirectory() as out_name:
+            pages = renderer.render_pdf_to_page_images(Path(out_name), Path(out_name), dpi=288)
+        self.assertEqual(len(pages), 1)
+        # The pixmap was produced while MuPDF error display was OFF.
+        self.assertEqual(fitz.display_during_pixmap, [False])
+        # ...and the prior (default-True) state was restored afterwards.
+        self.assertTrue(fitz.TOOLS.mupdf_display_errors())
+
+    def test_state_restored_even_when_rasterize_raises(self):
+        # Page count over cap raises mid-scope; the toggle must still be restored.
+        pages = [_FakePage(612, 792) for _ in range(MAX_RASTERIZED_PAGES + 1)]
+        fitz = _RecordingFitzModule(pages)
+        renderer = PyMuPdfPageRenderer(fitz_module=fitz)
+        with tempfile.TemporaryDirectory() as out_name:
+            with self.assertRaises(PdfPageTooLargeToRasterize):
+                renderer.render_pdf_to_page_images(Path(out_name), Path(out_name), dpi=288)
+        self.assertTrue(fitz.TOOLS.mupdf_display_errors())
+
+    def test_context_manager_fails_open_without_tools(self):
+        # A fitz build lacking TOOLS must not break rendering.
+        module = _FakeFitzModule([])
+        self.assertFalse(hasattr(module, "TOOLS"))
+        entered = False
+        with _suppressed_mupdf_errors(module):
+            entered = True
+        self.assertTrue(entered)
+
+    def test_context_manager_restores_prior_state(self):
+        tools = _RecordingMupdfTools()
+        tools.state = True
+
+        class _Mod:
+            TOOLS = tools
+
+        with _suppressed_mupdf_errors(_Mod()):
+            self.assertFalse(tools.state)  # OFF inside scope
+        self.assertTrue(tools.state)  # restored to prior value outside
 
 
 class SofficeConcurrencyAndTimeoutTests(unittest.TestCase):
