@@ -16,16 +16,14 @@
 //   renderOverviewRoster(containerEl, { clauses, currentClauseId }, { onClauseClick })
 //
 // Logical clause shape (field names are being finalized by the backend-data
-// teammate; integrator reconciles): { id, name, verdict, reviewed }
+// teammate; integrator reconciles): { id, name, verdict }
 //   * verdict: 'pass' | 'review' | 'fail'   (anything else is treated as 'review')
-//   * reviewed: boolean                      (renders the ov-check when true)
 //
 // Shared class contract (a CSS teammate styles these — we only emit markup):
 //   ov-roster                       wrapper on the container's content
 //   ov-row                          one clause row
 //   ov-row--current                 the row for currentClauseId
 //   ov-pill ov-pill--pass|--review|--fail   the verdict pill
-//   ov-check                        the "reviewed" check (only when reviewed)
 
 const OverviewRoster = (() => {
   // The three verdicts we know how to paint, worst-first. The index doubles as
@@ -82,18 +80,13 @@ const OverviewRoster = (() => {
     const verdict = normalizeVerdict(clause && clause.verdict);
     const id = clause && clause.id != null ? String(clause.id) : "";
     const name = clause && clause.name != null ? clause.name : "";
-    const reviewed = Boolean(clause && clause.reviewed);
 
     const rowClass = current ? "ov-row ov-row--current" : "ov-row";
-    const checkHtml = reviewed
-      ? '<span class="ov-check" aria-label="Reviewed" title="Reviewed">✓</span>'
-      : "";
 
     return (
       `<div class="${rowClass}" role="button" tabindex="0" data-clause-id="${escapeHtml(id)}">` +
       `<span class="ov-row__name">${escapeHtml(name)}</span>` +
       `<span class="ov-pill ov-pill--${verdict}">${escapeHtml(VERDICT_LABEL[verdict])}</span>` +
-      checkHtml +
       `</div>`
     );
   }

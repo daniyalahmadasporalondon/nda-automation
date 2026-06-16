@@ -80,10 +80,10 @@ function hydrate(container) {
 }
 
 const SAMPLE = [
-  { id: "c1", name: "Confidentiality", verdict: "pass", reviewed: true },
-  { id: "c2", name: "Term", verdict: "fail", reviewed: false },
-  { id: "c3", name: "Governing Law", verdict: "review", reviewed: false },
-  { id: "c4", name: "Non-Solicit", verdict: "pass", reviewed: false },
+  { id: "c1", name: "Confidentiality", verdict: "pass" },
+  { id: "c2", name: "Term", verdict: "fail" },
+  { id: "c3", name: "Governing Law", verdict: "review" },
+  { id: "c4", name: "Non-Solicit", verdict: "pass" },
 ];
 
 // --- Sorting: problems-first -------------------------------------------------
@@ -132,10 +132,10 @@ test("rowHtml emits the verdict pill modifier class", () => {
   assert.ok(OverviewRoster.rowHtml({ id: "x", name: "X", verdict: "pass" }).includes("ov-pill--pass"));
 });
 
-test("rowHtml renders ov-check only when reviewed is true", () => {
-  assert.ok(OverviewRoster.rowHtml({ id: "x", name: "X", verdict: "pass", reviewed: true }).includes("ov-check"));
-  assert.ok(!OverviewRoster.rowHtml({ id: "x", name: "X", verdict: "pass", reviewed: false }).includes("ov-check"));
+test("rowHtml never emits ov-check (reviewed tracking is descoped)", () => {
   assert.ok(!OverviewRoster.rowHtml({ id: "x", name: "X", verdict: "pass" }).includes("ov-check"));
+  // A stray `reviewed` field on the data must be ignored, not rendered.
+  assert.ok(!OverviewRoster.rowHtml({ id: "x", name: "X", verdict: "pass", reviewed: true }).includes("ov-check"));
 });
 
 test("rowHtml adds ov-row--current only for the current row", () => {
