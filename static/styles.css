@@ -6792,6 +6792,18 @@ button.active-clause-status:hover {
   padding: 0 12px;
 }
 
+/* The status badge / envelope id / download link in the send-for-signature
+   modal's .docusign-envelope-state are toggled via the [hidden] attribute and
+   only carry content once an envelope exists. Their flex/inline display would
+   beat the UA [hidden] { display:none }, so an empty pill (which reads as a
+   stray circle/bar) would show before any NDA is sent — make hidden
+   authoritative. Same pattern as #draftIntakeSignatureBadge[hidden] above. */
+.docusign-status-badge[hidden],
+.docusign-envelope-id[hidden],
+.docusign-download-signed[hidden] {
+  display: none;
+}
+
 .docusign-status-badge.ready {
   background: var(--green-bg);
   border-color: var(--green-border);
