@@ -18,7 +18,9 @@ aspora's contract desk imports NDAs from manual upload or Gmail, reviews them ag
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [Gmail: one connection, both directions](#gmail-one-connection-both-directions)
-- [Gmail import throttle](#gmail-import-throttle)
+- [Gmail polling toggle (sync\_enabled)](#gmail-polling-toggle-sync_enabled)
+- [Gmail import throttle (import\_limit)](#gmail-import-throttle-import_limit)
+- [Gmail processed-message ledger](#gmail-processed-message-ledger)
 - [Deployment](#deployment)
 - [Security & data](#security--data)
 - [Testing](#testing)
@@ -174,7 +176,7 @@ Common environment variables:
 | `OPENROUTER_API_KEY` | Server-side OpenRouter key for review + Gmail attachment selection. |
 | `NDA_AI_PROVIDER` / `NDA_AI_MODEL` | `openrouter` / `x-ai/grok-4.3`. |
 | `NDA_AI_VERIFIER` / `NDA_AI_VERIFIER_MODEL` | Optional independent adversarial verifier; default model is `deepseek/deepseek-v4-pro` and it uses the same OpenRouter key. |
-| `NDA_GMAIL_IMPORT_LIMIT` | Max inbound messages processed per poll cycle (default `20`). See [Gmail import throttle](#gmail-import-throttle). |
+| `NDA_GMAIL_IMPORT_LIMIT` | Env-level default for the per-poll new-message cap (default `20`, hard ceiling `40`). The Admin → Gmail panel exposes an `import_limit` setting that overrides this at runtime without a redeploy. See [Gmail import throttle (import\_limit)](#gmail-import-throttle-import_limit). |
 | `NDA_GMAIL_TRIAGE_MODEL` | Gmail attachment-selector model (picks the NDA attachment, e.g. `x-ai/grok-4.3`). |
 | `NDA_GMAIL_INTAKE_MODEL` | Gmail NDA-intake classifier model; default `deepseek/deepseek-v4-flash`. Optional and reuses `OPENROUTER_API_KEY`; with no key it falls back to the deterministic intake gate. |
 | `NDA_ACTIVE_REVIEW_ENGINE` | Review runtime pin; inbound review resolves to `ai_first`. Deterministic remains internal-only for explicit generation `force_engine` paths. |
@@ -202,19 +204,68 @@ Inbound import and outbound send share a **single Gmail login**. One **Connect G
 
 For local shared-token development you can still point at token files (`NDA_GMAIL_INBOUND_TOKEN_PATH` / `_OUTBOUND_TOKEN_PATH`, or ignored `data/gmail/{inbound,outbound}-token.json`). For hosted deployments, leave those unset so one user's token never becomes a shared mailbox fallback. When no user is connected, the scheduled inbound sync polls a server/env token **only** if `NDA_GMAIL_SERVER_INBOUND` is explicitly enabled — so **Disconnect Gmail** (which removes the last user's token) actually stops the scheduled inbound sync rather than silently falling back to a leftover shared token.
 
-## Gmail import throttle
+## Gmail polling toggle (sync_enabled)
 
-`NDA_GMAIL_IMPORT_LIMIT` (default `20`) caps the number of **new** inbound messages the scheduler hands to the heavy import path per poll cycle. "Heavy import" means: Pro-model attachment selection, Flash intake classification, PyMuPDF visual profiling, and attachment download + text extraction — the work that dominates the 2 GB Render worker's peak RSS.
+> **Note to reconciler:** `sync_enabled` is documented here from the feature spec. The backend setting name and the Admin → Gmail panel UI for it live in `feature/gmail-sync-controls-backend` and `feature/gmail-sync-controls-frontend`, which are not yet committed. Reconcile the setting name, default, and API field against the code before shipping this doc.
+
+The Admin → Gmail panel exposes a **polling toggle** (`sync_enabled`) that pauses or resumes the scheduled inbound sync without disconnecting the Gmail account.
+
+**Why this matters.** The old way to stop polling was to click **Disconnect Gmail**, which also revoked the OAuth token. Reconnecting required a fresh OAuth consent and triggered a catch-up burst at the next poll. The `sync_enabled` toggle keeps the token intact and simply stops the scheduler from running the Gmail API calls — no re-consent, no burst.
+
+**How the scheduler obeys it.** On every tick the Gmail sync scheduler reads the persisted Gmail settings before deciding whether to run. When `sync_enabled` is `false`, the scheduler skips the poll entirely and sleeps until the next tick. The current tick's scheduled interval and the sync-frequency setting are unchanged; the toggle only gates whether actual Gmail API work happens.
+
+**Operator workflow — pause and resume:**
+
+1. Open **Admin → Gmail** (top-right admin menu → Email).
+2. Find the **Polling** control. Click **Pause** (or the toggle) to set `sync_enabled = false`. The panel reflects the paused state immediately and no further scheduled polls execute.
+3. To resume, click **Resume** (or the toggle again). The scheduler picks up on the next scheduled tick; no sync runs retroactively for the paused window.
+
+**Emergency stop vs. polling pause.** The global kill-switch `NDA_INBOUND_AI_REVIEW_ENABLED=false` (env var, requires redeploy) disables the AI review worker but does not stop the Gmail poll from importing messages. `sync_enabled = false` stops the poll itself. For a complete stop during an incident, set both.
+
+**Relationship to Disconnect.** Disconnecting Gmail (`/api/gmail/disconnect`) removes the OAuth token and also resets `inbound_enabled` / `outbound_enabled` to their defaults. The `sync_enabled` toggle does not touch the token; it is the right tool for operational pauses (e.g. maintenance window, cost control) where you intend to resume polling soon.
+
+## Gmail import throttle (import_limit)
+
+> **Note to reconciler:** The admin-UI `import_limit` field (runtime-settable from the Gmail panel without a redeploy) is documented here from the feature spec. That field lives in `feature/gmail-sync-controls-backend` / `-frontend`, which are not yet committed. Reconcile the `import_limit` setting name, valid range, and API field name against the code. The env-default and clamp behaviour described below are already live in the base branch.
+
+`NDA_GMAIL_IMPORT_LIMIT` (default `20`, hard ceiling `40`) sets the env-level default for the number of **new** inbound messages the scheduler hands to the heavy import path per poll cycle. "Heavy import" means: Pro-model attachment selection, Flash intake classification, PyMuPDF visual profiling, and attachment download + text extraction — the work that dominates the 2 GB Render worker's peak RSS.
+
+**Runtime override via the Admin panel.** The Admin → Gmail panel exposes an `import_limit` field (integer, 1–40) that operators can adjust at runtime without a redeploy. The running server reads this value from the persisted Gmail settings on each poll. The env var `NDA_GMAIL_IMPORT_LIMIT` sets the initial default; the Admin field then overrides it. Both paths enforce the same hard ceiling of `40` to keep per-poll Gmail API quota consumption within the ~6,000 quota-units-per-minute budget.
+
+**Why the ceiling is 40.** Each `messages.get()` call costs ~5 Gmail quota units. A per-poll new-work batch of 40 messages drives at most ~200 units against the per-user per-minute budget of ~6,000 — leaving headroom for list probes and retries. Values above 40 are silently clamped; setting `NDA_GMAIL_IMPORT_LIMIT=60` or submitting `import_limit: 60` via the Admin API both result in an effective limit of `40`.
 
 **Why it matters on (re)connect.** Gmail's inbound query has no already-imported exclusion and applies no label or archive, so the first poll after connecting (or reconnecting) would otherwise attempt to catch up the full 90-day backlog in one burst — a one-time spike that can OOM the worker. `NDA_GMAIL_IMPORT_LIMIT` keeps each burst small.
 
-**How catch-up still makes progress.** The per-poll dedup index (`message_attachments_all_already_imported`) persists across polls and short-circuits already-imported messages **before** any download or extraction. The scheduler pages through the inbox interleaving cheap dedup probes with heavy imports: already-imported messages are skipped without counting against the limit, so each subsequent poll advances to the next un-imported batch until the backlog is drained.
+**How catch-up still makes progress.** The [processed-message ledger](#gmail-processed-message-ledger) records each imported message's `internalDate` as a persistent drain cursor. Already-imported messages are skipped without counting against the limit, so each subsequent poll advances to the next un-imported (older) batch until the backlog is drained.
 
 ```
 NDA_GMAIL_IMPORT_LIMIT=20   # default: gentle catch-up, ~20 new NDAs per poll cycle
+                             # hard ceiling 40; raise via Admin → Gmail → Import limit
 ```
 
-Raise to drain the backlog faster at the cost of a larger per-poll burst; the value is clamped to `>= 1`. The `.env.example` documents the default and override comments for operators.
+## Gmail processed-message ledger
+
+The scheduler maintains a **persistent per-owner drain cursor** — a low-water-mark on Gmail's server-assigned `internalDate` (epoch milliseconds) for the oldest message the catch-up scan has reached. It is stored in `$NDA_DATA_DIR/gmail_inbound_cursors.json`.
+
+**What problem this solves.** Gmail's inbound query (`in:inbox`) has no server-side exclusion for already-imported messages (the integration holds only the `gmail.readonly` scope, so it cannot apply a label or archive). The same newest messages re-surface on every poll. Without the cursor, once the already-imported prefix exceeded the scan window the scheduler would exhaust its entire per-poll budget inside already-imported messages, find zero new work, and stall permanently — silently dropping the remainder of the backlog until messages aged out at 90 days.
+
+**How the cursor works.** Each poll runs two bounded passes sharing a single `import_limit` new-work budget:
+
+1. **Head pass** — a small window over the base query (newest-first) to ingest mail that arrived since the last poll.
+2. **Drain pass** — the same base query date-bounded `before:<cursor>` so the already-drained newest prefix never re-surfaces. The cursor descends to the oldest message examined, and the next poll resumes right below it.
+
+Once the backlog is fully drained, the cursor resets and future polls run head-only. Forward progress is guaranteed: each drain poll advances the cursor to an older message or exhausts the backlog.
+
+**Dedup guard before AI triage.** Independently of the drain cursor, each candidate message is checked against a per-import dedup index (`message_attachments_all_already_imported`) **before** any AI triage or intake calls. Messages already present in the Repository are skipped without triggering the Pro attachment-selector, the Flash intake classifier, or any PDF extraction. This prevents re-classification cost even if the cursor resets or a message re-surfaces through a different query path.
+
+**Telemetry counters.** The following counters are exposed via the observability endpoint and the telemetry health summary:
+
+| Counter | What it counts |
+|---|---|
+| `inbound_ai_review_skipped_already_reviewed` | Inbound AI review jobs skipped because the matter already has an AI review result (avoids redundant re-reviews). |
+| `inbound_ai_review_scheduled` | (*Planned — not yet in base branch; will be emitted by `feature/gmail-processed-ledger`.*) Messages that passed the dedup check and were handed to the AI review queue. |
+
+**Durability.** `gmail_inbound_cursors.json` is stored under `NDA_DATA_DIR`, which on Render Standard is a mounted persistent disk (`/var/data`). On ephemeral storage the cursor resets on each restart, but the dedup index (`matters.json`) also persists there, so already-imported messages are still skipped via the dedup guard even without a cursor.
 
 ## DocuSign: send for signature (real e-signature)
 
