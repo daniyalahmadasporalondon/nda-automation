@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover - non-POSIX fallback
 
 from . import matter_store
 from .durable_io import fsync_parent_directory
+from .phase_observability import RENDER_PHASE_EVENT, PhaseTimer
 
 DOCUMENT_RENDER_CACHE_VERSION = "document-rendering:v1"
 DOCUMENT_RENDER_METADATA_VERSION = 1
@@ -470,20 +471,27 @@ def render_source_path_result(
     include_page_images: bool = True,
     dpi: int = DEFAULT_PAGE_IMAGE_DPI,
 ) -> DocumentRenderResult:
-    rendered = render_source_path_to_pdf(
-        source_path,
-        content_type=content_type,
-        cache_dir=cache_dir,
-        converter=converter,
-        timeout_seconds=timeout_seconds,
-        owner_user_id=owner_user_id,
-    )
-    return document_render_result(
-        rendered,
-        include_page_images=include_page_images,
-        page_renderer=page_renderer,
-        dpi=dpi,
-    )
+    # Per-job render phase timing (convert vs. rasterize vs. total). Best-effort and
+    # fail-open — see render_source_document_result for the rationale.
+    timer = PhaseTimer(RENDER_PHASE_EVENT)
+    with timer.phase("convert"):
+        rendered = render_source_path_to_pdf(
+            source_path,
+            content_type=content_type,
+            cache_dir=cache_dir,
+            converter=converter,
+            timeout_seconds=timeout_seconds,
+            owner_user_id=owner_user_id,
+        )
+    with timer.phase("rasterize"):
+        result = document_render_result(
+            rendered,
+            include_page_images=include_page_images,
+            page_renderer=page_renderer,
+            dpi=dpi,
+        )
+    timer.total()
+    return result
 
 
 def render_source_document_result(
@@ -499,21 +507,31 @@ def render_source_document_result(
     include_page_images: bool = True,
     dpi: int = DEFAULT_PAGE_IMAGE_DPI,
 ) -> DocumentRenderResult:
-    rendered = render_source_document_to_pdf(
-        source_bytes,
-        source_filename=source_filename,
-        content_type=content_type,
-        cache_dir=cache_dir,
-        converter=converter,
-        timeout_seconds=timeout_seconds,
-        owner_user_id=owner_user_id,
-    )
-    return document_render_result(
-        rendered,
-        include_page_images=include_page_images,
-        page_renderer=page_renderer,
-        dpi=dpi,
-    )
+    # Per-job phase/wait-time observability for the (often slow) render path: time
+    # the DOCX->PDF convert (soffice) and the page rasterize separately, plus the
+    # total, with a correlating job id. Best-effort and fail-open — never changes
+    # behavior or raises. A cache hit makes a phase near-instant, which is itself
+    # the useful signal (the slow time was elsewhere or already paid).
+    timer = PhaseTimer(RENDER_PHASE_EVENT)
+    with timer.phase("convert"):
+        rendered = render_source_document_to_pdf(
+            source_bytes,
+            source_filename=source_filename,
+            content_type=content_type,
+            cache_dir=cache_dir,
+            converter=converter,
+            timeout_seconds=timeout_seconds,
+            owner_user_id=owner_user_id,
+        )
+    with timer.phase("rasterize"):
+        result = document_render_result(
+            rendered,
+            include_page_images=include_page_images,
+            page_renderer=page_renderer,
+            dpi=dpi,
+        )
+    timer.total()
+    return result
 
 
 def peek_rendered_source_document(

@@ -33,6 +33,7 @@ from .ai_review import (
 )
 from .checker import load_playbook, validate_playbook
 from .openrouter_usage import record_openrouter_usage
+from .phase_observability import REVIEW_PHASE_EVENT, PhaseTimer
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
 from .review_state import REVIEW_STATE_CHECK, REVIEW_STATE_REVIEW
 
@@ -232,6 +233,11 @@ def assess_nda_with_ai(
     playbook: Mapping[str, Any] | None = None,
     checked_at: str | None = None,
 ) -> dict[str, Any]:
+    # Per-job phase/wait-time observability for the (often slow) AI review path:
+    # one record per model call so a slow review's logs name which step ate the
+    # time. Best-effort and fail-open — never changes behavior or raises.
+    timer = PhaseTimer(REVIEW_PHASE_EVENT)
+
     settings = _ai_review_settings()
     configured_reviewer = reviewer
     if configured_reviewer is None:
@@ -261,7 +267,8 @@ def assess_nda_with_ai(
         clause_localization=clause_localization,
     )
     try:
-        raw_response = configured_reviewer(packet)
+        with timer.phase("assessor"):
+            raw_response = configured_reviewer(packet)
     except Exception as error:
         raise AIAssessorError(f"AI-first assessment failed: {error}") from error
 
@@ -279,6 +286,7 @@ def assess_nda_with_ai(
         checked_at=checked_at,
         playbook=review_playbook,
         contract_structure=contract_structure,
+        phase_timer=timer,
     )
     document_info = packet.get("document", {}) if isinstance(packet.get("document"), Mapping) else {}
     truncation = _apply_truncation_guard(result, document_info)
@@ -300,6 +308,7 @@ def assess_nda_with_ai(
     }
     result["ai_first_review"] = {**dict(result.get("ai_first_review", {})), **metadata}
     result["ai_review"] = {**dict(result.get("ai_review", {})), **metadata}
+    timer.total()
     return result
 
 
