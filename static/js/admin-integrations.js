@@ -70,6 +70,12 @@ const AdminIntegrationsView = (() => {
   ];
   const DEFAULT_PARSED_TERMS = DEFAULT_SEARCH_TERMS.join(", ");
   const DEFAULT_FREQUENCY = "10_minutes";
+  // Mirror the backend clamp (gmail_integration._MAX_GMAIL_IMPORT_LIMIT_CLAMP).
+  // Keeping these in lockstep means the UI never offers (or posts) a value the
+  // server would silently cap, so the saved value always matches what was typed.
+  const MIN_IMPORT_LIMIT = 1;
+  const MAX_IMPORT_LIMIT = 40;
+  const DEFAULT_IMPORT_LIMIT = 20;
   const FREQUENCY_LABELS = {
     always_on: "Always on - every 1 minute",
     "10_minutes": "Every 10 minutes",
@@ -91,6 +97,9 @@ const AdminIntegrationsView = (() => {
     gmailSearchForm,
     gmailSearchTermsInput,
     gmailSearchSaveButton,
+    gmailImportLimitForm,
+    gmailImportLimitInput,
+    gmailImportLimitSaveButton,
     gmailIntakeForm,
     gmailIntakeInput,
     gmailIntakeSaveButton,
@@ -106,6 +115,18 @@ const AdminIntegrationsView = (() => {
       event.preventDefault();
       updateGmailSearchTerms();
     });
+    // The import-limit save lives in a form so Enter submits; also wire the
+    // button directly when it is rendered outside a <form>.
+    gmailImportLimitForm?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      updateGmailImportLimit();
+    });
+    if (gmailImportLimitSaveButton && !gmailImportLimitForm) {
+      gmailImportLimitSaveButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        updateGmailImportLimit();
+      });
+    }
     gmailIntakeForm?.addEventListener("submit", (event) => {
       event.preventDefault();
       updateGmailIntakePlaybook();
@@ -134,39 +155,66 @@ const AdminIntegrationsView = (() => {
       }
     }
 
+    // Posts a Gmail settings change, checking response.ok BEFORE parsing so a
+    // 401/500 (or a non-JSON proxy error page) surfaces the real status instead
+    // of a generic failure or a raw JSON SyntaxError. Returns the parsed status
+    // payload on success; throws a descriptive Error otherwise.
+    async function postGmailSettings(body, fallbackMessage) {
+      const response = await fetch("/api/gmail/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        // The error body may be JSON ({error}) or an HTML/blank proxy page;
+        // never let a failed parse mask the underlying HTTP status.
+        let payload = null;
+        try {
+          payload = await response.json();
+        } catch {
+          payload = null;
+        }
+        throw reviewErrorFromPayload(
+          payload,
+          `${fallbackMessage} (HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""})`,
+        );
+      }
+      // A 2xx with a malformed/blank body is still a save we cannot trust the
+      // status from; treat it as an error rather than silently wiping state.
+      try {
+        return await response.json();
+      } catch {
+        throw new Error(`${fallbackMessage} (unreadable server response)`);
+      }
+    }
+
     async function updateGmailToggle() {
       const status = state.gmailStatus || {};
-      // The single toggle IS the whole Gmail control. For a signed-in user's
-      // OAuth connection: On launches the Google connect flow, Off disconnects
-      // (removes the token). A fresh connect lands enabled, so there is nothing
-      // else to flip.
+      // The toggle now PAUSES/RESUMES Gmail polling -- it no longer disconnects.
+      // Disconnecting (removing the OAuth token) stays available via the per-role
+      // controls in the connection setup panel and the account menu, so an
+      // accidental tap on this switch can never drop the connection.
+      //
+      // For a signed-in user who has not connected Gmail yet there is no polling
+      // to pause, so the switch still hands off to the Google consent screen to
+      // create the connection in the first place.
       if (status.user_scoped === true) {
         const connected = isUserConnected(status.inbound) || isUserConnected(status.outbound);
-        if (connected) {
-          await disconnectGmailRole("all", gmailToggle);
+        if (!connected) {
+          // Hand off to the Google consent screen; the callback returns the page
+          // connected, so the toggle comes back On.
+          const connectUrl = status.connect_url || "/auth/gmail/start";
+          window.location.href = withNext(connectUrl);
           return;
         }
-        // Hand off to the Google consent screen; the callback returns the page
-        // connected + enabled, so the toggle comes back On.
-        const connectUrl = status.connect_url || "/auth/gmail/start";
-        window.location.href = withNext(connectUrl);
-        return;
       }
-      // Env / shared-token mode (no OAuth flow): fall back to pausing/resuming
-      // both role flags together.
-      const inboundOn = status.inbound?.enabled !== false;
-      const outboundOn = status.outbound?.enabled !== false;
-      const nextEnabled = !(inboundOn && outboundOn);
+      // Connected (or env / shared-token mode): flip the polling switch. Off
+      // pauses the scheduled poll, On resumes it -- the connection is untouched.
+      const nextEnabled = status.settings?.sync_enabled === false;
       setToggleDisabled(true);
       setOverall("Saving", "pending");
       try {
-        const response = await fetch("/api/gmail/settings", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ inbound_enabled: nextEnabled, outbound_enabled: nextEnabled }),
-        });
-        const payload = await response.json();
-        if (!response.ok) throw reviewErrorFromPayload(payload, "Gmail setting could not save");
+        const payload = await postGmailSettings({ sync_enabled: nextEnabled }, "Gmail setting could not save");
         state.gmailStatus = payload.gmail || state.gmailStatus || {};
         await load();
       } catch (error) {
@@ -174,6 +222,31 @@ const AdminIntegrationsView = (() => {
         renderToggleControls(state.gmailStatus || {});
       } finally {
         setToggleDisabled(false);
+      }
+    }
+
+    async function updateGmailImportLimit() {
+      const limit = parseImportLimit(gmailImportLimitInput?.value);
+      if (limit === null) {
+        setOverall("Add limit", "blocked");
+        setFact("import-limit-copy", `Enter a whole number between ${MIN_IMPORT_LIMIT} and ${MAX_IMPORT_LIMIT}.`);
+        return;
+      }
+      setImportLimitDisabled(true);
+      setOverall("Saving", "pending");
+      try {
+        const payload = await postGmailSettings({ import_limit: limit }, "Gmail import limit could not save");
+        state.gmailStatus = payload.gmail || state.gmailStatus || {};
+        await load();
+      } catch (error) {
+        setOverall(error.message || "Save failed", "blocked");
+        // Restore the input to the last-known-good value first, then surface the
+        // error inline so the message is not immediately overwritten by the
+        // re-render's "N messages per scheduled poll." copy.
+        renderImportLimit(state.gmailStatus || {});
+        setFact("import-limit-copy", error.message || "Gmail import limit could not save.");
+      } finally {
+        setImportLimitDisabled(false);
       }
     }
 
@@ -291,10 +364,14 @@ const AdminIntegrationsView = (() => {
       state.gmailStatus = status;
       const inbound = status.inbound || {};
       const outbound = status.outbound || {};
-      const paused = inbound.enabled === false || outbound.enabled === false;
+      // Polling paused (sync_enabled === false) reads as Paused in the header,
+      // as do the legacy per-role enabled flags.
+      const pollingPaused = status.settings?.sync_enabled === false;
+      const paused = pollingPaused || inbound.enabled === false || outbound.enabled === false;
       const ready = Boolean(inbound.ready && outbound.ready);
       setOverall(paused ? "Paused" : ready ? "Connected" : "Needs setup", paused ? "pending" : ready ? "ready" : "blocked");
       renderToggleControls(status);
+      renderImportLimit(status);
       renderFrequencyControl(status.settings?.sync_frequency || DEFAULT_FREQUENCY);
       renderSearchTerms(status);
       renderIntakePlaybook(status);
@@ -448,6 +525,7 @@ const AdminIntegrationsView = (() => {
       renderConnectionSetup(state.gmailStatus || {});
       renderSyncHistory(syncStatus(state.gmailStatus || {}).sync_history || []);
       renderToggleControls(state.gmailStatus || {});
+      renderImportLimit(state.gmailStatus || {});
       renderFrequencyControl(state.gmailStatus?.settings?.sync_frequency || DEFAULT_FREQUENCY);
       renderSearchTerms(state.gmailStatus || {});
     }
@@ -468,15 +546,18 @@ const AdminIntegrationsView = (() => {
     function renderToggleControls(status) {
       const inbound = status.inbound || {};
       const outbound = status.outbound || {};
-      // For a signed-in user the toggle reflects the connection itself (On =
-      // connected). In env/shared-token mode it reflects the enabled flags.
-      const on = status.user_scoped === true
-        ? (isUserConnected(inbound) || isUserConnected(outbound))
-        : (inbound.enabled !== false && outbound.enabled !== false);
+      // The toggle now reflects whether POLLING is on. A signed-in user who has
+      // not connected Gmail yet has no polling to show, so the switch reads Off
+      // (its tap starts the connect flow); once connected -- and in env/shared-
+      // token mode -- the switch follows settings.sync_enabled.
+      const needsConnect = status.user_scoped === true
+        && !(isUserConnected(inbound) || isUserConnected(outbound));
+      const pollingOn = status.settings?.sync_enabled !== false;
       const ready = inbound.ready === true && outbound.ready === true;
+      const on = needsConnect ? false : pollingOn;
       renderToggle(gmailToggle, on);
-      renderToggleIntent(status, on, ready);
-      setFact("enabled-copy", on ? "On" : "Off");
+      renderToggleIntent(status, { on, needsConnect, ready });
+      setFact("enabled-copy", needsConnect ? "Not connected" : on ? "Polling on" : "Polling off");
     }
 
     function renderToggle(button, enabled) {
@@ -486,17 +567,21 @@ const AdminIntegrationsView = (() => {
       button.classList.toggle("off", !enabled);
     }
 
-    function renderToggleIntent(status, enabled, ready) {
+    function renderToggleIntent(status, { on, needsConnect, ready }) {
       if (!gmailToggle) return;
+      // A not-yet-connected user gets the connect affordance. Otherwise the
+      // switch pauses or resumes polling (the connection is never touched here);
+      // when polling is nominally on but the mailboxes are not wired up yet, say
+      // so rather than offering to "pause" a sync that cannot run.
       let label;
-      if (status.user_scoped === true) {
-        label = enabled ? "Disconnect Gmail" : gmailToggleLabel(status);
-      } else if (enabled && ready) {
-        label = "Pause Gmail sync and send";
-      } else if (enabled) {
+      if (needsConnect) {
+        label = gmailToggleLabel(status);
+      } else if (on && !ready) {
         label = "Gmail enabled; setup required";
+      } else if (on) {
+        label = "Pause Gmail polling";
       } else {
-        label = "Resume Gmail sync and send";
+        label = "Resume Gmail polling";
       }
       gmailToggle.setAttribute("aria-label", label);
       gmailToggle.title = label;
@@ -504,6 +589,17 @@ const AdminIntegrationsView = (() => {
 
     function setToggleDisabled(disabled) {
       if (gmailToggle) gmailToggle.disabled = disabled;
+    }
+
+    function renderImportLimit(status) {
+      const limit = importLimitFromStatus(status);
+      if (gmailImportLimitInput) gmailImportLimitInput.value = String(limit);
+      setFact("import-limit-copy", `${limit} messages per scheduled poll.`);
+    }
+
+    function setImportLimitDisabled(disabled) {
+      if (gmailImportLimitInput) gmailImportLimitInput.disabled = disabled;
+      if (gmailImportLimitSaveButton) gmailImportLimitSaveButton.disabled = disabled;
     }
 
     function renderFrequencyControl(syncFrequency) {
@@ -608,6 +704,25 @@ const AdminIntegrationsView = (() => {
         seen.add(key);
       });
     return terms.slice(0, 60);
+  }
+
+  function importLimitFromStatus(status) {
+    const raw = status?.settings?.import_limit;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value < MIN_IMPORT_LIMIT) return DEFAULT_IMPORT_LIMIT;
+    // Clamp the displayed value into the supported band so a stale or
+    // over-the-cap stored value never renders something the input cannot hold.
+    return Math.min(Math.floor(value), MAX_IMPORT_LIMIT);
+  }
+
+  function parseImportLimit(value) {
+    // Reject blanks, decimals, and non-numeric input; clamp the top end to the
+    // backend cap so the POST never carries a value the server would reduce.
+    const trimmed = String(value == null ? "" : value).trim();
+    if (!/^\d+$/.test(trimmed)) return null;
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed) || parsed < MIN_IMPORT_LIMIT) return null;
+    return Math.min(parsed, MAX_IMPORT_LIMIT);
   }
 
   function gmailConnectionState(role, account, token, status) {
@@ -752,9 +867,15 @@ const AdminIntegrationsView = (() => {
     });
   }
 
-  return { createController };
+  return { createController, importLimitFromStatus, parseImportLimit, MAX_IMPORT_LIMIT, MIN_IMPORT_LIMIT };
 })();
 
 function createAdminIntegrationsController(options) {
   return AdminIntegrationsView.createController(options);
+}
+
+// Node test-harness export (no-op in the browser): lets the FE unit test drive
+// the controller and exercise the pure import-limit helpers without a real DOM.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { AdminIntegrationsView, createAdminIntegrationsController };
 }

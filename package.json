@@ -6,7 +6,8 @@
     "test:frontend:utils": "node tests/frontend/utility-modules.mjs",
     "test:frontend:corpus": "node tests/frontend/corpus-model.cjs",
     "test:frontend:counterparty": "node tests/frontend/counterparty-confirmation.cjs",
-    "test:frontend:docusign": "node tests/frontend/docusign-model.mjs"
+    "test:frontend:docusign": "node tests/frontend/docusign-model.mjs",
+    "test:frontend:admin": "node tests/frontend/admin-integrations.cjs"
   },
   "devDependencies": {
     "playwright": "^1.52.0",

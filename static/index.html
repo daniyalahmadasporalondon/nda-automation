@@ -1498,14 +1498,25 @@
                   <div class="integration-toggle-grid" id="adminGmailToggles">
                     <div class="integration-toggle-row">
                       <div>
-                        <strong>Gmail</strong>
+                        <strong>Gmail polling</strong>
                         <span data-admin-gmail="enabled-copy">Checking</span>
                       </div>
-                      <button class="integration-switch" id="adminGmailEnabledToggle" type="button" role="switch" aria-checked="false" aria-label="Enable Gmail inbound and outbound">
+                      <button class="integration-switch" id="adminGmailEnabledToggle" type="button" role="switch" aria-checked="false" aria-label="Pause Gmail polling">
                         <span></span>
                       </button>
                     </div>
                   </div>
+
+                  <section class="integration-subsection">
+                    <h3>Import limit per poll</h3>
+                    <form class="integration-search-form" id="adminGmailImportLimitForm">
+                      <input id="adminGmailImportLimitInput" type="number" min="1" max="40" step="1" inputmode="numeric" aria-label="Gmail import limit per poll" />
+                      <div class="integration-search-actions">
+                        <p data-admin-gmail="import-limit-copy">Checking import limit</p>
+                        <button class="secondary" id="adminGmailImportLimitSaveButton" type="submit">Save limit</button>
+                      </div>
+                    </form>
+                  </section>
 
                   <section class="integration-subsection">
                     <h3>Sync frequency</h3>
@@ -2140,7 +2151,7 @@
     <script src="/static/js/auth-session.js?v=20260615h"></script>
     <script src="/static/js/admin-ai.js"></script>
     <script src="/static/js/admin-health.js?v=20260607a"></script>
-    <script src="/static/js/admin-integrations.js?v=20260615q"></script>
+    <script src="/static/js/admin-integrations.js?v=20260616gsc1"></script>
     <script src="/static/js/admin-drive.js?v=20260615j"></script>
     <script src="/static/js/admin-personalisation.js?v=20260611a"></script>
     <script src="/static/js/admin-docusign.js?v=20260615ds1"></script>
@@ -2160,6 +2171,6 @@
     <script src="/static/js/dashboard-search.js?v=20260614a"></script>
     <script src="/static/js/notifications.js?v=20260615n"></script>
     <script src="/static/js/generator-editor.js?v=20260616dd1"></script>
-    <script src="/static/app.js?v=20260616gs3"></script>
+    <script src="/static/app.js?v=20260616gsc1"></script>
   </body>
 </html>
