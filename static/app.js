@@ -53,6 +53,7 @@ const studioResultMark = document.querySelector("#studioResultMark") || {};
 const studioResultMeta = document.querySelector("#studioResultMeta") || {};
 const studioDraftMeta = document.querySelector("#studioDraftMeta");
 const studioRefreshReviewButton = document.querySelector("#studioRefreshReviewButton");
+const studioReviewStaleIndicator = document.querySelector("#studioReviewStaleIndicator");
 const tabButtons = document.querySelectorAll("[data-tab]");
 const views = document.querySelectorAll("[data-view]");
 const adminWorkspaceTabs = new Set(["playbook", "admin", "guide"]);

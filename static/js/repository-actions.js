@@ -141,7 +141,11 @@ const RepositoryActions = (() => {
         prepareMatterReviewLoad(selectedReviewMatter);
         closePanel();
       }
-      const reviewMatter = await loadMatterReview(selectedReviewMatter.id, { refresh: true });
+      // Opening a matter must NOT run the AI review. Fetch the stored review only
+      // (the backend returns it plus a `review_may_be_stale` flag without invoking
+      // the model). The AI review is run exclusively by the explicit "Refresh with
+      // AI" button via loadMatterReview(..., { refresh: true }).
+      const reviewMatter = await loadMatterReview(selectedReviewMatter.id);
       if (!reviewMatter) {
         if (typeof showMatterReviewLoadError === "function") {
           showMatterReviewLoadError("Matter review details could not load.");

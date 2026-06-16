@@ -3338,6 +3338,26 @@ h3 {
   font-weight: 600;
 }
 
+.studio-review-stale-indicator {
+  align-items: center;
+  color: var(--amber-ink);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 12px;
+  gap: 4px;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
+.studio-review-stale-indicator::before {
+  background: var(--amber);
+  border-radius: 50%;
+  content: "";
+  display: inline-block;
+  height: 6px;
+  width: 6px;
+}
+
 .studio-refresh-review {
   background: #fff;
   border: 1px solid var(--amber-border);

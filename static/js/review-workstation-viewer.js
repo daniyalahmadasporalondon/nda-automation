@@ -324,16 +324,35 @@ function syncViewerParagraphEdit(editable) {
   updateManualRedlinePreview(editable, paragraph);
   markRedlineDraftDirty();
   markSourceEdited("Edited in viewer", { preserveSourceDocument: true });
+  // Cheap, offline clause DETECTION may run automatically (deterministic, no model).
   scheduleViewerReviewRefresh("Document edited");
-  scheduleClauseReassessForParagraph(paragraphId);
+  // The expensive per-clause AI reassess must NOT auto-fire on every keystroke.
+  // AI review is gated behind the explicit "Refresh with AI" action. A viewer edit
+  // marks the review as possibly stale instead, so the indicator + button surface.
+  markReviewMayBeStaleFromEdit();
   updateExportButtonState();
   if (droppedInlineFormat) {
     setFileMeta("Inline formatting on this paragraph was cleared by the text edit");
   }
 }
 
+// A viewer edit can invalidate the stored AI review, but we no longer auto-run
+// the model. Flag the loaded matter as possibly stale so the "Review may be
+// stale" indicator + "Refresh with AI" button appear; the operator triggers the
+// (expensive) AI reassess explicitly. Only meaningful for a saved matter.
+function markReviewMayBeStaleFromEdit() {
+  if (!state.selectedMatter?.id) return;
+  if (state.selectedMatter.review_may_be_stale) return;
+  state.selectedMatter.review_may_be_stale = true;
+  if (typeof renderReviewRefreshNotice === "function") {
+    renderReviewRefreshNotice(state.selectedMatter.review_refresh);
+  }
+}
+
 // Schedule a per-clause re-assessment for every clause that cites the edited
 // paragraph.  Only fires when there is a saved matter to reassess against.
+// NOTE: this is the expensive AI path and is now invoked ONLY from explicit
+// actions, never automatically on edit (see markReviewMayBeStaleFromEdit).
 function scheduleClauseReassessForParagraph(paragraphId) {
   if (!paragraphId || !state.selectedMatter?.id || typeof scheduleClauseReassess !== "function") return;
   const editedParagraphs = state.reviewParagraphs.map((p) => ({
@@ -378,10 +397,13 @@ async function refreshViewerReviewDetection(sequence) {
   const text = state.reviewSourceText.trim();
   if (!text) return;
   try {
+    // Live, per-edit clause DETECTION must stay cheap and AI-free. Pass
+    // offline:true so the backend runs only deterministic detection (no model).
+    // The expensive AI review is reserved for the explicit "Refresh with AI".
     const response = await fetch("/api/review", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, offline: true }),
     });
     const payload = await response.json();
     if (!response.ok) throw reviewErrorFromPayload(payload, "Review could not run");
@@ -875,7 +897,9 @@ function loadMatterIntoReview(matter) {
     ? matter.review_refresh.message || "Saved redline draft cleared after review refresh"
     : matter.review_refresh?.stale
       ? staleReviewMessage(matter.review_refresh)
-      : "";
+      : matter.review_may_be_stale
+        ? "Review may be stale. Use Refresh with AI to re-run the review."
+        : "";
   setFileMeta(
     refreshMessage
       || (matter.redline_draft

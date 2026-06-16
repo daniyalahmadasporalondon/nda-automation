@@ -55,10 +55,17 @@ export function createRepositoryApi({ fetchImpl = globalThis.fetch, reviewErrorF
       refresh ? { method: "POST" } : {},
       "Matter review details could not load",
     );
+    // `review_may_be_stale` may arrive at the payload top level or on the matter
+    // object. Opening a matter sets it WITHOUT running the AI review; the explicit
+    // refresh path clears it. Read it defensively from either location.
+    const mayBeStale = Boolean(
+      payload.review_may_be_stale ?? payload.matter?.review_may_be_stale,
+    );
     const reviewMatter = {
       ...(payload.matter || {}),
       extracted_text: payload.extracted_text || "",
       redline_draft: payload.redline_draft || null,
+      review_may_be_stale: mayBeStale,
       review_refresh: payload.review_refresh || null,
       review_result: payload.review_result || {},
     };
