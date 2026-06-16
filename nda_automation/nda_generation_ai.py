@@ -28,6 +28,7 @@ import os
 import re
 import urllib.error
 import urllib.request
+from time import monotonic as _monotonic
 from typing import Any, Callable, Mapping
 
 from .ai_review import (
@@ -68,6 +69,14 @@ OPENROUTER_CHAT_COMPLETIONS_ENDPOINT = "https://openrouter.ai/api/v1/chat/comple
 GENERATION_MODEL_ENV = "NDA_GENERATION_MODEL"
 DEFAULT_GENERATION_MODEL = "deepseek/deepseek-v4-flash"
 
+# Hard ceiling on the VISIBLE answer a single clause adaptation may emit. A clause
+# rephrase is ~25-60 tokens of output; this is a runaway guard, not a working bound
+# — set well above any legitimate rephrase so it never truncates a real answer (the
+# GuardedClauseAdapter's char-length check is the on-position bound). Capping it stops
+# a model that ignores "output only the clause" from streaming an essay on the request
+# the user is waiting on. Sent as ``max_tokens`` on every clause-adapter call.
+DEFAULT_ADAPT_MAX_TOKENS = 512
+
 
 def configured_generation_model() -> str:
     """The model to use for clause adaptation on the generate path.
@@ -91,6 +100,40 @@ def configured_generation_model() -> str:
 # the three calls also run in parallel (``adapt_clauses_in_parallel``), so the
 # worst-case AI wall-time is roughly this ceiling, not 3x it.
 DEFAULT_ADAPT_TIMEOUT_SECONDS = 12
+
+# HARD WALL-CLOCK deadline for the ENTIRE AI clause-adaptation step, across all
+# clauses. This is the structural guarantee that generation always completes in
+# bounded time on ANY model/network: once this many seconds have elapsed, every
+# clause still in flight is abandoned and its deterministic Playbook base text is
+# used instead (the same safe fallback as an AI miss). Unlike the per-call
+# ``DEFAULT_ADAPT_TIMEOUT_SECONDS`` — which is urllib's per-SOCKET idle timeout and
+# does NOT bound a stalled/slow call against the wall clock — this is enforced with a
+# real future deadline (``concurrent.futures`` ``as_completed(timeout=)``), so a hung
+# call can never hold the request past it. Kept small (the request is synchronous and
+# the user is waiting): the typical reasoning-off Flash call is ~1s, so this leaves
+# generous headroom while staying far under the frontend's 45s timeout. Env-tunable
+# via ``NDA_GENERATION_ADAPT_BUDGET_SECONDS``.
+ADAPT_TOTAL_BUDGET_ENV = "NDA_GENERATION_ADAPT_BUDGET_SECONDS"
+DEFAULT_ADAPT_TOTAL_BUDGET_SECONDS = 8.0
+
+
+def configured_adapt_total_budget_seconds() -> float:
+    """Wall-clock budget for the whole AI clause-adaptation step (env-tunable).
+
+    Reads ``NDA_GENERATION_ADAPT_BUDGET_SECONDS``; falls back to
+    :data:`DEFAULT_ADAPT_TOTAL_BUDGET_SECONDS`. A non-positive or unparseable value
+    falls back to the default (never disables the deadline — an unbounded AI step is
+    exactly the failure this guards against).
+    """
+
+    raw = os.environ.get(ADAPT_TOTAL_BUDGET_ENV, "").strip()
+    if not raw:
+        return DEFAULT_ADAPT_TOTAL_BUDGET_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_ADAPT_TOTAL_BUDGET_SECONDS
+    return value if value > 0 else DEFAULT_ADAPT_TOTAL_BUDGET_SECONDS
 
 # Per-clause load-bearing terms. The adapted text MUST still contain these (case-
 # insensitive substring) or it is treated as drift and the deterministic Playbook
@@ -217,8 +260,9 @@ def adapt_clauses_in_parallel(
     jobs: "list[tuple[str, str, Mapping[str, Any]]]",
     *,
     max_workers: int = 3,
+    total_budget_seconds: float | None = None,
 ) -> dict[str, str]:
-    """Adapt several clauses CONCURRENTLY, returning ``{clause_id: adapted_text}``.
+    """Adapt several clauses CONCURRENTLY under a HARD wall-clock deadline.
 
     The generation engine adapts three independent clauses; called serially that is
     three round-trips back-to-back (the dominant cost of an AI-on generate). Each
@@ -228,16 +272,30 @@ def adapt_clauses_in_parallel(
     per-clause outcome. The result for ``clause_id`` is the adapter's output for
     that clause (already the deterministic base text when the adapter declined it).
 
+    DEADLINE: the whole step is bounded by ``total_budget_seconds`` (default
+    :func:`configured_adapt_total_budget_seconds`). This is a REAL future deadline
+    via ``concurrent.futures.as_completed(timeout=)`` — NOT urllib's per-socket idle
+    timeout, which does not bound a stalled/slow call against the wall clock. Any
+    clause whose adaptation has not returned by the deadline is ABANDONED and its
+    deterministic Playbook ``base_text`` is used instead (the same safe fallback as
+    an AI miss). So a hung or slow AI call — on any model or network — can never hold
+    the synchronous generate request past the budget. Abandoned worker threads are
+    left to finish on their own (the pool is not joined), so a stuck call never
+    blocks the return.
+
     Robustness: a worker that raises despite the guard (it shouldn't — the guard
     swallows adapter errors) degrades to that clause's ``base_text`` rather than
     failing the whole generation. With a single job (or ``max_workers <= 1``) this
-    runs inline, so the common test path stays synchronous and deterministic.
+    runs inline (still under the deadline), so the common test path stays synchronous
+    and deterministic.
     """
 
     resolved: dict[str, str] = {}
     if not jobs:
         return resolved
     base_by_id = {clause_id: base_text for clause_id, base_text, _ in jobs}
+    if total_budget_seconds is None:
+        total_budget_seconds = configured_adapt_total_budget_seconds()
 
     def _one(job: "tuple[str, str, Mapping[str, Any]]") -> "tuple[str, str]":
         clause_id, base_text, context = job
@@ -248,21 +306,37 @@ def adapt_clauses_in_parallel(
         text = (out or "").strip()
         return clause_id, (text or base_text)
 
-    if len(jobs) == 1 or max_workers <= 1:
-        for job in jobs:
-            clause_id, text = _one(job)
-            resolved[clause_id] = text
-        return resolved
-
     import concurrent.futures as _futures  # noqa: PLC0415
 
+    # Default every clause to its deterministic base text up front, so any clause the
+    # deadline (or a pool failure) leaves unresolved still has the safe fallback.
+    resolved.update(base_by_id)
+
+    workers = 1 if (len(jobs) == 1 or max_workers <= 1) else min(max_workers, len(jobs))
+    # NB: do NOT use the executor as a context manager — its ``__exit__`` calls
+    # ``shutdown(wait=True)``, which would JOIN a hung worker and defeat the deadline.
+    # We shut down with ``wait=False`` in a ``finally`` so a stuck call never blocks
+    # the return.
+    deadline = _monotonic() + total_budget_seconds
+    executor = _futures.ThreadPoolExecutor(max_workers=workers)
     try:
-        with _futures.ThreadPoolExecutor(max_workers=min(max_workers, len(jobs))) as executor:
-            for clause_id, text in executor.map(_one, jobs):
-                resolved[clause_id] = text
-    except Exception:  # noqa: BLE001 - if the pool itself fails, fall back to base text for all
-        for clause_id, base_text in base_by_id.items():
-            resolved.setdefault(clause_id, base_text)
+        future_to_id = {executor.submit(_one, job): job[0] for job in jobs}
+        try:
+            for future in _futures.as_completed(future_to_id, timeout=total_budget_seconds):
+                remaining = deadline - _monotonic()
+                try:
+                    clause_id, text = future.result(timeout=max(0.0, remaining))
+                    resolved[clause_id] = text
+                except Exception:  # noqa: BLE001 - timeout/error: keep this clause's base text
+                    continue
+        except _futures.TimeoutError:
+            # The wall-clock budget elapsed with clauses still in flight; they keep
+            # their deterministic base text. We do not wait on the stragglers.
+            pass
+    finally:
+        # Never join: a hung worker must not block the request. The thread is left to
+        # finish (and is harmless — its result is simply discarded).
+        executor.shutdown(wait=False)
     return resolved
 
 
@@ -486,6 +560,26 @@ def _openrouter_request_body(request: Mapping[str, Any], *, model: str) -> dict[
             {"role": "user", "content": user},
         ],
         "temperature": 0.2,
+        # Bound the OUTPUT so a model can't hold the synchronous generate request by
+        # over-generating. Two independent bounds, both needed for DeepSeek-Flash (a
+        # reasoning model):
+        #
+        #  * reasoning.enabled=false — Flash otherwise burns 500-1000 *hidden*
+        #    chain-of-thought tokens on a trivial rephrase (measured: ~520-650
+        #    reasoning tokens vs ~35 visible answer tokens), turning a ~1s call into
+        #    6-25s. The visible answer is unchanged and still passes the guard; we
+        #    just stop paying for reasoning a constrained rephrase doesn't need. This
+        #    is the actual speed lever — it cuts per-call latency to ~1s.
+        #  * max_tokens — a runaway ceiling on the visible answer (see
+        #    DEFAULT_ADAPT_MAX_TOKENS). Set high enough never to truncate a real
+        #    clause; with reasoning off it's pure belt-and-braces.
+        #
+        # NOTE: max_tokens alone is the WRONG lever for a reasoning model — a tight
+        # cap is consumed by reasoning tokens first and truncates the actual answer
+        # (the clause then fails the on-position guard). Disabling reasoning is what
+        # makes the call both fast AND complete.
+        "max_tokens": DEFAULT_ADAPT_MAX_TOKENS,
+        "reasoning": {"enabled": False},
     }
 
 

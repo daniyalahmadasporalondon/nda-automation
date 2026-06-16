@@ -327,3 +327,94 @@ class TestFrozenClauseAdapter:
         assert extract_docx_text(a.docx_bytes) == extract_docx_text(b.docx_bytes)
         check = gen.self_check_generated_nda(a.docx_bytes, playbook=playbook)
         assert check.passed, (check.native_failures, check.dynamic_failures)
+
+
+class _SlowAdapter:
+    """Adapter that blocks for ``hang_seconds`` on the named clause (simulates a hung
+    or pathologically slow AI call); all other clauses adapt instantly."""
+
+    def __init__(self, *, slow_clause: str, hang_seconds: float, fast_text: str = "FAST"):
+        self.slow_clause = slow_clause
+        self.hang_seconds = hang_seconds
+        self.fast_text = fast_text
+
+    def adapt(self, clause_id, base_text, context):
+        if clause_id == self.slow_clause:
+            import time
+
+            time.sleep(self.hang_seconds)
+            return "ADAPTED-SHOULD-NEVER-BE-USED"
+        return self.fast_text
+
+
+class TestAdaptWallClockDeadline:
+    """The whole AI clause-adaptation step is bounded by a HARD wall-clock deadline:
+    a hung/slow call is abandoned and the deterministic base text is used, so a stuck
+    AI call can never hold the synchronous generate request past the budget."""
+
+    _JOBS = [
+        ("mutuality", "BASE-mutuality", {}),
+        ("confidential_information", "BASE-ci", {}),
+        ("term_and_survival", "BASE-term", {}),
+    ]
+
+    def test_hung_call_is_abandoned_at_the_deadline(self):
+        import time
+
+        adapter = _SlowAdapter(slow_clause="mutuality", hang_seconds=30.0)
+        start = time.monotonic()
+        result = gen_ai.adapt_clauses_in_parallel(adapter, self._JOBS, total_budget_seconds=0.5)
+        elapsed = time.monotonic() - start
+
+        # Returned at ~the budget, NOT the 30s hang.
+        assert elapsed < 5.0, f"hung call held the request {elapsed:.1f}s"
+        # The hung clause fell back to its deterministic base text...
+        assert result["mutuality"] == "BASE-mutuality"
+        # ...while the instant clauses still got their adapted text.
+        assert result["confidential_information"] == "FAST"
+        assert result["term_and_survival"] == "FAST"
+
+    def test_single_job_hung_call_also_respects_the_deadline(self):
+        import time
+
+        adapter = _SlowAdapter(slow_clause="mutuality", hang_seconds=30.0)
+        start = time.monotonic()
+        result = gen_ai.adapt_clauses_in_parallel(
+            adapter, [("mutuality", "BASE-mutuality", {})], total_budget_seconds=0.5
+        )
+        elapsed = time.monotonic() - start
+        assert elapsed < 5.0, f"single hung call held the request {elapsed:.1f}s"
+        assert result["mutuality"] == "BASE-mutuality"
+
+    def test_fast_calls_complete_within_budget_and_keep_ai_text(self):
+        adapter = _SlowAdapter(slow_clause="<none>", hang_seconds=0.0)
+        result = gen_ai.adapt_clauses_in_parallel(adapter, self._JOBS, total_budget_seconds=5.0)
+        assert result == {
+            "mutuality": "FAST",
+            "confidential_information": "FAST",
+            "term_and_survival": "FAST",
+        }
+
+    def test_budget_is_env_tunable(self, monkeypatch):
+        monkeypatch.setenv(gen_ai.ADAPT_TOTAL_BUDGET_ENV, "3.5")
+        assert gen_ai.configured_adapt_total_budget_seconds() == 3.5
+        # Non-positive / unparseable never disables the deadline.
+        monkeypatch.setenv(gen_ai.ADAPT_TOTAL_BUDGET_ENV, "0")
+        assert gen_ai.configured_adapt_total_budget_seconds() == gen_ai.DEFAULT_ADAPT_TOTAL_BUDGET_SECONDS
+        monkeypatch.setenv(gen_ai.ADAPT_TOTAL_BUDGET_ENV, "not-a-number")
+        assert gen_ai.configured_adapt_total_budget_seconds() == gen_ai.DEFAULT_ADAPT_TOTAL_BUDGET_SECONDS
+
+
+class TestOutputBoundedRequestBody:
+    """The clause-adapter request bounds the model's output so it can't hold the
+    synchronous generate by over-generating: reasoning is disabled (the real speed
+    lever for the DeepSeek-Flash reasoning model) and a runaway max_tokens cap is set."""
+
+    def test_request_disables_reasoning_and_caps_max_tokens(self):
+        request = gen_ai.build_adaptation_request("mutuality", "Each party ...", {})
+        body = gen_ai._openrouter_request_body(request, model="deepseek/deepseek-v4-flash")
+        assert body["reasoning"] == {"enabled": False}
+        assert body["max_tokens"] == gen_ai.DEFAULT_ADAPT_MAX_TOKENS
+        # The cap is a runaway guard, not a working bound — comfortably above a real
+        # ~25-60 token clause rephrase so it never truncates a legitimate answer.
+        assert body["max_tokens"] >= 256
