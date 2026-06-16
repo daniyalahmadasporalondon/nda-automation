@@ -22,7 +22,9 @@ Two ways to record a phase:
   wait), ``response sent`` (total) — via :meth:`GenerationStopwatch.phase` /
   :meth:`GenerationStopwatch.mark`.
 * The deeper workflow phases (``playbook loaded``, ``docx built``,
-  ``matter persisted``) live inside ``nda_generation_workflow`` (owned by another
+  ``safety gate passed``, ``matter created``, ``source artifact located``,
+  ``generated artifact saved``, ``self check completed``) live inside
+  ``nda_generation_workflow`` (owned by another
   builder). A process/thread-local *current stopwatch* is exposed via
   :func:`current_stopwatch` / :func:`mark_phase` so that code can record a phase
   with a single import + one call, without this module reaching into it. When no
