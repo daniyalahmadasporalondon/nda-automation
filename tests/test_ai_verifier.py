@@ -73,6 +73,65 @@ class ApplyVerifierTests(unittest.TestCase):
         # Returned a copy, not the same object.
         self.assertIsNot(updated[0], clauses[0])
 
+    def test_deferred_while_a_foreground_generation_is_in_flight(self):
+        # RIGHT OF WAY: while a generate is in flight the verifier must SKIP (it is
+        # the biggest background AI burst). It returns the clauses UNCHANGED with a
+        # "deferred" status, never calls the injected verifier, and bumps telemetry.
+        from nda_automation import generation_priority
+
+        scripted = _scripted(VERIFIER_VERDICT_REFUTE, confidence=0.9)
+        called = {"n": 0}
+
+        def _counting_verifier(packet):
+            called["n"] += 1
+            return scripted(packet)
+
+        clauses = [
+            _clause(
+                "non_circumvention",
+                "fail",
+                clause_type="prohibited",
+                confidence=0.70,
+                matched_text="Each party shall not be restricted from dealing with introduced contacts.",
+                evidence=["Each party shall not be restricted from dealing with introduced contacts."],
+            )
+        ]
+        before = telemetry.snapshot()["counters"].get("ai_verifier_deferred_for_generation", 0)
+        with generation_priority.generation_in_progress_guard():
+            updated, summary = apply_ai_verifier(
+                clauses, source_text="x", verifier=_counting_verifier
+            )
+        after = telemetry.snapshot()["counters"].get("ai_verifier_deferred_for_generation", 0)
+
+        self.assertEqual(summary["status"], "deferred")
+        self.assertEqual(called["n"], 0, "verifier ran while a generation had right-of-way")
+        # Clauses returned unchanged (additive-safe): the fail keeps its first-pass.
+        self.assertEqual(updated[0]["decision"], "fail")
+        self.assertIsNot(updated[0], clauses[0])
+        self.assertEqual(after, before + 1)
+
+    def test_not_deferred_when_no_generation_is_in_flight(self):
+        # Negative control: with NO generation in flight the verifier runs normally.
+        from nda_automation import generation_priority
+
+        with generation_priority._LOCK:  # ensure idle
+            generation_priority._active_count = 0
+            generation_priority._idle_event.set()
+        clauses = [
+            _clause(
+                "non_circumvention",
+                "fail",
+                clause_type="prohibited",
+                confidence=0.70,
+                matched_text="Each party shall not be restricted from dealing with introduced contacts.",
+                evidence=["Each party shall not be restricted from dealing with introduced contacts."],
+            )
+        ]
+        _updated, summary = apply_ai_verifier(
+            clauses, source_text="x", verifier=_scripted(VERIFIER_VERDICT_REFUTE, confidence=0.86)
+        )
+        self.assertNotEqual(summary["status"], "deferred")
+
     def test_refute_clears_a_fail_to_pass_only_when_verifier_beats_engine(self):
         clauses = [
             _clause(

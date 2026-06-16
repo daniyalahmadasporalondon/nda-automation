@@ -124,6 +124,16 @@ def apply_ai_verifier(
     if not enabled:
         return updated, _summary(status="disabled", records=[])
 
+    # RIGHT OF WAY: skip the (CPU/GIL-heavy, network-bound) verifier while a
+    # foreground NDA generation is in flight. The verifier is the single biggest
+    # background AI burst, and prod showed it firing repeatedly during a slow
+    # Generate. Returning the clause results UNCHANGED keeps the review additive and
+    # safe -- the clauses keep their finalized first-pass verdicts; only the extra
+    # adversarial pass is skipped. Fail-open via should_defer_background_ai().
+    if _should_defer_for_generation():
+        telemetry.increment("ai_verifier_deferred_for_generation")
+        return updated, _summary(status="deferred", records=[])
+
     # Injected verifier crosses the seam as-is (tests, callers). Otherwise resolve
     # the active one: an OpenRouter-backed pass when explicitly enabled + keyed,
     # else the always-available offline polarity adversary.
@@ -156,6 +166,23 @@ def apply_ai_verifier(
         verifier_kind=verifier_kind,
         changed=changed,
     )
+
+
+def _should_defer_for_generation() -> bool:
+    """Whether the verifier should stand down because a generate has right of way.
+
+    Thin, fail-open wrapper over ``generation_priority.should_defer_background_ai``.
+    Imported locally so ai_verifier carries no hard import dependency on the
+    priority module, and any error here returns False (run the verifier) -- a guard
+    bug must never silently disable the adversarial pass.
+    """
+
+    try:
+        from . import generation_priority  # noqa: PLC0415 - keep the dep light/local.
+
+        return bool(generation_priority.should_defer_background_ai())
+    except Exception:  # pragma: no cover - a guard bug must never disable the verifier.
+        return False
 
 
 def build_verifier_packet(

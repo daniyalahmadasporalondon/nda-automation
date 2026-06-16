@@ -47,6 +47,21 @@ from typing import Iterator
 _YIELD_TIMEOUT_ENV = "NDA_GENERATION_PRIORITY_YIELD_TIMEOUT_SECONDS"
 _DEFAULT_YIELD_TIMEOUT_SECONDS = 5.0
 
+class ForegroundGenerationDeferred(Exception):
+    """A background AI unit refused to run because a foreground generate has the
+    right of way.
+
+    Raised by :func:`raise_if_generation_active` so a caller that prefers an
+    exception-driven control flow (over a boolean check) can ``try/except`` it and
+    requeue/skip. Carries the :func:`generation_defer_payload` so a handler can log
+    or surface a consistent, telemetry-friendly reason without re-deriving it.
+    """
+
+    def __init__(self, payload: dict[str, object] | None = None) -> None:
+        self.payload = payload or generation_defer_payload()
+        super().__init__(str(self.payload.get("reason", "foreground generation in progress")))
+
+
 _LOCK = threading.Lock()
 _active_count = 0
 # Set (=True) when NO generation is in flight; cleared while a generate runs.
@@ -135,6 +150,87 @@ def should_defer_background_ai() -> bool:
         return generation_in_progress()
     except Exception:  # pragma: no cover - a guard bug must never wedge a worker.
         return False
+
+
+def generation_defer_payload() -> dict[str, object]:
+    """A small, consistent dict describing the current right-of-way deferral.
+
+    Returned to callers (e.g. the AI verifier, an explicit-refresh handler) that
+    skip/queue their work because a foreground generate is in flight, so they can
+    log/surface a uniform, telemetry-friendly reason without re-deriving it.
+    Fail-open: never raises; reports ``active=0`` on an unexpected error.
+    """
+
+    try:
+        active = active_generation_count()
+    except Exception:  # pragma: no cover - a guard bug must never wedge a worker.
+        active = 0
+    return {
+        "deferred": True,
+        "reason": "foreground generation in progress",
+        "active_generations": active,
+    }
+
+
+def raise_if_generation_active() -> None:
+    """Raise :class:`ForegroundGenerationDeferred` if a foreground generate is in flight.
+
+    The exception-driven twin of :func:`should_defer_background_ai` for callers
+    that prefer ``try/except`` control flow. Fail-OPEN: if the liveness check
+    itself errors it returns normally (does NOT raise), so a guard bug can never
+    block a background unit.
+    """
+
+    try:
+        active = generation_in_progress()
+    except Exception:  # pragma: no cover - a guard bug must never wedge a worker.
+        return
+    if active:
+        raise ForegroundGenerationDeferred(generation_defer_payload())
+
+
+def yield_store_to_generation(timeout: float | None = None) -> bool:
+    """Stand a background store-WRITE back while a foreground generation is in flight.
+
+    The right-of-way ``should_defer_background_ai()`` only stops a background AI
+    review from STARTING. But a review that was already mid-flight when the user
+    clicked Generate finishes its (slow, lock-free) assessor+verifier work and
+    then grabs the single global store lock (``matter_store._locked_store``) to
+    persist its result -- contending with generation's OWN several store writes
+    (create_matter + artifact backfill + timeline appends + the generated-NDA
+    artifact). Under a verifier storm a stream of these review writers repeatedly
+    beats generation to the non-fair lock, and generation's save can block for
+    minutes. THIS is the persist-point yield that closes that gap: a background
+    review writer calls it immediately BEFORE its store write, parks on the idle
+    event (which releases the GIL so the foreground generate gets the CPU) until
+    EVERY in-flight generation has finished its critical path, then proceeds.
+
+    Returns ``True`` when the path is clear (no generation in flight, so the
+    write may proceed at once), ``False`` if it proceeded after the timeout while
+    a generation was still in flight (so a stuck/long generate can never wedge the
+    review pipeline -- the write still lands, just a beat later).
+
+    Bounded + fail-open: ``timeout`` defaults to the env-tunable yield bound, a
+    non-positive timeout means "never yield" (returns immediately), and ANY
+    unexpected error returns ``True`` (proceed) rather than holding a review's
+    result hostage. This is purely a politeness yield: it NEVER drops or fails the
+    write, it only lets generation's lock acquisitions go first.
+    """
+
+    try:
+        if not generation_in_progress():
+            return True
+        wait_for = _yield_timeout_seconds() if timeout is None else float(timeout)
+        if wait_for <= 0:
+            return not generation_in_progress()
+        # Event.wait releases the GIL while parked and returns True as soon as the
+        # event is set (the LAST in-flight generate completed its critical path,
+        # incl. all its store writes). On timeout it returns False and the write
+        # proceeds anyway so a background review never stalls unboundedly behind a
+        # stuck/long generate.
+        return _idle_event.wait(timeout=wait_for)
+    except Exception:  # pragma: no cover - a guard bug must never wedge a worker.
+        return True
 
 
 def yield_to_active_generation(timeout: float | None = None) -> bool:

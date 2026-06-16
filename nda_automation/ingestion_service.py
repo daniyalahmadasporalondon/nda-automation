@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from types import ModuleType
 from typing import Any
 
+from . import generation_priority
 from .checker import ParagraphAlignmentError
 from .document_limits import ensure_document_size
 from .docx_text import DocxExtractionError, detect_docx_tracked_changes, extract_docx_paragraphs
@@ -394,6 +395,7 @@ def _perform_inbound_ai_review(
     owner_user_id: str,
     review_engine_func: ReviewEngineFn,
     use_semaphore: bool = True,
+    on_defer: Callable[[], None] | None = None,
 ) -> None:
     """Run the full active-engine review for one inbound matter and persist it.
 
@@ -410,6 +412,14 @@ def _perform_inbound_ai_review(
     production worker-pool path passes ``use_semaphore=False`` because the fixed
     pool size is ALREADY the concurrency bound -- gating again would double-gate
     the same review confusingly.
+
+    Right of way (DEEPER than the pool handler's pre-check): the defer check runs
+    again INSIDE the concurrency bound, just before the heavy AI work. The pool
+    handler gates BEFORE the semaphore, but a generate can start in the window
+    between that gate and acquiring the slot. Re-checking here closes that window.
+    ``on_defer`` (the pool's requeue) is invoked so the item retries off-thread and
+    is NEVER dropped; callers without a requeue (tests/explicit runner) pass None
+    and fall through -- the persist-point yield still keeps generation's save fast.
     """
 
     from contextlib import nullcontext
@@ -428,6 +438,28 @@ def _perform_inbound_ai_review(
 
     gate = _INBOUND_REVIEW_SEMAPHORE if use_semaphore else nullcontext()
     with gate:
+        # RIGHT-OF-WAY re-check INSIDE the bound, before any heavy AI work. When a
+        # foreground generate is in flight and the caller supplied a requeue, defer
+        # + requeue (off-thread) instead of starting -- the review never begins its
+        # GIL/CPU burst while a generate is racing to save. Fail-open via the guard.
+        if on_defer is not None and generation_priority.should_defer_background_ai():
+            from . import telemetry  # noqa: PLC0415 - keep the import light/local.
+
+            telemetry.increment("inbound_ai_review_deferred_for_generation")
+            LOGGER.info(
+                "Deferring inbound AI review for matter %s at drain (inside bound): a "
+                "foreground generation has the right of way; re-queuing after backoff.",
+                matter_id,
+            )
+            try:
+                on_defer()
+            except Exception:  # pragma: no cover - requeue is best-effort.
+                LOGGER.warning(
+                    "Inbound AI review deferred re-enqueue failed for matter %s",
+                    matter_id,
+                    exc_info=True,
+                )
+            return
         _perform_inbound_ai_review_locked(
             matter_id,
             repository=repository,
@@ -544,6 +576,14 @@ def _perform_inbound_ai_review_body(
         LOGGER.warning("Inbound AI review failed for matter %s", matter_id, exc_info=True)
         return
 
+    # PERSIST-POINT RIGHT OF WAY. The drain-time gate (_inbound_review_pool_handler)
+    # only stops a review from STARTING. A review that was already mid-flight when a
+    # Generate began has finished its slow, lock-free assessor+verifier work by now
+    # and is about to grab the single global store lock -- contending with the
+    # foreground generate's OWN several store writes. Stand back here so generation's
+    # save acquires first. Bounded + fail-open: a stuck/long generate can never wedge
+    # this write; it just lands a beat later. NEVER drops or fails the persist.
+    generation_priority.yield_store_to_generation()
     try:
         updated = repository.update_matter_review(
             matter_id,
@@ -605,8 +645,6 @@ def _inbound_review_pool_handler(matter_id: str, owner_user_id: str) -> None:
        frontend's 45 s timeout.
     """
 
-    from . import generation_priority  # noqa: PLC0415 - keep the import light/local.
-
     # Gate 1: kill-switch re-check at DRAIN time (not just enqueue time).
     if not inbound_ai_review_enabled():
         LOGGER.info(
@@ -635,6 +673,12 @@ def _inbound_review_pool_handler(matter_id: str, owner_user_id: str) -> None:
         owner_user_id=str(owner_user_id or ""),
         review_engine_func=review_nda_with_active_engine,
         use_semaphore=False,
+        # Deeper right-of-way: if a generate starts in the window between Gate 2 and
+        # this review actually beginning, the lower entry defers + re-queues via the
+        # same off-thread backoff so the item is never dropped.
+        on_defer=lambda: _INBOUND_REVIEW_POOL.requeue_after_backoff(
+            matter_id, owner_user_id, inbound_review_defer_backoff_seconds()
+        ),
     )
 
 
