@@ -441,7 +441,16 @@ class PdfTextTests(unittest.TestCase):
         extraction = extract_pdf_document(data)
 
         self.assertTrue(extraction.paragraphs)
-        self.assertIn("Confidential Information", extraction.paragraphs[0]["text"])
+        # The fixture carries two text spans (a body line and a red heading); their
+        # relative sort order is an artifact of how PyMuPDF lays out the content
+        # stream, not part of this test's intent. The intent is only that a normal
+        # small-image PDF still extracts its text past the image-bomb guard, so
+        # assert the body line appears among the paragraphs rather than strictly at [0].
+        self.assertTrue(
+            any("Confidential Information" in paragraph["text"] for paragraph in extraction.paragraphs),
+            f"body text not found in extracted paragraphs: "
+            f"{[paragraph['text'] for paragraph in extraction.paragraphs]}",
+        )
 
     @requires_pypdf
     def test_rejects_pdf_with_too_many_pages(self):
