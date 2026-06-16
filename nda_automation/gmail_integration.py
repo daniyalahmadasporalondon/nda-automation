@@ -142,7 +142,35 @@ NDA_MESSAGE_QUERY = _gmail_search_terms_query(app_settings.DEFAULT_GMAIL_INBOUND
 # resolving to the same envelope.
 DEFAULT_INBOUND_QUERY = GMAIL_INBOUND_BASE_QUERY
 DEFAULT_INBOUND_QUERY_WITH_AI_SELECTOR = DEFAULT_INBOUND_QUERY
-MAX_GMAIL_IMPORT_LIMIT = 100
+
+# Per-poll import ceiling. This is the GENTLE CATCH-UP knob: it bounds how many
+# inbound messages a SINGLE poll cycle downloads + triages (deepseek-v4-pro
+# attachment selector) + classifies (flash intake) + text-extracts (PyMuPDF) ON
+# THE POLL THREAD before queuing AI reviews. When Gmail is (re)connected the first
+# poll would otherwise catch up the whole 90-day backlog at once -- a one-time
+# burst that strains/OOMs the single 2 GB worker. Keeping this small drains the
+# backlog a batch at a time: the dedup index (message_attachments_all_already_
+# imported) PERSISTS across polls and short-circuits already-imported messages
+# BEFORE any download/extract, so each subsequent poll makes real forward progress
+# on the next batch until the backlog is empty. Override with NDA_GMAIL_IMPORT_LIMIT
+# (a higher value trades a faster drain for a larger per-poll burst). The default
+# is deliberately modest so re-enabling Gmail can never overwhelm the worker.
+NDA_GMAIL_IMPORT_LIMIT_ENV = "NDA_GMAIL_IMPORT_LIMIT"
+_DEFAULT_GMAIL_IMPORT_LIMIT = 20
+
+
+def _gmail_import_limit_from_env() -> int:
+    raw = os.environ.get(NDA_GMAIL_IMPORT_LIMIT_ENV, "")
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return _DEFAULT_GMAIL_IMPORT_LIMIT
+    # A non-positive override is meaningless (and a zero would import nothing); fall
+    # back to the default rather than wedging the catch-up.
+    return value if value >= 1 else _DEFAULT_GMAIL_IMPORT_LIMIT
+
+
+MAX_GMAIL_IMPORT_LIMIT = _gmail_import_limit_from_env()
 GMAIL_BODY_PREVIEW_LIMIT = 5000
 GMAIL_PROFILE_CACHE_SECONDS = 15 * 60
 

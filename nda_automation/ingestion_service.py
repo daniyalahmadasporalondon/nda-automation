@@ -38,11 +38,12 @@ SUPPORTED_DOCUMENT_EXTENSIONS = {".docx", ".pdf"}
 # draining a process-wide queue.
 #
 # Why a queue + a fixed pool and NOT one daemon thread per matter: a catch-up
-# poll can import up to MAX_GMAIL_IMPORT_LIMIT (=100) matters in one cycle.
-# Spawning a thread per matter parks ~100 daemon threads blocked on a limit-1
-# bound -- a transient hundreds-of-MB spike, the one remaining OOM scenario on
-# the 2 GB worker. Instead a batch of 100 enqueues 100 CHEAP items (just
-# matter_id/owner) and a FIXED pool of inbound_review_concurrency() workers
+# poll can import up to MAX_GMAIL_IMPORT_LIMIT matters in one cycle (default 20,
+# overridable via NDA_GMAIL_IMPORT_LIMIT). Spawning a thread per matter parks one
+# daemon thread per imported matter blocked on a limit-1 bound -- a transient
+# hundreds-of-MB spike, the one remaining OOM scenario on the 2 GB worker. Instead
+# a batch enqueues that many CHEAP items (just matter_id/owner) and a FIXED pool of
+# inbound_review_concurrency() workers
 # (default 1) drains them serially. The pool size IS the concurrency bound, so
 # at most N reviews run at once -- never N threads, never N-at-once on the
 # worker, never blocking generation/requests, never re-storming the inbox.
@@ -56,8 +57,8 @@ _DEFAULT_INBOUND_REVIEW_CONCURRENCY = 1
 INBOUND_AI_REVIEW_ENABLED_ENV = "NDA_INBOUND_AI_REVIEW_ENABLED"
 
 # Hard cap on the queue depth so a runaway producer (a pathological catch-up
-# backlog, a buggy sweep) can never grow the queue unboundedly. 100 == one
-# full MAX_GMAIL_IMPORT_LIMIT batch; the dedup-on-enqueue set means re-enqueues
+# backlog, a buggy sweep) can never grow the queue unboundedly. Comfortably covers
+# several MAX_GMAIL_IMPORT_LIMIT batches; the dedup-on-enqueue set means re-enqueues
 # of an already-pending matter are free, so this bound is rarely approached.
 _INBOUND_REVIEW_QUEUE_MAXSIZE = 256
 
