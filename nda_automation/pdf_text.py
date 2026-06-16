@@ -34,6 +34,14 @@ ENCRYPTED_PDF_MESSAGE = "The PDF is encrypted or password-protected. Remove the 
 PDF_SUPPORT_NOT_INSTALLED_MESSAGE = "PDF support is not installed. Install the pypdf dependency before reviewing PDF files."
 MAX_PDF_PAGES = 100
 MAX_PDF_EXTRACTED_CHARACTERS = 500_000
+# Image decompression-bomb guard. A single page can embed an image whose stored
+# (compressed) bytes are tiny but whose decoded pixel buffer is enormous — a
+# 6000x6000 image is only ~36 MP yet materializes ~274 MB of RSS when decoded.
+# We sum the per-image pixel area (width*height) across the page-capped pages
+# using fitz's ``get_image_info()`` — which reads image DIMENSIONS from the XObject
+# dict WITHOUT decoding a single pixel — and reject before any decode path runs.
+# 50 MP total ≈ 380 MB decoded at 3 bytes/px, the per-review ceiling we'll allow.
+MAX_PDF_TOTAL_IMAGE_PIXELS = 50_000_000
 
 # Memory guard for the fitz visual profile. ``page.get_text("dict")`` with the
 # default flags MATERIALIZES every embedded image's decoded bytes into the per-page
@@ -125,6 +133,9 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
     page_count = len(reader.pages)
     if page_count > MAX_PDF_PAGES:
         raise PdfExtractionError(f"The PDF has {page_count} pages, which exceeds the {MAX_PDF_PAGES} page review limit.")
+    # Reject image decompression bombs BEFORE any decode (text extraction or the
+    # visual profile) materializes pixels. Uses dimensions only — no decode.
+    _reject_image_decompression_bomb(data, page_count)
     pages_without_text = 0
     pages_with_text = 0
     extracted_character_count = 0
@@ -176,6 +187,57 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
             visual_profile=visual_profile,
         ),
     )
+
+
+def _reject_image_decompression_bomb(data: bytes, page_count: int) -> None:
+    """Reject a PDF whose embedded images would decode to too many pixels.
+
+    ``get_image_info()`` reports each image's ``width``/``height`` straight from
+    the XObject dictionary WITHOUT decoding the compressed stream, so summing
+    ``width * height`` is a cheap, decode-free proxy for the decoded RSS a real
+    extraction would incur. We respect ``MAX_PDF_PAGES`` (the same page cap the
+    text path uses) and reject before any decode if the total exceeds the cap.
+
+    Degrades safely: if fitz is unavailable or ``get_image_info`` raises, we
+    simply do not enforce the guard (the downstream limits still apply) rather
+    than blocking a reviewable PDF.
+    """
+
+    try:
+        import fitz
+    except ImportError:
+        return
+
+    try:
+        document = fitz.open(stream=data, filetype="pdf")
+    except Exception:
+        return
+
+    try:
+        total_pixels = 0
+        scanned_pages = min(page_count, MAX_PDF_PAGES)
+        for page_index in range(scanned_pages):
+            try:
+                images = document[page_index].get_image_info()
+            except Exception:
+                # Degrade safely on a single bad page rather than failing the guard.
+                continue
+            for image in images or []:
+                if not isinstance(image, dict):
+                    continue
+                width = _safe_int(image.get("width")) or 0
+                height = _safe_int(image.get("height")) or 0
+                if width > 0 and height > 0:
+                    total_pixels += width * height
+    finally:
+        document.close()
+
+    if total_pixels > MAX_PDF_TOTAL_IMAGE_PIXELS:
+        raise PdfExtractionError(
+            "The PDF embeds an image too large to process safely "
+            f"({total_pixels:,} pixels exceeds the {MAX_PDF_TOTAL_IMAGE_PIXELS:,} pixel limit; "
+            "this looks like an image decompression bomb)."
+        )
 
 
 def _extract_geo_lines(page: Any) -> list[GeoLine]:

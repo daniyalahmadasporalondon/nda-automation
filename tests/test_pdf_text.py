@@ -387,6 +387,37 @@ class PdfTextTests(unittest.TestCase):
                 extract_pdf_paragraphs(data)
 
     @requires_pypdf
+    @requires_pymupdf
+    def test_rejects_image_decompression_bomb_before_decode(self):
+        # An image whose summed pixel area exceeds the cap is rejected. We drive the
+        # tiny real image from make_image_pdf() against a lowered cap so the guard's
+        # dimension-summing reject path is exercised without allocating a huge pixmap.
+        # The guard runs BEFORE the text-extraction / visual-profile decode paths, so
+        # we patch _extract_geo_lines to fail if it is ever reached -- proving pre-decode.
+        data = make_image_pdf()
+
+        def _must_not_decode(_page):
+            raise AssertionError("decode path ran before the image-bomb guard rejected")
+
+        with patch.object(pdf_text, "MAX_PDF_TOTAL_IMAGE_PIXELS", 1):
+            with patch.object(pdf_text, "_extract_geo_lines", side_effect=_must_not_decode):
+                with self.assertRaisesRegex(PdfExtractionError, "decompression bomb"):
+                    extract_pdf_paragraphs(data)
+
+    @requires_pypdf
+    @requires_pymupdf
+    def test_accepts_pdf_with_normal_small_image(self):
+        # A PDF carrying a small embedded image (well under the pixel cap) extracts
+        # normally -- the bomb guard must not block legitimate image-bearing NDAs.
+        data = make_image_pdf()
+
+        paragraphs = extract_pdf_paragraphs(data)
+
+        self.assertTrue(paragraphs)
+        joined = " ".join(str(paragraph["text"]) for paragraph in paragraphs)
+        self.assertIn("Confidential Information", joined)
+
+    @requires_pypdf
     def test_rejects_pdf_with_too_much_extracted_text(self):
         data = make_pdf("This Agreement shall be governed by the laws of California.")
 
