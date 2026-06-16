@@ -341,6 +341,66 @@ def test_generated_matter_envelope_is_well_formed():
     assert by_email["priya@aspora.com"]["tabs"]["signHereTabs"][0]["anchorString"] == "\\sig_party_aspora\\"
 
 
+def test_real_send_path_emits_only_on_page_offsets_for_generated_nda(fake_token):
+    """REGRESSION (live 400 ``INVALID_USER_OFFSET: XOffset "-180" is invalid``).
+
+    This exercises the *actual runtime send path* — the real
+    ``HttpDocuSignClient.create_envelope`` that prod uses — for a GENERATED NDA
+    (counterparty + Aspora, distinct per-party anchors), and inspects the exact
+    JSON body POSTed to DocuSign's ``/envelopes`` endpoint. Every anchor X/Y
+    offset on the wire must be non-negative and on-page.
+
+    The prior fix only changed ``_tabs_for``'s literals + added ``_clamp_offset``;
+    a regression that let *any* offset (a second tab path, a future caller-supplied
+    value, a stale build) reach the wire negative would still 400 in prod. The
+    earlier tests assert ``build_envelope_definition`` in isolation; this one asserts
+    the value DocuSign actually receives, through the real client and a real JSON
+    round-trip, so it would have caught a ``-180`` arriving from ANY source.
+    """
+    counterparty = {
+        "name": "Acme Innovations",
+        "email": "cp@acme.com",
+        "role": "counterparty",
+        "anchor": "\\sig_party_counterparty\\",
+    }
+    aspora = {
+        "name": "Priya Nair",
+        "email": "priya@aspora.com",
+        "role": "aspora",
+        "anchor": "\\sig_party_aspora\\",
+    }
+    transport = _FakeTransport()
+    client = _client(transport)
+
+    client.create_envelope(
+        b"%PDF-1.4 generated nda for STOP / Delaware / 1yr",
+        "NDA.pdf",
+        normalize_signers([counterparty, aspora]),
+    )
+
+    # The exact bytes DocuSign would receive — serialize the captured body the
+    # same way the urllib transport does, then re-parse, so we assert on the wire
+    # form (this is where a "-180" would surface as the live error did).
+    _method, url, _headers, body = transport.json_calls[0]
+    assert url.endswith("/envelopes")
+    posted = json.loads(json.dumps(body))
+
+    max_offset = docusign_integration._MAX_ANCHOR_OFFSET_PIXELS
+    seen_offsets = 0
+    for recipient in posted["recipients"]["signers"]:
+        tabs = recipient["tabs"]
+        for tab in tabs["signHereTabs"] + tabs["dateSignedTabs"]:
+            x = int(tab["anchorXOffset"])
+            y = int(tab["anchorYOffset"])
+            seen_offsets += 2
+            assert 0 <= x <= max_offset, (
+                f"XOffset {x!r} is off-page (this is the live INVALID_USER_OFFSET 400)"
+            )
+            assert 0 <= y <= max_offset, f"YOffset {y!r} is off-page"
+    # Both parties, both tab kinds -> 4 tabs * 2 axes = 8 offsets actually checked.
+    assert seen_offsets == 8
+
+
 def test_real_client_segment_escaping_blocks_path_injection(fake_token):
     transport = _FakeTransport()
     transport.json_response = (200, {"status": "sent"})
