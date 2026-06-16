@@ -8,6 +8,10 @@ from typing import Any
 _LOCK = threading.Lock()
 _STARTED_AT = datetime.now(timezone.utc)
 _COUNTERS: dict[str, int] = {}
+# Gauges are LAST-VALUE / HIGH-WATER samples (e.g. per-review peak RSS), distinct
+# from the monotonic counters above. Stored separately so the existing counters
+# block and its health derivation are untouched.
+_GAUGES: dict[str, float] = {}
 
 
 def increment(counter: str, amount: int = 1) -> None:
@@ -17,15 +21,57 @@ def increment(counter: str, amount: int = 1) -> None:
         _COUNTERS[counter] = _COUNTERS.get(counter, 0) + amount
 
 
+def set_gauge(name: str, value: float) -> None:
+    """Record the LATEST value of a gauge (overwrites any prior sample).
+
+    For point-in-time samples like the most recent per-review peak RSS. Silently
+    ignores a non-finite / non-numeric value so a bad probe never corrupts the
+    snapshot.
+    """
+    coerced = _coerce_gauge_value(value)
+    if coerced is None:
+        return
+    with _LOCK:
+        _GAUGES[name] = coerced
+
+
+def gauge_max(name: str, value: float) -> None:
+    """Record a HIGH-WATER gauge: keep the maximum value ever seen for ``name``.
+
+    For peaks that should not regress within a process (e.g. the largest per-review
+    peak RSS observed). Non-numeric / non-finite values are ignored.
+    """
+    coerced = _coerce_gauge_value(value)
+    if coerced is None:
+        return
+    with _LOCK:
+        existing = _GAUGES.get(name)
+        if existing is None or coerced > existing:
+            _GAUGES[name] = coerced
+
+
+def _coerce_gauge_value(value: float) -> float | None:
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError):
+        return None
+    # Reject NaN / +-inf so the snapshot stays JSON-clean and comparable.
+    if coerced != coerced or coerced in (float("inf"), float("-inf")):
+        return None
+    return coerced
+
+
 def snapshot() -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     with _LOCK:
         counters = dict(sorted(_COUNTERS.items()))
+        gauges = dict(sorted(_GAUGES.items()))
     return {
         "started_at": _STARTED_AT.isoformat(),
         "checked_at": now.isoformat(),
         "uptime_seconds": max(0, int((now - _STARTED_AT).total_seconds())),
         "counters": counters,
+        "gauges": gauges,
     }
 
 
@@ -34,6 +80,7 @@ def reset() -> None:
     with _LOCK:
         _STARTED_AT = datetime.now(timezone.utc)
         _COUNTERS.clear()
+        _GAUGES.clear()
 
 
 # Counters watched as generic "operational failure" signals in the health
@@ -85,6 +132,9 @@ def health_summary(counters: Mapping[str, int]) -> dict[str, Any]:
         - review fail_closed_rate        >= 0.05 AND review attempted   >= 20
         - generation failed              >= 3
         - generation safety_gate_blocked >= 5
+        - inbound_review queue_full      >= 1
+        - inbound_review failed          >= 5
+        - inbound_review failure_rate    >= 0.25 AND inbound attempted  >= 10
         - any 'other' failure counter    >= 10
 
       alert when ANY of:
@@ -108,6 +158,22 @@ def health_summary(counters: Mapping[str, int]) -> dict[str, Any]:
         "deterministic_completed": _count(counters, "active_review_deterministic_completed"),
         "fail_closed_rate": _rate(review_fail_closed, review_attempted),
         "partial_rate": _rate(review_partial, review_attempted),
+    }
+
+    # Inbound auto-review pool health: a saturating queue (queue_full) or a high
+    # failure rate is the OOM-era saturation signal we want surfaced to operators.
+    inbound_completed = _count(counters, "inbound_ai_review_completed")
+    inbound_failed = _count(counters, "inbound_ai_review_failed")
+    inbound_queue_full = _count(counters, "inbound_ai_review_queue_full")
+    inbound_schedule_failed = _count(counters, "inbound_ai_review_schedule_failed")
+    inbound_attempted = inbound_completed + inbound_failed
+    inbound_review = {
+        "completed": inbound_completed,
+        "failed": inbound_failed,
+        "queue_full": inbound_queue_full,
+        "schedule_failed": inbound_schedule_failed,
+        "attempted": inbound_attempted,
+        "failure_rate": _rate(inbound_failed, inbound_attempted),
     }
 
     generation_requests = _count(counters, "generate_nda_requests")
@@ -165,6 +231,22 @@ def health_summary(counters: Mapping[str, int]) -> dict[str, Any]:
             1,
             f"NDA generation safety gate has blocked {generation_safety_gate_blocked} drafts.",
         )
+    # Inbound auto-review saturation / failure -- the queue filling up means imports
+    # are arriving faster than the fixed pool drains, the OOM-era backpressure signal.
+    if inbound_queue_full >= 1:
+        _flag(
+            1,
+            f"Inbound auto-review queue hit its bound {inbound_queue_full} time(s); "
+            "reviews are backing up faster than the worker pool drains.",
+        )
+    if inbound_failed >= 5:
+        _flag(1, f"Inbound auto-review has failed {inbound_failed} times since start.")
+    if inbound_review["failure_rate"] >= 0.25 and inbound_attempted >= 10:
+        _flag(
+            1,
+            "Inbound auto-review failure rate is "
+            f"{inbound_review['failure_rate'] * 100:.0f}% over {inbound_attempted} attempts.",
+        )
     for key, value in other.items():
         if value >= 10:
             _flag(1, f"Operational failure counter '{key}' is {value}.")
@@ -175,6 +257,7 @@ def health_summary(counters: Mapping[str, int]) -> dict[str, Any]:
 
     return {
         "review": review,
+        "inbound_review": inbound_review,
         "generation": generation,
         "other": other,
         "status": status,

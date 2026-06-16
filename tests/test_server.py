@@ -1629,7 +1629,7 @@ class ServerTests(unittest.TestCase):
         health = telemetry_payload["health"]
         self.assertEqual(
             set(health),
-            {"review", "generation", "other", "status", "alerts", "note"},
+            {"review", "inbound_review", "generation", "other", "status", "alerts", "note"},
         )
         self.assertIn(health["status"], {"ok", "warn", "alert"})
         self.assertIsInstance(health["alerts"], list)
@@ -10141,7 +10141,10 @@ class TelemetryHealthSummaryTest(unittest.TestCase):
             "generate_nda_safety_gate_blocked": 2,
         }
         summary = telemetry.health_summary(counters)
-        self.assertEqual(set(summary), {"review", "generation", "other", "status", "alerts", "note"})
+        self.assertEqual(
+            set(summary),
+            {"review", "inbound_review", "generation", "other", "status", "alerts", "note"},
+        )
         review = summary["review"]
         self.assertEqual(review["attempted"], 100)
         self.assertEqual(review["completed"], 80)
