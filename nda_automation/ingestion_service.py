@@ -496,8 +496,17 @@ def _inbound_review_pool_handler(matter_id: str, owner_user_id: str) -> None:
     The production pool stores only cheap ``(matter_id, owner_user_id)`` jobs, so
     the handler reconstructs the default repository + active engine here. No
     semaphore: the pool's fixed size is the concurrency bound.
+
+    Before starting this CPU-bound review, defer to any in-flight foreground NDA
+    generation so the single prod worker's GIL/CPU is not starved out from under a
+    user-facing generate (which must complete inside the frontend's 45 s timeout).
+    Bounded + fail-open: the yield blocks at most a few seconds and never raises,
+    so a long/stuck generate can never permanently wedge the review pool.
     """
 
+    from . import generation_priority  # noqa: PLC0415 - keep the import light/local.
+
+    generation_priority.yield_to_active_generation()
     _perform_inbound_ai_review(
         matter_id,
         repository=DiskMatterRepository(),
