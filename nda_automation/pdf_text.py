@@ -34,6 +34,14 @@ ENCRYPTED_PDF_MESSAGE = "The PDF is encrypted or password-protected. Remove the 
 PDF_SUPPORT_NOT_INSTALLED_MESSAGE = "PDF support is not installed. Install the pypdf dependency before reviewing PDF files."
 MAX_PDF_PAGES = 100
 MAX_PDF_EXTRACTED_CHARACTERS = 500_000
+# Decompression-bomb guard. Embedded images are stored compressed (a few KB of JPEG
+# can declare a 6000x6000 canvas), but DECODING one materializes width*height*bpp
+# bytes of RSS — a probe 6000x6000 RGB image is 36 MP -> ~274 MB. We sum the DECLARED
+# pixel area of every embedded image across the page-capped pages using the cheap
+# fitz get_image_info() (reads the XObject /Width//Height dictionary, never decodes),
+# and reject before any text/visual extraction touches the pixels. 50 MP total caps
+# the worst-case decoded footprint at ~380 MB (RGB) before anything is decoded.
+MAX_PDF_TOTAL_IMAGE_PIXELS = 50_000_000
 
 # Memory guard for the fitz visual profile. ``page.get_text("dict")`` with the
 # default flags MATERIALIZES every embedded image's decoded bytes into the per-page
@@ -125,6 +133,9 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
     page_count = len(reader.pages)
     if page_count > MAX_PDF_PAGES:
         raise PdfExtractionError(f"The PDF has {page_count} pages, which exceeds the {MAX_PDF_PAGES} page review limit.")
+    # Reject image decompression bombs BEFORE any decode (extract_text / visual profile)
+    # touches the pixels. Uses the cheap fitz get_image_info() (dictionary read, no decode).
+    _reject_pdf_image_bomb(data)
     pages_without_text = 0
     pages_with_text = 0
     extracted_character_count = 0
@@ -807,6 +818,52 @@ def _pdf_quality_report(
     if visual_profile:
         quality["visual_profile"] = visual_profile
     return quality
+
+
+def _reject_pdf_image_bomb(data: bytes) -> None:
+    """Reject an image decompression bomb before any pixel is decoded.
+
+    Sums the DECLARED pixel area (width*height) of every embedded image across the
+    page-capped pages via fitz ``get_image_info()`` — a dictionary read that never
+    decodes the image — and raises ``PdfExtractionError`` if the total exceeds
+    ``MAX_PDF_TOTAL_IMAGE_PIXELS``. Degrades safely (no rejection) when PyMuPDF is
+    missing or any probe raises: the guard only ever ADDS a rejection, never blocks a
+    PDF it could not measure.
+    """
+
+    try:
+        import fitz
+    except ImportError:
+        return
+
+    try:
+        document = fitz.open(stream=data, filetype="pdf")
+    except Exception:
+        return
+
+    try:
+        total_pixels = 0
+        for page_index in range(min(document.page_count, MAX_PDF_PAGES)):
+            try:
+                image_infos = document[page_index].get_image_info()
+            except Exception:
+                # Cannot measure this page cheaply -> skip it rather than crash.
+                continue
+            for info in image_infos:
+                if not isinstance(info, dict):
+                    continue
+                width = _safe_int(info.get("width")) or 0
+                height = _safe_int(info.get("height")) or 0
+                if width > 0 and height > 0:
+                    total_pixels += width * height
+        if total_pixels > MAX_PDF_TOTAL_IMAGE_PIXELS:
+            raise PdfExtractionError(
+                f"The PDF embeds {total_pixels:,} pixels of image data, which exceeds the "
+                f"{MAX_PDF_TOTAL_IMAGE_PIXELS:,} pixel limit. The image is too large "
+                "(possible decompression bomb)."
+            )
+    finally:
+        document.close()
 
 
 def _pdf_visual_profile(data: bytes) -> dict[str, object]:

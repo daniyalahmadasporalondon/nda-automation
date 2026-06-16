@@ -355,6 +355,37 @@ class PdfTextTests(unittest.TestCase):
         )
 
     @requires_pypdf
+    @requires_pymupdf
+    def test_rejects_image_decompression_bomb_before_any_decode(self):
+        # An embedded image whose DECLARED pixel area exceeds the bomb limit must be
+        # rejected BEFORE anything decodes the pixels. We patch the limit below the tiny
+        # fixture image's pixel area, then prove the reject fires ahead of decode by
+        # asserting neither the pypdf text path (_extract_geo_lines) nor the fitz visual
+        # profile (_pdf_visual_profile) is ever reached.
+        data = make_image_pdf()
+
+        with patch.object(pdf_text, "MAX_PDF_TOTAL_IMAGE_PIXELS", 1), \
+                patch.object(pdf_text, "_extract_geo_lines") as geo_lines, \
+                patch.object(pdf_text, "_pdf_visual_profile") as visual_profile:
+            with self.assertRaisesRegex(PdfExtractionError, "image is too large|decompression bomb"):
+                extract_pdf_document(data)
+
+        geo_lines.assert_not_called()
+        visual_profile.assert_not_called()
+
+    @requires_pypdf
+    @requires_pymupdf
+    def test_normal_small_image_pdf_passes_the_bomb_guard(self):
+        # A PDF with a small embedded image (well under the megapixel limit) must extract
+        # normally — the guard only rejects oversized images, never ordinary ones.
+        data = make_image_pdf()
+
+        extraction = extract_pdf_document(data)
+
+        self.assertIn("Confidential Information", extraction.paragraphs[0]["text"])
+        self.assertGreaterEqual(extraction.quality["visual_profile"]["image_count"], 1)
+
+    @requires_pypdf
     def test_quality_report_requires_source_preview_when_visual_profiler_missing(self):
         real_import = builtins.__import__
 
