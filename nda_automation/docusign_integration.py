@@ -226,14 +226,25 @@ def _tabs_for(signer: Signer) -> dict[str, Any]:
 
     ``signer.anchor`` is the per-party token planted on that party's ``By:``
     signature line in a generated NDA (it falls back to the signer name only when
-    no explicit anchor is set, e.g. a non-generated document). The token sits at
-    the END of the ``By: ____`` line, so:
+    no explicit anchor is set, e.g. a non-generated document). The token is
+    appended (hidden, end-of-line) to ``By: ______``, so it resolves at the RIGHT
+    end of the underscore blank — there is page room to the RIGHT of it but very
+    little to the LEFT (the signature table cell sits near the page's left
+    margin). Therefore:
 
-    * the **signHere** tab is nudged UP onto the signature line and LEFT so it
-      sits over the blank underscores (not on top of the marker text);
-    * the **dateSigned** tab sits just BELOW the signature line (positive Y, near
-      the left edge) so it never collides with the signature or spill outside the
-      two-column signature-table cell.
+    * the **signHere** tab is nudged UP onto the signature line (small negative Y)
+      and placed at the anchor with a small POSITIVE X so it sits just to the
+      right of the marker, on the page;
+    * the **dateSigned** tab sits just BELOW the signature line (positive Y), also
+      offset slightly RIGHT of the marker so it never collides with the signature
+      nor spills outside the two-column signature-table cell.
+
+    A previous build used ``anchorXOffset = -180`` (pixels) to push the field LEFT
+    over the underscores. Because the anchor already sits near the left margin,
+    -180px (~2.5in) drove the tab off the left edge of the page and DocuSign
+    rejected the whole envelope with ``INVALID_USER_OFFSET`` (HTTP 400). The
+    offsets below are non-negative so the field can never leave the page, and
+    ``_clamp_offset`` enforces that invariant as a backstop.
 
     ``ignoreIfNotPresent`` keeps a single missing anchor from failing the whole
     envelope create (DocuSign would otherwise 400 if the string is absent) — a
@@ -246,10 +257,10 @@ def _tabs_for(signer: Signer) -> dict[str, Any]:
             {
                 "anchorString": anchor,
                 "anchorUnits": "pixels",
-                # Sit on the signature line (up from the marker baseline) and over
-                # the blank to the left of the end-of-line marker.
-                "anchorXOffset": "-180",
-                "anchorYOffset": "-6",
+                # Sit on the signature line (up from the marker baseline) and just
+                # to the right of the end-of-line marker — on the page.
+                "anchorXOffset": _clamp_offset("2"),
+                "anchorYOffset": _clamp_offset("-6"),
                 "anchorIgnoreIfNotPresent": "true",
             }
         ],
@@ -257,14 +268,40 @@ def _tabs_for(signer: Signer) -> dict[str, Any]:
             {
                 "anchorString": anchor,
                 "anchorUnits": "pixels",
-                # Drop the date onto the line just below "By:" (the Name: row), at
-                # the left edge of the cell.
-                "anchorXOffset": "-180",
-                "anchorYOffset": "14",
+                # Drop the date onto the line just below the signature, slightly
+                # right of the marker so it stays inside the cell.
+                "anchorXOffset": _clamp_offset("2"),
+                "anchorYOffset": _clamp_offset("14"),
                 "anchorIgnoreIfNotPresent": "true",
             }
         ],
     }
+
+
+# The widest a tab offset may be from its anchor, in the chosen ``anchorUnits``
+# (pixels @ 72dpi here). A standard US-Letter / A4 page is ~612-595pt wide; a tab
+# anchored anywhere on the page plus this margin stays comfortably on-page, while
+# still allowing a generous nudge onto the signature line.
+_MAX_ANCHOR_OFFSET_PIXELS = 144  # ~2 inches
+
+
+def _clamp_offset(value: Any) -> str:
+    """Clamp an anchor offset to ``[0, _MAX_ANCHOR_OFFSET_PIXELS]`` (as a string).
+
+    DocuSign rejects the whole envelope with ``INVALID_USER_OFFSET`` (HTTP 400) if
+    an anchor offset drives a tab past a page boundary — most easily by going
+    NEGATIVE past the left/top edge. The Y axis grows downward and X to the right,
+    so a non-negative offset from an on-page anchor can never leave the page on
+    those edges. This guard makes a future bad value degrade gracefully (the tab
+    is merely repositioned) instead of failing the send. Non-numeric input falls
+    back to ``0``.
+    """
+    try:
+        offset = int(round(float(value)))
+    except (TypeError, ValueError):
+        offset = 0
+    offset = max(0, min(offset, _MAX_ANCHOR_OFFSET_PIXELS))
+    return str(offset)
 
 
 # ---------------------------------------------------------------------------

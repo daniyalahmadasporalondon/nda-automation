@@ -86,6 +86,42 @@ def test_envelope_definition_has_document_recipients_and_anchor_tabs():
     assert recipient["tabs"]["dateSignedTabs"][0]["anchorString"] == "Alice"
 
 
+def test_anchor_tab_offsets_stay_on_page():
+    """Every anchor X/Y offset must be on-page (non-negative, bounded).
+
+    A negative anchorXOffset (the old ``-180``) drove the tab past the left page
+    edge and DocuSign 400'd the whole envelope with INVALID_USER_OFFSET. Guard
+    that the emitted offsets can never leave the page on the left/top edges.
+    """
+    signers = normalize_signers(
+        [
+            {"name": "Alice", "email": "alice@x.com", "anchor": "\\sig_party_aspora\\"},
+            {"name": "Bob", "email": "bob@x.com", "anchor": "\\sig_party_counterparty\\"},
+        ]
+    )
+    definition = build_envelope_definition(b"%PDF-1.4 data", "nda.pdf", signers)
+    max_offset = docusign_integration._MAX_ANCHOR_OFFSET_PIXELS
+    for recipient in definition["recipients"]["signers"]:
+        tabs = recipient["tabs"]
+        for tab in tabs["signHereTabs"] + tabs["dateSignedTabs"]:
+            x = int(tab["anchorXOffset"])
+            y = int(tab["anchorYOffset"])
+            assert 0 <= x <= max_offset, f"X offset {x} off-page"
+            assert 0 <= y <= max_offset, f"Y offset {y} off-page"
+
+
+def test_clamp_offset_forces_negative_and_oversize_on_page():
+    """The clamp degrades a bad offset gracefully instead of letting it 400."""
+    clamp = docusign_integration._clamp_offset
+    max_offset = docusign_integration._MAX_ANCHOR_OFFSET_PIXELS
+    assert clamp("-180") == "0"  # the exact value from the live 400
+    assert clamp("-1") == "0"
+    assert clamp("0") == "0"
+    assert clamp("12") == "12"
+    assert clamp(str(max_offset + 500)) == str(max_offset)
+    assert clamp("not-a-number") == "0"
+
+
 def test_envelope_definition_rejects_empty_document():
     with pytest.raises(DocuSignError):
         build_envelope_definition(b"", "nda.pdf", normalize_signers([{"name": "A", "email": "a@x.com"}]))
