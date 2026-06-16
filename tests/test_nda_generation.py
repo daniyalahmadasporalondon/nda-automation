@@ -293,27 +293,38 @@ class TestSignatureAnchors:
         assert "Name: Jane Doe" in text
         assert "Title: Director" in text
 
-    def test_signature_boxes_are_stacked_vertically_full_width(self, playbook):
-        # The two party boxes are stacked (one full-width box ABOVE the other), not
-        # two narrow side-by-side columns — this gives each DocuSign anchor the full
-        # page width so the signHere/dateSigned offsets stay clearly on-page.
+    def test_signature_boxes_are_side_by_side_with_a_centre_gap(self, playbook):
+        # The two party boxes sit SIDE BY SIDE, pushed to the OUTER edges of the
+        # text width with a wide empty spacer column between them: counterparty box
+        # flush LEFT, Aspora box flush RIGHT, an obvious centred gap in the middle.
         from io import BytesIO
+
+        from docx.oxml.ns import qn
 
         document = Document(BytesIO(_generate(playbook).docx_bytes))
         table = document.tables[0]
-        assert len(table.rows) == 2, "signature boxes must be stacked in two rows"
-        # Each row is ONE full-width box: its cells are a single merged cell (the
-        # same underlying <w:tc>), so distinct-cell count per row is 1.
-        for row in table.rows:
-            distinct = {id(cell._tc) for cell in row.cells}
-            assert len(distinct) == 1, "each signature box must span the full width"
-        # Counterparty on top, Aspora below (the existing party order).
-        top = table.rows[0].cells[0].text
-        bottom = table.rows[1].cells[0].text
-        assert "For Acme Innovations Pvt Ltd" in top
-        assert "For Real Transfer Limited" in bottom
-        assert gen.SIGNATURE_ANCHOR_COUNTERPARTY in top
-        assert gen.SIGNATURE_ANCHOR_ASPORA in bottom
+        # One row, three columns (left box | empty spacer | right box).
+        assert len(table.rows) == 1, "boxes must stay side by side in a single row"
+        cells = table.rows[0].cells
+        assert len(cells) == 3, "expected left box + spacer + right box columns"
+        # The middle column is the empty spacer; the two party boxes flank it.
+        assert cells[1].text.strip() == "", "the middle spacer column must be empty"
+        assert "For Acme Innovations Pvt Ltd" in cells[0].text  # LEFT box
+        assert "For Real Transfer Limited" in cells[2].text  # RIGHT box
+        assert gen.SIGNATURE_ANCHOR_COUNTERPARTY in cells[0].text
+        assert gen.SIGNATURE_ANCHOR_ASPORA in cells[2].text
+
+        # The table still spans the full text width, and the centre gap is an
+        # obvious one (the spacer column is a meaningful fraction of the width).
+        grid = table._tbl.find(qn("w:tblGrid"))
+        widths = [int(gc.get(qn("w:w"))) for gc in grid.findall(qn("w:gridCol"))]
+        assert len(widths) == 3
+        left_w, gap_w, right_w = widths
+        # Boxes are the OUTER columns and roughly equal; the gap is clearly visible
+        # (at least ~1 inch = 1440 dxa) and centred between two non-trivial boxes.
+        assert gap_w >= 1440, f"centre gap too small ({gap_w} dxa)"
+        assert left_w > 0 and right_w > 0
+        assert abs(left_w - right_w) <= 2, "the two boxes should be balanced"
 
 
 # --------------------------------------------------------------------------- #

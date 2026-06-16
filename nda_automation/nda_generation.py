@@ -1096,17 +1096,15 @@ def _fill_signature_table(document: DocxDocument, entity: EntityParty, intake: C
     if len(cells) < 2:
         raise NdaGenerationError("Signature table does not have two party blocks.")
 
-    # The two party signature boxes are stacked VERTICALLY (one full-width box
-    # above the other) rather than side-by-side. The template ships them as two
-    # narrow columns in a single row, which pins the FIRST (counterparty) box hard
-    # against the page's left margin — leaving no horizontal room for the DocuSign
-    # signHere/dateSigned tabs and forcing the off-page anchor offsets that caused
-    # the INVALID_USER_OFFSET 400. A single-column stack gives each anchor the full
-    # page width, so a small on-page tab offset is always valid.
-    counterparty_cell, aspora_cell = _stack_signature_cells(table)
+    # The two party signature boxes sit SIDE BY SIDE (counterparty left, Aspora
+    # right). The template packs them as two adjacent columns with no gap between;
+    # we insert a narrow EMPTY spacer column between them so the boxes are visibly
+    # separated (an obvious gap, not cramped-adjacent). The counterparty box stays
+    # the LEFT column and Aspora the RIGHT column.
+    counterparty_cell, aspora_cell = _space_signature_cells_apart(table)
 
-    # The FIRST (top) box is the counterparty (FIRST party); the SECOND (bottom)
-    # box is Aspora. Each gets its party's DocuSign anchor token so the envelope
+    # The LEFT cell is the counterparty (FIRST party), the RIGHT cell is Aspora
+    # (SECOND party). Each gets its party's DocuSign anchor token so the envelope
     # can drop that signer's signHere/dateSigned tab on the right signature line.
     _write_signature_cell(
         counterparty_cell,
@@ -1124,44 +1122,104 @@ def _fill_signature_table(document: DocxDocument, entity: EntityParty, intake: C
     )
 
 
-def _stack_signature_cells(table: Any) -> tuple[Any, Any]:
-    """Reshape the 1x2 side-by-side signature table into a 2x1 stacked layout.
+# Width (in dxa / twentieths of a point; 1440 dxa = 1 inch) of the empty spacer
+# column inserted between the two side-by-side signature boxes. The table spans
+# the full text width, so a wide (~1.9in) middle spacer pushes the counterparty
+# box flush to the LEFT margin and the Aspora box flush to the RIGHT margin with
+# an obvious centred gap between them.
+_SIGNATURE_SPACER_WIDTH_DXA = 2800
 
-    Returns ``(top_cell, bottom_cell)`` — two full-page-width cells, one above the
-    other. The template's signature block is a single row of two narrow columns;
-    we merge that row's two cells into one full-width cell (the top box) and add a
-    second full-width row beneath it (the bottom box). Each box therefore spans the
-    whole page width, giving the planted DocuSign anchor ample horizontal room so a
-    small, clearly on-page tab offset is valid.
 
-    Merging carries the merged cell's text across, so we clear it before the caller
-    rewrites the box from scratch.
+def _space_signature_cells_apart(table: Any) -> tuple[Any, Any]:
+    """Insert a narrow empty spacer column between the two side-by-side boxes.
+
+    The template's signature block is one row of two adjacent columns with no gap.
+    We add a third grid column between them and give it an empty, narrow cell so
+    the LEFT (counterparty) and RIGHT (Aspora) boxes are visibly separated. The two
+    party boxes are re-narrowed to make room so the table still fits its original
+    width. Returns ``(left_cell, right_cell)`` for the caller to fill.
+
+    Works at the XML grid level (python-docx has no insert-column API). Falls back
+    to the bare two-column layout if the grid is not the expected shape, so a
+    template change can never make generation fail here.
     """
 
-    first_row_cells = table.rows[0].cells
-    # Merge the two side-by-side cells of the first row into one full-width cell.
-    top_cell = first_row_cells[0]
-    if len(first_row_cells) > 1 and first_row_cells[1] is not first_row_cells[0]:
-        top_cell = first_row_cells[0].merge(first_row_cells[1])
-    _clear_cell(top_cell)
+    from docx.oxml.ns import qn  # noqa: PLC0415
 
-    # Add a second full-width row for the bottom box. A new row spans the table's
-    # grid; its (possibly multiple) cells are merged so the box is full width too.
-    new_cells = table.add_row().cells
-    bottom_cell = new_cells[0]
-    for extra in new_cells[1:]:
-        if extra is not bottom_cell:
-            bottom_cell = bottom_cell.merge(extra)
-    _clear_cell(bottom_cell)
+    tbl = table._tbl
+    grid = tbl.find(qn("w:tblGrid"))
+    grid_cols = grid.findall(qn("w:gridCol")) if grid is not None else []
+    rows = list(tbl.findall(qn("w:tr")))
+    # Expected template shape: exactly two grid columns and one row with two cells.
+    first_row_cells = rows[0].findall(qn("w:tc")) if rows else []
+    if grid is None or len(grid_cols) != 2 or len(rows) != 1 or len(first_row_cells) != 2:
+        # Unexpected shape — leave the layout untouched, just hand back the two cells.
+        cells = table.rows[0].cells
+        return cells[0], cells[-1]
 
-    return top_cell, bottom_cell
+    # Re-budget the column widths: keep the total, carve the spacer out of the pair.
+    total = sum(int(gc.get(qn("w:w")) or 0) for gc in grid_cols)
+    spacer_w = min(_SIGNATURE_SPACER_WIDTH_DXA, max(0, total - 2))
+    box_w = max(1, (total - spacer_w) // 2)
+    grid_cols[0].set(qn("w:w"), str(box_w))
+    grid_cols[1].set(qn("w:w"), str(box_w))
+
+    # Insert a spacer grid column between the two existing columns.
+    spacer_col = grid.makeelement(qn("w:gridCol"), {qn("w:w"): str(spacer_w)})
+    grid_cols[0].addnext(spacer_col)
+
+    # Insert a matching empty spacer cell in the row, between the two party cells.
+    left_tc, right_tc = first_row_cells[0], first_row_cells[1]
+    spacer_tc = _make_spacer_cell(left_tc, spacer_w)
+    left_tc.addnext(spacer_tc)
+
+    # Keep each party cell's own width marker in step with the re-budgeted grid
+    # column (1 dxa = 1 twip; python-docx widths are EMU, 1 twip = 635 EMU).
+    box_w_emu = box_w * 635
+    _set_tc_width(left_tc, box_w)
+    _set_tc_width(right_tc, box_w)
+
+    # Re-fetch python-docx cell wrappers now the row has three cells.
+    row_cells = table.rows[0].cells
+    left_cell, right_cell = row_cells[0], row_cells[-1]
+    left_cell.width = right_cell.width = box_w_emu
+    return left_cell, right_cell
 
 
-def _clear_cell(cell: Any) -> None:
-    """Blank every paragraph in ``cell`` so the caller can rewrite it cleanly."""
+def _set_tc_width(tc: Any, width_dxa: int) -> None:
+    """Set the ``<w:tcW>`` width (dxa) on a raw ``<w:tc>`` element."""
 
-    for paragraph in cell.paragraphs:
-        _set_paragraph_text(paragraph, "")
+    from docx.oxml.ns import qn  # noqa: PLC0415
+
+    tc_pr = tc.find(qn("w:tcPr"))
+    if tc_pr is None:
+        tc_pr = tc.makeelement(qn("w:tcPr"), {})
+        tc.insert(0, tc_pr)
+    tc_w = tc_pr.find(qn("w:tcW"))
+    if tc_w is None:
+        tc_w = tc_pr.makeelement(qn("w:tcW"), {})
+        tc_pr.append(tc_w)
+    tc_w.set(qn("w:w"), str(width_dxa))
+    tc_w.set(qn("w:type"), "dxa")
+
+
+def _make_spacer_cell(template_tc: Any, width_dxa: int) -> Any:
+    """Build an empty ``<w:tc>`` spacer cell modelled on ``template_tc``.
+
+    Carries a minimal ``<w:tcPr>`` with the spacer width and a single empty
+    paragraph (a ``<w:tc>`` must contain at least one block-level element to be
+    valid OOXML).
+    """
+
+    from docx.oxml.ns import qn  # noqa: PLC0415
+
+    tc = template_tc.makeelement(qn("w:tc"), {})
+    tc_pr = tc.makeelement(qn("w:tcPr"), {})
+    tc_w = tc.makeelement(qn("w:tcW"), {qn("w:w"): str(width_dxa), qn("w:type"): "dxa"})
+    tc_pr.append(tc_w)
+    tc.append(tc_pr)
+    tc.append(tc.makeelement(qn("w:p"), {}))
+    return tc
 
 
 def _write_signature_cell(
