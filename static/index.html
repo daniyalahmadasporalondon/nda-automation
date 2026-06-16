@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260616ds3">
+    <link rel="stylesheet" href="/static/styles.css?v=20260616gs1">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260615cp1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260615r">
   </head>
@@ -309,6 +309,11 @@
                   <button class="secondary icon-text" id="draftIntakeSendButton" type="button" title="Email the NDA" aria-label="Email the NDA">
                     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 3 10.8 13.2"/><path d="M21 3 14.5 21 10.8 13.2 3 10.5 21 3Z"/></svg>
                     <span>Send</span>
+                  </button>
+                  <span id="draftIntakeSignatureBadge" class="docusign-status-badge" hidden aria-live="polite"></span>
+                  <button class="secondary icon-text" id="draftIntakeSendForSignatureButton" type="button" hidden title="Send this NDA for e-signature via DocuSign" aria-label="Send the NDA for signature">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>
+                    <span>Send for Signature</span>
                   </button>
                 </div>
               </footer>
@@ -2051,6 +2056,61 @@
       </div>
     </div>
 
+    <!--
+      Generator-scoped "Send for Signature" composer. A second instance of the
+      same DocuSign send controller / model / status states as the Review
+      workstation's modal above, with its own nodes so the two never double-bind.
+      Opened from the Generator's generated-NDA result (Send for Signature CTA);
+      its signers default to the counterparty (FIRST party) + the Aspora signatory.
+    -->
+    <div class="send-modal" id="generatorDocusignSendModal" role="dialog" aria-modal="true" aria-labelledby="generatorDocusignSendModalTitle" hidden>
+      <div class="send-modal-dialog">
+        <form class="send-modal-form" id="generatorDocusignSendForm">
+          <header class="send-modal-head">
+            <div>
+              <p class="send-modal-eyebrow">E-signature</p>
+              <h2 id="generatorDocusignSendModalTitle">Send for signature</h2>
+            </div>
+            <button class="send-modal-close" id="generatorDocusignSendModalClose" type="button" aria-label="Close send for signature dialog">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M18 6 6 18M6 6l12 12"/>
+              </svg>
+            </button>
+          </header>
+
+          <section class="docusign-signers" aria-label="Signers">
+            <h3>Signers</h3>
+            <div class="docusign-signer-rows" id="generatorDocusignSignerRows"></div>
+          </section>
+
+          <fieldset class="docusign-signing-order" id="generatorDocusignSigningOrder">
+            <legend>Signing order</legend>
+            <label>
+              <input type="radio" name="generatorDocusignSigningOrder" value="sequential" data-docusign-signing-order checked>
+              <span>Sequential — counterparty signs first, then Aspora</span>
+            </label>
+            <label>
+              <input type="radio" name="generatorDocusignSigningOrder" value="parallel" data-docusign-signing-order>
+              <span>Parallel — both signers notified at once</span>
+            </label>
+          </fieldset>
+
+          <div class="docusign-envelope-state">
+            <span id="generatorDocusignSignatureBadge" class="docusign-status-badge" hidden aria-live="polite"></span>
+            <span id="generatorDocusignEnvelopeId" class="docusign-envelope-id" hidden></span>
+            <a id="generatorDocusignDownloadSignedLink" class="docusign-download-signed" href="#" hidden>Download signed</a>
+          </div>
+
+          <p class="send-modal-status" id="generatorDocusignSendStatus" aria-live="polite"></p>
+
+          <footer class="send-modal-actions">
+            <button class="secondary" id="generatorDocusignSendCancelButton" type="button">Cancel</button>
+            <button id="generatorDocusignSendSubmitButton" type="submit">Send for signature</button>
+          </footer>
+        </form>
+      </div>
+    </div>
+
     <!-- In-app notification toasts for new inbound NDAs; populated by notifications.js. -->
     <div class="toast-stack" id="toastStack" aria-live="polite" aria-atomic="false"></div>
 
@@ -2063,7 +2123,7 @@
       no divergent untested .js duplicate. Module scripts are deferred, so this
       runs before any user interaction; all consumers call these at runtime.
     -->
-    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260615ds2"></script>
+    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260616gs1"></script>
     <script src="/static/js/redline-rendering.js?v=20260612c"></script>
     <script src="/static/js/repository-api.js?v=20260607c"></script>
     <script src="/static/js/repository-model.js?v=20260615cp1"></script>
@@ -2076,7 +2136,7 @@
     <script src="/static/js/corpus.js?v=20260615q"></script>
     <script src="/static/js/manual-upload.js"></script>
     <script src="/static/js/send-document.js?v=20260606i"></script>
-    <script src="/static/js/draft-intake.js?v=20260614b"></script>
+    <script src="/static/js/draft-intake.js?v=20260616gs1"></script>
     <script src="/static/js/auth-session.js?v=20260615h"></script>
     <script src="/static/js/admin-ai.js"></script>
     <script src="/static/js/admin-health.js?v=20260607a"></script>
@@ -2099,7 +2159,7 @@
     <script src="/static/js/app-state.js?v=20260615m"></script>
     <script src="/static/js/dashboard-search.js?v=20260614a"></script>
     <script src="/static/js/notifications.js?v=20260615n"></script>
-    <script src="/static/js/generator-editor.js?v=20260612c"></script>
-    <script src="/static/app.js?v=20260616ds3"></script>
+    <script src="/static/js/generator-editor.js?v=20260616dd1"></script>
+    <script src="/static/app.js?v=20260616gs1"></script>
   </body>
 </html>

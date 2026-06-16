@@ -28,9 +28,11 @@ from typing import Any, Callable
 from . import (
     artifact_registry,
     artifact_service,
+    docusign_connection,
     docusign_integration,
     entity_registry,
     gmail_integration,
+    nda_generation,
 )
 from .artifact_registry import (
     ROLE_GENERATED,
@@ -38,6 +40,7 @@ from .artifact_registry import (
     ROLE_REVIEWED,
     ROLE_SENT,
     latest_artifact_for_role,
+    matter_artifacts,
 )
 from .docusign_integration import (
     DEFAULT_SIGNING_ORDER,
@@ -61,6 +64,19 @@ _DOCUMENT_PRECEDENCE = (ROLE_REVIEWED, ROLE_GENERATED, ROLE_SENT, ROLE_ORIGINAL)
 # the caller did not override; surfaced as a clear error rather than guessed.
 _ASPORA_SIGNER_ROLE = "aspora"
 _COUNTERPARTY_SIGNER_ROLE = "counterparty"
+
+# DocuSign anchor strings the GENERATED NDA plants on each party's signature line
+# (the single source is ``nda_generation`` so the written marker and the anchored
+# tab can never drift). Each signer's signHere/dateSigned tab attaches to its
+# party's token, so the field lands on the right line. These exist ONLY in a
+# generated NDA; for received counterparty paper (a later phase) we have no
+# control over the layout, so the anchors are applied ONLY when the document we
+# send is a generated NDA (see ``_resolve_signers``) — otherwise the tabs fall
+# back to the signer name as before.
+_ANCHOR_FOR_ROLE = {
+    _ASPORA_SIGNER_ROLE: nda_generation.SIGNATURE_ANCHOR_ASPORA,
+    _COUNTERPARTY_SIGNER_ROLE: nda_generation.SIGNATURE_ANCHOR_COUNTERPARTY,
+}
 
 ClientFactory = Callable[..., docusign_integration.DocuSignClient]
 
@@ -347,9 +363,20 @@ def _resolve_signers(matter: dict[str, Any], override: Any | None) -> list[Signe
     counterparty contact (from the matter's reply/sender + derived counterparty
     name) and the Aspora signatory (from the entity registry bundle, when one is
     selected on the matter). Each side is parallel (any order) by default.
+
+    Signature-field anchoring: a GENERATED NDA carries a distinct, per-party
+    anchor token on each signature line (planted by ``nda_generation``), so each
+    signer's signHere/dateSigned tab attaches to the correct line. We assign those
+    anchors here, but ONLY when the document being sent is a generated NDA (it is
+    the case we control the template for). For received counterparty paper the
+    tokens are not in the document, so we leave the anchor empty and the tabs fall
+    back to the signer name — the reliable-anchor work for third-party layouts is
+    a later phase.
     """
     if isinstance(override, list) and override:
         return docusign_integration.normalize_signers(override)
+
+    generated = _is_generated_nda_matter(matter)
 
     signers: list[dict[str, Any]] = []
 
@@ -366,6 +393,13 @@ def _resolve_signers(matter: dict[str, Any], override: Any | None) -> list[Signe
             "Could not resolve any signers; provide signers explicitly "
             "({name, email}) to send this matter for signature."
         )
+
+    if generated:
+        for signer in signers:
+            anchor = _ANCHOR_FOR_ROLE.get(signer.get("role") or "")
+            if anchor:
+                signer["anchor"] = anchor
+
     return docusign_integration.normalize_signers(signers)
 
 
@@ -374,21 +408,54 @@ def _counterparty_signer(matter: dict[str, Any]) -> dict[str, Any] | None:
     if not email:
         return None
     name = artifact_registry.derive_counterparty(matter) or email
+    # The anchor is assigned in _resolve_signers (only for generated NDAs, where
+    # the counterparty signature line carries the token).
     return {"name": name, "email": email, "role": _COUNTERPARTY_SIGNER_ROLE, "anchor": ""}
 
 
 def _aspora_signer(matter: dict[str, Any]) -> dict[str, Any] | None:
-    """The Aspora signatory from the selected entity bundle, when resolvable.
+    """The Aspora signatory for an Aspora-signing matter, when routable.
 
-    Reads ``matter["signing_entity_id"]`` (set when an NDA was generated) and
-    pulls that entity's signatory. The placeholder ``[Authorised Signatory]`` /
-    missing email means we cannot route to a real inbox, so we OMIT the Aspora
-    signer rather than send to a fake address — the caller can pass an explicit
-    override to include a concrete Aspora signatory.
+    Resolves the entity id from ``matter["signing_entity_id"]`` when set, else from
+    the generated NDA's manifest (``...['generation']['entity_id']`` on the
+    generated artifact — the matter-level intake_metadata drops unknown keys, so
+    the artifact manifest is the reliable source for a generated matter). A
+    resolvable entity id is what marks this as an Aspora-signing matter.
+
+    Routing identity, in precedence order:
+
+    1. A SINGLE default Aspora signatory from config
+       (``NDA_DOCUSIGN_ASPORA_SIGNER_NAME`` + ``NDA_DOCUSIGN_ASPORA_SIGNER_EMAIL``):
+       when BOTH are set it is used for ANY Aspora entity, standing in for the
+       per-entity registry signatory (a ``[Authorised Signatory]`` placeholder with
+       no email, which DocuSign cannot route to). This makes Aspora a routable
+       signer on every generated NDA.
+    2. Otherwise the selected entity's own registry signatory, but only when it is
+       concrete + routable (a real name and ``@`` email).
+
+    When neither yields a routable address the Aspora signer is OMITTED (parallel
+    signing means the counterparty can still sign; an explicit per-send override
+    still wins, handled earlier in :func:`_resolve_signers`) — fully backward
+    compatible with the no-config behaviour.
+
+    The anchor is assigned centrally in :func:`_resolve_signers` (only for a
+    generated NDA, whose signature block carries the per-party token).
     """
-    entity_id = str(matter.get("signing_entity_id") or "").strip()
+    entity_id = _matter_entity_id(matter)
     if not entity_id:
         return None
+
+    default_signer = docusign_connection.aspora_default_signer()
+    if default_signer is not None:
+        # One configured identity for every Aspora entity — overrides the per-entity
+        # registry placeholder (which has no routable email).
+        return {
+            "name": default_signer["name"],
+            "email": default_signer["email"],
+            "role": _ASPORA_SIGNER_ROLE,
+            "anchor": "",
+        }
+
     entity = entity_registry.get_entity(entity_id)
     if not isinstance(entity, dict):
         return None
@@ -399,7 +466,48 @@ def _aspora_signer(matter: dict[str, Any]) -> dict[str, Any] | None:
         # No concrete, routable signatory — omit (parallel signing means the
         # counterparty can still sign; Aspora is added via override when known).
         return None
-    return {"name": name, "email": email, "role": _ASPORA_SIGNER_ROLE, "anchor": name}
+    return {"name": name, "email": email, "role": _ASPORA_SIGNER_ROLE, "anchor": ""}
+
+
+def _matter_entity_id(matter: dict[str, Any]) -> str:
+    """The Aspora signing-entity id for a matter, preferring an explicit field.
+
+    ``matter["signing_entity_id"]`` is honoured first (an explicit selection);
+    otherwise the generated NDA's manifest entity id is used, so a matter created
+    by the generation flow (which records the entity on the artifact manifest, not
+    a top-level field) still resolves its Aspora signer.
+    """
+    explicit = str(matter.get("signing_entity_id") or "").strip()
+    if explicit:
+        return explicit
+    manifest = _generation_manifest(matter)
+    return str(manifest.get("entity_id") or "").strip()
+
+
+def _generation_manifest(matter: dict[str, Any]) -> dict[str, Any]:
+    """The generation manifest from the matter's generated artifact, or ``{}``.
+
+    Generated NDAs stash the manifest on the generated artifact's
+    ``metadata['generation']``. Returns the first one found (a matter has at most
+    one generated NDA), or an empty dict for a non-generated matter.
+    """
+    for artifact in matter_artifacts(matter):
+        metadata = artifact.metadata if isinstance(artifact.metadata, dict) else {}
+        generation = metadata.get("generation")
+        if isinstance(generation, dict) and generation:
+            return generation
+    return {}
+
+
+def _is_generated_nda_matter(matter: dict[str, Any]) -> bool:
+    """Whether the document we will send is a generated NDA (carries our anchors).
+
+    True iff the matter has a generated NDA artifact with a manifest. The reviewed
+    (post-approval) document is derived from the generated NDA and keeps the same
+    signature block + anchor tokens, so a generation manifest is the right signal
+    even when the reviewed copy wins the send-precedence walk.
+    """
+    return bool(_generation_manifest(matter))
 
 
 # ---------------------------------------------------------------------------

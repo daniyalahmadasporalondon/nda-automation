@@ -15,6 +15,7 @@ import {
   buildSendForSignaturePayload,
   connectionView,
   defaultSigners,
+  generatorSignatureMatter,
   matterEnvelopeId,
   matterSignatureStatus,
   matterSignatureView,
@@ -248,9 +249,57 @@ test("buildSendForSignaturePayload: coerces an unknown signing_order to sequenti
   assert.equal(buildSendForSignaturePayload([], "parallel").signing_order, "parallel");
 });
 
+// --- Generator "Send for Signature": the generation-result -> matter view -----
+// The Generator's CTA acts on a freshly generated NDA (a saved matter, but not a
+// fetched public_matter). generatorSignatureMatter synthesizes the matter-like
+// view the send composer + defaultSigners read; these assert that view, and that
+// it flows end-to-end into the same two-party POST body the Review send produces.
+test("generatorSignatureMatter: builds the matter-like view from a generation result", () => {
+  const matter = generatorSignatureMatter({
+    matterId: "m-123",
+    counterpartyName: "Acme Corp",
+    counterpartyEmail: "deals@acme.com",
+  });
+  assert.equal(matter.id, "m-123");
+  assert.equal(matter.counterparty, "Acme Corp");
+  assert.equal(matter.counterparty_name, "Acme Corp");
+  assert.equal(matter.recipient_email, "deals@acme.com");
+});
+
+test("generatorSignatureMatter: no saved matter id (legacy blob) -> null, CTA stays hidden", () => {
+  assert.equal(generatorSignatureMatter({ counterpartyName: "Acme", counterpartyEmail: "a@b.com" }), null);
+  assert.equal(generatorSignatureMatter(null), null);
+  assert.equal(generatorSignatureMatter({ matterId: "" }), null);
+});
+
+test("generator send: matter view -> defaultSigners derives counterparty + Aspora both signing", () => {
+  const matter = generatorSignatureMatter({
+    matterId: "m-9",
+    counterpartyName: "Beta Labs",
+    counterpartyEmail: "legal@beta.io",
+  });
+  const signers = defaultSigners(matter, {
+    asporaSignatory: { name: "Jane Aspora", email: "jane@aspora.com" },
+  });
+  assert.deepEqual(signers[0], { role: "counterparty", name: "Beta Labs", email: "legal@beta.io", order: 1 });
+  assert.deepEqual(signers[1], { role: "aspora", name: "Jane Aspora", email: "jane@aspora.com", order: 2 });
+  // ...and that validated set builds the same REST contract body the Review send uses.
+  const validated = validateSigners(signers);
+  assert.equal(validated.ok, true);
+  const payload = buildSendForSignaturePayload(validated.signers, "sequential");
+  assert.deepEqual(payload, {
+    signers: [
+      { name: "Beta Labs", email: "legal@beta.io", role: "counterparty" },
+      { name: "Jane Aspora", email: "jane@aspora.com", role: "aspora" },
+    ],
+    signing_order: "sequential",
+  });
+});
+
 test("DocuSignModel namespace re-exports the same functions", () => {
   assert.equal(typeof DocuSignModel.signatureView, "function");
   assert.equal(typeof DocuSignModel.connectionView, "function");
+  assert.equal(typeof DocuSignModel.generatorSignatureMatter, "function");
   assert.equal(DocuSignModel.signatureView("completed").canDownloadSigned, true);
 });
 

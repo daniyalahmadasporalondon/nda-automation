@@ -219,6 +219,82 @@ class TestSlotFill:
 
 
 # --------------------------------------------------------------------------- #
+# DocuSign signature anchors — distinct per-party tokens on each signature line
+# --------------------------------------------------------------------------- #
+
+
+class TestSignatureAnchors:
+    """The generated NDA plants a DISTINCT DocuSign anchor token on each party's
+    signature line so the send-for-signature flow can drop each signer's
+    signHere/dateSigned tab on the right line. The anchors must be PRESENT in the
+    document (so DocuSign can find them) and UNIQUE per party (so the two parties
+    can be told apart)."""
+
+    def test_both_party_anchors_are_present_in_the_generated_doc(self, playbook):
+        text = extract_docx_text(_generate(playbook).docx_bytes)
+        assert gen.SIGNATURE_ANCHOR_ASPORA in text
+        assert gen.SIGNATURE_ANCHOR_COUNTERPARTY in text
+
+    def test_each_anchor_appears_exactly_once(self, playbook):
+        # A duplicate anchor would make DocuSign place the tab twice / ambiguously.
+        text = extract_docx_text(_generate(playbook).docx_bytes)
+        assert text.count(gen.SIGNATURE_ANCHOR_ASPORA) == 1
+        assert text.count(gen.SIGNATURE_ANCHOR_COUNTERPARTY) == 1
+
+    def test_anchors_are_distinct(self):
+        assert gen.SIGNATURE_ANCHOR_ASPORA != gen.SIGNATURE_ANCHOR_COUNTERPARTY
+
+    def test_counterparty_anchor_sits_on_the_counterparty_by_line(self, playbook):
+        # The counterparty token must be on the SAME signature line as the
+        # counterparty party name (so the field lands in the counterparty's cell).
+        text = extract_docx_text(_generate(playbook).docx_bytes)
+        lines = text.splitlines()
+        cp_line = next(i for i, line in enumerate(lines) if "For Acme Innovations Pvt Ltd" in line)
+        # The By: line immediately under the counterparty name carries the token.
+        window = "\n".join(lines[cp_line : cp_line + 3])
+        assert gen.SIGNATURE_ANCHOR_COUNTERPARTY in window
+        assert gen.SIGNATURE_ANCHOR_ASPORA not in window
+
+    def test_aspora_anchor_sits_on_the_aspora_by_line(self, playbook):
+        text = extract_docx_text(_generate(playbook).docx_bytes)
+        lines = text.splitlines()
+        aspora_line = next(i for i, line in enumerate(lines) if "For Real Transfer Limited" in line)
+        window = "\n".join(lines[aspora_line : aspora_line + 3])
+        assert gen.SIGNATURE_ANCHOR_ASPORA in window
+        assert gen.SIGNATURE_ANCHOR_COUNTERPARTY not in window
+
+    def test_anchor_tokens_carry_no_brackets(self):
+        # The leftover-placeholder guard only flags [...] template slots; the anchor
+        # tokens must not look like one (or generation would fail closed on them).
+        for token in (gen.SIGNATURE_ANCHOR_ASPORA, gen.SIGNATURE_ANCHOR_COUNTERPARTY):
+            assert "[" not in token and "]" not in token
+
+    def test_anchors_do_not_break_the_self_check_or_placeholder_guard(self, playbook):
+        # Planting the anchors must not introduce a prohibited position or leave a
+        # template slot unfilled — a clean generated NDA still passes everything.
+        import re
+
+        result = _generate(playbook)
+        text = extract_docx_text(result.docx_bytes)
+        assert re.findall(r"\[[^\]]+\]", text) == []
+        check = gen.self_check_generated_nda(result.docx_bytes, playbook=playbook)
+        assert check.passed, (check.native_failures, check.native_reviews, check.dynamic_failures)
+        # The ship gate (prohibited-position scan) also leaves the markers alone.
+        gen.assert_generated_nda_is_on_position(result, playbook)
+
+    def test_signature_block_still_has_both_parties_name_title_date(self, playbook):
+        # The anchored block is still a complete, visible two-party signature block.
+        text = extract_docx_text(_generate(playbook).docx_bytes)
+        assert "For Acme Innovations Pvt Ltd" in text
+        assert "For Real Transfer Limited" in text
+        assert text.count("By: _______________________________") == 2
+        assert text.count("Date: _______________________") == 2
+        # The Aspora signatory fills from the bundle; the counterparty is a blank line.
+        assert "Name: Jane Doe" in text
+        assert "Title: Director" in text
+
+
+# --------------------------------------------------------------------------- #
 # Generation — clauses realign to the Playbook
 # --------------------------------------------------------------------------- #
 

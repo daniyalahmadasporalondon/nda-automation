@@ -85,7 +85,71 @@ window.generatorEditor = (function () {
       }
       paras.push(para);
     });
+    // The signature sign-off renders as a `.nda-doc-signoff` <div> of two column
+    // <div>s of <span>s (none of which the block selector above captures), so a
+    // naive parse would visibly END the editor's document at the witness <p>. The
+    // GENERATED path already draws its signature block as a two-column grid from
+    // paragraphs carrying a `table` dict (renderTable), so synthesise the same
+    // table-cell paragraphs from the signoff columns here — the existing renderTable
+    // path then lights up and the draft mirrors what the generated NDA shows.
+    sourceEl.querySelectorAll(".nda-doc-signoff").forEach((signoff) => {
+      index = appendSignoffTableParagraphs(signoff, paras, index);
+    });
     return paras;
+  }
+
+  // Synthesise table-cell paragraphs from a `.nda-doc-signoff` block so the draft
+  // editor renders the same two-column signature grid the generated NDA has. Each
+  // direct child <div> of the signoff is one column (cell); each meaningful line in
+  // it (label / party / signature line / Name·Title·Date meta) becomes a paragraph
+  // tagged with `table: {table_index, row_index, cell_index}` so renderParagraphs
+  // groups them and renderTable draws the side-by-side columns. The signature LINE
+  // is an empty `.nda-doc-sig-line` <span>; it carries no text so it would normally
+  // be dropped, but it's the actual signing line — emit it as a blank paragraph so
+  // the block reads with a place to sign. Returns the advanced running index.
+  function appendSignoffTableParagraphs(signoff, paras, startIndex) {
+    if (!signoff) return startIndex;
+    const columns = Array.from(signoff.children).filter((el) => el.tagName === "DIV");
+    if (!columns.length) return startIndex;
+    // Keep table_index unique per signoff so two signoffs never merge into one grid.
+    const tableIndex = signoffTableIndex(paras);
+    let index = startIndex;
+    columns.forEach((column, cellIndex) => {
+      // Each line is a direct child <span>; a non-span child (defensive) is treated
+      // as its own line too. The empty sig-line span is kept as a blank line.
+      const lines = Array.from(column.children).filter(
+        (el) => el.tagName === "SPAN" || el.tagName === "DIV" || el.tagName === "P",
+      );
+      lines.forEach((line) => {
+        const isSigLine = line.classList && line.classList.contains("nda-doc-sig-line");
+        const runs = runsFromElement(line);
+        const text = runs.map((run) => run.text).join("");
+        if (!text.trim() && !isSigLine) return;
+        index += 1;
+        const para = {
+          id: `draft-${index}`,
+          index,
+          text,
+          runs: runs.length > 1 || runs[0].bold || runs.some((r) => r.fill || r.blank) ? runs : undefined,
+          table: { table_index: tableIndex, row_index: 0, cell_index: cellIndex },
+        };
+        paras.push(para);
+      });
+    });
+    return index;
+  }
+
+  // A table_index that doesn't collide with any already-synthesised signoff grid in
+  // `paras`, so multiple signoffs (or a re-parse) keep distinct contiguous tables.
+  function signoffTableIndex(paras) {
+    let max = -1;
+    paras.forEach((para) => {
+      const meta = para && para.table;
+      if (meta && typeof meta === "object" && Number.isFinite(Number(meta.table_index))) {
+        max = Math.max(max, Number(meta.table_index));
+      }
+    });
+    return max + 1;
   }
 
   // Marker + nesting level for a draft <li>, from its position + depth in the source
@@ -277,7 +341,12 @@ window.generatorEditor = (function () {
       }
       cell.paragraphs.push(paragraph);
     });
-    const columnCount = cells.reduce((max, cell) => Math.max(max, cell.col), 0) || cells.length;
+    // Column count is the distinct cell_index count (max index + 1), falling back
+    // to the cell count for a degenerate single-row table with no cell indices.
+    // (Mirrors renderReviewTable in redline-rendering.js — a two-cell signature row
+    // at indices 0,1 must yield 2 columns, not the max index 1, so the Company and
+    // Aspora blocks sit SIDE BY SIDE instead of stacking into one column.)
+    const columnCount = cells.reduce((max, cell) => Math.max(max, cell.col + 1), 0) || cells.length;
     const inner = cells
       .map((cell) => `<div class="generator-doc-table-cell">${cell.paragraphs.map(renderParagraph).join("")}</div>`)
       .join("");

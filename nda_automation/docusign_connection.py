@@ -50,6 +50,15 @@ REDIRECT_URI_ENV = "NDA_DOCUSIGN_OAUTH_REDIRECT_URI"
 AUTH_SERVER_ENV = "NDA_DOCUSIGN_AUTH_SERVER"
 CONNECT_HMAC_KEY_ENV = "NDA_DOCUSIGN_CONNECT_HMAC_KEY"
 
+# A SINGLE default Aspora signatory (name + email) used for ALL Aspora signing
+# entities when routing an envelope. The per-entity registry signatory is a
+# ``[Authorised Signatory]`` placeholder with no email, so DocuSign cannot route
+# Aspora's signing copy from it; when BOTH of these are set the workflow uses this
+# one identity as the Aspora recipient on every generated NDA (see
+# :func:`docusign_workflow._aspora_signer`).
+ASPORA_SIGNER_NAME_ENV = "NDA_DOCUSIGN_ASPORA_SIGNER_NAME"
+ASPORA_SIGNER_EMAIL_ENV = "NDA_DOCUSIGN_ASPORA_SIGNER_EMAIL"
+
 # DocuSign OAuth auth servers. Demo (sandbox) vs production are the two account.*
 # hosts; the eSignature REST base_uri is resolved per-account from /oauth/userinfo
 # (NOT hardcoded), because production accounts live on region-specific hosts.
@@ -110,6 +119,24 @@ def is_production() -> bool:
 
 def connect_hmac_key() -> str:
     return os.environ.get(CONNECT_HMAC_KEY_ENV, "")
+
+
+def aspora_default_signer() -> dict[str, str] | None:
+    """The single default Aspora signatory ``{name, email}``, or ``None``.
+
+    Reads ``NDA_DOCUSIGN_ASPORA_SIGNER_NAME`` + ``NDA_DOCUSIGN_ASPORA_SIGNER_EMAIL``
+    and returns a routable signatory ONLY when BOTH are set (and the email looks
+    like a real address). This single identity stands in for the per-entity
+    registry signatory (a ``[Authorised Signatory]`` placeholder with no email) so
+    Aspora becomes a routable signer on every generated NDA. When either is unset
+    returns ``None`` so the caller keeps its current behaviour (omit Aspora when no
+    routable email) — fully backward compatible.
+    """
+    name = os.environ.get(ASPORA_SIGNER_NAME_ENV, "").strip()
+    email = os.environ.get(ASPORA_SIGNER_EMAIL_ENV, "").strip()
+    if not name or not email or "@" not in email:
+        return None
+    return {"name": name, "email": email}
 
 
 # ---------------------------------------------------------------------------

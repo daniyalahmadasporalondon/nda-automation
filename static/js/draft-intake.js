@@ -50,6 +50,11 @@ function createDraftIntakeController({
   onDownloadGenerated,
   onSendGenerated,
   onEditGenerated,
+  // Optional seam: notified whenever the staged post-generation actions change —
+  // the saved-artifact handle after a successful generate, or null on
+  // clear/reset. app.js uses it to reveal/hide the "Send for Signature" CTA in
+  // step with whether a sendable generated matter exists. Additive; absent = no-op.
+  onStagedActionsChanged,
   // Optional seam: a stubbed generation handler. When the Generic NDA template
   // ships, app.js can pass a real one; until then the default reports pending.
   onGenerate,
@@ -275,9 +280,12 @@ function createDraftIntakeController({
     };
   }
 
-  // Records the last successful generation so Download/Send act on it.
+  // Records the last successful generation so Download/Send act on it, and
+  // notifies the optional staged-actions seam (app.js reveals/hides the
+  // "Send for Signature" CTA from this) with the saved-artifact handle or null.
   function setStagedActions(generated) {
     lastGenerated = generated || null;
+    if (typeof onStagedActionsChanged === "function") onStagedActionsChanged(lastGenerated);
   }
 
   // One-time population of the static option lists (entities, NDA types, laws).

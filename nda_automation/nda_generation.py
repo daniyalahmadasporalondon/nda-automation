@@ -62,6 +62,43 @@ CLAUSE_CONFIDENTIAL = "confidential_information"
 CLAUSE_GOVERNING_LAW = "governing_law"
 
 # --------------------------------------------------------------------------- #
+# DocuSign signature anchors
+# --------------------------------------------------------------------------- #
+# DocuSign does NOT auto-detect signature spots — the envelope tells it where to
+# drop each signer's signHere / dateSigned tab via an *anchor string* it searches
+# for in the document. For a generated NDA we own the template, so we plant a
+# DISTINCT, per-party anchor token on each party's signature line and route that
+# party's tabs to it. This is the reliable case the send-for-signature flow relies
+# on (``docusign_workflow`` imports these exact constants, so what is written and
+# what is anchored can never drift).
+#
+# Why explicit tokens rather than reusing existing block text: after the signature
+# block is normalised, BOTH party cells are structurally identical ("For <party>",
+# "By: ___", "Name: ...", ...), and the only distinguishing text — the party's
+# legal name — also appears earlier in the document (the party-introduction
+# recital). DocuSign anchors to the FIRST occurrence of a string, so reusing the
+# legal name would land the field on the recital, not the signature line, and the
+# two cells could not be told apart. The tokens below are unique, appear once each,
+# and sit exactly on the signature line.
+#
+# Token shape: backslash-delimited (``\sig_party_aspora\``) — the conventional
+# DocuSign anchor-marker form. It carries no square brackets (so it never trips the
+# leftover-placeholder guard, which only flags ``[...]`` template slots) and
+# matches none of the prohibited-position patterns (so the ship gate leaves it
+# alone). The tokens are designed to be hidden at send time (white/small font) but
+# are searchable text in the .docx so DocuSign can find them.
+SIGNATURE_ANCHOR_ASPORA = "\\sig_party_aspora\\"
+SIGNATURE_ANCHOR_COUNTERPARTY = "\\sig_party_counterparty\\"
+
+# The signer ``role`` (see ``docusign_workflow``) each anchor belongs to, so the
+# workflow can map "this recipient is the Aspora signatory / the counterparty" to
+# the right anchor without re-encoding the token strings.
+SIGNATURE_ANCHOR_BY_ROLE = {
+    "aspora": SIGNATURE_ANCHOR_ASPORA,
+    "counterparty": SIGNATURE_ANCHOR_COUNTERPARTY,
+}
+
+# --------------------------------------------------------------------------- #
 # Untrusted free-text sanitisation
 # --------------------------------------------------------------------------- #
 # intake.purpose and intake.business_description are free text from the caller
@@ -1008,32 +1045,52 @@ def _fill_signature_table(document: DocxDocument, entity: EntityParty, intake: C
     if len(cells) < 2:
         raise NdaGenerationError("Signature table does not have two party blocks.")
 
+    # The FIRST cell is the counterparty (FIRST party), the SECOND is Aspora
+    # (SECOND party). Each gets its party's DocuSign anchor token so the envelope
+    # can drop that signer's signHere/dateSigned tab on the right signature line.
     _write_signature_cell(
         cells[0],
         party_name=intake.company_name,
         signatory_name="",
         signatory_title="",
+        anchor=SIGNATURE_ANCHOR_COUNTERPARTY,
     )
     _write_signature_cell(
         cells[1],
         party_name=entity.legal_name,
         signatory_name=entity.signatory_name,
         signatory_title=entity.signatory_title,
+        anchor=SIGNATURE_ANCHOR_ASPORA,
     )
 
 
-def _write_signature_cell(cell: Any, *, party_name: str, signatory_name: str, signatory_title: str) -> None:
+def _write_signature_cell(
+    cell: Any,
+    *,
+    party_name: str,
+    signatory_name: str,
+    signatory_title: str,
+    anchor: str = "",
+) -> None:
     """Rewrite a signature cell to: header, party name, By/Name/Title/Date lines.
 
     Mirrors the Playbook ``signatures.redline_template`` so the block carries the
     ``By:`` / ``Title:`` / ``Date:`` markers the signatures checker requires. The
     cell's existing paragraphs are reused in order and any surplus is cleared.
+
+    ``anchor`` is this party's DocuSign anchor token. It is appended to the ``By:``
+    signature line so DocuSign drops the signHere tab right on that line (the
+    workflow offsets the tab off the marker). The marker is rendered hidden
+    (white, 1pt) so it does not show in the executed document, but stays as
+    searchable text so the anchor can always be found. Empty ``anchor`` leaves the
+    block unchanged (e.g. a non-signing-flow render).
     """
 
     party_line = f"For {party_name}".strip() if party_name else "For _______________________"
+    by_line = "By: _______________________________"
     lines = [
         party_line,
-        "By: _______________________________",
+        by_line,
         f"Name: {signatory_name}".rstrip() if signatory_name else "Name: _______________________",
         f"Title: {signatory_title}".rstrip() if signatory_title else "Title: _______________________",
         "Date: _______________________",
@@ -1047,6 +1104,29 @@ def _write_signature_cell(cell: Any, *, party_name: str, signatory_name: str, si
     # Clear any leftover template paragraphs beyond the lines we wrote.
     for paragraph in paragraphs[len(lines):]:
         _set_paragraph_text(paragraph, "")
+
+    # Plant the per-party anchor on the By: line (index 1) as a hidden run, so the
+    # marker is searchable text for DocuSign but invisible in the rendered doc.
+    if anchor:
+        by_paragraph = cell.paragraphs[1]
+        _append_hidden_anchor_run(by_paragraph, anchor)
+
+
+def _append_hidden_anchor_run(paragraph: Any, anchor: str) -> None:
+    """Append ``anchor`` to ``paragraph`` as a hidden (white, 1pt) run.
+
+    The token must be present as searchable text (so DocuSign can locate it) but
+    must not be visible in the executed document. A leading space keeps it off the
+    visible underscores. Colour + tiny size make it effectively invisible without
+    relying on the ``vanish`` property (which some renderers hide from text
+    extraction, which would defeat anchoring).
+    """
+
+    from docx.shared import Pt, RGBColor  # noqa: PLC0415
+
+    run = paragraph.add_run(" " + anchor)
+    run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+    run.font.size = Pt(1)
 
 
 # --------------------------------------------------------------------------- #

@@ -86,8 +86,11 @@ class Signer:
     ``routing_order`` drives signing order. Under ``parallel`` (default) every
     signer shares order 1 so either side can sign in any order; under
     ``sequential`` orders increase so DocuSign routes them in turn. ``anchor`` is
-    the anchor string the signature/date tabs attach to in the document (e.g. the
-    signature-block placeholder); when empty the tabs fall back to the name.
+    the anchor string the signature/date tabs attach to in the document — for a
+    generated NDA this is the distinct per-party token planted on that party's
+    signature line (``nda_generation.SIGNATURE_ANCHOR_*``), so the field lands on
+    the right line and the two parties never collide; when empty the tabs fall
+    back to the signer name.
     """
 
     name: str
@@ -218,22 +221,46 @@ def build_envelope_definition(
 
 
 def _tabs_for(signer: Signer) -> dict[str, Any]:
+    """The signHere + dateSigned anchor tabs for one signer.
+
+    ``signer.anchor`` is the per-party token planted on that party's ``By:``
+    signature line in a generated NDA (it falls back to the signer name only when
+    no explicit anchor is set, e.g. a non-generated document). The token sits at
+    the END of the ``By: ____`` line, so:
+
+    * the **signHere** tab is nudged UP onto the signature line and LEFT so it
+      sits over the blank underscores (not on top of the marker text);
+    * the **dateSigned** tab sits just BELOW the signature line (positive Y, near
+      the left edge) so it never collides with the signature or spill outside the
+      two-column signature-table cell.
+
+    ``ignoreIfNotPresent`` keeps a single missing anchor from failing the whole
+    envelope create (DocuSign would otherwise 400 if the string is absent) — a
+    defence-in-depth guard for the case a non-anchored document is ever sent with
+    an anchor set; the field is simply not placed rather than the send blocked.
+    """
     anchor = signer.anchor or signer.name
     return {
         "signHereTabs": [
             {
                 "anchorString": anchor,
                 "anchorUnits": "pixels",
-                "anchorXOffset": "0",
-                "anchorYOffset": "-20",
+                # Sit on the signature line (up from the marker baseline) and over
+                # the blank to the left of the end-of-line marker.
+                "anchorXOffset": "-180",
+                "anchorYOffset": "-6",
+                "anchorIgnoreIfNotPresent": "true",
             }
         ],
         "dateSignedTabs": [
             {
                 "anchorString": anchor,
                 "anchorUnits": "pixels",
-                "anchorXOffset": "200",
-                "anchorYOffset": "-20",
+                # Drop the date onto the line just below "By:" (the Name: row), at
+                # the left edge of the cell.
+                "anchorXOffset": "-180",
+                "anchorYOffset": "14",
+                "anchorIgnoreIfNotPresent": "true",
             }
         ],
     }

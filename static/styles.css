@@ -1087,6 +1087,16 @@ h3 {
   gap: 6px;
 }
 
+/* The generator's "Send for Signature" CTA + its inline signature badge are
+   toggled via the [hidden] attribute (revealed only after a generation). Both
+   carry a flex display (.icon-text / .docusign-status-badge) that would beat the
+   UA [hidden] { display:none }, so make hidden authoritative here — same pattern
+   as .link-button[hidden] above — or they'd show empty before any NDA exists. */
+#draftIntakeSendForSignatureButton[hidden],
+#draftIntakeSignatureBadge[hidden] {
+  display: none;
+}
+
 .icon-text svg {
   fill: none;
   height: 16px;

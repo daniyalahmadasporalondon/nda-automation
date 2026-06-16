@@ -145,6 +145,30 @@ export function defaultSigners(matter = {}, options = {}) {
   ];
 }
 
+// Shape a Generator generation result into the matter-like view the send
+// composer reads. The Generator's "Send for Signature" CTA acts on the freshly
+// generated NDA, which is a saved matter but NOT a fetched public_matter — so we
+// synthesize the few fields defaultSigners + the controller need from the
+// generation result:
+//   - id              -> the POST target (/api/matters/<id>/send-for-signature)
+//   - counterparty/... -> the FIRST-party (counterparty) signer NAME
+//   - recipient_email  -> the FIRST-party signer EMAIL
+// Returns null when the generation has no saved matter id (the legacy in-memory
+// blob path), so the caller keeps the CTA hidden — that NDA can't be sent.
+export function generatorSignatureMatter(generated) {
+  const matterId = String(generated?.matterId || "").trim();
+  if (!matterId) return null;
+  const name = String(generated?.counterpartyName || "").trim();
+  const email = String(generated?.counterpartyEmail || "").trim();
+  return {
+    id: matterId,
+    counterparty: name,
+    counterparty_name: name,
+    recipient_email: email,
+    document_title: name,
+  };
+}
+
 const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
 
 function emailFromValue(value) {
@@ -193,6 +217,7 @@ export const DocuSignModel = {
   buildSendForSignaturePayload,
   connectionView,
   defaultSigners,
+  generatorSignatureMatter,
   matterEnvelopeId,
   matterSignatureStatus,
   matterSignatureView,
@@ -208,6 +233,7 @@ if (typeof module !== "undefined" && module.exports) {
     buildSendForSignaturePayload,
     connectionView,
     defaultSigners,
+    generatorSignatureMatter,
     matterEnvelopeId,
     matterSignatureStatus,
     matterSignatureView,

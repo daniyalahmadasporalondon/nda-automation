@@ -297,6 +297,9 @@ const draftIntakeController = createDraftIntakeController({
   onDownloadGenerated: downloadGeneratedNda,
   onSendGenerated: sendGeneratedNda,
   onEditGenerated: editGeneratedNda,
+  // Reveal/hide the "Send for Signature" CTA in step with the staged generation:
+  // a saved generated matter -> show + prime the composer's matter; null -> hide.
+  onStagedActionsChanged: setGeneratorSignatureMatter,
 });
 adminAiController = createAdminAiController({
   state,
@@ -502,6 +505,75 @@ function syncDocuSignTriggerButton() {
   docusignSendController?.syncTriggerButton?.();
 }
 
+// The Generator's own "Send for Signature" composer. A SECOND instance of the
+// same DocuSign send controller (model helpers + status states identical to the
+// Review workstation's), bound to the generator-scoped modal nodes so the two
+// never double-bind. Its matter is the last generated NDA — a matter-like view
+// built from the generation result (id + counterparty + recipient) so
+// DocuSignModel.defaultSigners resolves the counterparty (FIRST party) + the
+// Aspora signatory exactly as the Review send does. Like a generated NDA, both
+// parties sign: it is our paper sent out for execution.
+let generatorSignatureMatter = null;
+const generatorDocusignSendController = createDocuSignSendController({
+  modalNode: document.querySelector("#generatorDocusignSendModal"),
+  closeButton: document.querySelector("#generatorDocusignSendModalClose"),
+  cancelButton: document.querySelector("#generatorDocusignSendCancelButton"),
+  form: document.querySelector("#generatorDocusignSendForm"),
+  signerRows: document.querySelector("#generatorDocusignSignerRows"),
+  signingOrderControl: document.querySelector("#generatorDocusignSigningOrder"),
+  statusNode: document.querySelector("#generatorDocusignSendStatus"),
+  badgeNode: document.querySelector("#generatorDocusignSignatureBadge"),
+  // The always-visible badge in the Generator action row, driven alongside the
+  // in-modal badge so the generated NDA shows its envelope state inline.
+  headerBadgeNode: document.querySelector("#draftIntakeSignatureBadge"),
+  envelopeNode: document.querySelector("#generatorDocusignEnvelopeId"),
+  downloadSignedLink: document.querySelector("#generatorDocusignDownloadSignedLink"),
+  submitButton: document.querySelector("#generatorDocusignSendSubmitButton"),
+  triggerButton: document.querySelector("#draftIntakeSendForSignatureButton"),
+  getMatter: () => generatorSignatureMatter,
+  getAsporaSignatory: () => ({
+    name: String(state.personalisationSettings?.signature || "").trim() || "Aspora Legal",
+    email: String(state.gmailStatus?.outbound?.email || "").trim(),
+  }),
+  reviewErrorFromPayload,
+  downloadUrl,
+  onMatterUpdated: (matter) => {
+    if (!matter?.id) return;
+    // Keep the in-session generator matter in sync with the envelope state the
+    // controller merged in (after send / on each status poll).
+    generatorSignatureMatter = { ...generatorSignatureMatter, ...matter };
+    syncGeneratorDocuSignTrigger();
+  },
+});
+
+// Reveal + label the Generator's "Send for Signature" CTA from the last
+// generated matter. Called after a successful generation (a matter exists) and
+// when the generator is cleared/reset (no matter -> hide the CTA + badge).
+function syncGeneratorDocuSignTrigger() {
+  generatorDocusignSendController?.syncTriggerButton?.();
+}
+
+// Record the just-generated NDA as the Generator send composer's matter, via the
+// shared DocuSignModel.generatorSignatureMatter helper (single source of the
+// matter-like shape defaultSigners reads: id + counterparty + recipient_email).
+// Null when the generation has no saved matter id (the legacy in-memory blob
+// path), so the CTA stays hidden — that NDA can't be sent for signature.
+function setGeneratorSignatureMatter(generated) {
+  const model = (typeof window !== "undefined" && window.DocuSignModel) || null;
+  generatorSignatureMatter = model && typeof model.generatorSignatureMatter === "function"
+    ? model.generatorSignatureMatter(generated)
+    : (generated && generated.matterId
+      ? {
+        id: generated.matterId,
+        counterparty: String(generated.counterpartyName || "").trim(),
+        counterparty_name: String(generated.counterpartyName || "").trim(),
+        recipient_email: String(generated.counterpartyEmail || "").trim(),
+        document_title: String(generated.counterpartyName || "").trim(),
+      }
+      : null);
+  syncGeneratorDocuSignTrigger();
+}
+
 // Clicking an AI-referenced paragraph (e.g. "p15") in a clause assessment jumps the
 // document to that paragraph and flashes it. Delegated at document level so it fires
 // no matter which panel re-rendered the reference (jumpToParagraph lives in the viewer).
@@ -681,6 +753,7 @@ function downloadFilename(response) {
 async function generateNdaFromDraft(payload) {
   const api = window.createGenerationApi();
   const counterpartyEmail = payload?.counterparty?.email || "";
+  const counterpartyName = payload?.counterparty?.name || "";
   const subject = payload?.counterparty?.name ? `NDA — ${payload.counterparty.name}` : "NDA";
   try {
     const result = await api.generateNda(payload);
@@ -690,7 +763,7 @@ async function generateNdaFromDraft(payload) {
       return {
         message: "NDA generated — use Download or Send.",
         tone: "success",
-        generated: { blob: result.blob, filename, counterpartyEmail, subject },
+        generated: { blob: result.blob, filename, counterpartyEmail, counterpartyName, subject },
       };
     }
     // JSON response (the real contract): the document was generated, a matter +
@@ -705,6 +778,10 @@ async function generateNdaFromDraft(payload) {
       matterId: result.matter_id || null,
       pdfDownloadUrl: result.pdf_download_url || null,
       counterpartyEmail,
+      // Prefer the server's manifest company name (the exact name written into the
+      // document); fall back to the intake name. Carried so the Send-for-Signature
+      // composer can label the counterparty signer without a second matter fetch.
+      counterpartyName: String(result.manifest?.counterparty_name || counterpartyName || "").trim(),
       subject,
     };
     const savedFor = payload?.counterparty?.name ? ` for ${payload.counterparty.name}` : "";
