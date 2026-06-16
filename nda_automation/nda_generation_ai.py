@@ -24,6 +24,7 @@ The provider plumbing reuses the project's OpenRouter client config
 from __future__ import annotations
 
 import json
+import os
 import re
 import urllib.error
 import urllib.request
@@ -38,6 +39,44 @@ from .openrouter_usage import record_openrouter_usage
 from .prohibited_positions import ANY_PROHIBITED_POSITION
 
 OPENROUTER_CHAT_COMPLETIONS_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+
+# The model the clause adapter uses for GENERATION (rephrasing the Playbook's
+# authoritative clause text to the deal). This is deliberately SEPARATE from the
+# review model (``NDA_AI_MODEL`` / ``DEFAULT_OPENROUTER_MODEL``): generation runs
+# synchronously on the request the user is waiting on, adapts three clauses, and
+# only needs to *rephrase* on-position text — a fast model is right here, where the
+# heavyweight reviewer is right for judging an inbound NDA.
+#
+# Why this matters: generation called ``build_clause_adapter()`` with no model, so
+# it fell to ``DEFAULT_OPENROUTER_MODEL`` (Opus — the slowest model). On prod, three
+# parallel Opus calls behind a per-socket (not wall-clock) timeout pushed the whole
+# generate past the frontend's 45s timeout. The default below is a fast model so the
+# generate completes in ~1-2s; the output is still bounded by the GuardedClauseAdapter
+# (load-bearing terms + prohibited-position scan + length) and the pre-save ship gate,
+# so a faster model never weakens correctness — drift just degrades to the
+# deterministic Playbook wording.
+#
+# Default = Claude Haiku 4.5: same family as the Opus reviewer (consistent legal
+# register), fast, and well-suited to constrained rephrasing. A cheaper alternative
+# already used elsewhere in this codebase is ``deepseek/deepseek-v4-flash`` (structure
+# validation + gmail intake) — set ``NDA_GENERATION_MODEL`` to switch.
+GENERATION_MODEL_ENV = "NDA_GENERATION_MODEL"
+DEFAULT_GENERATION_MODEL = "anthropic/claude-haiku-4.5"
+
+
+def configured_generation_model() -> str:
+    """The model to use for clause adaptation on the generate path.
+
+    Reads ``NDA_GENERATION_MODEL`` (a fast model is the point — see above), falling
+    back to :data:`DEFAULT_GENERATION_MODEL`. Mirrors the resolution shape of the
+    other per-feature model knobs (gmail intake / structure validation) so the env
+    surface stays consistent. Deliberately does NOT read ``NDA_AI_MODEL`` — the
+    review model and the generation model are independent.
+    """
+
+    return os.environ.get(GENERATION_MODEL_ENV, "").strip() or DEFAULT_GENERATION_MODEL
+
+
 # Per-call ceiling for a single clause adaptation. Generation is synchronous and
 # adapts three clauses, so this is the unit that bounds how long a slow model can
 # hold the request: a call that exceeds it raises ClauseAdaptationError, which the
@@ -147,18 +186,23 @@ def build_clause_adapter(
     ``provider`` is injectable for tests (a callable ``request -> text``). In
     production it defaults to the OpenRouter client when an API key is available;
     with no key, returns ``None`` so generation runs deterministically.
+
+    The model defaults to the FAST generation model (:func:`configured_generation_model`,
+    i.e. ``NDA_GENERATION_MODEL`` or Haiku) — NOT the heavyweight review model. The
+    generate path calls this with no ``model``, so leaving the default as the review
+    model (Opus) is what made generation slow enough to trip the frontend's 45s
+    timeout on prod. An explicit ``model`` still overrides (e.g. a caller pinning a
+    specific model for a test).
     """
 
     if provider is not None:
         return GuardedClauseAdapter(_CallableClauseAdapter(provider))
 
-    import os
-
     resolved_key = (api_key or os.environ.get(OPENROUTER_API_KEY_ENV, "")).strip()
     if not resolved_key:
         return None
     return GuardedClauseAdapter(
-        OpenRouterClauseAdapter(api_key=resolved_key, model=model or DEFAULT_OPENROUTER_MODEL)
+        OpenRouterClauseAdapter(api_key=resolved_key, model=model or configured_generation_model())
     )
 
 

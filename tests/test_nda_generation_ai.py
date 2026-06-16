@@ -63,6 +63,43 @@ class TestBuildClauseAdapter:
         assert hasattr(adapter, "adapt")
 
 
+class TestGenerationModel:
+    """The generate path must use the FAST generation model, not the Opus reviewer."""
+
+    def test_default_generation_model_is_fast_not_review_model(self, monkeypatch):
+        monkeypatch.delenv(gen_ai.GENERATION_MODEL_ENV, raising=False)
+        resolved = gen_ai.configured_generation_model()
+        assert resolved == gen_ai.DEFAULT_GENERATION_MODEL
+        # Must NOT silently fall back to the heavyweight review model (the bug).
+        assert resolved != gen_ai.DEFAULT_OPENROUTER_MODEL
+        assert "opus" not in resolved.lower()
+
+    def test_env_override_is_honoured(self, monkeypatch):
+        monkeypatch.setenv(gen_ai.GENERATION_MODEL_ENV, "deepseek/deepseek-v4-flash")
+        assert gen_ai.configured_generation_model() == "deepseek/deepseek-v4-flash"
+
+    def test_blank_env_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv(gen_ai.GENERATION_MODEL_ENV, "   ")
+        assert gen_ai.configured_generation_model() == gen_ai.DEFAULT_GENERATION_MODEL
+
+    def test_build_clause_adapter_uses_generation_model_by_default(self, monkeypatch):
+        # With a key but no explicit model, the live OpenRouter adapter must carry the
+        # fast generation model — this is the exact call the generate path makes.
+        monkeypatch.delenv(gen_ai.GENERATION_MODEL_ENV, raising=False)
+        monkeypatch.setenv(gen_ai.OPENROUTER_API_KEY_ENV, "sk-or-test-key")
+        adapter = gen_ai.build_clause_adapter()
+        assert adapter is not None
+        inner = adapter._inner  # GuardedClauseAdapter wraps the OpenRouter adapter
+        assert isinstance(inner, gen_ai.OpenRouterClauseAdapter)
+        assert inner.model == gen_ai._sanitize_model_name(gen_ai.DEFAULT_GENERATION_MODEL)
+        assert "opus" not in inner.model.lower()
+
+    def test_explicit_model_overrides_generation_default(self, monkeypatch):
+        monkeypatch.setenv(gen_ai.OPENROUTER_API_KEY_ENV, "sk-or-test-key")
+        adapter = gen_ai.build_clause_adapter(model="anthropic/claude-opus-4.8")
+        assert adapter._inner.model == "anthropic/claude-opus-4.8"
+
+
 class TestGuardrail:
     def test_on_position_adaptation_is_used(self, playbook):
         # A provider that rephrases but keeps the load-bearing terms is accepted.
