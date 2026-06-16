@@ -170,6 +170,8 @@ def test_inbound_workflow_accepts_public_only_transport():
         # AI intake telemetry is always present; all zero when the classifier is
         # unconfigured (this public-only transport) and no call is attempted.
         "ai_intake": {"ai_calls": 0, "ai_errors": 0, "ai_timeouts": 0, "ai_skipped_cap": 0},
+        # The drain never tripped a Gmail rate-limit, so the poll completed cleanly.
+        "rate_limited": False,
     }
     assert transport.service.users_api.messages_api.max_results == 25
 
@@ -281,11 +283,21 @@ def test_gmail_import_limit_env_default_and_overrides(monkeypatch):
     monkeypatch.delenv(gmail_integration.NDA_GMAIL_IMPORT_LIMIT_ENV, raising=False)
     assert gmail_integration._gmail_import_limit_from_env() == 20
 
-    # A valid override is honoured verbatim (operator trades burst for drain speed).
+    # A valid override within the clamp is honoured verbatim (operator trades burst
+    # for drain speed).
     monkeypatch.setenv(gmail_integration.NDA_GMAIL_IMPORT_LIMIT_ENV, "5")
     assert gmail_integration._gmail_import_limit_from_env() == 5
-    monkeypatch.setenv(gmail_integration.NDA_GMAIL_IMPORT_LIMIT_ENV, " 50 ")
-    assert gmail_integration._gmail_import_limit_from_env() == 50
+    monkeypatch.setenv(gmail_integration.NDA_GMAIL_IMPORT_LIMIT_ENV, " 30 ")
+    assert gmail_integration._gmail_import_limit_from_env() == 30
+
+    # An override above the clamp is capped so the per-poll messages.get() burst
+    # cannot push a single user past Gmail's ~6,000 quota-units/minute and trip
+    # rate-limits. The clamp is the upper bound, not the default.
+    monkeypatch.setenv(gmail_integration.NDA_GMAIL_IMPORT_LIMIT_ENV, "50")
+    assert gmail_integration._gmail_import_limit_from_env() == gmail_integration._MAX_GMAIL_IMPORT_LIMIT_CLAMP
+    assert gmail_integration._gmail_import_limit_from_env() == 40
+    monkeypatch.setenv(gmail_integration.NDA_GMAIL_IMPORT_LIMIT_ENV, "1000")
+    assert gmail_integration._gmail_import_limit_from_env() == 40
 
     # Garbage and non-positive values are meaningless (0 would import nothing and
     # wedge the catch-up) -> fall back to the default rather than break the poll.
@@ -433,3 +445,267 @@ def test_catch_up_drains_a_bounded_batch_per_poll(monkeypatch):
     # reported as cheaply skipped (no re-download), proving the dedup-gated paging.
     already = [s for s in result2["skipped"] if s.get("reason") == "already_imported"]
     assert len(already) == 20
+
+
+# --- Drain cursor: an arbitrary backlog (> max_scan) fully drains, no tail-drop ---
+
+
+class _CursorCatchUpMessages:
+    """A fake inbox of `inbox_size` messages, newest-first, each carrying a Gmail
+    server-assigned ``internalDate`` (ms) and honouring a ``before:<seconds>`` term
+    so the date-bounded drain query skips the already-drained newest prefix.
+
+    msg_000 is the NEWEST (largest internalDate); index N is older by N seconds. This
+    mirrors Gmail: ``list`` returns newest-first and ``before:S`` returns only
+    messages strictly OLDER than S seconds.
+    """
+
+    # An arbitrary fixed epoch so the dates are realistic but deterministic.
+    _BASE_SECONDS = 1_700_000_000
+
+    def __init__(self, inbox_size: int):
+        self.message_ids = [f"msg_{i:03d}" for i in range(inbox_size)]
+        # Newest first: msg_000 gets the largest date, each later index 1s older.
+        self.internal_ms = {
+            mid: (self._BASE_SECONDS - i) * 1000 for i, mid in enumerate(self.message_ids)
+        }
+        self.list_calls = 0
+
+    def _before_seconds(self, q: str) -> int | None:
+        for term in q.split():
+            if term.startswith("before:"):
+                try:
+                    return int(term.split(":", 1)[1])
+                except ValueError:
+                    return None
+        return None
+
+    def list(self, *, userId: str, q: str, maxResults: int, pageToken: str = ""):
+        self.list_calls += 1
+        before_seconds = self._before_seconds(q)
+        # Apply the date bound, preserving newest-first order.
+        if before_seconds is None:
+            eligible = list(self.message_ids)
+        else:
+            eligible = [
+                mid for mid in self.message_ids if self.internal_ms[mid] < before_seconds * 1000
+            ]
+        start = int(pageToken or "0")
+        page = eligible[start:start + maxResults]
+        next_start = start + len(page)
+        next_token = str(next_start) if next_start < len(eligible) else ""
+        return _Executable({
+            "messages": [{"id": mid} for mid in page],
+            "nextPageToken": next_token,
+        })
+
+    def get(self, *, userId: str, id: str, format: str):
+        return _Executable({"id": id, "payload": {}, "internalDate": str(self.internal_ms.get(id, 0))})
+
+
+class _CursorCatchUpUsers:
+    def __init__(self, messages_api: _CursorCatchUpMessages) -> None:
+        self.messages_api = messages_api
+
+    def messages(self) -> _CursorCatchUpMessages:
+        return self.messages_api
+
+
+class _CursorCatchUpService:
+    def __init__(self, inbox_size: int) -> None:
+        self.users_api = _CursorCatchUpUsers(_CursorCatchUpMessages(inbox_size))
+
+    def users(self) -> _CursorCatchUpUsers:
+        return self.users_api
+
+
+class _CursorCatchUpInboxTransport(_CatchUpInboxTransport):
+    """A cursor-AWARE catch-up transport: persistent in-memory dedup index AND a
+    persistent drain cursor (internalDate low-water-mark), modelling the real
+    readonly-scope production transport. This is the path that must drain an
+    arbitrary backlog larger than max_scan without a silent tail-drop.
+    """
+
+    def __init__(self, inbox_size: int) -> None:
+        super().__init__(inbox_size)
+        self.service = _CursorCatchUpService(inbox_size)
+        self._drain_cursor = 0
+        self.cursor_resets = 0
+
+    # The heavy-path entry point records the fetched id and marks it imported.
+    def message_nda_detection(self, message, attachments):
+        message_id = str(message.get("id") or "")
+        self.fetched_message_ids.append(message_id)
+        self.already_imported.add(message_id)
+        return {"matched": True}
+
+    # --- drain cursor (persistent across polls) ------------------------------
+    def inbound_drain_cursor(self, owner_user_id: str = "") -> int:
+        return self._drain_cursor
+
+    def advance_inbound_drain_cursor(self, owner_user_id: str, internal_date_ms: int) -> int:
+        candidate = int(internal_date_ms)
+        if candidate <= 0:
+            return self._drain_cursor
+        if self._drain_cursor <= 0 or candidate < self._drain_cursor:
+            self._drain_cursor = candidate
+        return self._drain_cursor
+
+    def reset_inbound_drain_cursor(self, owner_user_id: str = "") -> None:
+        self._drain_cursor = 0
+        self.cursor_resets += 1
+
+    def message_internal_date_ms(self, message: dict) -> int:
+        try:
+            return max(0, int(str(message.get("internalDate") or "0")))
+        except (TypeError, ValueError):
+            return 0
+
+    def inbound_query_before(self, base_query: str, cursor_internal_date_ms: int) -> str:
+        if cursor_internal_date_ms <= 0:
+            return base_query
+        before_seconds = (cursor_internal_date_ms + 999) // 1000
+        if before_seconds <= 0:
+            return base_query
+        return f"{base_query} before:{before_seconds}"
+
+    def is_rate_limit_error(self, error: Exception) -> bool:
+        return False
+
+
+def test_drain_cursor_drains_backlog_larger_than_max_scan_no_silent_drop(monkeypatch):
+    # THE REGRESSION GUARD. Re-connecting Gmail surfaces a backlog FAR larger than a
+    # single poll's max_scan cap. With the old fixed-cap paged scan, once the
+    # already-imported prefix grew past max_scan (= max(20*5, 20+100) = 120), every
+    # poll exhausted its whole scan budget inside already-imported messages, found
+    # ZERO new work, and the catch-up STALLED FOREVER -- silently dropping the
+    # (backlog - 120) tail. The persistent drain cursor must instead let the FULL
+    # backlog drain across polls with no tail-drop.
+    monkeypatch.setenv(gmail_integration.NDA_GMAIL_IMPORT_LIMIT_ENV, "20")
+    monkeypatch.setattr(
+        gmail_integration,
+        "MAX_GMAIL_IMPORT_LIMIT",
+        gmail_integration._gmail_import_limit_from_env(),
+    )
+    assert gmail_integration.MAX_GMAIL_IMPORT_LIMIT == 20
+
+    monkeypatch.setattr(
+        gmail_matter_inbox,
+        "import_inbound_attachments",
+        lambda *a, **k: {"imported": [], "skipped": [], "ai_intake": {}},
+    )
+
+    backlog = 300  # > max_scan (120): the exact size the old scan silently dropped at.
+    max_scan = max(20 * 5, 20 + 100)
+    assert backlog > max_scan
+    transport = _CursorCatchUpInboxTransport(inbox_size=backlog)
+    all_ids = list(transport.service.users_api.messages_api.message_ids)
+
+    # Poll until drained or stalled. A hard cap on polls (well above backlog/limit)
+    # turns a regression (a stall) into a FAILED assertion rather than a hang.
+    drained: list[str] = []
+    max_polls = backlog  # pathological ceiling; a healthy drain finishes far sooner.
+    for _poll in range(max_polls):
+        transport.fetched_message_ids.clear()
+        gmail_matter_inbox.import_inbound_matters(
+            transport=transport,
+            limit=999,
+            owner_user_id="owner_1",
+        )
+        new_this_poll = list(transport.fetched_message_ids)
+        drained.extend(new_this_poll)
+        if len(transport.already_imported) >= backlog:
+            break
+        # Forward progress is mandatory: a poll that imports nothing while the
+        # backlog is non-empty is the stall this fix exists to prevent.
+        assert new_this_poll, (
+            f"catch-up STALLED at {len(transport.already_imported)}/{backlog} imported "
+            f"-- {backlog - len(transport.already_imported)} silently dropped"
+        )
+
+    # The FULL backlog drained: every message imported exactly once, none dropped.
+    assert len(transport.already_imported) == backlog
+    assert sorted(drained) == sorted(all_ids)
+    assert len(drained) == len(set(drained)) == backlog
+    # The drain reached completion in a sane number of polls (~backlog/limit), not by
+    # accident of the pathological ceiling -- proving steady forward progress.
+    assert _poll + 1 <= (backlog // 20) + 5
+
+    # One more poll after the backlog is empty: it imports nothing (no double-import),
+    # the date-bounded drain pass reaches the end of the backlog, and the cursor is
+    # reset so future polls run head-only instead of perpetually re-paging below a
+    # stale frontier.
+    transport.fetched_message_ids.clear()
+    result = gmail_matter_inbox.import_inbound_matters(
+        transport=transport,
+        limit=999,
+        owner_user_id="owner_1",
+    )
+    assert transport.fetched_message_ids == []
+    assert result["rate_limited"] is False
+    assert transport.cursor_resets >= 1
+    assert transport.inbound_drain_cursor("owner_1") == 0
+
+
+class _RateLimitError(Exception):
+    pass
+
+
+class _RateLimitAfterNMessages(_CursorCatchUpInboxTransport):
+    """A cursor-aware transport whose message get() raises a Gmail rate-limit (429)
+    after `fail_after` successful fetches, to exercise the graceful 429 early-exit:
+    the poll must KEEP what it imported this cycle and flag rate_limited, never abort
+    the whole drain and lose the new messages already found."""
+
+    def __init__(self, inbox_size: int, fail_after: int) -> None:
+        super().__init__(inbox_size)
+        self._fail_after = fail_after
+        self._get_calls = 0
+
+    def is_rate_limit_error(self, error: Exception) -> bool:
+        return isinstance(error, _RateLimitError)
+
+    # Route the heavy-path entry through a get() that trips a 429 after N fetches.
+    def message_nda_detection(self, message, attachments):
+        return super().message_nda_detection(message, attachments)
+
+
+def test_rate_limit_midscan_keeps_imported_and_does_not_abort_poll(monkeypatch):
+    # A 429 during the per-message probe must NOT re-raise and discard the messages
+    # already imported this cycle; it pages-gracefully: keep what we have, flag
+    # rate_limited, and resume next poll from the persisted cursor.
+    monkeypatch.setenv(gmail_integration.NDA_GMAIL_IMPORT_LIMIT_ENV, "20")
+    monkeypatch.setattr(
+        gmail_integration,
+        "MAX_GMAIL_IMPORT_LIMIT",
+        gmail_integration._gmail_import_limit_from_env(),
+    )
+    monkeypatch.setattr(
+        gmail_matter_inbox,
+        "import_inbound_attachments",
+        lambda *a, **k: {"imported": [], "skipped": [], "ai_intake": {}},
+    )
+
+    transport = _RateLimitAfterNMessages(inbox_size=100, fail_after=5)
+    # Make the 5th get() raise a rate-limit.
+    real_get = transport.service.users_api.messages_api.get
+    state = {"n": 0}
+
+    def flaky_get(*, userId, id, format):
+        state["n"] += 1
+        if state["n"] > 5:
+            raise _RateLimitError("rateLimitExceeded")
+        return real_get(userId=userId, id=id, format=format)
+
+    transport.service.users_api.messages_api.get = flaky_get
+
+    result = gmail_matter_inbox.import_inbound_matters(
+        transport=transport,
+        limit=999,
+        owner_user_id="owner_1",
+    )
+
+    # The poll did NOT raise; it kept the 5 it managed to import and flagged the 429.
+    assert result["rate_limited"] is True
+    assert len(transport.already_imported) == 5
+    assert transport.fetched_message_ids == [f"msg_{i:03d}" for i in range(5)]

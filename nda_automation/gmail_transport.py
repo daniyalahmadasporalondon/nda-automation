@@ -226,6 +226,53 @@ class GmailTransport:
             owner_user_id=owner_user_id,
         ) is not None
 
+    def inbound_drain_cursor(self, owner_user_id: str = "") -> int:
+        """The persisted per-owner drain frontier (oldest reached internalDate, ms)."""
+        return int(DiskMatterRepository().gmail_inbound_cursor(owner_user_id=owner_user_id))
+
+    def advance_inbound_drain_cursor(self, owner_user_id: str, internal_date_ms: int) -> int:
+        """Lower the drain frontier toward an older message (monotonic down)."""
+        return int(DiskMatterRepository().advance_gmail_inbound_cursor(owner_user_id, internal_date_ms))
+
+    def reset_inbound_drain_cursor(self, owner_user_id: str = "") -> None:
+        """Drop the drain frontier once the backlog is fully drained."""
+        DiskMatterRepository().reset_gmail_inbound_cursor(owner_user_id=owner_user_id)
+
+    def message_internal_date_ms(self, message: dict[str, Any]) -> int:
+        """Gmail's server-assigned ``internalDate`` (epoch ms) for a fetched message.
+
+        Returns ``0`` when absent/unparseable so callers treat the message as
+        date-unknown and never advance the cursor on it.
+        """
+        try:
+            return max(0, int(str(message.get("internalDate") or "0")))
+        except (TypeError, ValueError):
+            return 0
+
+    def inbound_query_before(self, base_query: str, cursor_internal_date_ms: int) -> str:
+        """Date-bound ``base_query`` below the drain cursor so the drained newest
+        prefix never re-surfaces. ``cursor_internal_date_ms <= 0`` returns the query
+        unchanged (no cursor yet). Gmail's ``before:`` takes epoch SECONDS and is
+        exclusive, so we ceil the cursor (ms -> s, rounding UP) and the boundary
+        message itself is re-covered by the un-bounded head scan, never dropped.
+        """
+        if cursor_internal_date_ms <= 0:
+            return base_query
+        # Round the ms->s conversion UP so a ``before:`` bound never excludes the
+        # cursor message's own second; the head scan re-covers that second anyway.
+        before_seconds = (cursor_internal_date_ms + 999) // 1000
+        if before_seconds <= 0:
+            return base_query
+        return f"{base_query} before:{before_seconds}"
+
+    def is_rate_limit_error(self, error: Exception) -> bool:
+        """True when ``error`` is a Gmail 429 / rate-limit (so the poll can pace and
+        keep what it imported this cycle instead of aborting the whole drain)."""
+        try:
+            return bool(_legacy()._gmail_retry_after_epoch(error))
+        except Exception:  # pragma: no cover - probe is best-effort
+            return False
+
     def create_matter_from_document(self, **kwargs):
         return _legacy().create_matter_from_document(**kwargs)
 
