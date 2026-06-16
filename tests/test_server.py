@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
 from io import BytesIO
 from urllib.parse import parse_qs, urlparse
-from unittest.mock import call, patch
+from unittest.mock import MagicMock, call, patch
 from zipfile import ZIP_DEFLATED, ZipFile
 import xml.etree.ElementTree as ET
 
@@ -5098,7 +5098,11 @@ class ServerTests(unittest.TestCase):
                 stored = matter_store.list_matters()
 
         self.assertEqual(result["account"], "daniyal.ahmad@aspora.com")
-        self.assertEqual([item["reason"] for item in result["skipped"]], ["duplicate_attachment", "self_sent_or_outbound", "review_failed"])
+        # msg_duplicate's attachment is already imported, so it is short-circuited at
+        # the message level ("already_imported") BEFORE any download/extract, rather
+        # than the per-attachment "duplicate_attachment". msg_self / msg_unsafe are
+        # unchanged.
+        self.assertEqual([item["reason"] for item in result["skipped"]], ["already_imported", "self_sent_or_outbound", "review_failed"])
         self.assertEqual(len(result["imported"]), 1)
         self.assertEqual(result["imported"][0]["gmail_message_id"], "msg_new")
         self.assertEqual(result["imported"][0]["reply_to"], "Legal <legal@example.com>")
@@ -5107,6 +5111,202 @@ class ServerTests(unittest.TestCase):
         self.assertIn("confidential information", result["imported"][0]["gmail_detection_terms"])
         self.assertEqual(matter_view.public_matter(result["imported"][0])["recipient_email"], "legal@example.com")
         self.assertEqual(len(stored), 2)
+
+    def test_gmail_inbound_import_defers_ai_review_off_the_poll_thread(self):
+        # The inbound poll must run ONLY the fast offline deterministic first-pass
+        # review and NEVER call the AI assessor/verifier in the poll thread (that
+        # Opus+Pro storm + the PDF/extract memory spike is what OOM-crash-looped the
+        # single prod worker). Pin the active engine to ai_first -- WITHOUT the
+        # defer fix the poll would call assess_nda_with_ai once per attachment -- and
+        # assert the assessor is never invoked while the matter still imports.
+        class FakeExecutable:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class FakeMessages:
+            def __init__(self, messages):
+                self.messages = messages
+
+            def list(self, userId, q, maxResults):
+                return FakeExecutable({"messages": [{"id": mid} for mid in self.messages][:maxResults]})
+
+            def get(self, userId=None, messageId=None, id=None, format=None):
+                return FakeExecutable(self.messages[id])
+
+        class FakeUsers:
+            def __init__(self, messages):
+                self.messages_api = FakeMessages(messages)
+
+            def getProfile(self, userId):
+                return FakeExecutable({"emailAddress": "legal@aspora.com"})
+
+            def messages(self):
+                return self.messages_api
+
+        class FakeGmailService:
+            def __init__(self, messages):
+                self.users_api = FakeUsers(messages)
+
+            def users(self):
+                return self.users_api
+
+        docx_bytes = make_docx([
+            "MUTUAL NON-DISCLOSURE AGREEMENT",
+            "Each party may disclose Confidential Information to the other party.",
+            "The Receiving Party shall not disclose the Disclosing Party's Confidential Information.",
+            "This Agreement shall be governed by the laws of California.",
+        ])
+        inline_data = base64.urlsafe_b64encode(docx_bytes).decode("ascii").rstrip("=")
+        messages = {
+            "msg_new": {
+                "id": "msg_new",
+                "threadId": "thr_new",
+                "labelIds": ["INBOX"],
+                "snippet": "Please review.",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Legal <legal@example.com>"},
+                        {"name": "Subject", "value": "NDA"},
+                    ],
+                    "parts": [{"partId": "1", "filename": "New NDA.docx", "body": {"attachmentId": "att_new", "data": inline_data}}],
+                },
+            },
+        }
+
+        assessor = MagicMock(name="assess_nda_with_ai")
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(app_settings, "gmail_role_enabled", return_value=True):
+                    # ai_first is the active engine; the assessor is a strict mock so
+                    # ANY poll-path AI call would be recorded (and break the contract).
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true"}):
+                        with patch("nda_automation.ai_assessor.assess_nda_with_ai", assessor):
+                            with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
+                                result = gmail_integration.import_inbound_matters(limit=25)
+                imported = result["imported"]
+                stored_matter = matter_store.get_matter(imported[0]["id"]) if imported else None
+
+        # The poll imported the matter but ran ZERO assessor/verifier calls.
+        assessor.assert_not_called()
+        self.assertEqual(len(imported), 1)
+        self.assertEqual(imported[0]["gmail_message_id"], "msg_new")
+        # The persisted first-pass review was produced by the deterministic engine,
+        # not the AI-first engine -- i.e. the AI review was genuinely deferred.
+        engine_metadata = stored_matter["review_result"].get("active_review_engine") or {}
+        self.assertEqual(engine_metadata.get("executed_engine"), "deterministic")
+        self.assertEqual(engine_metadata.get("selected_engine"), "deterministic")
+
+    def test_gmail_inbound_skips_already_imported_message_before_content_scan(self):
+        # An already-imported message (re-surfaced by the inbox query every poll)
+        # must be short-circuited BEFORE any download/extract: neither the content
+        # scan (attachment_nda_detection) nor the attachment download may run for it.
+        class FakeExecutable:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class FakeMessages:
+            def __init__(self, messages):
+                self.messages = messages
+
+            def list(self, userId, q, maxResults):
+                return FakeExecutable({"messages": [{"id": mid} for mid in self.messages][:maxResults]})
+
+            def get(self, userId=None, messageId=None, id=None, format=None):
+                return FakeExecutable(self.messages[id])
+
+        class FakeUsers:
+            def __init__(self, messages):
+                self.messages_api = FakeMessages(messages)
+
+            def getProfile(self, userId):
+                return FakeExecutable({"emailAddress": "legal@aspora.com"})
+
+            def messages(self):
+                return self.messages_api
+
+        class FakeGmailService:
+            def __init__(self, messages):
+                self.users_api = FakeUsers(messages)
+
+            def users(self):
+                return self.users_api
+
+        # A NEUTRAL subject/body so message_nda_detection does NOT match -- without
+        # the dedup short-circuit the loop would fall through to the content scan
+        # (attachment_nda_detection), which downloads + extracts the attachment.
+        docx_bytes = make_docx([
+            "MUTUAL NON-DISCLOSURE AGREEMENT",
+            "The Receiving Party shall not disclose the Disclosing Party's Confidential Information.",
+        ])
+        messages = {
+            "msg_seen": {
+                "id": "msg_seen",
+                "threadId": "thr_seen",
+                "labelIds": ["INBOX"],
+                "snippet": "please take a look",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Ops <ops@example.com>"},
+                        {"name": "Subject", "value": "Fwd: a document"},
+                    ],
+                    "parts": [
+                        {"partId": "doc", "filename": "Document.docx", "body": {"attachmentId": "att_seen"}},
+                    ],
+                },
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                # Pre-seed a matter carrying this message+attachment's identity keys
+                # so the message is genuinely "already imported".
+                matter_store.create_matter(
+                    source_filename="Document.docx",
+                    document_bytes=docx_bytes,
+                    extracted_text="Seen",
+                    review_result={"clauses": []},
+                    triage={},
+                    source_type="gmail_inbound",
+                    intake_metadata={
+                        "gmail_attachment_id": "att_seen",
+                        "gmail_message_id": "msg_seen",
+                        "gmail_part_id": "doc",
+                    },
+                    dedupe_gmail=True,
+                )
+                with patch.object(app_settings, "gmail_role_enabled", return_value=True):
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
+                        with patch.object(gmail_integration, "_gmail_service", return_value=FakeGmailService(messages)):
+                            # The content scan and the attachment download MUST NOT
+                            # run for an already-imported message.
+                            with (
+                                patch.object(
+                                    gmail_integration,
+                                    "_attachment_nda_detection",
+                                    side_effect=AssertionError("content scan ran for an already-imported message"),
+                                ) as content_scan,
+                                patch.object(
+                                    gmail_integration,
+                                    "_attachment_bytes",
+                                    side_effect=AssertionError("attachment downloaded for an already-imported message"),
+                                ),
+                            ):
+                                result = gmail_integration.import_inbound_matters(limit=25)
+                matters = matter_store.list_matters()
+
+        content_scan.assert_not_called()
+        self.assertEqual(result["imported"], [])
+        self.assertEqual([item["reason"] for item in result["skipped"]], ["already_imported"])
+        # No duplicate matter was created; the pre-seeded one is untouched.
+        self.assertEqual(len(matters), 1)
 
     def test_gmail_import_parses_plain_text_and_html_message_bodies_for_nda_signals(self):
         class FakeExecutable:
@@ -6105,7 +6305,11 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(first["imported"]), 1)
         self.assertEqual(first["imported"][0]["needs_triage"], "true")
         self.assertEqual(second["imported"], [])
-        self.assertEqual([item["reason"] for item in second["skipped"]], ["duplicate_attachment"])
+        # The second poll short-circuits at the message level (every attachment is
+        # already imported) BEFORE any re-download/re-extract, so the skip is the
+        # message-level "already_imported" rather than the per-attachment
+        # "duplicate_attachment". Either way the matter is deduped (one matter).
+        self.assertEqual([item["reason"] for item in second["skipped"]], ["already_imported"])
         self.assertEqual(len(matters), 1)
 
     def test_selector_not_selected_attachment_becomes_triage_not_silently_imported(self):

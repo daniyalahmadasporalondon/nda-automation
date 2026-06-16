@@ -107,6 +107,22 @@ def import_inbound_matters(
             skipped.append({"message_id": message_id, "reason": "no_reviewable_attachment"})
             continue
 
+        # Dedup short-circuit AHEAD of any download/extract: a previously-imported
+        # forward (re-surfaced by the inbox query on every poll) is skipped here so
+        # the content-scan PDF/DOCX extraction below never re-downloads + re-parses
+        # its attachments. Only genuinely already-imported messages (every
+        # attachment matched on a pre-download identity key) are short-circuited;
+        # anything not provably imported falls through to the authoritative
+        # per-attachment path, preserving the false-negative protection.
+        if message_attachments_all_already_imported(
+            message_id,
+            attachments,
+            transport=transport,
+            owner_user_id=owner_user_id,
+        ):
+            skipped.append({"message_id": message_id, "reason": "already_imported"})
+            continue
+
         # Always make the per-message detection content-aware: if subject/body/
         # snippet/filename carry no NDA signal, fall back to scanning attachment
         # content. There is NO terminal drop here anymore -- the deterministic
@@ -663,6 +679,12 @@ def create_matter_from_prepared_attachment(
             },
             dedupe_gmail=True,
             owner_user_id=owner_user_id,
+            # The inbound poll runs ONLY the fast offline deterministic first-pass
+            # review here; the slow AI review (assessor + verifier) is deferred to
+            # on-demand (Refresh Review) so it NEVER executes in the poll thread.
+            # This removes the Opus+Pro storm and the biggest per-poll memory spike
+            # that was OOM-crash-looping the single prod worker.
+            defer_ai_review=True,
         )
     except (
         transport.ActiveReviewEngineError,
@@ -739,6 +761,44 @@ def gmail_attachment_already_imported(
         part_id=part_id,
         owner_user_id=owner_user_id,
     )
+
+
+def message_attachments_all_already_imported(
+    message_id: str,
+    attachments: list[dict[str, Any]],
+    *,
+    transport: Any,
+    owner_user_id: str = "",
+) -> bool:
+    """True only when EVERY attachment on the message is genuinely already imported.
+
+    Used to short-circuit the message BEFORE the content-scan PDF/DOCX extraction
+    (``attachment_nda_detection``), which otherwise downloads + extracts every
+    attachment on a previously-imported forward on every poll. The check passes
+    ONLY pre-download identity keys (message+attachment id / part id) — never a
+    content hash (which would require the very download we are trying to avoid) and
+    never a filename-only match (two different documents can share a name). The
+    duplicate lookup treats a filename-only overlap as NOT a match unless the byte
+    hashes are equal, so omitting the hash here can only make this STRICTER, never
+    looser: a non-identity match never short-circuits, preserving the false-negative
+    protection. Any attachment that is not provably already imported makes this
+    return ``False``, so the full per-attachment path (which adds the post-download
+    sha256 dedup) still runs as the authoritative classifier.
+    """
+    if not attachments:
+        return False
+    for attachment in attachments:
+        attachment_id = str(attachment.get("attachment_id") or "")
+        part_id = str(attachment.get("part_id") or "")
+        if not gmail_attachment_already_imported(
+            message_id,
+            attachment_id,
+            transport=transport,
+            part_id=part_id,
+            owner_user_id=owner_user_id,
+        ):
+            return False
+    return True
 
 
 def gmail_attachment_skip(message_id: str, attachment_filename: str, reason: str, **details: object) -> dict[str, str]:
