@@ -140,3 +140,15 @@ services:
       # kicks in, while staying far under the frontend's 45s generate timeout.
       - key: NDA_GENERATION_ADAPT_BUDGET_SECONDS
         value: "12"
+      # OpenRouter UPSTREAM-PROVIDER routing for the NDA-generation clause-adapter
+      # call. DeepSeek V4 Flash is load-balanced across many upstreams; an
+      # intermittent slow one (measured: ~11-24s vs the ~1s norm) drags the parallel
+      # adapt step — which shares one wall-clock budget across the three concurrent
+      # clause calls — to its ceiling whenever ANY one call is routed to it, which on
+      # prod's slower network pushed generation past the frontend's 45s timeout even
+      # with the AI deadline live. "latency" routes to the lowest-latency upstream
+      # first (measured: median ~1s, max ~3.7s — the slow tail is gone). A routing
+      # hint only: same model, same prompt, same guard-checked output, faster path.
+      # Set empty to fall back to OpenRouter's default balancing.
+      - key: NDA_GENERATION_PROVIDER_SORT
+        value: latency

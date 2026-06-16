@@ -418,3 +418,33 @@ class TestOutputBoundedRequestBody:
         # The cap is a runaway guard, not a working bound — comfortably above a real
         # ~25-60 token clause rephrase so it never truncates a legitimate answer.
         assert body["max_tokens"] >= 256
+
+
+class TestProviderLatencyRouting:
+    """The clause-adapter request pins OpenRouter to the lowest-latency upstream so
+    an intermittent slow provider can't drag the deadline-bounded parallel adapt step
+    to its budget ceiling (the real cause of generation tripping the 45s timeout)."""
+
+    def test_request_routes_to_lowest_latency_provider_by_default(self, monkeypatch):
+        monkeypatch.delenv(gen_ai.GENERATION_PROVIDER_SORT_ENV, raising=False)
+        request = gen_ai.build_adaptation_request("mutuality", "Each party ...", {})
+        body = gen_ai._openrouter_request_body(request, model="deepseek/deepseek-v4-flash")
+        assert body["provider"] == {"sort": "latency"}
+
+    def test_provider_sort_is_env_tunable_and_disablable(self, monkeypatch):
+        request = gen_ai.build_adaptation_request("mutuality", "Each party ...", {})
+
+        monkeypatch.setenv(gen_ai.GENERATION_PROVIDER_SORT_ENV, "throughput")
+        body = gen_ai._openrouter_request_body(request, model="m")
+        assert body["provider"] == {"sort": "throughput"}
+
+        # An explicitly empty value disables the routing hint entirely (back to
+        # OpenRouter's default balancing) — no provider block is sent.
+        monkeypatch.setenv(gen_ai.GENERATION_PROVIDER_SORT_ENV, "")
+        body = gen_ai._openrouter_request_body(request, model="m")
+        assert "provider" not in body
+
+        # A typo never sends an invalid routing block OpenRouter would reject; it
+        # falls back to the safe default strategy.
+        monkeypatch.setenv(gen_ai.GENERATION_PROVIDER_SORT_ENV, "bogus")
+        assert gen_ai.configured_generation_provider_sort() == gen_ai.DEFAULT_GENERATION_PROVIDER_SORT

@@ -69,6 +69,43 @@ OPENROUTER_CHAT_COMPLETIONS_ENDPOINT = "https://openrouter.ai/api/v1/chat/comple
 GENERATION_MODEL_ENV = "NDA_GENERATION_MODEL"
 DEFAULT_GENERATION_MODEL = "deepseek/deepseek-v4-flash"
 
+# OpenRouter UPSTREAM-PROVIDER routing for the clause-adapter call. The generation
+# model (DeepSeek V4 Flash) is load-balanced by OpenRouter across many upstream
+# providers, and an intermittent SLOW upstream is the real reason generation hits its
+# wall-clock budget: most providers answer a constrained rephrase in ~1s, but a slow
+# one (measured: AtlasCloud ~11s, tail to ~24s) drags the parallel adapt step — which
+# shares one deadline across the three concurrent calls — up to the full budget every
+# time ANY one of the three is routed to it. On prod's slower network this is what
+# pushed generation past the frontend's 45s timeout even with the AI deadline live.
+#
+# ``provider.sort = "latency"`` tells OpenRouter to route to the LOWEST-LATENCY
+# upstream first, so the slow-provider tail is avoided (measured with this on:
+# median ~1.0s, max ~3.7s, vs spikes to 11-24s without it). This is a routing hint
+# only — it never changes the model, the prompt, or the (still guard-checked) output,
+# so it affects speed alone. Env-tunable via ``NDA_GENERATION_PROVIDER_SORT`` (set to
+# an empty value to disable the routing hint and fall back to OpenRouter's default
+# balancing).
+GENERATION_PROVIDER_SORT_ENV = "NDA_GENERATION_PROVIDER_SORT"
+DEFAULT_GENERATION_PROVIDER_SORT = "latency"
+
+
+def configured_generation_provider_sort() -> str:
+    """The OpenRouter ``provider.sort`` strategy for clause-adapter calls.
+
+    Reads ``NDA_GENERATION_PROVIDER_SORT`` (default ``"latency"``); an explicitly
+    empty env value disables the routing hint. Only the documented OpenRouter sort
+    strategies are honoured — anything else falls back to the default — so a typo
+    can't send an invalid routing block that OpenRouter would reject.
+    """
+
+    raw = os.environ.get(GENERATION_PROVIDER_SORT_ENV)
+    if raw is None:
+        return DEFAULT_GENERATION_PROVIDER_SORT
+    value = raw.strip().lower()
+    if not value:
+        return ""
+    return value if value in {"latency", "throughput", "price"} else DEFAULT_GENERATION_PROVIDER_SORT
+
 # Hard ceiling on the VISIBLE answer a single clause adaptation may emit. A clause
 # rephrase is ~25-60 tokens of output; this is a runaway guard, not a working bound
 # — set well above any legitimate rephrase so it never truncates a real answer (the
@@ -553,7 +590,7 @@ def _openrouter_request_body(request: Mapping[str, Any], *, model: str) -> dict[
         f"purpose={deal.get('purpose')!r}, nda_type={deal.get('nda_type')!r}.\n\n"
         "Return the adapted clause text only."
     )
-    return {
+    body: dict[str, Any] = {
         "model": model,
         "messages": [
             {"role": "system", "content": request.get("system", "")},
@@ -581,6 +618,13 @@ def _openrouter_request_body(request: Mapping[str, Any], *, model: str) -> dict[
         "max_tokens": DEFAULT_ADAPT_MAX_TOKENS,
         "reasoning": {"enabled": False},
     }
+    # Route to the lowest-latency upstream provider so an intermittent slow one
+    # can't drag the (deadline-bounded) parallel adapt step to its budget ceiling.
+    # See GENERATION_PROVIDER_SORT_ENV; an empty strategy disables the hint.
+    provider_sort = configured_generation_provider_sort()
+    if provider_sort:
+        body["provider"] = {"sort": provider_sort}
+    return body
 
 
 def _openrouter_response_text(payload: Mapping[str, Any]) -> str:

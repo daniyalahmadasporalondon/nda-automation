@@ -98,6 +98,10 @@ class DeploymentConfigTests(unittest.TestCase):
         # default 8s) to preserve more AI rephrasing on prod's slower network while
         # staying under the frontend's 45s generate timeout.
         self.assertRegex(blueprint, r"key:\s+NDA_GENERATION_ADAPT_BUDGET_SECONDS\s+value:\s+\"12\"")
+        # Generation pins OpenRouter to the lowest-latency upstream provider so an
+        # intermittent slow upstream can't drag the deadline-bounded parallel adapt
+        # step to its budget ceiling (the real cause of the 45s generate timeout).
+        self.assertRegex(blueprint, r"key:\s+NDA_GENERATION_PROVIDER_SORT\s+value:\s+latency")
         # A persistent disk is mounted at /var/data so users.json, matters, and
         # exports survive restarts/redeploys (the whole point of the Standard plan).
         self.assertRegex(blueprint, r"disk:\s+name:\s+nda-data\s+mountPath:\s+/var/data\s+sizeGB:\s+1")
