@@ -1,0 +1,277 @@
+/* ===========================================================================
+   Overview tab — clause roster, review progress, send/approve footer.
+   Reuses the Review Workstation design tokens from styles.css (surfaces, ink,
+   brand, semantic pill colors, radii, shadows). The PASS / REVIEW / FAIL pills
+   mirror the shared `.status` pill recipe (tinted bg + inset 1px border ring +
+   ink color) so verdicts read identically across the app.
+   Only the .ov-* classes live here; .view toggling stays in styles.css.
+   =========================================================================== */
+
+/* ---------- Tab pane: counterparty/facts -> roster -> footer ---------- */
+
+.ov-tab {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  min-width: 0;
+  padding: 16px 18px 14px;
+}
+
+/* ---------- Facts strip (top): counterparty + key facts ---------- */
+
+.ov-counterparty {
+  color: var(--ink);
+  flex: 0 0 auto;
+  font-size: 16px;
+  font-weight: 850;
+  line-height: 1.15;
+  margin: 0;
+}
+
+.ov-facts {
+  align-items: stretch;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ov-fact {
+  background: var(--bg-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-sm);
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.25;
+  padding: 7px 10px;
+}
+
+.ov-fact strong {
+  color: var(--ink);
+  display: block;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  margin-bottom: 2px;
+  text-transform: uppercase;
+}
+
+/* ---------- Roster: scrollable list of clause rows ---------- */
+
+.ov-roster {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.ov-row {
+  align-items: center;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--ink);
+  cursor: pointer;
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  font-weight: 600;
+  gap: 9px;
+  padding: 9px 11px;
+  text-align: left;
+  transition: background 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.ov-row:hover,
+.ov-row:focus-visible {
+  background: var(--bg-soft);
+  border-color: var(--border-strong);
+  outline: none;
+}
+
+/* Clause label takes the remaining space, pushing pill + check to the right. */
+.ov-row > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ov-row--current {
+  background: var(--bg-softer);
+  border-color: var(--lotus);
+  box-shadow: inset 0 0 0 1px var(--brand-glow), var(--shadow-xs);
+}
+
+.ov-row--current:hover {
+  background: var(--bg-softer);
+  border-color: var(--lotus);
+}
+
+/* ---------- Verdict pills — mirror the shared `.status` pill look ---------- */
+
+.ov-pill {
+  border-radius: var(--r-pill);
+  flex: 0 0 auto;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  padding: 5px 7px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.ov-pill--pass {
+  background: var(--green-bg);
+  box-shadow: inset 0 0 0 1px var(--green-border);
+  color: var(--green-ink);
+}
+
+.ov-pill--review {
+  background: var(--amber-bg);
+  box-shadow: inset 0 0 0 1px var(--amber-border);
+  color: var(--amber-ink);
+}
+
+.ov-pill--fail {
+  background: var(--red-bg);
+  box-shadow: inset 0 0 0 1px var(--red-border);
+  color: var(--red-ink);
+}
+
+/* Small "reviewed" check mark trailing a row. */
+.ov-check {
+  align-items: center;
+  color: var(--green-ink);
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 14px;
+  justify-content: center;
+  width: 14px;
+}
+
+.ov-check svg {
+  height: 14px;
+  width: 14px;
+}
+
+/* ---------- Empty state ---------- */
+
+.ov-empty {
+  align-items: center;
+  color: var(--ink-muted);
+  display: flex;
+  flex: 1 1 auto;
+  font-size: 12.5px;
+  font-weight: 500;
+  justify-content: center;
+  min-height: 160px;
+  padding: 24px;
+  text-align: center;
+}
+
+/* ---------- Footer: progress + approve / send ---------- */
+
+.ov-footer {
+  align-items: center;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  margin: 2px -18px -14px;
+  padding: 12px 18px;
+}
+
+.ov-progress {
+  color: var(--ink-soft);
+  flex: 1 1 160px;
+  font-size: 11px;
+  font-weight: 700;
+  min-width: 0;
+}
+
+.ov-progress-bar {
+  background: var(--bg-chip);
+  border-radius: var(--r-pill);
+  flex: 1 1 100%;
+  height: 5px;
+  margin-top: 7px;
+  overflow: hidden;
+}
+
+/* The fill is the bar's child; width is set inline by the component. */
+.ov-progress-bar > * {
+  background: var(--green);
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  transition: width 0.24s ease;
+}
+
+.ov-approve,
+.ov-send {
+  align-items: center;
+  border: 0;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-family: var(--text-font);
+  font-size: 11px;
+  font-weight: 700;
+  height: 28px;
+  justify-content: center;
+  padding: 0 14px;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, transform 0.14s ease;
+}
+
+.ov-approve:active:not(:disabled),
+.ov-send:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.ov-approve {
+  background: var(--brand);
+  color: #fff;
+}
+
+.ov-approve:hover:not(:disabled):not(.ov-approve--disabled) {
+  background: var(--brand-bright);
+}
+
+/* Greyed/disabled approve — works as a class or the native :disabled state. */
+.ov-approve--disabled,
+.ov-approve:disabled {
+  background: var(--slate-bg);
+  box-shadow: inset 0 0 0 1px var(--slate-border);
+  color: var(--ink-muted);
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.ov-send {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  color: var(--ink-soft);
+}
+
+.ov-send:hover:not(:disabled) {
+  background: var(--bg-soft);
+  border-color: var(--lotus);
+  color: var(--brand);
+}
+
+.ov-send:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
