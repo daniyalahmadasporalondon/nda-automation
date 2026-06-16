@@ -878,6 +878,11 @@ function matterReviewPayloadToMatter(payload) {
     ...(payload?.matter || {}),
     extracted_text: payload?.extracted_text || "",
     redline_draft: payload?.redline_draft || null,
+    // A successful explicit refresh re-ran the AI, so the review is current unless
+    // the server still flags it. Honor the server flag if present, else clear it.
+    review_may_be_stale: Boolean(
+      payload?.review_may_be_stale ?? payload?.matter?.review_may_be_stale ?? false,
+    ),
     review_refresh: payload?.review_refresh || null,
     review_result: payload?.review_result || {},
   };
@@ -913,13 +918,27 @@ function handleStaleReviewOperationError(error, fallbackMeta) {
   studioRefreshReviewButton?.focus?.();
 }
 
+// True when the loaded matter's stored review may no longer reflect the active
+// Playbook / engine. Two independent signals:
+//   - review_refresh.stale: set by a server staleness check (refresh/operation paths)
+//   - review_may_be_stale: set when OPENING a matter (the open path does not run AI)
+// Either one means the operator should run an explicit "Refresh with AI".
+function reviewMayBeStale(matter = state.selectedMatter, refresh = matter?.review_refresh) {
+  return Boolean(refresh?.stale || matter?.review_may_be_stale);
+}
+
 function renderReviewRefreshNotice(refresh = state.selectedMatter?.review_refresh || null) {
+  const stale = reviewMayBeStale(state.selectedMatter, refresh);
+  const message = stale ? staleReviewMessage(refresh || state.selectedMatter?.review_refresh) : "";
+  if (studioReviewStaleIndicator) {
+    studioReviewStaleIndicator.hidden = !stale;
+    studioReviewStaleIndicator.title = message;
+  }
   if (!studioRefreshReviewButton) return;
-  const stale = Boolean(refresh?.stale);
   studioRefreshReviewButton.hidden = !stale;
   studioRefreshReviewButton.disabled = false;
-  studioRefreshReviewButton.textContent = "Refresh Review";
-  studioRefreshReviewButton.title = stale ? staleReviewMessage(refresh) : "";
+  studioRefreshReviewButton.textContent = "Refresh with AI";
+  studioRefreshReviewButton.title = stale ? message : "";
 }
 
 function staleReviewMessage(refresh, fallback = "Review is stale. Refresh the review before exporting or sending.") {
