@@ -896,3 +896,92 @@ def test_kill_switch_default_enabled(monkeypatch):
     for value in ("true", "1", "yes", "on", "anything"):
         monkeypatch.setenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, value)
         assert ingestion_service.inbound_ai_review_enabled() is True
+
+
+# --------------------------------------------------------------------------- #
+# (b) Kill-switch re-check at DRAIN time: a queued review already in the pool
+#     must stop reviewing when NDA_INBOUND_AI_REVIEW_ENABLED is flipped off.
+# --------------------------------------------------------------------------- #
+
+
+def test_pool_handler_returns_early_when_kill_switch_off_at_drain(monkeypatch):
+    """Flipping the kill-switch off STOPS in-flight draining, not just new enqueues.
+
+    The bug: the pool handler only honoured the kill-switch at enqueue time, so an
+    item already sitting in the queue when ops flipped NDA_INBOUND_AI_REVIEW_ENABLED
+    =false would still be reviewed. The handler must re-read the switch at DRAIN time
+    and return early -- no heavy review -- when it is off.
+    """
+    reviewed: list[str] = []
+    monkeypatch.setattr(ingestion_service, "_perform_inbound_ai_review",
+                        lambda *a, **k: reviewed.append("review"))
+
+    # Kill-switch OFF at drain: the handler refuses to review and does NOT requeue
+    # (the feature is disabled; the item is simply dropped from the queue).
+    monkeypatch.setenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, "false")
+    ingestion_service._inbound_review_pool_handler("matter_off", "owner_1")
+    assert reviewed == []
+
+    # Kill-switch ON again: the same handler reviews normally.
+    monkeypatch.setenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, "true")
+    ingestion_service._inbound_review_pool_handler("matter_on", "owner_1")
+    assert reviewed == ["review"]
+
+
+# --------------------------------------------------------------------------- #
+# (c) Loop closer: a persist that returns None counts as a FAILED attempt, so the
+#     3-strike poison-pill cap engages and the matter stops being re-swept forever.
+# --------------------------------------------------------------------------- #
+
+
+class _PersistReturnsNoneRepository(InMemoryMatterRepository):
+    """A repo whose update_matter_review always returns None (un-persistable save).
+
+    Stands in for the real-world orphan: the review runs but the write saves
+    nothing (matter vanished, owner mismatch, writer no-op). update_matter_fields
+    (used by the failure-recorder) still works, so the failure counter can climb.
+    """
+
+    def update_matter_review(self, *args, **kwargs):  # noqa: ARG002
+        return None
+
+
+def test_persist_returns_none_counts_as_failure_and_stops_resweeping(monkeypatch, caplog):
+    monkeypatch.delenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, raising=False)
+    monkeypatch.setenv(ingestion_service.INBOUND_REVIEW_MAX_FAILURES_ENV, "3")
+
+    repository = _PersistReturnsNoneRepository()
+    matter = create_matter_from_document(
+        filename="inbound.docx",
+        document_bytes=_docx(NDA_PARAGRAPHS),
+        source_type="gmail_inbound",
+        repository=repository,
+        defer_ai_review=True,
+    )
+    matter_id = matter["id"]
+    engine = _stub_ai_first_engine()  # the review itself SUCCEEDS; only the save is null.
+
+    # Each run: review succeeds, persist returns None -> recorded as a failed attempt.
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        for expected in (1, 2, 3):
+            ingestion_service._perform_inbound_ai_review(
+                matter_id, repository=repository, owner_user_id="", review_engine_func=engine,
+            )
+            assert repository.get_matter(matter_id)["inbound_review_failures"] == expected
+
+    # The orphan log names the matter id so it can later be found / re-homed.
+    assert any(matter_id in rec.getMessage() for rec in caplog.records)
+    # Never stamped ai_first (the save returned None), so the sweep WOULD re-pick it...
+    assert repository.get_matter(matter_id)["review_result"][
+        "active_review_engine"]["executed_engine"] == "deterministic"
+
+    # ...except it has now hit the cap (3 failures) -> the recovery sweep GIVES UP.
+    pool = ingestion_service._InboundReviewWorkerPool()
+    enqueued: list[str] = []
+    pool.configure(lambda mid, owner: enqueued.append(mid))
+    monkeypatch.setattr(ingestion_service, "_INBOUND_REVIEW_POOL", pool)
+    swept = ingestion_service.recover_unreviewed_inbound_matters(repository=repository)
+    assert swept == 0
+    assert enqueued == []  # the never-ending storm is closed.

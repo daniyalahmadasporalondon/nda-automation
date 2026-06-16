@@ -80,6 +80,33 @@ _INBOUND_REVIEW_SWEEP_LIMIT = 50
 INBOUND_REVIEW_MAX_FAILURES_ENV = "NDA_INBOUND_REVIEW_MAX_FAILURES"
 _DEFAULT_INBOUND_REVIEW_MAX_FAILURES = 3
 
+# Right-of-way backoff: when a foreground NDA generation is in flight the inbound
+# review worker REFUSES to start the heavy AI review and re-queues the matter
+# after this short delay (off-thread timer, so it lands AFTER the drain releases
+# the dedup key). A deterministic generate is ~17-58 ms; this small backoff lets
+# it (and any tightly-following generate) clear before the review retries, while
+# never dropping the matter. Env-tunable for ops.
+INBOUND_REVIEW_DEFER_BACKOFF_ENV = "NDA_INBOUND_REVIEW_DEFER_BACKOFF_SECONDS"
+_DEFAULT_INBOUND_REVIEW_DEFER_BACKOFF_SECONDS = 0.25
+
+
+def inbound_review_defer_backoff_seconds() -> float:
+    """Backoff before a generation-deferred review job is re-enqueued.
+
+    Defaults to ``_DEFAULT_INBOUND_REVIEW_DEFER_BACKOFF_SECONDS``; a non-positive
+    or unparseable override clamps to 0 (immediate re-enqueue, still off-thread so
+    the dedup key has been released).
+    """
+
+    raw = os.environ.get(INBOUND_REVIEW_DEFER_BACKOFF_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_INBOUND_REVIEW_DEFER_BACKOFF_SECONDS
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_INBOUND_REVIEW_DEFER_BACKOFF_SECONDS
+    return max(0.0, value)
+
 
 def inbound_review_max_failures() -> int:
     """Per-matter AI-review failure cap before the recovery sweep gives up.
@@ -204,6 +231,38 @@ class _InboundReviewWorkerPool:
             return False
         self._ensure_workers()
         return True
+
+    def requeue_after_backoff(self, matter_id: str, owner_user_id: str, delay: float) -> None:
+        """Re-enqueue one job after ``delay`` seconds, off-thread (right-of-way defer).
+
+        Used when a worker REFUSES to start a review because a foreground generate
+        has the right of way: the matter must not be lost, but re-enqueuing inline
+        would be a no-op (its dedup key is still pending until this drain's
+        ``finally`` releases it). A short daemon timer re-enqueues AFTER that
+        release, so the matter retries instead of being dropped. Fully fail-soft:
+        a timer/enqueue failure is logged, never raised into the worker.
+        """
+
+        key0 = str(matter_id or "")
+        if not key0:
+            return
+
+        def _resubmit() -> None:
+            try:
+                self.enqueue(key0, str(owner_user_id or ""))
+            except Exception:  # pragma: no cover - re-enqueue is best-effort.
+                LOGGER.warning(
+                    "Inbound AI review deferred re-enqueue failed for matter %s",
+                    key0,
+                    exc_info=True,
+                )
+
+        try:
+            timer = threading.Timer(max(0.0, float(delay)), _resubmit)
+            timer.daemon = True
+            timer.start()
+        except Exception:  # pragma: no cover - fall back to an inline best-effort retry.
+            _resubmit()
 
     def _drain(self) -> None:
         while True:
@@ -485,7 +544,27 @@ def _perform_inbound_ai_review_body(
         _record_inbound_review_failure(matter_id, repository=repository, owner_user_id=owner_user_id)
         LOGGER.warning("Inbound AI review persist failed for matter %s", matter_id, exc_info=True)
         return
-    if updated is None:
+    if not updated:
+        # LOOP CLOSER: the review ran but the persist returned None/falsy (e.g. the
+        # matter vanished, an owner mismatch, or a writer no-op). Previously this
+        # returned silently WITHOUT recording anything, so the matter was never
+        # stamped ai_first AND never counted as failed -> the recovery sweep re-swept
+        # it forever (the never-ending review storm). Treat the un-persistable save
+        # as a FAILED attempt: bump the poison-pill counter (same path the except
+        # branches use) so the 3-strike brake engages and the matter stops being
+        # re-reviewed. Name the matter id so these orphaned matters can be found /
+        # re-homed later.
+        telemetry.increment("inbound_ai_review_failed")
+        telemetry.increment("inbound_ai_review_persist_returned_none")
+        _record_inbound_review_failure(matter_id, repository=repository, owner_user_id=owner_user_id)
+        LOGGER.warning(
+            "Inbound AI review persisted nothing for matter %s owner=%s "
+            "(update_matter_review returned None); counted as a failed attempt so the "
+            "poison-pill cap can stop it being re-swept. This matter may be orphaned "
+            "(missing/owner-mismatch) and needs re-homing.",
+            matter_id,
+            str(owner_user_id or ""),
+        )
         return
     telemetry.increment("inbound_ai_review_completed")
 
@@ -497,16 +576,47 @@ def _inbound_review_pool_handler(matter_id: str, owner_user_id: str) -> None:
     the handler reconstructs the default repository + active engine here. No
     semaphore: the pool's fixed size is the concurrency bound.
 
-    Before starting this CPU-bound review, defer to any in-flight foreground NDA
-    generation so the single prod worker's GIL/CPU is not starved out from under a
-    user-facing generate (which must complete inside the frontend's 45 s timeout).
-    Bounded + fail-open: the yield blocks at most a few seconds and never raises,
-    so a long/stuck generate can never permanently wedge the review pool.
+    Two gates run BEFORE any heavy AI work, in order:
+
+    1. Kill-switch RE-CHECK at drain time: ``inbound_ai_review_enabled()`` is read
+       here, not only at enqueue, so flipping ``NDA_INBOUND_AI_REVIEW_ENABLED=false``
+       actually stops items already sitting in the queue from being reviewed --
+       the emergency stop works on in-flight draining, not just new enqueues. The
+       item is dropped from the queue (no re-queue) because the feature is off.
+
+    2. RIGHT OF WAY: if a foreground NDA generation is in flight
+       (``should_defer_background_ai()``), this worker REFUSES to start the review
+       and re-queues the matter after a short backoff instead of block-waiting --
+       a hard "don't start now", not a soft yield. The matter is never dropped
+       (re-enqueued off-thread once the dedup key releases), so the deterministic
+       user-facing generate keeps the single worker's GIL/CPU and stays under the
+       frontend's 45 s timeout.
     """
 
     from . import generation_priority  # noqa: PLC0415 - keep the import light/local.
 
-    generation_priority.yield_to_active_generation()
+    # Gate 1: kill-switch re-check at DRAIN time (not just enqueue time).
+    if not inbound_ai_review_enabled():
+        LOGGER.info(
+            "Inbound AI review kill-switch off at drain; skipping matter %s", matter_id
+        )
+        return
+
+    # Gate 2: give foreground generation the right of way -- defer + re-queue.
+    if generation_priority.should_defer_background_ai():
+        from . import telemetry  # noqa: PLC0415 - keep the import light/local.
+
+        telemetry.increment("inbound_ai_review_deferred_for_generation")
+        LOGGER.info(
+            "Deferring inbound AI review for matter %s: a foreground generation has "
+            "the right of way; re-queuing after backoff.",
+            matter_id,
+        )
+        _INBOUND_REVIEW_POOL.requeue_after_backoff(
+            matter_id, owner_user_id, inbound_review_defer_backoff_seconds()
+        )
+        return
+
     _perform_inbound_ai_review(
         matter_id,
         repository=DiskMatterRepository(),
