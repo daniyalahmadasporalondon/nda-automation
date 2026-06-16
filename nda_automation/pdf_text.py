@@ -35,6 +35,34 @@ PDF_SUPPORT_NOT_INSTALLED_MESSAGE = "PDF support is not installed. Install the p
 MAX_PDF_PAGES = 100
 MAX_PDF_EXTRACTED_CHARACTERS = 500_000
 
+# Memory guard for the fitz visual profile. ``page.get_text("dict")`` with the
+# default flags MATERIALIZES every embedded image's decoded bytes into the per-page
+# dict — on an image-heavy PDF that single transient dominates the whole review's
+# peak RSS (~50MB on a 3.8MB media-rich PDF, vs ~0.2MB without). The visual profile
+# only needs per-span colours + image/drawing *presence*, never the pixels, so we
+# strip ``TEXT_PRESERVE_IMAGES`` from the text flags and count images separately via
+# the lightweight ``get_image_info()``. Same signal, ~250x less peak memory.
+_FITZ_VISUAL_TEXT_FLAGS_NO_IMAGES: int | None = None
+
+
+def _fitz_visual_text_flags(fitz_module: Any) -> int | None:
+    """Text-extraction flags for the visual profile with image bytes suppressed.
+
+    Returns ``None`` (use the library default) if the running PyMuPDF lacks the
+    expected flag constants, so the profile degrades to the default behaviour
+    rather than crashing on an unexpected build.
+    """
+
+    global _FITZ_VISUAL_TEXT_FLAGS_NO_IMAGES
+    if _FITZ_VISUAL_TEXT_FLAGS_NO_IMAGES is not None:
+        return _FITZ_VISUAL_TEXT_FLAGS_NO_IMAGES
+    try:
+        flags = int(fitz_module.TEXTFLAGS_DICT) & ~int(fitz_module.TEXT_PRESERVE_IMAGES)
+    except Exception:  # pragma: no cover - exotic/old PyMuPDF build
+        return None
+    _FITZ_VISUAL_TEXT_FLAGS_NO_IMAGES = flags
+    return flags
+
 # Two chunks whose baselines differ by less than this many points belong to the
 # same visual line (sub/superscript jitter, split runs on one line).
 _SAME_LINE_Y_TOLERANCE = 3.0
@@ -813,19 +841,38 @@ def _pdf_visual_profile(data: bytes) -> dict[str, object]:
         unique_text_colors: set[int] = set()
         page_count = document.page_count
         profiled_pages = min(page_count, MAX_PDF_PAGES)
+        # Suppress image-byte materialization in the per-page text dict (the peak-RSS
+        # hog); count images via the lightweight get_image_info() instead. Falls back
+        # to the default text dict on a PyMuPDF build without the flag constants.
+        text_flags = _fitz_visual_text_flags(fitz)
         for page_index in range(profiled_pages):
             page = document[page_index]
             page_has_non_black_text = False
             page_has_images = False
             page_has_drawings = False
+            if text_flags is not None:
+                # Images are suppressed from the text dict below, so they never appear
+                # as type==1 blocks; count them here via the lightweight image-info API.
+                try:
+                    page_images = page.get_image_info()
+                except Exception:
+                    page_images = []
+                if page_images:
+                    image_count += len(page_images)
+                    page_has_images = True
             try:
-                blocks = page.get_text("dict").get("blocks", [])
+                if text_flags is None:
+                    blocks = page.get_text("dict").get("blocks", [])
+                else:
+                    blocks = page.get_text("dict", flags=text_flags).get("blocks", [])
             except Exception:
                 blocks = []
             for block in blocks:
                 if not isinstance(block, dict):
                     continue
                 if block.get("type") == 1:
+                    # Only reached on the default-flags fallback (text_flags is None),
+                    # where images are NOT counted via get_image_info above.
                     image_count += 1
                     page_has_images = True
                     continue
