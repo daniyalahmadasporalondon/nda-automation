@@ -93,7 +93,11 @@ class DeploymentConfigTests(unittest.TestCase):
         self.assertRegex(blueprint, r"key:\s+NDA_GENERATION_MODEL\s+value:\s+deepseek/deepseek-v4-flash")
         self.assertRegex(blueprint, r"key:\s+OPENROUTER_API_KEY\s+sync:\s+false")
         self.assertNotRegex(blueprint, r"key:\s+GROQ_API_KEY")
-        self.assertRegex(blueprint, r"key:\s+NDA_GMAIL_TRIAGE_MODEL\s+value:\s+anthropic/claude-opus-4.8")
+        self.assertRegex(blueprint, r"key:\s+NDA_GMAIL_TRIAGE_MODEL\s+value:\s+deepseek/deepseek-v4-pro")
+        # Generation's AI clause-adaptation budget is env-tunable; prod sets 12s (code
+        # default 8s) to preserve more AI rephrasing on prod's slower network while
+        # staying under the frontend's 45s generate timeout.
+        self.assertRegex(blueprint, r"key:\s+NDA_GENERATION_ADAPT_BUDGET_SECONDS\s+value:\s+\"12\"")
         # A persistent disk is mounted at /var/data so users.json, matters, and
         # exports survive restarts/redeploys (the whole point of the Standard plan).
         self.assertRegex(blueprint, r"disk:\s+name:\s+nda-data\s+mountPath:\s+/var/data\s+sizeGB:\s+1")

@@ -127,5 +127,16 @@ services:
         value: anthropic/claude-opus-4.8
       - key: OPENROUTER_API_KEY
         sync: false
+      # Gmail attachment-selector triage model. DeepSeek V4 Pro: the selection task
+      # is structured (pick attachment IDs from a constrained candidate set, with the
+      # intersection backstop neutralizing injection), so the cheaper/faster DeepSeek
+      # Pro matches Opus quality at a fraction of the cost. Reuses the verifier's
+      # model family, adding no new model surface.
       - key: NDA_GMAIL_TRIAGE_MODEL
-        value: anthropic/claude-opus-4.8
+        value: deepseek/deepseek-v4-pro
+      # HARD wall-clock budget for the AI clause-adaptation step during NDA
+      # generation (code default 8s). Prod's network to OpenRouter is slower than
+      # local, so 12s preserves more AI rephrasing before the deterministic fallback
+      # kicks in, while staying far under the frontend's 45s generate timeout.
+      - key: NDA_GENERATION_ADAPT_BUDGET_SECONDS
+        value: "12"

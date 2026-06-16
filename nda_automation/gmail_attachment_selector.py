@@ -13,7 +13,7 @@ from .openrouter_usage import record_openrouter_usage
 from .untrusted_text import neutralize_untrusted_text as _neutralize_shared_untrusted_text
 
 GMAIL_TRIAGE_MODEL_ENV = "NDA_GMAIL_TRIAGE_MODEL"
-DEFAULT_GMAIL_TRIAGE_MODEL = "anthropic/claude-opus-4.8"
+DEFAULT_GMAIL_TRIAGE_MODEL = "deepseek/deepseek-v4-pro"
 DEFAULT_GMAIL_TRIAGE_TIMEOUT_SECONDS = 20
 MIN_SELECTOR_CONFIDENCE = 0.70
 MAX_CANDIDATE_TEXT_CHARS = 1800
