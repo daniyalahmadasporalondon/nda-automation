@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import re
 from pathlib import Path
 
 from .. import gmail_integration, matter_render_job, matter_store, matter_summary, matter_view, pdf_export_service, telemetry
@@ -76,14 +77,34 @@ def handle_matter_review(handler, path: str, *, send_body: bool = True) -> None:
 
 
 def handle_matter_review_refresh(handler, path: str) -> None:
+    """POST /api/matters/<id>/review-refresh -- the ONLY path that runs the AI review.
+
+    This is the explicit, user-initiated AI refresh. It re-runs the active review
+    engine (AI-first by default, i.e. the verifier) over the matter and stores the
+    fresh review. Opening/fetching a matter never reaches here, so "looking at"
+    a matter never triggers the expensive AI.
+
+    The refresh runs whenever the BROAD offline staleness signal is set
+    (``review_may_be_stale``): playbook/engine drift OR no AI review exists yet OR
+    the matter text changed since the last review -- so an explicit click always
+    produces a fresh AI review when one is warranted, not only on playbook drift.
+    """
     matter_id = parse_matter_id(path, suffix="/review-refresh")
     matter = _matter_for_review_response(handler, matter_id, send_body=True)
     if matter is None:
         return
+
+    def _broad_staleness(_review_result: object, _matter: dict = matter) -> bool:
+        may_be_stale, _reasons = _review_may_be_stale(
+            _matter,
+            playbook_stale=review_result_is_stale(_matter.get("review_result")),
+        )
+        return may_be_stale
+
     refresh = RepositoryMatterLifecycle(_repository(handler)).refresh_review(
         matter,
         review_engine_func=review_nda_with_active_engine,
-        review_staleness_func=review_result_is_stale,
+        review_staleness_func=_broad_staleness,
     )
     handler._send_json(_matter_review_payload(
         refresh.matter,
@@ -182,6 +203,64 @@ def _with_restored_paragraph_structure(matter: dict, *, repository: MatterReposi
     return {**matter, "review_result": {**review_result, "paragraphs": merged}}
 
 
+def _normalize_review_text(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _matter_has_ai_review(review_result: object) -> bool:
+    """True when the matter's STORED review was produced by the AI-first engine.
+
+    A deterministically-generated review (e.g. outbound generation, which pins the
+    deterministic engine and defers AI to on-demand) carries an
+    ``active_review_engine.executed_engine`` that is not ``ai_first`` -- so "no AI
+    review exists" is true and the matter should advertise ``review_may_be_stale``.
+    A missing/empty review is likewise "no AI review".
+    """
+    if not isinstance(review_result, dict) or not review_result:
+        return False
+    engine = review_result.get("active_review_engine")
+    if not isinstance(engine, dict):
+        # Pre-engine-metadata reviews: fall back to the ai_first marker if present.
+        return isinstance(review_result.get("ai_first_review"), dict)
+    executed = str(engine.get("executed_engine") or engine.get("engine") or "").strip()
+    return executed == "ai_first"
+
+
+def _matter_review_text_changed(matter: dict, review_result: object) -> bool:
+    """True when the matter's current text differs from what the review was run on.
+
+    Cheap + OFFLINE: compares the matter's current ``extracted_text`` to the text
+    snapshot the stored review recorded (``review_result['extracted_text']``). When
+    the review never recorded its source text we cannot prove a change, so we return
+    False (the engine/playbook/no-AI signals still apply).
+    """
+    if not isinstance(review_result, dict):
+        return False
+    review_text = review_result.get("extracted_text")
+    if not isinstance(review_text, str) or not review_text.strip():
+        return False
+    return _normalize_review_text(matter.get("extracted_text")) != _normalize_review_text(review_text)
+
+
+def _review_may_be_stale(matter: dict, *, playbook_stale: bool) -> tuple[bool, list[str]]:
+    """Cheap/offline staleness verdict for the matter-fetch response.
+
+    OR of three offline signals (none of which call the AI engine):
+      - ``playbook_stale``  -- playbook hash / engine version / structure drift
+        (from review_result_staleness).
+      - no AI review exists -- the stored review was not produced by the AI engine.
+      - text changed        -- the matter text changed since the last review run.
+    """
+    review_result = matter.get("review_result")
+    extra_reasons: list[str] = []
+    if not _matter_has_ai_review(review_result):
+        extra_reasons.append("no_ai_review")
+    if _matter_review_text_changed(matter, review_result):
+        extra_reasons.append("matter_text_changed")
+    may_be_stale = bool(playbook_stale or extra_reasons)
+    return may_be_stale, extra_reasons
+
+
 def _matter_review_payload(
     matter: dict,
     matter_id: str | None,
@@ -194,6 +273,7 @@ def _matter_review_payload(
     if was_stale is None:
         was_stale = bool(staleness["stale"])
     is_stale = bool(staleness["stale"])
+    may_be_stale, extra_stale_reasons = _review_may_be_stale(matter, playbook_stale=is_stale)
     refreshed = bool(refresh_attempted and was_stale and not is_stale)
     redline_draft_cleared = bool(
         refreshed
@@ -201,13 +281,25 @@ def _matter_review_payload(
         and not isinstance(matter.get("redline_draft"), dict)
     )
     payload = matter_view.review_matter(matter)
+    # Cheap/offline staleness signal. Opening/fetching a matter NEVER runs the AI
+    # engine -- it returns the EXISTING stored review and this boolean. The AI
+    # review runs only on the explicit POST /api/matters/<id>/review-refresh path.
+    # ``review_may_be_stale`` is the BROAD offline signal: playbook/engine drift OR
+    # no AI review exists OR the matter text changed since the last review.
+    payload["review_may_be_stale"] = may_be_stale
+    combined_stale_reasons = list(staleness["stale_reasons"]) + [
+        reason for reason in extra_stale_reasons if reason not in staleness["stale_reasons"]
+    ]
     payload["review_refresh"] = {
+        # ``stale`` keeps its narrow playbook/engine meaning (export/send gate);
+        # ``review_may_be_stale`` is the broad open-time indicator.
         "stale": is_stale,
+        "review_may_be_stale": may_be_stale,
         "refresh_method": "POST",
         "refresh_url": f"/api/matters/{matter_id}/review-refresh",
         "refreshed": refreshed,
         "redline_draft_cleared": redline_draft_cleared,
-        "stale_reasons": staleness["stale_reasons"],
+        "stale_reasons": combined_stale_reasons,
         "current_playbook": staleness["current_playbook"],
         "review_playbook": staleness["review_playbook"],
         "current_review_engine_version": staleness["current_review_engine_version"],

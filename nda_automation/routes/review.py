@@ -47,13 +47,36 @@ def handle_text_review(handler, *, review_nda_func=review_nda) -> None:
         handler._send_json({"error": str(error)}, status=413)
         return
 
+    # The live editor calls this on every keystroke (debounced) only to refresh
+    # cheap OFFLINE clause detection. When the caller asks for an offline review the
+    # expensive AI reviewer/verifier must NOT run -- the AI review happens only via
+    # the explicit Refresh-with-AI path. `_run_offline_review` pins the deterministic
+    # (no-AI) engine in a way that works for both the live active-engine seam
+    # (force_engine="deterministic") and the plain review_nda seam (verify/ai_enabled).
+    offline = bool(payload.get("offline"))
     try:
-        result = review_nda_func(text)
+        result = _run_offline_review(review_nda_func, text) if offline else review_nda_func(text)
     except ActiveReviewEngineError as error:
         handler._send_json({"error": str(error)}, status=502)
         return
 
     handler._send_json(result)
+
+
+def _run_offline_review(review_nda_func, text: str):
+    """Run an OFFLINE (no-AI) review across the review-engine seams.
+
+    The production route passes ``review_nda_with_active_engine`` (which exposes a
+    ``force_engine`` knob whose ``"deterministic"`` engine already pins verify=False +
+    ai_enabled=False). A test/direct caller may inject plain ``review_nda`` (which
+    instead takes ``verify`` / ``ai_enabled``). Try ``force_engine`` first and fall
+    back on a ``TypeError`` for the callable that doesn't accept it, so neither seam
+    runs the AI reviewer/verifier on a keystroke.
+    """
+    try:
+        return review_nda_func(text, force_engine="deterministic")
+    except TypeError:
+        return review_nda_func(text, verify=False, ai_enabled=False)
 
 
 def handle_document_review(handler, *, extract_document_func=extract_document, review_nda_func=review_nda) -> None:
