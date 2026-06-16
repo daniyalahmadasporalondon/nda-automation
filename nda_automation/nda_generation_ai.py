@@ -56,12 +56,17 @@ OPENROUTER_CHAT_COMPLETIONS_ENDPOINT = "https://openrouter.ai/api/v1/chat/comple
 # so a faster model never weakens correctness — drift just degrades to the
 # deterministic Playbook wording.
 #
-# Default = Claude Haiku 4.5: same family as the Opus reviewer (consistent legal
-# register), fast, and well-suited to constrained rephrasing. A cheaper alternative
-# already used elsewhere in this codebase is ``deepseek/deepseek-v4-flash`` (structure
-# validation + gmail intake) — set ``NDA_GENERATION_MODEL`` to switch.
+# Default = DeepSeek V4 Flash: the distilled FAST/cheap DeepSeek variant already used
+# elsewhere in this codebase (``NDA_STRUCTURE_VALIDATION_MODEL`` + the Gmail intake
+# classifier), so it adds no new provider/model surface. It is the faster of the two
+# DeepSeek models we run (the other, ``deepseek/deepseek-v4-pro``, is the larger,
+# slower verifier model — ``NDA_AI_VERIFIER_MODEL``). Flash's quality is sufficient
+# here because this is only a constrained, on-position rephrase: the output is bounded
+# by the GuardedClauseAdapter (load-bearing terms + prohibited-position scan + length)
+# and the pre-save ship gate, so the model affects speed/prose only, never the legal
+# position. Set ``NDA_GENERATION_MODEL`` to switch.
 GENERATION_MODEL_ENV = "NDA_GENERATION_MODEL"
-DEFAULT_GENERATION_MODEL = "anthropic/claude-haiku-4.5"
+DEFAULT_GENERATION_MODEL = "deepseek/deepseek-v4-flash"
 
 
 def configured_generation_model() -> str:
@@ -188,7 +193,8 @@ def build_clause_adapter(
     with no key, returns ``None`` so generation runs deterministically.
 
     The model defaults to the FAST generation model (:func:`configured_generation_model`,
-    i.e. ``NDA_GENERATION_MODEL`` or Haiku) — NOT the heavyweight review model. The
+    i.e. ``NDA_GENERATION_MODEL`` or DeepSeek V4 Flash) — NOT the heavyweight review
+    model. The
     generate path calls this with no ``model``, so leaving the default as the review
     model (Opus) is what made generation slow enough to trip the frontend's 45s
     timeout on prod. An explicit ``model`` still overrides (e.g. a caller pinning a

@@ -93,12 +93,14 @@ services:
       # authoritative clause text to the deal). Deliberately a FAST model and
       # SEPARATE from the review model above: generation runs synchronously on the
       # request the user waits on and adapts three clauses in parallel, so Opus here
-      # pushed the generate past the frontend's 45s timeout on prod. Haiku completes
-      # in ~1-2s; output is still bounded by the GuardedClauseAdapter + the pre-save
-      # ship gate, so the faster model never weakens correctness. Cheaper alternative:
-      # deepseek/deepseek-v4-flash.
+      # pushed the generate past the frontend's 45s timeout on prod. DeepSeek V4 Flash
+      # is the faster of the two DeepSeek models we already run (the slower
+      # deepseek-v4-pro is the verifier below) and is reused from structure validation
+      # + Gmail intake, so it adds no new model surface. Output is still bounded by the
+      # GuardedClauseAdapter + the pre-save ship gate, so the faster model affects
+      # speed/prose only, never correctness.
       - key: NDA_GENERATION_MODEL
-        value: anthropic/claude-haiku-4.5
+        value: deepseek/deepseek-v4-flash
       # Independent adversarial second-opinion verifier on OpenRouter. It uses a
       # different model family from the main reviewer on purpose.
       - key: NDA_AI_VERIFIER

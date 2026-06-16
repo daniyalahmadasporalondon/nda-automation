@@ -75,8 +75,11 @@ class TestGenerationModel:
         assert "opus" not in resolved.lower()
 
     def test_env_override_is_honoured(self, monkeypatch):
-        monkeypatch.setenv(gen_ai.GENERATION_MODEL_ENV, "deepseek/deepseek-v4-flash")
-        assert gen_ai.configured_generation_model() == "deepseek/deepseek-v4-flash"
+        # Use a value distinct from the default so this proves the env knob, not the
+        # default. (The default is now deepseek-v4-flash; deepseek-v4-pro is a real,
+        # distinct DeepSeek model we also run, so it's a faithful override value.)
+        monkeypatch.setenv(gen_ai.GENERATION_MODEL_ENV, "deepseek/deepseek-v4-pro")
+        assert gen_ai.configured_generation_model() == "deepseek/deepseek-v4-pro"
 
     def test_blank_env_falls_back_to_default(self, monkeypatch):
         monkeypatch.setenv(gen_ai.GENERATION_MODEL_ENV, "   ")
