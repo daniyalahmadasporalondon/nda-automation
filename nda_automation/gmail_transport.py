@@ -273,6 +273,19 @@ class GmailTransport:
         except Exception:  # pragma: no cover - probe is best-effort
             return False
 
+    def processed_ledger_session(self, owner_user_id: str = "") -> Any:
+        """A load-once / mark-many / write-once processed-message ledger session.
+
+        Complements the drain cursor: the cursor stops the heavy re-work on
+        re-surfaced mail, this stops the per-message fetch + the gmail_intake /
+        gmail_triage AI calls entirely for messages that already reached a terminal
+        outcome. Reads the durable per-owner ledger ONCE here; the inbox loop marks
+        terminal outcomes in memory and the session writes the file ONCE at poll end.
+        """
+        from .gmail_processed_ledger import ProcessedLedgerSession
+
+        return ProcessedLedgerSession(owner_user_id)
+
     def create_matter_from_document(self, **kwargs):
         return _legacy().create_matter_from_document(**kwargs)
 

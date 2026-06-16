@@ -6567,11 +6567,16 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(first["imported"]), 1)
         self.assertEqual(first["imported"][0]["needs_triage"], "true")
         self.assertEqual(second["imported"], [])
-        # The second poll short-circuits at the message level (every attachment is
-        # already imported) BEFORE any re-download/re-extract, so the skip is the
-        # message-level "already_imported" rather than the per-attachment
-        # "duplicate_attachment". Either way the matter is deduped (one matter).
-        self.assertEqual([item["reason"] for item in second["skipped"]], ["already_imported"])
+        # The second poll short-circuits the message BEFORE any re-download/re-extract.
+        # The processed-message ledger fires one step EARLIER than the attachment
+        # dedup gate (it marked this fully-imported message on poll 1), so the skip
+        # reason is now the message-level "processed_message"; absent the ledger it
+        # would be "already_imported". Either short-circuit means the matter is
+        # deduped (one matter, nothing re-imported, no re-download).
+        self.assertEqual(
+            [item["reason"] for item in second["skipped"]],
+            ["processed_message"],
+        )
         self.assertEqual(len(matters), 1)
 
     def test_selector_not_selected_attachment_becomes_triage_not_silently_imported(self):

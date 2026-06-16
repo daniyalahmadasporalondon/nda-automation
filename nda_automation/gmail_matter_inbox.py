@@ -16,6 +16,28 @@ LOGGER = logging.getLogger(__name__)
 # emits a warn-log. Below this the silent per-call fallback is fine.
 _AI_DEGRADED_FRACTION = 0.5
 
+# Per-attachment skip reasons that represent a STABLE, DEFINITIVE outcome -- the
+# attachment was conclusively evaluated and there is no importable NDA to recover
+# from it. These are the only non-import outcomes that make a message safe to mark
+# processed in the ledger. This is an ALLOWLIST on purpose (a fail-safe inversion of
+# the transient-reason blocklist): any skip reason NOT in this set -- a download
+# failure (attachment_unavailable / attachment_too_large), an extraction crash
+# (review_failed / pdf_text_unreadable_needs_ocr), or any future/unknown reason -- is
+# treated as TRANSIENT, so the message stays UNMARKED and retries next poll. The
+# safe bias is "retry", never "wrongly suppress".
+#
+# Note: a failing AI selector/intake classifier does NOT produce one of these skips
+# directly -- resolve_intake_lane falls back to the DETERMINISTic lane on any
+# non-ok AI status, so a "non_nda_attachment" / "ai_not_selected_attachment" skip is
+# always a stable deterministic-or-confident-AI decision, not a swallowed AI error.
+_TERMINAL_STABLE_ATTACHMENT_SKIP_REASONS = frozenset(
+    {
+        "non_nda_attachment",
+        "ai_not_selected_attachment",
+        "duplicate_attachment",
+    }
+)
+
 
 def import_inbound_matters(
     *,
@@ -90,6 +112,16 @@ def import_inbound_matters(
         except Exception:  # pragma: no cover - cursor read is best-effort
             drain_cursor = 0
 
+    # Open the durable per-owner processed-message ledger ONCE for the whole poll
+    # (load-once / mark-many / write-once, REFINEMENT A). The scan checks it BEFORE
+    # the messages().get + the gmail_intake classifier + the gmail_triage selector AI
+    # calls (REFINEMENT C) so an already-processed message costs no fetch and no AI
+    # call. The session is obtained through the transport seam (exactly like the
+    # drain cursor) so a transport that does not expose it -- older fakes -- degrades
+    # to the pre-ledger behaviour, and tests get an isolated in-memory ledger rather
+    # than the shared on-disk one. Best-effort: an open failure never fails the poll.
+    processed_ledger = _open_processed_ledger(transport, owner_user_id)
+
     state = _ScanState(import_limit=import_limit)
     # The hard SCAN cap bounds a single pass so a screenful of already-imported (or
     # id-less) stubs can never probe unboundedly; it comfortably exceeds import_limit
@@ -113,6 +145,7 @@ def import_inbound_matters(
         imported=imported,
         skipped=skipped,
         sync_tallies=sync_tallies,
+        processed_ledger=processed_ledger,
     )
 
     if cursor_supported and drain_cursor > 0:
@@ -139,6 +172,13 @@ def import_inbound_matters(
             _persist_drain_cursor(transport, owner_user_id, state, drain_cursor)
         except Exception:  # pragma: no cover - cursor write is best-effort
             LOGGER.warning("Failed to persist Gmail inbound drain cursor", exc_info=True)
+
+    # Persist the processed-message ledger exactly ONCE for the whole poll (write-
+    # once, REFINEMENT A): a no-op when nothing new reached a terminal outcome.
+    # Best-effort -- a flush failure is already logged-and-swallowed inside flush(),
+    # so it can never break the poll, and unwritten ids simply re-process next poll.
+    if processed_ledger is not None:
+        processed_ledger.flush()
 
     return {
         "account": account_email,
@@ -187,6 +227,7 @@ class _ScanContext:
         imported: list[dict[str, Any]],
         skipped: list[dict[str, str]],
         sync_tallies: "_IntakeTallies",
+        processed_ledger: Any = None,
     ) -> None:
         self.transport = transport
         self.service = service
@@ -197,6 +238,10 @@ class _ScanContext:
         self.imported = imported
         self.skipped = skipped
         self.sync_tallies = sync_tallies
+        # The load-once / mark-many / write-once processed-message ledger for this
+        # poll (REFINEMENT A). May be None when the ledger could not be opened, in
+        # which case the scan degrades to the pre-ledger behaviour.
+        self.processed_ledger = processed_ledger
 
 
 def _scan_pass(
@@ -252,6 +297,23 @@ def _scan_pass(
             message_id = str(message_stub.get("id") or "")
             if not message_id:
                 continue
+
+            # PROCESSED-LEDGER SKIP (REFINEMENT C): this is the whole point of the
+            # ledger -- short-circuit a message that already reached a terminal
+            # outcome on a prior poll BEFORE the messages().get below AND before the
+            # gmail_intake classifier + the gmail_triage attachment-selector AI calls
+            # those downstream paths make. A "processed" skip is a cheap pre-fetch
+            # gate (like the dedup short-circuit): it does NOT count toward
+            # import_limit and does NOT touch the drain cursor, so the scan pages past
+            # it to the next un-processed (older) batch exactly as it pages past an
+            # already-imported one -- coexisting with the cursor drain (REFINEMENT F),
+            # never stalling its forward progress nor hiding genuinely-new mail (an
+            # unseen id is simply absent from the ledger and falls through).
+            ledger = context.processed_ledger
+            if ledger is not None and ledger.is_processed(message_id):
+                context.skipped.append({"message_id": message_id, "reason": "processed_message"})
+                continue
+
             try:
                 message = service.users().messages().get(userId="me", id=message_id, format="full").execute()
             except Exception as exc:
@@ -270,11 +332,19 @@ def _scan_pass(
 
             if transport.is_self_or_outbound_message(message, context.account_email):
                 context.skipped.append({"message_id": message_id, "reason": "self_sent_or_outbound"})
+                # TERMINAL outcome (REFINEMENT D): a self-sent/outbound message is
+                # structurally never reviewable -- mark it so the next poll skips it
+                # before the fetch + AI calls. (Marked in-memory; written once at the
+                # end of the poll.)
+                _mark_processed(context, message_id)
                 continue
 
             attachments = list(transport.reviewable_attachments(message.get("payload") or {}))
             if not attachments:
                 context.skipped.append({"message_id": message_id, "reason": "no_reviewable_attachment"})
+                # TERMINAL outcome (REFINEMENT D): the message carries no reviewable
+                # attachment and never will -- mark it processed.
+                _mark_processed(context, message_id)
                 continue
 
             # Dedup short-circuit AHEAD of any download/extract: a previously-
@@ -292,6 +362,12 @@ def _scan_pass(
                 owner_user_id=context.owner_user_id,
             ):
                 context.skipped.append({"message_id": message_id, "reason": "already_imported"})
+                # TERMINAL outcome (REFINEMENT D): every attachment is already
+                # imported -- mark so future polls skip it before the fetch (the
+                # dedup gate stops the heavy re-work; the ledger now also stops the
+                # re-fetch). Idempotent with the dedup gate; complementary, not a
+                # replacement.
+                _mark_processed(context, message_id)
                 continue
 
             # This message will hit the heavy import path: count it against the
@@ -328,6 +404,19 @@ def _scan_pass(
             context.imported.extend(attachment_result["imported"])
             context.skipped.extend(attachment_result["skipped"])
             context.sync_tallies.merge(attachment_result.get("ai_intake"))
+            # TERMINAL outcome (REFINEMENT D + P1-1): mark processed when the heavy
+            # import path reached a STABLE, DEFINITIVE outcome for the whole message --
+            # every attachment either imported OR hit a terminal non-NDA/duplicate
+            # skip, with NO transient failure. This is the fix for the sticky
+            # non-NDA message: a message whose only attachment the selector/intake
+            # terminally skips as non-NDA imports nothing yet is fully evaluated, so it
+            # MUST be marked or it re-runs the gmail_triage + gmail_intake AI calls
+            # (and burns an import_limit slot) on EVERY poll forever. We still do NOT
+            # mark when stable_outcome is False -- any transient per-attachment failure
+            # (attachment_unavailable / too_large / extraction crash / review_failed)
+            # leaves the message unmarked so it retries next poll (the safe bias).
+            if attachment_result.get("stable_outcome"):
+                _mark_processed(context, message_id)
         # Stop on an empty next-page token OR a zero-progress page (a page that
         # advanced the token but returned no messages), mirroring the original
         # paged-fetch termination guards.
@@ -371,6 +460,41 @@ def _persist_drain_cursor(
         return
     if state.drain_floor_ms > 0:
         transport.advance_inbound_drain_cursor(owner_user_id, state.drain_floor_ms)
+
+
+def _open_processed_ledger(transport: Any, owner_user_id: str) -> Any:
+    """Open the per-owner processed-message ledger session via the transport seam.
+
+    Mirrors how the drain cursor is obtained: the transport exposes
+    ``processed_ledger_session(owner)`` (production delegates to
+    :class:`gmail_processed_ledger.ProcessedLedgerSession`; tests provide an
+    isolated in-memory fake). A transport without the seam -- older fakes -- returns
+    ``None`` and the scan runs exactly as it did before the ledger existed. Any
+    failure to open is logged and swallowed so it can never break the poll.
+    """
+    opener = getattr(transport, "processed_ledger_session", None)
+    if not callable(opener):
+        return None
+    try:
+        return opener(owner_user_id)
+    except Exception:  # pragma: no cover - ledger open is best-effort
+        LOGGER.warning(
+            "Failed to open Gmail processed-message ledger; continuing without it",
+            exc_info=True,
+        )
+        return None
+
+
+def _mark_processed(context: "_ScanContext", message_id: str) -> None:
+    """Record ``message_id`` as processed for this poll (in-memory, write-once).
+
+    A thin guard so every terminal-outcome call site stays a one-liner and a missing
+    ledger (open failed) is a silent no-op. The actual durable write happens ONCE at
+    the end of the poll via ``ProcessedLedgerSession.flush``.
+    """
+    ledger = context.processed_ledger
+    if ledger is not None:
+        ledger.mark(message_id)
 
 
 def _is_rate_limited(transport: Any, error: Exception) -> bool:
@@ -527,7 +651,24 @@ def import_inbound_attachments(
         elif matter is not None:
             imported.append(matter)
     tallies.warn_if_degraded(LOGGER, message_id, model=_intake_model(transport))
-    return {"imported": imported, "skipped": skipped, "ai_intake": tallies.as_dict()}
+    # STABLE-OUTCOME signal for the processed-message ledger (P1-1, the sticky
+    # non-NDA case): the message reached a definitive outcome iff EVERY attachment
+    # either imported or hit a TERMINAL-stable non-NDA/duplicate skip -- i.e. no skip
+    # carries a transient (download/extraction) reason. When True the caller may mark
+    # the message processed even if NOTHING imported (a message whose only attachment
+    # is a known non-NDA the selector/intake skips), so it stops re-running the
+    # gmail_triage + gmail_intake AI calls every poll. When False (any transient
+    # failure) the message stays unmarked and retries.
+    stable_outcome = all(
+        str(skip.get("reason") or "") in _TERMINAL_STABLE_ATTACHMENT_SKIP_REASONS
+        for skip in skipped
+    )
+    return {
+        "imported": imported,
+        "skipped": skipped,
+        "ai_intake": tallies.as_dict(),
+        "stable_outcome": stable_outcome,
+    }
 
 
 class _IntakeTallies:

@@ -236,6 +236,235 @@ def test_scheduled_review_is_idempotent_already_reviewed_matter_skipped():
     assert len(ai_engine.calls) == first_calls  # type: ignore[attr-defined]  # no re-review
 
 
+def test_schedule_increments_scheduled_counter_and_logs(caplog):
+    """A successful schedule increments inbound_ai_review_scheduled and logs it.
+
+    Reuses the existing inbound-review counters (REFINEMENT G): the new
+    inbound_ai_review_scheduled is the intake signal that pairs with the existing
+    completed/failed/queue_full/schedule_failed outcome counters.
+    """
+    import logging
+
+    from nda_automation import telemetry
+
+    telemetry.reset()
+    repository = InMemoryMatterRepository()
+    ai_engine = _stub_ai_first_engine()
+    matter = create_matter_from_document(
+        filename="inbound.docx",
+        document_bytes=_docx(NDA_PARAGRAPHS),
+        source_type="gmail_inbound",
+        repository=repository,
+        defer_ai_review=True,
+    )
+
+    before = telemetry.snapshot()["counters"].get("inbound_ai_review_scheduled", 0)
+    with caplog.at_level(logging.INFO, logger="nda_automation.ingestion_service"):
+        # owner left empty to match the matter created above (no owner tag), so the
+        # background body's owner-scoped re-fetch resolves and the review runs.
+        scheduled = schedule_inbound_ai_review(
+            matter,
+            repository=repository,
+            runner=_synchronous_runner,
+            review_engine_func=ai_engine,
+        )
+    assert scheduled is True
+
+    counters = telemetry.snapshot()["counters"]
+    assert counters.get("inbound_ai_review_scheduled", 0) == before + 1
+    # The scheduling log fired for the matter, and the body's "Running" log fired too.
+    assert any(
+        "Scheduling inbound AI review for matter" in r.message and matter["id"] in r.message
+        for r in caplog.records
+    )
+    assert any("Running inbound AI review for matter" in r.message for r in caplog.records)
+
+
+def test_schedule_skips_and_does_not_count_scheduled_for_duplicate():
+    """A gmail-duplicate / already-reviewed matter is rejected BEFORE the counter.
+
+    The scheduled counter must reflect real demand, so an early-return guard
+    (duplicate, no id, already ai_first) must NOT bump it.
+    """
+    from nda_automation import telemetry
+
+    telemetry.reset()
+    repository = InMemoryMatterRepository()
+    ai_engine = _stub_ai_first_engine()
+
+    # A gmail duplicate sentinel is rejected by the guard before any counting.
+    scheduled = schedule_inbound_ai_review(
+        {"id": "m1", "_existing_gmail_duplicate": True},
+        repository=repository,
+        runner=_synchronous_runner,
+        review_engine_func=ai_engine,
+    )
+    assert scheduled is False
+    assert telemetry.snapshot()["counters"].get("inbound_ai_review_scheduled", 0) == 0
+
+
+def test_already_reviewed_matter_increments_skip_counter_and_logs(caplog):
+    """When the review body finds the matter already ai_first, it logs the skip and
+    increments inbound_ai_review_skipped_already_reviewed (the existing counter)."""
+    import logging
+
+    from nda_automation import ingestion_service, telemetry
+    from nda_automation.matter_repository import InMemoryMatterRepository as _Repo
+
+    telemetry.reset()
+    repository = _Repo()
+    ai_engine = _stub_ai_first_engine()
+    matter = create_matter_from_document(
+        filename="inbound.docx",
+        document_bytes=_docx(NDA_PARAGRAPHS),
+        source_type="gmail_inbound",
+        repository=repository,
+        defer_ai_review=True,
+    )
+    # Review it once so it is now ai_first.
+    schedule_inbound_ai_review(
+        matter, repository=repository, runner=_synchronous_runner, review_engine_func=ai_engine
+    )
+    before = telemetry.snapshot()["counters"].get("inbound_ai_review_skipped_already_reviewed", 0)
+
+    # Now drive the review body DIRECTLY on the already-reviewed matter (models a
+    # duplicate enqueue that slipped past the schedule-time guard): it must skip.
+    # owner left empty to match the matter created above (no owner tag).
+    with caplog.at_level(logging.INFO, logger="nda_automation.ingestion_service"):
+        ingestion_service._perform_inbound_ai_review(
+            matter["id"],
+            repository=repository,
+            owner_user_id="",
+            review_engine_func=ai_engine,
+        )
+
+    counters = telemetry.snapshot()["counters"]
+    assert counters.get("inbound_ai_review_skipped_already_reviewed", 0) == before + 1
+    assert any(
+        "already ai_first reviewed" in r.message and matter["id"] in r.message
+        for r in caplog.records
+    )
+    # The engine was NOT called again for the skip.
+    assert len(ai_engine.calls) == 1  # type: ignore[attr-defined]
+
+
+def _failing_engine():
+    """A review engine that ALWAYS raises -- a poison pill (no deterministic
+    fallback). Records each call so a test can count how many times it was tried."""
+
+    calls: list[str] = []
+
+    def _engine(text, *, paragraphs=None, **_kwargs):
+        calls.append(text)
+        raise RuntimeError("permanent review failure")  # caught by the body's except
+
+    _engine.calls = calls  # type: ignore[attr-defined]
+    return _engine
+
+
+def test_review_failure_increments_per_matter_failure_count():
+    from nda_automation import ingestion_service
+
+    repository = InMemoryMatterRepository()
+    failing = _failing_engine()
+    matter = create_matter_from_document(
+        filename="inbound.docx",
+        document_bytes=_docx(NDA_PARAGRAPHS),
+        source_type="gmail_inbound",
+        repository=repository,
+        defer_ai_review=True,
+    )
+    # Drive the body directly with a failing engine: the failure is recorded on the
+    # matter (poison-pill guard), the matter is NOT stamped ai_first.
+    ingestion_service._perform_inbound_ai_review(
+        matter["id"], repository=repository, owner_user_id="", review_engine_func=failing,
+    )
+    after = repository.get_matter(matter["id"])
+    assert after["inbound_review_failures"] == 1
+    assert "inbound_review_failed_at" in after
+    # Still deterministic-only (the review never succeeded).
+    assert after["review_result"]["active_review_engine"]["executed_engine"] == "deterministic"
+
+
+def test_recovery_sweep_gives_up_on_poison_pill_after_cap(monkeypatch):
+    """A matter that has failed review >= the cap is NOT re-enqueued by the sweep.
+
+    This is the verifier-storm fix: without it, recover_unreviewed_inbound_matters
+    re-enqueues a permanently-failing review every poll, forever.
+    """
+    from nda_automation import ingestion_service, telemetry
+
+    monkeypatch.delenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, raising=False)
+    monkeypatch.setenv(ingestion_service.INBOUND_REVIEW_MAX_FAILURES_ENV, "3")
+    telemetry.reset()
+
+    # Isolate the worker pool so enqueue() does not actually run reviews.
+    pool = ingestion_service._InboundReviewWorkerPool()
+    enqueued: list[str] = []
+    pool.configure(lambda matter_id, owner: enqueued.append(matter_id))
+    monkeypatch.setattr(ingestion_service, "_INBOUND_REVIEW_POOL", pool)
+
+    repository = InMemoryMatterRepository()
+    matter = create_matter_from_document(
+        filename="inbound.docx",
+        document_bytes=_docx(NDA_PARAGRAPHS),
+        source_type="gmail_inbound",
+        repository=repository,
+        defer_ai_review=True,
+    )
+    matter_id = matter["id"]
+
+    # Below the cap (2 failures): the sweep STILL re-enqueues it (transient retries).
+    repository.update_matter_fields(matter_id, {"inbound_review_failures": 2})
+    n = ingestion_service.recover_unreviewed_inbound_matters(repository=repository)
+    assert n == 1 and enqueued == [matter_id]
+
+    # At the cap (3 failures): the sweep GIVES UP -- not re-enqueued -- and bumps the
+    # give-up counter.
+    enqueued.clear()
+    repository.update_matter_fields(matter_id, {"inbound_review_failures": 3})
+    n2 = ingestion_service.recover_unreviewed_inbound_matters(repository=repository)
+    assert n2 == 0
+    assert enqueued == []  # poison pill stopped looping
+    assert telemetry.snapshot()["counters"].get("inbound_ai_review_gave_up", 0) == 1
+
+
+def test_transient_failures_retry_up_to_cap_then_succeed():
+    """A matter that fails twice (transient) then succeeds is still reviewed -- the
+    cap only stops a matter that keeps failing, never a recoverable one."""
+    from nda_automation import ingestion_service
+
+    repository = InMemoryMatterRepository()
+    matter = create_matter_from_document(
+        filename="inbound.docx",
+        document_bytes=_docx(NDA_PARAGRAPHS),
+        source_type="gmail_inbound",
+        repository=repository,
+        defer_ai_review=True,
+    )
+    matter_id = matter["id"]
+    failing = _failing_engine()
+    succeeding = _stub_ai_first_engine()
+
+    # Two transient failures (below cap=3): recorded, matter still deterministic.
+    ingestion_service._perform_inbound_ai_review(
+        matter_id, repository=repository, owner_user_id="", review_engine_func=failing,
+    )
+    ingestion_service._perform_inbound_ai_review(
+        matter_id, repository=repository, owner_user_id="", review_engine_func=failing,
+    )
+    assert repository.get_matter(matter_id)["inbound_review_failures"] == 2
+    assert ingestion_service.inbound_review_max_failures() == 3  # default; still under cap
+
+    # The matter is still UNDER the cap, so the sweep would retry it -- and a now-
+    # healthy engine reviews it successfully.
+    ingestion_service._perform_inbound_ai_review(
+        matter_id, repository=repository, owner_user_id="", review_engine_func=succeeding,
+    )
+    reviewed = repository.get_matter(matter_id)
+    assert reviewed["review_result"]["active_review_engine"]["executed_engine"] == "ai_first"
+
+
 def test_scheduled_review_survives_a_restart_mid_batch():
     """A worker that finished matter A but not matter B before restarting must, on
     re-schedule, review ONLY B (A is already ai_first and is skipped)."""
