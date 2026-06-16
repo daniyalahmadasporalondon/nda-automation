@@ -577,6 +577,8 @@ async function testPlaybookAdminEditor(page) {
       settings: {
         inbound_enabled: true,
         outbound_enabled: true,
+        sync_enabled: true,
+        import_limit: 25,
         sync_frequency: "10_minutes",
         last_sync_at: "2026-05-31T12:34:00+00:00",
         last_sync_imported_count: 2,
@@ -642,6 +644,14 @@ async function testPlaybookAdminEditor(page) {
     }
     if (Object.prototype.hasOwnProperty.call(gmailSettingsPayload, "sync_frequency")) {
       gmailStatusPayload.gmail.settings.sync_frequency = gmailSettingsPayload.sync_frequency;
+    }
+    if (Object.prototype.hasOwnProperty.call(gmailSettingsPayload, "sync_enabled")) {
+      // The toggle pauses/resumes polling -- the connection (ready flags) is
+      // untouched, only settings.sync_enabled changes.
+      gmailStatusPayload.gmail.settings.sync_enabled = gmailSettingsPayload.sync_enabled;
+    }
+    if (Object.prototype.hasOwnProperty.call(gmailSettingsPayload, "import_limit")) {
+      gmailStatusPayload.gmail.settings.import_limit = gmailSettingsPayload.import_limit;
     }
     await route.fulfill({
       status: 200,
@@ -954,9 +964,26 @@ async function testPlaybookAdminEditor(page) {
   await page.waitForFunction(() => document.querySelector('[data-gmail-frequency="30_minutes"]')?.getAttribute("aria-pressed") === "true");
   assert.deepEqual(gmailSettingsPayloads[gmailSettingsPayloads.length - 1], { sync_frequency: "30_minutes" });
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "Every 30 minutes.");
+  // The Gmail switch PAUSES polling (sync_enabled:false) -- it must not
+  // disconnect, and the connection (ready flags) stays intact.
+  assert.equal(await page.locator("#adminGmailEnabledToggle").getAttribute("aria-label"), "Pause Gmail polling");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "IMPORT LIMIT PER POLL");
+  await assertTextContains(page.locator("#adminIntegrationsPanel"), "25 messages per scheduled poll.");
+  assert.equal(await page.locator("#adminGmailImportLimitInput").inputValue(), "25");
+  assert.equal(await page.locator("#adminGmailImportLimitInput").getAttribute("max"), "40");
   await page.locator("#adminGmailEnabledToggle").click();
   await page.waitForFunction(() => document.querySelector("#adminGmailEnabledToggle")?.getAttribute("aria-checked") === "false");
-  assert.deepEqual(gmailSettingsPayloads[gmailSettingsPayloads.length - 1], { inbound_enabled: false, outbound_enabled: false });
+  assert.deepEqual(gmailSettingsPayloads[gmailSettingsPayloads.length - 1], { sync_enabled: false });
+  assert.equal(await page.locator('[data-admin-gmail="enabled-copy"]').innerText(), "Polling off");
+  assert.equal(await page.locator("#adminGmailEnabledToggle").getAttribute("aria-label"), "Resume Gmail polling");
+  // Connection survives the pause: the setup panel still reports both mailboxes.
+  await assertTextContains(page.locator("#adminGmailSetupPanel"), "inbound@example.com");
+  await assertTextContains(page.locator("#adminGmailSetupPanel"), "outbound@example.com");
+  // Import limit saves the typed value and re-renders the copy line.
+  await page.locator("#adminGmailImportLimitInput").fill("30");
+  await page.locator("#adminGmailImportLimitSaveButton").click();
+  await waitForText(page, "#adminIntegrationsPanel", "30 messages per scheduled poll.");
+  assert.deepEqual(gmailSettingsPayloads[gmailSettingsPayloads.length - 1], { import_limit: 30 });
   assert.equal(await page.locator("#adminGmailSyncButton").count(), 0);
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "DEFAULT IMPORT QUERY");
   await assertTextContains(page.locator("#adminIntegrationsPanel"), "subject:NDA");
@@ -5175,9 +5202,9 @@ async function testUserGmailSessionControls(page) {
   await page.locator('[data-admin-section="email"]').click();
   await waitForText(page, "#adminGmailSyncHistory", "4 imported / 0 skipped");
   await assertTextContains(page.locator("#adminGmailSetupPanel"), "User Gmail: alice@example.com");
-  // The single Gmail toggle is now the whole connect/disconnect control: it reads
-  // On when connected, and there are no separate Connect/Disconnect buttons in the
-  // setup panel (the per-role rows stay as read-only status).
+  // The Gmail switch reads On when connected and polling is enabled. Disconnect
+  // lives in the account menu (exercised below), not the switch or the setup
+  // panel (its per-role rows stay as read-only status).
   assert.equal(await page.locator("#adminGmailEnabledToggle").getAttribute("aria-checked"), "true");
   assert.equal(await page.locator("#adminGmailSetupPanel [data-gmail-disconnect-role]").count(), 0);
   await assertTextContains(page.locator("#adminGmailSyncHistory"), "4 imported / 0 skipped / 0 duplicates / 1 stale duplicates removed / 0 review failures");
