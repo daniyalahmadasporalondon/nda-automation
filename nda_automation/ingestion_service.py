@@ -414,6 +414,19 @@ def _perform_inbound_ai_review(
 
     from contextlib import nullcontext
 
+    # Kill-switch RE-CHECK at DRAIN time, at the lowest-level review entry every
+    # caller funnels through. The flag is read here (not only at enqueue) so
+    # flipping NDA_INBOUND_AI_REVIEW_ENABLED=false stops an already-queued item
+    # from being reviewed when it is finally drained -- the emergency stop works
+    # on in-flight draining, not just new enqueues. The pool handler also checks
+    # this earlier (so it can skip the requeue dance), but this guard makes the
+    # contract hold for ANY caller of _perform_inbound_ai_review.
+    if not inbound_ai_review_enabled():
+        LOGGER.info(
+            "Inbound AI review kill-switch off at drain; skipping matter %s", matter_id
+        )
+        return
+
     gate = _INBOUND_REVIEW_SEMAPHORE if use_semaphore else nullcontext()
     with gate:
         _perform_inbound_ai_review_locked(

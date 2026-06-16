@@ -574,6 +574,7 @@ assert.deepEqual(await repositoryApi.getMatterReview("matter one"), {
   id: "matter one",
   extracted_text: "Contract text",
   redline_draft: null,
+  review_may_be_stale: false,
   review_refresh: null,
   review_result: { clauses: [] },
 });
@@ -581,6 +582,7 @@ assert.deepEqual(await repositoryApi.getMatterReview("matter one", { refresh: tr
   id: "matter one",
   extracted_text: "Refreshed contract text",
   redline_draft: null,
+  review_may_be_stale: false,
   review_refresh: { refreshed: true, stale: false },
   review_result: { clauses: [{ id: "mutuality" }] },
 });
