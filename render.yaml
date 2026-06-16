@@ -121,6 +121,21 @@ services:
       # change; NDAs keep their deterministic first-pass + stay reviewable on-demand.
       - key: NDA_INBOUND_AI_REVIEW_ENABLED
         value: "true"
+      # ADDITIVE table recovery for borderless 2-column signature/notice/term
+      # blocks that the one-dimensional pypdf prose splitter flattens (e.g.
+      # "Signature: Signature: / Name: Name:"). The code default is FALSE so local
+      # runs and tests never require the camelot dependency; prod turns it ON here.
+      # When ON it runs camelot `stream` ONLY on keyword-gated pages (those whose
+      # text contains Signature / Notice to / Initial Term markers), so genuine
+      # 2-column prose pages are never shattered into fake tables, and attaches the
+      # recovered cells ADDITIVELY under quality.visual_profile.recovered_tables —
+      # the pypdf prose paragraphs are never touched or reordered. camelot is
+      # lazy-imported and the whole pass is fail-open + bounded by a process-wide
+      # single-slot semaphore, so it can never crash or stack onto a review.
+      # Requires the [tables] extra (installed by the Dockerfile); if camelot is
+      # ever missing the feature no-ops with a clear log. Set "false" to disable.
+      - key: NDA_TABLE_AUGMENTATION_ENABLED
+        value: "true"
       # Independent adversarial second-opinion verifier on OpenRouter. It uses a
       # different model family from the main reviewer on purpose.
       - key: NDA_AI_VERIFIER

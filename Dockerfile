@@ -24,7 +24,13 @@ COPY nda_automation ./nda_automation
 COPY static ./static
 COPY playbook.json ./
 
+# The [tables] extra adds camelot `stream` table recovery for borderless 2-column
+# signature/notice/term blocks (NDA_TABLE_AUGMENTATION_ENABLED, on in render.yaml).
+# It pulls opencv-python-headless + pandas + numpy (~223MB resident). camelot is
+# LAZY-imported in nda_automation.table_extraction — only when a keyword-gated page
+# is actually processed — so the resident cost stays deferred and bounded, and the
+# feature no-ops cleanly if the import ever fails.
 RUN python -m pip install --upgrade pip \
-    && python -m pip install ".[pdf,gmail]"
+    && python -m pip install ".[pdf,gmail,tables]"
 
 CMD ["sh", "-c", "python -m nda_automation.server --host 0.0.0.0 --port ${PORT:-8787}"]

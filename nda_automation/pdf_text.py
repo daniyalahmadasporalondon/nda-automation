@@ -7,6 +7,7 @@ from statistics import median
 from typing import Any, List, Optional
 
 from .review_document import Paragraph
+from .table_extraction import augment_quality_with_tables
 
 
 class PdfExtractionError(ValueError):
@@ -136,18 +137,22 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
         raise PdfExtractionError("No readable text was found in the PDF. Scanned PDFs need OCR before review.")
     extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraphs)
     visual_profile = _pdf_visual_profile(data)
-    return PdfExtraction(
-        paragraphs=paragraphs,
-        quality=_pdf_quality_report(
-            page_count=page_count,
-            pages_with_text=pages_with_text,
-            pages_without_text=pages_without_text,
-            extracted_text=extracted_text,
-            paragraph_count=len(paragraphs),
-            repeated_margin_count=len(repeated_margins),
-            visual_profile=visual_profile,
-        ),
+    quality = _pdf_quality_report(
+        page_count=page_count,
+        pages_with_text=pages_with_text,
+        pages_without_text=pages_without_text,
+        extracted_text=extracted_text,
+        paragraph_count=len(paragraphs),
+        repeated_margin_count=len(repeated_margins),
+        visual_profile=visual_profile,
     )
+    # ADDITIVE, default-OFF table recovery. When NDA_TABLE_AUGMENTATION_ENABLED is
+    # unset/false this is a strict no-op (the quality block is returned unchanged
+    # and the prose paragraphs above are never touched). When ON it attaches
+    # recovered 2-column table cells under quality["visual_profile"], which the
+    # one-dimensional prose splitter flattens. It NEVER raises.
+    quality = augment_quality_with_tables(quality, data)
+    return PdfExtraction(paragraphs=paragraphs, quality=quality)
 
 
 def _extract_geo_lines(page: Any) -> list[GeoLine]:
