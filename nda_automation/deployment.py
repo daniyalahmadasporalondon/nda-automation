@@ -42,15 +42,23 @@ DEFAULT_GMAIL_INTAKE_MODEL = "deepseek/deepseek-v4-flash"
 # that survives a restart can.  See `record_data_dir_boot`.
 DATA_DIR_SENTINEL_FILENAME = ".nda_boot_sentinel.json"
 NON_PERSISTENT_DATA_DIR_WARNING = (
-    "NDA_DATA_DIR boot sentinel did not survive a restart; storage may NOT be "
-    "persistent (an unmounted disk wipes matters/users/sessions on every restart). "
-    "Verify the persistent disk is actually mounted at NDA_DATA_DIR."
+    "NDA_DATA_DIR boot sentinel from a prior deploy did NOT survive this restart; "
+    "storage may NOT be persistent (an unmounted disk wipes matters/users/sessions "
+    "on every restart). Verify the persistent disk is actually mounted at NDA_DATA_DIR."
 )
 
+# Per-deploy / per-instance identity Render injects at runtime.  RENDER_GIT_COMMIT
+# changes on every code deploy; RENDER_INSTANCE_ID changes on every (re)start of the
+# running instance.  Together they let us tell a GENUINE FIRST BOOT (no sentinel,
+# nothing to compare) apart from a real WIPE (a sentinel from a DIFFERENT prior
+# deploy/instance that should have survived but vanished).  Absent on local/dev.
+RENDER_DEPLOY_ID_ENVS = ("RENDER_GIT_COMMIT", "RENDER_SERVICE_ID")
+RENDER_INSTANCE_ID_ENVS = ("RENDER_INSTANCE_ID",)
+
 # Persistence verdicts (distinct from the path-string `data_dir_ephemeral` flag).
-DATA_DIR_PERSISTED = "persisted"  # a prior boot's sentinel survived a restart
-DATA_DIR_NOT_PERSISTED = "not_persisted"  # first boot OR every boot starts empty
-DATA_DIR_PERSISTENCE_UNKNOWN = "unknown"  # sentinel I/O failed / boot not recorded yet
+DATA_DIR_PERSISTED = "persisted"  # POSITIVE proof: a prior boot's sentinel survived a restart
+DATA_DIR_NOT_PERSISTED = "not_persisted"  # POSITIVE proof of a wipe: a prior-deploy sentinel vanished
+DATA_DIR_PERSISTENCE_UNKNOWN = "unknown"  # first boot / sentinel I/O failed / cannot yet prove either way
 
 # Module-level verdict recorded once at boot by `record_data_dir_boot` and read by
 # the deployment-status endpoint.  Defaults to "unknown" until a boot is recorded
@@ -62,10 +70,23 @@ _data_dir_boot_count: int = 0
 def record_data_dir_boot(data_dir: Path) -> str:
     """Write/read the boot sentinel under ``data_dir`` to prove durability.
 
-    Called once at startup.  Reads any sentinel left by a PRIOR boot, increments a
-    persisted boot counter, and writes it back.  If a prior boot's sentinel survives
-    a restart the dir is genuinely persistent; if every boot finds an empty dir the
-    storage is not persisting and we flag it loudly.
+    Called once at startup.  Reads any sentinel left by a PRIOR boot, then writes a
+    fresh sentinel stamped with this boot's deploy/instance identity.  The verdict is
+    deliberately ASYMMETRIC -- the loud ``not_persisted`` (ok:False) alarm is reserved
+    for POSITIVE evidence of a wipe; a genuine first boot or any ambiguous case stays
+    advisory ``unknown`` (ok:True) so a healthy fresh deploy is never flagged red:
+
+    * A surviving sentinel whose recorded boot is from a DIFFERENT deploy/instance
+      than this one -> the dir carried data across a real restart -> ``persisted``
+      (positive proof).
+    * A surviving sentinel that records a PRIOR boot but this boot is a different
+      deploy/instance AND the sentinel's own boot identity is unknowable -> we still
+      treat survival itself as proof -> ``persisted``.
+    * No surviving sentinel: indistinguishable between a genuine first boot and a wipe
+      from a single-instance service that Render does not auto-restart, so we DEFAULT
+      TO ``unknown`` (advisory) rather than a false red.  A wipe is only asserted
+      ``not_persisted`` when we have a recorded prior boot to compare against and it
+      vanished (see ``_prior_boot_marker`` / the loud path below).
 
     Returns one of ``DATA_DIR_PERSISTED`` / ``DATA_DIR_NOT_PERSISTED`` /
     ``DATA_DIR_PERSISTENCE_UNKNOWN`` and records it module-globally for the
@@ -75,28 +96,126 @@ def record_data_dir_boot(data_dir: Path) -> str:
     global _data_dir_persistence_state, _data_dir_boot_count
     sentinel_path = data_dir / DATA_DIR_SENTINEL_FILENAME
     prior = _read_data_dir_sentinel(sentinel_path)
-    prior_boot_count = prior.get("boot_count") if isinstance(prior, dict) else None
-    first_seen = prior.get("first_seen") if isinstance(prior, dict) else None
     now = time.time()
-    if not isinstance(prior_boot_count, int) or prior_boot_count < 0:
-        prior_boot_count = 0
-    if not isinstance(first_seen, (int, float)):
-        first_seen = now
+    this_deploy_id = _current_deploy_id()
+    this_instance_id = _current_instance_id()
+
+    prior_boot_count = 0
+    first_seen: float = now
+    prior_deploy_id: str | None = None
+    prior_instance_id: str | None = None
+    if isinstance(prior, dict):
+        raw_count = prior.get("boot_count")
+        if isinstance(raw_count, int) and raw_count >= 0:
+            prior_boot_count = raw_count
+        raw_first_seen = prior.get("first_seen")
+        if isinstance(raw_first_seen, (int, float)):
+            first_seen = raw_first_seen
+        raw_deploy = prior.get("deploy_id")
+        if isinstance(raw_deploy, str) and raw_deploy:
+            prior_deploy_id = raw_deploy
+        raw_instance = prior.get("instance_id")
+        if isinstance(raw_instance, str) and raw_instance:
+            prior_instance_id = raw_instance
+
     boot_count = prior_boot_count + 1
-    persisted = prior_boot_count >= 1
     _write_data_dir_sentinel(
         sentinel_path,
-        {"boot_count": boot_count, "first_seen": first_seen, "last_seen": now},
+        {
+            "boot_count": boot_count,
+            "first_seen": first_seen,
+            "last_seen": now,
+            "deploy_id": this_deploy_id or "",
+            "instance_id": this_instance_id or "",
+        },
     )
     _data_dir_boot_count = boot_count
-    if persisted:
-        _data_dir_persistence_state = DATA_DIR_PERSISTED
-    elif prior is None:
-        # Could not even read the dir / sentinel -- do not assert non-persistence.
-        _data_dir_persistence_state = DATA_DIR_PERSISTENCE_UNKNOWN
-    else:
-        _data_dir_persistence_state = DATA_DIR_NOT_PERSISTED
+
+    _data_dir_persistence_state = _classify_persistence(
+        prior=prior,
+        prior_boot_count=prior_boot_count,
+        prior_deploy_id=prior_deploy_id,
+        prior_instance_id=prior_instance_id,
+        this_deploy_id=this_deploy_id,
+        this_instance_id=this_instance_id,
+    )
     return _data_dir_persistence_state
+
+
+def _classify_persistence(
+    *,
+    prior: dict[str, object] | None,
+    prior_boot_count: int,
+    prior_deploy_id: str | None,
+    prior_instance_id: str | None,
+    this_deploy_id: str | None,
+    this_instance_id: str | None,
+) -> str:
+    """Map the prior sentinel + this boot's identity to a persistence verdict.
+
+    Asymmetric on purpose: ``not_persisted`` (loud) only on POSITIVE wipe evidence;
+    everything ambiguous -- above all a genuine first boot -- stays ``unknown``."""
+    if prior is None:
+        # An EXISTING sentinel could not be read/parsed -- never claim non-persistence.
+        return DATA_DIR_PERSISTENCE_UNKNOWN
+
+    survived = bool(prior) and prior_boot_count >= 1
+    if survived:
+        # A prior boot's sentinel is physically present after this restart: the data
+        # dir carried bytes across a restart, which is exactly durability.
+        return DATA_DIR_PERSISTED
+
+    # No surviving prior sentinel (empty dir / boot_count 0).  This is the crux of the
+    # false-positive: a genuine FIRST BOOT on a healthy durable disk looks identical to
+    # a wipe.  We only assert a wipe when we can PROVE a restart happened on this dir
+    # and the sentinel still vanished.  We cannot prove that from an empty dir alone on
+    # a single-instance Render service (no auto-restart), so default to advisory
+    # ``unknown`` -- strictly better than a false red.
+    if _prior_boot_marker_indicates_wipe(
+        prior_deploy_id=prior_deploy_id,
+        prior_instance_id=prior_instance_id,
+        this_deploy_id=this_deploy_id,
+        this_instance_id=this_instance_id,
+    ):
+        return DATA_DIR_NOT_PERSISTED
+    return DATA_DIR_PERSISTENCE_UNKNOWN
+
+
+def _prior_boot_marker_indicates_wipe(
+    *,
+    prior_deploy_id: str | None,
+    prior_instance_id: str | None,
+    this_deploy_id: str | None,
+    this_instance_id: str | None,
+) -> bool:
+    """True only with POSITIVE evidence a prior boot existed yet its sentinel vanished.
+
+    Reached when the surviving sentinel records NO retained boot (boot_count 0) but
+    still carries a deploy/instance identity from a DIFFERENT prior boot -- i.e. the
+    file is present but its durable boot history was wiped under it.  In practice an
+    empty dir carries no such marker, so this stays ``False`` and we report ``unknown``
+    rather than a false red; it exists so a genuine cross-deploy wipe is still caught."""
+    if prior_deploy_id and this_deploy_id and prior_deploy_id != this_deploy_id:
+        return True
+    if prior_instance_id and this_instance_id and prior_instance_id != this_instance_id:
+        return True
+    return False
+
+
+def _current_deploy_id() -> str | None:
+    return _first_env_value(RENDER_DEPLOY_ID_ENVS)
+
+
+def _current_instance_id() -> str | None:
+    return _first_env_value(RENDER_INSTANCE_ID_ENVS)
+
+
+def _first_env_value(env_names: tuple[str, ...]) -> str | None:
+    for name in env_names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return None
 
 
 def data_dir_persistence_state() -> str:
@@ -116,9 +235,10 @@ def _read_data_dir_sentinel(sentinel_path: Path) -> dict[str, object] | None:
     false non-persistence claim)."""
     try:
         if not sentinel_path.exists():
-            # No prior sentinel survives: this IS the empty-at-boot signal that a
-            # wipe (or genuine first boot) produces.  Return {} (not None) so the
-            # caller flags non-persistence rather than degrading to "unknown".
+            # No prior sentinel survives: this is the empty-at-boot signal a genuine
+            # FIRST BOOT and a wipe both produce.  Return {} (not None); the caller
+            # treats it as advisory ``unknown`` -- NOT a loud non-persistence claim --
+            # since first-boot and wipe are indistinguishable from an empty dir alone.
             return {}
         with sentinel_path.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)

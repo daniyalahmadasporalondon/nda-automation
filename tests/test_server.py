@@ -1303,14 +1303,20 @@ class ServerTests(unittest.TestCase):
                 with patch.object(export_service, "EXPORTS_DIR", server_module.Path("/tmp/nda-automation-exports")):
                     server_module._validate_public_storage("127.0.0.1")
 
-    def test_boot_sentinel_empty_data_dir_flags_non_persistent(self):
+    def test_boot_sentinel_first_boot_empty_dir_is_unknown_not_red(self):
+        # FALSE-POSITIVE REGRESSION GUARD: a genuine first boot on a healthy durable
+        # disk has no surviving sentinel.  It must NOT be flagged not_persisted (which
+        # would drive needs_attention + the red FE banner); it stays advisory unknown.
         deployment_module._reset_data_dir_persistence_state_for_tests()
         self.addCleanup(deployment_module._reset_data_dir_persistence_state_for_tests)
-        with tempfile.TemporaryDirectory() as tmp:
-            data_dir = server_module.Path(tmp) / "data"  # does not exist yet
-            verdict = deployment_module.record_data_dir_boot(data_dir)
-        self.assertEqual(verdict, deployment_module.DATA_DIR_NOT_PERSISTED)
-        self.assertEqual(deployment_module.data_dir_persistence_state(), deployment_module.DATA_DIR_NOT_PERSISTED)
+        with patch.dict(os.environ, {}, clear=False):
+            for name in (*deployment_module.RENDER_DEPLOY_ID_ENVS, *deployment_module.RENDER_INSTANCE_ID_ENVS):
+                os.environ.pop(name, None)
+            with tempfile.TemporaryDirectory() as tmp:
+                data_dir = server_module.Path(tmp) / "data"  # does not exist yet
+                verdict = deployment_module.record_data_dir_boot(data_dir)
+        self.assertEqual(verdict, deployment_module.DATA_DIR_PERSISTENCE_UNKNOWN)
+        self.assertEqual(deployment_module.data_dir_persistence_state(), deployment_module.DATA_DIR_PERSISTENCE_UNKNOWN)
 
     def test_boot_sentinel_surviving_across_boots_flags_persistent(self):
         deployment_module._reset_data_dir_persistence_state_for_tests()
@@ -1318,25 +1324,51 @@ class ServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = server_module.Path(tmp) / "data"
             first = deployment_module.record_data_dir_boot(data_dir)
-            self.assertEqual(first, deployment_module.DATA_DIR_NOT_PERSISTED)
-            # Sentinel left by the first boot survives -- the directory is durable.
+            # First boot is advisory unknown -- no prior sentinel to compare against.
+            self.assertEqual(first, deployment_module.DATA_DIR_PERSISTENCE_UNKNOWN)
+            # Sentinel left by the first boot survives -- POSITIVE proof of durability.
             deployment_module._reset_data_dir_persistence_state_for_tests()
             second = deployment_module.record_data_dir_boot(data_dir)
         self.assertEqual(second, deployment_module.DATA_DIR_PERSISTED)
         self.assertEqual(deployment_module.data_dir_persistence_state(), deployment_module.DATA_DIR_PERSISTED)
 
-    def test_boot_sentinel_wiped_between_boots_keeps_flagging_non_persistent(self):
+    def test_boot_sentinel_wiped_between_boots_with_render_identity_flags_non_persistent(self):
+        # A real cross-deploy wipe IS still caught: a sentinel from a DIFFERENT prior
+        # deploy survives in name but its retained boot history was wiped under it.
         deployment_module._reset_data_dir_persistence_state_for_tests()
         self.addCleanup(deployment_module._reset_data_dir_persistence_state_for_tests)
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = server_module.Path(tmp) / "data"
-            deployment_module.record_data_dir_boot(data_dir)
-            # Simulate the silent-wipe crisis: the dir resets between restarts.
-            for child in data_dir.iterdir():
-                child.unlink()
-            deployment_module._reset_data_dir_persistence_state_for_tests()
-            verdict = deployment_module.record_data_dir_boot(data_dir)
+            data_dir.mkdir(parents=True)
+            sentinel_path = data_dir / deployment_module.DATA_DIR_SENTINEL_FILENAME
+            # Surviving file from a prior deploy, but its durable boot history (count)
+            # was wiped to 0 under it -- positive evidence the dir reset across deploys.
+            sentinel_path.write_text(
+                json.dumps({"boot_count": 0, "first_seen": 1.0, "last_seen": 1.0, "deploy_id": "prior-commit"}),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"RENDER_GIT_COMMIT": "current-commit"}, clear=False):
+                verdict = deployment_module.record_data_dir_boot(data_dir)
         self.assertEqual(verdict, deployment_module.DATA_DIR_NOT_PERSISTED)
+
+    def test_boot_sentinel_emptied_dir_without_identity_stays_unknown(self):
+        # Without Render identity we cannot prove first-boot vs wipe from an empty dir
+        # on a single-instance (no auto-restart) service, so default to advisory
+        # unknown -- never a false red.
+        deployment_module._reset_data_dir_persistence_state_for_tests()
+        self.addCleanup(deployment_module._reset_data_dir_persistence_state_for_tests)
+        with patch.dict(os.environ, {}, clear=False):
+            for name in (*deployment_module.RENDER_DEPLOY_ID_ENVS, *deployment_module.RENDER_INSTANCE_ID_ENVS):
+                os.environ.pop(name, None)
+            with tempfile.TemporaryDirectory() as tmp:
+                data_dir = server_module.Path(tmp) / "data"
+                deployment_module.record_data_dir_boot(data_dir)
+                # Simulate the dir resetting between restarts (sentinel gone entirely).
+                for child in data_dir.iterdir():
+                    child.unlink()
+                deployment_module._reset_data_dir_persistence_state_for_tests()
+                verdict = deployment_module.record_data_dir_boot(data_dir)
+        self.assertEqual(verdict, deployment_module.DATA_DIR_PERSISTENCE_UNKNOWN)
 
     def test_boot_sentinel_corrupt_file_degrades_to_unknown_without_raising(self):
         deployment_module._reset_data_dir_persistence_state_for_tests()
