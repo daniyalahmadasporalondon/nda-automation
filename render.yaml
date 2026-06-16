@@ -101,6 +101,18 @@ services:
       # speed/prose only, never correctness.
       - key: NDA_GENERATION_MODEL
         value: deepseek/deepseek-v4-flash
+      # KILL-SWITCH for the NDA-generation prose-polish AI (the clause adapter
+      # above). Set to "false" so generation skips building the OpenRouter clause
+      # adapter entirely and runs the pure deterministic Playbook path: instant
+      # (~0.15s), zero OpenRouter calls, still fully Playbook-compliant and
+      # safety-gated. This trades the AI's prose polish (it only rephrases
+      # already-on-position clauses, never the legal position) for reliability —
+      # the live AI adapter caused repeated slow/timeout/crash generates on prod.
+      # Flip back to "true" to re-enable the generation AI; the AI code stays
+      # intact. Does NOT affect AI REVIEW (NDA_AI_REVIEW_ENABLED) or any other
+      # AI feature — generation only.
+      - key: NDA_GENERATION_AI_ENABLED
+        value: "false"
       # Independent adversarial second-opinion verifier on OpenRouter. It uses a
       # different model family from the main reviewer on purpose.
       - key: NDA_AI_VERIFIER

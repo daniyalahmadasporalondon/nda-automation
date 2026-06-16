@@ -91,6 +91,11 @@ class DeploymentConfigTests(unittest.TestCase):
         # reviewer, so a synchronous generate stays well under the frontend's 45s
         # timeout. Flash is the faster of the two DeepSeek models we run.
         self.assertRegex(blueprint, r"key:\s+NDA_GENERATION_MODEL\s+value:\s+deepseek/deepseek-v4-flash")
+        # The generation prose-polish AI is DISABLED on prod for reliability: the
+        # clause adapter only rephrases already-on-position clauses, so the pure
+        # deterministic path is the same Playbook-compliant doc, instant and with
+        # zero OpenRouter calls. Flip to "true" to re-enable (code defaults ON).
+        self.assertRegex(blueprint, r"key:\s+NDA_GENERATION_AI_ENABLED\s+value:\s+\"false\"")
         self.assertRegex(blueprint, r"key:\s+OPENROUTER_API_KEY\s+sync:\s+false")
         self.assertNotRegex(blueprint, r"key:\s+GROQ_API_KEY")
         self.assertRegex(blueprint, r"key:\s+NDA_GMAIL_TRIAGE_MODEL\s+value:\s+deepseek/deepseek-v4-pro")

@@ -34,6 +34,7 @@ clause takes — adaptation is constrained to the slots, never the substance.
 from __future__ import annotations
 
 import datetime as _dt
+import os
 import re
 from dataclasses import dataclass, field
 from io import BytesIO
@@ -60,6 +61,32 @@ NDA_TYPE_ONE_WAY = "one_way"
 CLAUSE_TERM = "term_and_survival"
 CLAUSE_CONFIDENTIAL = "confidential_information"
 CLAUSE_GOVERNING_LAW = "governing_law"
+
+# Kill-switch for the generation prose-polish AI. The AI clause adapter only
+# rephrases already-on-position clause text (it never changes which position a
+# clause takes), so disabling it yields the same Playbook-compliant document via
+# the pure deterministic path — just instantly and with zero OpenRouter calls.
+# DEFAULTS TO ENABLED when unset/blank, so existing behaviour and tests are
+# preserved; set ``NDA_GENERATION_AI_ENABLED=false`` (or 0/no/off) to force the
+# deterministic-only path. Live on prod as the reliability default.
+GENERATION_AI_ENABLED_ENV = "NDA_GENERATION_AI_ENABLED"
+
+
+def generation_ai_enabled() -> bool:
+    """Whether the generation clause-adapter AI may be built.
+
+    Default-ENABLED: returns ``True`` unless the env flag is explicitly set to a
+    falsey value (``false``/``0``/``no``/``off``, case-insensitive). An unset or
+    blank value preserves the original AI-on behaviour. This is the single seam
+    that decides whether ``generate_nda_for_entity`` constructs the clause
+    adapter at all — when it returns ``False`` no OpenRouter client is built and
+    no AI call is made, so generation runs the pure deterministic Playbook path.
+    """
+
+    raw = os.environ.get(GENERATION_AI_ENABLED_ENV, "").strip().lower()
+    if not raw:
+        return True
+    return raw not in {"false", "0", "no", "off"}
 
 # --------------------------------------------------------------------------- #
 # DocuSign signature anchors
@@ -644,7 +671,13 @@ def generate_nda_for_entity(
         from .nda_generation_ai import build_frozen_clause_adapter  # noqa: PLC0415
 
         clause_adapter = build_frozen_clause_adapter()
-    elif clause_adapter is None and use_ai:
+    elif clause_adapter is None and use_ai and generation_ai_enabled():
+        # Build the live AI clause adapter only when the kill-switch is on (the
+        # default). With NDA_GENERATION_AI_ENABLED=false we skip construction
+        # entirely: no OpenRouter client, no network call — ``clause_adapter``
+        # stays ``None`` and generation runs the pure deterministic Playbook
+        # path. An explicit ``clause_adapter`` (tests) and ``use_frozen`` (the
+        # gen-verify golden fixture) are unaffected — neither calls OpenRouter.
         from .nda_generation_ai import build_clause_adapter  # noqa: PLC0415
 
         clause_adapter = build_clause_adapter()

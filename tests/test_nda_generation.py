@@ -1055,3 +1055,132 @@ class TestShipGate:
         stored = artifact_service.get_artifact_bytes(matter["id"], artifact.id, repository=repo)
         assert "shall not compete" not in extract_docx_text(stored).lower()
         assert gen.self_check_generated_nda(stored, playbook=playbook).passed
+
+
+class TestGenerationAiEnabledFlag:
+    """NDA_GENERATION_AI_ENABLED kill-switch: default ON, off => deterministic-only.
+
+    The switch decides whether ``generate_nda_for_entity`` builds the live AI
+    clause adapter at all. With it off, the adapter is NEVER constructed, so no
+    OpenRouter client is created and no network call is made — generation runs
+    the pure deterministic Playbook path. With it on (the default), behaviour is
+    unchanged.
+    """
+
+    # ---- generation_ai_enabled() flag parsing ---- #
+
+    def test_flag_defaults_enabled_when_unset(self, monkeypatch):
+        monkeypatch.delenv(gen.GENERATION_AI_ENABLED_ENV, raising=False)
+        assert gen.generation_ai_enabled() is True
+
+    def test_flag_defaults_enabled_when_blank(self, monkeypatch):
+        monkeypatch.setenv(gen.GENERATION_AI_ENABLED_ENV, "   ")
+        assert gen.generation_ai_enabled() is True
+
+    @pytest.mark.parametrize("truthy", ["true", "True", "1", "yes", "on", "ON"])
+    def test_flag_truthy_values_keep_ai_enabled(self, monkeypatch, truthy):
+        monkeypatch.setenv(gen.GENERATION_AI_ENABLED_ENV, truthy)
+        assert gen.generation_ai_enabled() is True
+
+    @pytest.mark.parametrize("falsey", ["false", "False", "0", "no", "off", "OFF"])
+    def test_flag_falsey_values_disable_ai(self, monkeypatch, falsey):
+        monkeypatch.setenv(gen.GENERATION_AI_ENABLED_ENV, falsey)
+        assert gen.generation_ai_enabled() is False
+
+    # ---- the seam: adapter construction is gated ---- #
+
+    def test_disabled_never_builds_the_clause_adapter(self, playbook, monkeypatch):
+        # The whole point: with the flag off, build_clause_adapter is NOT invoked,
+        # so no OpenRouter client is constructed and no call is ever made — even
+        # though use_ai defaults True. We don't even need an API key.
+        monkeypatch.setenv(gen.GENERATION_AI_ENABLED_ENV, "false")
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        import nda_automation.nda_generation_ai as gen_ai
+
+        calls = {"build": 0}
+
+        def _boom(*args, **kwargs):  # pragma: no cover - must never run
+            calls["build"] += 1
+            raise AssertionError("build_clause_adapter must not be called when AI is disabled")
+
+        monkeypatch.setattr(gen_ai, "build_clause_adapter", _boom)
+
+        bundle = ActivePlaybookBundle(playbook=playbook, runtime={})
+        result = gen.generate_nda_for_entity(
+            "real_transfer", _intake(), playbook_bundle=bundle
+        )
+
+        assert calls["build"] == 0
+        # And the deterministic output is real, on-position, and gate-clean.
+        check = gen.self_check_generated_nda(result.docx_bytes, playbook=playbook)
+        assert check.passed, (check.native_failures, check.dynamic_failures)
+        gen.assert_generated_nda_is_on_position(result, playbook)
+
+    def test_enabled_default_still_builds_the_clause_adapter(self, playbook, monkeypatch):
+        # Default behaviour preserved: with the flag unset, the AI path is taken
+        # (build_clause_adapter is invoked). We stub it to avoid any real network.
+        monkeypatch.delenv(gen.GENERATION_AI_ENABLED_ENV, raising=False)
+
+        import nda_automation.nda_generation_ai as gen_ai
+
+        calls = {"build": 0}
+        real_build = gen_ai.build_clause_adapter
+
+        def _spy(*args, **kwargs):
+            calls["build"] += 1
+            # Return None (the no-key behaviour) so generation runs deterministically
+            # but through the AI-on branch, proving the branch was taken.
+            return None
+
+        monkeypatch.setattr(gen_ai, "build_clause_adapter", _spy)
+
+        bundle = ActivePlaybookBundle(playbook=playbook, runtime={})
+        result = gen.generate_nda_for_entity(
+            "real_transfer", _intake(), playbook_bundle=bundle
+        )
+
+        assert calls["build"] == 1
+        assert real_build is not None  # the live builder still exists / re-enableable
+        check = gen.self_check_generated_nda(result.docx_bytes, playbook=playbook)
+        assert check.passed
+
+    def test_explicit_use_ai_false_is_unaffected_by_flag_on(self, playbook, monkeypatch):
+        # An explicit use_ai=False caller stays deterministic regardless of the flag.
+        monkeypatch.setenv(gen.GENERATION_AI_ENABLED_ENV, "true")
+
+        import nda_automation.nda_generation_ai as gen_ai
+
+        def _boom(*args, **kwargs):  # pragma: no cover - must never run
+            raise AssertionError("use_ai=False must never build the adapter")
+
+        monkeypatch.setattr(gen_ai, "build_clause_adapter", _boom)
+
+        bundle = ActivePlaybookBundle(playbook=playbook, runtime={})
+        result = gen.generate_nda_for_entity(
+            "real_transfer", _intake(), playbook_bundle=bundle, use_ai=False
+        )
+        assert gen.self_check_generated_nda(result.docx_bytes, playbook=playbook).passed
+
+    def test_disabled_generate_and_save_makes_zero_openrouter_calls(self, playbook, monkeypatch):
+        # End-to-end SHIP path with the flag off: no API key, no adapter built, the
+        # safety gate passes, and a clean deterministic artifact is persisted.
+        from nda_automation.matter_repository import InMemoryMatterRepository
+        from nda_automation import artifact_service
+        import nda_automation.nda_generation_ai as gen_ai
+
+        monkeypatch.setenv(gen.GENERATION_AI_ENABLED_ENV, "0")
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        def _boom(*args, **kwargs):  # pragma: no cover - must never run
+            raise AssertionError("no AI adapter must be built on the disabled ship path")
+
+        monkeypatch.setattr(gen_ai, "build_clause_adapter", _boom)
+
+        repo = InMemoryMatterRepository()
+        matter = _seed_matter(repo)
+        result, artifact = gen.generate_and_save_nda(
+            "real_transfer", _intake(), matter["id"], playbook=playbook, repository=repo
+        )
+        stored = artifact_service.get_artifact_bytes(matter["id"], artifact.id, repository=repo)
+        assert gen.self_check_generated_nda(stored, playbook=playbook).passed
