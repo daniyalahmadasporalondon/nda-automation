@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -107,9 +108,57 @@ def _json_request(request: urllib.request.Request, error_message: str) -> dict[s
         with urllib.request.urlopen(request, timeout=15) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise GoogleIdentityError(error_message) from exc
+        # Google returns the real reason (invalid_grant / redirect_uri_mismatch /
+        # invalid_client / ...) in the JSON body of the 4xx. The generic wrapper
+        # alone makes these undiagnosable, so read the body, surface the reason in
+        # the raised message, and log it. The detail is sanitised (single line,
+        # length-capped) and carries no client secret, so it is safe to expose.
+        detail = _http_error_detail(exc)
+        message = f"{error_message} ({detail})" if detail else error_message
+        _log_oauth_failure(error_message, status=exc.code, detail=detail)
+        raise GoogleIdentityError(message) from exc
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        _log_oauth_failure(error_message, status=None, detail=exc.__class__.__name__)
         raise GoogleIdentityError(error_message) from exc
     if not isinstance(payload, dict):
         raise GoogleIdentityError(error_message)
     return payload
+
+
+def _http_error_detail(exc: urllib.error.HTTPError) -> str:
+    """Extract Google's `error`/`error_description` from a token-endpoint 4xx.
+
+    Returns a short, single-line, secret-free description suitable for both the
+    user-facing error and the server log, or "" if the body is unreadable.
+    """
+    try:
+        raw = exc.read().decode("utf-8", "replace")
+    except Exception:  # pragma: no cover - body already consumed / unreadable
+        raw = ""
+    error_code = ""
+    error_description = ""
+    if raw:
+        try:
+            body = json.loads(raw)
+        except (ValueError, TypeError):
+            body = None
+        if isinstance(body, dict):
+            error_code = str(body.get("error") or "").strip()
+            error_description = str(body.get("error_description") or "").strip()
+    detail = error_code
+    if error_description and error_description != error_code:
+        detail = f"{error_code}: {error_description}" if error_code else error_description
+    if not detail:
+        detail = raw.strip()
+    return _sanitize_detail(detail)
+
+
+def _sanitize_detail(detail: str) -> str:
+    collapsed = " ".join(str(detail or "").split())
+    return collapsed[:200]
+
+
+def _log_oauth_failure(error_message: str, *, status: int | None, detail: str) -> None:
+    status_part = f" status={status}" if status is not None else ""
+    detail_part = f" detail={detail}" if detail else ""
+    print(f"{error_message}{status_part}{detail_part}", file=sys.stderr)
