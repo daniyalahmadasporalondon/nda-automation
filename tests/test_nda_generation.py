@@ -293,6 +293,28 @@ class TestSignatureAnchors:
         assert "Name: Jane Doe" in text
         assert "Title: Director" in text
 
+    def test_signature_boxes_are_stacked_vertically_full_width(self, playbook):
+        # The two party boxes are stacked (one full-width box ABOVE the other), not
+        # two narrow side-by-side columns — this gives each DocuSign anchor the full
+        # page width so the signHere/dateSigned offsets stay clearly on-page.
+        from io import BytesIO
+
+        document = Document(BytesIO(_generate(playbook).docx_bytes))
+        table = document.tables[0]
+        assert len(table.rows) == 2, "signature boxes must be stacked in two rows"
+        # Each row is ONE full-width box: its cells are a single merged cell (the
+        # same underlying <w:tc>), so distinct-cell count per row is 1.
+        for row in table.rows:
+            distinct = {id(cell._tc) for cell in row.cells}
+            assert len(distinct) == 1, "each signature box must span the full width"
+        # Counterparty on top, Aspora below (the existing party order).
+        top = table.rows[0].cells[0].text
+        bottom = table.rows[1].cells[0].text
+        assert "For Acme Innovations Pvt Ltd" in top
+        assert "For Real Transfer Limited" in bottom
+        assert gen.SIGNATURE_ANCHOR_COUNTERPARTY in top
+        assert gen.SIGNATURE_ANCHOR_ASPORA in bottom
+
 
 # --------------------------------------------------------------------------- #
 # Generation — clauses realign to the Playbook

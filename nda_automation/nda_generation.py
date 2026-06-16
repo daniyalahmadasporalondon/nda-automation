@@ -1096,23 +1096,72 @@ def _fill_signature_table(document: DocxDocument, entity: EntityParty, intake: C
     if len(cells) < 2:
         raise NdaGenerationError("Signature table does not have two party blocks.")
 
-    # The FIRST cell is the counterparty (FIRST party), the SECOND is Aspora
-    # (SECOND party). Each gets its party's DocuSign anchor token so the envelope
+    # The two party signature boxes are stacked VERTICALLY (one full-width box
+    # above the other) rather than side-by-side. The template ships them as two
+    # narrow columns in a single row, which pins the FIRST (counterparty) box hard
+    # against the page's left margin — leaving no horizontal room for the DocuSign
+    # signHere/dateSigned tabs and forcing the off-page anchor offsets that caused
+    # the INVALID_USER_OFFSET 400. A single-column stack gives each anchor the full
+    # page width, so a small on-page tab offset is always valid.
+    counterparty_cell, aspora_cell = _stack_signature_cells(table)
+
+    # The FIRST (top) box is the counterparty (FIRST party); the SECOND (bottom)
+    # box is Aspora. Each gets its party's DocuSign anchor token so the envelope
     # can drop that signer's signHere/dateSigned tab on the right signature line.
     _write_signature_cell(
-        cells[0],
+        counterparty_cell,
         party_name=intake.company_name,
         signatory_name="",
         signatory_title="",
         anchor=SIGNATURE_ANCHOR_COUNTERPARTY,
     )
     _write_signature_cell(
-        cells[1],
+        aspora_cell,
         party_name=entity.legal_name,
         signatory_name=entity.signatory_name,
         signatory_title=entity.signatory_title,
         anchor=SIGNATURE_ANCHOR_ASPORA,
     )
+
+
+def _stack_signature_cells(table: Any) -> tuple[Any, Any]:
+    """Reshape the 1x2 side-by-side signature table into a 2x1 stacked layout.
+
+    Returns ``(top_cell, bottom_cell)`` — two full-page-width cells, one above the
+    other. The template's signature block is a single row of two narrow columns;
+    we merge that row's two cells into one full-width cell (the top box) and add a
+    second full-width row beneath it (the bottom box). Each box therefore spans the
+    whole page width, giving the planted DocuSign anchor ample horizontal room so a
+    small, clearly on-page tab offset is valid.
+
+    Merging carries the merged cell's text across, so we clear it before the caller
+    rewrites the box from scratch.
+    """
+
+    first_row_cells = table.rows[0].cells
+    # Merge the two side-by-side cells of the first row into one full-width cell.
+    top_cell = first_row_cells[0]
+    if len(first_row_cells) > 1 and first_row_cells[1] is not first_row_cells[0]:
+        top_cell = first_row_cells[0].merge(first_row_cells[1])
+    _clear_cell(top_cell)
+
+    # Add a second full-width row for the bottom box. A new row spans the table's
+    # grid; its (possibly multiple) cells are merged so the box is full width too.
+    new_cells = table.add_row().cells
+    bottom_cell = new_cells[0]
+    for extra in new_cells[1:]:
+        if extra is not bottom_cell:
+            bottom_cell = bottom_cell.merge(extra)
+    _clear_cell(bottom_cell)
+
+    return top_cell, bottom_cell
+
+
+def _clear_cell(cell: Any) -> None:
+    """Blank every paragraph in ``cell`` so the caller can rewrite it cleanly."""
+
+    for paragraph in cell.paragraphs:
+        _set_paragraph_text(paragraph, "")
 
 
 def _write_signature_cell(
