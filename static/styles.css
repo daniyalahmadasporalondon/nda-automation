@@ -1087,12 +1087,12 @@ h3 {
   gap: 6px;
 }
 
-/* The generator's "Send for Signature" CTA + its inline signature badge are
-   toggled via the [hidden] attribute (revealed only after a generation). Both
-   carry a flex display (.icon-text / .docusign-status-badge) that would beat the
-   UA [hidden] { display:none }, so make hidden authoritative here — same pattern
-   as .link-button[hidden] above — or they'd show empty before any NDA exists. */
-#draftIntakeSendForSignatureButton[hidden],
+/* The generator's inline signature badge is toggled via the [hidden] attribute
+   (shown only once there's an envelope status). Its .docusign-status-badge flex
+   display would beat the UA [hidden] { display:none }, so make hidden
+   authoritative here — same pattern as .link-button[hidden] above — or an empty
+   pill would show before any NDA is sent. (The "Send for Signature" CTA button
+   is always visible and is enabled/disabled, never hidden, so it needs no rule.) */
 #draftIntakeSignatureBadge[hidden] {
   display: none;
 }

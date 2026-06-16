@@ -546,18 +546,54 @@ const generatorDocusignSendController = createDocuSignSendController({
   },
 });
 
-// Reveal + label the Generator's "Send for Signature" CTA from the last
-// generated matter. Called after a successful generation (a matter exists) and
-// when the generator is cleared/reset (no matter -> hide the CTA + badge).
+// Keep the Generator's "Send for Signature" CTA in sync with the last generated
+// matter. Unlike the Review workstation's trigger (which the shared controller
+// HIDES until a matter exists), the generator CTA is ALWAYS VISIBLE in the
+// action row alongside Generate / Download / Send — it is DISABLED with a hint
+// until a sendable generated matter exists, then ENABLES so a click opens the
+// composer.
+//
+// We deliberately do NOT call the controller's syncTriggerButton here: that
+// helper drives the Review trigger by writing triggerButton.textContent, which
+// would wipe this button's SVG icon + <span> structure. Instead we drive the
+// inline badge directly via renderSignatureState (the same badge the controller
+// uses) and set the label inside our own <span>, leaving the icon intact.
 function syncGeneratorDocuSignTrigger() {
-  generatorDocusignSendController?.syncTriggerButton?.();
+  const matter = generatorSignatureMatter;
+  // Drive the inline signature badge from the matter's envelope state (idle ->
+  // hidden, sent/signed -> the tone-coloured pill), exactly as the Review path.
+  generatorDocusignSendController?.renderSignatureState?.(matter || null);
+
+  const triggerButton = document.querySelector("#draftIntakeSendForSignatureButton");
+  if (!triggerButton) return;
+  const label = triggerButton.querySelector("span");
+  const sendable = Boolean(matter?.id);
+  // Always in the row; enabled only once a sendable generated matter exists.
+  triggerButton.hidden = false;
+  triggerButton.disabled = !sendable;
+  if (!sendable) {
+    if (label) label.textContent = "Send for Signature";
+    triggerButton.title = "Generate the NDA first";
+    return;
+  }
+  // Sendable: reflect the envelope state on the label/hint without losing the
+  // icon. An already-sent matter reads "Signature status" / "View signature".
+  const model = (typeof window !== "undefined" && window.DocuSignModel) || null;
+  const view = model?.matterSignatureView ? model.matterSignatureView(matter) : null;
+  if (view?.sent) {
+    if (label) label.textContent = view.completed ? "View Signature" : "Signature Status";
+    triggerButton.title = view.label;
+  } else {
+    if (label) label.textContent = "Send for Signature";
+    triggerButton.title = "Send this NDA for e-signature via DocuSign";
+  }
 }
 
 // Record the just-generated NDA as the Generator send composer's matter, via the
 // shared DocuSignModel.generatorSignatureMatter helper (single source of the
 // matter-like shape defaultSigners reads: id + counterparty + recipient_email).
 // Null when the generation has no saved matter id (the legacy in-memory blob
-// path), so the CTA stays hidden — that NDA can't be sent for signature.
+// path), so the CTA stays DISABLED — that NDA can't be sent for signature.
 function setGeneratorSignatureMatter(generated) {
   const model = (typeof window !== "undefined" && window.DocuSignModel) || null;
   generatorSignatureMatter = model && typeof model.generatorSignatureMatter === "function"
