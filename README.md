@@ -14,9 +14,11 @@ aspora's contract desk imports NDAs from manual upload or Gmail, reviews them ag
 - [The app at a glance](#the-app-at-a-glance)
 - [Key features](#key-features)
 - [How review works](#how-review-works)
+- [PDF extraction and memory](#pdf-extraction-and-memory)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [Gmail: one connection, both directions](#gmail-one-connection-both-directions)
+- [Gmail import throttle](#gmail-import-throttle)
 - [Deployment](#deployment)
 - [Security & data](#security--data)
 - [Testing](#testing)
@@ -93,6 +95,19 @@ The active review path:
 
 The active review engine is **AI-first** and **fails closed**: if AI is unavailable, new review creation returns an error instead of silently substituting deterministic results. Admin can view the runtime from **Admin → AI** and deterministic review remains internal-only for explicit generation checks.
 
+## PDF extraction and memory
+
+PDF support requires the `pdf` extra (`pypdf` / `PyMuPDF` / `pdf2docx`). The two libraries play distinct, non-overlapping roles:
+
+| Library | Role |
+| --- | --- |
+| **pypdf** | Text extraction, paragraph segmentation, geometry (baseline y, font size, indentation). The sole source of clause text sent to the AI reviewer. |
+| **PyMuPDF (fitz)** | Visual profile only: detects coloured text, drawings, and embedded images so the UI can decide whether a source preview is needed. Never used for text extraction. |
+
+**Memory behavior in the visual profile.** PyMuPDF's `page.get_text("dict")` with default flags materialises the decoded pixel bytes of every embedded image into the per-page dict — on an image-heavy PDF this single transient dominates the worker's peak RSS (~50 MB for a 3.8 MB media-rich PDF, vs ~0.2 MB without). Because the visual profile only needs image *presence*, not pixel data, the profile strips `TEXT_PRESERVE_IMAGES` from the text-dict flags and counts images via the lightweight `page.get_image_info()` call instead. The result is the same signal at roughly 250× lower peak memory, which keeps inbound PDF reviews well within the 2 GB Render worker. On PyMuPDF builds that lack the expected flag constants the profile degrades gracefully to the default text-dict behaviour rather than crashing.
+
+Text-based PDFs (the common case) produce no images at all and are unaffected by the above. **Scanned PDFs** (no embedded text layer) are rejected at intake with "No readable text was found in the PDF" — OCR is not currently wired in.
+
 ## Quick start
 
 Requires **Python 3.9+**. DOCX review and export work out of the box (`python-docx` is a core dependency); PDF and Gmail are optional extras.
@@ -159,6 +174,7 @@ Common environment variables:
 | `OPENROUTER_API_KEY` | Server-side OpenRouter key for review + Gmail attachment selection. |
 | `NDA_AI_PROVIDER` / `NDA_AI_MODEL` | `openrouter` / `x-ai/grok-4.3`. |
 | `NDA_AI_VERIFIER` / `NDA_AI_VERIFIER_MODEL` | Optional independent adversarial verifier; default model is `deepseek/deepseek-v4-pro` and it uses the same OpenRouter key. |
+| `NDA_GMAIL_IMPORT_LIMIT` | Max inbound messages processed per poll cycle (default `20`). See [Gmail import throttle](#gmail-import-throttle). |
 | `NDA_GMAIL_TRIAGE_MODEL` | Gmail attachment-selector model (picks the NDA attachment, e.g. `x-ai/grok-4.3`). |
 | `NDA_GMAIL_INTAKE_MODEL` | Gmail NDA-intake classifier model; default `deepseek/deepseek-v4-flash`. Optional and reuses `OPENROUTER_API_KEY`; with no key it falls back to the deterministic intake gate. |
 | `NDA_ACTIVE_REVIEW_ENGINE` | Review runtime pin; inbound review resolves to `ai_first`. Deterministic remains internal-only for explicit generation `force_engine` paths. |
@@ -185,6 +201,20 @@ Inbound import and outbound send share a **single Gmail login**. One **Connect G
 - Gmail web access and Gmail API access are separate: the browser can be logged in while the API token is missing, expired, or rate-limited. The app records recent sync/send failures and backs off after a temporary lockout.
 
 For local shared-token development you can still point at token files (`NDA_GMAIL_INBOUND_TOKEN_PATH` / `_OUTBOUND_TOKEN_PATH`, or ignored `data/gmail/{inbound,outbound}-token.json`). For hosted deployments, leave those unset so one user's token never becomes a shared mailbox fallback. When no user is connected, the scheduled inbound sync polls a server/env token **only** if `NDA_GMAIL_SERVER_INBOUND` is explicitly enabled — so **Disconnect Gmail** (which removes the last user's token) actually stops the scheduled inbound sync rather than silently falling back to a leftover shared token.
+
+## Gmail import throttle
+
+`NDA_GMAIL_IMPORT_LIMIT` (default `20`) caps the number of **new** inbound messages the scheduler hands to the heavy import path per poll cycle. "Heavy import" means: Pro-model attachment selection, Flash intake classification, PyMuPDF visual profiling, and attachment download + text extraction — the work that dominates the 2 GB Render worker's peak RSS.
+
+**Why it matters on (re)connect.** Gmail's inbound query has no already-imported exclusion and applies no label or archive, so the first poll after connecting (or reconnecting) would otherwise attempt to catch up the full 90-day backlog in one burst — a one-time spike that can OOM the worker. `NDA_GMAIL_IMPORT_LIMIT` keeps each burst small.
+
+**How catch-up still makes progress.** The per-poll dedup index (`message_attachments_all_already_imported`) persists across polls and short-circuits already-imported messages **before** any download or extraction. The scheduler pages through the inbox interleaving cheap dedup probes with heavy imports: already-imported messages are skipped without counting against the limit, so each subsequent poll advances to the next un-imported batch until the backlog is drained.
+
+```
+NDA_GMAIL_IMPORT_LIMIT=20   # default: gentle catch-up, ~20 new NDAs per poll cycle
+```
+
+Raise to drain the backlog faster at the cost of a larger per-poll burst; the value is clamped to `>= 1`. The `.env.example` documents the default and override comments for operators.
 
 ## DocuSign: send for signature (real e-signature)
 
