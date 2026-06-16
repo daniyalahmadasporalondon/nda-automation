@@ -298,6 +298,15 @@ def _scan_pass(
             # per-poll NEW-work budget that bounds load on the 2 GB worker.
             state.new_processed += 1
 
+            # Defer this CPU-bound per-message step (download + PDF/DOCX extraction
+            # + AI selector/intake) to any in-flight foreground NDA generation so the
+            # single prod worker's GIL/CPU is not starved out from under a user-facing
+            # generate. Bounded + fail-open: blocks at most a few seconds and never
+            # raises, so the poll can never stall unboundedly behind a stuck generate.
+            from . import generation_priority  # noqa: PLC0415 - light/local import.
+
+            generation_priority.yield_to_active_generation()
+
             # Always make the per-message detection content-aware: if subject/
             # body/snippet/filename carry no NDA signal, fall back to scanning
             # attachment content. There is NO terminal drop here anymore -- the
