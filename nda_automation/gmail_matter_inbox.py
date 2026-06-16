@@ -52,38 +52,182 @@ def import_inbound_matters(
     # sync result carries an honest health signal for the classifier.
     sync_tallies = _IntakeTallies()
 
-    # Gentle catch-up via an INTERLEAVED paged scan. The inbound query has no
-    # already-imported exclusion and applies no label/archive, so it re-surfaces the
-    # SAME newest messages on every poll. If we capped the *fetch* at import_limit
-    # and the newest import_limit messages were already imported, every poll would
-    # re-fetch those same slots and make ZERO forward progress -- the catch-up would
-    # stall after the first batch. So import_limit instead caps the number of NEW
-    # (dedup-miss) messages handed to the heavy import path per poll (the Pro
-    # attachment selector + Flash intake + PyMuPDF extraction + attachment download
-    # -- the work that strains the 2 GB worker). The cheap per-stub probe (list +
-    # metadata get + pre-download identity dedup) pages PAST the already-imported
-    # newest messages so each poll advances to the next un-imported batch, draining
-    # the backlog a bounded slice at a time until it is empty.
+    # Gentle catch-up via a paged scan, now with a PERSISTENT DRAIN CURSOR so an
+    # arbitrarily large backlog drains to completion WITHOUT unbounded per-poll
+    # scanning. import_limit caps the number of NEW (dedup-miss) messages handed to
+    # the heavy import path per poll (Pro attachment selector + Flash intake +
+    # PyMuPDF extraction + download -- the work that strains the 2 GB worker).
     #
-    # Termination guards (unchanged in spirit): stop once import_limit NEW messages
-    # are processed; stop on an empty next-page token or a zero-progress page (Gmail
-    # can return a non-empty token on a page that yielded no messages); and enforce
-    # a hard SCAN cap so a backlog of many already-imported messages can never make
-    # one poll probe unboundedly. The scan cap comfortably exceeds import_limit so a
-    # full new batch is always reachable past a screenful of already-imported ones.
-    # pageToken is passed only when non-empty so single-page transport fakes that do
-    # not accept the kwarg keep working.
-    new_processed = 0
+    # THE STALL THIS FIXES: the inbound query has no already-imported exclusion (we
+    # only hold the gmail.readonly scope, so we cannot label/archive imported mail),
+    # so it re-surfaces the SAME newest messages newest-first on every poll. The old
+    # scan paged PAST the already-imported prefix with a fixed max_scan cap; once the
+    # imported prefix grew past that cap (backlog > max_scan), every poll exhausted
+    # its whole scan budget inside already-imported messages, found ZERO new work,
+    # and the loop exited with no forward progress -- PERMANENTLY, silently dropping
+    # the (backlog - max_scan) tail until it aged out at 90 days.
+    #
+    # THE FIX (Option B, readonly-safe -- no new scope, no re-consent): record a
+    # per-owner low-water-mark on Gmail's server-assigned internalDate (the deepest,
+    # i.e. oldest, message the scan has reached). Each poll runs two bounded passes
+    # sharing the one import_limit NEW-work budget:
+    #   1. HEAD pass  -- the un-bounded base query (newest-first), bounded by a small
+    #      head_window, to ingest newly-arrived mail above the frontier.
+    #   2. DRAIN pass -- the SAME base query date-bounded `before:<cursor>` so the
+    #      already-drained newest prefix never re-surfaces; the scan reaches the next
+    #      un-imported (older) batch DIRECTLY. The cursor is then lowered to the
+    #      oldest message examined this poll, so the next poll resumes right below it.
+    # Forward progress is guaranteed (the cursor strictly descends until the backlog
+    # is drained, then is reset and the head pass alone keeps up), and the per-poll
+    # probe is bounded to ~import_limit + head_window get()s -- never the whole
+    # backlog. When the transport lacks cursor support (older fakes) or a message
+    # carries no internalDate, the scan degrades to the single bounded legacy pass.
+    cursor_supported = callable(getattr(transport, "inbound_drain_cursor", None))
+    drain_cursor = 0
+    if cursor_supported:
+        try:
+            drain_cursor = int(transport.inbound_drain_cursor(owner_user_id))
+        except Exception:  # pragma: no cover - cursor read is best-effort
+            drain_cursor = 0
+
+    state = _ScanState(import_limit=import_limit)
+    # The hard SCAN cap bounds a single pass so a screenful of already-imported (or
+    # id-less) stubs can never probe unboundedly; it comfortably exceeds import_limit
+    # so a full new batch is reachable past the imported ones.
+    max_scan = max(import_limit * 5, import_limit + 100)
+    # The head pass only needs to absorb mail that ARRIVED since the last poll, which
+    # always lands at the very FRONT (newer than everything imported), so a small
+    # window suffices -- it must NOT be large enough to do the backlog draining
+    # (that is the drain pass's job, paging below the cursor). Sizing it at
+    # import_limit lets a poll-interval's worth of fresh arrivals through while
+    # keeping the head probe cheap.
+    head_window = import_limit
+
+    context = _ScanContext(
+        transport=transport,
+        service=service,
+        account_email=account_email,
+        owner_user_id=owner_user_id,
+        intake_playbook=intake_playbook,
+        intake_budget=intake_budget,
+        imported=imported,
+        skipped=skipped,
+        sync_tallies=sync_tallies,
+    )
+
+    if cursor_supported and drain_cursor > 0:
+        # Pass 1: head re-scan for newly-arrived mail above the frontier (bounded).
+        _scan_pass(inbound_query, max_scan=head_window, state=state, context=context)
+        # Pass 2: drain the backlog below the frontier, date-bounded so the drained
+        # prefix never re-surfaces.
+        if not state.rate_limited and state.new_processed < import_limit:
+            drain_query = transport.inbound_query_before(inbound_query, drain_cursor)
+            _scan_pass(drain_query, max_scan=max_scan, state=state, context=context, track_floor=True)
+    else:
+        # No cursor support (or no cursor yet): a single bounded pass over the base
+        # query, identical in spirit to the pre-cursor behaviour.
+        _scan_pass(inbound_query, max_scan=max_scan, state=state, context=context, track_floor=True)
+
+    # Advance (lower) the persistent cursor to the oldest message examined in the
+    # drain this poll, so the NEXT poll resumes right below it instead of re-paging
+    # the imported prefix. When the drain pass found NO un-imported message older
+    # than the cursor and was not cut short by the budget/rate-limit, the backlog
+    # below the frontier is exhausted: reset the cursor so future polls run head-only
+    # (and a fresh backlog re-arms it). All best-effort -- never raise into the poll.
+    if cursor_supported:
+        try:
+            _persist_drain_cursor(transport, owner_user_id, state, drain_cursor)
+        except Exception:  # pragma: no cover - cursor write is best-effort
+            LOGGER.warning("Failed to persist Gmail inbound drain cursor", exc_info=True)
+
+    return {
+        "account": account_email,
+        "imported": imported,
+        "query": inbound_query,
+        "skipped": skipped,
+        "ai_intake": sync_tallies.as_dict(),
+        "rate_limited": state.rate_limited,
+    }
+
+
+class _ScanState:
+    """Mutable per-poll scan accounting shared across the head + drain passes."""
+
+    def __init__(self, *, import_limit: int) -> None:
+        self.import_limit = import_limit
+        self.new_processed = 0
+        # The oldest internalDate (ms) examined in a floor-tracking (drain) pass this
+        # poll -- the resume point for the next poll's cursor. 0 means "none seen".
+        self.drain_floor_ms = 0
+        # True once a date-bounded drain pass reached the end of the backlog
+        # (an empty/zero-progress page) WITHOUT being cut short by the budget or a
+        # rate-limit -- i.e. nothing older than the cursor remains to import.
+        self.drain_exhausted = False
+        self.rate_limited = False
+
+    def note_floor(self, internal_date_ms: int) -> None:
+        if internal_date_ms <= 0:
+            return
+        if self.drain_floor_ms == 0 or internal_date_ms < self.drain_floor_ms:
+            self.drain_floor_ms = internal_date_ms
+
+
+class _ScanContext:
+    """Immutable-ish bag of the per-poll collaborators a scan pass needs."""
+
+    def __init__(
+        self,
+        *,
+        transport: Any,
+        service: Any,
+        account_email: str,
+        owner_user_id: str,
+        intake_playbook: str,
+        intake_budget: "_IntakeCallBudget",
+        imported: list[dict[str, Any]],
+        skipped: list[dict[str, str]],
+        sync_tallies: "_IntakeTallies",
+    ) -> None:
+        self.transport = transport
+        self.service = service
+        self.account_email = account_email
+        self.owner_user_id = owner_user_id
+        self.intake_playbook = intake_playbook
+        self.intake_budget = intake_budget
+        self.imported = imported
+        self.skipped = skipped
+        self.sync_tallies = sync_tallies
+
+
+def _scan_pass(
+    inbound_query: str,
+    *,
+    max_scan: int,
+    state: _ScanState,
+    context: _ScanContext,
+    track_floor: bool = False,
+) -> None:
+    """One bounded paged scan over ``inbound_query``.
+
+    Pages newest-first, handing up to the remaining import_limit NEW (dedup-miss)
+    messages to the heavy import path and cheaply skipping already-imported ones.
+    Stops on: the NEW-work budget, the hard ``max_scan`` cap, an empty next-page
+    token, a zero-progress page, or a Gmail rate-limit (429) -- the last keeps what
+    was imported this cycle rather than aborting the whole poll. ``track_floor``
+    records the oldest internalDate examined (the drain pass's resume point).
+    """
+    transport = context.transport
+    service = context.service
+    new_stubs_total = 0
     stubs_scanned = 0
     page_token = ""
-    max_scan = max(import_limit * 5, import_limit + 100)
-    page_size = min(import_limit, 100) or 1
-    scanning = True
-    while scanning and new_processed < import_limit and stubs_scanned < max_scan:
+    page_size = min(state.import_limit, 100) or 1
+    saw_pages = False
+    while state.new_processed < state.import_limit and stubs_scanned < max_scan:
         # Only the list() call is guarded as a "list" error: the per-message work
-        # below keeps its own narrow error handling (matching the pre-refactor
-        # structure) so a genuine processing bug is never mislabeled as a Gmail
-        # listing failure.
+        # below keeps its own narrow error handling so a genuine processing bug is
+        # never mislabeled as a Gmail listing failure. A rate-limit (429) on list()
+        # stops THIS pass gracefully (keep what we imported), never re-raises.
         try:
             page = service.users().messages().list(
                 userId="me",
@@ -92,13 +236,17 @@ def import_inbound_matters(
                 **({"pageToken": page_token} if page_token else {}),
             ).execute()
         except Exception as exc:
+            if _is_rate_limited(transport, exc):
+                state.rate_limited = True
+                return
             transport.raise_gmail_api_error(exc, "Gmail inbound sync could not list messages.")
             raise  # unreachable: raise_gmail_api_error always raises; satisfies type/flow
+        saw_pages = True
         new_stubs = page.get("messages") or []
         page_token = str(page.get("nextPageToken") or "")
+        new_stubs_total += len(new_stubs)
         for message_stub in new_stubs:
-            if new_processed >= import_limit or stubs_scanned >= max_scan:
-                scanning = False
+            if state.new_processed >= state.import_limit or stubs_scanned >= max_scan:
                 break
             stubs_scanned += 1
             message_id = str(message_stub.get("id") or "")
@@ -107,57 +255,64 @@ def import_inbound_matters(
             try:
                 message = service.users().messages().get(userId="me", id=message_id, format="full").execute()
             except Exception as exc:
+                if _is_rate_limited(transport, exc):
+                    # A 429 mid-scan: keep everything imported so far this poll and
+                    # stop -- the next poll resumes from the persisted cursor.
+                    state.rate_limited = True
+                    return
                 if transport.gmail_retry_after_epoch(exc):
                     transport.raise_gmail_api_error(exc, "Gmail inbound sync could not load a message.")
-                skipped.append({"message_id": message_id, "reason": "message_unavailable"})
+                context.skipped.append({"message_id": message_id, "reason": "message_unavailable"})
                 continue
 
-            if transport.is_self_or_outbound_message(message, account_email):
-                skipped.append({"message_id": message_id, "reason": "self_sent_or_outbound"})
+            if track_floor:
+                state.note_floor(_message_internal_date_ms(transport, message))
+
+            if transport.is_self_or_outbound_message(message, context.account_email):
+                context.skipped.append({"message_id": message_id, "reason": "self_sent_or_outbound"})
                 continue
 
             attachments = list(transport.reviewable_attachments(message.get("payload") or {}))
             if not attachments:
-                skipped.append({"message_id": message_id, "reason": "no_reviewable_attachment"})
+                context.skipped.append({"message_id": message_id, "reason": "no_reviewable_attachment"})
                 continue
 
             # Dedup short-circuit AHEAD of any download/extract: a previously-
-            # imported forward (re-surfaced by the inbox query on every poll) is
-            # skipped here so the content-scan PDF/DOCX extraction below never
-            # re-downloads + re-parses its attachments. Crucially this does NOT
-            # count toward import_limit -- the scan pages past these to reach the
-            # next un-imported batch. Only genuinely already-imported messages
-            # (every attachment matched on a pre-download identity key) are
-            # short-circuited; anything not provably imported falls through to the
-            # authoritative per-attachment path, preserving the false-negative
-            # protection.
+            # imported forward (re-surfaced by the inbox query) is skipped here so
+            # the content-scan PDF/DOCX extraction never re-downloads + re-parses its
+            # attachments. This does NOT count toward import_limit -- the scan pages
+            # past these to reach the next un-imported batch. Only genuinely
+            # already-imported messages (every attachment matched on a pre-download
+            # identity key) are short-circuited; anything not provably imported falls
+            # through to the authoritative per-attachment path.
             if message_attachments_all_already_imported(
                 message_id,
                 attachments,
                 transport=transport,
-                owner_user_id=owner_user_id,
+                owner_user_id=context.owner_user_id,
             ):
-                skipped.append({"message_id": message_id, "reason": "already_imported"})
+                context.skipped.append({"message_id": message_id, "reason": "already_imported"})
                 continue
 
             # This message will hit the heavy import path: count it against the
             # per-poll NEW-work budget that bounds load on the 2 GB worker.
-            new_processed += 1
+            state.new_processed += 1
 
             # Always make the per-message detection content-aware: if subject/
             # body/snippet/filename carry no NDA signal, fall back to scanning
             # attachment content. There is NO terminal drop here anymore -- the
-            # deterministic per-attachment band classifier
-            # (import_inbound_attachments) is the authoritative classifier, so an
-            # attachment-only NDA with a neutral subject is never dropped before
-            # its content is judged.
+            # deterministic per-attachment band classifier is authoritative, so an
+            # attachment-only NDA with a neutral subject is never dropped before its
+            # content is judged.
             detection = transport.message_nda_detection(message, attachments)
             if not detection["matched"]:
                 detection = transport.attachment_nda_detection(service, message_id, attachments)
 
             metadata = message_selector_metadata(
                 message,
-                transport.message_metadata(message, account_email, detection=detection if detection["matched"] else None),
+                transport.message_metadata(
+                    message, context.account_email, detection=detection if detection["matched"] else None
+                ),
                 transport=transport,
             )
             attachment_result = import_inbound_attachments(
@@ -166,26 +321,83 @@ def import_inbound_matters(
                 attachments,
                 metadata,
                 transport=transport,
-                owner_user_id=owner_user_id,
-                intake_playbook=intake_playbook,
-                intake_budget=intake_budget,
+                owner_user_id=context.owner_user_id,
+                intake_playbook=context.intake_playbook,
+                intake_budget=context.intake_budget,
             )
-            imported.extend(attachment_result["imported"])
-            skipped.extend(attachment_result["skipped"])
-            sync_tallies.merge(attachment_result.get("ai_intake"))
+            context.imported.extend(attachment_result["imported"])
+            context.skipped.extend(attachment_result["skipped"])
+            context.sync_tallies.merge(attachment_result.get("ai_intake"))
         # Stop on an empty next-page token OR a zero-progress page (a page that
         # advanced the token but returned no messages), mirroring the original
         # paged-fetch termination guards.
         if not page_token or not new_stubs:
             break
 
-    return {
-        "account": account_email,
-        "imported": imported,
-        "query": inbound_query,
-        "skipped": skipped,
-        "ai_intake": sync_tallies.as_dict(),
-    }
+    # A floor-tracking (drain) pass that consumed every page (ran out of token)
+    # WITHOUT hitting the NEW-work budget or a rate-limit has reached the end of the
+    # backlog below the cursor: nothing older remains to import.
+    if (
+        track_floor
+        and saw_pages
+        and not page_token
+        and not state.rate_limited
+        and state.new_processed < state.import_limit
+    ):
+        state.drain_exhausted = True
+
+
+def _persist_drain_cursor(
+    transport: Any,
+    owner_user_id: str,
+    state: _ScanState,
+    previous_cursor: int,
+) -> None:
+    """Move the persistent per-owner drain cursor after a poll.
+
+    Lowers it to the oldest message examined in the drain pass (the resume point),
+    or resets it once the backlog below the frontier is fully drained so future
+    polls run head-only. No-op when this poll never ran a date-bounded drain (no
+    prior cursor) and saw no floor.
+    """
+    if state.drain_exhausted:
+        # The drain reached the end of the backlog this poll (no un-imported message
+        # older than where it scanned). Clear any frontier so future polls run
+        # head-only; a fresh backlog re-arms the cursor on the next floor-tracking
+        # pass. Covers both the resumed-drain case AND the first poll that drained a
+        # below-import_limit backlog in one pass (so no stale cursor is left armed).
+        if previous_cursor > 0:
+            transport.reset_inbound_drain_cursor(owner_user_id)
+        return
+    if state.drain_floor_ms > 0:
+        transport.advance_inbound_drain_cursor(owner_user_id, state.drain_floor_ms)
+
+
+def _is_rate_limited(transport: Any, error: Exception) -> bool:
+    probe = getattr(transport, "is_rate_limit_error", None)
+    if callable(probe):
+        try:
+            return bool(probe(error))
+        except Exception:  # pragma: no cover - probe is best-effort
+            return False
+    # Fall back to the retry-after probe every inbox transport exposes.
+    try:
+        return bool(transport.gmail_retry_after_epoch(error))
+    except Exception:  # pragma: no cover - probe is best-effort
+        return False
+
+
+def _message_internal_date_ms(transport: Any, message: dict[str, Any]) -> int:
+    getter = getattr(transport, "message_internal_date_ms", None)
+    if callable(getter):
+        try:
+            return int(getter(message))
+        except Exception:  # pragma: no cover - date read is best-effort
+            return 0
+    try:
+        return max(0, int(str(message.get("internalDate") or "0")))
+    except (TypeError, ValueError):
+        return 0
 
 
 def import_inbound_attachments(

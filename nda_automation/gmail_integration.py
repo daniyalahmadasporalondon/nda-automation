@@ -157,6 +157,14 @@ DEFAULT_INBOUND_QUERY_WITH_AI_SELECTOR = DEFAULT_INBOUND_QUERY
 # is deliberately modest so re-enabling Gmail can never overwhelm the worker.
 NDA_GMAIL_IMPORT_LIMIT_ENV = "NDA_GMAIL_IMPORT_LIMIT"
 _DEFAULT_GMAIL_IMPORT_LIMIT = 20
+# Upper clamp on the per-poll NEW-work limit. Gmail allows ~6,000 quota-units per
+# user per minute; a messages.get() costs ~5 units and the per-poll probe issues
+# roughly one get() per scanned stub, so an operator pushing the knob to 60+ could
+# drive a single poll past the per-minute budget and trip rate-limits. Clamping at
+# 40 keeps even the heaviest poll comfortably inside quota while still letting an
+# operator trade burst for a faster drain. (With the drain cursor the steady-state
+# get() count collapses to ~the new-work batch, so this is defense-in-depth.)
+_MAX_GMAIL_IMPORT_LIMIT_CLAMP = 40
 
 
 def _gmail_import_limit_from_env() -> int:
@@ -167,7 +175,11 @@ def _gmail_import_limit_from_env() -> int:
         return _DEFAULT_GMAIL_IMPORT_LIMIT
     # A non-positive override is meaningless (and a zero would import nothing); fall
     # back to the default rather than wedging the catch-up.
-    return value if value >= 1 else _DEFAULT_GMAIL_IMPORT_LIMIT
+    if value < 1:
+        return _DEFAULT_GMAIL_IMPORT_LIMIT
+    # Clamp the upper end so the knob can't be pushed into Gmail rate-limit
+    # territory (a too-large per-poll burst of messages.get() probes).
+    return min(value, _MAX_GMAIL_IMPORT_LIMIT_CLAMP)
 
 
 MAX_GMAIL_IMPORT_LIMIT = _gmail_import_limit_from_env()

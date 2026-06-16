@@ -752,5 +752,93 @@ class UpdateMatterCounterpartyTests(unittest.TestCase):
                 self.assertTrue(intake["counterparty"]["verified"])
 
 
+class GmailInboundCursorTests(unittest.TestCase):
+    """The persistent per-owner Gmail inbound drain cursor (Option B for the
+    drain-stall fix): a low-water-mark on internalDate that only ever moves to an
+    OLDER message and survives across polls."""
+
+    def cursor_patches(self, data_dir: str):
+        root = Path(data_dir)
+        return (
+            patch.object(matter_store, "DATA_DIR", root),
+            patch.object(matter_store, "GMAIL_INBOUND_CURSORS_PATH", root / "gmail_inbound_cursors.json"),
+        )
+
+    def test_cursor_defaults_to_zero_and_persists_across_reads(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.cursor_patches(data_dir)
+            for p in patches:
+                p.start()
+            try:
+                # No file yet -> 0 ("no cursor; scan newest-first un-bounded").
+                self.assertEqual(matter_store.gmail_inbound_cursor("owner_1"), 0)
+                # First advance writes the file and is readable back.
+                matter_store.advance_gmail_inbound_cursor("owner_1", 1_700_000_000_000)
+                self.assertTrue((Path(data_dir) / "gmail_inbound_cursors.json").is_file())
+                self.assertEqual(matter_store.gmail_inbound_cursor("owner_1"), 1_700_000_000_000)
+            finally:
+                for p in patches:
+                    p.stop()
+
+    def test_cursor_only_descends_and_is_per_owner(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.cursor_patches(data_dir)
+            for p in patches:
+                p.start()
+            try:
+                matter_store.advance_gmail_inbound_cursor("owner_1", 5000)
+                # A LOWER (older) frontier is accepted (the drain reached deeper).
+                self.assertEqual(matter_store.advance_gmail_inbound_cursor("owner_1", 3000), 3000)
+                # A HIGHER (newer) value never pushes the cursor back up (newly-arrived
+                # mail above the frontier must not re-expose a drained region).
+                self.assertEqual(matter_store.advance_gmail_inbound_cursor("owner_1", 9000), 3000)
+                self.assertEqual(matter_store.gmail_inbound_cursor("owner_1"), 3000)
+                # Non-positive dates are ignored (we never learned a real date).
+                self.assertEqual(matter_store.advance_gmail_inbound_cursor("owner_1", 0), 3000)
+                # A different owner keeps an independent cursor.
+                self.assertEqual(matter_store.gmail_inbound_cursor("owner_2"), 0)
+                matter_store.advance_gmail_inbound_cursor("owner_2", 7000)
+                self.assertEqual(matter_store.gmail_inbound_cursor("owner_2"), 7000)
+                self.assertEqual(matter_store.gmail_inbound_cursor("owner_1"), 3000)
+            finally:
+                for p in patches:
+                    p.stop()
+
+    def test_cursor_reset_clears_only_that_owner(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.cursor_patches(data_dir)
+            for p in patches:
+                p.start()
+            try:
+                matter_store.advance_gmail_inbound_cursor("owner_1", 3000)
+                matter_store.advance_gmail_inbound_cursor("owner_2", 7000)
+                matter_store.reset_gmail_inbound_cursor("owner_1")
+                self.assertEqual(matter_store.gmail_inbound_cursor("owner_1"), 0)
+                self.assertEqual(matter_store.gmail_inbound_cursor("owner_2"), 7000)
+                # Reset is idempotent / safe on an unknown owner.
+                matter_store.reset_gmail_inbound_cursor("owner_missing")
+                self.assertEqual(matter_store.gmail_inbound_cursor("owner_2"), 7000)
+            finally:
+                for p in patches:
+                    p.stop()
+
+    def test_cursor_survives_corrupt_store_file(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.cursor_patches(data_dir)
+            for p in patches:
+                p.start()
+            try:
+                cursor_path = Path(data_dir) / "gmail_inbound_cursors.json"
+                cursor_path.write_text("{ not valid json", encoding="utf-8")
+                # A corrupt store reads as empty (0) rather than raising into the poll.
+                self.assertEqual(matter_store.gmail_inbound_cursor("owner_1"), 0)
+                # And a subsequent advance heals the file.
+                matter_store.advance_gmail_inbound_cursor("owner_1", 4000)
+                self.assertEqual(matter_store.gmail_inbound_cursor("owner_1"), 4000)
+            finally:
+                for p in patches:
+                    p.stop()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -132,6 +132,12 @@ class MatterRepository(Protocol):
         owner_user_id: str = "",
     ) -> dict[str, Any] | None: ...
 
+    def gmail_inbound_cursor(self, owner_user_id: str = "") -> int: ...
+
+    def advance_gmail_inbound_cursor(self, owner_user_id: str, internal_date_ms: int) -> int: ...
+
+    def reset_gmail_inbound_cursor(self, owner_user_id: str = "") -> None: ...
+
     def export_matters_backup(self, owner_user_id: str = "") -> dict[str, Any]: ...
 
 
@@ -280,6 +286,15 @@ class DiskMatterRepository:
             owner_user_id=owner_user_id,
         )
 
+    def gmail_inbound_cursor(self, owner_user_id: str = "") -> int:
+        return matter_store.gmail_inbound_cursor(owner_user_id=owner_user_id)
+
+    def advance_gmail_inbound_cursor(self, owner_user_id: str, internal_date_ms: int) -> int:
+        return matter_store.advance_gmail_inbound_cursor(owner_user_id, internal_date_ms)
+
+    def reset_gmail_inbound_cursor(self, owner_user_id: str = "") -> None:
+        matter_store.reset_gmail_inbound_cursor(owner_user_id=owner_user_id)
+
     def export_matters_backup(self, owner_user_id: str = "") -> dict[str, Any]:
         return matter_store.export_matters_backup(owner_user_id=owner_user_id)
 
@@ -291,6 +306,7 @@ class InMemoryMatterRepository:
         self._lock = threading.RLock()
         self._matters: list[dict[str, Any]] = []
         self._documents: dict[str, bytes] = {}
+        self._gmail_inbound_cursors: dict[str, int] = {}
 
     # --- reads ---------------------------------------------------------
     def list_matters(self, owner_user_id: str = "") -> list[dict[str, Any]]:
@@ -692,6 +708,31 @@ class InMemoryMatterRepository:
                 owner_user_id=owner_user_id,
             )
         return copy.deepcopy(match) if match is not None else None
+
+    def gmail_inbound_cursor(self, owner_user_id: str = "") -> int:
+        key = _clean_owner_user_id(owner_user_id)
+        with self._lock:
+            return max(0, int(self._gmail_inbound_cursors.get(key, 0)))
+
+    def advance_gmail_inbound_cursor(self, owner_user_id: str, internal_date_ms: int) -> int:
+        key = _clean_owner_user_id(owner_user_id)
+        try:
+            candidate = int(internal_date_ms)
+        except (TypeError, ValueError):
+            candidate = 0
+        with self._lock:
+            existing = int(self._gmail_inbound_cursors.get(key, 0))
+            if candidate <= 0:
+                return max(0, existing)
+            if existing <= 0 or candidate < existing:
+                self._gmail_inbound_cursors[key] = candidate
+                return candidate
+            return existing
+
+    def reset_gmail_inbound_cursor(self, owner_user_id: str = "") -> None:
+        key = _clean_owner_user_id(owner_user_id)
+        with self._lock:
+            self._gmail_inbound_cursors.pop(key, None)
 
     def export_matters_backup(self, owner_user_id: str = "") -> dict[str, Any]:
         with self._lock:

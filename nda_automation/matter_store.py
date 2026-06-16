@@ -24,7 +24,15 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ["NDA_DATA_DIR"]).expanduser() if os.environ.get("NDA_DATA_DIR") else ROOT / "data"
 MATTERS_PATH = DATA_DIR / "matters.json"
 UPLOADS_DIR = DATA_DIR / "uploads"
+# Persistent per-owner Gmail inbound drain cursor. A low-water-mark on Gmail's
+# server-assigned ``internalDate`` (epoch ms) recording the oldest message the
+# catch-up scan has reached. The inbound query date-bounds below this mark on the
+# next poll so the already-drained newest prefix never re-surfaces -- this is what
+# lets an arbitrary backlog drain WITHOUT the scan re-paging (and re-``get()``-ing)
+# the imported prefix every poll, the defect that previously stalled the catch-up.
+GMAIL_INBOUND_CURSORS_PATH = DATA_DIR / "gmail_inbound_cursors.json"
 _MATTERS_LOCK = threading.RLock()
+_GMAIL_CURSOR_LOCK = threading.RLock()
 # Maximum seconds to wait when acquiring _MATTERS_LOCK or the on-disk flock
 # before giving up and raising MatterStoreError.  30 s is well above any
 # expected critical-section duration while keeping the export endpoint
@@ -169,6 +177,84 @@ def find_gmail_attachment(
             },
             owner_user_id=owner_user_id,
         )
+
+
+def gmail_inbound_cursor(owner_user_id: str = "") -> int:
+    """The persisted per-owner inbound drain cursor (oldest reached internalDate, ms).
+
+    ``0`` means "no cursor yet" — the catch-up has not paged below the inbox head,
+    so the inbound query must NOT date-bound and scans newest-first as before. The
+    value is Gmail's server-assigned ``internalDate`` (epoch milliseconds), which is
+    monotonic and tamper-proof (unlike the ``Date`` header), so a ``before:`` bound
+    derived from it reliably skips the already-drained newest prefix.
+    """
+    key = _clean_owner_user_id(owner_user_id)
+    with _GMAIL_CURSOR_LOCK:
+        cursors = _load_gmail_inbound_cursors()
+    try:
+        return max(0, int(cursors.get(key, 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def advance_gmail_inbound_cursor(owner_user_id: str, internal_date_ms: int) -> int:
+    """Lower the per-owner drain cursor toward ``internal_date_ms`` (monotonic down).
+
+    The cursor only ever moves to an OLDER message (a smaller internalDate) so a
+    burst of newly-arrived mail above the frontier can never push it back up and
+    re-expose an already-drained region. A non-positive ``internal_date_ms`` is
+    ignored (we never learned a real date for the batch). Returns the cursor in
+    force after the call.
+    """
+    key = _clean_owner_user_id(owner_user_id)
+    try:
+        candidate = int(internal_date_ms)
+    except (TypeError, ValueError):
+        candidate = 0
+    if candidate <= 0:
+        return gmail_inbound_cursor(owner_user_id)
+    with _GMAIL_CURSOR_LOCK:
+        cursors = _load_gmail_inbound_cursors()
+        existing = 0
+        try:
+            existing = int(cursors.get(key, 0))
+        except (TypeError, ValueError):
+            existing = 0
+        # First cursor for this owner, or a strictly-older frontier: persist it.
+        if existing <= 0 or candidate < existing:
+            cursors[key] = candidate
+            _write_json_atomic(GMAIL_INBOUND_CURSORS_PATH, cursors)
+            return candidate
+        return existing
+
+
+def reset_gmail_inbound_cursor(owner_user_id: str = "") -> None:
+    """Drop the per-owner drain cursor (e.g. after a full backlog drain or reset)."""
+    key = _clean_owner_user_id(owner_user_id)
+    with _GMAIL_CURSOR_LOCK:
+        cursors = _load_gmail_inbound_cursors()
+        if key in cursors:
+            del cursors[key]
+            _write_json_atomic(GMAIL_INBOUND_CURSORS_PATH, cursors)
+
+
+def _load_gmail_inbound_cursors() -> dict[str, int]:
+    if not GMAIL_INBOUND_CURSORS_PATH.is_file():
+        return {}
+    try:
+        with GMAIL_INBOUND_CURSORS_PATH.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    cursors: dict[str, int] = {}
+    for owner_key, value in payload.items():
+        try:
+            cursors[str(owner_key)] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return cursors
 
 
 def update_matter_stage(matter_id: str, board_column: str, owner_user_id: str = "") -> dict[str, Any] | None:
