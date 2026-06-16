@@ -26,15 +26,17 @@ gmail = [
 # `stream` tail (opencv-headless + pandas + numpy) is ~223MB; camelot is
 # LAZY-imported (only when a keyword-gated page is processed) so the resident cost
 # stays deferred and the feature no-ops cleanly if the import is absent.
-#   * camelot-py pinned to the 1.x line: 2.0.0 restructured backends/extras, so
-#     pin to the tested shape (>=1.0,<2).
+#   * camelot-py pinned to the 2.x line (>=2,<3): the old <2 pin forced camelot
+#     1.0.x, which caps pypdf<4.0 and collides with the [pdf] extra's pypdf>=6.0
+#     (ResolutionImpossible on py3.11). camelot 2.0.0 dropped its pypdf dependency
+#     (switched to pypdfium2), so 2.x resolves cleanly alongside pypdf>=6.0.
 #   * opencv-python-headless floor is 4.8.1.78 — the >=4.5 floor admitted
 #     CVE-2023-4863 (HIGH libwebp OOB write). headless (no GUI/X11 libs) keeps the
 #     slim server image small and needs no extra apt packages.
 #   * `stream` needs NO Ghostscript binary (only camelot `lattice` does), so this
 #     extra adds ZERO apt packages to the Dockerfile.
 tables = [
-  "camelot-py>=1.0,<2",
+  "camelot-py>=2,<3",
   "opencv-python-headless>=4.8.1.78",
 ]
 # Lighter pure-Python alternative backend, swappable behind the same interface.
