@@ -1258,7 +1258,10 @@ assert.deepEqual(
   intakeApi.governingLawOptions().map((law) => law.id),
   ["scotland"],
 );
-assert.equal(intakeApi.entityLabel(customRegistry[0]), "Solo");
+// The dropdown label is the FULL legal name (what travels into the generated NDA).
+assert.equal(intakeApi.entityLabel(customRegistry[0]), "Solo Company Ltd");
+// When an entity carries no legal_name, the label falls back to the short_name.
+assert.equal(intakeApi.entityLabel({ id: "x", short_name: "Shorty" }), "Shorty");
 const customPick = intakeApi.applyEntitySelection(intakeApi.createInitialIntake(), "only_one");
 assert.equal(customPick.governingLawId, "scotland");
 assert.equal(intakeApi.validateDraftIntake({ ...customPick, counterpartyName: "X" }).ok, true);
