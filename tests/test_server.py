@@ -4887,10 +4887,11 @@ class ServerTests(unittest.TestCase):
             "query": gmail_integration.DEFAULT_INBOUND_QUERY,
             "skipped": [],
         }
-        with patch.object(server_module.gmail_integration, "import_inbound_matters", return_value=result) as import_inbound:
-            with patch.object(server_module.matter_store, "deduplicate_gmail_matters", return_value=2) as deduplicate:
-                with patch.object(server_module.app_settings, "record_gmail_sync") as record_sync:
-                    server_module._run_scheduled_gmail_sync()
+        with patch.dict(os.environ, {"NDA_GMAIL_SERVER_INBOUND": "1"}, clear=False):
+            with patch.object(server_module.gmail_integration, "import_inbound_matters", return_value=result) as import_inbound:
+                with patch.object(server_module.matter_store, "deduplicate_gmail_matters", return_value=2) as deduplicate:
+                    with patch.object(server_module.app_settings, "record_gmail_sync") as record_sync:
+                        server_module._run_scheduled_gmail_sync()
 
         import_inbound.assert_called_once_with(limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT)
         deduplicate.assert_called_once_with()
@@ -5047,35 +5048,138 @@ class ServerTests(unittest.TestCase):
         run_sync.assert_not_called()
 
     def test_gmail_sync_scheduler_step_runs_when_inbound_setup_is_ready(self):
-        with patch.object(
-            server_module.app_settings,
-            "gmail_settings",
-            return_value={"inbound_enabled": True, "sync_frequency": "always_on"},
-        ):
-            with patch.object(server_module.app_settings, "gmail_sync_interval_seconds", return_value=60):
-                with patch.object(server_module.gmail_integration, "gmail_role_setup_error", return_value=""):
-                    with patch.object(server_module.time, "monotonic", return_value=120.0):
-                        with patch.object(server_module, "_gmail_sync_process_lock", self.acquired_gmail_sync_lock):
-                            with patch.object(server_module, "_run_scheduled_gmail_sync") as run_sync:
-                                last_run, last_frequency, sleep_seconds = server_module._gmail_sync_scheduler_step(
-                                    0.0,
-                                    "always_on",
-                                )
+        # No connected user here: this is the server-token path, which is now
+        # gated behind the explicit NDA_GMAIL_SERVER_INBOUND opt-in.
+        with patch.dict(os.environ, {"NDA_GMAIL_SERVER_INBOUND": "1"}, clear=False):
+            with patch.object(
+                server_module.app_settings,
+                "gmail_settings",
+                return_value={"inbound_enabled": True, "sync_frequency": "always_on"},
+            ):
+                with patch.object(server_module.app_settings, "gmail_sync_interval_seconds", return_value=60):
+                    with patch.object(server_module.gmail_integration, "gmail_role_setup_error", return_value=""):
+                        with patch.object(server_module.time, "monotonic", return_value=120.0):
+                            with patch.object(server_module, "_gmail_sync_process_lock", self.acquired_gmail_sync_lock):
+                                with patch.object(server_module, "_run_scheduled_gmail_sync") as run_sync:
+                                    last_run, last_frequency, sleep_seconds = server_module._gmail_sync_scheduler_step(
+                                        0.0,
+                                        "always_on",
+                                    )
 
         self.assertEqual(last_run, 120.0)
         self.assertEqual(last_frequency, "always_on")
         self.assertEqual(sleep_seconds, 60)
         run_sync.assert_called_once_with()
 
+    def test_gmail_sync_scheduler_step_skips_server_token_when_no_user_and_no_opt_in(self):
+        # Regression: after the last user disconnects (no connected owners), a
+        # scheduled poll must NOT fall back to a leftover server/env token.
+        # Disconnecting Gmail should actually stop the inbound sync.
+        with patch.dict(os.environ, {"NDA_GMAIL_SERVER_INBOUND": ""}, clear=False):
+            with patch.object(
+                server_module.app_settings,
+                "gmail_settings",
+                return_value={"inbound_enabled": True, "sync_frequency": "always_on"},
+            ):
+                with patch.object(server_module.app_settings, "gmail_sync_interval_seconds", return_value=60):
+                    with patch.object(
+                        server_module.gmail_integration, "gmail_sync_owner_user_ids", return_value=[]
+                    ):
+                        # A leftover server token would otherwise satisfy this gate.
+                        with patch.object(
+                            server_module.gmail_integration, "gmail_role_setup_error", return_value=""
+                        ):
+                            with patch.object(server_module.time, "monotonic", return_value=120.0):
+                                with patch.object(server_module, "_run_scheduled_gmail_sync") as run_sync:
+                                    last_run, last_frequency, sleep_seconds = (
+                                        server_module._gmail_sync_scheduler_step("", "always_on")
+                                    )
+
+        self.assertEqual(last_run, 120.0)
+        self.assertEqual(last_frequency, "always_on")
+        self.assertEqual(sleep_seconds, 60)
+        run_sync.assert_not_called()
+
+    def test_gmail_sync_scheduler_step_runs_server_token_when_opted_in(self):
+        # The explicit opt-in keeps a legitimately-configured server-token inbound
+        # deployment working.
+        with patch.dict(os.environ, {"NDA_GMAIL_SERVER_INBOUND": "1"}, clear=False):
+            with patch.object(
+                server_module.app_settings,
+                "gmail_settings",
+                return_value={"inbound_enabled": True, "sync_frequency": "always_on"},
+            ):
+                with patch.object(server_module.app_settings, "gmail_sync_interval_seconds", return_value=60):
+                    with patch.object(
+                        server_module.gmail_integration, "gmail_sync_owner_user_ids", return_value=[]
+                    ):
+                        with patch.object(
+                            server_module.gmail_integration, "gmail_role_setup_error", return_value=""
+                        ):
+                            with patch.object(server_module.time, "monotonic", return_value=120.0):
+                                with patch.object(
+                                    server_module, "_gmail_sync_process_lock", self.acquired_gmail_sync_lock
+                                ):
+                                    with patch.object(server_module, "_run_scheduled_gmail_sync") as run_sync:
+                                        last_run, last_frequency, sleep_seconds = (
+                                            server_module._gmail_sync_scheduler_step("", "always_on")
+                                        )
+
+        self.assertEqual(last_run, 120.0)
+        self.assertEqual(last_frequency, "always_on")
+        self.assertEqual(sleep_seconds, 60)
+        run_sync.assert_called_once_with()
+
+    def test_run_scheduled_gmail_sync_no_ops_without_user_or_opt_in(self):
+        # Defense-in-depth: the run function itself makes ZERO import calls when
+        # there is no connected user and no explicit server-inbound opt-in.
+        with patch.dict(os.environ, {"NDA_GMAIL_SERVER_INBOUND": ""}, clear=False):
+            with patch.object(
+                server_module.gmail_integration, "gmail_sync_owner_user_ids", return_value=[]
+            ):
+                with patch.object(
+                    server_module.gmail_integration, "import_inbound_matters"
+                ) as import_inbound:
+                    with patch.object(server_module.app_settings, "record_gmail_sync") as record_sync:
+                        server_module._run_scheduled_gmail_sync()
+
+        import_inbound.assert_not_called()
+        record_sync.assert_not_called()
+        self.assertEqual(
+            telemetry.snapshot()["counters"].get("gmail_sync_skipped_no_connected_user"), 1
+        )
+
+    def test_run_scheduled_gmail_sync_uses_server_token_when_opted_in(self):
+        with patch.dict(os.environ, {"NDA_GMAIL_SERVER_INBOUND": "1"}, clear=False):
+            with patch.object(
+                server_module.gmail_integration, "gmail_sync_owner_user_ids", return_value=[]
+            ):
+                with patch.object(
+                    server_module.gmail_integration,
+                    "import_inbound_matters",
+                    return_value={"imported": [], "skipped": []},
+                ) as import_inbound:
+                    with patch.object(
+                        server_module.DiskMatterRepository,
+                        "deduplicate_gmail_matters",
+                        return_value=0,
+                    ):
+                        with patch.object(server_module.app_settings, "record_gmail_sync") as record_sync:
+                            server_module._run_scheduled_gmail_sync()
+
+        import_inbound.assert_called_once()
+        record_sync.assert_called_once()
+
     def test_scheduled_gmail_sync_backs_off_after_gmail_rate_limit(self):
         error = gmail_integration.GmailRateLimitError(
             "Gmail API rate limit exceeded. Retry after 2026-06-04T14:06:26.379Z.",
             retry_after_epoch=1000.0,
         )
-        with patch.object(server_module.gmail_integration, "import_inbound_matters", side_effect=error):
-            with patch.object(server_module.app_settings, "record_gmail_sync_error") as record_error:
-                with patch.object(server_module, "_log_background_error"):
-                    server_module._run_scheduled_gmail_sync()
+        with patch.dict(os.environ, {"NDA_GMAIL_SERVER_INBOUND": "1"}, clear=False):
+            with patch.object(server_module.gmail_integration, "import_inbound_matters", side_effect=error):
+                with patch.object(server_module.app_settings, "record_gmail_sync_error") as record_error:
+                    with patch.object(server_module, "_log_background_error"):
+                        server_module._run_scheduled_gmail_sync()
 
         record_error.assert_called_once()
         self.assertEqual(telemetry.snapshot()["counters"]["gmail_sync_rate_limit_failures"], 1)

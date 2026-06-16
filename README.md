@@ -166,6 +166,7 @@ Common environment variables:
 | `NDA_ADMIN_USERS` | Comma-separated emails granted admin. |
 | `NDA_ALLOW_EPHEMERAL_DATA` | `true` only for short-lived demos on ephemeral storage. |
 | `NDA_GMAIL_INBOUND_TOKEN_PATH` / `_OUTBOUND_TOKEN_PATH` | Legacy shared token files for local Gmail; leave unset for hosted per-user Gmail. |
+| `NDA_GMAIL_SERVER_INBOUND` | Opt-in (`true`/`1`) for the legacy server-level inbound token fallback. When **no** user has connected Gmail, the scheduler runs the shared/env token only if this is set. Default off ⇒ disconnecting the last account stops the scheduled inbound sync. |
 
 **Optional semantic fallback** — a lazy-loaded callable invoked only when configured:
 
@@ -183,7 +184,7 @@ Inbound import and outbound send share a **single Gmail login**. One **Connect G
 - Outbound send generates the same Word redline/report used by export, opens a confirmation composer, and emails it back to the matter sender **only after the operator confirms the exact recipient address** — guarding against a spoofed `Reply-To` redirecting a redline.
 - Gmail web access and Gmail API access are separate: the browser can be logged in while the API token is missing, expired, or rate-limited. The app records recent sync/send failures and backs off after a temporary lockout.
 
-For local shared-token development you can still point at token files (`NDA_GMAIL_INBOUND_TOKEN_PATH` / `_OUTBOUND_TOKEN_PATH`, or ignored `data/gmail/{inbound,outbound}-token.json`). For hosted deployments, leave those unset so one user's token never becomes a shared mailbox fallback.
+For local shared-token development you can still point at token files (`NDA_GMAIL_INBOUND_TOKEN_PATH` / `_OUTBOUND_TOKEN_PATH`, or ignored `data/gmail/{inbound,outbound}-token.json`). For hosted deployments, leave those unset so one user's token never becomes a shared mailbox fallback. When no user is connected, the scheduled inbound sync polls a server/env token **only** if `NDA_GMAIL_SERVER_INBOUND` is explicitly enabled — so **Disconnect Gmail** (which removes the last user's token) actually stops the scheduled inbound sync rather than silently falling back to a leftover shared token.
 
 ## DocuSign: send for signature (real e-signature)
 

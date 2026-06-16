@@ -923,9 +923,28 @@ def _gmail_sync_scheduler_step(last_run: float, last_frequency: str) -> tuple[fl
     return last_run, last_frequency, sleep_seconds
 
 
+# Opt-in flag for the legacy server-level inbound token fallback. When NO user
+# has connected Gmail (e.g. the last account just disconnected), the scheduler
+# used to silently fall back to the env/local server token and keep polling --
+# so "Disconnect Gmail" did not stop the inbound sync, which blindsided users.
+# The fallback is now opt-in: set NDA_GMAIL_SERVER_INBOUND=1 to run a
+# deliberately-configured server-token inbound deployment. Default off ⇒ no
+# connected account ⇒ the scheduled sync does not run.
+GMAIL_SERVER_INBOUND_ENV = "NDA_GMAIL_SERVER_INBOUND"
+
+
+def _gmail_server_inbound_fallback_enabled() -> bool:
+    return _env_flag_enabled(GMAIL_SERVER_INBOUND_ENV)
+
+
 def _gmail_inbound_configured_for_scheduled_sync() -> bool:
     if gmail_integration.gmail_sync_owner_user_ids():
         return True
+    # No connected user. Only honor the server-level/env token fallback when an
+    # operator has explicitly opted in; otherwise a disconnected account leaves
+    # the scheduler idle instead of storming a leftover server token.
+    if not _gmail_server_inbound_fallback_enabled():
+        return False
     return not gmail_integration.gmail_role_setup_error("inbound")
 
 
@@ -966,6 +985,13 @@ def _run_scheduled_gmail_sync() -> None:
         owner_user_ids = gmail_integration.gmail_sync_owner_user_ids()
         if owner_user_ids:
             result = _run_scheduled_user_gmail_sync(owner_user_ids)
+        elif not _gmail_server_inbound_fallback_enabled():
+            # Defense-in-depth: never touch a leftover server/env token from the
+            # scheduled path unless the operator explicitly opted in. With no
+            # connected user this makes the poll a no-op (zero import/review
+            # calls) instead of storming a disconnected mailbox.
+            telemetry.increment("gmail_sync_skipped_no_connected_user")
+            return
         else:
             result = gmail_integration.import_inbound_matters(limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT)
             result = {**result, "deduplicated_count": DiskMatterRepository().deduplicate_gmail_matters()}
