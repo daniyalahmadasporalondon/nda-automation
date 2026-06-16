@@ -1563,6 +1563,16 @@ def _budgeted_page_dpi(
     requested DPI. If the page cannot fit the budget even at ``min_dpi`` the
     MediaBox is pathological and rasterizing it would threaten the instance, so
     we reject rather than rasterize.
+
+    Shared-budget note (decode-RSS ceiling): this RASTERIZE path bounds a single
+    page's pixmap to ``MAX_PAGE_PIXMAP_BYTES`` (96 MB, 3 channels). The TEXT
+    EXTRACTION path applies the SAME 96 MB decoded-bytes ceiling, expressed as a
+    pixel-area budget: ``pdf_text.MAX_PDF_IMAGE_PIXELS`` = 24 Mpix x 4 bytes/pixel
+    (RGBA) ~= 96 MB. Both paths therefore cap a decode transient to ~96 MB of
+    pixels — well under the 2 GB worker — from one shared number's worth of
+    reasoning. The extraction guard rejects PRE-decode (from get_image_info
+    dimensions); this guard clamps the DPI down to fit, or rejects only when even
+    ``min_dpi`` cannot.
     """
     if requested_dpi <= 0:
         raise ValueError("Page image DPI must be a positive integer.")

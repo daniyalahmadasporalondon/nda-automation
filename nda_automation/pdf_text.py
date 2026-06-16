@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from statistics import median
 from typing import Any, List, Optional
 
+from .document_limits import MAX_DOCUMENT_BYTES
 from .review_document import Paragraph
 from .table_extraction import augment_quality_with_tables
 
@@ -35,6 +36,44 @@ ENCRYPTED_PDF_MESSAGE = "The PDF is encrypted or password-protected. Remove the 
 PDF_SUPPORT_NOT_INSTALLED_MESSAGE = "PDF support is not installed. Install the pypdf dependency before reviewing PDF files."
 MAX_PDF_PAGES = 100
 MAX_PDF_EXTRACTED_CHARACTERS = 500_000
+
+# Decompression-bomb guard for the TEXT EXTRACTION path. ``page.extract_text()``
+# (pypdf, in ``_extract_geo_lines``) and the fitz visual profile both trigger a
+# FULL decode of every embedded image stream — and the decoded pixel buffer, not
+# the on-disk compressed bytes, is what costs RAM. A single 6000x6000 image in a
+# 108 KB file decodes to ~144 MB (4 bytes/pixel) and drove peak RSS to ~274 MB in
+# the adversarial probe; a 12000x12000 image (~576 MB decoded, ~4 GB with decode
+# transients) would OOM the 2 GB worker. The byte cap (10 MB), page cap (100) and
+# char cap (500K) ALL pass such a file, so we add an explicit DECODED-PIXEL-AREA
+# budget that is checked from the CHEAP ``get_image_info()`` (image dimensions
+# WITHOUT decoding pixels) BEFORE any extract_text/visual-profile decode runs.
+#
+# BUDGET: 24 Mpix total embedded-image area across the (page-capped) pages.
+#   * 24_000_000 pixels x 4 bytes/pixel (RGBA) = ~96 MB of decoded pixels — the
+#     SAME ceiling as document_rendering.MAX_PAGE_PIXMAP_BYTES (96 MB), so the
+#     extraction path and the rasterize path bound decoded RSS to one shared
+#     number's worth of reasoning. Even at ~2-3x pypdf/Pillow decode transients
+#     the worst-case transient peak (~200-290 MB) sits far under the 2 GB worker,
+#     leaving headroom for the rest of the review pipeline.
+#   * The 6000x6000 (36 Mpix, ~274 MB observed peak) bomb is rejected; a normal
+#     image PDF — a small logo, or a single 300 DPI US-Letter page scan
+#     (2550x3300 ~= 8.4 Mpix) — passes comfortably.
+MAX_PDF_IMAGE_PIXELS = 24_000_000
+PDF_IMAGE_BOMB_MESSAGE = (
+    "The PDF embeds images far larger than the review limit (a likely "
+    "decompression bomb). Reduce the embedded image resolution before reviewing."
+)
+# Belt-and-suspenders byte ceiling re-asserted INSIDE extract_pdf_document itself,
+# rather than trusting every caller to have run upstream ensure_document_size. Bound
+# directly to document_limits.MAX_DOCUMENT_BYTES (10 MB) so the two never drift.
+MAX_PDF_DOCUMENT_BYTES = MAX_DOCUMENT_BYTES
+# Cap on the number of vector paths a single page (and the whole document) may
+# contribute to the visual profile. ``page.get_drawings()`` materializes one dict
+# per vector path; a "drawings bomb" (a PDF with millions of trivial path ops) is
+# otherwise unbounded and can exhaust memory inside the profiler. We stop counting
+# once the cap is hit — the profile only needs drawing PRESENCE, not an exact count.
+MAX_PDF_DRAWINGS_PER_PAGE = 50_000
+MAX_PDF_DRAWINGS_TOTAL = 200_000
 
 # Memory guard for the fitz visual profile. ``page.get_text("dict")`` with the
 # default flags MATERIALIZES every embedded image's decoded bytes into the per-page
@@ -104,6 +143,18 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
     except ImportError as exc:
         raise PdfExtractionError(PDF_SUPPORT_NOT_INSTALLED_MESSAGE) from exc
 
+    # Belt-and-suspenders byte ceiling. Every production caller is expected to have
+    # run ensure_document_size already, but this module is also reachable directly
+    # (tests, future callers); re-asserting the cap here means the extraction path can
+    # never be handed an arbitrarily large blob just because one caller skipped the
+    # upstream gate. A bomb's danger is decoded pixels, not file bytes (guarded
+    # below), but this keeps the on-disk size bounded too.
+    if len(data) > MAX_PDF_DOCUMENT_BYTES:
+        raise PdfExtractionError(
+            f"The PDF is {len(data):,} bytes, which exceeds the "
+            f"{MAX_PDF_DOCUMENT_BYTES:,} byte review limit."
+        )
+
     if not data.lstrip().startswith(b"%PDF-"):
         raise PdfExtractionError(INVALID_PDF_MESSAGE)
 
@@ -126,6 +177,16 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
     page_count = len(reader.pages)
     if page_count > MAX_PDF_PAGES:
         raise PdfExtractionError(f"The PDF has {page_count} pages, which exceeds the {MAX_PDF_PAGES} page review limit.")
+
+    # IMAGE-PIXEL-AREA BUDGET — runs BEFORE the page loop below calls
+    # _extract_geo_lines -> page.extract_text(), which is what decodes the embedded
+    # image streams into RAM. Summing the embedded-image pixel area via the cheap
+    # get_image_info() (dimensions WITHOUT decoding pixels) lets us reject a
+    # decompression bomb with NO decode having happened. Fails OPEN (no rejection)
+    # when PyMuPDF is unavailable or the probe errors — the guard never blocks a
+    # reviewable PDF on its own infrastructure failure.
+    _guard_pdf_image_pixel_area(data, page_count)
+
     pages_without_text = 0
     pages_with_text = 0
     extracted_character_count = 0
@@ -181,6 +242,68 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
     # one-dimensional prose splitter flattens. It NEVER raises.
     quality = augment_quality_with_tables(quality, data)
     return PdfExtraction(paragraphs=paragraphs, quality=quality)
+
+
+def _guard_pdf_image_pixel_area(data: bytes, page_count: int) -> None:
+    """Reject a PDF whose embedded images would decode to too many pixels.
+
+    This is the PRE-DECODE decompression-bomb guard for the extraction path. It
+    uses PyMuPDF's ``get_image_info()``, which reports each embedded image's
+    pixel WIDTH/HEIGHT from the stream dictionary WITHOUT decoding the pixels, so
+    the dangerous full-image decode (``page.extract_text()`` in ``_extract_geo_lines``,
+    and the fitz visual profile) never runs on a bomb.
+
+    Only the page-capped prefix (``MAX_PDF_PAGES``) is inspected — the pages whose
+    text we will actually extract — matching the page cap the rest of the pipeline
+    honours. Total embedded-image pixel area across those pages is summed and
+    compared to ``MAX_PDF_IMAGE_PIXELS``; exceeding it raises ``PdfExtractionError``
+    BEFORE any decode.
+
+    FAILS OPEN: if PyMuPDF is missing or the probe raises for any reason, we do NOT
+    reject — the guard must never block a legitimately reviewable PDF because of its
+    own infrastructure gap. (A bomb still cannot get FAR on a no-fitz box: the visual
+    profile is the only other decoder and it independently degrades to "unavailable".)
+    A genuine ``PdfExtractionError`` raised here is re-raised, not swallowed.
+    """
+
+    try:
+        import fitz
+    except ImportError:
+        return
+
+    document = None
+    try:
+        document = fitz.open(stream=data, filetype="pdf")
+        inspected_pages = min(document.page_count, page_count, MAX_PDF_PAGES)
+        total_pixels = 0
+        for page_index in range(inspected_pages):
+            try:
+                image_infos = document[page_index].get_image_info()
+            except Exception:
+                # One unreadable page must not blind the whole guard; skip it.
+                continue
+            for info in image_infos or []:
+                if not isinstance(info, dict):
+                    continue
+                width = _safe_int(info.get("width"))
+                height = _safe_int(info.get("height"))
+                if not width or not height or width < 0 or height < 0:
+                    continue
+                total_pixels += width * height
+                if total_pixels > MAX_PDF_IMAGE_PIXELS:
+                    raise PdfExtractionError(PDF_IMAGE_BOMB_MESSAGE)
+    except PdfExtractionError:
+        raise
+    except Exception:
+        # Probe failed for a non-rejection reason (corrupt build, unexpected API):
+        # fail OPEN rather than block a reviewable PDF.
+        return
+    finally:
+        if document is not None:
+            try:
+                document.close()
+            except Exception:
+                pass
 
 
 def _extract_geo_lines(page: Any) -> list[GeoLine]:
@@ -840,6 +963,7 @@ def _pdf_visual_profile(data: bytes) -> dict[str, object]:
         non_black_text_span_count = 0
         image_count = 0
         drawing_count = 0
+        drawings_cap_hit = False
         pages_with_non_black_text = 0
         pages_with_images = 0
         pages_with_drawings = 0
@@ -897,13 +1021,36 @@ def _pdf_visual_profile(data: bytes) -> dict[str, object]:
                         if color != 0:
                             non_black_text_span_count += 1
                             page_has_non_black_text = True
-            try:
-                page_drawings = page.get_drawings()
-            except Exception:
-                page_drawings = []
-            if page_drawings:
-                drawing_count += len(page_drawings)
+            # DRAWINGS-BOMB CAP. ``page.get_drawings()`` returns one dict per vector
+            # path; a PDF stuffed with millions of trivial path ops is otherwise an
+            # unbounded memory sink inside the profiler. We need only drawing PRESENCE,
+            # not an exact count, so once the document-wide cap is reached we stop
+            # calling get_drawings() on further pages entirely, and we clamp any single
+            # page's contribution to the per-page cap. The exact count is reported as
+            # capped (drawings_count_capped) so downstream never mistakes the clamp for
+            # a true total. This stays inside the existing fail-to-"unavailable" wrapper.
+            if drawing_count < MAX_PDF_DRAWINGS_TOTAL:
+                try:
+                    page_drawings = page.get_drawings()
+                except Exception:
+                    page_drawings = []
+                page_drawing_count = len(page_drawings) if page_drawings else 0
+                # Drop the materialized list immediately; we only keep the count.
+                page_drawings = None
+                if page_drawing_count:
+                    if page_drawing_count > MAX_PDF_DRAWINGS_PER_PAGE:
+                        page_drawing_count = MAX_PDF_DRAWINGS_PER_PAGE
+                        drawings_cap_hit = True
+                    drawing_count += page_drawing_count
+                    page_has_drawings = True
+                    if drawing_count >= MAX_PDF_DRAWINGS_TOTAL:
+                        drawing_count = MAX_PDF_DRAWINGS_TOTAL
+                        drawings_cap_hit = True
+            else:
+                # Cap already hit on a prior page: skip the (potentially huge)
+                # get_drawings() materialization but preserve the presence signal.
                 page_has_drawings = True
+                drawings_cap_hit = True
             if page_has_non_black_text:
                 pages_with_non_black_text += 1
             if page_has_images:
@@ -935,6 +1082,7 @@ def _pdf_visual_profile(data: bytes) -> dict[str, object]:
         "non_black_text_span_count": non_black_text_span_count,
         "unique_text_color_count": len(unique_text_colors),
         "drawing_count": drawing_count,
+        "drawings_count_capped": drawings_cap_hit,
         "image_count": image_count,
         "pages_with_non_black_text": pages_with_non_black_text,
         "pages_with_drawings": pages_with_drawings,
