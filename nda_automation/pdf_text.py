@@ -132,9 +132,37 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
                 "text": paragraph_text,
             })
 
+    ocr_recovered = False
+    if not paragraphs:
+        # SCANNED-PDF OCR FALLBACK (DEFAULT-OFF). The native text layer is empty
+        # (scanner output / image-only PDF). When the OCR fallback is enabled AND a
+        # non-free provider is configured, recover layout-preserving TEXT via OCR and
+        # feed it through the TEXT-ONLY paragraph path (never-merge-safe, no
+        # geometry). When the fallback is OFF or yields nothing, the reject below is
+        # unchanged.
+        paragraphs = _ocr_fallback_paragraphs(data)
+        ocr_recovered = bool(paragraphs)
+
     if not paragraphs:
         raise PdfExtractionError("No readable text was found in the PDF. Scanned PDFs need OCR before review.")
     extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraphs)
+    if ocr_recovered:
+        # OCR'd pages have no native text layer; report the recovered text so quality
+        # warnings (sparse text etc.) still surface, and skip the geometry-only
+        # visual profile (there is no native text geometry to profile).
+        return PdfExtraction(
+            paragraphs=paragraphs,
+            quality=_pdf_quality_report(
+                page_count=page_count,
+                pages_with_text=pages_with_text,
+                pages_without_text=pages_without_text,
+                extracted_text=extracted_text,
+                paragraph_count=len(paragraphs),
+                repeated_margin_count=len(repeated_margins),
+                visual_profile=None,
+                ocr_recovered=True,
+            ),
+        )
     visual_profile = _pdf_visual_profile(data)
     return PdfExtraction(
         paragraphs=paragraphs,
@@ -148,6 +176,81 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
             visual_profile=visual_profile,
         ),
     )
+
+
+def _ocr_fallback_paragraphs(data: bytes) -> List[Paragraph]:
+    """Recover paragraphs from a scanned PDF via the OCR fallback, or ``[]``.
+
+    Returns ``[]`` (meaning "still scanned, reject unchanged") when the fallback is
+    disabled, no non-free provider is configured, or OCR recovers nothing. Any
+    failure inside the OCR provider degrades to ``[]`` rather than crashing review:
+    the OCR fallback is an accuracy lever and must fail SAFE, not closed.
+    """
+
+    from .ocr_fallback import OcrError, resolve_ocr_provider
+
+    provider = resolve_ocr_provider()
+    if provider is None:
+        return []
+    try:
+        ocr_text = provider(data)
+    except OcrError:
+        return []
+    except Exception:
+        # Defence-in-depth: a provider bug must not break the unchanged reject path.
+        return []
+    if not ocr_text or not ocr_text.strip():
+        return []
+    return _paragraphs_from_ocr_text(ocr_text)
+
+
+def _paragraphs_from_ocr_text(ocr_text: str) -> List[Paragraph]:
+    """Build Paragraph dicts from layout-preserving OCR text via the TEXT-ONLY path.
+
+    OCR returns flat text (no per-glyph geometry), so each page's lines run through
+    ``_split_pdf_paragraphs`` as plain ``str`` -- exactly the never-merge-safe path
+    the visitor-unsupported flat-text branch already uses. Pages are delimited by the
+    LLMWhisperer ``<<<`` page separator (its default ``page_seperator``).
+    """
+
+    paragraphs: List[Paragraph] = []
+    pages = _split_ocr_pages(ocr_text)
+    for page_index, page_text in enumerate(pages, start=1):
+        lines = _normalized_lines(page_text)
+        if not lines:
+            continue
+        for paragraph_text in _split_pdf_paragraphs(lines):
+            if not paragraph_text.strip():
+                continue
+            paragraphs.append({
+                "id": f"p{len(paragraphs) + 1}",
+                "source_index": len(paragraphs) + 1,
+                "source_part": "pdf",
+                "page_number": page_index,
+                "text": paragraph_text,
+                "ocr": True,
+            })
+    return paragraphs
+
+
+def _split_ocr_pages(ocr_text: str) -> list[str]:
+    """Split LLMWhisperer layout text into pages on its ``<<<`` page separator.
+
+    The marker may appear on its own line (e.g. ``<<<``) or be padded; any run of
+    three or more ``<`` on an otherwise-marker line is treated as a page break. When
+    no marker is present the whole document is a single page.
+    """
+
+    pages: list[str] = []
+    current: list[str] = []
+    for raw_line in ocr_text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if re.fullmatch(r"\s*<{3,}\s*", raw_line):
+            pages.append("\n".join(current))
+            current = []
+            continue
+        current.append(raw_line)
+    pages.append("\n".join(current))
+    return [page for page in pages if page.strip()] or [ocr_text]
 
 
 def _extract_geo_lines(page: Any) -> list[GeoLine]:
@@ -736,9 +839,18 @@ def _pdf_quality_report(
     paragraph_count: int,
     repeated_margin_count: int,
     visual_profile: dict[str, object] | None = None,
+    ocr_recovered: bool = False,
 ) -> dict[str, object]:
     extracted_characters = len(extracted_text)
     warnings: list[dict[str, object]] = []
+    if ocr_recovered:
+        warnings.append({
+            "type": "pdf_text_recovered_via_ocr",
+            "message": (
+                "This PDF had no text layer; the text was recovered via OCR. "
+                "Verify the extraction against the original document."
+            ),
+        })
     if pages_without_text:
         warnings.append({
             "type": "pdf_pages_without_text",
@@ -774,6 +886,7 @@ def _pdf_quality_report(
         "extracted_characters": extracted_characters,
         "extracted_paragraphs": paragraph_count,
         "repeated_margin_lines_removed": repeated_margin_count,
+        "ocr_recovered": ocr_recovered,
         "warnings": warnings,
     }
     if visual_profile:
