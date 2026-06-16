@@ -113,6 +113,14 @@ services:
       # AI feature — generation only.
       - key: NDA_GENERATION_AI_ENABLED
         value: "false"
+      # Inbound auto-review kill-switch (default true). Imported Gmail NDAs get a
+      # fast deterministic first-pass on the poll thread, then the full AI review
+      # runs in the background via a single persistent worker pool draining a
+      # bounded queue (size = NDA_INBOUND_REVIEW_CONCURRENCY, default 1). Set
+      # "false" to emergency-disable inbound auto-review entirely without a code
+      # change; NDAs keep their deterministic first-pass + stay reviewable on-demand.
+      - key: NDA_INBOUND_AI_REVIEW_ENABLED
+        value: "true"
       # Independent adversarial second-opinion verifier on OpenRouter. It uses a
       # different model family from the main reviewer on purpose.
       - key: NDA_AI_VERIFIER

@@ -439,3 +439,231 @@ def test_inbound_review_concurrency_defaults_to_one(monkeypatch):
     assert ingestion_service.inbound_review_concurrency() == 1  # clamps to >= 1
     monkeypatch.setenv(ingestion_service.INBOUND_REVIEW_CONCURRENCY_ENV, "garbage")
     assert ingestion_service.inbound_review_concurrency() == 1  # unparseable -> default
+
+
+# --------------------------------------------------------------------------- #
+# Hardening: a fresh, isolated worker pool per test so we never touch the live
+# module pool, the disk repository, or leak threads between tests.
+# --------------------------------------------------------------------------- #
+def _fresh_pool(monkeypatch):
+    """Swap the module pool for a fresh one for the duration of one test."""
+    pool = ingestion_service._InboundReviewWorkerPool()
+    monkeypatch.setattr(ingestion_service, "_INBOUND_REVIEW_POOL", pool)
+    return pool
+
+
+# --------------------------------------------------------------------------- #
+# Issue 1 (OOM edge): a burst of N imports creates a BOUNDED pool of threads,
+# NOT N daemon threads.
+# --------------------------------------------------------------------------- #
+def test_burst_of_100_imports_creates_bounded_threads_not_one_per_matter(monkeypatch):
+    monkeypatch.delenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, raising=False)
+    monkeypatch.setenv(ingestion_service.INBOUND_REVIEW_CONCURRENCY_ENV, "1")
+    pool = _fresh_pool(monkeypatch)
+
+    live_threads: set[int] = set()
+    processed: list[str] = []
+    lock = threading.Lock()
+    gate = threading.Event()
+
+    def _handler(matter_id, owner_user_id):
+        # Block briefly so all 100 jobs are in flight while we count the threads
+        # that are actually draining them.
+        with lock:
+            live_threads.add(threading.get_ident())
+        gate.wait(timeout=5)
+        with lock:
+            processed.append(matter_id)
+
+    pool.configure(_handler)
+
+    # Enqueue a 100-matter burst through the PRODUCTION scheduling path (no runner
+    # injected), exactly as a catch-up poll of MAX_GMAIL_IMPORT_LIMIT would.
+    for index in range(100):
+        scheduled = schedule_inbound_ai_review(
+            {"id": f"matter_{index}", "extracted_text": "x"}
+        )
+        assert scheduled is True
+
+    # The number of worker threads is the pool size (1), NEVER ~100.
+    time.sleep(0.1)  # let the single worker pick up the first job
+    assert len(live_threads) <= ingestion_service.inbound_review_concurrency()
+    assert len(live_threads) == 1  # default concurrency
+
+    gate.set()
+    pool._join_for_tests(timeout=5)
+    assert len(processed) == 100  # every matter still got processed, serially
+
+
+def test_burst_respects_concurrency_env_for_pool_size(monkeypatch):
+    monkeypatch.delenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, raising=False)
+    monkeypatch.setenv(ingestion_service.INBOUND_REVIEW_CONCURRENCY_ENV, "3")
+    pool = _fresh_pool(monkeypatch)
+
+    live_threads: set[int] = set()
+    lock = threading.Lock()
+    gate = threading.Event()
+
+    def _handler(matter_id, owner_user_id):
+        with lock:
+            live_threads.add(threading.get_ident())
+        gate.wait(timeout=5)
+
+    pool.configure(_handler)
+    for index in range(50):
+        schedule_inbound_ai_review({"id": f"m_{index}", "extracted_text": "x"})
+
+    time.sleep(0.1)
+    # Bounded by the configured pool size (3), still far below the 50-matter burst.
+    assert len(live_threads) <= 3
+    gate.set()
+    pool._join_for_tests(timeout=5)
+
+
+def test_enqueue_dedups_same_matter_and_bounds_the_queue(monkeypatch):
+    monkeypatch.delenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, raising=False)
+    monkeypatch.setenv(ingestion_service.INBOUND_REVIEW_CONCURRENCY_ENV, "1")
+    pool = _fresh_pool(monkeypatch)
+
+    processed: list[str] = []
+    lock = threading.Lock()
+    release = threading.Event()
+
+    def _handler(matter_id, owner_user_id):
+        release.wait(timeout=5)
+        with lock:
+            processed.append(matter_id)
+
+    pool.configure(_handler)
+    # Enqueue the SAME matter many times before the worker drains it: dedup keeps
+    # it pending exactly once.
+    for _ in range(20):
+        assert schedule_inbound_ai_review({"id": "same", "extracted_text": "x"}) is True
+    # The first job is already taken by the worker (pending count is 0 or 1).
+    assert pool._pending_count() <= 1
+
+    release.set()
+    pool._join_for_tests(timeout=5)
+    assert processed.count("same") <= 1
+
+
+# --------------------------------------------------------------------------- #
+# Issue 2 (silent-skip): the recovery sweep re-enqueues an un-AI-reviewed matter
+# and it gets reviewed, while an already-ai_first matter is NOT re-reviewed.
+# --------------------------------------------------------------------------- #
+def test_recovery_sweep_reenqueues_unreviewed_but_not_already_reviewed(monkeypatch):
+    monkeypatch.delenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, raising=False)
+    monkeypatch.setenv(ingestion_service.INBOUND_REVIEW_CONCURRENCY_ENV, "1")
+    repository = InMemoryMatterRepository()
+    ai_engine = _stub_ai_first_engine()
+    pool = _fresh_pool(monkeypatch)
+
+    # Route the pool's per-job handler at the in-memory repo + stub engine.
+    def _handler(matter_id, owner_user_id):
+        ingestion_service._perform_inbound_ai_review(
+            matter_id,
+            repository=repository,
+            owner_user_id=owner_user_id,
+            review_engine_func=ai_engine,
+            use_semaphore=False,
+        )
+
+    pool.configure(_handler)
+
+    # One inbound matter left deterministic-only (never AI-reviewed)...
+    unreviewed = create_matter_from_document(
+        filename="unreviewed.docx", document_bytes=_docx(NDA_PARAGRAPHS),
+        source_type="gmail_inbound", repository=repository, defer_ai_review=True,
+    )
+    # ...and one already AI-reviewed (the sweep must NOT touch it).
+    already = create_matter_from_document(
+        filename="already.docx", document_bytes=_docx(NDA_PARAGRAPHS),
+        source_type="gmail_inbound", repository=repository, defer_ai_review=True,
+    )
+    schedule_inbound_ai_review(
+        already, repository=repository, runner=_synchronous_runner, review_engine_func=ai_engine
+    )
+    assert repository.get_matter(already["id"])["review_result"][
+        "active_review_engine"]["executed_engine"] == "ai_first"
+    calls_before = len(ai_engine.calls)  # type: ignore[attr-defined]
+
+    enqueued = ingestion_service.recover_unreviewed_inbound_matters(repository=repository)
+    assert enqueued == 1  # only the unreviewed matter was re-enqueued
+    pool._join_for_tests(timeout=5)
+
+    # The unreviewed matter is now AI-reviewed; the already-reviewed one ran once.
+    assert repository.get_matter(unreviewed["id"])["review_result"][
+        "active_review_engine"]["executed_engine"] == "ai_first"
+    assert len(ai_engine.calls) == calls_before + 1  # type: ignore[attr-defined]
+
+
+def test_recovery_sweep_skips_outbound_and_is_bounded(monkeypatch):
+    monkeypatch.delenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, raising=False)
+    repository = InMemoryMatterRepository()
+    pool = _fresh_pool(monkeypatch)
+    enqueued_ids: list[str] = []
+    pool.configure(lambda matter_id, owner: enqueued_ids.append(matter_id))
+
+    # An OUTBOUND (generated) matter must never be swept into inbound auto-review.
+    create_matter_from_document(
+        filename="generated.docx", document_bytes=_docx(NDA_PARAGRAPHS),
+        source_type="generated", repository=repository, defer_ai_review=True,
+    )
+    # Many inbound matters; the sweep is bounded per call.
+    for index in range(10):
+        create_matter_from_document(
+            filename=f"in_{index}.docx", document_bytes=_docx(NDA_PARAGRAPHS),
+            source_type="gmail_inbound", repository=repository, defer_ai_review=True,
+        )
+
+    enqueued = ingestion_service.recover_unreviewed_inbound_matters(
+        repository=repository, limit=3
+    )
+    assert enqueued == 3  # capped at the per-sweep limit
+    pool._join_for_tests(timeout=5)
+    # The generated/outbound matter was never enqueued.
+    assert all("generated" not in i for i in enqueued_ids)
+
+
+# --------------------------------------------------------------------------- #
+# Issue 3 (kill-switch): NDA_INBOUND_AI_REVIEW_ENABLED=false -> zero AI review.
+# --------------------------------------------------------------------------- #
+def test_kill_switch_off_skips_scheduling_and_sweep(monkeypatch):
+    repository = InMemoryMatterRepository()
+    pool = _fresh_pool(monkeypatch)
+    ran: list[str] = []
+    pool.configure(lambda matter_id, owner: ran.append(matter_id))
+
+    matter = create_matter_from_document(
+        filename="a.docx", document_bytes=_docx(NDA_PARAGRAPHS),
+        source_type="gmail_inbound", repository=repository, defer_ai_review=True,
+    )
+
+    monkeypatch.setenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, "false")
+    assert ingestion_service.inbound_ai_review_enabled() is False
+    # Scheduling is a no-op (production path).
+    assert schedule_inbound_ai_review(matter) is False
+    # The explicit-runner path is ALSO gated by the kill-switch.
+    assert schedule_inbound_ai_review(
+        matter, repository=repository, runner=_synchronous_runner,
+        review_engine_func=_stub_ai_first_engine(),
+    ) is False
+    # The recovery sweep is a no-op too.
+    assert ingestion_service.recover_unreviewed_inbound_matters(repository=repository) == 0
+
+    pool._join_for_tests(timeout=1)
+    assert ran == []  # nothing was ever reviewed
+    # The matter keeps its deterministic first-pass, reviewable on-demand.
+    assert repository.get_matter(matter["id"])["review_result"][
+        "active_review_engine"]["executed_engine"] == "deterministic"
+
+
+def test_kill_switch_default_enabled(monkeypatch):
+    monkeypatch.delenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, raising=False)
+    assert ingestion_service.inbound_ai_review_enabled() is True
+    for value in ("false", "0", "no", "off", "FALSE", "Off"):
+        monkeypatch.setenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, value)
+        assert ingestion_service.inbound_ai_review_enabled() is False
+    for value in ("true", "1", "yes", "on", "anything"):
+        monkeypatch.setenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, value)
+        assert ingestion_service.inbound_ai_review_enabled() is True

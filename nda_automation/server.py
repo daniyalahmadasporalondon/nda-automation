@@ -72,6 +72,7 @@ from .rate_limit import (
     _rate_limit_window_seconds as _rate_limit_window_seconds,
     _reset_rate_limits as _reset_rate_limits,
 )
+from . import ingestion_service
 from .ingestion_service import create_matter_from_document, extract_document
 from . import lifecycle_counter, lifecycle_signed
 from .matter_repository import DiskMatterRepository
@@ -794,7 +795,40 @@ def main() -> None:
     server.serve_forever()
 
 
+def _recover_unreviewed_inbound_matters(owner_user_id: str = "") -> None:
+    """Bounded, fail-soft recovery sweep for un-AI-reviewed inbound matters.
+
+    Delegates to ingestion_service; a sweep failure must never break the sync or
+    the scheduler.
+    """
+    try:
+        ingestion_service.recover_unreviewed_inbound_matters(owner_user_id=owner_user_id)
+    except Exception as error:  # pragma: no cover - defensive background logging.
+        _log_background_error("Inbound AI review recovery sweep failed", error)
+
+
+def _run_startup_inbound_review_recovery() -> None:
+    """On process startup, sweep once across all owners so a deploy that landed
+    mid-batch doesn't leave NDAs silently deterministic-only until the next poll.
+
+    Per-owner when user-scoped sync is configured, else a single global sweep.
+    Fail-soft.
+    """
+    try:
+        owner_user_ids = gmail_integration.gmail_sync_owner_user_ids()
+    except Exception:
+        owner_user_ids = []
+    if owner_user_ids:
+        for owner_user_id in owner_user_ids:
+            _recover_unreviewed_inbound_matters(owner_user_id=owner_user_id)
+    else:
+        _recover_unreviewed_inbound_matters()
+
+
 def _start_gmail_sync_scheduler() -> None:
+    # Recover any inbound NDAs left un-AI-reviewed by a previous process before
+    # the periodic scheduler starts. Off the request path, fail-soft.
+    threading.Thread(target=_run_startup_inbound_review_recovery, daemon=True).start()
     scheduler = threading.Thread(target=_gmail_sync_scheduler_loop, daemon=True)
     scheduler.start()
 
@@ -914,6 +948,10 @@ def _run_scheduled_gmail_sync() -> None:
         else:
             result = gmail_integration.import_inbound_matters(limit=gmail_integration.MAX_GMAIL_IMPORT_LIMIT)
             result = {**result, "deduplicated_count": DiskMatterRepository().deduplicate_gmail_matters()}
+            # Recovery sweep: re-enqueue inbound NDAs that never got their AI
+            # review (worker restart / OOM / deploy mid-batch, transient AI
+            # failure). Idempotent + bounded; never raises into the sync.
+            _recover_unreviewed_inbound_matters()
         finished_at = datetime.now(timezone.utc).isoformat()
         app_settings.record_gmail_sync(result, synced_at=finished_at, started_at=started_at, finished_at=finished_at)
         telemetry.increment("gmail_sync_successes")
@@ -950,6 +988,8 @@ def _run_scheduled_user_gmail_sync(owner_user_ids: list[str]) -> dict[str, objec
                 owner_user_id=owner_user_id
             )
             result = {**result, "deduplicated_count": owner_deduplicated_count}
+            # Recovery sweep for this owner's inbound NDAs that never got AI-reviewed.
+            _recover_unreviewed_inbound_matters(owner_user_id=owner_user_id)
             user_finished_at = datetime.now(timezone.utc).isoformat()
             user_store.record_user_gmail_sync(
                 owner_user_id,

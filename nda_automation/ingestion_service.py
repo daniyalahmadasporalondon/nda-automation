@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import threading
+from collections.abc import Callable
 from typing import Any
 
 from .checker import ParagraphAlignmentError
@@ -25,28 +27,55 @@ LOGGER = logging.getLogger(__name__)
 SUPPORTED_DOCUMENT_EXTENSIONS = {".docx", ".pdf"}
 
 # --------------------------------------------------------------------------- #
-# Inbound auto-review (async + serialized)
+# Inbound auto-review (async + bounded worker pool)
 # --------------------------------------------------------------------------- #
 # Inbound Gmail NDAs import FAST: create_matter_from_document runs only the
 # offline deterministic first-pass (defer_ai_review=True) so the single poll
 # thread never blocks on the slow Opus/Pro AI review. To restore the core
 # feature (inbound NDAs auto-reviewed by AI) WITHOUT the storm that motivated
-# bb62b8f, the full active-engine review (assessor + verifier) is scheduled to
-# run AFTER import, OFF the poll thread, and SERIALIZED behind a process-wide
-# semaphore so AT MOST N inbound reviews run at once (default 1). A batch of new
-# NDAs therefore reviews sequentially in the background -- never N-at-once on the
-# worker, never blocking generation/requests, and never re-storming the inbox.
+# bb62b8f, the full active-engine review (assessor + verifier) is run AFTER
+# import, OFF the poll thread, by a SINGLE persistent background WORKER POOL
+# draining a process-wide queue.
+#
+# Why a queue + a fixed pool and NOT one daemon thread per matter: a catch-up
+# poll can import up to MAX_GMAIL_IMPORT_LIMIT (=100) matters in one cycle.
+# Spawning a thread per matter parks ~100 daemon threads blocked on a limit-1
+# bound -- a transient hundreds-of-MB spike, the one remaining OOM scenario on
+# the 2 GB worker. Instead a batch of 100 enqueues 100 CHEAP items (just
+# matter_id/owner) and a FIXED pool of inbound_review_concurrency() workers
+# (default 1) drains them serially. The pool size IS the concurrency bound, so
+# at most N reviews run at once -- never N threads, never N-at-once on the
+# worker, never blocking generation/requests, never re-storming the inbox.
 INBOUND_REVIEW_CONCURRENCY_ENV = "NDA_INBOUND_REVIEW_CONCURRENCY"
 _DEFAULT_INBOUND_REVIEW_CONCURRENCY = 1
+
+# Kill-switch (parallel to NDA_GENERATION_AI_ENABLED): default-ENABLED. Set
+# NDA_INBOUND_AI_REVIEW_ENABLED=false (or 0/no/off) to emergency-disable inbound
+# auto-review entirely -- imported NDAs keep their deterministic first-pass and
+# stay reviewable on-demand, no code change or redeploy required.
+INBOUND_AI_REVIEW_ENABLED_ENV = "NDA_INBOUND_AI_REVIEW_ENABLED"
+
+# Hard cap on the queue depth so a runaway producer (a pathological catch-up
+# backlog, a buggy sweep) can never grow the queue unboundedly. 100 == one
+# full MAX_GMAIL_IMPORT_LIMIT batch; the dedup-on-enqueue set means re-enqueues
+# of an already-pending matter are free, so this bound is rarely approached.
+_INBOUND_REVIEW_QUEUE_MAXSIZE = 256
+
+# Per-sweep cap: the recovery sweep enqueues at most this many un-reviewed
+# matters per call so a large historical backlog drains over several poll
+# cycles instead of flooding the queue at once.
+_INBOUND_REVIEW_SWEEP_LIMIT = 50
 
 
 def inbound_review_concurrency() -> int:
     """How many inbound auto-reviews may run concurrently (env-configurable).
 
     Defaults to 1 -- strict serialization, the structural anti-storm guarantee.
-    A larger value (e.g. ``NDA_INBOUND_REVIEW_CONCURRENCY=2``) is allowed if a
-    bigger worker can absorb it; anything below 1 (or unparseable) clamps to 1 so
-    the semaphore is always a valid bound.
+    This is the SIZE of the persistent background worker pool, so it bounds both
+    concurrency AND the number of live review threads. A larger value (e.g.
+    ``NDA_INBOUND_REVIEW_CONCURRENCY=2``) is allowed if a bigger worker can
+    absorb it; anything below 1 (or unparseable) clamps to 1 so the pool is
+    always a valid bound.
     """
 
     raw = os.environ.get(INBOUND_REVIEW_CONCURRENCY_ENV, "").strip()
@@ -59,11 +88,129 @@ def inbound_review_concurrency() -> int:
     return max(1, value)
 
 
-# One process-wide semaphore gates EVERY inbound async review. It is created once
-# at import for the configured limit; tests that need a different bound inject a
-# runner or override the semaphore. The BoundedSemaphore is the single structural
-# fact that prevents an N-at-once storm when a poll imports a batch of new NDAs.
+def inbound_ai_review_enabled() -> bool:
+    """Whether inbound auto-review runs at all (env kill-switch).
+
+    Default-ENABLED: returns ``True`` unless ``NDA_INBOUND_AI_REVIEW_ENABLED`` is
+    explicitly set to a falsey value (``false``/``0``/``no``/``off``,
+    case-insensitive). When ``False`` the scheduler and the recovery sweep are
+    both no-ops -- inbound NDAs keep their deterministic first-pass and remain
+    reviewable on-demand.
+    """
+
+    raw = os.environ.get(INBOUND_AI_REVIEW_ENABLED_ENV, "").strip().lower()
+    if not raw:
+        return True
+    return raw not in {"false", "0", "no", "off"}
+
+
+# One process-wide semaphore still gates the explicit-runner path (tests inject a
+# runner and rely on this bound). The production path uses the worker pool below,
+# whose fixed size is the concurrency bound, so the two never double-gate the
+# same review: production reviews go through the pool, never the semaphore.
 _INBOUND_REVIEW_SEMAPHORE = threading.BoundedSemaphore(inbound_review_concurrency())
+
+
+class _InboundReviewWorkerPool:
+    """A persistent, lazily-started pool draining a bounded queue of review jobs.
+
+    A batch import enqueues cheap ``(matter_id, owner_user_id)`` jobs; a FIXED
+    pool of ``inbound_review_concurrency()`` daemon workers processes them. The
+    pool size IS the concurrency/thread bound -- a 100-matter burst never parks
+    100 threads. Dedup-on-enqueue (a pending-key set) keeps a re-enqueued matter
+    from queueing twice, and the bounded queue refuses overflow so the queue can
+    never grow unboundedly.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._queue: queue.Queue[tuple[str, str]] = queue.Queue(
+            maxsize=_INBOUND_REVIEW_QUEUE_MAXSIZE
+        )
+        self._pending: set[tuple[str, str]] = set()
+        self._workers: list[threading.Thread] = []
+        self._handler: Callable[[str, str], None] | None = None
+
+    def configure(self, handler: Callable[[str, str], None]) -> None:
+        """Bind the per-job handler (the function that performs one review)."""
+        with self._lock:
+            self._handler = handler
+
+    def _ensure_workers(self) -> None:
+        size = inbound_review_concurrency()
+        with self._lock:
+            # Drop dead workers (a crashed daemon thread) so the pool self-heals,
+            # then top back up to the configured size.
+            self._workers = [worker for worker in self._workers if worker.is_alive()]
+            while len(self._workers) < size:
+                worker = threading.Thread(
+                    target=self._drain,
+                    name="inbound-ai-review",
+                    daemon=True,
+                )
+                self._workers.append(worker)
+                worker.start()
+
+    def enqueue(self, matter_id: str, owner_user_id: str) -> bool:
+        """Enqueue one review job (dedup-on-enqueue, bounded). Returns scheduled."""
+        key = (str(matter_id or ""), str(owner_user_id or ""))
+        if not key[0]:
+            return False
+        with self._lock:
+            if key in self._pending:
+                # Already queued -- a duplicate enqueue (re-poll, sweep) is free.
+                return True
+            self._pending.add(key)
+        try:
+            self._queue.put_nowait(key)
+        except queue.Full:
+            with self._lock:
+                self._pending.discard(key)
+            from . import telemetry
+
+            telemetry.increment("inbound_ai_review_queue_full")
+            return False
+        self._ensure_workers()
+        return True
+
+    def _drain(self) -> None:
+        while True:
+            key = self._queue.get()
+            matter_id, owner_user_id = key
+            try:
+                handler = self._handler
+                if handler is not None:
+                    handler(matter_id, owner_user_id)
+            except Exception:  # pragma: no cover - handler is already fail-soft.
+                LOGGER.warning(
+                    "Inbound AI review worker job failed for matter %s",
+                    matter_id,
+                    exc_info=True,
+                )
+            finally:
+                with self._lock:
+                    self._pending.discard(key)
+                self._queue.task_done()
+
+    # -- test helpers ------------------------------------------------------- #
+    def _pending_count(self) -> int:
+        with self._lock:
+            return len(self._pending)
+
+    def _join_for_tests(self, timeout: float | None = None) -> None:
+        """Block until the queue drains (test-only convenience)."""
+        if timeout is None:
+            self._queue.join()
+            return
+        # Best-effort bounded wait used by tests.
+        import time as _time
+
+        deadline = _time.monotonic() + timeout
+        while self._queue.unfinished_tasks and _time.monotonic() < deadline:
+            _time.sleep(0.005)
+
+
+_INBOUND_REVIEW_POOL = _InboundReviewWorkerPool()
 
 
 def _matter_already_ai_reviewed(matter: dict[str, Any]) -> bool:
@@ -92,62 +239,108 @@ def _perform_inbound_ai_review(
     repository: MatterRepository,
     owner_user_id: str,
     review_engine_func: ReviewEngineFn,
+    use_semaphore: bool = True,
 ) -> None:
     """Run the full active-engine review for one inbound matter and persist it.
 
-    Acquires the process-wide serialization semaphore for the WHOLE review so at
-    most ``inbound_review_concurrency()`` inbound reviews execute at once. Re-reads
-    the matter fresh from durable storage inside the critical section so a matter
-    already reviewed (idempotency) is skipped, and so a worker that restarted
-    mid-batch resumes only the not-yet-reviewed matters. Fail-soft: any error is
-    logged and swallowed -- a failed background review must never crash the worker
-    or wedge the poll; the matter keeps its deterministic first-pass and stays
-    reviewable on-demand.
+    Re-reads the matter fresh from durable storage so a matter already reviewed
+    (idempotency) is skipped, and so a worker that restarted mid-batch resumes
+    only the not-yet-reviewed matters. Fail-soft: any error is logged and
+    swallowed -- a failed background review must never crash the worker or wedge
+    the poll; the matter keeps its deterministic first-pass and stays reviewable
+    on-demand.
+
+    Serialization: when ``use_semaphore`` is True (the explicit-runner path, e.g.
+    tests that spawn raw threads) the whole review is gated by the process-wide
+    BoundedSemaphore so at most ``inbound_review_concurrency()`` run at once. The
+    production worker-pool path passes ``use_semaphore=False`` because the fixed
+    pool size is ALREADY the concurrency bound -- gating again would double-gate
+    the same review confusingly.
     """
+
+    from contextlib import nullcontext
+
+    gate = _INBOUND_REVIEW_SEMAPHORE if use_semaphore else nullcontext()
+    with gate:
+        _perform_inbound_ai_review_locked(
+            matter_id,
+            repository=repository,
+            owner_user_id=owner_user_id,
+            review_engine_func=review_engine_func,
+        )
+
+
+def _perform_inbound_ai_review_locked(
+    matter_id: str,
+    *,
+    repository: MatterRepository,
+    owner_user_id: str,
+    review_engine_func: ReviewEngineFn,
+) -> None:
+    """The review body, assuming the concurrency bound is already held."""
 
     from . import telemetry
 
-    with _INBOUND_REVIEW_SEMAPHORE:
+    try:
+        matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+        if not isinstance(matter, dict):
+            return
+        if _matter_already_ai_reviewed(matter):
+            telemetry.increment("inbound_ai_review_skipped_already_reviewed")
+            return
+        extracted_text = str(matter.get("extracted_text") or "")
+        if not extracted_text.strip():
+            return
+        paragraphs = review_result_paragraphs(matter.get("review_result"))
+        review_result = review_engine_func(extracted_text, paragraphs=paragraphs)
+    except ParagraphAlignmentError:
+        # Stored paragraph offsets did not align; retry text-only so a tracked
+        # -changes / reconstructed source still gets its AI review.
         try:
-            matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
-            if not isinstance(matter, dict):
-                return
-            if _matter_already_ai_reviewed(matter):
-                telemetry.increment("inbound_ai_review_skipped_already_reviewed")
-                return
-            extracted_text = str(matter.get("extracted_text") or "")
-            if not extracted_text.strip():
-                return
-            paragraphs = review_result_paragraphs(matter.get("review_result"))
-            review_result = review_engine_func(extracted_text, paragraphs=paragraphs)
-        except ParagraphAlignmentError:
-            # Stored paragraph offsets did not align; retry text-only so a tracked
-            # -changes / reconstructed source still gets its AI review.
-            try:
-                review_result = review_engine_func(extracted_text)
-            except Exception:
-                telemetry.increment("inbound_ai_review_failed")
-                LOGGER.warning("Inbound AI review failed for matter %s", matter_id, exc_info=True)
-                return
+            review_result = review_engine_func(extracted_text)
         except Exception:
             telemetry.increment("inbound_ai_review_failed")
             LOGGER.warning("Inbound AI review failed for matter %s", matter_id, exc_info=True)
             return
+    except Exception:
+        telemetry.increment("inbound_ai_review_failed")
+        LOGGER.warning("Inbound AI review failed for matter %s", matter_id, exc_info=True)
+        return
 
-        try:
-            updated = repository.update_matter_review(
-                matter_id,
-                review_result,
-                triage_review_result(review_result),
-                owner_user_id=owner_user_id,
-            )
-        except Exception:
-            telemetry.increment("inbound_ai_review_failed")
-            LOGGER.warning("Inbound AI review persist failed for matter %s", matter_id, exc_info=True)
-            return
-        if updated is None:
-            return
-        telemetry.increment("inbound_ai_review_completed")
+    try:
+        updated = repository.update_matter_review(
+            matter_id,
+            review_result,
+            triage_review_result(review_result),
+            owner_user_id=owner_user_id,
+        )
+    except Exception:
+        telemetry.increment("inbound_ai_review_failed")
+        LOGGER.warning("Inbound AI review persist failed for matter %s", matter_id, exc_info=True)
+        return
+    if updated is None:
+        return
+    telemetry.increment("inbound_ai_review_completed")
+
+
+def _inbound_review_pool_handler(matter_id: str, owner_user_id: str) -> None:
+    """Worker-pool per-job handler: review one matter via the default disk repo.
+
+    The production pool stores only cheap ``(matter_id, owner_user_id)`` jobs, so
+    the handler reconstructs the default repository + active engine here. No
+    semaphore: the pool's fixed size is the concurrency bound.
+    """
+
+    _perform_inbound_ai_review(
+        matter_id,
+        repository=DiskMatterRepository(),
+        owner_user_id=str(owner_user_id or ""),
+        review_engine_func=review_nda_with_active_engine,
+        use_semaphore=False,
+    )
+
+
+_INBOUND_REVIEW_POOL.configure(_inbound_review_pool_handler)
 
 
 def schedule_inbound_ai_review(
@@ -155,18 +348,31 @@ def schedule_inbound_ai_review(
     *,
     repository: MatterRepository | None = None,
     owner_user_id: str = "",
-    runner: BackgroundRunner = run_in_daemon_thread,
+    runner: BackgroundRunner | None = None,
     review_engine_func: ReviewEngineFn | None = None,
 ) -> bool:
     """Schedule the full ai_first review of a just-imported inbound matter.
 
-    Runs OFF the caller's (poll) thread via ``runner`` and SERIALIZED behind the
-    module semaphore. Returns True when work was scheduled, False when there is
-    nothing to do (no matter id, a gmail duplicate, or already AI-reviewed). The
-    scheduling itself is best-effort: a runner that raises is logged and swallowed
-    so a background-review failure can never break the import that triggered it.
+    Production path (``runner`` left as ``None``): the matter is ENQUEUED onto a
+    process-wide bounded queue drained by a FIXED pool of
+    ``inbound_review_concurrency()`` persistent daemon workers. A 100-matter burst
+    therefore enqueues 100 cheap items and ONE worker processes them serially --
+    never 100 parked threads (the OOM edge this hardening closes).
+
+    Explicit-runner path (a ``runner`` is passed, e.g. tests): the legacy
+    per-call behaviour is preserved -- the work runs via ``runner`` and is gated
+    by the process-wide semaphore so the serialization/idempotency/fail-soft
+    contracts still hold for an injected repository + engine.
+
+    Returns True when work was scheduled, False when there is nothing to do (the
+    kill-switch is off, no matter id, a gmail duplicate, or already AI-reviewed).
+    Best-effort: a scheduling failure is logged and swallowed so it can never
+    break the import that triggered it.
     """
 
+    if not inbound_ai_review_enabled():
+        # Emergency kill-switch: keep the deterministic first-pass, no AI review.
+        return False
     if not isinstance(matter, dict) or matter.get("_existing_gmail_duplicate"):
         return False
     matter_id = str(matter.get("id") or "")
@@ -175,8 +381,26 @@ def schedule_inbound_ai_review(
     if _matter_already_ai_reviewed(matter):
         return False
 
+    # Production: enqueue onto the persistent worker pool. The pool is the
+    # serialization (its fixed size == concurrency bound), so a burst can never
+    # spawn one thread per matter.
+    if runner is None and repository is None and review_engine_func is None:
+        try:
+            return _INBOUND_REVIEW_POOL.enqueue(matter_id, str(owner_user_id or ""))
+        except Exception:
+            from . import telemetry
+
+            telemetry.increment("inbound_ai_review_schedule_failed")
+            LOGGER.warning(
+                "Failed to enqueue inbound AI review for matter %s", matter_id, exc_info=True
+            )
+            return False
+
+    # Explicit-runner path (injected repo/engine/runner): legacy semaphore-gated
+    # per-call behaviour, preserved for tests and bespoke callers.
     repo = repository or DiskMatterRepository()
     engine = review_engine_func or review_nda_with_active_engine
+    run = runner or run_in_daemon_thread
 
     def _work() -> None:
         _perform_inbound_ai_review(
@@ -187,7 +411,7 @@ def schedule_inbound_ai_review(
         )
 
     try:
-        runner(_work)
+        run(_work)
     except Exception:
         from . import telemetry
 
@@ -195,6 +419,84 @@ def schedule_inbound_ai_review(
         LOGGER.warning("Failed to schedule inbound AI review for matter %s", matter_id, exc_info=True)
         return False
     return True
+
+
+def _matter_is_inbound(matter: dict[str, Any]) -> bool:
+    """True for an imported INBOUND NDA (gmail / manual upload), not outbound.
+
+    Outbound matters (generated NDAs, send-document deliveries) are reviewed
+    on-demand and must not be swept into the inbound auto-review backlog.
+    """
+
+    source_type = str(matter.get("source_type") or "").lower()
+    if source_type in {"generated", "send_document"}:
+        return False
+    return True
+
+
+def recover_unreviewed_inbound_matters(
+    *,
+    repository: MatterRepository | None = None,
+    owner_user_id: str = "",
+    limit: int = _INBOUND_REVIEW_SWEEP_LIMIT,
+) -> int:
+    """Re-enqueue inbound matters that never got their AI review (recovery sweep).
+
+    If a worker restarts/OOMs/deploys mid-batch or a transient AI failure occurs,
+    the affected NDAs keep ``executed_engine != "ai_first"`` forever -- the next
+    poll dedups them and never re-schedules, so they would stay deterministic-only
+    silently. This sweep, run on startup AND/OR each poll cycle, finds those
+    matters and enqueues them. Idempotent: the ``_matter_already_ai_reviewed``
+    guard inside the worker means an already-reviewed matter that slips in is a
+    cheap no-op. Bounded: at most ``limit`` matters per sweep, so a large
+    historical backlog drains over several cycles instead of flooding the queue.
+
+    Returns the count enqueued. Honours the kill-switch (no-op when disabled) and
+    is fully fail-soft.
+    """
+
+    if not inbound_ai_review_enabled():
+        return 0
+    repo = repository or DiskMatterRepository()
+    try:
+        matters = repo.list_matters(owner_user_id=owner_user_id)
+    except Exception:
+        LOGGER.warning("Inbound AI review recovery sweep failed to list matters", exc_info=True)
+        return 0
+
+    enqueued = 0
+    for matter in matters:
+        if enqueued >= max(0, int(limit)):
+            break
+        if not isinstance(matter, dict):
+            continue
+        if matter.get("_existing_gmail_duplicate"):
+            continue
+        if not _matter_is_inbound(matter):
+            continue
+        if _matter_already_ai_reviewed(matter):
+            continue
+        if not str(matter.get("extracted_text") or "").strip():
+            continue
+        matter_id = str(matter.get("id") or "")
+        if not matter_id:
+            continue
+        matter_owner = str(matter.get("owner_user_id") or owner_user_id or "")
+        try:
+            if _INBOUND_REVIEW_POOL.enqueue(matter_id, matter_owner):
+                enqueued += 1
+        except Exception:
+            LOGGER.warning(
+                "Inbound AI review recovery sweep failed to enqueue matter %s",
+                matter_id,
+                exc_info=True,
+            )
+            continue
+    if enqueued:
+        from . import telemetry
+
+        telemetry.increment("inbound_ai_review_recovery_enqueued", amount=enqueued)
+    return enqueued
 
 
 def create_matter_from_document(
@@ -287,7 +589,9 @@ __all__ = [
     "create_matter_from_document",
     "extract_document",
     "extract_document_paragraphs",
+    "inbound_ai_review_enabled",
     "inbound_review_concurrency",
     "is_supported_document_filename",
+    "recover_unreviewed_inbound_matters",
     "schedule_inbound_ai_review",
 ]
