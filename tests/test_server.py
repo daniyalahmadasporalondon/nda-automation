@@ -9296,7 +9296,18 @@ class ServerTests(unittest.TestCase):
             self.assertIsNone(archive.testzip())
             document_xml = archive.read("word/document.xml").decode("utf-8")
         self.assertIn("Reviewed Text NDA", document_xml)
-        self.assertIn("This Agreement shall be governed by the laws of California.", document_xml)
+        # The reviewed text drove the export -- it appears in the Redlined NDA body
+        # (the deterministic engine redlines the governing-law clause, so the
+        # sentence renders as "...laws of" + a tracked California->England edit
+        # rather than one contiguous string). The verdict/findings sections that
+        # used to carry a verbatim copy are correctly gated off: this text-path
+        # export is a deterministic review, which must not ship verdicts to a
+        # counterparty (see build_review_report_docx).
+        self.assertIn("This Agreement shall be governed by the laws of", document_xml)
+        self.assertIn("California", document_xml)
+        self.assertIn("AI review has not been run on this document.", document_xml)
+        self.assertNotIn("Overall status:", document_xml)
+        self.assertNotIn("Clause Findings", document_xml)
 
     def test_review_docx_export_returns_404_for_missing_matter(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -9329,7 +9340,10 @@ class ServerTests(unittest.TestCase):
         ET.fromstring(document_xml)
         ET.fromstring(core_xml)
         self.assertIn("SurrogateNDA", core_xml)
-        self.assertIn("This Agreement shall be governed by the laws of California.", document_xml)
+        # Reviewed text reached the (redlined) body; the deterministic engine
+        # redlines the governing-law clause, so the sentence is not contiguous.
+        self.assertIn("This Agreement shall be governed by the laws of", document_xml)
+        self.assertIn("California", document_xml)
         self.assertNotIn("\ud800", document_xml)
         self.assertNotIn("\udfff", core_xml)
         self.assertNotIn("\ufdd0", document_xml)
@@ -9464,9 +9478,18 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         with ZipFile(BytesIO(payload)) as archive:
             document_xml = archive.read("word/document.xml").decode("utf-8")
+        # Security: client-supplied redline/template text is re-derived server-side
+        # and never shipped.
         self.assertNotIn("MALICIOUS", document_xml)
-        self.assertIn("Delaware", document_xml)
+        # The server's source text reaches the (redlined) body.
         self.assertIn("California", document_xml)
+        # This is a deterministic text-path export (no AI review), so the
+        # verdict/finding/template sections -- which previously carried the
+        # server-derived "Delaware" template option -- are gated off and must not
+        # ship to a counterparty. The gate notice stands in their place.
+        self.assertIn("AI review has not been run on this document.", document_xml)
+        self.assertNotIn("Template options", document_xml)
+        self.assertNotIn("Clause Findings", document_xml)
 
     def test_selected_export_redlines_ignore_id_collision_for_different_clause(self):
         review_result = {
