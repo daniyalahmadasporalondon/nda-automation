@@ -27,6 +27,12 @@ function createDocuSignSendController({
   submitButton,
   triggerButton,
   getMatter,
+  // Optional progressive-disclosure gate. When supplied and it returns false for
+  // the current matter, the trigger button stays hidden even though a matter is
+  // loaded. The Review workstation passes a gate keyed on ai_review_ran (nothing
+  // to send before a review has run); the Generator passes nothing (always shown
+  // once an NDA exists).
+  isTriggerVisible,
   getAsporaSignatory,
   reviewErrorFromPayload,
   downloadUrl,
@@ -349,7 +355,10 @@ function createDocuSignSendController({
   function syncTriggerButton() {
     if (!triggerButton) return;
     const matter = currentMatter();
-    const hasMatter = Boolean(matter?.id);
+    const gateVisible = typeof isTriggerVisible === "function"
+      ? Boolean(isTriggerVisible(matter))
+      : true;
+    const hasMatter = Boolean(matter?.id) && gateVisible;
     triggerButton.hidden = !hasMatter;
     if (!hasMatter) return;
     // Read the canonical nested status (matter.docusign.status), flat as fallback,
