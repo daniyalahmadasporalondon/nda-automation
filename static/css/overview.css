@@ -83,11 +83,14 @@
   letter-spacing: 0.02em;
 }
 
-/* Confirm — a quiet text-button, not a filled chip. */
+/* Confirm — a flat, minimal text-button. No gradient, no glow/halo: a plain
+   brand-coloured label with a neutral hairline underline that only firms up on
+   hover. */
 .ov-counterparty-confirm {
   background: transparent;
   border: 0;
-  border-bottom: 1px solid var(--brand-glow);
+  border-bottom: 1px solid var(--border-soft);
+  box-shadow: none;
   color: var(--brand);
   cursor: pointer;
   font-family: var(--text-font);
