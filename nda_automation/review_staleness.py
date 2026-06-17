@@ -6,9 +6,7 @@ from typing import Any
 from .checker import REVIEW_ENGINE_VERSION
 from .playbook_runtime import ensure_active_playbook_runtime, public_playbook_runtime
 
-STALE_REVIEW_EXPORT_MESSAGE = (
-    "Review is stale. Refresh the review before exporting or sending a redline."
-)
+STALE_REVIEW_EXPORT_MESSAGE = "Review is stale — refresh before sending."
 
 _PLAYBOOK_RUNTIME_KEYS = (
     "active_version_id",
@@ -121,9 +119,9 @@ def review_playbook_runtime_metadata(review_result: object) -> dict[str, Any]:
 
 def stale_review_message(reasons: list[str]) -> str:
     if "playbook_changed" in reasons:
-        return "The active Playbook has changed since this review was generated. Refresh the review before exporting or sending a redline."
+        return "Playbook changed — refresh the review before sending."
     if "review_engine_version_changed" in reasons:
-        return "The review engine has changed since this review was generated. Refresh the review before exporting or sending a redline."
+        return "Review engine changed — refresh the review before sending."
     if "playbook_runtime_unavailable" in reasons:
-        return "The active Playbook runtime could not be verified. Refresh the review before exporting or sending a redline."
+        return "Playbook runtime unverified — refresh the review before sending."
     return STALE_REVIEW_EXPORT_MESSAGE

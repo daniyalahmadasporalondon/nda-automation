@@ -54,7 +54,7 @@ def test_review_staleness_flags_changed_playbook_hash():
     assert summary["stale_reasons"] == ["playbook_changed"]
     assert summary["current_playbook"]["active_hash"] == "sha256:current"
     assert summary["review_playbook"]["active_hash"] == "sha256:review"
-    assert "active Playbook has changed" in summary["message"]
+    assert "Playbook changed" in summary["message"]
 
 
 def test_review_staleness_accepts_matching_engine_and_playbook_runtime():

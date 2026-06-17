@@ -358,7 +358,13 @@ function createDocuSignSendController({
   // "Send for signature" on a matter that has a saved review (and is ideally
   // approved). Called by the workstation when the selected matter changes.
   function syncTriggerButton() {
-    if (!triggerButton) return;
+    // The Review instance has NO trigger button (Send moved to the Overview
+    // footer), but it still owns the always-visible header signature badge — keep
+    // it in sync from matter state even without a button to label.
+    if (!triggerButton) {
+      renderSignatureState(currentMatter());
+      return;
+    }
     const matter = currentMatter();
     const gateVisible = typeof isTriggerVisible === "function"
       ? Boolean(isTriggerVisible(matter))

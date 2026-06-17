@@ -416,13 +416,13 @@
         </main>
 
         <main class="studio-review view" id="reviewView" role="tabpanel" aria-labelledby="reviewTab" data-view="review" hidden>
-          <!-- Header trimmed: counterparty + matter facts and the Approve / Send /
-               Reviewed / Refresh actions now live in the Overview inspector tab, so
-               those nodes are visually collapsed here (overview.css) to declutter the
-               header toward just the document title. The DOM nodes are KEPT — the
-               existing review flow still toggles their .hidden/state and the Overview
-               footer programmatically clicks #studioSendForSignatureButton — they are
-               only hidden from view, never removed. -->
+          <!-- Header trimmed: counterparty + matter facts and the terminal
+               Approve / Send actions now live ONLY in the Overview inspector tab's
+               footer (static/js/overview/footer.js). They have been REMOVED from this
+               header outright — the footer owns the approve gate and opens the
+               DocuSign composer directly (window.openReviewDocuSignComposer), so no
+               hidden header twin is needed. Reviewed / Refresh and Save/Reset/Clear
+               stay here. -->
           <header class="studio-matter-card studio-matter-card--overview-trimmed">
             <div class="studio-matter-left">
               <span class="back-dot">‹</span>
@@ -460,23 +460,18 @@
                 </form>
                 <p id="studioCounterpartyStatus" class="studio-counterparty-status" role="status" aria-live="polite" hidden></p>
               </div>
-              <!-- Approve / Send move to the Overview footer, but those header
-                   buttons stay live + visible here for now: the existing review
-                   flow toggles their state and tests drive them, and the Overview
-                   footer component is folded in by the integrator. De-duplicating
-                   (hiding these header buttons) is a one-line follow-up once the
-                   footer lands — see overview.css note. Reviewed/Refresh are NOT
-                   moved (reviewed-tracking was cut from the Overview scope). -->
+              <!-- Approve Review + Send for Signature have MOVED to the Overview
+                   inspector tab's footer (static/js/overview/footer.js) and are no
+                   longer duplicated here. The header keeps only the review-status
+                   controls (stale indicator, Review, Reviewed) and the draft
+                   controls. The signature-status badge stays — it is the
+                   always-visible "out for signature / signed" status, driven by the
+                   DocuSign controller independently of any send button. -->
               <div class="studio-matter-actions actions" role="group" aria-label="Matter actions">
                 <span id="studioReviewStaleIndicator" class="studio-review-stale-indicator" role="status" aria-live="polite" hidden>Review may be stale</span>
                 <button id="studioRefreshReviewButton" class="studio-refresh-review" type="button" hidden>Review</button>
                 <button id="studioReviewedButton" class="studio-reviewed-btn" type="button" hidden title="Confirm you've checked the flagged clauses — this enables Send Redline">Reviewed</button>
-                <button id="studioApproveReviewButton" class="studio-approve-review" type="button" hidden title="Approve this review">Approve Review</button>
                 <span id="studioSignatureBadge" class="docusign-status-badge" hidden aria-live="polite"></span>
-                <button id="studioSendForSignatureButton" class="studio-send-signature secondary icon-text" type="button" hidden title="Send this NDA for e-signature via DocuSign">
-                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>
-                  <span>Send for Signature</span>
-                </button>
                 <button id="studioSaveDraftButton" class="secondary" type="button" disabled>Save Draft</button>
                 <button id="studioDiscardDraftButton" class="secondary" type="button" disabled>Reset Draft</button>
                 <button id="studioClearButton" class="secondary" type="button">Clear</button>
@@ -2180,7 +2175,7 @@
     <script src="/static/js/admin-drive.js?v=20260615j"></script>
     <script src="/static/js/admin-personalisation.js?v=20260611a"></script>
     <script src="/static/js/admin-docusign.js?v=20260615ds1"></script>
-    <script src="/static/js/docusign-send.js?v=20260617sb1"></script>
+    <script src="/static/js/docusign-send.js?v=20260617hd1"></script>
     <script src="/static/js/contract-structure-view.js?v=20260614b"></script>
     <script src="/static/js/review-fill.js?v=20260617mrg2"></script>
     <!-- Overview inspector sub-tab: the three presentational component renderers
@@ -2188,10 +2183,10 @@
     <script src="/static/js/overview/roster.js?v=20260617persist1"></script>
     <script src="/static/js/overview/footer.js?v=20260617persist1"></script>
     <script src="/static/js/overview/facts.js?v=20260617cp1"></script>
-    <script src="/static/js/overview/overview-tab.js?v=20260617ovx1"></script>
+    <script src="/static/js/overview/overview-tab.js?v=20260617hd1"></script>
     <script src="/static/js/playbook-draft-runtime.js?v=20260614c"></script>
     <script src="/static/js/playbook-view.js?v=20260614c"></script>
-    <script src="/static/js/review-workstation-actions.js?v=20260617ush1"></script>
+    <script src="/static/js/review-workstation-actions.js?v=20260617hd1"></script>
     <script src="/static/js/review-workstation-source.js?v=20260615cp1"></script>
     <script src="/static/js/review-workstation-rendering.js?v=20260617ush1"></script>
     <script src="/static/js/review-workstation-format.js?v=20260610d"></script>
@@ -2202,6 +2197,6 @@
     <script src="/static/js/dashboard-search.js?v=20260614a"></script>
     <script src="/static/js/notifications.js?v=20260615n"></script>
     <script src="/static/js/generator-editor.js?v=20260616dd1"></script>
-    <script src="/static/app.js?v=20260617ush1"></script>
+    <script src="/static/app.js?v=20260617hd1"></script>
   </body>
 </html>

@@ -18,8 +18,11 @@ const studioDiscardDraftButton = document.querySelector("#studioDiscardDraftButt
 const studioExportButton = document.querySelector("#studioExportButton");
 const studioSendButton = document.querySelector("#studioSendButton");
 const studioReviewedButton = document.querySelector("#studioReviewedButton");
-const studioApproveReviewButton = document.querySelector("#studioApproveReviewButton");
-const studioApproveBlockReasons = document.querySelector("#studioApproveBlockReasons");
+// Approve Review + Send for Signature moved out of the header into the Overview
+// footer (static/js/overview/footer.js); the header no longer carries those
+// buttons. The footer reads the gate helpers (approveBlockReasons /
+// isMatterApproved) and opens the DocuSign composer directly
+// (window.openReviewDocuSignComposer), so no header twin button is needed.
 const studioSendModal = document.querySelector("#studioSendModal");
 const studioSendForm = document.querySelector("#studioSendForm");
 const studioSendModalClose = document.querySelector("#studioSendModalClose");
@@ -507,10 +510,14 @@ const pdfMarkupController = createPdfMarkupController({
 });
 
 // "Send for signature" — the DocuSign e-signature action on a reviewed/approved
-// matter. The trigger button + signature badge live in the studio matter-actions
-// group; the chooser is a modal. The Aspora signatory name defaults to the
-// personalisation signature ("Aspora Legal" fallback) and its email to the
-// outbound Gmail account — both editable in the chooser.
+// matter. The chooser is a modal; the always-visible signature-status badge lives
+// in the studio matter-actions group. There is NO header trigger button anymore —
+// the Overview footer's "Send for signature" opens this composer directly via
+// window.openReviewDocuSignComposer (exposed below). `triggerButton` is therefore
+// null; syncTriggerButton still refreshes the header badge from matter state.
+// The Aspora signatory name defaults to the personalisation signature ("Aspora
+// Legal" fallback) and its email to the outbound Gmail account — both editable in
+// the chooser.
 docusignSendController = createDocuSignSendController({
   modalNode: document.querySelector("#docusignSendModal"),
   closeButton: document.querySelector("#docusignSendModalClose"),
@@ -527,10 +534,11 @@ docusignSendController = createDocuSignSendController({
   envelopeNode: document.querySelector("#docusignEnvelopeId"),
   downloadSignedLink: document.querySelector("#docusignDownloadSignedLink"),
   submitButton: document.querySelector("#docusignSendSubmitButton"),
-  triggerButton: document.querySelector("#studioSendForSignatureButton"),
+  // No header trigger button: the Overview footer drives the send.
+  triggerButton: null,
   getMatter: () => state.selectedMatter || null,
-  // No-jump header: "Send for signature" stays PRESENT for any loaded matter and
-  // is GRAYED/disabled (not hidden) on an UNREVIEWED matter — nothing to send yet.
+  // Pre-review gate: nothing to send before the AI review runs. The footer applies
+  // the same gate (sendDisabled pre-review); this guards the direct-open path too.
   // aiReviewRan() reads the ai_review_ran flag with a clause-presence fallback for
   // old payloads, matching the Approve gate.
   isTriggerEnabled: (matter) => (typeof aiReviewRan === "function" ? aiReviewRan(matter) : true),
@@ -547,6 +555,14 @@ docusignSendController = createDocuSignSendController({
     if (typeof syncDocuSignTriggerButton === "function") syncDocuSignTriggerButton();
   },
 });
+
+// The Overview footer's "Send for signature" opens the Review DocuSign composer
+// through this global (it no longer has a header button to click). The footer
+// already gates Send pre-review (sendDisabled), so a click here means the review
+// has run and there is something to send.
+if (typeof window !== "undefined") {
+  window.openReviewDocuSignComposer = () => docusignSendController?.openComposer?.();
+}
 
 // Thin global hook the review-workstation render funnel calls whenever the
 // selected matter/review state changes (see updateExportButtonState), so the
