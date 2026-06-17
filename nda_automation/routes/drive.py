@@ -229,8 +229,13 @@ def handle_drive_upload_matter(handler) -> None:
     try:
         synced = drive_integration.sync_matter_folder(
             matter=matter,
+            # The MATTER owner reads the artifact bytes back; the GOOGLE-token owner
+            # authenticates the Drive upload. They are distinct ids — passing the
+            # token owner as the matter owner would fail the owner-scoped artifact
+            # read whenever they differ (the #10 identity split).
             matter_id=matter_id,
-            owner_user_id=drive_token_owner_user_id,
+            owner_user_id=owner_user_id,
+            drive_token_owner_user_id=drive_token_owner_user_id,
             root_folder_id=root_folder_id,
             synced_at=synced_at,
         )

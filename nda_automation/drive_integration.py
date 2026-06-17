@@ -49,9 +49,12 @@ from __future__ import annotations
 
 import hashlib
 from io import BytesIO
+import logging
 from typing import Any
 
 from . import artifact_registry, artifact_service, gmail_integration, google_connection
+
+logger = logging.getLogger(__name__)
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 JSON_MIME = "application/json"
@@ -237,14 +240,22 @@ def upload_or_replace_file(
     mimetype: str = DOCX_MIME,
     owner_user_id: str = "",
     service: Any | None = None,
+    replace_existing: bool = False,
 ) -> dict[str, Any]:
     """Upload ``file_bytes`` as ``filename`` into ``parent_id`` (idempotent by name).
 
-    Returns ``{"file_id", "web_link", "filename", "created": bool}``. IDEMPOTENT
-    by name within the parent: the grammar makes filenames unique per matter, so a
-    pre-existing file of that exact name means "already synced" — we SKIP the
-    upload and return the existing id with ``created=False``. Only genuinely new
-    filenames are uploaded (``created=True``).
+    Returns ``{"file_id", "web_link", "filename", "created": bool, "replaced":
+    bool}``. IDEMPOTENT by name within the parent. Default behaviour: the grammar
+    makes per-artifact filenames unique per matter, so a pre-existing file of that
+    exact name means "already synced" — we SKIP the upload and return the existing
+    id with ``created=False`` / ``replaced=False``.
+
+    When ``replace_existing`` is True a pre-existing file of that name is TRULY
+    overwritten in place via ``files().update`` (a media update keyed by file id)
+    rather than skipped. This is for fixed-name files whose CONTENT changes between
+    syncs — chiefly ``matter_summary.json`` — so a re-sync after the matter became
+    executed/signed actually lands the fresh facets (``created=False`` but
+    ``replaced=True``). Only genuinely new filenames are created (``created=True``).
     """
     if not isinstance(file_bytes, (bytes, bytearray)) or not file_bytes:
         raise DriveIntegrationError("No document bytes to upload to Drive.")
@@ -270,15 +281,21 @@ def upload_or_replace_file(
     except Exception as exc:
         _raise_drive_api_error(exc, "Drive file lookup failed.")
     files = listing.get("files") if isinstance(listing, dict) else None
+    existing_id = ""
+    existing_link = ""
     if isinstance(files, list) and files:
         existing = files[0]
         if isinstance(existing, dict) and existing.get("id"):
-            return {
-                "file_id": str(existing["id"]),
-                "web_link": str(existing.get("webViewLink") or ""),
-                "filename": upload_name,
-                "created": False,
-            }
+            existing_id = str(existing["id"])
+            existing_link = str(existing.get("webViewLink") or "")
+    if existing_id and not replace_existing:
+        return {
+            "file_id": existing_id,
+            "web_link": existing_link,
+            "filename": upload_name,
+            "created": False,
+            "replaced": False,
+        }
 
     try:
         from googleapiclient.http import MediaIoBaseUpload
@@ -290,6 +307,27 @@ def upload_or_replace_file(
         mimetype=str(mimetype or DOCX_MIME),
         resumable=False,
     )
+    if existing_id and replace_existing:
+        # TRUE replace: overwrite the existing file's media in place (keeps the id
+        # + URL stable so a previously-stored pointer stays valid).
+        try:
+            updated = drive_service.files().update(
+                fileId=existing_id,
+                media_body=media,
+                fields="id,webViewLink",
+            ).execute()
+        except Exception as exc:
+            _raise_drive_api_error(exc, "Drive replace failed.")
+        if not isinstance(updated, dict):
+            updated = {}
+        return {
+            "file_id": str(updated.get("id") or existing_id),
+            "web_link": str(updated.get("webViewLink") or existing_link),
+            "filename": upload_name,
+            "created": False,
+            "replaced": True,
+        }
+
     try:
         created = drive_service.files().create(
             body={"name": upload_name, "parents": [parent_id]},
@@ -305,6 +343,7 @@ def upload_or_replace_file(
         "web_link": str(created.get("webViewLink") or ""),
         "filename": upload_name,
         "created": True,
+        "replaced": False,
     }
 
 
@@ -447,8 +486,10 @@ def sync_matter_folder(
     matter: dict[str, Any],
     matter_id: str,
     owner_user_id: str = "",
+    drive_token_owner_user_id: str | None = None,
     root_folder_id: str = "",
     synced_at: str = "",
+    signed_via: str = "",
     service: Any | None = None,
     get_artifact_bytes: Any | None = None,
 ) -> dict[str, Any]:
@@ -460,19 +501,35 @@ def sync_matter_folder(
     fetches its bytes, and uploads it (skipping any already present). Finally it
     writes ``metadata/matter_summary.json``.
 
+    Two DISTINCT owner ids are threaded here because they answer different
+    questions:
+
+    * ``owner_user_id`` — the MATTER/artifact owner. Used to read the artifact
+      bytes back (``get_artifact_bytes``) from the owner-scoped document store.
+    * ``drive_token_owner_user_id`` — the GOOGLE-token owner whose Drive credential
+      the upload authenticates as. Resolved the same way the deliberate
+      Save-to-Drive route resolves it (``google_connection.connected_owner_user_id``
+      → the per-user token; empty string → the server-global token for the
+      no-login / local-demo path). Defaults to ``owner_user_id`` for backward
+      compatibility when a caller does not distinguish the two.
+
     ``root_folder_id`` (the admin setting) is used as the PARENT of the app-created
     ``NDAs`` root when provided; the ``NDAs`` root itself is always app-created so
     the whole tree is app-owned and visible under ``drive.file``.
 
     ``synced_at`` is passed in (the route stamps it) so this helper stays pure and
-    testable. ``get_artifact_bytes`` defaults to the live artifact service but is
-    injectable for tests.
+    testable. ``signed_via`` ("docusign" / "uploaded") records HOW a now-executed
+    matter was signed; it tags the signed file's name (``_uploaded`` suffix for an
+    externally-signed paper copy) and the durable summary's ``signed_via`` facet.
+    ``get_artifact_bytes`` defaults to the live artifact service but is injectable
+    for tests.
 
     Returns ``{matter_folder_id, matter_folder_url, synced_count, total_count,
     artifacts: [...]}`` where ``synced_count`` is the number of NEWLY uploaded
     artifact files (re-syncs report 0).
     """
-    drive_service = service or _drive_service(owner_user_id)
+    token_owner = owner_user_id if drive_token_owner_user_id is None else drive_token_owner_user_id
+    drive_service = service or _drive_service(token_owner)
     if get_artifact_bytes is None:
         get_artifact_bytes = artifact_service.get_artifact_bytes
 
@@ -503,7 +560,7 @@ def sync_matter_folder(
     synced_count = 0
     artifact_records: list[dict[str, Any]] = []
     for sequence, artifact in enumerate(artifacts, start=1):
-        filename = _drive_filename_for_artifact(sequence, artifact)
+        filename = _drive_filename_for_artifact(sequence, artifact, signed_via=signed_via)
         file_bytes = get_artifact_bytes(matter_id, artifact.id, owner_user_id=owner_user_id)
         if not file_bytes:
             # An artifact without retrievable bytes is recorded (so the summary
@@ -531,14 +588,21 @@ def sync_matter_folder(
         matter_folder_url=matter_folder_url,
         synced_at=synced_at,
         artifact_records=artifact_records,
+        signed_via=signed_via,
     )
     summary_bytes = _json_bytes(summary)
+    # The summary carries a FIXED name (``matter_summary.json``) but mutable
+    # CONTENT — it must be truly overwritten on every re-sync (e.g. once a matter
+    # becomes executed/signed) instead of skipped on the name hit, or a /tmp-wipe
+    # corpus rebuild would read a stale, pre-signed summary and show the matter
+    # unsigned. ``replace_existing`` routes it through ``files().update``.
     upload_or_replace_file(
         file_bytes=summary_bytes,
         filename=MATTER_SUMMARY_FILENAME,
         parent_id=metadata_folder_id,
         mimetype=JSON_MIME,
         service=drive_service,
+        replace_existing=True,
     )
 
     return {
@@ -548,6 +612,152 @@ def sync_matter_folder(
         "total_count": len(artifacts),
         "artifacts": [_public_artifact_record(record) for record in artifact_records],
     }
+
+
+def drive_token_owner_for_matter(owner_user_id: str) -> str:
+    """Resolve which Google-token owner authenticates the Drive upload for a matter.
+
+    Used by the unattended executed-transition paths that have NO session/handler
+    to read ``current_user`` from (the DocuSign webhook; the lifecycle archivers).
+    The matter's own ``owner_user_id`` is the matter/artifact owner, NOT necessarily
+    the Drive-token owner — so threading it straight into the Drive layer is the
+    wrong-identity bug this resolves.
+
+    Resolution mirrors the deliberate Save-to-Drive route's
+    ``google_connection.connected_owner_user_id`` outcome WITHOUT a request object:
+
+    * If the matter owner has a usable per-user Drive credential, archive as them.
+    * Otherwise fall back to the SERVER-GLOBAL token (``""``) — which is also the
+      no-login / local-demo path (``drive_connected("")`` resolves the env/local
+      ``data/google`` token). This keeps the local demo working unchanged.
+
+    Returns ``""`` when neither a per-user nor a server-global token exists; the
+    caller's connected-gate then skips the archive cleanly.
+    """
+    owner = str(owner_user_id or "").strip()
+    if owner and drive_connected(owner):
+        return owner
+    return ""
+
+
+def archive_executed_matter(
+    *,
+    matter: dict[str, Any],
+    matter_id: str,
+    owner_user_id: str,
+    repository: Any,
+    drive_token_owner_user_id: str | None = None,
+    signed_via: str = "",
+) -> None:
+    """Mirror a fully-executed matter into its Drive folder (STRICTLY best-effort).
+
+    The single archiver behind every executed transition (DocuSign poll + webhook,
+    signed-upload, manual mark-executed). Gated on Drive being connected for the
+    resolved token owner AND Drive auto-intake being enabled; on success it runs
+    :func:`sync_matter_folder` (executed PDF + a freshly-overwritten
+    ``matter_summary.json``) and stamps the ``drive`` pointer back onto the matter.
+
+    Two distinct owners (see :func:`sync_matter_folder`): ``owner_user_id`` is the
+    MATTER owner (reads artifact bytes + write-back); ``drive_token_owner_user_id``
+    is the GOOGLE-token owner the upload authenticates as. When the latter is not
+    supplied it is resolved via :func:`drive_token_owner_for_matter` (per-user token
+    → else server-global ``""``), which is the #10 wrong-identity fix.
+
+    This function NEVER raises and is always logged: a skip (not connected /
+    auto-intake off / no token) or a failure (sync raised) is recorded via
+    telemetry AND a log line so the previously-silent miss is observable. It must
+    not break the executed transition that already persisted before this ran.
+    """
+    from . import app_settings, telemetry
+
+    token_owner = (
+        drive_token_owner_for_matter(owner_user_id)
+        if drive_token_owner_user_id is None
+        else drive_token_owner_user_id
+    )
+
+    try:
+        connected = drive_connected(token_owner)
+        auto_intake = app_settings.drive_auto_intake_enabled()
+    except Exception:
+        telemetry.increment("drive_oncomplete_skipped")
+        logger.warning(
+            "Drive archive skipped for matter %s (signed_via=%s): gate read failed.",
+            matter_id,
+            signed_via or "unknown",
+        )
+        return
+    if not connected or not auto_intake:
+        telemetry.increment("drive_oncomplete_skipped")
+        logger.info(
+            "Drive archive skipped for matter %s (signed_via=%s): "
+            "drive_connected=%s auto_intake=%s token_owner=%r.",
+            matter_id,
+            signed_via or "unknown",
+            connected,
+            auto_intake,
+            token_owner,
+        )
+        return
+
+    try:
+        root_folder_id = str(app_settings.drive_settings().get("folder_id") or "")
+    except Exception:
+        root_folder_id = ""
+
+    # Read artifact bytes from the SAME repository that holds this matter (not a
+    # fresh default DiskMatterRepository), so the signed PDF resolves whatever
+    # repository the executed transition threaded through.
+    def _bytes_from_repository(an_matter_id, artifact_id, *, owner_user_id=""):
+        return artifact_service.get_artifact_bytes(
+            an_matter_id,
+            artifact_id,
+            repository=repository,
+            owner_user_id=owner_user_id,
+        )
+
+    try:
+        synced_at = _now_iso()
+        synced = sync_matter_folder(
+            matter=matter,
+            matter_id=matter_id,
+            owner_user_id=owner_user_id,
+            drive_token_owner_user_id=token_owner,
+            root_folder_id=root_folder_id,
+            synced_at=synced_at,
+            signed_via=signed_via,
+            get_artifact_bytes=_bytes_from_repository,
+        )
+        repository.update_matter_fields(
+            matter_id,
+            {
+                "drive": {
+                    "matter_folder_id": synced["matter_folder_id"],
+                    "matter_folder_url": synced["matter_folder_url"],
+                    "synced_at": synced_at,
+                    "artifacts": synced["artifacts"],
+                }
+            },
+            owner_user_id=owner_user_id,
+        )
+        telemetry.increment("drive_oncomplete_synced")
+        telemetry.increment("drive_files_synced", amount=int(synced.get("synced_count") or 0))
+    except Exception:
+        telemetry.increment("drive_oncomplete_failed")
+        logger.warning(
+            "Drive archive failed for matter %s (signed_via=%s, token_owner=%r); "
+            "executed transition is unaffected.",
+            matter_id,
+            signed_via or "unknown",
+            token_owner,
+            exc_info=True,
+        )
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _resolve_root_folder(
@@ -695,7 +905,12 @@ def _drive_safe_name(value: object) -> str:
     return " ".join("".join(cleaned).split()).strip()
 
 
-def _drive_filename_for_artifact(sequence: int, artifact: artifact_registry.Artifact) -> str:
+def _drive_filename_for_artifact(
+    sequence: int,
+    artifact: artifact_registry.Artifact,
+    *,
+    signed_via: str = "",
+) -> str:
     """Build the lifecycle-grammar filename ``{NN}_{stage}[_v{N}].{ext}``.
 
     The registry stays the source of truth for sequence/actor/role/version/ext;
@@ -704,8 +919,15 @@ def _drive_filename_for_artifact(sequence: int, artifact: artifact_registry.Arti
     ``received``; our-org ``original``/``generated`` -> ``draft``). Repeatable
     stages carry a ``_v{N}`` suffix; one-shot stages (received, draft, signed) do
     not. The chronological ``sequence`` is the enumeration order at sync time.
+
+    When the matter was executed via an externally-signed UPLOAD
+    (``signed_via == "uploaded"``) the SIGNED artifact's stage is suffixed
+    ``signed_uploaded`` so the archived file reads ``NN_signed_uploaded.pdf`` —
+    visibly distinct in Drive from a plain DocuSign-signed ``NN_signed.pdf``.
     """
     stage = artifact_registry.stage_for(artifact.role, artifact.actor)
+    if stage == artifact_registry.STAGE_SIGNED and str(signed_via or "").strip().lower() == "uploaded":
+        stage = f"{stage}_uploaded"
     return artifact_registry.stage_filename(sequence, stage, artifact.version, artifact.ext)
 
 
@@ -746,6 +968,7 @@ def _matter_summary(
     matter_folder_url: str,
     synced_at: str,
     artifact_records: list[dict[str, Any]],
+    signed_via: str = "",
 ) -> dict[str, Any]:
     workflow_state: dict[str, Any] = {}
     try:
@@ -767,12 +990,17 @@ def _matter_summary(
         # this block; its presence is what flips facets_available true). Computed from
         # the same matter; any derivation hiccup is swallowed (like workflow_state) so
         # a facet failure never breaks the sync.
-        "facets": _summary_facets(matter, workflow_state),
+        "facets": _summary_facets(matter, workflow_state, signed_via=signed_via),
         "artifacts": [_public_artifact_record(record) for record in artifact_records],
     }
 
 
-def _summary_facets(matter: dict[str, Any], workflow_state: dict[str, Any]) -> dict[str, Any]:
+def _summary_facets(
+    matter: dict[str, Any],
+    workflow_state: dict[str, Any],
+    *,
+    signed_via: str = "",
+) -> dict[str, Any]:
     """Compute the durable ``facets`` block for matter_summary.json.
 
     Mirrors corpus_index's app-state derivation but lands the values on disk so a
@@ -793,6 +1021,11 @@ def _summary_facets(matter: dict[str, Any], workflow_state: dict[str, Any]) -> d
     return {
         "governing_law": governing_law,
         "signed": _summary_signed(workflow_state),
+        # HOW a now-signed matter was executed: "docusign" (e-signed through our
+        # DocuSign flow) vs "uploaded" (an externally / paper-signed PDF was
+        # uploaded). "" when not yet signed or unknown. Persisted so a Drive-only
+        # matter (after a /tmp wipe) keeps the provenance at a glance.
+        "signed_via": _summary_signed_via(matter, signed_via),
         "has_clauses": has_clauses,
         "term_years": term_years,
         # The review requirement counts the has_issues facet reads. Persisted here so
@@ -906,6 +1139,35 @@ def _summary_signed(workflow_state: dict[str, Any]) -> bool | None:
     if status in ("sent_awaiting_counterparty", "counter_received", "sending"):
         return False
     return None
+
+
+def _summary_signed_via(matter: dict[str, Any], signed_via: str = "") -> str:
+    """How the matter was executed: "docusign" / "uploaded" / "".
+
+    Prefers the explicit ``signed_via`` the executed transition passed in. When a
+    re-sync supplies none, falls back to the matter's own durable signals: a
+    DocuSign envelope on the matter means "docusign"; a captured signed-upload
+    artifact (``metadata.captured_via == "signed_upload"`` with no DocuSign
+    envelope) means "uploaded". Empty when not yet signed / unknown.
+    """
+    explicit = str(signed_via or "").strip().lower()
+    if explicit in ("docusign", "uploaded"):
+        return explicit
+    if not isinstance(matter, dict):
+        return ""
+    signature = matter.get("docusign")
+    if isinstance(signature, dict) and signature.get("envelope_id"):
+        return "docusign"
+    try:
+        for artifact in artifact_registry.matter_artifacts(matter):
+            if artifact.role != artifact_registry.ROLE_SIGNED:
+                continue
+            metadata = artifact.metadata if isinstance(artifact.metadata, dict) else {}
+            if str(metadata.get("captured_via") or "") == "signed_upload":
+                return "uploaded"
+    except Exception:
+        return ""
+    return ""
 
 
 def _summary_clause_ids(matter: dict[str, Any]) -> list[str]:

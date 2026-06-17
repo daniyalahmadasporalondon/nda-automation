@@ -123,6 +123,28 @@ class _FakeFilesV2:
         self._store["files"][file_id] = record
         return _FakeExecutable({"id": file_id, "webViewLink": record["web_link"]})
 
+    def update(self, *, fileId, fields, media_body=None, body=None):  # noqa: N803
+        """In-place media (and/or name) update keyed by file id.
+
+        Models ``files().update`` for the true-replace path: it overwrites the
+        existing record's CONTENT (and optional name) without minting a new id, so
+        a re-sync of a fixed-name file (``matter_summary.json``) lands fresh bytes
+        on the same id rather than skipping or duplicating.
+        """
+        self._store.setdefault("update_calls", []).append(
+            {"file_id": fileId, "has_media": media_body is not None, "body": body}
+        )
+        record = self._store["files"].get(fileId)
+        if record is None:
+            error = Exception("File not found")
+            error.resp = type("_Resp", (), {"status": 404})()
+            raise error
+        if media_body is not None:
+            record["content"] = _media_bytes(media_body)
+        if isinstance(body, dict) and body.get("name"):
+            record["name"] = body["name"]
+        return _FakeExecutable({"id": fileId, "webViewLink": record["web_link"]})
+
 
 class _FakeAboutV2:
     def get(self, *, fields):

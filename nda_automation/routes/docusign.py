@@ -320,7 +320,15 @@ def handle_signature_status(handler, path: str, *, send_body: bool = True) -> No
 
     try:
         result = docusign_workflow.sync_signature_status(
-            matter, matter_id, owner_user_id, repository=repository
+            matter,
+            matter_id,
+            owner_user_id,
+            repository=repository,
+            # #10: resolve the Drive-token owner the SAME way the deliberate
+            # Save-to-Drive route does (the Google-scoped id, "" in no-login mode)
+            # so the on-complete archive authenticates to Drive correctly instead of
+            # mis-using the matter/request id.
+            drive_token_owner_user_id=_google_owner_user_id(handler),
         )
     except docusign_connection.DocuSignNotConnectedError:
         handler._send_json(_needs_connect_payload(), status=409, send_body=send_body)
@@ -373,7 +381,13 @@ def handle_signed_document(handler, path: str, *, send_body: bool = True) -> Non
     if not pdf_bytes:
         # Try a live sync to capture a freshly-completed envelope's executed PDF.
         try:
-            docusign_workflow.sync_signature_status(matter, matter_id, owner_user_id, repository=repository)
+            docusign_workflow.sync_signature_status(
+                matter,
+                matter_id,
+                owner_user_id,
+                repository=repository,
+                drive_token_owner_user_id=_google_owner_user_id(handler),
+            )
             refreshed = repository.get_matter(matter_id, owner_user_id=owner_user_id) or matter
             pdf_bytes = _signed_artifact_bytes(refreshed, matter_id, owner_user_id, repository)
         except docusign_workflow.DocuSignWorkflowError:
@@ -429,6 +443,14 @@ def handle_docusign_webhook(handler) -> None:
 
     completed = False
     try:
+        # #10 (webhook path): there is NO session/handler to read the Google-scoped
+        # owner from, so we leave drive_token_owner_user_id as None. The archiver
+        # then resolves the Drive-token owner from the matched matter's connected
+        # Google account (drive_integration.drive_token_owner_for_matter): the matter
+        # owner's per-user Drive token when present, else the server-global token
+        # ("" — the no-login / local-demo path). This is the correct identity for
+        # the on-complete archive instead of threading the raw matter owner id into
+        # the Drive layer.
         result = docusign_workflow.sync_signature_status(
             matter, matter_id, owner_user_id, repository=_repository(handler)
         )
