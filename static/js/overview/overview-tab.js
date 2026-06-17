@@ -27,9 +27,31 @@
 // review-workstation modules load around this controller, so an eager capture
 // would freeze a null reference.
 
-function createOverviewController({ state, root }) {
+function createOverviewController({ state, root, fillSection, renderFill }) {
   function panel() {
     return root || document.querySelector("#studioDetailPanel");
+  }
+
+  // The merged Overview pane renders the at-a-glance summary ABOVE the existing
+  // Fill/Aspora-entity tool. `fillSection` is a persistent standalone element
+  // (owned by app.js) that the UNTOUCHED reviewFillController paints into via
+  // root.innerHTML — so it owns its own markup entirely and the section TITLE must
+  // live OUTSIDE it. We wrap it in a titled section and relocate the whole wrapper
+  // into the bottom of the pane on each render; `renderFill` repaints the body.
+  function mountFillSection(tab) {
+    if (!tab || !fillSection) return;
+    const wrapper = document.createElement("section");
+    wrapper.className = "ov-section ov-section-fill";
+    const title = document.createElement("h3");
+    title.className = "ov-section-title";
+    title.textContent = "Aspora entity";
+    // Keep the controller's body class on the persistent element it owns.
+    fillSection.className = "ov-section-fill-body";
+    wrapper.append(title, fillSection);
+    tab.append(wrapper);
+    // The Fill controller paints into fillSection (its root) on demand. Its
+    // root.innerHTML write only touches its own body, leaving the title intact.
+    if (typeof renderFill === "function") renderFill();
   }
 
   function escape(value) {
@@ -209,6 +231,11 @@ function createOverviewController({ state, root }) {
     if (refreshButton) {
       refreshButton.addEventListener("click", () => onRefresh());
     }
+    // The Fill (Aspora-entity) tool scans loaded paragraphs for blanks and is
+    // useful even before any AI review has run, so it stays available below the
+    // empty notice (mirrors the old separate-Fill-tab empty behaviour).
+    const tab = container.querySelector(".ov-tab");
+    mountFillSection(tab);
   }
 
   // --- compose ---------------------------------------------------------------
@@ -235,21 +262,36 @@ function createOverviewController({ state, root }) {
     const facts = factsData();
     const footer = footerData();
 
-    // The three component renderers paint into their own child containers, top to
-    // bottom. They are folded in by the integrator; until then a missing renderer
-    // degrades to a labelled placeholder so the shell still mounts and the rest of
-    // the pane renders (no hard crash on a not-yet-present component).
-    const factsEl = document.createElement("section");
-    factsEl.className = "ov-section ov-section-facts";
-    const rosterEl = document.createElement("section");
-    rosterEl.className = "ov-section ov-section-roster";
-    const footerEl = document.createElement("section");
-    footerEl.className = "ov-section ov-section-footer";
-    tab.append(factsEl, rosterEl, footerEl);
+    // SUMMARY section: the at-a-glance Overview (counterparty/facts, clause roster,
+    // approve/send footer), wrapped in a titled ov-section. The three component
+    // renderers paint into their own child containers, top to bottom. They are
+    // folded in by the integrator; until then a missing renderer degrades to a
+    // labelled placeholder so the shell still mounts (no hard crash on a not-yet-
+    // present component).
+    const summarySection = document.createElement("section");
+    summarySection.className = "ov-section ov-section-summary";
+    const summaryTitle = document.createElement("h3");
+    summaryTitle.className = "ov-section-title";
+    summaryTitle.textContent = "Summary";
+    const summaryBody = document.createElement("div");
+    summaryBody.className = "ov-section-summary-body";
+    summarySection.append(summaryTitle, summaryBody);
+    tab.append(summarySection);
+
+    const factsEl = document.createElement("div");
+    factsEl.className = "ov-block ov-block-facts";
+    const rosterEl = document.createElement("div");
+    rosterEl.className = "ov-block ov-block-roster";
+    const footerEl = document.createElement("div");
+    footerEl.className = "ov-block ov-block-footer";
+    summaryBody.append(factsEl, rosterEl, footerEl);
 
     composeFacts(factsEl, facts);
     composeRoster(rosterEl, clauses);
     composeFooter(footerEl, footer);
+
+    // ASPORA ENTITY section: the existing Fill tool, relocated below the summary.
+    mountFillSection(tab);
   }
 
   function composeFacts(el, facts) {
