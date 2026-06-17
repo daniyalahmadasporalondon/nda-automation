@@ -16,6 +16,7 @@ import copy
 import hashlib
 import threading
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -73,6 +74,16 @@ class MatterRepository(Protocol):
         self, matter_id: str, review_result: dict[str, Any], triage: dict[str, Any], owner_user_id: str = ""
     ) -> dict[str, Any] | None: ...
 
+    def refresh_matter_review(
+        self,
+        matter_id: str,
+        review_result: dict[str, Any],
+        triage: dict[str, Any],
+        *,
+        expected_updated_at: str = "",
+        owner_user_id: str = "",
+    ) -> dict[str, Any] | None: ...
+
     def set_clause_reviewer_decision(
         self,
         matter_id: str,
@@ -108,6 +119,15 @@ class MatterRepository(Protocol):
         matter_id: str,
         artifacts: list[dict[str, Any]],
         current_artifact_id: str = "",
+        owner_user_id: str = "",
+    ) -> dict[str, Any] | None: ...
+
+    def mutate_matter_artifacts(
+        self,
+        matter_id: str,
+        mutate: Callable[
+            [list[dict[str, Any]], str], tuple[list[dict[str, Any]], str]
+        ],
         owner_user_id: str = "",
     ) -> dict[str, Any] | None: ...
 
@@ -196,6 +216,23 @@ class DiskMatterRepository:
     ) -> dict[str, Any] | None:
         return matter_store.update_matter_review(matter_id, review_result, triage, owner_user_id=owner_user_id)
 
+    def refresh_matter_review(
+        self,
+        matter_id: str,
+        review_result: dict[str, Any],
+        triage: dict[str, Any],
+        *,
+        expected_updated_at: str = "",
+        owner_user_id: str = "",
+    ) -> dict[str, Any] | None:
+        return matter_store.refresh_matter_review(
+            matter_id,
+            review_result,
+            triage,
+            expected_updated_at=expected_updated_at,
+            owner_user_id=owner_user_id,
+        )
+
     def set_clause_reviewer_decision(
         self,
         matter_id: str,
@@ -248,6 +285,18 @@ class DiskMatterRepository:
     ) -> dict[str, Any] | None:
         return matter_store.update_matter_artifacts(
             matter_id, artifacts, current_artifact_id, owner_user_id=owner_user_id
+        )
+
+    def mutate_matter_artifacts(
+        self,
+        matter_id: str,
+        mutate: Callable[
+            [list[dict[str, Any]], str], tuple[list[dict[str, Any]], str]
+        ],
+        owner_user_id: str = "",
+    ) -> dict[str, Any] | None:
+        return matter_store.mutate_matter_artifacts(
+            matter_id, mutate, owner_user_id=owner_user_id
         )
 
     def put_artifact_document(self, stored_filename: str, document_bytes: bytes) -> str:
@@ -473,6 +522,41 @@ class InMemoryMatterRepository:
                 return copy.deepcopy(updated_matter)
         return None
 
+    def refresh_matter_review(
+        self,
+        matter_id: str,
+        review_result: dict[str, Any],
+        triage: dict[str, Any],
+        *,
+        expected_updated_at: str = "",
+        owner_user_id: str = "",
+    ) -> dict[str, Any] | None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            for index, matter in enumerate(self._matters):
+                if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id):
+                    continue
+                current_updated_at = str(matter.get("updated_at") or "")
+                raced = bool(expected_updated_at) and current_updated_at != str(expected_updated_at)
+                updated_matter = {
+                    **matter,
+                    "review_result": copy.deepcopy(review_result),
+                    **copy.deepcopy(triage),
+                    "updated_at": now,
+                }
+                if raced:
+                    updated_matter["human_reviewed"] = matter.get("human_reviewed", False)
+                    if isinstance(matter.get("redline_draft"), dict):
+                        updated_matter["redline_draft"] = copy.deepcopy(matter["redline_draft"])
+                    else:
+                        updated_matter.pop("redline_draft", None)
+                else:
+                    updated_matter["human_reviewed"] = False
+                    updated_matter.pop("redline_draft", None)
+                self._matters[index] = updated_matter
+                return copy.deepcopy(updated_matter)
+        return None
+
     def set_clause_reviewer_decision(
         self,
         matter_id: str,
@@ -604,6 +688,35 @@ class InMemoryMatterRepository:
                     **matter,
                     "artifacts": copy.deepcopy(list(artifacts)),
                     "current_artifact_id": str(current_artifact_id or ""),
+                    "updated_at": now,
+                }
+                self._matters[index] = updated_matter
+                return copy.deepcopy(updated_matter)
+        return None
+
+    def mutate_matter_artifacts(
+        self,
+        matter_id: str,
+        mutate: Callable[
+            [list[dict[str, Any]], str], tuple[list[dict[str, Any]], str]
+        ],
+        owner_user_id: str = "",
+    ) -> dict[str, Any] | None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            for index, matter in enumerate(self._matters):
+                if matter.get("id") != matter_id or not _matter_owner_matches(matter, owner_user_id):
+                    continue
+                current_artifacts = matter.get("artifacts")
+                current_artifacts = (
+                    copy.deepcopy(current_artifacts) if isinstance(current_artifacts, list) else []
+                )
+                current_pointer = str(matter.get("current_artifact_id") or "")
+                new_artifacts, new_pointer = mutate(current_artifacts, current_pointer)
+                updated_matter = {
+                    **matter,
+                    "artifacts": copy.deepcopy(list(new_artifacts)),
+                    "current_artifact_id": str(new_pointer or ""),
                     "updated_at": now,
                 }
                 self._matters[index] = updated_matter
