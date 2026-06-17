@@ -51,8 +51,7 @@ const AdminDocuSignView = (() => {
       setOverall("Checking", "pending");
       try {
         const response = await fetch("/api/docusign/status");
-        const payload = await response.json();
-        if (!response.ok) throw reviewErrorFromPayload(payload, "DocuSign status could not load");
+        const payload = await window.AuthExpired.parseOkJson(response, "DocuSign status could not load", reviewErrorFromPayload);
         render(payload);
       } catch (error) {
         renderError(error.message || "DocuSign status could not load");
@@ -74,8 +73,7 @@ const AdminDocuSignView = (() => {
             headers: { "Content-Type": "application/json" },
             body: "{}",
           });
-          const payload = await response.json();
-          if (!response.ok) throw reviewErrorFromPayload(payload, "DocuSign disconnect failed");
+          const payload = await window.AuthExpired.parseOkJson(response, "DocuSign disconnect failed", reviewErrorFromPayload);
           await load();
         } catch (error) {
           setOverall(error.message || "Disconnect failed", "blocked");
@@ -102,8 +100,7 @@ const AdminDocuSignView = (() => {
           headers: { "Content-Type": "application/json" },
           body: "{}",
         });
-        const payload = await response.json();
-        if (!response.ok) throw reviewErrorFromPayload(payload, "DocuSign connect failed");
+        const payload = await window.AuthExpired.parseOkJson(response, "DocuSign connect failed", reviewErrorFromPayload);
         const redirectUrl = String(payload.connect_url || payload.redirect_url || payload.authorization_url || "").trim();
         if (redirectUrl) {
           window.location.href = withNext(redirectUrl);

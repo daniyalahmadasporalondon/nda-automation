@@ -238,6 +238,11 @@ const notificationsController = createNotificationsController({
     return Array.isArray(payload.matters) ? payload.matters : [];
   },
 });
+// Wire global session-expiry handling: a 401 from any request surfaces a clean
+// "session expired — sign in again" toast (via the existing notification system)
+// instead of a cryptic JSON parse error. Kept to a single line so this file stays
+// merge-friendly with other in-flight branches.
+globalThis.AuthExpired?.register?.({ notify: notificationsController.notify });
 const manualUploadController = createManualUploadController({
   modalNode: manualUploadModal,
   closeButton: manualUploadModalClose,

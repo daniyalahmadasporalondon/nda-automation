@@ -22,8 +22,7 @@ const AdminDriveView = (() => {
       setOverall("Checking", "pending");
       try {
         const response = await fetch("/api/drive/status");
-        const payload = await response.json();
-        if (!response.ok) throw reviewErrorFromPayload(payload, "Drive status could not load");
+        const payload = await window.AuthExpired.parseOkJson(response, "Drive status could not load", reviewErrorFromPayload);
         renderDrive(payload);
       } catch (error) {
         renderError(error.message || "Drive status could not load");
@@ -44,8 +43,7 @@ const AdminDriveView = (() => {
             headers: { "Content-Type": "application/json" },
             body: "{}",
           });
-          const payload = await response.json();
-          if (!response.ok) throw reviewErrorFromPayload(payload, "Drive disconnect failed");
+          const payload = await window.AuthExpired.parseOkJson(response, "Drive disconnect failed", reviewErrorFromPayload);
           await load();
         } catch (error) {
           setOverall(error.message || "Disconnect failed", "blocked");
@@ -76,8 +74,7 @@ const AdminDriveView = (() => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(requestPayload),
         });
-        const payload = await response.json();
-        if (!response.ok) throw reviewErrorFromPayload(payload, "Drive folder could not save");
+        const payload = await window.AuthExpired.parseOkJson(response, "Drive folder could not save", reviewErrorFromPayload);
         applyDriveSettings(payload.drive || {});
         setFact("folder-message", folderId
           ? "NDAs root folder saved. Per-matter subfolders are created inside it."

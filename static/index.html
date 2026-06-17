@@ -2166,26 +2166,30 @@
     -->
     <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260617gfl1"></script>
     <script src="/static/js/redline-rendering.js?v=20260612c"></script>
-    <script src="/static/js/repository-api.js?v=20260616xr1"></script>
+    <!-- Global session-expiry handling + the shared ok-before-parse JSON guard.
+         Must load before app.js (which registers the handler) and before any
+         classic script that calls window.AuthExpired.parseOkJson at runtime. -->
+    <script src="/static/js/auth-expired.js?v=20260617a401"></script>
+    <script src="/static/js/repository-api.js?v=20260617a401"></script>
     <script src="/static/js/repository-model.js?v=20260617exec1"></script>
     <script src="/static/js/repository-board.js?v=20260617exec1"></script>
     <script src="/static/js/repository-send.js?v=20260617gfl1"></script>
     <script src="/static/js/document-download-menu.js?v=20260612c"></script>
     <script src="/static/js/repository-detail.js?v=20260617gfl1"></script>
-    <script src="/static/js/repository-actions.js?v=20260617gfl1"></script>
+    <script src="/static/js/repository-actions.js?v=20260617a401"></script>
     <script src="/static/js/repository.js?v=20260615g"></script>
     <script src="/static/js/corpus.js?v=20260617exec1"></script>
     <script src="/static/js/manual-upload.js?v=20260617hyg1"></script>
     <script src="/static/js/send-document.js?v=20260606i"></script>
     <script src="/static/js/draft-intake.js?v=20260617gen1"></script>
     <script src="/static/js/auth-session.js?v=20260615h"></script>
-    <script src="/static/js/admin-ai.js?v=20260617hyg1"></script>
-    <script src="/static/js/admin-health.js?v=20260607a"></script>
+    <script src="/static/js/admin-ai.js?v=20260617a401"></script>
+    <script src="/static/js/admin-health.js?v=20260617a401"></script>
     <script src="/static/js/admin-integrations.js?v=20260616gsc1"></script>
-    <script src="/static/js/admin-drive.js?v=20260615j"></script>
+    <script src="/static/js/admin-drive.js?v=20260617a401"></script>
     <script src="/static/js/admin-personalisation.js?v=20260611a"></script>
-    <script src="/static/js/admin-docusign.js?v=20260615ds1"></script>
-    <script src="/static/js/docusign-send.js?v=20260617hd1"></script>
+    <script src="/static/js/admin-docusign.js?v=20260617a401"></script>
+    <script src="/static/js/docusign-send.js?v=20260617a401"></script>
     <script src="/static/js/contract-structure-view.js?v=20260614b"></script>
     <script src="/static/js/review-fill.js?v=20260617occ1"></script>
     <!-- Overview inspector sub-tab: the three presentational component renderers
@@ -2208,6 +2212,6 @@
     <script src="/static/js/dashboard-search.js?v=20260614a"></script>
     <script src="/static/js/notifications.js?v=20260617aio1"></script>
     <script src="/static/js/generator-editor.js?v=20260616dd1"></script>
-    <script src="/static/app.js?v=20260617me1"></script>
+    <script src="/static/app.js?v=20260617a401"></script>
   </body>
 </html>

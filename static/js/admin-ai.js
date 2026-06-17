@@ -25,8 +25,7 @@ const AdminAiView = (() => {
       setOverall("Checking", "pending");
       try {
         const response = await fetch("/api/ai/settings");
-        const payload = await response.json();
-        if (!response.ok) throw reviewErrorFromPayload(payload, "AI settings could not load");
+        const payload = await window.AuthExpired.parseOkJson(response, "AI settings could not load", reviewErrorFromPayload);
         renderAiFromPayload(payload);
       } catch (error) {
         renderError(error.message || "AI settings could not load");
@@ -50,8 +49,7 @@ const AdminAiView = (() => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ api_key: apiKey, enabled: true }),
         });
-        const payload = await response.json();
-        if (!response.ok) throw reviewErrorFromPayload(payload, "AI key could not save");
+        const payload = await window.AuthExpired.parseOkJson(response, "AI key could not save", reviewErrorFromPayload);
         if (aiApiKeyInput) aiApiKeyInput.value = "";
         renderAiFromPayload(payload);
         setFact("key-message", "AI key saved locally. AI is on.");
@@ -69,8 +67,7 @@ const AdminAiView = (() => {
       setFact("key-message", "Clearing saved local key...");
       try {
         const response = await fetch("/api/ai/api-key", { method: "DELETE" });
-        const payload = await response.json();
-        if (!response.ok) throw reviewErrorFromPayload(payload, "Saved AI key could not clear");
+        const payload = await window.AuthExpired.parseOkJson(response, "Saved AI key could not clear", reviewErrorFromPayload);
         renderAiFromPayload(payload);
         setFact("key-message", payload.ai_review?.api_key_source === "environment"
           ? "Local key cleared. The backend environment key is still configured."
@@ -93,8 +90,7 @@ const AdminAiView = (() => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ enabled: nextEnabled }),
         });
-        const payload = await response.json();
-        if (!response.ok) throw reviewErrorFromPayload(payload, "AI setting could not save");
+        const payload = await window.AuthExpired.parseOkJson(response, "AI setting could not save", reviewErrorFromPayload);
         renderAiFromPayload(payload);
       } catch (error) {
         setOverall(error.message || "Save failed", "blocked");
@@ -124,8 +120,7 @@ const AdminAiView = (() => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(requestPayload),
         });
-        const payload = await response.json();
-        if (!response.ok) throw reviewErrorFromPayload(payload, "Runtime settings could not save");
+        const payload = await window.AuthExpired.parseOkJson(response, "Runtime settings could not save", reviewErrorFromPayload);
         renderAiFromPayload(payload);
         setFact("runtime-message", "Runtime settings saved for new reviews.");
       } catch (error) {

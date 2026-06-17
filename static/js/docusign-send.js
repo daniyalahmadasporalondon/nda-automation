@@ -193,8 +193,7 @@ function createDocuSignSendController({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const result = await response.json();
-      if (!response.ok) throw reviewErrorFromPayload(result, "Could not send for signature");
+      const result = await window.AuthExpired.parseOkJson(response, "Could not send for signature", reviewErrorFromPayload);
       const envelopeId = result.envelope_id || matterEnvelopeId(matter) || "";
       const status = result.status || "sent";
       const merged = {
