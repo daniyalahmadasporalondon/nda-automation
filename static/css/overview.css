@@ -476,6 +476,72 @@
   display: none;
 }
 
+/* ---------- Combined-tab stacked SECTIONS (Summary + Aspora entity) ----------
+   The combined Overview+Fill pane stacks named SECTIONS — a "Summary" block
+   (the flat counterparty/facts/roster/footer above) and an "Aspora entity"
+   block wrapping the existing Fill tool. Each owns an .ov-section-title. They
+   read as one coherent tab via a hairline rule + generous spacing between them
+   — flat, vertical, no bubbles, no cards. The separation is scoped to sections
+   that carry a title so the bare facts/roster/footer sub-sections (which bring
+   their own spacing + footer rule) are left untouched. */
+
+.ov-section:has(> .ov-section-title) {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* Hairline rule + breathing room between consecutive titled sections — the only
+   separator; no border-box, no background, so the stack still reads as one tab. */
+.ov-section:has(> .ov-section-title) + .ov-section:has(> .ov-section-title) {
+  border-top: 1px solid var(--border);
+  margin-top: 10px;
+  padding-top: 22px;
+}
+
+/* Small, quiet uppercase section label — mirrors the facts/fill mini-labels so
+   the two sections feel like one family. */
+.ov-section-title {
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+/* ---------- Aspora-entity section: host the existing Fill tool flat ----------
+   The Fill markup keeps ALL its existing .fill-* classes (styles.css); we don't
+   restyle its dropdowns, candidate rows, Apply button or checkboxes. We only
+   shed the chrome that would make it read as a separate boxed widget inside the
+   tab: its outer body padding (the section already owns the tab's horizontal
+   rhythm) and a leading "Fill" mini-heading that would duplicate the section's
+   own .ov-section-title. Scoped via :has(.fill-*) so it tracks the Fill markup's
+   presence regardless of the section's specific modifier class. */
+
+.ov-section:has(> .ov-section-title) .fill-body {
+  padding: 0;
+}
+
+/* A leading fill sub-section sits flush under the section title (the title
+   already supplies the top spacing). Inner fill sub-sections keep their gap. */
+.ov-section:has(> .ov-section-title) .fill-body > .fill-section:first-child,
+.ov-section:has(> .ov-section-title) > .fill-section:first-child {
+  margin-top: 0;
+}
+
+/* The .ov-section-title names the block, so a redundant top-level "Fill" label
+   from the Fill tool's own first .fill-section-title is folded away. Inner
+   sub-section titles (slot mappings, blanks) are untouched — only a *leading*
+   one that duplicates the section heading is hidden. */
+.ov-section:has(> .ov-section-title) > .fill-body > .fill-section:first-child > .fill-section-title,
+.ov-section:has(> .ov-section-title) > .fill-section:first-child > .fill-section-title {
+  display: none;
+}
+
 /* Empty-state variant tightens the tab gap (the block carries its own spacing). */
 .ov-tab-empty {
   gap: 0;
