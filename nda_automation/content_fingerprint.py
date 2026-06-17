@@ -158,6 +158,22 @@ def is_valid_fingerprint(fingerprint: Any) -> bool:
     )
 
 
+def is_exact_match(a: Any, b: Any) -> bool:
+    """True when two stored fingerprints share an ``exact`` sha256 (identical text).
+
+    The exact-dup oracle, kept separate from :func:`similarity` so the corpus can
+    apply DIFFERENT gating to the two dup paths: an exact match (byte-identical
+    modulo whitespace/case) is a true duplicate regardless of counterparty, whereas a
+    near match (SimHash similarity < 1.0) is only a meaningful resend signal WITHIN a
+    counterparty (two genuinely-different deals from one template score high on
+    SimHash but are not duplicates). Defensive against odd/legacy fingerprints
+    (returns ``False`` rather than raising).
+    """
+    if not is_valid_fingerprint(a) or not is_valid_fingerprint(b):
+        return False
+    return a["exact"] == b["exact"]
+
+
 def similarity(a: Any, b: Any) -> float:
     """Scalar similarity in ``[0.0, 1.0]`` between two stored-fingerprint dicts.
 
