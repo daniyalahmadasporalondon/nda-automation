@@ -414,7 +414,8 @@
             "value": "England and Wales",
             "default": true,
             "aliases": [
-              "english"
+              "english",
+              "england"
             ]
           },
           {

@@ -918,23 +918,74 @@ function applyGoverningLawRedline(lawPhrase, lawLabel) {
   renderStudioClauseLane();
   renderStudioDetail();
 }
-const DOCUMENT_GOVERNING_LAWS = [
-  ["India", /\b(?:india|indian)\b/i],
-  ["Delaware", /\bdelaware\b/i],
-  ["England and Wales", /\b(?:england and wales|english\s+law|laws?\s+of\s+england)\b/i],
-  ["DIFC", /\b(?:difc|dubai international financial cent)/i],
-  ["Ontario, Canada", /\b(?:ontario|ontarian|canadian|canada)\b/i],
-];
+// Escape a playbook-sourced match term so it can be embedded in a RegExp safely
+// (the terms are author-controlled approved-option labels/aliases, but they may
+// carry regex metacharacters like the comma+space in "Ontario, Canada").
+function escapeGoverningLawTerm(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Build the [label, matchTerms[]] list of jurisdictions to detect in the document
+// DIRECTLY from the loaded governing_law clause's playbook-sourced approved
+// options — never a hardcoded jurisdiction list. Each option contributes its
+// label, value, id, and aliases as case-insensitive match terms, so a
+// jurisdiction added/removed/renamed in the playbook is recognized automatically.
+// The canonical home is clause.rules.approved_options ({id,label,value,aliases});
+// clause.approved_options (a flattened mirror) and clause.approved_laws (a flat
+// label list) are tolerated as fallbacks so detection works across review-result
+// shapes. Returns [] when no governing_law clause / options are loaded.
+function documentGoverningLaws() {
+  const clauses = Array.isArray(state.reviewClauses) ? state.reviewClauses : [];
+  const clause = clauses.find((item) => item && item.id === "governing_law");
+  if (!clause) return [];
+  const rules = clause.rules && typeof clause.rules === "object" ? clause.rules : null;
+  const optionSource = (rules && Array.isArray(rules.approved_options) ? rules.approved_options : null)
+    || (Array.isArray(clause.approved_options) ? clause.approved_options : null)
+    || (Array.isArray(clause.approved_laws) ? clause.approved_laws : null)
+    || [];
+  const laws = [];
+  for (const option of optionSource) {
+    let label = "";
+    const terms = [];
+    if (option && typeof option === "object") {
+      label = String(option.label || option.value || option.id || "").trim();
+      for (const key of ["label", "value", "id"]) {
+        const term = String(option[key] || "").trim();
+        if (term) terms.push(term);
+      }
+      if (Array.isArray(option.aliases)) {
+        for (const alias of option.aliases) {
+          const term = String(alias || "").trim();
+          if (term) terms.push(term);
+        }
+      }
+    } else {
+      // Flat approved_laws entry: the string is both the label and the only term.
+      label = String(option || "").trim();
+      if (label) terms.push(label);
+    }
+    if (!label || !terms.length) continue;
+    laws.push([label, terms]);
+  }
+  return laws;
+}
 
 function detectDocumentGoverningLaw() {
+  const laws = documentGoverningLaws();
+  if (!laws.length) return "";
   const paragraphs = Array.isArray(state.reviewParagraphs) ? state.reviewParagraphs : [];
   for (const paragraph of paragraphs) {
     const text = String((paragraph && paragraph.text) || "");
     // Operative governing-law language only — never an "incorporated under the
     // laws of X" recital, which names a party's jurisdiction, not the contract's.
     if (!/governing\s+law|governed\s+by|construed\s+in\s+accordance/i.test(text)) continue;
-    for (const [label, pattern] of DOCUMENT_GOVERNING_LAWS) {
-      if (pattern.test(text)) return label;
+    for (const [label, terms] of laws) {
+      // Word-boundary, case-insensitive match on any of the option's
+      // label/value/id/aliases. \b around an escaped multi-word term still
+      // anchors on the outer word characters (e.g. "England and Wales").
+      if (terms.some((term) => new RegExp(`\\b${escapeGoverningLawTerm(term)}\\b`, "i").test(text))) {
+        return label;
+      }
     }
   }
   return "";

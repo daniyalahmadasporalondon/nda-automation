@@ -412,17 +412,31 @@ def validate_registry_against_playbook(playbook: Mapping[str, Any]) -> None:
     """Validate the registry, then check the law mapping against ``playbook``.
 
     Every entity's ``governing_law.playbook_option_id`` must exist among the
-    playbook's ``governing_law`` ``approved_options`` ids. Raises ``ValueError``
-    if the playbook has drifted away from a position a bundle relies on.
+    playbook's ``governing_law`` ``approved_options`` ids, AND each bundle's cached
+    ``governing_law.label`` must equal that approved option's playbook label.
+    Raises ``ValueError`` if the playbook has drifted away from a position a bundle
+    relies on, or if a bundle's display label has drifted from the playbook's
+    (the label is display-only -- the operative value already comes from the
+    playbook via the id -- but asserting it here keeps the duplicated copy honest).
     """
 
     validate_registry()
 
-    option_ids = _playbook_governing_law_option_ids(playbook)
-    if not option_ids:
+    options = _playbook_governing_law_options(playbook)
+    if not options:
         raise ValueError(
             "Playbook has no governing_law approved_options to map entities to."
         )
+
+    option_ids = {option["id"] for option in options}
+    # Map each approved-option id to its playbook label so the cached
+    # governing_law.label on every bundle can be asserted against the single
+    # source of truth. The operative governing-law VALUE in generated docs is
+    # already pulled from the playbook via the option id, so the cached label is
+    # display-only -- but if it silently drifts from the playbook (an option
+    # renamed without updating the bundle) the UI would show a stale jurisdiction
+    # name. Asserting equality here fails loudly instead, closing that drift.
+    option_label_by_id = {option["id"]: option["label"] for option in options}
 
     for entity in SIGNING_ENTITIES:
         option_id = entity["governing_law"]["playbook_option_id"]
@@ -431,6 +445,15 @@ def validate_registry_against_playbook(playbook: Mapping[str, Any]) -> None:
                 f"Entity {entity['id']} maps to governing-law position "
                 f"'{option_id}', which is not an approved playbook option "
                 f"(have: {sorted(option_ids)})."
+            )
+        cached_label = str(entity["governing_law"].get("label") or "")
+        playbook_label = option_label_by_id[option_id]
+        if cached_label != playbook_label:
+            raise ValueError(
+                f"Entity {entity['id']} caches governing-law label "
+                f"'{cached_label}', which has drifted from the playbook label "
+                f"'{playbook_label}' for option '{option_id}'. Update the bundle's "
+                f"governing_law.label to match the playbook."
             )
 
 
