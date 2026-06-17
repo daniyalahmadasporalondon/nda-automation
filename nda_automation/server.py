@@ -76,7 +76,7 @@ from .rate_limit import (
     _reset_rate_limits as _reset_rate_limits,
 )
 from . import ingestion_service
-from .ingestion_service import create_matter_from_document, extract_document
+from .ingestion_service import create_matter_from_document
 from . import lifecycle_counter, lifecycle_signed
 from .matter_repository import DiskMatterRepository
 from .review_engine import review_nda_with_active_engine
@@ -134,14 +134,6 @@ def _handle_playbook_draft_get(handler, *, send_body: bool) -> None:
 
 def _handle_text_review_post(handler) -> None:
     review_routes.handle_text_review(handler, review_nda_func=review_nda_with_active_engine)
-
-
-def _handle_document_review_post(handler) -> None:
-    review_routes.handle_document_review(
-        handler,
-        extract_document_func=extract_document,
-        review_nda_func=review_nda_with_active_engine,
-    )
 
 
 def _handle_ai_second_opinion_post(handler) -> None:
@@ -260,7 +252,6 @@ _POST_EXACT_ROUTES = {
     "/api/review/ai-draft-validation": _handle_ai_draft_validation_post,
     "/api/review/ai-second-opinion": _handle_ai_second_opinion_post,
     "/api/review/reassess-clause": _handle_reassess_clause_post,
-    "/api/review-document": _handle_document_review_post,
     "/api/matters": _handle_matter_upload_post,
     "/api/generate-nda": generation_routes.handle_generate_nda,
     "/api/dashboard/assistant": dashboard_routes.handle_dashboard_assistant,
