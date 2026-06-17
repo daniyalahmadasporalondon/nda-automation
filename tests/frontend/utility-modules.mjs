@@ -16,6 +16,8 @@ import {
   gmailSendBlock,
   gmailSendButtonLabel,
   needsHumanReview,
+  reviewActionable,
+  reviewNeverRan,
   reviewStale,
   reviewStaleLabel,
   reviewStaleReasons,
@@ -539,6 +541,22 @@ assert.equal(
   "Review is out of date. Refresh against the active Playbook.",
 );
 assert.equal(MatterUtils.reviewStale({ review_stale: true }), true);
+
+// reviewNeverRan: true ONLY for the explicit ai_review_ran === false flag (the
+// never-reviewed state); older payloads lacking the flag are not "never ran".
+assert.equal(reviewNeverRan({ ai_review_ran: false }), true);
+assert.equal(reviewNeverRan({ ai_review_ran: true }), false);
+assert.equal(reviewNeverRan({}), false);
+// reviewActionable: a user has a review action to run when the matter has never
+// been reviewed OR its stored review is stale. Drives the inspector "Run AI
+// review" / "Refresh Review" control + the workstation review button presence.
+assert.equal(reviewActionable({ ai_review_ran: false }), true); // never-reviewed
+assert.equal(reviewActionable({ review_stale: true }), true); // stale
+assert.equal(reviewActionable({ review_refresh: { stale: true } }), true); // stale (opened)
+assert.equal(reviewActionable({ ai_review_ran: true }), false); // reviewed + fresh
+assert.equal(reviewActionable({}), false); // unknown payload: stale-only fallback, not actionable
+assert.equal(MatterUtils.reviewActionable({ ai_review_ran: false }), true);
+assert.equal(MatterUtils.reviewNeverRan({ ai_review_ran: false }), true);
 
 const calls = [];
 const repositoryApi = createRepositoryApi({

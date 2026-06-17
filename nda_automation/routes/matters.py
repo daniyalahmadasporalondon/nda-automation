@@ -549,6 +549,16 @@ def handle_matter_upload(handler, *, create_matter_from_document_func=create_mat
         return
 
     try:
+        # DEFER the AI review like inbound + generation do. Running the AI review
+        # synchronously at create fail-CLOSED (502, no matter saved) whenever the
+        # AI reviewer was unavailable, so a transient provider outage silently
+        # dropped manually-uploaded NDAs. With defer_ai_review=True the matter is
+        # created immediately UN-REVIEWED ("Not reviewed yet") and sits in its
+        # source column; the explicit, user-initiated on-demand review (the Review
+        # workstation / inspector "Run AI review" button -> POST
+        # /api/matters/<id>/review-refresh) runs the AI later. This also keeps the
+        # upload path off the synchronous review storm entirely. The frontend
+        # surfaces the no-AI notification when that on-demand review cannot run.
         matter = create_matter_from_document_func(
             filename=filename,
             document_bytes=document_bytes,
@@ -556,6 +566,7 @@ def handle_matter_upload(handler, *, create_matter_from_document_func=create_mat
             board_column=board_column,
             intake_metadata=matter_intake_metadata(payload, filename),
             owner_user_id=request_owner_user_id(handler),
+            defer_ai_review=True,
         )
     except (DocxExtractionError, PdfExtractionError, ValueError) as error:
         handler._send_json({"error": str(error)}, status=400)

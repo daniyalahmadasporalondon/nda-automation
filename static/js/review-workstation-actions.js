@@ -412,6 +412,21 @@ async function markSelectedMatterExecuted() {
       await repositoryController.loadMatters();
     }
     if (typeof renderDashboardInboxTable === "function") renderDashboardInboxTable();
+    // Bust the corpus TTL cache so the just-executed matter appears in the
+    // executed library immediately. The Corpus tab lazy-loads from a warm
+    // per-owner cache on activation, so without an explicit refresh the newly
+    // executed matter would not surface until the cache expired. refresh() issues
+    // GET /api/corpus?refresh=1. Best-effort: a corpus refresh failure must not
+    // surface as a mark-executed error (the mark itself already succeeded).
+    if (typeof corpusController !== "undefined"
+      && corpusController
+      && typeof corpusController.refresh === "function") {
+      try {
+        await corpusController.refresh();
+      } catch (_corpusError) {
+        // Swallow: corpus refresh is a convenience, not part of the mark contract.
+      }
+    }
   } catch (error) {
     renderOperationError(error, "Could not mark this matter executed.");
   } finally {
@@ -1108,16 +1123,21 @@ function renderReviewRefreshNotice(refresh = state.selectedMatter?.review_refres
   // review is already current (reviewed && !stale), since a click would be a
   // no-op. Safe fallback when ai_review_ran is absent: aiReviewRan() ->
   // hasReviewResults(), i.e. the current/reviewed behavior.
-  const reviewLoaded = Boolean(state.selectedMatter?.id) && state.reviewClauses.length > 0;
+  // PRESENCE is gated only on "is a matter open" — NOT on whether review clauses
+  // exist. A never-reviewed matter has zero clauses, and gating on
+  // reviewClauses.length > 0 hid this button exactly in the state where the user
+  // most needs it (the only way to run the first AI review). The button is now
+  // present whenever a matter is loaded and ENABLE/GRAY is driven by `actionable`.
+  const matterLoaded = Boolean(state.selectedMatter?.id);
   // `reviewed` is already resolved above (aiReviewRan()) for the stale indicator.
   // Actionable when not yet reviewed, or reviewed-but-stale (something to re-run).
   const actionable = !reviewed || stale;
-  studioRefreshReviewButton.hidden = !reviewLoaded;
+  studioRefreshReviewButton.hidden = !matterLoaded;
   // Disabled (grayed via the global button:disabled rule) when the review is
   // current and there is nothing to do; the .is-refreshing class still drives the
   // in-flight spinner/disabled state during an actual run.
-  studioRefreshReviewButton.disabled = !reviewLoaded || !actionable;
-  studioRefreshReviewButton.setAttribute("aria-disabled", String(!reviewLoaded || !actionable));
+  studioRefreshReviewButton.disabled = !matterLoaded || !actionable;
+  studioRefreshReviewButton.setAttribute("aria-disabled", String(!matterLoaded || !actionable));
   studioRefreshReviewButton.textContent = "Review";
   studioRefreshReviewButton.title = !reviewed
     ? "Run the AI review against the active Playbook."
