@@ -54,6 +54,47 @@ test("counterpartyNeedsConfirmation fails open when the flag is absent or malfor
   assert.equal(RepositoryModel.counterpartyNeedsConfirmation(undefined), true);
 });
 
+// --- the board-column derivation (matterColumn) -----------------------------
+// An AI review advances an intake matter (Upload / Inbox / Generated) to
+// "In Review"; un-reviewed intake matters keep their intake column; reviewed and
+// sent matters are never pulled backward (forward-only).
+test("matterColumn: un-reviewed intake matters keep their intake column", () => {
+  // Manual upload is STORED as in_review and displayed back as Upload.
+  assert.equal(
+    RepositoryModel.matterColumn({ source_type: "manual_upload", board_column: "in_review" }),
+    "manual_upload",
+  );
+  assert.equal(
+    RepositoryModel.matterColumn({ source_type: "manual_upload", board_column: "in_review", ai_review_ran: false }),
+    "manual_upload",
+  );
+  assert.equal(RepositoryModel.matterColumn({ source_type: "gmail_demo", board_column: "gmail_demo" }), "gmail_demo");
+  assert.equal(RepositoryModel.matterColumn({ source_type: "generated", board_column: "generated" }), "generated");
+});
+
+test("matterColumn: an AI-reviewed intake matter advances to in_review for every source", () => {
+  // Upload (stored in_review) must escape "Upload" once reviewed.
+  assert.equal(
+    RepositoryModel.matterColumn({ source_type: "manual_upload", board_column: "in_review", ai_review_ran: true }),
+    "in_review",
+  );
+  assert.equal(
+    RepositoryModel.matterColumn({ source_type: "gmail_demo", board_column: "gmail_demo", ai_review_ran: true }),
+    "in_review",
+  );
+  assert.equal(
+    RepositoryModel.matterColumn({ source_type: "generated", board_column: "generated", ai_review_ran: true }),
+    "in_review",
+  );
+});
+
+test("matterColumn: forward-only -- reviewed and sent matters are never pulled back", () => {
+  assert.equal(RepositoryModel.matterColumn({ board_column: "reviewed", ai_review_ran: true }), "reviewed");
+  assert.equal(RepositoryModel.matterColumn({ board_column: "sent", ai_review_ran: true }), "sent");
+  // A non-upload matter already advanced to in_review stays put.
+  assert.equal(RepositoryModel.matterColumn({ source_type: "gmail_demo", board_column: "in_review", ai_review_ran: true }), "in_review");
+});
+
 // --- the repository card badge ----------------------------------------------
 const BASE_MATTER = {
   id: "m1",
