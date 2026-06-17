@@ -21,18 +21,21 @@ def request_is_admin(*, user_id: str, provider: str, host: str) -> bool:
     """Return whether the authenticated caller may use admin-only endpoints.
 
     Admin identities are explicitly listed in NDA_ADMIN_USERS. When no list is
-    configured we fall back to the historical single-operator model: HTTP Basic
-    auth is the deployment's break-glass operator credential, so a Basic-auth
-    caller is treated as admin, while per-user Google accounts are not. On a
-    loopback host where authentication is not required, the local developer is
-    trusted, matching how the rest of the app treats loopback.
+    configured we FAIL CLOSED: no authenticated caller is admin. An empty
+    admin list used to fall back to "any HTTP Basic caller is admin", which on a
+    deployment that shares one Basic credential across all users silently made
+    every authenticated user an administrator. On a loopback host where
+    authentication is not required, the local developer is still trusted,
+    matching how the rest of the app treats loopback.
     """
     if not _auth_required_for_host(host):
         return True
     admin_ids = _admin_user_ids()
-    if admin_ids:
-        return str(user_id or "").strip() in admin_ids
-    return str(provider or "").strip().lower() == "basic"
+    if not admin_ids:
+        # Fail closed: with no configured admin identities, real authenticated
+        # callers get no admin access. (Loopback dev is handled above.)
+        return False
+    return str(user_id or "").strip() in admin_ids
 
 
 def _basic_auth_matches(header: str, username: str, password: str) -> bool:
