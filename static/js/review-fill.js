@@ -545,6 +545,11 @@ function createFillController({ state, root, rerenderDocument }) {
         id: candidate.id,
         paragraph_id: candidate.paragraph_id,
         find: candidate.find,
+        // The EXACT detected position of this blank/identity in the paragraph.
+        // applyCleanFill rewrites this specific span, not indexOf's first match —
+        // so a repeated token (or the Aspora name appearing twice) fills the spot
+        // we actually flagged, not an earlier coincidental one.
+        offset: Number.isFinite(candidate.offset) ? candidate.offset : null,
         value,
         field: candidate.slot === "address" ? "registered_office" : "legal_name",
         mode: work.mode === "tracked" ? "tracked" : "clean",
@@ -565,19 +570,46 @@ function createFillController({ state, root, rerenderDocument }) {
     }
   }
 
-  // Rewrites the first occurrence of `find` in the paragraph with `value`, in BOTH
-  // the live paragraph and the export baselines, so the viewer shows the change and
-  // manualExportRedlines() sees no diff for it.
+  // Rewrites the SPECIFIC detected occurrence of `find` in the paragraph with
+  // `value`, in the live paragraph and BOTH export baselines, so the viewer shows
+  // the change and manualExportRedlines() sees no diff for it. Detection recorded
+  // the exact `offset` (record.offset) of the blank/identity we flagged, so we
+  // honor that span instead of re-searching with indexOf — otherwise a repeated
+  // token (or the Aspora name appearing twice) would always rewrite the FIRST
+  // occurrence and leave the intended one untouched. The three arrays are all
+  // snapshots of the same paragraph text, so one offset is valid for each; we still
+  // verify the span matches `find` before splicing so a drifted array is left
+  // alone rather than corrupted (keeping the arrays in sync).
+  //
+  // Falls back to indexOf only when no offset was recorded (e.g. legacy fills) AND
+  // the token is unambiguous (a single occurrence), so we never silently pick the
+  // wrong one of several matches.
+  function spanAt(text, offset, find) {
+    if (offset == null || !Number.isFinite(offset) || offset < 0 || offset > text.length) return -1;
+    return text.slice(offset, offset + find.length) === find ? offset : -1;
+  }
+
   function applyCleanFill(record) {
     let touched = false;
+    const find = String(record.find || "");
+    if (!find) return false;
     const replaceIn = (list) => {
       if (!Array.isArray(list)) return;
       const paragraph = list.find((item) => String(item.id) === String(record.paragraph_id));
       if (!paragraph) return;
       const text = String(paragraph.text || "");
-      const at = text.indexOf(record.find);
-      if (at === -1) return;
-      paragraph.text = text.slice(0, at) + record.value + text.slice(at + record.find.length);
+      let at = spanAt(text, record.offset, find);
+      if (at === -1) {
+        // No usable recorded offset for this array (none stored, or its text has
+        // drifted from the detected snapshot). Only fall back to a search when the
+        // token is unambiguous — a single occurrence — so we never rewrite the
+        // wrong one of several identical tokens.
+        const first = text.indexOf(find);
+        if (first === -1) return;
+        if (text.indexOf(find, first + 1) !== -1) return; // ambiguous — skip rather than guess
+        at = first;
+      }
+      paragraph.text = text.slice(0, at) + record.value + text.slice(at + find.length);
       touched = true;
     };
     replaceIn(state.reviewParagraphs);
