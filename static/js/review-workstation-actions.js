@@ -882,7 +882,16 @@ async function refreshSelectedMatterReview() {
     const refreshedMatter = matterReviewPayloadToMatter(payload);
     loadMatterIntoReview(refreshedMatter);
     await repositoryController.loadMatters();
-    if (payload.review_refresh?.stale) {
+    if (payload.ai_review_unavailable) {
+      // AI is the only reviewer on the Review tab. When it cannot run the matter is
+      // left "not reviewed" (no deterministic fallback) -- surface that honestly via
+      // the existing in-app notification system instead of claiming a fresh review.
+      const message =
+        payload.ai_review_unavailable_message ||
+        "Review can't be completed — no AI reviewer available.";
+      notifyReviewUnavailable(message);
+      setFileMeta(message);
+    } else if (payload.review_refresh?.stale) {
       setFileMeta(staleReviewMessage(payload.review_refresh));
     } else if (payload.review_refresh?.redline_draft_cleared) {
       setFileMeta(payload.review_refresh.message || "Review refreshed. Saved redline draft was cleared.");
@@ -910,6 +919,24 @@ async function refreshSelectedMatterReview() {
       renderReviewRefreshNotice();
     }
     updateExportButtonState();
+  }
+}
+
+// Fire the "no AI reviewer available" message through the existing in-app
+// notification system (the toast controller created in app.js). Defensive: if the
+// controller is not present (e.g. isolated test harness) the inline file-meta
+// message still communicates the same thing, so this is best-effort and never throws.
+function notifyReviewUnavailable(message) {
+  try {
+    if (
+      typeof notificationsController !== "undefined" &&
+      notificationsController &&
+      typeof notificationsController.notify === "function"
+    ) {
+      notificationsController.notify("Review unavailable", message);
+    }
+  } catch (error) {
+    // Notification is advisory; never let it break the refresh flow.
   }
 }
 

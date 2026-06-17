@@ -19,6 +19,7 @@ from __future__ import annotations
 import unittest
 
 from nda_automation.matter_repository import InMemoryMatterRepository
+from nda_automation.review_engine import ActiveReviewEngineError
 from nda_automation.routes import matters as matters_routes
 
 
@@ -217,6 +218,126 @@ class ExplicitRefreshRunsAI(unittest.TestCase):
 
         self.assertEqual(handler.status, 200)
         self.assertEqual(spy.calls, 1, "explicit refresh must run AI on a text-changed matter")
+
+
+class _UnavailableAIEngine:
+    """Stands in for the AI reviewer being unavailable (AI off / key missing /
+    provider error). Mirrors review_nda_with_active_engine's AI-first fail-closed
+    contract: it raises ActiveReviewEngineError and NEVER returns a deterministic
+    review."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.forced_engines: list[object] = []
+
+    def __call__(self, text, *, paragraphs=None, **kwargs):
+        self.calls += 1
+        self.forced_engines.append(kwargs.get("force_engine"))
+        raise ActiveReviewEngineError("AI-first review failed: AI-first assessment is disabled.")
+
+
+class ReviewTabIsAIOnly(unittest.TestCase):
+    """The user-facing Review tab uses the AI as the ONLY reviewer.
+
+    When the AI cannot run there is NO deterministic fallback: the matter is left
+    "not reviewed" (ai_review_ran false) and the response carries the notification
+    signal. And the review-tab call site always forces the AI-first engine, so a
+    deterministic active-engine config can never produce a verdict on this path.
+    """
+
+    def test_review_refresh_forces_ai_first_engine(self):
+        repository = InMemoryMatterRepository()
+        text = "Confidential information clause that needs an AI review."
+        deterministic_review = _fresh_ai_review_result(text)
+        deterministic_review["active_review_engine"] = {"executed_engine": "deterministic"}
+        deterministic_review.pop("ai_first_review", None)
+        matter_id = _seed_matter(repository, extracted_text=text, review_result=deterministic_review)
+
+        spy = _SpyEngine()
+        captured: list[object] = []
+        original = matters_routes.review_nda_with_active_engine
+
+        def _recording_engine(text, *, paragraphs=None, **kwargs):
+            captured.append(kwargs.get("force_engine"))
+            return spy(text, paragraphs=paragraphs)
+
+        matters_routes.review_nda_with_active_engine = _recording_engine
+        try:
+            handler = _FakeHandler(repository=repository)
+            matters_routes.handle_matter_review_refresh(
+                handler, f"/api/matters/{matter_id}/review-refresh"
+            )
+        finally:
+            matters_routes.review_nda_with_active_engine = original
+
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(spy.calls, 1)
+        # The review-tab wrapper MUST pin the AI-first engine regardless of config.
+        self.assertEqual(captured, ["ai_first"])
+        self.assertNotIn("ai_review_unavailable", handler.json)
+
+    def test_ai_off_leaves_matter_unreviewed_and_notifies(self):
+        repository = InMemoryMatterRepository()
+        text = "Confidential information clause needing review while AI is OFF."
+        # No prior AI review -> broad staleness True -> the refresh attempts AI.
+        deterministic_review = _fresh_ai_review_result(text)
+        deterministic_review["active_review_engine"] = {"executed_engine": "deterministic"}
+        deterministic_review.pop("ai_first_review", None)
+        matter_id = _seed_matter(repository, extracted_text=text, review_result=deterministic_review)
+
+        unavailable = _UnavailableAIEngine()
+        original = matters_routes.review_nda_with_active_engine
+        matters_routes.review_nda_with_active_engine = unavailable
+        try:
+            handler = _FakeHandler(repository=repository)
+            matters_routes.handle_matter_review_refresh(
+                handler, f"/api/matters/{matter_id}/review-refresh"
+            )
+        finally:
+            matters_routes.review_nda_with_active_engine = original
+
+        self.assertEqual(handler.status, 200)
+        # AI was attempted, forced to AI-first, and failed closed.
+        self.assertEqual(unavailable.calls, 1)
+        self.assertEqual(unavailable.forced_engines, ["ai_first"])
+        # No deterministic review was produced -- the matter is still "not reviewed".
+        self.assertFalse(handler.json["matter"]["ai_review_ran"])
+        stored = repository.get_matter(matter_id, owner_user_id="owner@example.com")
+        self.assertEqual(
+            stored["review_result"]["active_review_engine"]["executed_engine"],
+            "deterministic",
+            "the stored review must be untouched (no NEW deterministic review written)",
+        )
+        # The notification signal fires with the required message.
+        self.assertTrue(handler.json["ai_review_unavailable"])
+        self.assertIn(
+            "no AI reviewer available",
+            handler.json["ai_review_unavailable_message"],
+        )
+
+    def test_ai_on_runs_normal_review_without_notification(self):
+        repository = InMemoryMatterRepository()
+        text = "Confidential information clause with the AI reviewer ON."
+        deterministic_review = _fresh_ai_review_result(text)
+        deterministic_review["active_review_engine"] = {"executed_engine": "deterministic"}
+        deterministic_review.pop("ai_first_review", None)
+        matter_id = _seed_matter(repository, extracted_text=text, review_result=deterministic_review)
+
+        spy = _SpyEngine()  # returns a completed AI-first review
+        original = matters_routes.review_nda_with_active_engine
+        matters_routes.review_nda_with_active_engine = spy
+        try:
+            handler = _FakeHandler(repository=repository)
+            matters_routes.handle_matter_review_refresh(
+                handler, f"/api/matters/{matter_id}/review-refresh"
+            )
+        finally:
+            matters_routes.review_nda_with_active_engine = original
+
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(spy.calls, 1)
+        self.assertTrue(handler.json["matter"]["ai_review_ran"])
+        self.assertNotIn("ai_review_unavailable", handler.json)
 
 
 if __name__ == "__main__":

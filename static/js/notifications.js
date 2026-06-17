@@ -195,7 +195,30 @@ const NotificationsView = (() => {
       });
     }
 
-    return { observe, poll };
+    // Fire an arbitrary in-app toast (not tied to an inbound matter). Reuses the
+    // same toast machinery (mountToast / esc / stack cap / auto-dismiss) as the
+    // inbound-arrival toasts, so callers get a notification through the one existing
+    // notification mechanism rather than a bespoke banner. Used by the Review tab to
+    // report "Review can't be completed — no AI reviewer available."
+    function notify(title, subtitle) {
+      const node = document.createElement("div");
+      node.className = "toast";
+      node.setAttribute("role", "status");
+      node.dataset.toastAlert = "true";
+      node.innerHTML = `
+        <button class="toast-close" type="button" data-toast-close aria-label="Dismiss notification">&times;</button>
+        <span class="toast-open toast-open--static">
+          <span class="toast-icon" aria-hidden="true">\u{26A0}\u{FE0F}</span>
+          <span class="toast-body">
+            <span class="toast-title">${esc(title)}</span>
+            ${subtitle ? `<span class="toast-subtitle">${esc(subtitle)}</span>` : ""}
+          </span>
+        </span>
+      `;
+      mountToast(node, () => {});
+    }
+
+    return { observe, poll, notify };
   }
 
   return { createController };

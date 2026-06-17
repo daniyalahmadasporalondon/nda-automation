@@ -27,7 +27,11 @@ from ..matter_repository import DiskMatterRepository, MatterRepository, MatterRe
 from ..pdf_text import PdfExtractionError
 from ..repository_board_workflow import RepositoryBoardWorkflow, RepositoryBoardWorkflowError
 from ..review_document import STRUCTURAL_METADATA_KEYS, align_document_paragraphs
-from ..review_engine import ActiveReviewEngineError, review_nda_with_active_engine
+from ..review_engine import (
+    REVIEW_ENGINE_AI_FIRST,
+    ActiveReviewEngineError,
+    review_nda_with_active_engine,
+)
 from ..review_staleness import review_result_is_stale, review_result_staleness
 from ..review_state import review_was_ai_executed
 from .common import parse_matter_id, request_owner_user_id
@@ -77,13 +81,35 @@ def handle_matter_review(handler, path: str, *, send_body: bool = True) -> None:
     handler._send_json(_matter_review_payload(matter, matter_id), send_body=send_body)
 
 
+def _review_tab_ai_only_engine(text, **kwargs):
+    """Review-tab review engine: AI is the ONLY reviewer.
+
+    The user-facing Review workstation must NEVER fall back to the deterministic
+    review. We pin ``force_engine=ai_first`` so this call site ignores the active
+    engine config (which can select ``deterministic`` via env/runtime settings) and
+    always runs the AI reviewer. When the AI reviewer cannot run (AI disabled / key
+    missing / provider error) ``review_nda_with_active_engine`` raises
+    ``ActiveReviewEngineError`` (fail-closed, no deterministic review produced);
+    ``refresh_review`` then leaves the matter unreviewed and the route surfaces a
+    notification rather than a deterministic verdict.
+
+    This is intentionally a thin, review-tab-LOCAL wrapper: the shared
+    ``review_nda_with_active_engine`` and the inbound/ingestion call sites are left
+    exactly as they are.
+    """
+    return review_nda_with_active_engine(text, force_engine=REVIEW_ENGINE_AI_FIRST, **kwargs)
+
+
 def handle_matter_review_refresh(handler, path: str) -> None:
     """POST /api/matters/<id>/review-refresh -- the ONLY path that runs the AI review.
 
-    This is the explicit, user-initiated AI refresh. It re-runs the active review
-    engine (AI-first by default, i.e. the verifier) over the matter and stores the
-    fresh review. Opening/fetching a matter never reaches here, so "looking at"
-    a matter never triggers the expensive AI.
+    This is the explicit, user-initiated AI refresh. On the Review tab the AI is the
+    ONLY reviewer: it re-runs the AI-first engine (the verifier) over the matter and
+    stores the fresh review. There is NO deterministic fallback here -- if the AI
+    reviewer cannot run (AI disabled / key missing / provider error) the matter is
+    left "not reviewed" (``ai_review_ran`` stays false) and the response carries
+    ``ai_review_unavailable`` so the frontend fires a notification. Opening/fetching a
+    matter never reaches here, so "looking at" a matter never triggers the AI.
 
     The refresh runs whenever the BROAD offline staleness signal is set
     (``review_may_be_stale``): playbook/engine drift OR no AI review exists yet OR
@@ -104,16 +130,33 @@ def handle_matter_review_refresh(handler, path: str) -> None:
 
     refresh = RepositoryMatterLifecycle(_repository(handler)).refresh_review(
         matter,
-        review_engine_func=review_nda_with_active_engine,
+        review_engine_func=_review_tab_ai_only_engine,
         review_staleness_func=_broad_staleness,
     )
-    handler._send_json(_matter_review_payload(
+    # AI is the only reviewer on the Review tab. ``refresh_review`` swallows an
+    # ``ActiveReviewEngineError`` (AI unavailable) and returns the matter UNCHANGED,
+    # so a refresh that was warranted (``was_stale``) but did not leave the matter
+    # with an executed AI review means the AI reviewer could not run. No
+    # deterministic verdict is ever produced -- we just tell the frontend to notify.
+    ai_review_unavailable = bool(
+        refresh.was_stale
+        and not review_was_ai_executed(refresh.matter.get("review_result"))
+    )
+    if ai_review_unavailable:
+        telemetry.increment("review_tab_ai_unavailable")
+    payload = _matter_review_payload(
         refresh.matter,
         matter_id,
         was_stale=refresh.was_stale,
         had_redline_draft=refresh.had_redline_draft,
         refresh_attempted=refresh.refresh_attempted,
-    ))
+    )
+    if ai_review_unavailable:
+        payload["ai_review_unavailable"] = True
+        payload["ai_review_unavailable_message"] = (
+            "Review can't be completed — no AI reviewer available."
+        )
+    handler._send_json(payload)
 
 
 def _matter_for_review_response(handler, matter_id: str | None, *, send_body: bool) -> dict | None:
