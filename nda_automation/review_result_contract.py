@@ -14,7 +14,12 @@ from .redline_edit_contract import normalize_redline_edits, redline_inserted_tex
 from .review_document import EvidenceProvenanceError, validate_clause_evidence_trust
 from .source_fidelity import source_fidelity_payload
 
-COUNTERPARTY_SOURCE = "ai_review_preamble"
+# The honest default ``source`` for a counterparty block that no AI extraction
+# produced. ``ai_review_preamble`` is reserved for a name the AI extractor actually
+# returned; an empty/unverified block (deterministic engine, a direct caller, a
+# fail-open extraction) is ``unreviewed`` so the surfaced provenance never implies
+# the AI named the party when the display name came from the subject-line normalizer.
+COUNTERPARTY_SOURCE = "unreviewed"
 
 PROPOSED_CHANGE_CONTRACT_VERSION = 1
 PROPOSED_CHANGE_REPLACE = "replace"

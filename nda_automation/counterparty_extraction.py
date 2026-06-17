@@ -41,7 +41,18 @@ from .untrusted_text import neutralize_untrusted_text
 LOGGER = logging.getLogger(__name__)
 
 COUNTERPARTY_EXTRACTION_VERSION = 1
+# Provenance labels for a counterparty block's ``source``. They must be HONEST about
+# how the name was produced:
+#   - ``ai_review_preamble`` is reserved for a name the AI extractor ACTUALLY produced
+#     (the preamble extraction ran and returned a distinct counterparty name).
+#   - ``unreviewed`` is the fail-open / no-name label: extraction did not run, was
+#     disabled/unconfigured, errored, or ran but found no distinct counterparty. The
+#     display name for these matters comes from the deterministic subject-line
+#     normalizer (``counterparty_naming.normalize_counterparty``), not from AI, so the
+#     source must not claim the AI preamble produced it.
 COUNTERPARTY_SOURCE = "ai_review_preamble"
+COUNTERPARTY_SOURCE_AI = "ai_review_preamble"
+COUNTERPARTY_SOURCE_UNREVIEWED = "unreviewed"
 
 # The first party is always us; "Aspora" is pinned so a preamble that only spells
 # out a long legal name ("Aspora Technology Services Private Limited") still anchors
@@ -113,6 +124,8 @@ def empty_counterparty() -> dict[str, Any]:
 
     This is the FAIL-OPEN value: every error path collapses to it, and the review
     result / matter carry it when extraction is disabled, unconfigured, or failed.
+    No AI counterparty was produced, so the source is honestly ``unreviewed`` (the
+    display name, if any, comes from the deterministic subject-line normalizer).
     """
     return {
         "name": "",
@@ -120,7 +133,7 @@ def empty_counterparty() -> dict[str, Any]:
         "verified": False,
         "first_party": "",
         "second_party": "",
-        "source": COUNTERPARTY_SOURCE,
+        "source": COUNTERPARTY_SOURCE_UNREVIEWED,
     }
 
 
@@ -244,27 +257,30 @@ def extract_counterparty(
 
     if not counterparty_name:
         # The reviewer ran but found no distinct counterparty (placeholder/template,
-        # both-parties-ours, or a single named party). Never verified.
+        # both-parties-ours, or a single named party). Never verified. No AI name was
+        # produced, so the source is ``unreviewed`` (not the AI-preamble label).
         return {
             "name": "",
             "confidence": confidence,
             "verified": False,
             "first_party": first_party,
             "second_party": second_party,
-            "source": COUNTERPARTY_SOURCE,
+            "source": COUNTERPARTY_SOURCE_UNREVIEWED,
         }
 
     # A counterparty that is actually one of OUR first-party tokens is not a
     # counterparty -- refuse it deterministically so an injected/echoed "Aspora"
     # can never be confidently finalized as the other side.
     if _matches_first_party(counterparty_name, tokens):
+        # The "counterparty" was actually one of OUR own parties -> no real AI
+        # counterparty was produced, so the source is ``unreviewed``.
         return {
             "name": "",
             "confidence": confidence,
             "verified": False,
             "first_party": first_party,
             "second_party": second_party,
-            "source": COUNTERPARTY_SOURCE,
+            "source": COUNTERPARTY_SOURCE_UNREVIEWED,
         }
 
     verified = _cross_check(
@@ -275,13 +291,15 @@ def extract_counterparty(
         verifier=verifier,
         verify=verify,
     )
+    # The AI extractor actually produced a distinct counterparty name -> the AI
+    # preamble source is honest here (and only here).
     return {
         "name": counterparty_name,
         "confidence": confidence,
         "verified": bool(verified),
         "first_party": first_party,
         "second_party": second_party,
-        "source": COUNTERPARTY_SOURCE,
+        "source": COUNTERPARTY_SOURCE_AI,
     }
 
 

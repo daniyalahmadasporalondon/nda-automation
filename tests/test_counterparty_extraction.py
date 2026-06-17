@@ -13,6 +13,8 @@ import unittest
 
 from nda_automation.counterparty_extraction import (
     COUNTERPARTY_SOURCE,
+    COUNTERPARTY_SOURCE_AI,
+    COUNTERPARTY_SOURCE_UNREVIEWED,
     _matches_first_party,
     empty_counterparty,
     extract_counterparty,
@@ -667,6 +669,66 @@ class DeterministicFallbackWhenBothTiersUnavailableTests(unittest.TestCase):
         self.assertEqual(
             normalize_counterparty("Fwd: Aspora <> Coverstack"), "Coverstack"
         )
+
+
+class HonestCounterpartySourceLabelTests(unittest.TestCase):
+    """The ``source`` label must be honest about HOW the name was produced.
+
+    ``ai_review_preamble`` is reserved for a name the AI extractor actually returned;
+    a fail-open / no-name block reads ``unreviewed`` so the surfaced provenance never
+    implies the AI named the party when the display name came from the deterministic
+    subject-line normalizer (the inbound-matter fallback).
+    """
+
+    def test_genuine_ai_extraction_is_labelled_ai_review_preamble(self):
+        reviewer = _StubReviewer({
+            "first_party": "Aspora",
+            "second_party": "Globex Industries Ltd",
+            "counterparty": "Globex Industries Ltd",
+            "confidence": 0.96,
+        })
+        result = extract_counterparty(PREAMBLE, reviewer=reviewer, verify=False)
+        self.assertEqual(result["name"], "Globex Industries Ltd")
+        self.assertEqual(result["source"], COUNTERPARTY_SOURCE_AI)
+        self.assertEqual(result["source"], "ai_review_preamble")
+
+    def test_empty_block_is_labelled_unreviewed_not_ai(self):
+        self.assertEqual(empty_counterparty()["source"], COUNTERPARTY_SOURCE_UNREVIEWED)
+        self.assertEqual(empty_counterparty()["source"], "unreviewed")
+        self.assertNotEqual(empty_counterparty()["source"], "ai_review_preamble")
+
+    def test_reviewer_finds_no_distinct_party_is_unreviewed(self):
+        # The reviewer ran but returned no counterparty (blank template) -> no AI name
+        # was produced, so the source must be ``unreviewed``, not the AI-preamble label.
+        reviewer = _StubReviewer({
+            "first_party": "Aspora",
+            "second_party": "",
+            "counterparty": "",
+            "confidence": 0.1,
+        })
+        result = extract_counterparty(PREAMBLE, reviewer=reviewer, verify=False)
+        self.assertEqual(result["name"], "")
+        self.assertEqual(result["source"], COUNTERPARTY_SOURCE_UNREVIEWED)
+
+    def test_counterparty_that_is_actually_us_is_unreviewed(self):
+        reviewer = _StubReviewer({
+            "first_party": "Aspora",
+            "second_party": "Aspora",
+            "counterparty": "Aspora",
+            "confidence": 0.9,
+        })
+        result = extract_counterparty(PREAMBLE, reviewer=reviewer, verify=False)
+        self.assertEqual(result["name"], "")
+        self.assertEqual(result["source"], COUNTERPARTY_SOURCE_UNREVIEWED)
+
+    def test_contract_default_block_source_is_unreviewed(self):
+        from nda_automation.review_result_contract import (
+            COUNTERPARTY_SOURCE as CONTRACT_SOURCE,
+            empty_counterparty_block,
+        )
+
+        self.assertEqual(CONTRACT_SOURCE, "unreviewed")
+        self.assertEqual(empty_counterparty_block()["source"], "unreviewed")
 
 
 if __name__ == "__main__":
