@@ -201,6 +201,116 @@ def test_send_for_missing_matter_raises(in_memory_matters):
 
 
 # --------------------------------------------------------------------------- #
+# Per-recipient signature status — Aspora vs counterparty, 0/2 -> 1/2 -> 2/2
+# --------------------------------------------------------------------------- #
+
+_TWO_PARTY_SIGNERS = [
+    {"name": "Daniyal Ahmad", "email": "daniyal.ahmad@aspora.com", "role": "aspora"},
+    {"name": "Acme Corp", "email": "cp@acme.com", "role": "counterparty"},
+]
+
+
+def _send_two_party(matter, matter_id, in_memory_matters, fake):
+    return docusign_workflow.send_for_signature(
+        matter,
+        matter_id,
+        OWNER,
+        repository=in_memory_matters,
+        client=fake,
+        signers=list(_TWO_PARTY_SIGNERS),
+    ).envelope_id
+
+
+def _stored_signers_by_role(in_memory_matters, matter_id):
+    stored = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
+    signature = stored[docusign_workflow.SIGNATURE_FIELD]
+    return {s.get("role"): s for s in signature["signers"]}
+
+
+def test_sync_records_per_recipient_status_zero_of_two(matter_with_reviewed, in_memory_matters):
+    """Sent, neither party signed -> both recipients read 'awaiting' (0/2)."""
+    matter, matter_id = matter_with_reviewed
+    fake = FakeDocuSignClient()
+    envelope_id = _send_two_party(matter, matter_id, in_memory_matters, fake)
+    fake.advance(envelope_id)  # -> delivered (still out for signature)
+
+    docusign_workflow.sync_signature_status(
+        None, matter_id, OWNER, repository=in_memory_matters, client=fake
+    )
+    by_role = _stored_signers_by_role(in_memory_matters, matter_id)
+    assert by_role["aspora"]["signature_status"] == "awaiting"
+    assert by_role["counterparty"]["signature_status"] == "awaiting"
+    assert by_role["aspora"]["signed_at"] == ""
+
+
+def test_sync_records_per_recipient_status_one_of_two_aspora(matter_with_reviewed, in_memory_matters):
+    """Only Aspora has signed -> Aspora 'signed' (with a date), counterparty 'awaiting' (1/2)."""
+    matter, matter_id = matter_with_reviewed
+    fake = FakeDocuSignClient()
+    envelope_id = _send_two_party(matter, matter_id, in_memory_matters, fake)
+    fake.sign_recipient(envelope_id, "daniyal.ahmad@aspora.com")
+
+    docusign_workflow.sync_signature_status(
+        None, matter_id, OWNER, repository=in_memory_matters, client=fake
+    )
+    by_role = _stored_signers_by_role(in_memory_matters, matter_id)
+    assert by_role["aspora"]["signature_status"] == "signed"
+    assert by_role["aspora"]["signed_at"]  # a signed timestamp is surfaced
+    assert by_role["counterparty"]["signature_status"] == "awaiting"
+
+
+def test_sync_records_per_recipient_status_one_of_two_counterparty(matter_with_reviewed, in_memory_matters):
+    """Only the counterparty has signed -> counterparty 'signed', Aspora 'awaiting' (1/2)."""
+    matter, matter_id = matter_with_reviewed
+    fake = FakeDocuSignClient()
+    envelope_id = _send_two_party(matter, matter_id, in_memory_matters, fake)
+    fake.sign_recipient(envelope_id, "cp@acme.com")
+
+    docusign_workflow.sync_signature_status(
+        None, matter_id, OWNER, repository=in_memory_matters, client=fake
+    )
+    by_role = _stored_signers_by_role(in_memory_matters, matter_id)
+    assert by_role["counterparty"]["signature_status"] == "signed"
+    assert by_role["aspora"]["signature_status"] == "awaiting"
+
+
+def test_sync_records_per_recipient_status_two_of_two(matter_with_reviewed, in_memory_matters):
+    """Envelope completed -> both parties 'signed' (2/2, fully executed)."""
+    matter, matter_id = matter_with_reviewed
+    fake = FakeDocuSignClient(auto_complete=True)
+    _send_two_party(matter, matter_id, in_memory_matters, fake)
+
+    final = docusign_workflow.sync_signature_status(
+        None, matter_id, OWNER, repository=in_memory_matters, client=fake
+    )
+    assert final.completed is True
+    by_role = _stored_signers_by_role(in_memory_matters, matter_id)
+    assert by_role["aspora"]["signature_status"] == "signed"
+    assert by_role["counterparty"]["signature_status"] == "signed"
+    assert by_role["aspora"]["signed_at"]
+    assert by_role["counterparty"]["signed_at"]
+
+
+def test_sync_tolerates_client_without_recipient_support(matter_with_reviewed, in_memory_matters):
+    """A client lacking get_envelope_recipients leaves signers unenriched (no crash)."""
+
+    class _NoRecipientsClient(FakeDocuSignClient):
+        get_envelope_recipients = None  # not callable -> best-effort skip
+
+    matter, matter_id = matter_with_reviewed
+    fake = _NoRecipientsClient()
+    _send_two_party(matter, matter_id, in_memory_matters, fake)
+
+    # Must not raise; the per-party fields are simply absent.
+    docusign_workflow.sync_signature_status(
+        None, matter_id, OWNER, repository=in_memory_matters, client=fake
+    )
+    by_role = _stored_signers_by_role(in_memory_matters, matter_id)
+    assert "signature_status" not in by_role["aspora"]
+    assert by_role["aspora"]["role"] == "aspora"
+
+
+# --------------------------------------------------------------------------- #
 # Signature anchoring — each signer's tabs anchor to its party's token
 # --------------------------------------------------------------------------- #
 

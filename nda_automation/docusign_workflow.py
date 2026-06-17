@@ -256,6 +256,16 @@ def sync_signature_status(
     signed_artifact_id = ""
     fields: dict[str, Any] = {SIGNATURE_FIELD: {**signature, "status": status, "last_synced_at": _now_iso()}}
 
+    # Surface the PER-RECIPIENT signed state so the matter view can show each
+    # party (Aspora / counterparty) at a glance — signed / awaiting — rather than
+    # only the envelope's overall status. Best-effort: a client that does not
+    # expose recipients, or any fetch failure, leaves the stored signers untouched
+    # (the per-party section degrades to the existing overall status). Never blocks
+    # the sync — the envelope status above is the authoritative transition.
+    fields[SIGNATURE_FIELD]["signers"] = _signers_with_recipient_status(
+        signature, docusign_client, envelope_id
+    )
+
     if completed:
         signed_artifact_id = _capture_executed_document(
             docusign_client,
@@ -379,6 +389,59 @@ def _as_pdf(file_bytes: bytes, filename: str, owner_user_id: str) -> tuple[bytes
 def _with_ext(filename: str, ext: str) -> str:
     stem = Path(str(filename or "NDA")).stem or "NDA"
     return f"{stem}.{ext}"
+
+
+# ---------------------------------------------------------------------------
+# Per-recipient signature status
+# ---------------------------------------------------------------------------
+def _signers_with_recipient_status(
+    signature: dict[str, Any],
+    client: docusign_integration.DocuSignClient,
+    envelope_id: str,
+) -> list[dict[str, Any]]:
+    """The stored signer list enriched with each recipient's live signed status.
+
+    Returns a fresh signer-dict list (copies of the stored ``signature["signers"]``)
+    with two fields merged in per signer from DocuSign's recipients endpoint,
+    matched by email (case-insensitively):
+
+    * ``signature_status`` — ``signed`` / ``awaiting`` / ``declined`` (normalized).
+    * ``signed_at`` — the recipient's signedDateTime when present, else ``""``.
+
+    The signer's ``role`` (``aspora`` / ``counterparty``) is preserved verbatim, so
+    the UI can map each party's signed state without re-deriving who is who.
+
+    Best-effort and fail-soft: a client without ``get_envelope_recipients``, or any
+    DocuSign error, returns the stored signers unchanged (so the view degrades to
+    the envelope's overall status). Never raises.
+    """
+    stored = signature.get("signers")
+    signers = [dict(s) for s in stored if isinstance(s, dict)] if isinstance(stored, list) else []
+    fetch = getattr(client, "get_envelope_recipients", None)
+    if not callable(fetch):
+        return signers
+    try:
+        recipients = fetch(envelope_id)
+    except DocuSignNotConnectedError:
+        raise
+    except DocuSignError:
+        return signers
+    except Exception:  # noqa: BLE001 -- per-recipient status is non-authoritative; never block the sync.
+        return signers
+    if not isinstance(recipients, list):
+        return signers
+    by_email = {
+        str(r.get("email") or "").strip().casefold(): r
+        for r in recipients
+        if isinstance(r, dict) and str(r.get("email") or "").strip()
+    }
+    for signer in signers:
+        match = by_email.get(str(signer.get("email") or "").strip().casefold())
+        if match is None:
+            continue
+        signer["signature_status"] = str(match.get("status") or docusign_integration.RECIPIENT_AWAITING)
+        signer["signed_at"] = str(match.get("signed_at") or "")
+    return signers
 
 
 # ---------------------------------------------------------------------------
