@@ -26,6 +26,12 @@ function createDraftIntakeController({
   counterpartyEmailInput,
   ndaTypeSelect,
   termInput,
+  // Term stepper controls (the integer-years +/- widget). termInput is the
+  // editable number box; the buttons step it; the hint surfaces the playbook cap.
+  termDecrementButton,
+  termIncrementButton,
+  termHintNode,
+  termUnitNode,
   projectPurposeInput,
   governingLawSelect,
   lawStatusNode,
@@ -83,6 +89,10 @@ function createDraftIntakeController({
   // parallel). Mirrors DEFAULT_MAX_TERM_YEARS in modules/draft-intake.mjs.
   const DEFAULT_MAX_TERM_YEARS = 5;
   let maxTermYears = DEFAULT_MAX_TERM_YEARS;
+
+  // The term the stepper starts at (and resets to). 2 years matches the form's
+  // previous "e.g. 2 years" default; always within [1, maxTermYears].
+  const DEFAULT_TERM_YEARS = 2;
 
   function api() {
     if (!intakeApi) {
@@ -200,12 +210,76 @@ function createDraftIntakeController({
     intake = { ...intake, counterpartyEmail: counterpartyEmailInput.value };
     setStatus("");
     updateGenerateState();
+    updateSendState();
   });
 
-  termInput?.addEventListener("input", () => {
-    intake = { ...intake, term: termInput.value };
+  // ── Term stepper ──────────────────────────────────────────────────────────
+  // The Term field is an integer-years +/- stepper. The minimum is 1 year and the
+  // MAXIMUM is the playbook's term cap (maxTermYears, sourced live from the
+  // /api/signing-entities feed's playbook_meta.max_term_years; falls back to the
+  // hardcoded DEFAULT_MAX_TERM_YEARS only when the feed is unavailable). The value
+  // is always clamped to [1, maxTermYears] — the same window generation enforces
+  // (nda_generation._resolve_term_years) — so the form can never request a term the
+  // generated NDA won't honour. intake.term carries "N years" text, which the
+  // backend term_years() parser reads as its leading integer.
+  const TERM_MIN_YEARS = 1;
+
+  // The current integer term, derived from intake.term (mirrors the backend's
+  // leading-token parse). Falls back to the default when blank/unparseable.
+  function currentTermYears() {
+    const token = String(intake.term || "").trim().split(/\s+/)[0];
+    const parsed = Number.parseInt(token, 10);
+    return Number.isFinite(parsed) ? parsed : DEFAULT_TERM_YEARS;
+  }
+
+  // Clamp to [1, playbook max].
+  function clampTermYears(value) {
+    const n = Number.isFinite(value) ? Math.floor(value) : DEFAULT_TERM_YEARS;
+    return Math.min(Math.max(n, TERM_MIN_YEARS), maxTermYears);
+  }
+
+  // Commit an integer term into the intake (as "N years" text), reflect it in the
+  // input, update the +/- disabled state + cap hint, and re-render the dependents.
+  function setTermYears(value, { flash = false } = {}) {
+    const years = clampTermYears(value);
+    const unit = years === 1 ? "year" : "years";
+    intake = { ...intake, term: `${years} ${unit}` };
+    if (termInput && Number(termInput.value) !== years) termInput.value = String(years);
+    if (termUnitNode) termUnitNode.textContent = unit;
+    renderTermControls();
     renderSidePanel();
-    flashField("term");
+    if (flash) flashField("term");
+  }
+
+  // Disable +/- at the bounds and surface the playbook cap once the live value is
+  // known (so the user understands why the plus button stops at the max).
+  function renderTermControls() {
+    const years = currentTermYears();
+    if (termInput) {
+      termInput.min = String(TERM_MIN_YEARS);
+      termInput.max = String(maxTermYears);
+    }
+    if (termDecrementButton) termDecrementButton.disabled = years <= TERM_MIN_YEARS;
+    if (termIncrementButton) termIncrementButton.disabled = years >= maxTermYears;
+    if (termHintNode) {
+      const unit = maxTermYears === 1 ? "year" : "years";
+      termHintNode.textContent = `Playbook caps the term at ${maxTermYears} ${unit}.`;
+    }
+  }
+
+  termDecrementButton?.addEventListener("click", () => {
+    setTermYears(currentTermYears() - 1, { flash: true });
+  });
+
+  termIncrementButton?.addEventListener("click", () => {
+    setTermYears(currentTermYears() + 1, { flash: true });
+  });
+
+  // Typing directly into the box: re-clamp on every input so an out-of-range value
+  // (e.g. 99) is corrected to the cap immediately and the +/- state stays honest.
+  termInput?.addEventListener("input", () => {
+    const parsed = Number.parseInt(termInput.value, 10);
+    setTermYears(Number.isFinite(parsed) ? parsed : DEFAULT_TERM_YEARS);
   });
 
   projectPurposeInput?.addEventListener("input", () => {
@@ -298,6 +372,9 @@ function createDraftIntakeController({
     populateEntityOptions();
     populateNdaTypeOptions();
     populateGoverningLawOptions();
+    // loadRegistry() may have refreshed maxTermYears from the live playbook feed;
+    // seed the stepper to the default term, re-clamped against the live cap.
+    setTermYears(currentTermYears());
     initialized = true;
   }
 
@@ -629,6 +706,24 @@ function createDraftIntakeController({
     generateButton.disabled = busy || !result.ok;
   }
 
+  // Send EMAILS the NDA to the counterparty, so it needs a counterparty email —
+  // the Send modal's own submit stays disabled without a valid recipient. The
+  // counterparty email field is otherwise OPTIONAL (Generate / Download / Send for
+  // Signature don't need it), so only Send is gated here. We disable the Send
+  // button and explain why in its title when no valid email is present, so the
+  // "(required to send)" label and the button agree on the real gate.
+  function hasSendableEmail() {
+    const email = String(intake.counterpartyEmail || "").trim();
+    return email !== "" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  }
+
+  function updateSendState() {
+    if (!sendButton) return;
+    const ready = hasSendableEmail();
+    sendButton.disabled = !ready;
+    sendButton.title = ready ? "Email the NDA" : "Add a counterparty email to send";
+  }
+
   async function generate() {
     if (busy) return;
     const result = api().validateDraftIntake(intake);
@@ -680,11 +775,15 @@ function createDraftIntakeController({
     if (form) form.reset();
     if (entitySelect) entitySelect.value = "";
     if (ndaTypeSelect) ndaTypeSelect.value = intake.ndaType;
+    // Re-seed the term stepper to the default (form.reset() restores the input's
+    // value but not the intake's term text, which createInitialIntake blanked).
+    setTermYears(DEFAULT_TERM_YEARS);
     renderEntityBundle();
     renderGoverningLaw();
     setStagedActions(null);
     setStatus(status, status ? "success" : "");
     updateGenerateState();
+    updateSendState();
   }
 
   // Called when the Generator tab is shown. Loads the live registry on first
@@ -697,6 +796,8 @@ function createDraftIntakeController({
     renderEntityBundle();
     renderGoverningLaw();
     updateGenerateState();
+    updateSendState();
+    renderTermControls();
   }
 
   function setStatus(message, tone = "") {

@@ -829,6 +829,68 @@ h3 {
   color: rgba(93, 84, 112, 0.52);
 }
 
+/* Term stepper: integer-years +/- control (playbook-capped). */
+.term-stepper {
+  align-items: stretch;
+  display: flex;
+  gap: 8px;
+  max-width: 220px;
+}
+
+.term-stepper-btn {
+  align-items: center;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  cursor: pointer;
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 18px;
+  font-weight: 700;
+  justify-content: center;
+  line-height: 1;
+  min-height: 38px;
+  width: 38px;
+}
+
+.term-stepper-btn:hover:not(:disabled) {
+  border-color: var(--accent, var(--border-strong));
+}
+
+.term-stepper-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.term-stepper-input {
+  -moz-appearance: textfield;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: center;
+}
+
+.term-stepper-input::-webkit-outer-spin-button,
+.term-stepper-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.term-stepper-unit {
+  align-items: center;
+  color: var(--ink-soft);
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.term-stepper-hint {
+  color: var(--ink-muted, var(--ink-soft));
+  font-size: 11px;
+  margin: 2px 0 0;
+}
+
 /* --- NDA Generator tab (outbound-draft intake) --- */
 .generator-view {
   flex: 1;
