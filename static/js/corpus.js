@@ -60,6 +60,25 @@ const CorpusModel = (() => {
     non_compete: "Non-compete",
   };
 
+  // Clause-presence facets: the backend emits the sentinel value "present" for a
+  // matter whose review carried the clause (governing_law-style single scalar). A
+  // bare "present" reads poorly in the rail/token, so these render "Present".
+  const CLAUSE_PRESENCE_KEYS = ["non_solicit", "non_compete"];
+  const CLAUSE_PRESENCE_VALUE_LABELS = { present: "Present" };
+
+  function isClausePresenceFacet(key) {
+    return CLAUSE_PRESENCE_KEYS.indexOf(key) !== -1;
+  }
+
+  // Human label for a rich-facet value. Clause-presence facets map "present" ->
+  // "Present"; every other facet labels by its own value (governing-law codes etc.).
+  function richFacetValueLabel(key, value) {
+    if (isClausePresenceFacet(key)) {
+      return CLAUSE_PRESENCE_VALUE_LABELS[String(value)] || String(value);
+    }
+    return String(value);
+  }
+
   function artifactStageLabel(artifact) {
     if (!artifact || typeof artifact !== "object") return "";
     if (artifact.stage_label) return String(artifact.stage_label);
@@ -167,8 +186,10 @@ const CorpusModel = (() => {
     artifactStageLabel,
     counterpartyName,
     formatDate,
+    isClausePresenceFacet,
     lifecycleLabel,
     matterFacetValue,
+    richFacetValueLabel,
     matterTitle,
     monthKey,
     monthLabel,
@@ -382,7 +403,7 @@ const CorpusRender = (() => {
     });
     return Array.from(counts.entries())
       .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([value, count]) => ({ value, label: value, count }));
+      .map(([value, count]) => ({ value, label: CorpusModel.richFacetValueLabel(key, value), count }));
   }
 
   function facetGroupMarkup(key, title, options, activeFacets, { rich }) {
@@ -409,12 +430,20 @@ const CorpusRender = (() => {
   }
 
   function degradedFacetGroupMarkup(key, title) {
+    // Honest empty state: the group only shows here when NO matter carries the
+    // facet. The clause-presence facets say so plainly (they currently match zero
+    // matters because the clauses are not in the active playbook) -- no "available
+    // once indexed" promise of imminent data. The generic rich facet (governing
+    // law) keeps the neutral "no data yet" wording.
+    const emptyLabel = CorpusModel.isClausePresenceFacet(key)
+      ? "No matters with this clause"
+      : "No data yet";
     return `
       <section class="corpus-facet-group corpus-facet-group--rich" data-facet-key="${html(key)}" data-degraded>
         <h3 class="corpus-facet-title">${html(title)}</h3>
         <div class="corpus-facet-options">
           <button class="corpus-facet-option" type="button" aria-pressed="false" disabled>
-            <span class="corpus-facet-label">Available once indexed</span>
+            <span class="corpus-facet-label">${html(emptyLabel)}</span>
           </button>
         </div>
       </section>
@@ -448,6 +477,10 @@ const CorpusRender = (() => {
     if (key === "flags") {
       const def = FLAG_FACET_DEFS.find((d) => d.value === value);
       if (def) return def.label;
+    }
+    if (CorpusModel.isClausePresenceFacet(key)) {
+      // Token reads e.g. "Non-solicit: Present" rather than "...: present".
+      return `${CorpusModel.RICH_FACET_LABELS[key] || key}: ${CorpusModel.richFacetValueLabel(key, value)}`;
     }
     return String(value);
   }

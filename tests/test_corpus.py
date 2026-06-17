@@ -658,6 +658,57 @@ class CorpusFacetTests(unittest.TestCase):
             dsi.corpus_matter_matches_spec(corpus_matter, dsi.validate_filter_spec({"has_issues": True}))
         )
 
+    def test_app_state_clause_facets_light_up_for_ai_reviewed_matter(self):
+        # An AI-reviewed matter whose review carried the dynamic non_solicitation +
+        # non_compete clause ids surfaces the keyed clause-presence facets the FE rich
+        # rail reads (non_solicit / non_compete), each resolving to the "present"
+        # sentinel. The engine id `non_solicitation` maps to the FE key `non_solicit`.
+        matter = self.repo.create_matter(
+            source_filename="Restrictive NDA.docx",
+            document_bytes=b"PK\x03\x04 fake docx",
+            extracted_text="This Agreement is mutual.",
+            review_result={
+                "active_review_engine": {"executed_engine": "ai_first"},
+                "clauses": [
+                    {"id": "mutuality", "decision": "pass"},
+                    {"id": "non_solicitation", "decision": "review"},
+                    {"id": "non_compete", "decision": "check"},
+                ],
+            },
+            triage={"triage_status": "review"},
+            source_type="manual_upload",
+            board_column="in_review",
+            owner_user_id="owner-a",
+        )
+        self.assertTrue(matter["id"])
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "")
+        corpus_matter = _only_matter(payload)
+        facets = corpus_matter["facets"]
+        # has_clauses still carries the raw engine ids...
+        self.assertIn("non_solicitation", facets["has_clauses"])
+        self.assertIn("non_compete", facets["has_clauses"])
+        # ...and the keyed clause-presence facets resolve to the "present" sentinel.
+        self.assertEqual(facets["non_solicit"], "present")
+        self.assertEqual(facets["non_compete"], "present")
+
+        # count == filtered parity: the FE option count equals the matters the facet
+        # filter keeps (this single matter matches both).
+        flat = corpus_index.flatten_corpus(payload)
+        ns_hits = [m for m in flat if (m.get("facets") or {}).get("non_solicit") == "present"]
+        nc_hits = [m for m in flat if (m.get("facets") or {}).get("non_compete") == "present"]
+        self.assertEqual(len(ns_hits), 1)
+        self.assertEqual(len(nc_hits), 1)
+
+    def test_app_state_clause_facets_none_when_clause_absent(self):
+        # A matter whose review did NOT carry these clause ids (deterministic-only, or
+        # simply no restrictive clause) leaves the keyed facets None -- the FE treats
+        # None as absent so the facet group never falsely matches the matter.
+        _seed_matter(self.repo, owner="owner-a", title="Plain NDA")
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "")
+        facets = _only_matter(payload)["facets"]
+        self.assertIsNone(facets["non_solicit"])
+        self.assertIsNone(facets["non_compete"])
+
     def test_deterministic_only_review_does_not_surface_issue_counts(self):
         # A matter whose stored review_result was NOT produced by the AI (ai_first)
         # engine -- e.g. outbound generation, which pins the deterministic engine and
@@ -732,7 +783,7 @@ class CorpusFacetTests(unittest.TestCase):
         summary["facets"] = {
             "governing_law": "india",
             "signed": True,
-            "has_clauses": ["mutuality", "governing_law"],
+            "has_clauses": ["mutuality", "governing_law", "non_solicitation"],
             "term_years": 3,
             "schema_version": 1,
         }
@@ -744,10 +795,14 @@ class CorpusFacetTests(unittest.TestCase):
         self.assertTrue(facets["facets_available"])
         self.assertEqual(facets["governing_law"], "india")
         self.assertIs(facets["signed"], True)
-        self.assertEqual(facets["has_clauses"], ["mutuality", "governing_law"])
+        self.assertEqual(facets["has_clauses"], ["mutuality", "governing_law", "non_solicitation"])
         self.assertEqual(facets["term_years"], 3.0)
         self.assertEqual(facets["phase"], "executed")
         self.assertEqual(facets["status"], "fully_signed")
+        # Drive pass also derives the keyed clause-presence facets from has_clauses:
+        # non_solicitation present -> non_solicit "present"; non_compete absent -> None.
+        self.assertEqual(facets["non_solicit"], "present")
+        self.assertIsNone(facets["non_compete"])
 
     def test_legacy_drive_summary_without_facets_degrades_unavailable(self):
         fake = FakeDriveService()
@@ -761,6 +816,9 @@ class CorpusFacetTests(unittest.TestCase):
         self.assertEqual(facets["governing_law"], "")
         self.assertIsNone(facets["signed"])
         self.assertEqual(facets["has_clauses"], [])
+        # The keyed clause-presence facets default None on a degraded block.
+        self.assertIsNone(facets["non_solicit"])
+        self.assertIsNone(facets["non_compete"])
 
     def test_unknown_facet_never_positively_matches_a_filter(self):
         # The graceful-degradation linchpin, asserted via the corpus matcher: a legacy

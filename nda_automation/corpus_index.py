@@ -85,6 +85,34 @@ _ROLE_STAGE_LABELS = {
 # written before the facets enrichment degrades gracefully (see _drive_facets).
 FACETS_SCHEMA_VERSION = 1
 
+# Clause-presence facets surfaced as their own keys (mirroring how
+# ``governing_law`` is its own scalar facet) so the FE rich-facet rail can light
+# them up + filter on them. The FE keys ``non_solicit``/``non_compete`` map to the
+# engine clause ids ``non_solicitation``/``non_compete`` -- note the
+# solicit/solicitation naming mismatch. Each facet resolves to the sentinel string
+# ``_CLAUSE_PRESENT`` when its clause id is in ``has_clauses`` (so the FE
+# ``matterFacetValue`` reads a single non-empty value -> one "Present" option whose
+# count == filtered-result parity, exactly like governing_law), or ``None`` when
+# absent (-> the FE treats it as missing and the group skips that matter). NOTE
+# (verified 2026-06-17): these clause ids are NOT in the active playbook, so no
+# engine emits them today and both facets currently match zero matters; the wiring
+# is correct so they populate the moment the playbook gains the clauses. A matter
+# never resolves to a false "absent" claim -- absence is None, not a negative match.
+_CLAUSE_PRESENT = "present"
+# FE rich-facet key -> the engine clause id whose presence resolves it.
+_CLAUSE_FACET_IDS: dict[str, str] = {
+    "non_solicit": "non_solicitation",
+    "non_compete": "non_compete",
+}
+
+
+def _clause_facet(has_clauses: Any, clause_id: str) -> str | None:
+    """``_CLAUSE_PRESENT`` when ``clause_id`` is in ``has_clauses``, else ``None``."""
+    if isinstance(has_clauses, list) and clause_id in has_clauses:
+        return _CLAUSE_PRESENT
+    return None
+
+
 # Workflow statuses that resolve the ``signed`` facet. Anything else (intake /
 # review / approval, pre-send) resolves to ``None`` -> "unknown", so a signed
 # filter never silently includes or excludes a pre-send matter. Mirrors the FE
@@ -107,6 +135,11 @@ def _empty_facets(*, available: bool) -> dict[str, Any]:
         "governing_law": "",
         "signed": None,
         "has_clauses": [],
+        # Clause-presence facets keyed for the FE rich-facet rail (derived from
+        # has_clauses membership). None -> the FE treats the facet as absent so a
+        # facet filter never positively matches (graceful-degradation default).
+        "non_solicit": None,
+        "non_compete": None,
         "term_years": None,
         # The workflow enums (phase/status) the existing status/phase search
         # dimensions filter on, surfaced here so the FE adapter can reconstruct a
@@ -149,10 +182,15 @@ def _signed_from_status(status: str) -> bool | None:
 def _flatten_clause_ids(clause_ids: dict[str, Any]) -> list[str]:
     """Union of the pass/review/check clause-id buckets, de-duplicated + ordered.
 
-    Caveat (carry from memory): ``non_solicitation``/``non_compete`` are dynamic
-    clauses only the AI-first engine emits -- a deterministically-reviewed matter
-    never lists them, so ``has_clause`` for those resolves only on AI-reviewed
-    matters. Not fixed here; the matcher comment flags it.
+    Caveat (verified 2026-06-17): ``non_solicitation``/``non_compete`` are NOT in the
+    active ``playbook.json`` (which carries 6 clauses: the 5 native + non_circumvention)
+    -- they exist only as the demo dynamic ids the search bar advertises
+    (``dashboard_search_intent._DEMO_DYNAMIC_CLAUSE_IDS``). NEITHER engine emits them,
+    so today no matter lists them and the keyed clause-presence facets (non_solicit /
+    non_compete) match zero matters. The wiring below derives those facets from
+    ``has_clauses`` membership so they light up the moment the playbook gains the
+    clauses; until then the FE renders an honest empty state. We do NOT add the
+    clauses here -- the playbook is the single source of truth (a pending decision).
     """
     seen: dict[str, None] = {}
     if isinstance(clause_ids, dict):
@@ -226,6 +264,10 @@ def _app_facets(matter: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]
         facets["has_clauses"] = _app_clause_ids(matter)
     except Exception:  # noqa: BLE001
         facets["has_clauses"] = []
+    # Surface the clause-presence facets keyed for the FE, derived from the
+    # has_clauses list just computed (engine id -> FE key via _CLAUSE_FACET_IDS).
+    for facet_key, clause_id in _CLAUSE_FACET_IDS.items():
+        facets[facet_key] = _clause_facet(facets["has_clauses"], clause_id)
     try:
         facets["term_years"] = _app_term_years(matter)
     except Exception:  # noqa: BLE001
@@ -292,6 +334,11 @@ def _drive_facets(summary: dict[str, Any]) -> dict[str, Any]:
         return _empty_facets(available=False)
     signed = raw.get("signed")
     has_clauses = raw.get("has_clauses")
+    has_clause_ids = (
+        [str(c).strip() for c in has_clauses if str(c or "").strip()]
+        if isinstance(has_clauses, list)
+        else []
+    )
     term_years = raw.get("term_years")
     # phase/status come from the durable workflow_state block, not the facets block
     # (drive_integration writes them there); read defensively so a hand-edited summary
@@ -304,9 +351,11 @@ def _drive_facets(summary: dict[str, Any]) -> dict[str, Any]:
     return {
         "governing_law": str(raw.get("governing_law") or ""),
         "signed": signed if isinstance(signed, bool) else None,
-        "has_clauses": [str(c).strip() for c in has_clauses if str(c or "").strip()]
-        if isinstance(has_clauses, list)
-        else [],
+        "has_clauses": has_clause_ids,
+        # Clause-presence facets, derived from the durable has_clauses list (engine
+        # id -> FE key). None when absent (mirrors the app-state pass + degradation).
+        "non_solicit": _clause_facet(has_clause_ids, _CLAUSE_FACET_IDS["non_solicit"]),
+        "non_compete": _clause_facet(has_clause_ids, _CLAUSE_FACET_IDS["non_compete"]),
         "term_years": float(term_years)
         if isinstance(term_years, (int, float)) and not isinstance(term_years, bool) and term_years > 0
         else None,

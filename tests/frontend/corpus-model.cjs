@@ -132,6 +132,33 @@ test("buildFilter combines facets (AND across keys) and free text", () => {
   assert.deepEqual(matters.filter(filterD).map((m) => m.counterparty), ["Globex Inc"]);
 });
 
+// --- clause-presence facets (non_solicit / non_compete) --------------------
+test("clause-presence facets render the 'present' sentinel as 'Present'", () => {
+  assert.equal(CorpusModel.richFacetValueLabel("non_solicit", "present"), "Present");
+  assert.equal(CorpusModel.richFacetValueLabel("non_compete", "present"), "Present");
+  // A non-presence rich facet labels by its own value (governing law codes etc.).
+  assert.equal(CorpusModel.richFacetValueLabel("governing_law", "india"), "india");
+  assert.ok(CorpusModel.isClausePresenceFacet("non_solicit"));
+  assert.ok(CorpusModel.isClausePresenceFacet("non_compete"));
+  assert.ok(!CorpusModel.isClausePresenceFacet("governing_law"));
+});
+
+test("buildFilter on non_solicit/non_compete matches only matters carrying the clause", () => {
+  // Mirrors the backend emit: facets.non_solicit/non_compete = "present" or absent.
+  const matters = [
+    { counterparty: "Both Co", title: "Both NDA", status: "reviewed", source: "app", artifacts: [], facets: { non_solicit: "present", non_compete: "present" } },
+    { counterparty: "Solicit Co", title: "Solicit NDA", status: "reviewed", source: "app", artifacts: [], facets: { non_solicit: "present" } },
+    { counterparty: "Plain Co", title: "Plain NDA", status: "reviewed", source: "app", artifacts: [], facets: {} },
+  ];
+  const nonSolicit = CorpusView.buildFilter(new Map([["non_solicit", new Set(["present"])]]), "");
+  assert.deepEqual(matters.filter(nonSolicit).map((m) => m.counterparty), ["Both Co", "Solicit Co"]);
+  const nonCompete = CorpusView.buildFilter(new Map([["non_compete", new Set(["present"])]]), "");
+  assert.deepEqual(matters.filter(nonCompete).map((m) => m.counterparty), ["Both Co"]);
+  // count == filtered parity: 2 matters carry non_solicit, 1 carries non_compete.
+  assert.equal(matters.filter(nonSolicit).length, 2);
+  assert.equal(matters.filter(nonCompete).length, 1);
+});
+
 test("buildFilter flags facet matches the duplicate flag", () => {
   const matters = [
     { duplicate: true, status: "x", source: "app", artifacts: [] },
