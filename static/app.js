@@ -18,6 +18,10 @@ const studioDiscardDraftButton = document.querySelector("#studioDiscardDraftButt
 const studioExportButton = document.querySelector("#studioExportButton");
 const studioSendButton = document.querySelector("#studioSendButton");
 const studioReviewedButton = document.querySelector("#studioReviewedButton");
+// Understated, confirm-gated "Mark as executed" — the SECONDARY path for an NDA
+// signed OUTSIDE our DocuSign flow (paper / uploaded). DocuSign completion is the
+// normal automatic route to executed; this is the manual exception handle.
+const studioMarkExecutedButton = document.querySelector("#studioMarkExecutedButton");
 // Approve Review + Send for Signature moved out of the header into the Overview
 // footer (static/js/overview/footer.js); the header no longer carries those
 // buttons. The footer reads the gate helpers (approveBlockReasons /

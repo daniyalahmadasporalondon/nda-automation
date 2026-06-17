@@ -90,6 +90,8 @@ PUBLIC_MATTER_FIELDS = {
     "docusign",
     "document_title",
     "drive",
+    "executed",
+    "executed_at",
     "gmail_account",
     "gmail_attachment_selector",
     "gmail_attachment_selector_confidence",

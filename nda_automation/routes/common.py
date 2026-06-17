@@ -24,6 +24,22 @@ def request_owner_user_id(handler) -> str:
     return str(getattr(handler, "current_user_id", "") or "").strip()
 
 
+def request_actor(handler) -> str:
+    """A human-readable identity for the authenticated caller for audit records.
+
+    Prefers the session user's email/name/id (in that order); falls back to the
+    owner user id, then a generic label. Used to stamp ``actor`` on append-only
+    timeline events (approvals, manual mark-executed, ...).
+    """
+    user = getattr(handler, "current_user", None)
+    if isinstance(user, dict):
+        for key in ("email", "name", "id"):
+            value = str(user.get(key) or "").strip()
+            if value:
+                return value
+    return request_owner_user_id(handler) or "operator"
+
+
 def request_user_provider(handler) -> str:
     current_user = getattr(handler, "current_user", None)
     if isinstance(current_user, dict):

@@ -23,15 +23,34 @@ Contract:
         PDF). Owner-scoped like the sibling matter routes; reads the executed
         document off the request as base64 (the matter-upload convention), calls
         :func:`capture_signed_artifact`, and responds with the updated public
-        matter.
+        matter. Uploading the executed copy IS an attestation that both parties
+        signed, so it also flips the executed contract via
+        :func:`mark_matter_executed` (best-effort; never blocks the artifact).
+
+    mark_matter_executed(repository, matter_id, owner_user_id, *, actor) -> dict | None
+        The MANUAL "mark as executed" primitive for an NDA signed OUTSIDE our
+        DocuSign flow (uploaded / paper-signed). A human attests both parties have
+        signed, and this flips the shared executed contract on the matter
+        (``executed=True`` / ``status="fully_signed"`` / ``executed_at=<now>``) --
+        the same three fields the DocuSign completion sync sets -- WITHOUT touching
+        the AI review state. Records who/when via an append-only ``executed``
+        timeline event. Idempotent guard: a matter already executed is returned
+        unchanged (no re-flip, no duplicate timeline event). Returns the updated
+        matter dict, or ``None`` when the matter is missing / not owned.
+
+    handle_mark_executed(handler, path) -> None
+        The route body for POST ``/api/matters/{id}/mark-executed``. Owner-scoped,
+        confirm-gated by the deliberate frontend action; 409s a matter that is
+        already executed, and responds with the updated public matter.
 """
 from __future__ import annotations
 
 import base64
 import binascii
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from . import artifact_service, matter_view
+from . import artifact_service, matter_view, workflow
 from .artifact_registry import (
     ACTOR_HUMAN,
     ROLE_COUNTER,
@@ -46,7 +65,7 @@ from .artifact_registry import (
 )
 from .document_limits import DOCUMENT_TOO_LARGE_MESSAGE, DocumentSizeError, ensure_document_size
 from .matter_repository import DiskMatterRepository
-from .routes.common import parse_matter_id, request_owner_user_id
+from .routes.common import parse_matter_id, request_actor, request_owner_user_id
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .artifact_registry import Artifact
@@ -58,6 +77,7 @@ SIGNED_EXTENSION = ".pdf"
 SIGNED_FILENAME_MESSAGE = "Upload the executed copy as a PDF."
 MATTER_NOT_FOUND_MESSAGE = "Matter not found."
 MISSING_DOCUMENT_MESSAGE = "Provide the executed document to capture."
+ALREADY_EXECUTED_MESSAGE = "This matter is already marked executed."
 DECODE_FAILED_MESSAGE = "The signed document could not be decoded."
 
 # The chronological precedence for the document the executed copy descends from.
@@ -200,13 +220,121 @@ def handle_signed_upload(handler, path: str) -> None:
         handler._send_json({"error": MATTER_NOT_FOUND_MESSAGE}, status=404)
         return
 
-    matter = DiskMatterRepository().get_matter(matter_id, owner_user_id=owner_user_id)
+    # Uploading the executed copy IS a human attestation that both parties signed,
+    # so flip the shared executed contract too (executed / status=fully_signed /
+    # executed_at) -- reconciling the gap where a signed artifact landed without the
+    # matter qualifying as executed for the board/corpus contract. Idempotent: a
+    # re-upload of an already-executed matter leaves the fields untouched. The
+    # mark is best-effort -- the signed artifact must persist even if the flip
+    # somehow can't (we already responded 201 with the artifact below either way).
+    executed = mark_matter_executed(
+        None,
+        matter_id,
+        owner_user_id,
+        actor=request_actor(handler),
+    )
+
+    matter = executed or DiskMatterRepository().get_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
         handler._send_json({"error": MATTER_NOT_FOUND_MESSAGE}, status=404)
         return
     handler._send_json(
         {"matter": matter_view.public_matter(matter), "artifact_id": artifact.id},
         status=201,
+    )
+
+
+def mark_matter_executed(
+    repository: "MatterRepository | None",
+    matter_id: str,
+    owner_user_id: str,
+    *,
+    actor: str = "",
+) -> dict | None:
+    """Flip the shared executed contract on a matter (the MANUAL "mark executed").
+
+    Sets ``executed=True`` / ``status="fully_signed"`` / ``executed_at=<now>`` --
+    the exact three fields :func:`docusign_workflow.sync_signature_status` sets on
+    DocuSign completion -- so a paper / externally-signed NDA qualifies as executed
+    for the board (excluded) and the corpus library (included). The AI review state
+    (``ai_review_ran`` and the review payload) is never touched.
+
+    Records a who/when audit trail via an append-only ``executed`` timeline event
+    (actor + detail noting the manual path). Idempotent: a matter that is already
+    executed is returned unchanged -- no re-flip and no duplicate timeline event.
+
+    Returns the updated matter dict, or ``None`` when the matter is missing / not
+    owned by the caller.
+    """
+    repository = repository or DiskMatterRepository()
+    matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+    if matter is None:
+        return None
+
+    # Guard: never re-flip an already-executed matter (whether executed via the
+    # DocuSign sync, a prior manual mark, or a phase marker).
+    if workflow._is_executed(matter):
+        return matter
+
+    now = datetime.now(timezone.utc).isoformat()
+    fields: dict[str, object] = {
+        "executed": True,
+        "executed_at": now,
+        "status": workflow.STATUS_FULLY_SIGNED,
+    }
+    updated = repository.update_matter_fields(matter_id, fields, owner_user_id=owner_user_id)
+    if updated is None:
+        # The matter vanished between the read and the write (or ownership changed).
+        return None
+
+    event = workflow.build_timeline_event(
+        workflow.EVENT_EXECUTED,
+        phase=workflow.PHASE_EXECUTED,
+        status=workflow.STATUS_FULLY_SIGNED,
+        actor=actor,
+        detail="Marked executed manually (signed outside DocuSign).",
+        at=now,
+    )
+    after_event = repository.append_timeline_event(matter_id, event, owner_user_id=owner_user_id)
+    return after_event or updated
+
+
+def handle_mark_executed(handler, path: str) -> None:
+    """Route body for POST ``/api/matters/{id}/mark-executed`` -- the manual mark.
+
+    Owner-scoped: a cross-tenant or missing matter answers 404. A matter that is
+    already executed answers 409 (the action is a deliberate, confirm-gated
+    attestation, not an idempotent toggle the UI should re-submit). On success
+    responds with the updated public matter and the recorded actor/timestamp.
+    """
+    matter_id = parse_matter_id(path, suffix="/mark-executed")
+    if matter_id is None:
+        handler._send_json({"error": MATTER_NOT_FOUND_MESSAGE}, status=404)
+        return
+
+    owner_user_id = request_owner_user_id(handler)
+    repository = DiskMatterRepository()
+    matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+    if matter is None:
+        handler._send_json({"error": MATTER_NOT_FOUND_MESSAGE}, status=404)
+        return
+    if workflow._is_executed(matter):
+        handler._send_json({"error": ALREADY_EXECUTED_MESSAGE}, status=409)
+        return
+
+    actor = request_actor(handler)
+    updated = mark_matter_executed(repository, matter_id, owner_user_id, actor=actor)
+    if updated is None:
+        handler._send_json({"error": MATTER_NOT_FOUND_MESSAGE}, status=404)
+        return
+
+    handler._send_json(
+        {
+            "matter": matter_view.public_matter(updated),
+            "executed_at": str(updated.get("executed_at") or ""),
+            "executed_by": actor,
+        },
+        status=200,
     )
 
 
