@@ -707,6 +707,23 @@ def lint_playbook(playbook: Mapping[str, Any]) -> list[LintViolation]:
     for clause in clauses:
         if not isinstance(clause, Mapping):
             continue
-        for check in CHECKS.values():
-            violations.extend(check(clause))
+        for check_id, check in CHECKS.items():
+            # Per-check isolation: a single check throwing on an unusual-but-legal
+            # clause must NOT abort the loop and silently disable every OTHER
+            # check (which would turn the hard publish gate into a no-op). Instead
+            # the failure is surfaced as a BLOCKING violation, so the gate
+            # fails-closed and a self-contradictory playbook cannot slip through on
+            # the back of one buggy check.
+            try:
+                violations.extend(check(clause))
+            except Exception as exc:  # noqa: BLE001 - isolate one check's crash
+                violations.append(
+                    LintViolation(
+                        _clause_id(clause),
+                        check_id,
+                        f"lint check '{check_id}' raised and could not validate this "
+                        f"clause ({type(exc).__name__}: {exc}); blocking publish so a "
+                        "broken check cannot silently pass an unchecked playbook",
+                    )
+                )
     return violations

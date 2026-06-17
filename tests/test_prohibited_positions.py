@@ -46,12 +46,12 @@ def test_loader_reads_a_changed_playbook(tmp_path, monkeypatch):
     target = tmp_path / "playbook.json"
     target.write_text(json.dumps(playbook))
 
-    monkeypatch.setattr(pp, "_PLAYBOOK_PATH", target)
+    monkeypatch.setattr(pp, "_playbook_path", lambda: target)
     assert pp._load_prohibited_position_sources() == (("custom_family", "unique_marker_xyz"),)
 
 
 def test_loader_falls_back_when_playbook_unreadable(monkeypatch):
-    monkeypatch.setattr(pp, "_PLAYBOOK_PATH", Path("/nonexistent/does-not-exist.json"))
+    monkeypatch.setattr(pp, "_playbook_path", lambda: Path("/nonexistent/does-not-exist.json"))
     assert (
         pp._load_prohibited_position_sources()
         == pp._FALLBACK_PROHIBITED_POSITION_PATTERN_SOURCES
@@ -65,7 +65,7 @@ def test_loader_falls_back_on_invalid_regex(tmp_path, monkeypatch):
     target = tmp_path / "playbook.json"
     target.write_text(json.dumps(playbook))
 
-    monkeypatch.setattr(pp, "_PLAYBOOK_PATH", target)
+    monkeypatch.setattr(pp, "_playbook_path", lambda: target)
     assert (
         pp._load_prohibited_position_sources()
         == pp._FALLBACK_PROHIBITED_POSITION_PATTERN_SOURCES
@@ -83,3 +83,20 @@ def test_first_prohibited_position_and_any_match_known_families():
     assert pp.first_prohibited_position("hereby assigns all right title and interest in") == "ip_assignment"
     assert pp.ANY_PROHIBITED_POSITION.search("this agreement shall automatically renew")
     assert pp.first_prohibited_position("a perfectly ordinary confidentiality clause") == ""
+
+
+def test_playbook_path_prefers_persistent_disk(tmp_path, monkeypatch):
+    # #39: when NDA_DATA_DIR is set and a published playbook exists on the
+    # persistent disk, the prohibited-position guard must read THAT copy (so a
+    # publish that changes the patterns takes effect), not the bundled image copy.
+    data_dir = tmp_path / "var-data"
+    data_dir.mkdir()
+    persistent = data_dir / "playbook.json"
+    persistent.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("NDA_DATA_DIR", str(data_dir))
+    assert pp._playbook_path() == persistent
+
+
+def test_playbook_path_uses_bundled_when_no_data_dir(monkeypatch):
+    monkeypatch.delenv("NDA_DATA_DIR", raising=False)
+    assert pp._playbook_path() == pp._BUNDLED_PLAYBOOK_PATH

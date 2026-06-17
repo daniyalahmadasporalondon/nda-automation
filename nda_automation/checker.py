@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import string
 from copy import deepcopy
 from pathlib import Path
@@ -54,7 +56,46 @@ from .decision_arbiter import (
 from .review_orchestration import ReviewCommand, orchestrate_review
 
 ROOT = Path(__file__).resolve().parent.parent
-PLAYBOOK_PATH = ROOT / "playbook.json"
+# The playbook SHIPPED in the deployed image (read-only seed). Edits/publishes
+# must NOT land here -- the image is disposable, so a redeploy would silently
+# revert any prod publish + version history.
+BUNDLED_PLAYBOOK_PATH = ROOT / "playbook.json"
+
+
+def _resolve_playbook_path() -> Path:
+    """Resolve the live playbook path, persistent when NDA_DATA_DIR is set.
+
+    In a deployment (NDA_DATA_DIR set, e.g. the Render persistent disk), the
+    live ``playbook.json`` -- and so its ``.runtime`` / ``.draft`` / ``.history``
+    sidecars, which derive their paths from it -- lives on the persistent disk so
+    a publish survives a redeploy. The bundled image copy is used ONLY as a
+    first-run seed: if the persistent copy is absent it is copied across once and
+    thereafter never clobbered (a redeploy with NEW bundled bytes does not
+    overwrite a published one). In dev (no NDA_DATA_DIR) reads stay on the
+    in-repo copy exactly as before.
+    """
+
+    data_dir = os.environ.get("NDA_DATA_DIR")
+    if not data_dir:
+        return BUNDLED_PLAYBOOK_PATH
+
+    persistent = Path(data_dir).expanduser() / "playbook.json"
+    if not persistent.exists():
+        try:
+            persistent.parent.mkdir(parents=True, exist_ok=True)
+            if BUNDLED_PLAYBOOK_PATH.exists():
+                # copy2 preserves the bundled bytes verbatim; only ever runs when
+                # the persistent copy is absent, so an existing publish is safe.
+                shutil.copy2(BUNDLED_PLAYBOOK_PATH, persistent)
+        except OSError:
+            # If the persistent disk is unwritable, fall back to the bundled copy
+            # rather than crashing the process; reads still work (publishes that
+            # land on the image are the pre-existing behaviour, not a regression).
+            return BUNDLED_PLAYBOOK_PATH
+    return persistent
+
+
+PLAYBOOK_PATH = _resolve_playbook_path()
 # Bump whenever the review pipeline's OUTPUT changes (engine logic, the AI
 # assessment prompt, or how a finding is worded) so stored reviews are flagged
 # stale and re-run on Refresh Review. v8: AI-first prompt hardening (v7) + the

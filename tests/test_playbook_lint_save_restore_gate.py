@@ -103,19 +103,23 @@ class SaveActivePlaybookLintGateTests(_LintGateTestBase):
         self.assertEqual(response["playbook"], candidate)
         self.assertEqual(self._on_disk(), candidate)
 
-    def test_save_succeeds_when_lint_raises(self) -> None:
-        # A bug in the lint itself must NOT wedge saving: the gate fails open
-        # (logs + treats as no violations) rather than crashing the save flow.
+    def test_save_blocked_when_lint_machinery_raises(self) -> None:
+        # #38: when the lint MACHINERY itself errors, the save gate must FAIL CLOSED
+        # (reject + surface the failure) rather than silently no-op the lint and
+        # persist an unvalidated playbook.
         candidate = deepcopy(self.active_playbook)
 
         def exploding_lint(playbook):
             raise RuntimeError("lint blew up")
 
         with patch.object(playbook_authoring, "lint_playbook", exploding_lint):
-            response = self._save(candidate)
+            with self.assertRaises(playbook_authoring.PlaybookAuthoringError) as ctx:
+                self._save(candidate)
 
-        self.assertEqual(response["playbook"], candidate)
-        self.assertEqual(self._on_disk(), candidate)
+        self.assertEqual(ctx.exception.status, 400)
+        self.assertIn("lint could not run", ctx.exception.payload["error"])
+        # No-op: the active playbook on disk is unchanged.
+        self.assertEqual(self._on_disk(), self.active_playbook)
 
 
 class RestorePlaybookHistoryEntryLintGateTests(_LintGateTestBase):
@@ -188,21 +192,26 @@ class RestorePlaybookHistoryEntryLintGateTests(_LintGateTestBase):
         self.assertEqual(response["playbook"], snapshot)
         self.assertEqual(self._on_disk(), snapshot)
 
-    def test_restore_succeeds_when_lint_raises(self) -> None:
-        # Fail-open: a lint bug must NOT wedge restore.
+    def test_restore_blocked_when_lint_machinery_raises(self) -> None:
+        # #38 fail-closed: a lint-machinery error must BLOCK restore (not silently
+        # no-op the gate), with the same error surface as publish/save.
         snapshot = deepcopy(self.active_playbook)
         mutuality = next(clause for clause in snapshot["clauses"] if clause["id"] == "mutuality")
         mutuality["preferred_position"] = "Historical snapshot, lint will explode on restore."
         history_id = self._seed_history_entry(snapshot)
+        before = self._on_disk()
 
         def exploding_lint(playbook):
             raise RuntimeError("lint blew up")
 
         with patch.object(playbook_authoring, "lint_playbook", exploding_lint):
-            response = self._restore(history_id)
+            with self.assertRaises(playbook_authoring.PlaybookAuthoringError) as ctx:
+                self._restore(history_id)
 
-        self.assertEqual(response["playbook"], snapshot)
-        self.assertEqual(self._on_disk(), snapshot)
+        self.assertEqual(ctx.exception.status, 400)
+        self.assertIn("lint could not run", ctx.exception.payload["error"])
+        # No-op: the live playbook is unchanged by the rejected restore.
+        self.assertEqual(self._on_disk(), before)
 
 
 if __name__ == "__main__":

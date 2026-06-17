@@ -104,20 +104,28 @@ class PlaybookLintPublishGateTests(unittest.TestCase):
             response = self._publish(candidate)
         self.assertEqual(response["playbook"], candidate)
 
-    def test_publish_succeeds_when_lint_raises(self) -> None:
-        # A bug in the lint itself must NOT block publishing: the gate fails open
-        # (logs + treats as no violations) rather than crashing the publish flow.
+    def test_publish_rejected_when_lint_machinery_raises(self) -> None:
+        # #38: when the lint MACHINERY itself blows up (not a clause violation, but
+        # the lint engine erroring), the gate must FAIL CLOSED -- reject the publish
+        # and surface the failure -- rather than silently treating it as a no-op and
+        # letting an unvalidated playbook go live.
         candidate = deepcopy(self.active_playbook)
 
         def exploding_lint(playbook):
             raise RuntimeError("lint blew up")
 
         with patch.object(playbook_authoring, "lint_playbook", exploding_lint):
-            response = self._publish(candidate)
-        self.assertEqual(response["playbook"], candidate)
+            with self.assertRaises(playbook_authoring.PlaybookAuthoringError) as ctx:
+                self._publish(candidate)
+
+        error = ctx.exception
+        self.assertEqual(error.status, 400)
+        self.assertIn("error", error.payload)
+        self.assertIn("lint could not run", error.payload["error"])
+        # Rejection is a no-op: the active playbook on disk is unchanged.
         self.assertEqual(
             json.loads(self.playbook_path.read_text(encoding="utf-8")),
-            candidate,
+            self.active_playbook,
         )
 
     def _candidate_with_option_id_collision(self) -> dict:
@@ -218,9 +226,11 @@ class PlaybookLintPublishGateTests(unittest.TestCase):
             self.active_playbook,
         )
 
-    def test_publish_fail_open_when_collision_check_raises(self) -> None:
-        # Fail-open contract for the new check specifically: if the collision check
-        # itself throws, the whole lint gate fails open and publishing is unaffected.
+    def test_publish_blocked_when_a_single_check_raises(self) -> None:
+        # #38 per-check isolation: if ONE check throws, the gate must FAIL CLOSED
+        # (block publish + surface the failing check) -- not silently no-op the
+        # whole lint and let an unchecked playbook through. The other checks still
+        # run, so a real violation in the same playbook is reported alongside.
         from nda_automation import playbook_lint
 
         candidate = self._candidate_with_option_id_collision()
@@ -231,12 +241,16 @@ class PlaybookLintPublishGateTests(unittest.TestCase):
         patched_checks = dict(playbook_lint.CHECKS)
         patched_checks["option_id_collision"] = exploding_check
         with patch.object(playbook_lint, "CHECKS", patched_checks):
-            response = self._publish(candidate)
+            with self.assertRaises(playbook_authoring.PlaybookAuthoringError) as ctx:
+                self._publish(candidate)
 
-        self.assertEqual(response["playbook"], candidate)
+        error = ctx.exception
+        self.assertEqual(error.status, 400)
+        self.assertIn("raised and could not validate", error.payload["error"])
+        # Rejection is a no-op: the active playbook on disk is unchanged.
         self.assertEqual(
             json.loads(self.playbook_path.read_text(encoding="utf-8")),
-            candidate,
+            self.active_playbook,
         )
 
     def test_draft_validation_surfaces_lint_violations(self) -> None:

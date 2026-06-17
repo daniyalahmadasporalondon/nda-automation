@@ -735,3 +735,43 @@ def test_real_playbook_each_clause_runs_all_checks() -> None:
     assert [(v.clause_id, v.check_id) for v in first] == [
         (v.clause_id, v.check_id) for v in second
     ]
+
+
+def test_one_throwing_check_does_not_disable_the_others(monkeypatch) -> None:
+    """#38: per-check isolation -- a single throwing check yields a BLOCKING
+    violation and the OTHER checks still run, instead of the whole gate silently
+    becoming a no-op."""
+    import nda_automation.playbook_lint as lint_mod
+
+    def boom(_clause):
+        raise RuntimeError("unusual-but-legal clause")
+
+    # Replace one registered check with a thrower; keep the rest intact.
+    patched = dict(lint_mod.CHECKS)
+    patched["decision_space_coverage"] = boom
+    monkeypatch.setattr(lint_mod, "CHECKS", patched)
+
+    # A clause that ALSO trips a different (still-live) check, so we can prove the
+    # other checks were not disabled by the thrower.
+    playbook = {
+        "clauses": [
+            {
+                "id": "c1",
+                "rules": {
+                    "pass_conditions": [
+                        {"id": "p", "decision": "WRONG", "issue_type": "none", "description": "x"}
+                    ],
+                    "fail_conditions": [
+                        {"id": "f", "decision": "fail", "issue_type": "missing", "description": "y"}
+                    ],
+                },
+            }
+        ]
+    }
+    violations = lint_mod.lint_playbook(playbook)
+    check_ids = {v.check_id for v in violations}
+    # The thrower surfaced as a blocking violation (not silently dropped)...
+    assert "decision_space_coverage" in check_ids
+    assert any("raised" in v.message for v in violations)
+    # ...AND the OTHER check (condition_well_formed) still ran on the same clause.
+    assert "condition_well_formed" in check_ids
