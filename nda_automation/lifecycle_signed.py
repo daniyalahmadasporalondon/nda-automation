@@ -48,6 +48,7 @@ from __future__ import annotations
 import base64
 import binascii
 from datetime import datetime, timezone
+import logging
 from typing import TYPE_CHECKING
 
 from . import artifact_service, matter_view, workflow
@@ -66,6 +67,8 @@ from .artifact_registry import (
 from .document_limits import DOCUMENT_TOO_LARGE_MESSAGE, DocumentSizeError, ensure_document_size
 from .matter_repository import DiskMatterRepository
 from .routes.common import parse_matter_id, request_actor, request_owner_user_id
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .artifact_registry import Artifact
@@ -238,6 +241,13 @@ def handle_signed_upload(handler, path: str) -> None:
     if matter is None:
         handler._send_json({"error": MATTER_NOT_FOUND_MESSAGE}, status=404)
         return
+
+    # Mirror the externally-signed copy to Drive (best-effort, like the DocuSign
+    # completion path). An uploaded paper-signed PDF IS a signed document, so it
+    # always archives — labelled "uploaded" (vs DocuSign "docusign") in both the
+    # durable summary facet and the archived file name (``NN_signed_uploaded.pdf``).
+    _archive_executed_to_drive(handler, matter, matter_id, owner_user_id, signed_via="uploaded")
+
     handler._send_json(
         {"matter": matter_view.public_matter(matter), "artifact_id": artifact.id},
         status=201,
@@ -328,6 +338,20 @@ def handle_mark_executed(handler, path: str) -> None:
         handler._send_json({"error": MATTER_NOT_FOUND_MESSAGE}, status=404)
         return
 
+    # Mirror to Drive (best-effort) ONLY when there is an actual signed document to
+    # archive. A bare manual mark-executed is just an attestation (no PDF), so there
+    # is nothing to mirror — skip gracefully, no error. When a signed copy IS
+    # present (e.g. a prior signed-upload, or a counter that already carried the
+    # executed copy) it is mirrored, labelled by how it was executed.
+    if latest_artifact_for_role(updated, ROLE_SIGNED) is not None:
+        _archive_executed_to_drive(
+            handler,
+            updated,
+            matter_id,
+            owner_user_id,
+            signed_via=_signed_via_for_matter(updated),
+        )
+
     handler._send_json(
         {
             "matter": matter_view.public_matter(updated),
@@ -370,3 +394,66 @@ def _signed_storage_name(matter_id: str, version: int) -> str:
     safe_matter = str(matter_id or "matter").strip() or "matter"
     version_label = max(int(version), 1)
     return f"{safe_matter}-signed-v{version_label}{SIGNED_EXTENSION}"
+
+
+def _signed_via_for_matter(matter: dict) -> str:
+    """How a now-executed matter was signed: "docusign" / "uploaded".
+
+    A matter with a DocuSign envelope was e-signed through our flow; otherwise an
+    executed copy that exists here arrived as an externally / paper-signed upload.
+    Defaults to "uploaded" (the manual-mark path is for NDAs signed outside our
+    DocuSign flow).
+    """
+    if isinstance(matter, dict):
+        signature = matter.get("docusign")
+        if isinstance(signature, dict) and signature.get("envelope_id"):
+            return "docusign"
+    return "uploaded"
+
+
+def _archive_executed_to_drive(
+    handler,
+    matter: dict,
+    matter_id: str,
+    owner_user_id: str,
+    *,
+    signed_via: str,
+) -> None:
+    """Best-effort: mirror a freshly-executed matter to Drive from a route handler.
+
+    Reuses the SAME shared archiver + Drive-token-owner resolution as the DocuSign
+    completion path (the #10 fix), so the signed copy + an overwritten
+    ``matter_summary.json`` land in the matter's Drive folder, labelled by how it
+    was executed (``signed_via``). The Drive-token owner is resolved from the
+    SESSION the same way the deliberate Save-to-Drive route does — the Google-scoped
+    id, or "" in no-login / local-demo mode (server-global token) — NOT the raw
+    matter/request id.
+
+    STRICTLY best-effort: the shared archiver swallows + logs every failure path and
+    never raises; this wrapper additionally guards the resolution itself so a Drive
+    hiccup can never break the executed transition (which already persisted) or the
+    HTTP response. Emits a log on any skip/failure so the miss is observable.
+    """
+    try:
+        from . import drive_integration, google_connection
+
+        drive_token_owner_user_id = google_connection.connected_owner_user_id(
+            getattr(handler, "current_user", None),
+            owner_user_id=request_owner_user_id(handler),
+        )
+        drive_integration.archive_executed_matter(
+            matter=matter,
+            matter_id=matter_id,
+            owner_user_id=owner_user_id,
+            repository=DiskMatterRepository(),
+            drive_token_owner_user_id=drive_token_owner_user_id,
+            signed_via=signed_via,
+        )
+    except Exception:  # pragma: no cover - defensive; the archiver itself never raises
+        logger.warning(
+            "Drive archive wrapper failed for matter %s (signed_via=%s); "
+            "executed transition is unaffected.",
+            matter_id,
+            signed_via,
+            exc_info=True,
+        )

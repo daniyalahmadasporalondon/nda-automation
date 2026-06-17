@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
 from typing import Any, Callable
 
@@ -50,6 +51,8 @@ from .docusign_integration import (
     DocuSignNotConnectedError,
 )
 from .matter_repository import DiskMatterRepository, MatterRepository
+
+logger = logging.getLogger(__name__)
 
 # Where the signature envelope state lives on the matter (durable, owner-scoped).
 SIGNATURE_FIELD = "docusign"
@@ -218,6 +221,7 @@ def sync_signature_status(
     client: docusign_integration.DocuSignClient | None = None,
     client_factory: ClientFactory | None = None,
     drive_sync: DriveSyncFn | None = None,
+    drive_token_owner_user_id: str | None = None,
 ) -> SignatureStatusResult:
     """Fetch the envelope status; on completion store the signed artifact.
 
@@ -235,6 +239,14 @@ def sync_signature_status(
     outage / not-connected / any error is swallowed and logged, never blocking the
     executed transition (the envelope IS done at DocuSign). ``drive_sync`` is
     injectable for tests; it defaults to the live Drive archiver.
+
+    ``drive_token_owner_user_id`` is the GOOGLE-token owner the Drive upload
+    authenticates as (distinct from the matter owner). The status-poll route passes
+    the session's connected-Google id (``_google_owner_user_id``) so the archive
+    resolves the Drive token the SAME way the deliberate Save-to-Drive route does,
+    instead of mis-using the matter/request id (the #10 fix). When ``None`` the
+    archiver resolves it from the matter owner's stored Drive token, falling back to
+    the server-global token (the no-login / webhook path).
     """
     repository = repository or DiskMatterRepository()
     matter = _load_matter(matter, matter_id, owner_user_id, repository)
@@ -300,6 +312,8 @@ def sync_signature_status(
             matter_id=matter_id,
             owner_user_id=owner_user_id,
             repository=repository,
+            drive_token_owner_user_id=drive_token_owner_user_id,
+            signed_via="docusign",
         )
 
     return SignatureStatusResult(
@@ -645,64 +659,39 @@ def _archive_to_drive(
     matter_id: str,
     owner_user_id: str,
     repository: MatterRepository,
+    drive_token_owner_user_id: str | None = None,
+    signed_via: str = "docusign",
 ) -> None:
     """Mirror the fully-executed matter into its Google Drive folder (best-effort).
 
     Fires on the DocuSign ``completed`` transition so the executed PDF + a fresh
     ``metadata/matter_summary.json`` land in ``{root}/{counterparty}/{matter}/``.
-    Mirrors the intake auto-sync (:meth:`matter_lifecycle._perform_drive_sync`):
-    it is gated on Drive being connected AND auto-intake being enabled, then calls
-    :func:`drive_integration.sync_matter_folder` and stamps the resulting ``drive``
-    pointer back onto the matter.
+    A thin wrapper over the shared :func:`drive_integration.archive_executed_matter`
+    (the single archiver every executed transition shares).
 
-    STRICTLY best-effort: every failure path — Drive not connected, auto-intake
-    off, a settings read blowing up, the sync raising, the write-back failing — is
-    swallowed here and recorded via telemetry. This function must NEVER raise, so a
-    Drive outage can never block or fail the "completed"/executed transition that
-    already persisted before we were called.
+    ``owner_user_id`` is the MATTER owner (artifact bytes + write-back);
+    ``drive_token_owner_user_id`` is the GOOGLE-token owner the upload authenticates
+    as. The status-poll route resolves the latter from the session
+    (``_google_owner_user_id``); the webhook resolves it from the matched matter's
+    connected Google account. When not supplied the archiver resolves it from the
+    matter owner's stored Drive token, falling back to the server-global token —
+    which keeps the no-login / local-demo ``""`` path working.
+
+    STRICTLY best-effort: the shared archiver swallows + LOGS every failure path
+    (not connected, auto-intake off, settings read blowing up, the sync raising,
+    the write-back failing) and never raises, so a Drive outage can never block or
+    fail the "completed"/executed transition that already persisted before us.
     """
-    from . import app_settings, drive_integration, telemetry
+    from . import drive_integration
 
-    try:
-        connected = drive_integration.drive_connected(owner_user_id)
-        auto_intake = app_settings.drive_auto_intake_enabled()
-    except Exception:
-        telemetry.increment("drive_oncomplete_skipped")
-        return
-    if not connected or not auto_intake:
-        telemetry.increment("drive_oncomplete_skipped")
-        return
-
-    try:
-        root_folder_id = str(app_settings.drive_settings().get("folder_id") or "")
-    except Exception:
-        root_folder_id = ""
-
-    try:
-        synced_at = _now_iso()
-        synced = drive_integration.sync_matter_folder(
-            matter=matter,
-            matter_id=matter_id,
-            owner_user_id=owner_user_id,
-            root_folder_id=root_folder_id,
-            synced_at=synced_at,
-        )
-        repository.update_matter_fields(
-            matter_id,
-            {
-                "drive": {
-                    "matter_folder_id": synced["matter_folder_id"],
-                    "matter_folder_url": synced["matter_folder_url"],
-                    "synced_at": synced_at,
-                    "artifacts": synced["artifacts"],
-                }
-            },
-            owner_user_id=owner_user_id,
-        )
-        telemetry.increment("drive_oncomplete_synced")
-        telemetry.increment("drive_files_synced", amount=int(synced.get("synced_count") or 0))
-    except Exception:
-        telemetry.increment("drive_oncomplete_failed")
+    drive_integration.archive_executed_matter(
+        matter=matter,
+        matter_id=matter_id,
+        owner_user_id=owner_user_id,
+        repository=repository,
+        drive_token_owner_user_id=drive_token_owner_user_id,
+        signed_via=signed_via,
+    )
 
 
 # ---------------------------------------------------------------------------
