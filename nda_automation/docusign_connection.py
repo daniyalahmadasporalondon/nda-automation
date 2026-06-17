@@ -59,6 +59,19 @@ CONNECT_HMAC_KEY_ENV = "NDA_DOCUSIGN_CONNECT_HMAC_KEY"
 ASPORA_SIGNER_NAME_ENV = "NDA_DOCUSIGN_ASPORA_SIGNER_NAME"
 ASPORA_SIGNER_EMAIL_ENV = "NDA_DOCUSIGN_ASPORA_SIGNER_EMAIL"
 
+# Local-dev DocuSign owner. In NO-LOGIN mode (loopback bind, no Basic/Google auth
+# configured — see http_auth._auth_required_for_host) there is no signed-in user,
+# so request_owner_user_id() is "". Matter access treats that empty owner as the
+# single-tenant wildcard, but DocuSign tokens are keyed per owner and an empty
+# owner cannot be stored (save_user_token rejects it) — so OAuth consent would
+# complete yet the token-save would fail, leaving connected:false. To make the
+# local connect STICK, the OAuth lifecycle resolves a STABLE owner id for this
+# mode only. This NEVER affects a deployment with real auth: when auth IS required
+# the resolver returns the request owner unchanged and the empty-owner branch is
+# never taken (an authenticated request always carries a real owner).
+LOCAL_DEV_OWNER_ENV = "NDA_DOCUSIGN_LOCAL_DEV_OWNER"
+DEFAULT_LOCAL_DEV_OWNER = "local-dev"
+
 # DocuSign OAuth auth servers. Demo (sandbox) vs production are the two account.*
 # hosts; the eSignature REST base_uri is resolved per-account from /oauth/userinfo
 # (NOT hardcoded), because production accounts live on region-specific hosts.
@@ -137,6 +150,54 @@ def aspora_default_signer() -> dict[str, str] | None:
     if not name or not email or "@" not in email:
         return None
     return {"name": name, "email": email}
+
+
+def local_dev_owner_user_id() -> str:
+    """The stable local-dev owner id used in no-login mode (env-overridable)."""
+    configured = os.environ.get(LOCAL_DEV_OWNER_ENV, "").strip()
+    return configured or DEFAULT_LOCAL_DEV_OWNER
+
+
+def _no_login_mode() -> bool:
+    """Whether the app is running with authentication effectively disabled.
+
+    True only when no auth method is configured (neither Google OAuth nor HTTP
+    Basic) AND auth is not force-enabled via ``NDA_REQUIRE_AUTH``. This is the same
+    condition under which ``server._authorize_request`` leaves ``current_user_id``
+    empty on a loopback bind (the trusted local developer). A deployment with real
+    auth — or any host that forces auth — is NEVER in this mode, so the local-dev
+    owner substitution can never fire there.
+    """
+    from .http_auth import _auth_method_configured, _env_flag_enabled
+
+    if _env_flag_enabled("NDA_REQUIRE_AUTH"):
+        return False
+    return not _auth_method_configured()
+
+
+def resolve_owner_user_id(owner_user_id: str, *, host: str = "") -> str:
+    """Resolve the DocuSign token owner, substituting a local-dev id in no-login mode.
+
+    Returns ``owner_user_id`` unchanged whenever it is non-empty (every
+    authenticated request) OR whenever any auth method is configured / forced
+    (production / any configured-auth deployment). Only when the owner is empty AND
+    the app is in no-login mode — the loopback no-login developer path — does it
+    return the stable :func:`local_dev_owner_user_id`, so the OAuth token can be
+    stored and read back under a real owner and ``connected:true`` works locally.
+
+    ``host`` is accepted for call-site symmetry but no-login detection is
+    host-agnostic (it keys off whether auth is configured), so token-layer callers
+    that have no request host still resolve correctly.
+
+    This is the SINGLE substitution point: it touches DocuSign token ownership only
+    and never matter ownership (matter access keeps using the empty-owner wildcard).
+    """
+    owner = str(owner_user_id or "").strip()
+    if owner:
+        return owner
+    if not _no_login_mode():
+        return owner
+    return local_dev_owner_user_id()
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +342,7 @@ def _shared_token_path() -> Path | None:
 
 
 def _token_path_for(owner_user_id: str) -> Path:
+    owner_user_id = resolve_owner_user_id(owner_user_id)
     owner_segment = clean_user_token_segment(owner_user_id)
     if owner_segment:
         return user_token_path(owner_user_id)
@@ -298,6 +360,7 @@ def save_user_token(owner_user_id: str, token_response: dict[str, Any], account:
     token keeps the previously stored one (DocuSign returns a refresh token on the
     code exchange; subsequent refreshes return a new one).
     """
+    owner_user_id = resolve_owner_user_id(owner_user_id)
     owner_segment = clean_user_token_segment(owner_user_id)
     if not owner_segment:
         raise DocuSignConnectionError("A signed-in user is required to connect DocuSign.")
@@ -330,6 +393,7 @@ def save_user_token(owner_user_id: str, token_response: dict[str, Any], account:
 
 def disconnect_user(owner_user_id: str) -> bool:
     """Remove the user's stored DocuSign token. Returns True when one was removed."""
+    owner_user_id = resolve_owner_user_id(owner_user_id)
     owner_segment = clean_user_token_segment(owner_user_id)
     if not owner_segment:
         raise DocuSignConnectionError("A signed-in user is required to disconnect DocuSign.")
