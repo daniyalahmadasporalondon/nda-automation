@@ -179,6 +179,7 @@ const CorpusRender = (() => {
       const reasons = {
         not_connected: "Drive not connected",
         drive_error: "Drive listing failed",
+        drive_timeout: "Drive slow to respond — retry shortly",
         rate_limited: "Drive rate-limited — retry shortly",
         drive_skipped: "Drive crawl skipped",
       };

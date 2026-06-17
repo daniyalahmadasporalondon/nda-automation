@@ -382,6 +382,72 @@ class CorpusIndexTests(unittest.TestCase):
         self.assertFalse(payload["drive"]["reconciled"])
         self.assertEqual(payload["drive"]["reason"], corpus_index.REASON_RATE_LIMITED)
 
+    def test_slow_drive_crawl_fails_fast_with_drive_timeout(self):
+        # A Drive backend so slow each list call burns more than the crawl budget:
+        # build_corpus must bail out at the wall-clock deadline (reason
+        # 'drive_timeout') instead of grinding through every call, while the
+        # app-state matters still come back intact.
+        _seed_matter(self.repo, owner="owner-a", title="Solo NDA")
+        # Populate a real NDAs tree so that, ABSENT the deadline, the crawl would
+        # reconcile a Drive-only matter — proving the deadline is what trips, not an
+        # empty tree.
+        inner = FakeDriveService()
+        _build_drive_tree(
+            inner,
+            counterparty="Globex",
+            summary=_summary_for("drive-only-1", counterparty="Globex"),
+        )
+        clock = _Clock(start=1000.0)
+        # Each Drive call burns half the budget, so the crawl trips a few calls in.
+        per_call = corpus_index.CORPUS_DRIVE_CRAWL_DEADLINE_SECONDS / 2.0
+        slow = _ClockAdvancingDriveService(inner, clock, advance_per_call=per_call)
+        payload = corpus_index.build_corpus(
+            self.repo, "owner-a", "drive-owner", drive_service=slow, clock=clock
+        )
+        # App-state corpus intact + returned.
+        self.assertEqual(payload["matter_count"], 1)
+        # Drive degraded fast with the new timeout reason; still flagged connected.
+        self.assertFalse(payload["drive"]["reconciled"])
+        self.assertTrue(payload["drive"]["connected"])
+        self.assertEqual(payload["drive"]["reason"], corpus_index.REASON_DRIVE_TIMEOUT)
+        # The crawl stopped early — it did NOT walk every call in the tree (which
+        # would be 6: root + 2 listings + metadata + summary lookup + download).
+        self.assertLess(slow.list_calls, 6)
+
+    def test_drive_timeout_reason_is_distinct_from_drive_error(self):
+        self.assertEqual(corpus_index.REASON_DRIVE_TIMEOUT, "drive_timeout")
+        self.assertNotEqual(
+            corpus_index.REASON_DRIVE_TIMEOUT, corpus_index.REASON_DRIVE_ERROR
+        )
+
+    def test_real_wallclock_crawl_returns_within_bound(self):
+        # Production path (clock=None): a hung sequential crawl must still return
+        # promptly. Each list call sleeps ~half the deadline; the guard trips after
+        # a couple of calls, so build_corpus returns well under the Drive client's
+        # ~30s socket timeout. We assert it finishes in a small multiple of the
+        # deadline, never the 30s hang.
+        import time
+
+        _seed_matter(self.repo, owner="owner-a", title="Solo NDA")
+        inner = FakeDriveService()
+        _build_drive_tree(
+            inner,
+            counterparty="Globex",
+            summary=_summary_for("drive-only-1", counterparty="Globex"),
+        )
+        deadline = corpus_index.CORPUS_DRIVE_CRAWL_DEADLINE_SECONDS
+        slow = _SleepingDriveService(inner, sleep_seconds=deadline * 0.6)
+        start = time.monotonic()
+        payload = corpus_index.build_corpus(
+            self.repo, "owner-a", "drive-owner", drive_service=slow
+        )
+        elapsed = time.monotonic() - start
+        self.assertEqual(payload["matter_count"], 1)
+        self.assertEqual(payload["drive"]["reason"], corpus_index.REASON_DRIVE_TIMEOUT)
+        # Returned within a small multiple of the deadline (allow one in-flight
+        # call to finish), far below the ~30s un-bounded hang.
+        self.assertLess(elapsed, deadline + deadline * 0.6 + 2.0)
+
     # 6. Caching with an injected clock.
     def test_caching_serves_warm_then_refresh_rebuilds(self):
         matter = _seed_matter(self.repo, owner="owner-a", title="Cached NDA", subject="Cached NDA")
@@ -672,6 +738,88 @@ class _RaisingDriveService:
 
     def execute(self):  # pragma: no cover - defensive
         raise self._error
+
+
+class _ClockAdvancingDriveService:
+    """Wraps a populated :class:`FakeDriveService` but advances an injected clock on
+    every ``files().list`` execute, modelling a Drive backend so slow each request
+    burns wall-clock time. Deterministic (no real sleeping): the crawl's deadline
+    guard reads the same injected clock, so the crawl trips ``drive_timeout`` after a
+    few calls. The wrapped fake holds a real NDAs tree, so absent the deadline the
+    crawl would reconcile — proving the deadline (not an empty tree) is what trips.
+    """
+
+    def __init__(self, inner, clock, *, advance_per_call):
+        self._inner = inner
+        self._clock = clock
+        self._advance = float(advance_per_call)
+        self.list_calls = 0
+
+    def files(self):
+        return _ClockAdvancingFiles(self, self._inner.files())
+
+
+class _ClockAdvancingFiles:
+    def __init__(self, parent, inner_files):
+        self._parent = parent
+        self._inner_files = inner_files
+
+    def list(self, **kwargs):
+        return _ClockAdvancingExec(self._parent, self._inner_files.list(**kwargs))
+
+    def get_media(self, **kwargs):
+        return _ClockAdvancingExec(self._parent, self._inner_files.get_media(**kwargs))
+
+
+class _ClockAdvancingExec:
+    def __init__(self, parent, inner_request):
+        self._parent = parent
+        self._inner_request = inner_request
+
+    def execute(self):
+        self._parent.list_calls += 1
+        self._parent._clock.advance(self._parent._advance)
+        return self._inner_request.execute()
+
+
+class _SleepingDriveService:
+    """Wraps a populated :class:`FakeDriveService` but blocks on real wall-clock time
+    for ``sleep_seconds`` on each Drive call, modelling a genuinely slow sequential
+    crawl. Used to prove ``build_corpus`` returns within the bound on the production
+    wall-clock path (clock=None)."""
+
+    def __init__(self, inner, sleep_seconds):
+        self._inner = inner
+        self._sleep = float(sleep_seconds)
+        self.list_calls = 0
+
+    def files(self):
+        return _SleepingFiles(self, self._inner.files())
+
+
+class _SleepingFiles:
+    def __init__(self, parent, inner_files):
+        self._parent = parent
+        self._inner_files = inner_files
+
+    def list(self, **kwargs):
+        return _SleepingExec(self._parent, self._inner_files.list(**kwargs))
+
+    def get_media(self, **kwargs):
+        return _SleepingExec(self._parent, self._inner_files.get_media(**kwargs))
+
+
+class _SleepingExec:
+    def __init__(self, parent, inner_request):
+        self._parent = parent
+        self._inner_request = inner_request
+
+    def execute(self):
+        import time as _time
+
+        self._parent.list_calls += 1
+        _time.sleep(self._parent._sleep)
+        return self._inner_request.execute()
 
 
 class _FakeResp:
