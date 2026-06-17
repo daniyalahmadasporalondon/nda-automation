@@ -113,6 +113,209 @@ def _clause_facet(has_clauses: Any, clause_id: str) -> str | None:
     return None
 
 
+# --- master-filter facet vocabularies -------------------------------------
+# Six additional facet dimensions, each derived ONLY from data already on the
+# matter / review_result (no new review, no playbook change, no live extraction),
+# mirroring how governing_law is derived. Each degrades to None / [] / "" (the
+# graceful-degradation default) so a facet filter never positively matches on
+# missing data.
+
+# mutuality: from the mutuality review clause's verdict + analysis.
+MUTUALITY_MUTUAL = "mutual"
+MUTUALITY_ONE_WAY = "one_way"
+_MUTUALITY_CLAUSE_ID = "mutuality"
+
+# term_band: bucket the existing term_years scalar (the same scalar the term facet
+# surfaces). Boundaries: <=2y, 3-5y (anything >2y and <=5y), >5y.
+TERM_BAND_SHORT = "<=2y"
+TERM_BAND_MID = "3-5y"
+TERM_BAND_LONG = ">5y"
+
+# restraint_types: tag the non_circumvention finding's flagged text by restraint
+# family, reusing the EXISTING prohibited_positions regexes (no new clause). Only
+# these three families are surfaced as restraint types.
+_RESTRAINT_FAMILIES: tuple[str, ...] = ("non_compete", "non_solicit", "non_circumvention")
+_NON_CIRCUMVENTION_CLAUSE_ID = "non_circumvention"
+
+# review_outcome: collapse the per-clause review verdicts (via review_state) to one
+# document-level outcome. has_fail when any clause fails (check); else needs_review
+# when any clause needs review; else clean when at least one clause passed; None when
+# the matter was never (AI-)reviewed -- so an unreviewed matter is never claimed clean.
+REVIEW_OUTCOME_CLEAN = "clean"
+REVIEW_OUTCOME_NEEDS_REVIEW = "needs_review"
+REVIEW_OUTCOME_HAS_FAIL = "has_fail"
+
+# origin: where the document came from. generated = the generator wrote it;
+# received = a counterparty sent it (manual upload OR Gmail/email inbound); None when
+# the source is unknown (never guessed).
+ORIGIN_GENERATED = "generated"
+ORIGIN_RECEIVED = "received"
+
+
+def _review_clauses(review_result: Any) -> list[dict[str, Any]]:
+    """The clause dicts from a stored review_result, or [] for any odd shape."""
+    if not isinstance(review_result, dict):
+        return []
+    clauses = review_result.get("clauses")
+    if not isinstance(clauses, list):
+        return []
+    return [clause for clause in clauses if isinstance(clause, dict)]
+
+
+def _find_clause(review_result: Any, clause_id: str) -> dict[str, Any] | None:
+    for clause in _review_clauses(review_result):
+        if str(clause.get("id") or "") == clause_id:
+            return clause
+    return None
+
+
+def _mutuality_from_result(review_result: Any) -> str | None:
+    """``mutual`` | ``one_way`` | ``None`` from the mutuality review clause.
+
+    Reads the clause's ``mutuality_analysis`` (the structured paragraph-id buckets
+    the deterministic check attaches) plus its decision, mirroring the
+    ``checks.mutuality.reason_code`` polarity:
+
+    * one-way confidentiality paragraphs present -> ``one_way`` (a real asymmetry
+      signal, regardless of the clause's pass/review/check decision);
+    * else strong reciprocal-obligation paragraphs present -> ``mutual``;
+    * else ``None`` -- a weak label / role-only / not-present clause is not a
+      confident polarity, so the facet stays unknown (never a guessed polarity).
+
+    Never raises; any odd shape -> ``None``.
+    """
+    clause = _find_clause(review_result, _MUTUALITY_CLAUSE_ID)
+    if clause is None:
+        return None
+    analysis = clause.get("mutuality_analysis")
+    if not isinstance(analysis, dict):
+        return None
+    one_way_ids = analysis.get("one_way_paragraph_ids")
+    if isinstance(one_way_ids, list) and any(str(pid or "").strip() for pid in one_way_ids):
+        return MUTUALITY_ONE_WAY
+    strong_ids = analysis.get("strong_mutuality_paragraph_ids")
+    if isinstance(strong_ids, list) and any(str(pid or "").strip() for pid in strong_ids):
+        return MUTUALITY_MUTUAL
+    return None
+
+
+def _term_band_from_years(term_years: float | None) -> str | None:
+    """Bucket the term_years scalar into a band; ``None`` when term is unknown."""
+    if not isinstance(term_years, (int, float)) or isinstance(term_years, bool):
+        return None
+    if term_years <= 0:
+        return None
+    if term_years <= 2:
+        return TERM_BAND_SHORT
+    if term_years <= 5:
+        return TERM_BAND_MID
+    return TERM_BAND_LONG
+
+
+def _restraint_types_from_result(review_result: Any) -> list[str]:
+    """The restraint families found in the non_circumvention finding's flagged text.
+
+    Runs the EXISTING ``prohibited_positions`` regexes (sourced from the playbook,
+    not re-implemented here) against the non_circumvention clause's flagged text
+    (``matched_text`` + the joined ``evidence`` paragraphs) and returns the subset of
+    {non_compete, non_solicit, non_circumvention} that match, in a stable order. This
+    is the "tag the restraint by type" approach -- no new clause, no new review, no
+    live extraction; it only re-reads text the review already flagged. Empty list
+    when the clause is absent, carries no flagged text, or matches no family.
+    Never raises.
+    """
+    clause = _find_clause(review_result, _NON_CIRCUMVENTION_CLAUSE_ID)
+    if clause is None:
+        return []
+    text = _clause_flagged_text(clause)
+    if not text:
+        return []
+    try:
+        from . import prohibited_positions
+
+        found = {
+            label
+            for label, pattern in prohibited_positions.PROHIBITED_POSITION_PATTERNS
+            if label in _RESTRAINT_FAMILIES and pattern.search(text)
+        }
+    except Exception:  # noqa: BLE001 -- a regex/import hiccup never breaks the index.
+        return []
+    return [family for family in _RESTRAINT_FAMILIES if family in found]
+
+
+def _clause_flagged_text(clause: dict[str, Any]) -> str:
+    """The flagged text a clause carries: ``matched_text`` + joined ``evidence``.
+
+    Both engines (deterministic ``checks.common._result`` and ``ai_first_review``)
+    emit ``matched_text`` (the joined flagged paragraphs) and ``evidence`` (a list of
+    paragraph texts or paragraph dicts). We concatenate both so the family scan sees
+    the widest flagged text without re-extracting the document.
+    """
+    parts: list[str] = []
+    matched = clause.get("matched_text")
+    if isinstance(matched, str) and matched.strip():
+        parts.append(matched)
+    evidence = clause.get("evidence")
+    if isinstance(evidence, list):
+        for item in evidence:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                value = item.get("text") or item.get("matched_text") or ""
+                if isinstance(value, str):
+                    parts.append(value)
+    return "\n".join(part for part in parts if part)
+
+
+def _review_outcome_from_result(review_result: Any) -> str | None:
+    """``clean`` | ``needs_review`` | ``has_fail`` | ``None`` from clause verdicts.
+
+    Derived from the canonical ``review_state`` aggregate (the same single source
+    the send gate reads), so this never diverges from the per-clause verdicts:
+
+    * any clause fails (check)        -> ``has_fail``
+    * else any clause needs review    -> ``needs_review``
+    * else at least one clause passed -> ``clean``
+    * otherwise (no clause verdicts)  -> ``None`` (unreviewed; never claimed clean).
+
+    Never raises; an odd shape -> ``None``.
+    """
+    if not isinstance(review_result, dict) or not _review_clauses(review_result):
+        return None
+    try:
+        state = review_state.review_state_from_result(review_result)
+    except Exception:  # noqa: BLE001
+        return None
+    counts = state.get("counts") if isinstance(state, dict) else None
+    if not isinstance(counts, dict):
+        return None
+    if _safe_count(counts.get("check")) > 0:
+        return REVIEW_OUTCOME_HAS_FAIL
+    if _safe_count(counts.get("review")) > 0:
+        return REVIEW_OUTCOME_NEEDS_REVIEW
+    if _safe_count(counts.get("pass")) > 0:
+        return REVIEW_OUTCOME_CLEAN
+    return None
+
+
+def _origin_from_source(source_type: Any, *, has_gmail: bool = False) -> str | None:
+    """``generated`` | ``received`` | ``None`` from a matter's ``source_type``.
+
+    * ``generated`` / ``send_document`` source_type -> ``generated`` (the generator
+      wrote it -- mirrors ``ingestion_service``'s outbound classification);
+    * ``manual_upload`` / ``gmail*`` / ``email`` source_type, or a Gmail message id
+      present -> ``received`` (a counterparty sent it -- mirrors
+      ``artifact_service._source_for_matter``);
+    * otherwise ``None`` (unknown -- never guessed).
+    """
+    token = str(source_type or "").strip().casefold()
+    if token in {"generated", "send_document"}:
+        return ORIGIN_GENERATED
+    if token.startswith("gmail") or token in {"manual_upload", "upload", "email"} or has_gmail:
+        return ORIGIN_RECEIVED
+    return None
+
+
 # Workflow statuses that resolve the ``signed`` facet. Anything else (intake /
 # review / approval, pre-send) resolves to ``None`` -> "unknown", so a signed
 # filter never silently includes or excludes a pre-send matter. Mirrors the FE
@@ -141,6 +344,15 @@ def _empty_facets(*, available: bool) -> dict[str, Any]:
         "non_solicit": None,
         "non_compete": None,
         "term_years": None,
+        # Master-filter facets. Each at its empty/null value so a facet filter never
+        # positively matches a legacy/degraded block (the graceful-degradation
+        # linchpin), exactly like governing_law/term_years above.
+        "mutuality": None,
+        "term_band": None,
+        "restraint_types": [],
+        "review_outcome": None,
+        "clauses_present": [],
+        "origin": None,
         # The workflow enums (phase/status) the existing status/phase search
         # dimensions filter on, surfaced here so the FE adapter can reconstruct a
         # workflow_state over a corpus matter (which otherwise only carries the
@@ -272,6 +484,33 @@ def _app_facets(matter: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]
         facets["term_years"] = _app_term_years(matter)
     except Exception:  # noqa: BLE001
         facets["term_years"] = None
+    # --- master-filter facets (all from data already on the matter) ---
+    review_result = matter.get("review_result")
+    try:
+        facets["mutuality"] = _mutuality_from_result(review_result)
+    except Exception:  # noqa: BLE001
+        facets["mutuality"] = None
+    try:
+        facets["term_band"] = _term_band_from_years(facets["term_years"])
+    except Exception:  # noqa: BLE001
+        facets["term_band"] = None
+    try:
+        facets["restraint_types"] = _restraint_types_from_result(review_result)
+    except Exception:  # noqa: BLE001
+        facets["restraint_types"] = []
+    try:
+        facets["review_outcome"] = _review_outcome_from_result(review_result)
+    except Exception:  # noqa: BLE001
+        facets["review_outcome"] = None
+    # clauses_present is the same set as has_clauses (the clause ids the doc has),
+    # surfaced under the master-filter name the FE rail keys off.
+    facets["clauses_present"] = list(facets["has_clauses"])
+    try:
+        facets["origin"] = _origin_from_source(
+            matter.get("source_type"), has_gmail=bool(matter.get("gmail_message_id"))
+        )
+    except Exception:  # noqa: BLE001
+        facets["origin"] = None
     facets["phase"] = str(state.get("phase") or "")
     facets["status"] = str(state.get("status") or "")
     # The failure/gate axes come straight from the same workflow_state the Python
@@ -340,6 +579,32 @@ def _drive_facets(summary: dict[str, Any]) -> dict[str, Any]:
         else []
     )
     term_years = raw.get("term_years")
+    term_years_value = (
+        float(term_years)
+        if isinstance(term_years, (int, float)) and not isinstance(term_years, bool) and term_years > 0
+        else None
+    )
+    # Master-filter facets, read back from the durable block (drive_integration persists
+    # them at sync). Each read defensively + degrades to None/[] when absent or
+    # hand-edited to an odd shape, so a Drive-only matter still filters by them but a
+    # legacy summary (written before this enrichment) never falsely matches. term_band
+    # is re-derived from the durable term_years so the band and the scalar can never
+    # drift apart on disk.
+    raw_restraints = raw.get("restraint_types")
+    restraint_types = (
+        [str(r).strip() for r in raw_restraints if str(r or "").strip() in _RESTRAINT_FAMILIES]
+        if isinstance(raw_restraints, list)
+        else []
+    )
+    raw_clauses_present = raw.get("clauses_present")
+    clauses_present = (
+        [str(c).strip() for c in raw_clauses_present if str(c or "").strip()]
+        if isinstance(raw_clauses_present, list)
+        else list(has_clause_ids)
+    )
+    mutuality = raw.get("mutuality")
+    review_outcome = raw.get("review_outcome")
+    origin = raw.get("origin")
     # phase/status come from the durable workflow_state block, not the facets block
     # (drive_integration writes them there); read defensively so a hand-edited summary
     # can never break the index.
@@ -356,9 +621,16 @@ def _drive_facets(summary: dict[str, Any]) -> dict[str, Any]:
         # id -> FE key). None when absent (mirrors the app-state pass + degradation).
         "non_solicit": _clause_facet(has_clause_ids, _CLAUSE_FACET_IDS["non_solicit"]),
         "non_compete": _clause_facet(has_clause_ids, _CLAUSE_FACET_IDS["non_compete"]),
-        "term_years": float(term_years)
-        if isinstance(term_years, (int, float)) and not isinstance(term_years, bool) and term_years > 0
+        "term_years": term_years_value,
+        # Master-filter facets read back from the durable block (see above).
+        "mutuality": mutuality if mutuality in (MUTUALITY_MUTUAL, MUTUALITY_ONE_WAY) else None,
+        "term_band": _term_band_from_years(term_years_value),
+        "restraint_types": [family for family in _RESTRAINT_FAMILIES if family in restraint_types],
+        "review_outcome": review_outcome
+        if review_outcome in (REVIEW_OUTCOME_CLEAN, REVIEW_OUTCOME_NEEDS_REVIEW, REVIEW_OUTCOME_HAS_FAIL)
         else None,
+        "clauses_present": clauses_present,
+        "origin": origin if origin in (ORIGIN_GENERATED, ORIGIN_RECEIVED) else None,
         "phase": str((workflow_state or {}).get("phase") or ""),
         "status": str((workflow_state or {}).get("status") or ""),
         "needs_attention": (workflow_state or {}).get("needs_attention") is True,
@@ -617,6 +889,21 @@ def _drive_pass(
             "drive_orphans": [],
         }
     except drive_integration.DriveIntegrationError:
+        return {
+            "drive": _drive_block(connected=True, reconciled=False, reason=REASON_DRIVE_ERROR),
+            "drive_matters": {},
+            "drive_orphans": [],
+        }
+    except Exception:  # noqa: BLE001
+        # The module contract is "a Drive hiccup never raises out of build_corpus; it
+        # degrades to an app-state-only corpus". The specific catches above cover the
+        # wrapped drive_integration errors, but an UNEXPECTED exception type -- a raw
+        # google-api/httplib2 client error or a socket error that was never wrapped --
+        # would otherwise escape _drive_pass (and build_corpus, which has no catch),
+        # killing the whole /api/corpus request so even the app-state matters drop and
+        # the Corpus tab goes down. Degrade ANY unexpected Drive failure to
+        # app-state-only (reason=drive_error), mirroring the DriveIntegrationError
+        # branch, so the corpus always renders the live matters.
         return {
             "drive": _drive_block(connected=True, reconciled=False, reason=REASON_DRIVE_ERROR),
             "drive_matters": {},
@@ -994,8 +1281,61 @@ def _group_and_wrap(matters: list[dict[str, Any]], drive_block: dict[str, Any]) 
         "groups": groups,
         "matter_count": matter_count,
         "counterparty_count": len(groups),
+        "facet_counts": _facet_counts(matters),
         "drive": drive_block,
     }
+
+
+# Facet keys whose per-matter value is a LIST of values (each value counts the matter
+# once); every other counted facet is a single scalar value.
+_LIST_FACET_KEYS: frozenset[str] = frozenset({"restraint_types", "clauses_present"})
+
+# The master-filter facet keys the top-level count block covers. Counts are derived
+# from the SAME per-matter facet values the filter reads, so each count is exactly the
+# number of matters a filter on that value keeps (count == filtered parity). A null /
+# "" / empty-list value is NOT counted (an unknown facet never positively matches), so
+# the option list the FE builds from these counts only ever offers real, filterable
+# values.
+_COUNTED_FACET_KEYS: tuple[str, ...] = (
+    "mutuality",
+    "term_band",
+    "restraint_types",
+    "review_outcome",
+    "clauses_present",
+    "origin",
+)
+
+
+def _facet_counts(matters: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    """``{facet_key: {value: matter_count}}`` over the merged matters.
+
+    For each master-filter facet, count how many matters carry each value, mirroring
+    exactly what a filter on that value would keep. List facets (restraint_types /
+    clauses_present) count a matter once per value it lists; scalar facets count a
+    matter under its single value. Null / empty values are skipped so the count block
+    only advertises filterable values. This is the backend twin of the FE rail's
+    option-count derivation (corpus.js builds the same counts from matter.facets), so
+    the AI facet-count tool and the FE rail agree without re-deriving over a live Drive.
+    """
+    counts: dict[str, dict[str, int]] = {key: {} for key in _COUNTED_FACET_KEYS}
+    for matter in matters:
+        facets = matter.get("facets") if isinstance(matter, dict) else None
+        if not isinstance(facets, dict):
+            continue
+        for key in _COUNTED_FACET_KEYS:
+            value = facets.get(key)
+            if key in _LIST_FACET_KEYS:
+                if not isinstance(value, list):
+                    continue
+                for item in value:
+                    token = str(item or "").strip()
+                    if token:
+                        counts[key][token] = counts[key].get(token, 0) + 1
+            else:
+                token = str(value or "").strip()
+                if token:
+                    counts[key][token] = counts[key].get(token, 0) + 1
+    return counts
 
 
 # --- url builders ----------------------------------------------------------
