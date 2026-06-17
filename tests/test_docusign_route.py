@@ -359,6 +359,47 @@ def test_send_for_signature_not_connected_is_409(repo, monkeypatch):
     assert handler.response["needs_connect"] is True
 
 
+def test_send_for_signature_duplicate_on_active_envelope_is_409(repo, connected, fake_client):
+    """#30: a SECOND send on a matter with an active envelope is refused (409),
+    not allowed to create a duplicate envelope to the counterparty."""
+    matter_id = _matter_with_reviewed(repo)
+    # First send creates the envelope.
+    first = _FakeHandler(repo, payload={})
+    docusign_routes.handle_send_for_signature(first, f"/api/matters/{matter_id}/send-for-signature")
+    assert first.status == 201
+    first_envelope = first.response["envelope_id"]
+    assert first_envelope
+
+    # Second send must be rejected WITHOUT minting a new envelope.
+    second = _FakeHandler(repo, payload={})
+    docusign_routes.handle_send_for_signature(second, f"/api/matters/{matter_id}/send-for-signature")
+    assert second.status == 409
+    assert second.response["already_sent"] is True
+    # The stored envelope id is unchanged (no duplicate was created).
+    stored = repo.get_matter(matter_id, owner_user_id=OWNER)
+    assert stored[docusign_routes.docusign_workflow.SIGNATURE_FIELD]["envelope_id"] == first_envelope
+
+
+def test_send_for_signature_resend_allowed_after_terminal_envelope(repo, connected, fake_client):
+    """#30: a terminal envelope (voided) is NOT active — a legitimate resend is
+    allowed (does not 409)."""
+    matter_id = _matter_with_reviewed(repo)
+    first = _FakeHandler(repo, payload={})
+    docusign_routes.handle_send_for_signature(first, f"/api/matters/{matter_id}/send-for-signature")
+    assert first.status == 201
+
+    # Force the stored envelope to a terminal state.
+    field = docusign_routes.docusign_workflow.SIGNATURE_FIELD
+    stored = repo.get_matter(matter_id, owner_user_id=OWNER)
+    signature = dict(stored[field])
+    signature["status"] = "voided"
+    repo.update_matter_fields(matter_id, {field: signature}, owner_user_id=OWNER)
+
+    resend = _FakeHandler(repo, payload={})
+    docusign_routes.handle_send_for_signature(resend, f"/api/matters/{matter_id}/send-for-signature")
+    assert resend.status == 201
+
+
 # --------------------------------------------------------------------------
 # signature-status / signed-document
 # --------------------------------------------------------------------------
