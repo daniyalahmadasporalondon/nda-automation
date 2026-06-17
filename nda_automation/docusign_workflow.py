@@ -46,6 +46,8 @@ from .artifact_registry import (
 from .docusign_integration import (
     DEFAULT_SIGNING_ORDER,
     STATUS_COMPLETED,
+    STATUS_DECLINED,
+    STATUS_VOIDED,
     Signer,
     DocuSignError,
     DocuSignNotConnectedError,
@@ -278,6 +280,14 @@ def sync_signature_status(
         signature, docusign_client, envelope_id
     )
 
+    # Terminal-but-not-signed transitions, split by what they mean for the deal.
+    # Both clear the awaiting-signature limbo (so a dead/cancelled deal stops
+    # reading as "awaiting counterparty" forever) and record a timeline event; they
+    # diverge on the resulting workflow state (see workflow._derive_phase_and_status).
+    declined = status == STATUS_DECLINED
+    voided = status == STATUS_VOIDED
+    timeline_event: dict[str, Any] | None = None
+
     if completed:
         signed_artifact_id = _capture_executed_document(
             docusign_client,
@@ -294,10 +304,46 @@ def sync_signature_status(
         fields["status"] = "fully_signed"
         if signed_artifact_id:
             fields[SIGNATURE_FIELD]["signed_artifact_id"] = signed_artifact_id
+    elif declined:
+        # Counterparty REFUSED. Clear awaiting; flag it for human attention. The
+        # matter stays visible (Sent column) and needs_attention so the user can
+        # renegotiate, re-send, or close. NOT executed.
+        fields["awaiting_signature"] = False
+        fields["signature_declined"] = True
+        fields["signature_declined_at"] = _now_iso()
+        # A re-decline / re-void should never leave the opposite stale flag set.
+        fields["signature_voided"] = False
+        timeline_event = _signature_terminal_event(
+            declined=True, voided=False, raw_status=status
+        )
+    elif voided:
+        # Envelope CANCELLED (usually the sender voided to reissue). Clear awaiting
+        # and return the matter to a RE-SENDABLE state (Send available again). NOT
+        # an error / attention state.
+        fields["awaiting_signature"] = False
+        fields["signature_voided"] = True
+        fields["signature_voided_at"] = _now_iso()
+        fields["signature_declined"] = False
+        timeline_event = _signature_terminal_event(
+            declined=False, voided=True, raw_status=status
+        )
 
     updated = repository.update_matter_fields(matter_id, fields, owner_user_id=owner_user_id)
     if updated is None:
         updated = {**matter, **fields}
+
+    if timeline_event is not None:
+        # Append the terminal-not-signed event after the state write so the matter
+        # exists with the cleared flags. Best-effort: never let a timeline hiccup
+        # mask the (already-persisted) status transition.
+        try:
+            after_event = repository.append_timeline_event(
+                matter_id, timeline_event, owner_user_id=owner_user_id
+            )
+        except Exception:  # noqa: BLE001 -- the timeline is non-authoritative here.
+            after_event = None
+        if after_event is not None:
+            updated = after_event
 
     if completed:
         # Best-effort: archive the fully-executed matter (signed PDF + refreshed
@@ -728,6 +774,41 @@ def _default_subject(matter: dict[str, Any]) -> str:
     if counterparty and counterparty.lower() != "unknown counterparty":
         return f"Please sign: {title} — {counterparty}"
     return f"Please sign: {title}"
+
+
+def _signature_terminal_event(
+    *, declined: bool, voided: bool, raw_status: str
+) -> dict[str, Any]:
+    """Build the timeline event for a terminal-but-not-signed signature transition.
+
+    Declined and voided each get a distinct, human-readable detail line and land on
+    the workflow phase/status the deriver will read for them (Sent/declined for a
+    refusal, Approval/voided for a cancelled-re-sendable envelope). Uses the shared
+    ``workflow.build_timeline_event`` so the shape matches every other lifecycle
+    event in the append-only log.
+    """
+    from . import workflow
+
+    now = _now_iso()
+    date = now[:10]
+    if declined:
+        return workflow.build_timeline_event(
+            "signature_declined",
+            phase=workflow.PHASE_SENT,
+            status=workflow.STATUS_SIGNATURE_DECLINED,
+            actor="docusign",
+            detail=f"Counterparty declined on {date}.",
+            at=now,
+        )
+    # voided
+    return workflow.build_timeline_event(
+        "signature_voided",
+        phase=workflow.PHASE_APPROVAL,
+        status=workflow.STATUS_SIGNATURE_VOIDED,
+        actor="docusign",
+        detail=f"Envelope voided on {date}.",
+        at=now,
+    )
 
 
 def _now_iso() -> str:

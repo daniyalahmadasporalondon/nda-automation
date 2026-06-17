@@ -86,6 +86,13 @@ MATTER_UPDATE_FIELDS = {
     "last_outbound_thread_id",
     "last_outbound_to",
     "pdf_annotations",
+    # DocuSign terminal-but-not-signed markers (the workflow deriver reads these to
+    # surface a declined deal as "needs attention" and a voided one as re-sendable,
+    # instead of stuck "awaiting signature" forever).
+    "signature_declined",
+    "signature_declined_at",
+    "signature_voided",
+    "signature_voided_at",
     "status",
 }
 
