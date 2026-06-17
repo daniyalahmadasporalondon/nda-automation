@@ -513,6 +513,52 @@ class DriveV2IntegrationTests(unittest.TestCase):
         self.assertIn("mutuality", facets["has_clauses"])
         self.assertEqual(facets["term_years"], 4.0)
 
+    def test_matter_summary_requirement_counts_gated_on_ai_review_ran(self):
+        # The durable facets block must NOT persist deterministic requirement counts
+        # for a matter whose review_result was not produced by the AI (ai_first)
+        # engine -- otherwise the corpus "has issues" search leaks a deterministic
+        # verdict for a doc the AI never reviewed. Gated to (0, 0) + ai_review_ran=False.
+        deterministic = drive_integration._matter_summary(
+            matter={
+                "id": "m_det",
+                "subject": "Generated NDA",
+                "review_result": {
+                    "requirements_failed": 3,
+                    "requirements_needs_review": 2,
+                    "active_review_engine": {"executed_engine": "deterministic"},
+                },
+            },
+            matter_id="m_det",
+            counterparty="Acme",
+            matter_folder_url="",
+            synced_at="2026-06-07T11:00:00+00:00",
+            artifact_records=[],
+        )["facets"]
+        self.assertEqual(deterministic["requirements_failed"], 0)
+        self.assertEqual(deterministic["requirements_needs_review"], 0)
+        self.assertFalse(deterministic["ai_review_ran"])
+
+        # An AI (ai_first) review keeps the real counts + marks ai_review_ran true.
+        ai_reviewed = drive_integration._matter_summary(
+            matter={
+                "id": "m_ai",
+                "subject": "Reviewed NDA",
+                "review_result": {
+                    "requirements_failed": 3,
+                    "requirements_needs_review": 2,
+                    "active_review_engine": {"executed_engine": "ai_first"},
+                },
+            },
+            matter_id="m_ai",
+            counterparty="Acme",
+            matter_folder_url="",
+            synced_at="2026-06-07T11:00:00+00:00",
+            artifact_records=[],
+        )["facets"]
+        self.assertEqual(ai_reviewed["requirements_failed"], 3)
+        self.assertEqual(ai_reviewed["requirements_needs_review"], 2)
+        self.assertTrue(ai_reviewed["ai_review_ran"])
+
     def test_matter_summary_swallows_facet_failure_and_still_writes(self):
         # A facet-derivation hiccup must never break the sync: a governing-law
         # derivation that raises is swallowed by _summary_facets and the summary still

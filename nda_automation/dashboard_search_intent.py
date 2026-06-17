@@ -298,6 +298,14 @@ def _corpus_matter_human_gate(matter: Mapping[str, Any]) -> bool:
 
 def _corpus_matter_has_issues(matter: Mapping[str, Any]) -> bool:
     facets = _matter_facets(matter)
+    # GATE (read side, belt-and-suspenders): a matter only "has issues" when an AI
+    # (ai_first) review actually ran for it. The corpus write-derivation already
+    # zeroes the requirement counts for deterministic-only matters, but a STALE facet
+    # block persisted before that gate may still carry non-zero deterministic counts;
+    # requiring the ai_review_ran signal (absent -> falsy) keeps that stale verdict
+    # from leaking into the "matters with issues" filter.
+    if facets.get("ai_review_ran") is not True:
+        return False
     failed = _coerce_count(facets.get("requirements_failed"))
     needs_review = _coerce_count(facets.get("requirements_needs_review"))
     return failed > 0 or needs_review > 0

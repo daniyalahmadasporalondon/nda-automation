@@ -124,6 +124,15 @@ def _empty_facets(*, available: bool) -> dict[str, Any]:
         "human_gate": False,
         "requirements_failed": 0,
         "requirements_needs_review": 0,
+        # Whether an AI (ai_first) review actually ran for this matter. The
+        # has_issues consumer (dashboard_search_intent._corpus_matter_has_issues)
+        # gates on this so a deterministic-only verdict never leaks into the
+        # "matters with issues" filter -- belt-and-suspenders alongside the
+        # write-time gate in _app_requirement_counts / _summary_requirement_counts,
+        # and it ALSO neutralizes stale persisted facets written before that gate
+        # (they lack this key, so it defaults False here). Default False so a
+        # legacy/degraded facet block never positively matches has_issues.
+        "ai_review_ran": False,
         "facets_available": available,
     }
 
@@ -228,6 +237,12 @@ def _app_facets(matter: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]
     # mirrors the backend matcher exactly.
     facets["needs_attention"] = state.get("needs_attention") is True
     facets["human_gate"] = state.get("human_gate") is True
+    # Whether an AI (ai_first) review actually ran -- the has_issues consumer gates
+    # on this. Read defensively so a bad review_result can never break the index.
+    try:
+        facets["ai_review_ran"] = review_state.review_was_ai_executed(matter.get("review_result"))
+    except Exception:  # noqa: BLE001
+        facets["ai_review_ran"] = False
     failed, needs_review = _app_requirement_counts(matter)
     facets["requirements_failed"] = failed
     facets["requirements_needs_review"] = needs_review
@@ -239,9 +254,19 @@ def _app_requirement_counts(matter: dict[str, Any]) -> tuple[int, int]:
 
     Same source matter_summary's review digest reads; absent/odd shapes degrade to
     (0, 0) so the has_issues facet never falsely matches. Never raises.
+
+    GATE: surface the counts ONLY when an AI (ai_first) review actually ran for this
+    matter (``review_state.review_was_ai_executed`` -- the same signal
+    ``matter_view`` gates its ``ai_review_ran`` projection on). A deterministic-only
+    matter (e.g. outbound generation, which pins the deterministic engine and defers
+    AI to on-demand) carries deterministic requirement counts that would otherwise
+    leak into the corpus "has issues" search even though no AI reviewed the document;
+    gating here returns (0, 0) so the deterministic verdict never surfaces as an issue.
     """
     review_result = matter.get("review_result")
     if not isinstance(review_result, dict):
+        return 0, 0
+    if not review_state.review_was_ai_executed(review_result):
         return 0, 0
     return (
         _safe_count(review_result.get("requirements_failed")),
@@ -291,6 +316,11 @@ def _drive_facets(summary: dict[str, Any]) -> dict[str, Any]:
         "human_gate": (workflow_state or {}).get("human_gate") is True,
         "requirements_failed": _safe_count(raw.get("requirements_failed")),
         "requirements_needs_review": _safe_count(raw.get("requirements_needs_review")),
+        # Read the AI-ran signal back from the durable facets block (the has_issues
+        # consumer gates on it). A summary written before this key existed -- or any
+        # stale facet block from before the gate -- lacks it, so it defaults False
+        # (has_issues never falsely matches), mirroring the other facets.
+        "ai_review_ran": raw.get("ai_review_ran") is True,
         "facets_available": True,
     }
 

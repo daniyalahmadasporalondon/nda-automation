@@ -797,8 +797,27 @@ def _summary_facets(matter: dict[str, Any], workflow_state: dict[str, Any]) -> d
         # _drive_facets reads them back from this block.
         "requirements_failed": failed,
         "requirements_needs_review": needs_review,
+        # Whether an AI (ai_first) review actually ran. Persisted so the has_issues
+        # consumer can gate on it even for a Drive-only matter; corpus_index's
+        # _drive_facets reads it back (and treats its absence as False).
+        "ai_review_ran": _summary_ai_review_ran(matter),
         "schema_version": 1,
     }
+
+
+def _summary_ai_review_ran(matter: dict[str, Any]) -> bool:
+    """True when an AI (ai_first) review actually ran for this matter.
+
+    Best-effort wrapper over ``review_state.review_was_ai_executed`` (the same signal
+    matter_view gates ai_review_ran on). Persisted into the durable facets block so a
+    Drive-only matter keeps the signal; never raises (a bad review_result -> False).
+    """
+    try:
+        from . import review_state
+
+        return review_state.review_was_ai_executed(matter.get("review_result"))
+    except Exception:
+        return False
 
 
 def _summary_requirement_counts(matter: dict[str, Any]) -> tuple[int, int]:
@@ -806,9 +825,17 @@ def _summary_requirement_counts(matter: dict[str, Any]) -> tuple[int, int]:
 
     Best-effort, mirroring corpus_index's app-state derivation; absent/odd shapes
     degrade to (0, 0). Never raises.
+
+    GATE: surface the counts ONLY when an AI (ai_first) review actually ran (same gate
+    as corpus_index._app_requirement_counts). A deterministic-only matter would
+    otherwise persist deterministic requirement counts to matter_summary.json that
+    leak into the corpus "has issues" search; gating returns (0, 0) so the durable
+    summary carries no deterministic verdict.
     """
     review_result = matter.get("review_result")
     if not isinstance(review_result, dict):
+        return 0, 0
+    if not _summary_ai_review_ran(matter):
         return 0, 0
 
     def _coerce(value: object) -> int:

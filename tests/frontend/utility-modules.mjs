@@ -1923,6 +1923,8 @@ const specMatters = [
     created_at: daysAgo(30),
     requirements_failed: 2,
     requirements_needs_review: 0,
+    // Surfaced counts imply an AI (ai_first) review ran; matterHasIssues gates on it.
+    ai_review_ran: true,
     workflow_state: { status: "awaiting_approval", phase: "approval", needs_attention: false, human_gate: true },
   },
   {
@@ -1941,6 +1943,8 @@ const specMatters = [
     created_at: daysAgo(10),
     requirements_failed: 0,
     requirements_needs_review: 1,
+    // Surfaced counts imply an AI (ai_first) review ran; matterHasIssues gates on it.
+    ai_review_ran: true,
     workflow_state: { status: "review_failed", phase: "review", needs_attention: true, human_gate: false },
   },
 ];
@@ -2029,7 +2033,7 @@ const corpusWorkflowMatters = [
   {
     matter_id: "cw_stuck",
     title: "Globex NDA stuck",
-    facets: { phase: "review", status: "review_failed", needs_attention: true, human_gate: false, requirements_failed: 0, requirements_needs_review: 1, facets_available: true },
+    facets: { phase: "review", status: "review_failed", needs_attention: true, human_gate: false, requirements_failed: 0, requirements_needs_review: 1, ai_review_ran: true, facets_available: true },
   },
   {
     matter_id: "cw_clean",
@@ -2056,6 +2060,18 @@ assert.deepEqual(acids(applyFilterSpec(adaptedCorpus, { human_gate: true }, NOW)
 // needs_attention + has_issues mirror the backend matcher over the same source.
 assert.deepEqual(acids(applyFilterSpec(adaptedCorpus, { needs_attention: true }, NOW)), ["cw_stuck"]);
 assert.deepEqual(acids(applyFilterSpec(adaptedCorpus, { has_issues: true }, NOW)), ["cw_stuck"]);
+// AI-ran gate (mirrors backend _corpus_matter_has_issues): a corpus matter carrying
+// non-zero counts WITHOUT the ai_review_ran signal (deterministic-only, or a stale
+// facet block from before the gate) must NOT match has_issues.
+const deterministicCorpus = [
+  adaptCorpusMatter({
+    matter_id: "cw_det",
+    title: "Generated NDA (deterministic)",
+    facets: { phase: "review", status: "review_failed", needs_attention: false, human_gate: false, requirements_failed: 2, requirements_needs_review: 1, ai_review_ran: false, facets_available: true },
+  }),
+];
+assert.equal(deterministicCorpus[0].ai_review_ran, false);
+assert.deepEqual(acids(applyFilterSpec(deterministicCorpus, { has_issues: true }, NOW)), []);
 // The legacy/degraded matter never positively matches any of these facets.
 assert.equal(acids(applyFilterSpec(adaptedCorpus, { human_gate: true }, NOW)).includes("cw_legacy"), false);
 assert.equal(acids(applyFilterSpec(adaptedCorpus, { needs_attention: true }, NOW)).includes("cw_legacy"), false);
