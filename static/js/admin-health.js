@@ -20,8 +20,7 @@ const AdminHealthView = (() => {
       setStatus("checking", "Checking", true);
       try {
         const response = await fetch("/api/telemetry");
-        const payload = await response.json();
-        if (!response.ok) throw reviewErrorFromPayload(payload, "AI review health could not load");
+        const payload = await window.AuthExpired.parseOkJson(response, "AI review health could not load", reviewErrorFromPayload);
         render(payload);
       } catch (error) {
         renderError(error.message || "AI review health could not load");

@@ -49,6 +49,16 @@ const RepositoryActions = (() => {
         }
         renderBoard();
       } catch (error) {
+        // A 401 means the session expired, not that the repository is empty.
+        // The shared API helper already fired the global auth-expired prompt;
+        // do NOT wipe `state.matters` or deselect the open matter — that would
+        // blank the whole board behind a cryptic error. Leave the existing view
+        // in place and surface the expiry on the board banner.
+        if (globalThis.AuthExpired?.isAuthError?.(error)) {
+          globalThis.AuthExpired.handleAuthExpired();
+          renderBoard({ errorMessage: "Your session expired — please sign in again." });
+          return;
+        }
         state.matters = [];
         setSelectedMatter(null);
         setPendingDeleteMatterId(null);

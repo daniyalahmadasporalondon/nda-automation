@@ -1,9 +1,22 @@
 export function createRepositoryApi({ fetchImpl = globalThis.fetch, reviewErrorFromPayload }) {
+  // Check `response.ok` BEFORE parsing JSON. On session expiry the server returns
+  // a 401 with an empty/HTML body, so `response.json()` itself throws a SyntaxError
+  // ("The string did not match the expected pattern." in Safari) that masks the
+  // real cause. Only parse when ok; on a non-ok response throw a clean Error
+  // carrying the real `status`, and fire the global auth-expired prompt on a 401.
   async function jsonRequest(url, options = {}, fallbackMessage = "Request failed") {
     const response = await fetchImpl(url, options);
-    const payload = await response.json();
-    if (!response.ok) throw reviewErrorFromPayload(payload, fallbackMessage);
-    return payload;
+    if (response.ok) return response.json();
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+    const error = reviewErrorFromPayload(payload, fallbackMessage);
+    error.status = response.status;
+    if (response.status === 401) globalThis.AuthExpired?.handleAuthExpired?.();
+    throw error;
   }
 
   async function loadGmailStatus() {
