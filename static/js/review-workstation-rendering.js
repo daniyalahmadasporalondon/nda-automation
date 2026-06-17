@@ -196,6 +196,15 @@ function updateExportButtonState() {
       }
     }
   }
+  if (typeof studioMarkExecutedButton !== "undefined" && studioMarkExecutedButton) {
+    // The understated manual mark-executed affordance: shown only on a saved matter
+    // that is NOT already executed (DocuSign completion or a prior mark would set
+    // matterIsExecuted). It is the SECONDARY path for an NDA signed outside DocuSign,
+    // so it never competes with the normal send/sign flow — quiet link-style button.
+    const matter = state.selectedMatter;
+    const showMark = Boolean(matter?.id) && !matterIsExecuted(matter);
+    studioMarkExecutedButton.hidden = !showMark;
+  }
   updateApproveReviewControl();
   updateRedlineDraftControls();
   // Keep the DocuSign "Send for signature" trigger + signature badge in sync with

@@ -72,6 +72,10 @@ function setupReviewWorkstationActions() {
     markMatterReviewed();
   });
 
+  studioMarkExecutedButton?.addEventListener("click", () => {
+    markSelectedMatterExecuted();
+  });
+
   // Approve Review now lives only on the Overview footer, which calls
   // approveSelectedReview() directly (window.approveSelectedReview). There is no
   // header Approve button to wire here anymore.
@@ -365,6 +369,54 @@ async function markMatterReviewed({ sourceButton = studioReviewedButton, clauseI
     renderStudioDetail();
     updateExportButtonState();
     renderOperationError(error, "Could not mark this matter reviewed.");
+  }
+}
+
+// The MANUAL "mark as executed" action — the SECONDARY path for an NDA signed
+// OUTSIDE our DocuSign flow (paper / uploaded). DocuSign completion is the normal
+// automatic route. Because it is an attestation ("both parties signed this"), it
+// is confirm-gated and deliberate, never a silent toggle. On success it flips the
+// shared executed contract server-side (executed / status=fully_signed /
+// executed_at) so the matter drops off the board and joins the executed library.
+async function markSelectedMatterExecuted() {
+  const matter = state.selectedMatter;
+  const matterId = matter?.id;
+  if (!matterId) return;
+  if (matterIsExecuted(matter)) {
+    setFileMeta("This matter is already marked executed.");
+    updateExportButtonState();
+    return;
+  }
+  const confirmMessage =
+    "Confirm both parties have signed this NDA outside DocuSign.\n\n"
+    + "This files it into the executed library and removes it from the active board. "
+    + "It does not change the AI review.";
+  if (typeof window !== "undefined" && typeof window.confirm === "function") {
+    if (!window.confirm(confirmMessage)) return;
+  }
+
+  if (studioMarkExecutedButton) studioMarkExecutedButton.disabled = true;
+  try {
+    const response = await fetch(`/api/matters/${encodeURIComponent(matterId)}/mark-executed`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw reviewErrorFromPayload(payload, "Could not mark this matter executed");
+    if (payload.matter?.id) {
+      state.selectedMatter = { ...state.selectedMatter, ...payload.matter };
+    }
+    setFileMeta("Marked executed. Filed into the executed library.");
+    updateExportButtonState();
+    if (repositoryController && typeof repositoryController.loadMatters === "function") {
+      await repositoryController.loadMatters();
+    }
+    if (typeof renderDashboardInboxTable === "function") renderDashboardInboxTable();
+  } catch (error) {
+    renderOperationError(error, "Could not mark this matter executed.");
+  } finally {
+    if (studioMarkExecutedButton) studioMarkExecutedButton.disabled = false;
+    updateExportButtonState();
   }
 }
 
@@ -977,6 +1029,16 @@ function reviewMayBeStale(matter = state.selectedMatter, refresh = matter?.revie
 function aiReviewRan(matter = state.selectedMatter) {
   if (matter && typeof matter.ai_review_ran === "boolean") return matter.ai_review_ran;
   return hasReviewResults();
+}
+
+// True when a matter is already executed (fully signed). Mirrors the backend
+// workflow._is_executed contract: the explicit executed flag / executed_at, or a
+// fully_signed status. Used to hide the manual "Mark as executed" affordance once
+// a matter is executed (via DocuSign completion OR a prior manual mark).
+function matterIsExecuted(matter = state.selectedMatter) {
+  if (!matter || typeof matter !== "object") return false;
+  if (matter.executed === true || matter.executed_at) return true;
+  return String(matter.status || "") === "fully_signed";
 }
 
 function renderReviewRefreshNotice(refresh = state.selectedMatter?.review_refresh || null) {

@@ -463,6 +463,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             if path.startswith("/api/matters/") and path.endswith("/signed"):
                 lifecycle_signed.handle_signed_upload(self, path)
                 return
+            if path.startswith("/api/matters/") and path.endswith("/mark-executed"):
+                lifecycle_signed.handle_mark_executed(self, path)
+                return
             if path.startswith("/api/matters/") and path.endswith("/counter"):
                 lifecycle_counter.handle_counter_upload(self, path)
                 return

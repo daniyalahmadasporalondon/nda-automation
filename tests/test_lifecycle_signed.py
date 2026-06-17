@@ -249,3 +249,150 @@ def test_route_rejects_undecodable_content(route_repo):
 
     assert handler.status == 400
     assert handler.response["error"] == lifecycle_signed.DECODE_FAILED_MESSAGE
+
+
+# --- mark_matter_executed (the MANUAL "mark executed" path) ----------------
+def _executed_fields(matter: dict) -> tuple:
+    return (matter.get("executed"), matter.get("status"), matter.get("executed_at"))
+
+
+def test_mark_executed_sets_the_three_shared_fields():
+    repo = InMemoryMatterRepository()
+    matter = _create_matter(repo)
+    assert _executed_fields(matter) != (True, "fully_signed", matter.get("executed_at"))
+
+    updated = lifecycle_signed.mark_matter_executed(
+        repo, matter["id"], OWNER, actor="alice@aspora.com"
+    )
+
+    assert updated is not None
+    assert updated["executed"] is True
+    assert updated["status"] == "fully_signed"
+    assert updated["executed_at"]
+    # The board/corpus contract reads through workflow._is_executed.
+    from nda_automation import workflow
+
+    assert workflow._is_executed(updated) is True
+
+
+def test_mark_executed_leaves_review_state_untouched():
+    repo = InMemoryMatterRepository()
+    review_result = {"clauses": [{"id": "c1", "status": "pass"}], "active_review_engine": {"executed_engine": "ai_first"}}
+    matter = repo.create_matter(
+        source_filename="Mutual NDA.docx",
+        document_bytes=b"PK\x03\x04 source docx",
+        extracted_text="This Agreement is mutual.",
+        review_result=review_result,
+        triage={"triage_status": "ready_to_sign"},
+        source_type="manual_upload",
+        board_column="in_review",
+        owner_user_id=OWNER,
+    )
+    before = repo.get_matter(matter["id"], owner_user_id=OWNER)
+
+    updated = lifecycle_signed.mark_matter_executed(repo, matter["id"], OWNER, actor="a")
+
+    assert updated is not None
+    # The mark flips only the executed contract -- the review payload + its AI-ran
+    # provenance are byte-for-byte unchanged.
+    assert updated.get("review_result") == before.get("review_result") == review_result
+
+
+def test_mark_executed_records_who_when_timeline_event():
+    repo = InMemoryMatterRepository()
+    matter = _create_matter(repo)
+
+    updated = lifecycle_signed.mark_matter_executed(
+        repo, matter["id"], OWNER, actor="alice@aspora.com"
+    )
+
+    timeline = updated.get("matter_timeline") or []
+    executed_events = [e for e in timeline if e.get("type") == "executed"]
+    assert len(executed_events) == 1
+    assert executed_events[0]["actor"] == "alice@aspora.com"
+
+
+def test_mark_executed_is_idempotent_no_duplicate_event():
+    repo = InMemoryMatterRepository()
+    matter = _create_matter(repo)
+
+    first = lifecycle_signed.mark_matter_executed(repo, matter["id"], OWNER, actor="a")
+    first_at = first["executed_at"]
+    second = lifecycle_signed.mark_matter_executed(repo, matter["id"], OWNER, actor="b")
+
+    # Second call is a no-op: the executed_at is unchanged and there is exactly one
+    # executed timeline event (the guard returns the matter untouched).
+    assert second["executed_at"] == first_at
+    executed_events = [e for e in (second.get("matter_timeline") or []) if e.get("type") == "executed"]
+    assert len(executed_events) == 1
+
+
+def test_mark_executed_returns_none_for_other_tenant():
+    repo = InMemoryMatterRepository()
+    matter = _create_matter(repo, owner=OWNER)
+
+    result = lifecycle_signed.mark_matter_executed(repo, matter["id"], OTHER_OWNER, actor="x")
+
+    assert result is None
+    # No fields flipped on the real owner's matter.
+    owner_matter = repo.get_matter(matter["id"], owner_user_id=OWNER)
+    assert owner_matter.get("executed") in (None, False)
+
+
+# --- handle_mark_executed (route body) ------------------------------------
+def test_mark_executed_route_flips_fields_and_returns_200(route_repo):
+    matter = _create_matter(route_repo)
+    handler = _FakeHandler({}, owner=OWNER)
+    handler.current_user = {"email": "alice@aspora.com"}
+
+    lifecycle_signed.handle_mark_executed(handler, f"/api/matters/{matter['id']}/mark-executed")
+
+    assert handler.status == 200
+    body = handler.response
+    assert body["matter"]["id"] == matter["id"]
+    assert body["executed_by"] == "alice@aspora.com"
+    assert body["executed_at"]
+    stored = route_repo.get_matter(matter["id"], owner_user_id=OWNER)
+    assert stored["executed"] is True
+    assert stored["status"] == "fully_signed"
+
+
+def test_mark_executed_route_409s_already_executed(route_repo):
+    matter = _create_matter(route_repo)
+    lifecycle_signed.mark_matter_executed(route_repo, matter["id"], OWNER, actor="a")
+    handler = _FakeHandler({}, owner=OWNER)
+
+    lifecycle_signed.handle_mark_executed(handler, f"/api/matters/{matter['id']}/mark-executed")
+
+    assert handler.status == 409
+    assert handler.response["error"] == lifecycle_signed.ALREADY_EXECUTED_MESSAGE
+
+
+def test_mark_executed_route_404s_other_tenant(route_repo):
+    matter = _create_matter(route_repo, owner=OWNER)
+    handler = _FakeHandler({}, owner=OTHER_OWNER)
+
+    lifecycle_signed.handle_mark_executed(handler, f"/api/matters/{matter['id']}/mark-executed")
+
+    assert handler.status == 404
+    assert route_repo.get_matter(matter["id"], owner_user_id=OWNER).get("executed") in (None, False)
+
+
+# --- signed-upload reconciliation (auto-marks executed) --------------------
+def test_signed_upload_route_also_marks_matter_executed(route_repo):
+    matter = _create_matter(route_repo)
+    payload = {
+        "filename": "Executed NDA.pdf",
+        "content_base64": base64.b64encode(SIGNED_BYTES).decode("ascii"),
+    }
+    handler = _FakeHandler(payload, owner=OWNER)
+
+    lifecycle_signed.handle_signed_upload(handler, f"/api/matters/{matter['id']}/signed")
+
+    assert handler.status == 201
+    # The signed artifact landed AND the executed contract flipped (reconciliation).
+    assert handler.response["matter"]["executed"] is True
+    assert handler.response["matter"]["status"] == "fully_signed"
+    stored = route_repo.get_matter(matter["id"], owner_user_id=OWNER)
+    assert stored["executed"] is True
+    assert latest_artifact_for_role(stored, ROLE_SIGNED) is not None
