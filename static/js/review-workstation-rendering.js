@@ -179,7 +179,22 @@ function updateExportButtonState() {
       && MatterUtils.needsHumanReview(matter) && !matter.human_reviewed,
     );
     studioReviewedButton.hidden = !reviewBlocked;
-    if (reviewBlocked) updateReviewedButtonScope();
+    if (reviewBlocked) {
+      updateReviewedButtonScope();
+      // No-jump header: the "Mark N clauses reviewed" count is derived from the
+      // DETERMINISTIC first-pass, which is meaningless until an AI review has run.
+      // Rather than HIDE the button on an unreviewed matter (a layout jump), keep
+      // it in place and GRAY/disable it. Layer the ai_review_ran gate ON TOP of the
+      // existing visibility: when shown, it is interactive only once reviewed. Safe
+      // fallback when ai_review_ran is absent: aiReviewRan() -> hasReviewResults(),
+      // i.e. the current/reviewed (enabled) behavior.
+      const reviewed = aiReviewRan(matter);
+      studioReviewedButton.disabled = !reviewed;
+      studioReviewedButton.setAttribute("aria-disabled", String(!reviewed));
+      if (!reviewed) {
+        studioReviewedButton.title = "Run the AI review before marking clauses reviewed.";
+      }
+    }
   }
   updateApproveReviewControl();
   updateRedlineDraftControls();

@@ -29,10 +29,15 @@ function createDocuSignSendController({
   getMatter,
   // Optional progressive-disclosure gate. When supplied and it returns false for
   // the current matter, the trigger button stays hidden even though a matter is
-  // loaded. The Review workstation passes a gate keyed on ai_review_ran (nothing
-  // to send before a review has run); the Generator passes nothing (always shown
-  // once an NDA exists).
+  // loaded. The Generator passes nothing (always shown once an NDA exists).
   isTriggerVisible,
+  // Optional ENABLE gate (no-jump header). When supplied and it returns false for
+  // the current matter, the trigger button stays PRESENT but DISABLED/grayed
+  // instead of hidden — so it never appears/disappears between states. The Review
+  // workstation passes a gate keyed on ai_review_ran (nothing to send before a
+  // review has run); the Generator passes nothing (always enabled once an NDA
+  // exists).
+  isTriggerEnabled,
   getAsporaSignatory,
   reviewErrorFromPayload,
   downloadUrl,
@@ -361,12 +366,26 @@ function createDocuSignSendController({
     const hasMatter = Boolean(matter?.id) && gateVisible;
     triggerButton.hidden = !hasMatter;
     if (!hasMatter) return;
+    // No-jump header: the trigger stays present once a matter is loaded, but is
+    // GRAYED/disabled until the enable gate passes (the Review workstation gates on
+    // ai_review_ran — nothing to send before a review has run). Default (no gate
+    // supplied) = enabled.
+    const gateEnabled = typeof isTriggerEnabled === "function"
+      ? Boolean(isTriggerEnabled(matter))
+      : true;
+    triggerButton.disabled = !gateEnabled;
+    triggerButton.setAttribute("aria-disabled", String(!gateEnabled));
     // Read the canonical nested status (matter.docusign.status), flat as fallback,
     // so a reloaded/freshly-fetched matter that is already out for signature keeps
     // its "already sent" label instead of resetting to "Send for signature".
     const view = matterView(matter);
     // Update any inline badge that lives outside the modal too.
     renderSignatureState(matter);
+    if (!gateEnabled) {
+      triggerButton.textContent = "Send for signature";
+      triggerButton.title = "Run the AI review before sending for signature.";
+      return;
+    }
     if (view?.sent) {
       triggerButton.textContent = view.completed ? "View signature" : "Signature status";
       triggerButton.title = view.label;
