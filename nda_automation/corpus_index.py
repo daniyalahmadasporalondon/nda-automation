@@ -67,9 +67,29 @@ CORPUS_DRIVE_CRAWL_DEADLINE_SECONDS = 4.0
 # A matter's document content is flagged as a near-duplicate of ANOTHER matter's
 # when their content fingerprints score at or above this similarity (see
 # content_fingerprint.similarity: 1.0 == exact normalized-text match, else a
-# 64-bit SimHash Hamming similarity). 0.90 maps to a SimHash Hamming distance of at
-# most 6 of 64 bits.
-DUPLICATE_SIMILARITY_THRESHOLD = 0.90
+# 64-bit SimHash Hamming similarity). This threshold gates the NEAR-dup (SimHash)
+# path ONLY -- the exact-dup (sha256 == 1.0) path always flags regardless of score.
+#
+# TEMPLATE-AWARENESS (the 2026-06-17 false-positive fix): an NDA is ~90% boilerplate
+# template text, so two GENUINELY DIFFERENT deals struck from one template score
+# 0.90-0.97 raw SimHash similarity and would both be falsely flagged. The near-dup
+# path is therefore (1) GATED on SAME-COUNTERPARTY -- it only fires when the two
+# matters belong to the same counterparty, so a near-dup reads as "this counterparty
+# sent you two near-identical docs" (a real resend signal complementing
+# repeat_entity), never "two unrelated deals share our template" -- AND (2)
+# recalibrated UP from 0.90 to 0.93 so even WITHIN one counterparty it fires only on
+# a near-identical resend (a small date/value or one-line tweak -- measured ~0.95),
+# not on two genuinely-different deals struck with the same party that happen to
+# reuse the same boilerplate (measured ~0.84). Pure formatting/whitespace/case-only
+# resends normalize to identical text and flag via the exact-dup sha256 path (1.0)
+# regardless. The exact-dup path is unchanged and stays cross-counterparty: identical
+# text is identical regardless of party.
+NEAR_DUPLICATE_SIMILARITY_THRESHOLD = 0.93
+
+# Back-compat alias: the original single-threshold name. Retained so any external
+# reference / test that imported it keeps resolving; it now denotes the near-dup
+# threshold (the only path a threshold applies to -- exact dup is == 1.0).
+DUPLICATE_SIMILARITY_THRESHOLD = NEAR_DUPLICATE_SIMILARITY_THRESHOLD
 
 # The matter field the lazily-computed content fingerprint is cached on. The whole
 # matter dict is JSON round-tripped with no field whitelist (see matter_store), so a
@@ -1394,48 +1414,93 @@ def _stamp_repeat_entity(matters: list[dict[str, Any]]) -> int:
     return count
 
 
+def _is_duplicate_pair(
+    self_fp: dict[str, Any],
+    self_key: str,
+    other_fp: dict[str, Any],
+    other_key: str,
+) -> float | None:
+    """The dup similarity for an ordered pair, or ``None`` when it is not a duplicate.
+
+    TEMPLATE-AWARE gating (the two dup paths are gated DIFFERENTLY):
+
+    * **Exact dup** (identical normalized-text sha256) -> always a duplicate,
+      ``similarity 1.0``, REGARDLESS of counterparty. Identical text is identical
+      whoever the party is, so a re-sent identical NDA still surfaces.
+    * **Near dup** (SimHash similarity < 1.0) -> a duplicate ONLY when the two matters
+      share the SAME normalized counterparty (``self_key == other_key`` and the key is
+      non-empty) AND the similarity is >= ``NEAR_DUPLICATE_SIMILARITY_THRESHOLD``.
+      Cross-counterparty near matches are template siblings (~90% shared boilerplate),
+      NOT duplicates, so they are dropped here -- this is what kills the
+      genuinely-different-deal false positive. The unknown-counterparty sentinel
+      normalizes to "" (see ``_normalized_entity_key``), so two ownerless/unknown
+      matters never near-dup-match each other either.
+
+    Pure scalar work: ``is_exact_match`` is a hex ``==``; ``similarity`` is an
+    XOR+popcount. No text is read. Returns the (rounded) similarity to stamp, or
+    ``None`` to skip the pair.
+    """
+    if content_fingerprint.is_exact_match(self_fp, other_fp):
+        return 1.0
+    # Near-dup path: same-counterparty gate. Empty key (unknown counterparty) never
+    # qualifies as "same", so unknown matters cannot near-dup-match.
+    if not self_key or self_key != other_key:
+        return None
+    score = content_fingerprint.similarity(self_fp, other_fp)
+    if score < NEAR_DUPLICATE_SIMILARITY_THRESHOLD:
+        return None
+    return score
+
+
 def _stamp_duplicate_document(matters: list[dict[str, Any]]) -> int:
     """Stamp each matter's ``duplicate_document`` signal; return the flagged count.
 
-    Resolves the cross-matter near-duplicate signal now the whole corpus is known
-    (a per-matter facet builder cannot see other matters). For every matter carrying
-    a fingerprint, find the OTHER matters whose fingerprint scores
-    >= ``DUPLICATE_SIMILARITY_THRESHOLD`` against it (scalar
-    ``content_fingerprint.similarity`` only — XOR+popcount / hex ``==``, NEVER a
-    live text diff), and point at a DETERMINISTIC match: the earliest other matter
-    (by ``created_at`` then ``matter_id``), with its title + the similarity.
+    Resolves the cross-matter duplicate signal now the whole corpus is known (a
+    per-matter facet builder cannot see other matters). For every matter carrying a
+    fingerprint, find the OTHER matters it duplicates per :func:`_is_duplicate_pair`
+    (exact-dup = cross-counterparty sha256 ``==``; near-dup = SAME-counterparty SimHash
+    >= ``NEAR_DUPLICATE_SIMILARITY_THRESHOLD`` -- scalar only, NEVER a live text diff),
+    and point at a DETERMINISTIC match: the earliest other matter (by ``created_at``
+    then ``matter_id``), with its title + the similarity.
 
     "Same matter from app + Drive counts once": app+Drive records merge by matter_id
     into one corpus-matter BEFORE this runs, and matters sharing a matter_id are
     skipped as self-matches here, so a matter is never flagged a duplicate of itself.
 
     Complexity note: this is O(n²) SCALAR comparisons over n fingerprinted matters
-    (each comparison is two 64-bit int ops), NOT an O(n²) text diff. The expensive
-    work (extraction, fingerprint compute) already happened once at cache time.
+    (each comparison is a hex ``==`` plus, on the same-counterparty near path, two
+    64-bit int ops), NOT an O(n²) text diff. The expensive work (extraction,
+    fingerprint compute) already happened once at cache time. The counterparty key is
+    normalized ONCE per candidate here (not per pair), so the gate adds no per-pair
+    cost beyond a string ``==``.
     """
-    # Only matters with a real fingerprint can match. Capture (index, matter, fp).
-    candidates: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
+    # Only matters with a real fingerprint can match. Capture (index, matter, fp,
+    # normalized-counterparty-key). The key is computed ONCE per candidate (not per
+    # pair) so the same-counterparty gate stays a cheap scalar string compare inside
+    # the O(n²) loop.
+    candidates: list[tuple[int, dict[str, Any], dict[str, Any], str]] = []
     for index, matter in enumerate(matters):
         fingerprint = matter.get(_FINGERPRINT_KEY)
         if content_fingerprint.is_valid_fingerprint(fingerprint):
-            candidates.append((index, matter, fingerprint))
+            cp_key = _normalized_entity_key(str(matter.get("counterparty") or ""))
+            candidates.append((index, matter, fingerprint, cp_key))
 
-    def _sort_key(item: tuple[int, dict[str, Any], dict[str, Any]]) -> tuple[str, str, int]:
-        index, matter, _fp = item
+    def _sort_key(item: tuple[int, dict[str, Any], dict[str, Any], str]) -> tuple[str, str, int]:
+        index, matter, _fp, _cp = item
         return (str(matter.get("created_at") or ""), str(matter.get("matter_id") or ""), index)
 
     count = 0
-    for index, matter, fingerprint in candidates:
+    for index, matter, fingerprint, self_key in candidates:
         self_id = str(matter.get("matter_id") or "") or f"__idx_{index}"
         best_match: tuple[tuple[str, str, int], dict[str, Any], float] | None = None
-        for other_index, other, other_fp in candidates:
+        for other_index, other, other_fp, other_key in candidates:
             other_id = str(other.get("matter_id") or "") or f"__idx_{other_index}"
             if other_id == self_id:
                 continue  # never a duplicate of itself (incl. the merged app+Drive record)
-            score = content_fingerprint.similarity(fingerprint, other_fp)
-            if score < DUPLICATE_SIMILARITY_THRESHOLD:
+            score = _is_duplicate_pair(fingerprint, self_key, other_fp, other_key)
+            if score is None:
                 continue
-            candidate_key = _sort_key((other_index, other, other_fp))
+            candidate_key = _sort_key((other_index, other, other_fp, other_key))
             if best_match is None or candidate_key < best_match[0]:
                 best_match = (candidate_key, other, score)
         if best_match is None:

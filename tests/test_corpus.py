@@ -1506,8 +1506,8 @@ class CorpusRepeatEntityTests(unittest.TestCase):
 
 
 # A realistic NDA body (>100 words) so a word-3-shingle SimHash is meaningful and a
-# small edit stays well above the 0.90 dup threshold (the "same NDA re-sent with a
-# minor tweak" case), mirroring production document lengths.
+# small edit stays well above the dup threshold (the "same NDA re-sent with a minor
+# tweak" case), mirroring production document lengths.
 _NDA_BODY = (
     "This Mutual Non-Disclosure Agreement governs the exchange of confidential information "
     "between the parties. Each party agrees to hold the other party confidential information "
@@ -1519,6 +1519,36 @@ _NDA_BODY = (
     "available through no fault of the receiving party or independently developed without reference to the "
     "disclosing party confidential information. Each party acknowledges that monetary damages may be inadequate."
 )
+
+
+def _india_nda(party: str, city: str, term: str, *, extra: str = "") -> str:
+    """A template-driven India-law NDA with deal-specific slots (party/city/term).
+
+    This is the realistic "templated corpus" the false-positive fix targets: the
+    boilerplate is shared verbatim, only the party name, registered-office city, and
+    term differ -- exactly two GENUINELY DIFFERENT deals struck from one template.
+    """
+    return (
+        "This Mutual Non-Disclosure Agreement is entered into between Aspora and " + party + ". "
+        "Each party agrees to hold the other party confidential information in strict confidence "
+        "and not to disclose it to any third party without prior written consent. The receiving "
+        "party shall use the confidential information solely for the purpose of evaluating a potential "
+        "business relationship between the parties. The registered office of " + party + " is located "
+        "in " + city + ", India. This agreement shall remain in effect for a period of " + term + " "
+        "from the effective date and shall be governed by the laws of India. The obligations of "
+        "confidentiality shall survive termination of this agreement. Confidential information does not "
+        "include information that is publicly available through no fault of the receiving party or "
+        "independently developed without reference to the disclosing party confidential information. "
+        "Each party acknowledges that monetary damages may be inadequate and that injunctive relief may "
+        "be sought. Any dispute arising under this agreement shall be subject to the exclusive jurisdiction "
+        "of the courts of " + city + "." + extra
+    )
+
+
+# The exact verifier false-positive repro: two DIFFERENT-counterparty template-sibling
+# NDAs (Acme/Mumbai/3yr vs Globex/Bangalore/2yr) that score ~0.88-0.91 raw SimHash.
+_ACME_NDA = _india_nda("Acme Technologies Private Limited", "Mumbai", "three years")
+_GLOBEX_NDA = _india_nda("Globex Solutions Private Limited", "Bangalore", "two years")
 _UNRELATED_BODY = (
     "This purchase order covers the supply of office furniture including ergonomic chairs, standing desks, "
     "filing cabinets, and meeting room tables for the new downtown headquarters building. Delivery is "
@@ -1580,11 +1610,17 @@ class CorpusDuplicateDocumentTests(unittest.TestCase):
         self.assertEqual(dup_b["matched_title"], "Acme NDA")
         self.assertEqual(payload["facet_counts"]["duplicate_document"], 2)
 
-    def test_near_duplicate_at_threshold_flags(self):
-        # Same NDA re-sent with one phrase changed -> near-dup above the 0.90 threshold.
-        near = _NDA_BODY.replace("three years", "five years")
-        a = _seed_doc_matter(self.repo, owner="o", counterparty="Acme", title="Acme v1", extracted_text=_NDA_BODY)
-        b = _seed_doc_matter(self.repo, owner="o", counterparty="Beta", title="Beta v2", extracted_text=near)
+    def test_same_counterparty_near_identical_resend_flags(self):
+        # SAME counterparty re-sends a near-identical doc (a small content tweak that
+        # does NOT normalize away) -> near-dup above the recalibrated threshold but
+        # below exact. This is the real resend signal the near-dup path is FOR.
+        near = _ACME_NDA + " This is the final executed version for our records."
+        a = _seed_doc_matter(
+            self.repo, owner="o", counterparty="Acme Technologies", title="Acme v1", extracted_text=_ACME_NDA
+        )
+        b = _seed_doc_matter(
+            self.repo, owner="o", counterparty="Acme Technologies", title="Acme v2", extracted_text=near
+        )
 
         payload = corpus_index.build_corpus(self.repo, "o", "")
         matters = self._matters_by_id(payload)
@@ -1592,8 +1628,79 @@ class CorpusDuplicateDocumentTests(unittest.TestCase):
         dup_a = matters[a["id"]]["duplicate_document"]
         self.assertIsNotNone(dup_a)
         self.assertEqual(dup_a["matched_matter_id"], b["id"])
-        self.assertGreaterEqual(dup_a["similarity"], corpus_index.DUPLICATE_SIMILARITY_THRESHOLD)
+        self.assertGreaterEqual(dup_a["similarity"], corpus_index.NEAR_DUPLICATE_SIMILARITY_THRESHOLD)
         self.assertLess(dup_a["similarity"], 1.0)  # near, not exact
+        self.assertEqual(payload["facet_counts"]["duplicate_document"], 2)
+
+    def test_cross_counterparty_template_siblings_do_not_flag(self):
+        # THE VERIFIER FALSE-POSITIVE CASE: two GENUINELY DIFFERENT deals (Acme/Mumbai/3yr
+        # vs Globex/Bangalore/2yr) struck from one template score 0.88-0.91 raw SimHash.
+        # With the same-counterparty gate they must NOT be flagged as duplicate_document.
+        a = _seed_doc_matter(
+            self.repo, owner="o", counterparty="Acme Technologies", title="Acme NDA", extracted_text=_ACME_NDA
+        )
+        b = _seed_doc_matter(
+            self.repo, owner="o", counterparty="Globex Solutions", title="Globex NDA", extracted_text=_GLOBEX_NDA
+        )
+
+        # Guard: the RAW similarity really is in the dangerous 0.88-0.97 template-sibling
+        # band (else this test would pass for the wrong reason).
+        fp_a = corpus_index.content_fingerprint.compute_fingerprint(_ACME_NDA)
+        fp_b = corpus_index.content_fingerprint.compute_fingerprint(_GLOBEX_NDA)
+        raw = corpus_index.content_fingerprint.similarity(fp_a, fp_b)
+        self.assertGreater(raw, 0.85, f"fixture too dissimilar to be a real repro (raw={raw})")
+        self.assertLess(raw, 1.0, "fixture must not be an exact dup")
+
+        payload = corpus_index.build_corpus(self.repo, "o", "")
+        matters = self._matters_by_id(payload)
+
+        self.assertIsNone(matters[a["id"]]["duplicate_document"])
+        self.assertIsNone(matters[b["id"]]["duplicate_document"])
+        self.assertEqual(payload["facet_counts"]["duplicate_document"], 0)
+
+    def test_same_counterparty_genuinely_different_deals_do_not_flag(self):
+        # Two genuinely-different deals with the SAME counterparty (different purpose,
+        # term, and remedies) score ~0.84 SimHash -> below the recalibrated near
+        # threshold, so they are NOT flagged even though the gate would allow them.
+        deal2 = _india_nda(
+            "Acme Technologies Private Limited", "Mumbai", "five years"
+        ).replace(
+            "evaluating a potential business relationship",
+            "a joint product development initiative covering hardware and embedded firmware",
+        ).replace(
+            "injunctive relief may be sought",
+            "liquidated damages of one hundred thousand dollars shall apply",
+        )
+        a = _seed_doc_matter(
+            self.repo, owner="o", counterparty="Acme Technologies", title="Acme NDA 1", extracted_text=_ACME_NDA
+        )
+        b = _seed_doc_matter(
+            self.repo, owner="o", counterparty="Acme Technologies", title="Acme NDA 2", extracted_text=deal2
+        )
+
+        payload = corpus_index.build_corpus(self.repo, "o", "")
+        matters = self._matters_by_id(payload)
+
+        self.assertIsNone(matters[a["id"]]["duplicate_document"])
+        self.assertIsNone(matters[b["id"]]["duplicate_document"])
+        self.assertEqual(payload["facet_counts"]["duplicate_document"], 0)
+
+    def test_exact_dup_flags_across_counterparties(self):
+        # The exact-dup (sha256) path is UNCHANGED by the gate: byte-identical content
+        # (modulo case/whitespace) flags regardless of counterparty.
+        a = _seed_doc_matter(
+            self.repo, owner="o", counterparty="Acme Technologies", title="Acme", extracted_text=_ACME_NDA
+        )
+        b = _seed_doc_matter(
+            self.repo, owner="o", counterparty="Zenith Industries", title="Zenith", extracted_text=_ACME_NDA.upper()
+        )
+
+        payload = corpus_index.build_corpus(self.repo, "o", "")
+        matters = self._matters_by_id(payload)
+
+        self.assertIsNotNone(matters[a["id"]]["duplicate_document"])
+        self.assertEqual(matters[a["id"]]["duplicate_document"]["similarity"], 1.0)
+        self.assertEqual(matters[a["id"]]["duplicate_document"]["matched_matter_id"], b["id"])
         self.assertEqual(payload["facet_counts"]["duplicate_document"], 2)
 
     def test_genuinely_different_docs_do_not_flag(self):
@@ -1676,6 +1783,69 @@ class CorpusDuplicateDocumentTests(unittest.TestCase):
             self.assertIsNotNone(matters[b["id"]]["duplicate_document"])
         finally:
             corpus_index.content_fingerprint.compute_fingerprint = original
+
+    def test_is_exact_match_helper_contract(self):
+        cf = corpus_index.content_fingerprint
+        fp_acme = cf.compute_fingerprint(_ACME_NDA)
+        fp_acme_upper = cf.compute_fingerprint(_ACME_NDA.upper())  # normalizes identical
+        fp_globex = cf.compute_fingerprint(_GLOBEX_NDA)
+        self.assertTrue(cf.is_exact_match(fp_acme, fp_acme_upper))
+        self.assertFalse(cf.is_exact_match(fp_acme, fp_globex))
+        # Defensive: odd/None inputs never raise, just return False.
+        self.assertFalse(cf.is_exact_match(None, fp_acme))
+        self.assertFalse(cf.is_exact_match(fp_acme, {"bad": "shape"}))
+
+    def test_build_cost_is_scalar_only_no_reextraction(self):
+        # PERF assertion: the dup stamp must do scalar fingerprint compares ONLY --
+        # never re-extract text and never recompute a fingerprint at compare time. On
+        # a SECOND build (fingerprints already cached) the build must:
+        #   * call compute_fingerprint ZERO times (no recompute / no re-extraction), and
+        #   * keep the cross-counterparty near path CHEAP (it short-circuits on the
+        #     same-counterparty string compare BEFORE the SimHash popcount), so
+        #     content_fingerprint.similarity is not even called for cross-cp near pairs.
+        seen = {"compute": 0, "similarity": 0}
+        orig_compute = corpus_index.content_fingerprint.compute_fingerprint
+        orig_sim = corpus_index.content_fingerprint.similarity
+
+        def _count_compute(text):
+            seen["compute"] += 1
+            return orig_compute(text)
+
+        def _count_sim(a, b):
+            seen["similarity"] += 1
+            return orig_sim(a, b)
+
+        corpus_index.content_fingerprint.compute_fingerprint = _count_compute
+        corpus_index.content_fingerprint.similarity = _count_sim
+        try:
+            # Three DIFFERENT-counterparty template siblings (the dangerous case): each
+            # cross-cp near pair must be rejected by the gate WITHOUT a SimHash compare.
+            _seed_doc_matter(self.repo, owner="o", counterparty="Acme", title="A", extracted_text=_ACME_NDA)
+            _seed_doc_matter(self.repo, owner="o", counterparty="Globex", title="G", extracted_text=_GLOBEX_NDA)
+            _seed_doc_matter(
+                self.repo,
+                owner="o",
+                counterparty="Initech",
+                title="I",
+                extracted_text=_india_nda("Initech LLP", "Pune", "four years"),
+            )
+
+            corpus_index.build_corpus(self.repo, "o", "")  # warm the lazy fingerprint cache
+            seen["compute"] = 0
+            seen["similarity"] = 0
+
+            corpus_index.invalidate_cache()
+            corpus_index.build_corpus(self.repo, "o", "")
+
+            # Second build: NO recompute / NO re-extraction (scalar-compare only).
+            self.assertEqual(seen["compute"], 0)
+            # The near-dup SimHash compare is short-circuited for every cross-counterparty
+            # pair (all 3 here are distinct counterparties), so similarity() -- the
+            # XOR+popcount -- is never invoked. This proves the gate adds no per-pair cost.
+            self.assertEqual(seen["similarity"], 0)
+        finally:
+            corpus_index.content_fingerprint.compute_fingerprint = orig_compute
+            corpus_index.content_fingerprint.similarity = orig_sim
 
     def test_internal_fingerprint_key_never_leaks_into_payload(self):
         _seed_doc_matter(self.repo, owner="o", counterparty="Acme", title="A", extracted_text=_NDA_BODY)
