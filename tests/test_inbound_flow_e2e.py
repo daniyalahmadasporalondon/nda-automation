@@ -15,7 +15,7 @@ Everything between those two seams is the REAL implementation:
     Gmail poll
       -> paged-scan import bounded by NDA_GMAIL_IMPORT_LIMIT (gmail_matter_inbox)
       -> identity dedup (already-imported messages skipped on the next poll)
-      -> matter created with the deterministic first-pass (defer_ai_review=True)
+      -> matter created UN-REVIEWED (no review at create; defer_ai_review=True)
       -> the full AI review ENQUEUED to the inbound worker pool (ingestion_service)
       -> memory-bounded PDF extraction (real pdf_text/pypdf on a real PDF fixture)
       -> review completes + persists onto the matter (executed_engine == "ai_first").
@@ -152,7 +152,7 @@ class _FullInboundTransport(_PublicOnlyInboxTransport):
       * ``extract_document_paragraphs`` runs the real pypdf extraction;
       * ``attachment_nda_validation`` runs the real deterministic NDA band classifier;
       * ``create_matter_from_document`` runs the real ingestion against an isolated
-        in-memory repository (deterministic first-pass, defer_ai_review=True);
+        in-memory repository (un-reviewed at create, defer_ai_review=True);
       * dedup is routed through the SAME in-memory repository's
         ``find_gmail_attachment`` so a second poll sees the prior import;
       * ``schedule_inbound_ai_review`` runs the real scheduler with an injected
@@ -265,7 +265,7 @@ class _FullInboundTransport(_PublicOnlyInboxTransport):
 
     # -- real matter creation + real review scheduling ------------------- #
     def create_matter_from_document(self, **kwargs):
-        # The inbound poll defers the AI review (fast deterministic first-pass).
+        # The inbound poll creates the matter un-reviewed (no review at create).
         assert kwargs.get("defer_ai_review") is True
         matter = ingestion_service.create_matter_from_document(
             repository=self.repository, **kwargs
@@ -431,8 +431,8 @@ def test_poll_recovery_sweep_enqueues_unreviewed_inbound_matter(monkeypatch, fre
     enqueued: list[str] = []
     fresh_review_pool.configure(lambda matter_id, owner: enqueued.append(matter_id))
 
-    # An inbound NDA imported with only its deterministic first-pass (never AI
-    # reviewed) -- e.g. a worker that restarted mid-batch before reviewing it.
+    # An inbound NDA imported UN-REVIEWED (no review at create, never AI reviewed)
+    # -- e.g. a worker that restarted mid-batch before reviewing it.
     matter = ingestion_service.create_matter_from_document(
         filename="inbound_nda_sample.pdf",
         document_bytes=_fixture_pdf_bytes(),
@@ -440,10 +440,12 @@ def test_poll_recovery_sweep_enqueues_unreviewed_inbound_matter(monkeypatch, fre
         repository=repository,
         defer_ai_review=True,
     )
-    assert matter["review_result"]["active_review_engine"]["executed_engine"] == "deterministic"
+    assert matter["review_result"] is None  # un-reviewed at create
 
     # The poll cycle's recovery sweep (the same call server._recover_unreviewed_
-    # inbound_matters makes) re-enqueues the un-AI-reviewed matter.
+    # inbound_matters makes) re-enqueues the un-AI-reviewed matter. It must enqueue
+    # this never-reviewed matter exactly once (and not busy-loop on it across cycles:
+    # the worker stamps it ai_first and the idempotency guard then skips it).
     enqueued_count = ingestion_service.recover_unreviewed_inbound_matters(repository=repository)
     fresh_review_pool._join_for_tests(timeout=5)
 
@@ -473,6 +475,6 @@ def test_poll_kill_switch_off_enqueues_nothing(monkeypatch, fresh_review_pool):
     fresh_review_pool._join_for_tests(timeout=1)
 
     assert enqueued == []
-    # The matter keeps its deterministic first-pass, reviewable on-demand.
+    # AI-off: the matter simply stays un-reviewed (no crash), reviewable on-demand.
     persisted = repository.get_matter(matter["id"])
-    assert persisted["review_result"]["active_review_engine"]["executed_engine"] == "deterministic"
+    assert persisted["review_result"] is None

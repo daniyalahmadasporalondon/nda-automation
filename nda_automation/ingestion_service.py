@@ -895,30 +895,36 @@ def create_matter_from_document(
     ensure_document_size(document_bytes)
     document_type, extracted_paragraphs, extraction_quality = extract_document(filename, document_bytes)
     extracted_text = extracted_text_from_paragraphs(extracted_paragraphs)
-    # Outbound NDA generation defers the slow AI review: it runs the fast
-    # deterministic review at creation (so the matter is valid + sendable
-    # immediately) and leaves the AI review for on-demand (Refresh Review). Inbound
-    # intake (gmail / manual upload) leaves this off and keeps the active engine.
-    review_result = review_nda_with_active_engine(
-        extracted_text,
-        paragraphs=extracted_paragraphs,
-        force_engine="deterministic" if defer_ai_review else None,
-        **({"playbook_runtime_func": playbook_runtime_func} if playbook_runtime_func is not None else {}),
-    )
-    attach_document_source(
-        review_result,
-        filename=filename,
-        document_type=document_type,
-        extracted_paragraphs=extracted_paragraphs,
-        extracted_text=extracted_text,
-        extraction_quality=extraction_quality,
-    )
+    # When defer_ai_review is set the matter is created UN-REVIEWED: no review runs
+    # at create. The full AI review (assessor + verifier) is scheduled to run later
+    # off the create path (inbound: schedule_inbound_ai_review; outbound generation:
+    # on-demand Refresh Review). This removes the synchronous deterministic
+    # first-pass that was tied to the production OOM/cost storm; the matter shows
+    # "Not Reviewed Yet" and sits in its source column until the async review runs.
+    # The eager paths (manual upload defaults defer_ai_review=False) still run the
+    # active engine synchronously at create, so those matters arrive reviewed.
+    if defer_ai_review:
+        review_result = None
+    else:
+        review_result = review_nda_with_active_engine(
+            extracted_text,
+            paragraphs=extracted_paragraphs,
+            **({"playbook_runtime_func": playbook_runtime_func} if playbook_runtime_func is not None else {}),
+        )
+        attach_document_source(
+            review_result,
+            filename=filename,
+            document_type=document_type,
+            extracted_paragraphs=extracted_paragraphs,
+            extracted_text=extracted_text,
+            extraction_quality=extraction_quality,
+        )
     matter = repository.create_matter(
         source_filename=filename,
         document_bytes=document_bytes,
         extracted_text=extracted_text,
         review_result=review_result,
-        triage=triage_review_result(review_result),
+        triage=triage_review_result(review_result) if review_result is not None else {},
         source_type=source_type,
         board_column=board_column,
         intake_metadata=intake_metadata,

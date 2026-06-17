@@ -1,10 +1,11 @@
 """Inbound auto-review: async + serialized full AI review of imported Gmail NDAs.
 
-bb62b8f made the Gmail poll import each inbound NDA with ONLY the fast offline
-deterministic first-pass (defer_ai_review=True), pushing the AI review on-demand
--- which removed the core feature (inbound NDAs auto-reviewed by AI). These tests
-pin the restored behaviour: import stays fast (NO synchronous assessor/verifier on
-the poll thread), the full active-engine review runs AUTOMATICALLY in the
+The Gmail poll imports each inbound NDA UN-REVIEWED (defer_ai_review=True: NO review
+runs at create -- not even a deterministic first-pass), pushing the AI review fully
+async/off-thread -- restoring the core feature (inbound NDAs auto-reviewed by AI)
+without the synchronous review that drove the OOM/cost storm. These tests pin the
+behaviour: import stays fast (NO synchronous assessor/verifier on
+the poll thread, matter created un-reviewed), the full active-engine review runs AUTOMATICALLY in the
 background and persists onto the matter, the background reviews are SERIALIZED
 behind a process-wide semaphore (never N-at-once), and a concurrent request is
 never blocked while a background review runs.
@@ -78,7 +79,7 @@ def _stub_ai_first_engine(executed_engine: str = "ai_first"):
 # --------------------------------------------------------------------------- #
 # (a) Import returns fast with NO synchronous assessor/verifier on the poll thread
 # --------------------------------------------------------------------------- #
-def test_import_runs_only_deterministic_first_pass_no_ai_on_poll_thread():
+def test_import_creates_unreviewed_matter_no_ai_on_poll_thread():
     repository = InMemoryMatterRepository()
     ai_engine = _stub_ai_first_engine()
 
@@ -87,14 +88,15 @@ def test_import_runs_only_deterministic_first_pass_no_ai_on_poll_thread():
         document_bytes=_docx(NDA_PARAGRAPHS),
         source_type="gmail_inbound",
         repository=repository,
-        # The inbound poll path passes defer_ai_review=True so import runs only the
-        # offline deterministic engine -- NEVER the AI assessor/verifier.
+        # The inbound poll path passes defer_ai_review=True so import runs NO review
+        # at all -- NEVER the AI assessor/verifier, and no deterministic first-pass.
         defer_ai_review=True,
     )
 
-    # The matter exists immediately and its review is the deterministic first-pass,
-    # NOT the AI engine. The AI engine was never called on the import path.
-    assert matter["review_result"]["active_review_engine"]["executed_engine"] == "deterministic"
+    # The matter exists immediately and is UN-REVIEWED (no review_result): it shows
+    # "Not Reviewed Yet" until the async AI review runs. No engine ran on import.
+    assert matter["review_result"] is None
+    assert matter.get("extracted_text", "").strip()  # text is still stored for the async review
     assert ai_engine.calls == []  # type: ignore[attr-defined]
 
 
@@ -193,7 +195,7 @@ def test_scheduled_review_runs_ai_engine_and_persists_onto_matter():
         repository=repository,
         defer_ai_review=True,
     )
-    assert matter["review_result"]["active_review_engine"]["executed_engine"] == "deterministic"
+    assert matter["review_result"] is None  # un-reviewed at create
 
     scheduled = schedule_inbound_ai_review(
         matter,
@@ -382,8 +384,8 @@ def test_review_failure_increments_per_matter_failure_count():
     after = repository.get_matter(matter["id"])
     assert after["inbound_review_failures"] == 1
     assert "inbound_review_failed_at" in after
-    # Still deterministic-only (the review never succeeded).
-    assert after["review_result"]["active_review_engine"]["executed_engine"] == "deterministic"
+    # Still un-reviewed (the review never succeeded, no first-pass to fall back on).
+    assert after["review_result"] is None
 
 
 def test_recovery_sweep_gives_up_on_poison_pill_after_cap(monkeypatch):
@@ -446,7 +448,7 @@ def test_transient_failures_retry_up_to_cap_then_succeed():
     failing = _failing_engine()
     succeeding = _stub_ai_first_engine()
 
-    # Two transient failures (below cap=3): recorded, matter still deterministic.
+    # Two transient failures (below cap=3): recorded, matter still un-reviewed.
     ingestion_service._perform_inbound_ai_review(
         matter_id, repository=repository, owner_user_id="", review_engine_func=failing,
     )
@@ -640,7 +642,7 @@ def test_scheduling_never_raises_when_runner_throws():
     ) is False
 
 
-def test_failed_background_review_is_swallowed_and_leaves_first_pass():
+def test_failed_background_review_is_swallowed_and_leaves_matter_unreviewed():
     repository = InMemoryMatterRepository()
     matter = create_matter_from_document(
         filename="a.docx", document_bytes=_docx(NDA_PARAGRAPHS),
@@ -651,12 +653,13 @@ def test_failed_background_review_is_swallowed_and_leaves_first_pass():
         raise RuntimeError("OpenRouter down")
 
     # The work runs inline (synchronous runner); the engine raises but the failure
-    # is fail-soft -- no exception escapes, and the deterministic first-pass stays.
+    # is fail-soft -- no exception escapes, and the matter stays un-reviewed (there
+    # is no deterministic first-pass to fall back on).
     schedule_inbound_ai_review(
         matter, repository=repository, runner=_synchronous_runner, review_engine_func=_failing_engine
     )
     persisted = repository.get_matter(matter["id"])
-    assert persisted["review_result"]["active_review_engine"]["executed_engine"] == "deterministic"
+    assert persisted["review_result"] is None
 
 
 def test_inbound_review_concurrency_defaults_to_one(monkeypatch):
@@ -799,7 +802,7 @@ def test_recovery_sweep_reenqueues_unreviewed_but_not_already_reviewed(monkeypat
 
     pool.configure(_handler)
 
-    # One inbound matter left deterministic-only (never AI-reviewed)...
+    # One inbound matter left un-reviewed (never AI-reviewed)...
     unreviewed = create_matter_from_document(
         filename="unreviewed.docx", document_bytes=_docx(NDA_PARAGRAPHS),
         source_type="gmail_inbound", repository=repository, defer_ai_review=True,
@@ -882,9 +885,8 @@ def test_kill_switch_off_skips_scheduling_and_sweep(monkeypatch):
 
     pool._join_for_tests(timeout=1)
     assert ran == []  # nothing was ever reviewed
-    # The matter keeps its deterministic first-pass, reviewable on-demand.
-    assert repository.get_matter(matter["id"])["review_result"][
-        "active_review_engine"]["executed_engine"] == "deterministic"
+    # AI-off: the matter simply stays un-reviewed (no crash), reviewable on-demand.
+    assert repository.get_matter(matter["id"])["review_result"] is None
 
 
 def test_kill_switch_default_enabled(monkeypatch):
@@ -974,8 +976,7 @@ def test_persist_returns_none_counts_as_failure_and_stops_resweeping(monkeypatch
     # The orphan log names the matter id so it can later be found / re-homed.
     assert any(matter_id in rec.getMessage() for rec in caplog.records)
     # Never stamped ai_first (the save returned None), so the sweep WOULD re-pick it...
-    assert repository.get_matter(matter_id)["review_result"][
-        "active_review_engine"]["executed_engine"] == "deterministic"
+    assert repository.get_matter(matter_id)["review_result"] is None
 
     # ...except it has now hit the cap (3 failures) -> the recovery sweep GIVES UP.
     pool = ingestion_service._InboundReviewWorkerPool()
