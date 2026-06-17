@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, TypedDict
 
-from . import artifact_registry
+from . import artifact_registry, governing_law_view
 from .concept_classifier import classify_document_concepts
 from .contract_structure import build_contract_structure
 from .gmail_integration import matter_reply_recipient, recipient_email
@@ -36,6 +36,8 @@ class PublicMatter(TypedDict, total=False):
     gmail_attachment_selector_confidence: str
     gmail_attachment_selector_model: str
     gmail_attachment_selector_reason: str
+    governing_law: str
+    has_ai_review: bool
     has_redline_draft: bool
     human_reviewed: bool
     id: str
@@ -66,6 +68,8 @@ class PublicMatter(TypedDict, total=False):
     source_type: str
     status: str
     subject: str
+    term_label: str
+    term_years: float
     triage_status: str
     updated_at: str
     workflow_state: dict[str, Any]
@@ -170,6 +174,15 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
     # OR a cleaned subject fallback), so the UI shows a usable name even while the
     # extraction is unconfirmed.
     public.update(_counterparty_confirmation_fields(matter))
+    # Matter facts the Overview roster reads alongside the counterparty + received
+    # date: the governing law (a Playbook approved-option id, "" when unknown -- the
+    # same value the corpus/dashboard derive) and the detected term. Both are
+    # best-effort derivations over the stored review; an absent/unclear value
+    # degrades to "" / None rather than guessing, so the UI shows "not specified".
+    public.update(_matter_facts_fields(matter))
+    # Whether ANY AI review has run yet -- the single boolean the Overview empty
+    # state ("No review yet") reads instead of probing review_result shape.
+    public["has_ai_review"] = _matter_has_any_review(matter)
     public["document_downloads"] = public_matter_document_downloads(matter)
     # The artifact registry view: the tracked documents on the matter plus the
     # current_artifact_id pointer ("the version that matters now"). A compact
@@ -261,6 +274,88 @@ def _safe_confidence(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _matter_facts_fields(matter: dict[str, Any]) -> dict[str, Any]:
+    """Project the matter's governing-law + term facts into the public shape.
+
+    Both are best-effort derivations over the stored review and fail open: any
+    derivation failure degrades to ``""`` / ``None`` rather than crashing the
+    projection, so a sparse/odd review never breaks the matter view.
+
+    * ``governing_law`` -- the Playbook approved-option id (e.g. ``difc``), reusing
+      ``governing_law_view.derive_governing_law`` (the same single source the corpus
+      and Drive index read); ``""`` when no approved law is detectable.
+    * ``term_years`` -- the clean ``term_years`` scalar the checker persists on the
+      ``term_and_survival`` clause result, or ``None`` when unknown.
+    * ``term_label`` -- a human display string for ``term_years`` (e.g. ``"1 year"``
+      / ``"3 years"``), or ``""`` when the term is unknown.
+    """
+    try:
+        governing_law = governing_law_view.derive_governing_law(matter)
+    except Exception:  # noqa: BLE001 -- an odd review never breaks the matter view.
+        governing_law = ""
+    term_years = _matter_term_years(matter)
+    return {
+        "governing_law": governing_law,
+        "term_years": term_years,
+        "term_label": _term_label(term_years),
+    }
+
+
+def _matter_term_years(matter: dict[str, Any]) -> float | None:
+    """Best-effort term in years from the stored ``term_and_survival`` clause.
+
+    Reads the clean ``term_years`` scalar the checker persists (the same field the
+    corpus ``term_years`` facet reads); absent/odd/non-positive -> ``None`` so the
+    term degrades to "unknown" rather than guessing. Never raises.
+    """
+    review_result = matter.get("review_result")
+    if not isinstance(review_result, dict):
+        return None
+    clauses = review_result.get("clauses")
+    if not isinstance(clauses, list):
+        return None
+    for clause in clauses:
+        if not isinstance(clause, dict) or str(clause.get("id") or "") != "term_and_survival":
+            continue
+        value = clause.get("term_years")
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)) and value > 0:
+            return float(value)
+    return None
+
+
+def _term_label(term_years: float | None) -> str:
+    """A human display string for a term in years (e.g. ``"1 year"`` / ``"3 years"``).
+
+    Renders a whole number without a trailing ``.0`` and pluralizes the unit; a
+    fractional term keeps one decimal. ``None`` -> ``""`` (term unknown).
+    """
+    if term_years is None or term_years <= 0:
+        return ""
+    if float(term_years).is_integer():
+        whole = int(term_years)
+        return f"{whole} year" if whole == 1 else f"{whole} years"
+    rendered = f"{term_years:.1f}".rstrip("0").rstrip(".")
+    return f"{rendered} years"
+
+
+def _matter_has_any_review(matter: dict[str, Any]) -> bool:
+    """True when ANY review (deterministic or AI) has produced a stored result.
+
+    The Overview empty state ("No review yet") reads this single boolean. We treat
+    a non-empty ``review_result`` OR a stored ``ai_first_review_result`` as "a
+    review has run". This is deliberately broader than "an AI review has run"
+    (routes.matters._matter_has_ai_review) -- the empty state is about whether the
+    roster has any verdicts to show, not which engine produced them.
+    """
+    review_result = matter.get("review_result")
+    if isinstance(review_result, dict) and review_result:
+        return True
+    ai_first = matter.get("ai_first_review_result")
+    return isinstance(ai_first, dict) and bool(ai_first)
 
 
 def _matter_review_block_resolved(matter: dict[str, Any]) -> bool:
