@@ -54,6 +54,16 @@ STATUS_VOIDED = "voided"
 
 TERMINAL_STATUSES = frozenset({STATUS_COMPLETED, STATUS_DECLINED, STATUS_VOIDED})
 
+# A per-recipient signed status. DocuSign reports each recipient's own status on
+# the recipients endpoint ("created"/"sent"/"delivered"/"completed"/"declined").
+# "completed" is that recipient HAVING SIGNED. We normalize the per-recipient
+# vocabulary to this small set so the matter view can show a clean per-party
+# state (signed / awaiting / declined) without leaking DocuSign's full status
+# vocabulary to the UI.
+RECIPIENT_SIGNED = "signed"
+RECIPIENT_AWAITING = "awaiting"
+RECIPIENT_DECLINED = "declined"
+
 DEFAULT_EMAIL_SUBJECT = "Please sign: NDA"
 
 # Signing-order modes. PARALLEL is the default: both recipients share the same
@@ -154,6 +164,59 @@ def _coerce_routing_order(value: Any) -> int:
     return order if order > 0 else 0
 
 
+def normalize_recipient_status(status: Any) -> str:
+    """Collapse a DocuSign per-recipient status to the small UI vocabulary.
+
+    DocuSign's recipient status ladder is ``created -> sent -> delivered ->
+    completed`` (a recipient is "completed" once they have SIGNED), plus terminal
+    ``declined`` / ``autoresponded``. We map ``completed`` to
+    :data:`RECIPIENT_SIGNED`, ``declined`` to :data:`RECIPIENT_DECLINED`, and
+    everything else (still out for signature) to :data:`RECIPIENT_AWAITING`. An
+    unknown / blank value fails toward ``awaiting`` (never "signed").
+    """
+    value = str(status or "").strip().casefold()
+    if value == STATUS_COMPLETED:
+        return RECIPIENT_SIGNED
+    if value == STATUS_DECLINED:
+        return RECIPIENT_DECLINED
+    return RECIPIENT_AWAITING
+
+
+def parse_envelope_recipients(payload: Any) -> list[dict[str, Any]]:
+    """Project a DocuSign ``GET /envelopes/{id}/recipients`` body into a flat list.
+
+    DocuSign returns recipients bucketed by type (``signers``, ``carbonCopies``,
+    ...), each an array of recipient objects carrying ``email`` / ``name`` /
+    ``status`` and (when signed) ``signedDateTime``. We only care about the
+    ``signers`` bucket — those are the parties who actually sign — and reduce each
+    to ``{email, name, status, signed_at}`` with the status normalized via
+    :func:`normalize_recipient_status`. Pure + defensive: a non-dict body, a
+    missing/odd ``signers`` bucket, or a non-dict recipient each degrade to an
+    empty list / skipped entry rather than raising.
+    """
+    if not isinstance(payload, dict):
+        return []
+    signers = payload.get("signers")
+    if not isinstance(signers, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for raw in signers:
+        if not isinstance(raw, dict):
+            continue
+        email = str(raw.get("email") or "").strip()
+        if not email:
+            continue
+        result.append(
+            {
+                "email": email,
+                "name": str(raw.get("name") or "").strip(),
+                "status": normalize_recipient_status(raw.get("status")),
+                "signed_at": str(raw.get("signedDateTime") or "").strip(),
+            }
+        )
+    return result
+
+
 class DocuSignClient(Protocol):
     """The four operations the send-for-signature workflow drives."""
 
@@ -168,6 +231,8 @@ class DocuSignClient(Protocol):
     ) -> dict[str, Any]: ...
 
     def get_envelope_status(self, envelope_id: str) -> str: ...
+
+    def get_envelope_recipients(self, envelope_id: str) -> list[dict[str, Any]]: ...
 
     def download_completed(self, envelope_id: str) -> bytes: ...
 
@@ -369,6 +434,15 @@ class HttpDocuSignClient:
     def get_envelope_status(self, envelope_id: str) -> str:
         response = self._request_json("GET", f"{self._account_path()}/envelopes/{_segment(envelope_id)}")
         return str(response.get("status") or "")
+
+    def get_envelope_recipients(self, envelope_id: str) -> list[dict[str, Any]]:
+        # ``/recipients`` lists every recipient with their OWN status +
+        # signedDateTime; we project just the ``signers`` bucket via the pure
+        # parser so the per-party signed state is decoupled from the wire shape.
+        response = self._request_json(
+            "GET", f"{self._account_path()}/envelopes/{_segment(envelope_id)}/recipients"
+        )
+        return parse_envelope_recipients(response)
 
     def download_completed(self, envelope_id: str) -> bytes:
         # ``/documents/combined`` is the single merged PDF of every signed document

@@ -186,6 +186,65 @@ def test_real_client_get_status(fake_token):
     assert url.endswith("/envelopes/env-123")
 
 
+def test_normalize_recipient_status_maps_completed_to_signed():
+    assert docusign_integration.normalize_recipient_status("completed") == "signed"
+    assert docusign_integration.normalize_recipient_status("Completed") == "signed"
+
+
+def test_normalize_recipient_status_declined_and_awaiting():
+    assert docusign_integration.normalize_recipient_status("declined") == "declined"
+    # Anything still out for signature (or unknown / blank) is awaiting, never signed.
+    for value in ("sent", "delivered", "created", "", None, "weird"):
+        assert docusign_integration.normalize_recipient_status(value) == "awaiting"
+
+
+def test_parse_envelope_recipients_projects_signers_only():
+    payload = {
+        "signers": [
+            {
+                "email": "Daniyal.Ahmad@aspora.com",
+                "name": "Daniyal Ahmad",
+                "status": "completed",
+                "signedDateTime": "2026-06-17T10:00:00Z",
+            },
+            {"email": "cp@acme.com", "name": "Acme", "status": "sent"},
+        ],
+        "carbonCopies": [{"email": "cc@acme.com", "status": "completed"}],
+    }
+    parsed = docusign_integration.parse_envelope_recipients(payload)
+    assert [p["email"] for p in parsed] == ["Daniyal.Ahmad@aspora.com", "cp@acme.com"]
+    assert parsed[0]["status"] == "signed"
+    assert parsed[0]["signed_at"] == "2026-06-17T10:00:00Z"
+    assert parsed[1]["status"] == "awaiting"
+    assert parsed[1]["signed_at"] == ""
+
+
+def test_parse_envelope_recipients_defensive_on_odd_payloads():
+    assert docusign_integration.parse_envelope_recipients(None) == []
+    assert docusign_integration.parse_envelope_recipients({}) == []
+    assert docusign_integration.parse_envelope_recipients({"signers": "nope"}) == []
+    # Non-dict entries and blank-email entries are skipped.
+    assert docusign_integration.parse_envelope_recipients(
+        {"signers": ["x", {"email": ""}, {"email": "ok@x.com", "status": "completed"}]}
+    ) == [{"email": "ok@x.com", "name": "", "status": "signed", "signed_at": ""}]
+
+
+def test_real_client_get_recipients_hits_recipients_endpoint(fake_token):
+    transport = _FakeTransport()
+    transport.json_response = (
+        200,
+        {"signers": [{"email": "a@x.com", "status": "completed", "signedDateTime": "2026-06-17T10:00:00Z"}]},
+    )
+    client = _client(transport)
+    recipients = client.get_envelope_recipients("env-123")
+    assert recipients == [
+        {"email": "a@x.com", "name": "", "status": "signed", "signed_at": "2026-06-17T10:00:00Z"}
+    ]
+    method, url, _headers, _body = transport.json_calls[0]
+    assert method == "GET"
+    assert url.endswith("/envelopes/env-123/recipients")
+
+
 def test_real_client_download_completed_returns_pdf_bytes(fake_token):
     transport = _FakeTransport()
     client = _client(transport)

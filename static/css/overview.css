@@ -661,3 +661,96 @@
   font-size: 12px;
   padding: 12px 14px;
 }
+
+/* ---------- Signatures: the two parties' e-signature status ----------
+   A small, flat status block (no card): a header tally ("1/2") over two
+   hairline-separated party rows. Reuses the shared .ov-fact-label small-caps
+   gray label so it reads as one family with Facts / Counterparty. */
+
+.ov-signatures {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ov-signatures-head {
+  align-items: baseline;
+  display: flex;
+  gap: 10px;
+}
+
+.ov-signatures-tally {
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.ov-signatures-tally--partial {
+  color: var(--amber-ink, #92400e);
+}
+
+.ov-signatures-tally--executed {
+  color: var(--green-ink, #047857);
+}
+
+.ov-signatures-executed {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ov-signatures-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.ov-signature-party {
+  align-items: center;
+  border-top: 1px solid var(--border-soft);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 7px 0;
+}
+
+.ov-signature-party:first-child {
+  border-top: 0;
+}
+
+.ov-signature-party-name {
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.ov-signature-party-status {
+  align-items: baseline;
+  color: var(--ink-muted);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 600;
+  gap: 6px;
+}
+
+.ov-signature-party-mark {
+  font-weight: 700;
+}
+
+/* Signed — green tick + date. Awaiting / not-sent — quiet gray. Declined — red. */
+.ov-signature-party-status--signed {
+  color: var(--green-ink, #047857);
+}
+
+.ov-signature-party-status--awaiting {
+  color: var(--amber-ink, #92400e);
+}
+
+.ov-signature-party-status--not_sent {
+  color: var(--ink-muted);
+}
+
+.ov-signature-party-status--declined {
+  color: var(--red-ink, #b91c1c);
+}

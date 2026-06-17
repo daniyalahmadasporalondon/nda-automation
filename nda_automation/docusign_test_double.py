@@ -36,6 +36,7 @@ from .docusign_integration import (
     DocuSignError,
     Signer,
     normalize_signers,
+    parse_envelope_recipients,
 )
 
 _HAPPY_PATH = (STATUS_CREATED, STATUS_SENT, STATUS_DELIVERED, STATUS_COMPLETED)
@@ -51,6 +52,12 @@ class _Envelope:
     document_bytes: bytes
     history: list[dict[str, str]] = field(default_factory=list)
     void_reason: str = ""
+    # Per-recipient DocuSign status keyed by lowercased email. Seeded to the
+    # envelope's status on create; advancing the envelope to completed flips every
+    # un-signed recipient to completed, and ``sign_recipient`` flips ONE so tests
+    # can exercise the partial (1-of-2) signing state.
+    recipient_status: dict[str, str] = field(default_factory=dict)
+    recipient_signed_at: dict[str, str] = field(default_factory=dict)
 
 
 class FakeDocuSignClient:
@@ -90,6 +97,11 @@ class FakeDocuSignClient:
             )
             envelope.history.append({"status": STATUS_CREATED, "at": now})
             envelope.history.append({"status": STATUS_SENT, "at": now})
+            # Each recipient starts out at the envelope's status (sent/awaiting).
+            for signer in envelope.signers:
+                email = str(signer.get("email") or "").strip().casefold()
+                if email:
+                    envelope.recipient_status[email] = STATUS_SENT
             self._envelopes[envelope_id] = envelope
             if self._auto_complete:
                 self._walk_to_completed(envelope)
@@ -98,6 +110,35 @@ class FakeDocuSignClient:
     def get_envelope_status(self, envelope_id: str) -> str:
         with self._lock:
             return self._require(envelope_id).status
+
+    def get_envelope_recipients(self, envelope_id: str) -> list[dict[str, Any]]:
+        # Mirrors the real client's projection: one entry per signer carrying its
+        # own (possibly partial) status + signedDateTime, parsed through the same
+        # pure helper the HTTP client uses so the shape is identical.
+        with self._lock:
+            envelope = self._require(envelope_id)
+            raw_signers = []
+            for signer in envelope.signers:
+                email = str(signer.get("email") or "").strip()
+                key = email.casefold()
+                raw_signers.append(
+                    {
+                        "email": email,
+                        "name": signer.get("name") or "",
+                        "status": envelope.recipient_status.get(key, envelope.status),
+                        "signedDateTime": envelope.recipient_signed_at.get(key, ""),
+                    }
+                )
+            return parse_envelope_recipients({"signers": raw_signers})
+
+    def sign_recipient(self, envelope_id: str, email: str) -> None:
+        """Mark ONE recipient as signed (status completed) without completing the
+        whole envelope — the control tests use to reach the 1-of-2 signed state."""
+        with self._lock:
+            envelope = self._require(envelope_id)
+            key = str(email or "").strip().casefold()
+            envelope.recipient_status[key] = STATUS_COMPLETED
+            envelope.recipient_signed_at[key] = _now_iso()
 
     def download_completed(self, envelope_id: str) -> bytes:
         with self._lock:
@@ -128,6 +169,8 @@ class FakeDocuSignClient:
                 index = 0
             envelope.status = _HAPPY_PATH[min(index + 1, len(_HAPPY_PATH) - 1)]
             envelope.history.append({"status": envelope.status, "at": _now_iso()})
+            if envelope.status == STATUS_COMPLETED:
+                self._complete_recipients(envelope)
             return envelope.status
 
     def complete(self, envelope_id: str) -> str:
@@ -147,6 +190,19 @@ class FakeDocuSignClient:
             index = _HAPPY_PATH.index(envelope.status)
             envelope.status = _HAPPY_PATH[index + 1]
             envelope.history.append({"status": envelope.status, "at": _now_iso()})
+        self._complete_recipients(envelope)
+
+    def _complete_recipients(self, envelope: _Envelope) -> None:
+        # A completed envelope means every recipient has signed: flip any
+        # not-yet-signed recipient to completed (preserving an already-recorded
+        # signed time for the recipients a test signed individually).
+        now = _now_iso()
+        for signer in envelope.signers:
+            key = str(signer.get("email") or "").strip().casefold()
+            if not key:
+                continue
+            envelope.recipient_status[key] = STATUS_COMPLETED
+            envelope.recipient_signed_at.setdefault(key, now)
 
     def _require(self, envelope_id: str) -> _Envelope:
         envelope = self._envelopes.get(str(envelope_id or ""))
