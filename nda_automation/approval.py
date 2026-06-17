@@ -20,7 +20,7 @@ from typing import Any
 
 from .playbook_runtime import ensure_active_playbook_runtime
 from .redline_actions import REDLINE_REPLACE_PARAGRAPH
-from .review_staleness import review_result_staleness
+from .review_staleness import CurrentRuntimeFn, review_result_staleness
 
 CurrentPlaybookHashFn = Callable[[], str]
 
@@ -180,14 +180,27 @@ def review_is_stale(
     review_result: object,
     *,
     current_playbook_hash_func: CurrentPlaybookHashFn = _current_published_playbook_hash,
+    current_runtime_func: CurrentRuntimeFn | None = None,
 ) -> bool:
     """Stale when review_staleness flags it OR playbook_version.hash drifts.
 
     review_staleness already hash-compares playbook_runtime; this additionally
     honors the locked playbook_version.hash field so the gate stays correct even
     if only that provenance field is present.
+
+    ``current_runtime_func``/``current_playbook_hash_func`` are injectable so a
+    batch caller (e.g. corpus_index.build_corpus) can resolve the active playbook
+    runtime ONCE and thread the constant resolvers through every matter, instead
+    of paying a playbook.json flock+read+validate per matter. When
+    ``current_runtime_func`` is omitted the staleness check resolves the runtime
+    itself (the unbatched default).
     """
-    if review_result_staleness(review_result)["stale"]:
+    staleness = (
+        review_result_staleness(review_result, current_runtime_func=current_runtime_func)
+        if current_runtime_func is not None
+        else review_result_staleness(review_result)
+    )
+    if staleness["stale"]:
         return True
     review_hash = review_playbook_version_hash(review_result)
     if not review_hash:
@@ -196,7 +209,12 @@ def review_is_stale(
     return not current_hash or review_hash != current_hash
 
 
-def approval_blocks(matter: dict[str, Any]) -> list[str]:
+def approval_blocks(
+    matter: dict[str, Any],
+    *,
+    current_playbook_hash_func: CurrentPlaybookHashFn | None = None,
+    current_runtime_func: CurrentRuntimeFn | None = None,
+) -> list[str]:
     """Return the reason codes that currently block approval (empty == approvable).
 
     The single human gate is "Approve Review": one approval signs off the whole
@@ -204,9 +222,18 @@ def approval_blocks(matter: dict[str, Any]) -> list[str]:
     ``stale_playbook`` -- a data-freshness guard raised when the stored review no
     longer matches the published Playbook (by review_staleness or the locked
     playbook_version.hash). As soon as the review is fresh, approval is allowed.
+
+    ``current_playbook_hash_func``/``current_runtime_func`` are injectable so a
+    batch caller can resolve the active playbook runtime ONCE and thread the
+    constant resolvers through, avoiding a per-call playbook.json read.
     """
+    kwargs: dict[str, Any] = {}
+    if current_playbook_hash_func is not None:
+        kwargs["current_playbook_hash_func"] = current_playbook_hash_func
+    if current_runtime_func is not None:
+        kwargs["current_runtime_func"] = current_runtime_func
     blocks: list[str] = []
-    if review_is_stale(matter.get("review_result")):
+    if review_is_stale(matter.get("review_result"), **kwargs):
         blocks.append(BLOCK_STALE_PLAYBOOK)
     return blocks
 
