@@ -3310,29 +3310,31 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.getByRole("tab", { name: "Repository" }).click();
   await page.waitForSelector(".repository-card");
-  assert.equal(await page.locator('[data-repository-count="manual_upload"]').innerText(), "2");
-  assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "0");
+  // Both imports are AI-reviewed on ingest (ai_first stub), so they advance from
+  // the "Upload" intake column to "In Review" (ai_review_ran === true).
+  assert.equal(await page.locator('[data-repository-count="manual_upload"]').innerText(), "0");
+  assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "2");
   await page.getByRole("searchbox", { name: "Search repository cards" }).fill(deleteStem);
   assert.equal(await page.locator(".repository-card").count(), 1);
   await assertTextContains(page.locator(".repository-card"), deleteStem);
-  assert.equal(await page.locator('[data-repository-count="manual_upload"]').innerText(), "1");
+  assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "1");
   await page.getByRole("searchbox", { name: "Search repository cards" }).fill("no matching nda");
   assert.equal(await page.locator(".repository-card").count(), 0);
-  await assertTextContains(page.locator('[data-repository-list="manual_upload"]'), "No matching documents");
+  await assertTextContains(page.locator('[data-repository-list="in_review"]'), "No matching documents");
   await page.getByRole("searchbox", { name: "Search repository cards" }).fill("");
   assert.equal(await page.locator(".repository-card").count(), 2);
-  assert.equal(await page.locator('[data-repository-count="manual_upload"]').innerText(), "2");
+  assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "2");
   await assertTextContains(page.locator(".repository-card").first(), deleteStem);
   const deleteCard = page.locator(".repository-card").filter({ hasText: deleteStem });
   await deleteCard.getByRole("button", { name: "Delete matter" }).click();
   await assertTextContains(deleteCard, "Delete matter and stored document?");
   assert.equal(await page.locator(".repository-card").filter({ hasText: deleteStem }).count(), 1);
-  assert.equal(await page.locator('[data-repository-count="manual_upload"]').innerText(), "2");
+  assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "2");
   await deleteCard.getByRole("button", { name: "Cancel delete matter" }).click();
   assert.equal(await deleteCard.getByRole("group", { name: "Delete matter confirmation" }).count(), 0);
   await deleteCard.getByRole("button", { name: "Delete matter" }).click();
   await deleteCard.getByRole("button", { name: "Confirm delete matter" }).click();
-  await waitForRepositoryCount(page, "manual_upload", "1");
+  await waitForRepositoryCount(page, "in_review", "1");
   assert.equal(await page.locator(".repository-card").filter({ hasText: deleteStem }).count(), 0);
   assert.equal(await page.locator("#repositoryMatterPanel:not([hidden])").count(), 0);
   assert.equal(await page.locator('[data-repository-count="reviewed"]').innerText(), "0");
@@ -3357,8 +3359,8 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   assert.ok(matterExportPayload.matter_id, "Repository panel export should send a matter id");
   assert.match(matterDownload.suggestedFilename(), /^repository-matter-\d+-redlined(?:-[0-9a-f]{12})?\.docx$/);
   await assertTextContains(page.locator("#repositoryMatterPanel"), "still needs human review");
-  await waitForRepositoryCount(page, "manual_upload", "1");
-  await waitForRepositoryCount(page, "in_review", "0");
+  await waitForRepositoryCount(page, "manual_upload", "0");
+  await waitForRepositoryCount(page, "in_review", "1");
   await waitForRepositoryCount(page, "reviewed", "0");
 
   await page.getByRole("button", { name: "Open Review" }).click();
@@ -3367,8 +3369,8 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await assertTextContains(page.locator("#studioDocTitle"), "repository-matter-");
   await waitForText(page, "#studioFileMeta", "Manual Upload matter loaded");
   await assertTextContains(page.locator("#studioFileMeta"), "Manual Upload matter loaded");
-  await waitForRepositoryCount(page, "manual_upload", "1");
-  await waitForRepositoryCount(page, "in_review", "0");
+  await waitForRepositoryCount(page, "manual_upload", "0");
+  await waitForRepositoryCount(page, "in_review", "1");
   await waitForRepositoryCount(page, "reviewed", "0");
   await page.getByRole("tab", { name: "Repository" }).click();
   await page.waitForSelector("#repositoryMatterPanel[hidden]", { state: "attached" });
@@ -3383,8 +3385,8 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   const reviewMatterExportPayload = reviewMatterExportRequest.postDataJSON();
   assert.ok(reviewMatterExportPayload.matter_id, "Loaded repository matter export should send a matter id");
   assert.match(reviewMatterDownload.suggestedFilename(), /^repository-matter-\d+-redlined(?:-[0-9a-f]{12})?\.docx$/);
-  await waitForRepositoryCount(page, "manual_upload", "1");
-  await waitForRepositoryCount(page, "in_review", "0");
+  await waitForRepositoryCount(page, "manual_upload", "0");
+  await waitForRepositoryCount(page, "in_review", "1");
   await waitForRepositoryCount(page, "reviewed", "0");
   assert.equal(await page.getByRole("button", { name: "Review NDA" }).count(), 0);
 
@@ -3924,24 +3926,26 @@ async function testManualUploadModal(page) {
   await assertTextContains(page.locator("#repositoryMatterPanel"), "Upload");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "counterparty@example.com");
   await assertTextContains(page.locator("#repositoryMatterPanel"), "Uploaded outside Gmail.");
-  await assertTextContains(page.locator('[data-repository-list="manual_upload"]'), stem);
-  await assertTextContains(page.locator('[data-repository-list="manual_upload"] .repository-card').filter({ hasText: stem }), "Manual Upload");
-  await waitForRepositoryCount(page, "manual_upload", "1");
-  await waitForRepositoryCount(page, "in_review", "0");
+  // The upload is AI-reviewed on ingest (ai_first stub), so it advances from the
+  // "Upload" intake column to "In Review" (ai_review_ran === true).
+  await assertTextContains(page.locator('[data-repository-list="in_review"]'), stem);
+  await assertTextContains(page.locator('[data-repository-list="in_review"] .repository-card').filter({ hasText: stem }), "Manual Upload");
+  await waitForRepositoryCount(page, "manual_upload", "0");
+  await waitForRepositoryCount(page, "in_review", "1");
 
   await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#reviewView:not([hidden])");
   await assertTextContains(page.locator("#studioCounterpartyMeta"), "counterparty@example.com");
   await page.getByRole("tab", { name: "Repository" }).click();
   await page.waitForSelector("#repositoryMatterPanel[hidden]", { state: "attached" });
-  await waitForRepositoryCount(page, "manual_upload", "1");
-  await waitForRepositoryCount(page, "in_review", "0");
-  const uploadedCard = page.locator('[data-repository-list="manual_upload"] .repository-card').filter({ hasText: stem });
+  await waitForRepositoryCount(page, "manual_upload", "0");
+  await waitForRepositoryCount(page, "in_review", "1");
+  const uploadedCard = page.locator('[data-repository-list="in_review"] .repository-card').filter({ hasText: stem });
   await uploadedCard.getByRole("button", { name: "Delete matter" }).click();
   await assertTextContains(uploadedCard, "Delete matter and stored document?");
   await uploadedCard.getByRole("button", { name: "Confirm delete matter" }).click();
   await page.waitForFunction(
-    (uploadedStem) => !document.querySelector('[data-repository-list="manual_upload"]')?.innerText.includes(uploadedStem),
+    (uploadedStem) => !document.querySelector('[data-repository-list="in_review"]')?.innerText.includes(uploadedStem),
     stem,
   );
 
@@ -3964,17 +3968,17 @@ async function testManualUploadModal(page) {
   assert.equal(uploadRequest.postDataJSON().board_column, "in_review");
   await page.waitForSelector("#manualUploadModal[hidden]", { state: "attached" });
   await page.waitForFunction(
-    (uploadedStem) => document.querySelector('[data-repository-list="manual_upload"]')?.innerText.includes(uploadedStem),
+    (uploadedStem) => document.querySelector('[data-repository-list="in_review"]')?.innerText.includes(uploadedStem),
     reviewedStem,
   );
   await page.getByRole("button", { name: "Close matter inspector" }).click();
   await page.waitForSelector("#repositoryMatterPanel[hidden]", { state: "attached" });
 
-  const reviewedCard = page.locator('[data-repository-list="manual_upload"] .repository-card').filter({ hasText: reviewedStem });
+  const reviewedCard = page.locator('[data-repository-list="in_review"] .repository-card').filter({ hasText: reviewedStem });
   await reviewedCard.getByRole("button", { name: "Delete matter" }).click();
   await reviewedCard.getByRole("button", { name: "Confirm delete matter" }).click();
   await page.waitForFunction(
-    (uploadedStem) => !document.querySelector('[data-repository-list="manual_upload"]')?.innerText.includes(uploadedStem),
+    (uploadedStem) => !document.querySelector('[data-repository-list="in_review"]')?.innerText.includes(uploadedStem),
     reviewedStem,
   );
 
