@@ -31,7 +31,24 @@ global.RepositoryModel = {
   },
 };
 
-const { CorpusModel, CorpusView } = require(path.join(__dirname, "..", "..", "static", "js", "corpus.js"));
+const { CorpusModel, CorpusRender, CorpusView } = require(path.join(__dirname, "..", "..", "static", "js", "corpus.js"));
+
+// Minimal DOM stub — no jsdom dependency, matching the repo's zero-dep FE
+// harness style. Captures the last innerHTML written and no-ops the event
+// binding (renderFacetRail/renderGroups call querySelectorAll after setting
+// innerHTML; an empty NodeList keeps the markup assertions DOM-free).
+function stubNode() {
+  return {
+    innerHTML: "",
+    classList: { add() {}, remove() {}, toggle() {} },
+    querySelectorAll() {
+      return [];
+    },
+    querySelector() {
+      return null;
+    },
+  };
+}
 
 let passed = 0;
 function test(name, fn) {
@@ -193,6 +210,160 @@ test("month keys sort newest-first with undated last", () => {
   const keys = ["2025-12", "2026-06", "0000-00", "2026-01"];
   const sorted = keys.slice().sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
   assert.deepEqual(sorted, ["2026-06", "2026-01", "2025-12", "0000-00"]);
+});
+
+// --- duplicate signals: model helpers --------------------------------------
+test("isRepeatEntity reads repeat_entity (top-level or facets), defaults false", () => {
+  assert.equal(CorpusModel.isRepeatEntity({ repeat_entity: true }), true);
+  assert.equal(CorpusModel.isRepeatEntity({ facets: { repeat_entity: true } }), true);
+  assert.equal(CorpusModel.isRepeatEntity({ repeat_entity: false }), false);
+  assert.equal(CorpusModel.isRepeatEntity({}), false);
+  assert.equal(CorpusModel.isRepeatEntity(null), false);
+});
+
+test("duplicateDocument returns the match object or null", () => {
+  const dd = { matched_matter_id: "m-9", matched_title: "Acme Mk II", similarity: 0.91 };
+  assert.deepEqual(CorpusModel.duplicateDocument({ duplicate_document: dd }), dd);
+  assert.deepEqual(CorpusModel.duplicateDocument({ facets: { duplicate_document: dd } }), dd);
+  assert.equal(CorpusModel.duplicateDocument({ duplicate_document: null }), null);
+  // A match object missing the id is not a usable link target.
+  assert.equal(CorpusModel.duplicateDocument({ duplicate_document: { similarity: 0.9 } }), null);
+  assert.equal(CorpusModel.duplicateDocument({}), null);
+});
+
+test("similarityLabel rounds a [0,1] similarity to a NN% match label", () => {
+  assert.equal(CorpusModel.similarityLabel(0.91), "91% match");
+  assert.equal(CorpusModel.similarityLabel(0.925), "93% match"); // round-half-up
+  assert.equal(CorpusModel.similarityLabel(1), "100% match");
+  assert.equal(CorpusModel.similarityLabel("0.8"), "80% match");
+  assert.equal(CorpusModel.similarityLabel(undefined), "");
+});
+
+// --- duplicate signals: facet filter + count parity ------------------------
+// A 4-matter fixture exercising all three independent flag axes.
+const FLAG_MATTERS = [
+  // Drive copy only.
+  { counterparty: "Drive Co", title: "Drive NDA", status: "reviewed", source: "both", artifacts: [], duplicate: true },
+  // Repeat entity only.
+  { counterparty: "Repeat Co", title: "Repeat NDA #1", status: "reviewed", source: "app", artifacts: [], repeat_entity: true },
+  // Repeat entity + duplicate document.
+  {
+    counterparty: "Repeat Co",
+    title: "Repeat NDA #2",
+    status: "reviewed",
+    source: "app",
+    artifacts: [],
+    repeat_entity: true,
+    duplicate_document: { matched_matter_id: "rep-1", matched_title: "Repeat NDA #1", similarity: 0.88 },
+  },
+  // No flags.
+  { counterparty: "Clean Co", title: "Clean NDA", status: "reviewed", source: "app", artifacts: [] },
+];
+
+test("repeat_entity facet filters matters flagged repeat_entity (count parity)", () => {
+  const filter = CorpusView.buildFilter(new Map([["flags", new Set(["repeat_entity"])]]), "");
+  const matched = FLAG_MATTERS.filter(filter);
+  assert.deepEqual(matched.map((m) => m.title), ["Repeat NDA #1", "Repeat NDA #2"]);
+  // Sidebar count (flagMatches) == filtered-result count.
+  const count = FLAG_MATTERS.filter((m) => CorpusRender.flagMatches(m, "repeat_entity")).length;
+  assert.equal(count, matched.length);
+  assert.equal(count, 2);
+});
+
+test("duplicate_document facet filters matters with a non-null match (count parity)", () => {
+  const filter = CorpusView.buildFilter(new Map([["flags", new Set(["duplicate_document"])]]), "");
+  const matched = FLAG_MATTERS.filter(filter);
+  assert.deepEqual(matched.map((m) => m.title), ["Repeat NDA #2"]);
+  const count = FLAG_MATTERS.filter((m) => CorpusRender.flagMatches(m, "duplicate_document")).length;
+  assert.equal(count, matched.length);
+  assert.equal(count, 1);
+});
+
+test("the renamed Drive-copy flag still keys on matter.duplicate", () => {
+  const filter = CorpusView.buildFilter(new Map([["flags", new Set(["duplicate"])]]), "");
+  const matched = FLAG_MATTERS.filter(filter);
+  assert.deepEqual(matched.map((m) => m.title), ["Drive NDA"]);
+  const count = FLAG_MATTERS.filter((m) => CorpusRender.flagMatches(m, "duplicate")).length;
+  assert.equal(count, matched.length);
+});
+
+test("flags facet ORs within the key across the three duplicate signals", () => {
+  const filter = CorpusView.buildFilter(
+    new Map([["flags", new Set(["duplicate", "repeat_entity", "duplicate_document"])]]),
+    ""
+  );
+  // Everything except the clean matter.
+  assert.deepEqual(FLAG_MATTERS.filter(filter).map((m) => m.title), [
+    "Drive NDA",
+    "Repeat NDA #1",
+    "Repeat NDA #2",
+  ]);
+});
+
+test("the sidebar rail renders all three flag facets with parity counts", () => {
+  const rail = stubNode();
+  const payload = { groups: [{ counterparty: "x", matters: FLAG_MATTERS }] };
+  CorpusRender.renderFacetRail(rail, payload, new Map(), {});
+  const html = rail.innerHTML;
+  // Renamed label is honest about being the Drive signal.
+  assert.ok(html.includes("Drive copy"), "Drive copy facet label rendered");
+  assert.ok(html.includes("Repeat entity"), "Repeat entity facet label rendered");
+  assert.ok(html.includes("Duplicate document"), "Duplicate document facet label rendered");
+  // Each flag option carries its parity count.
+  const optionFor = (value) => {
+    const re = new RegExp(
+      `data-facet-key="flags" data-facet-value="${value}"[\\s\\S]*?corpus-facet-count">(\\d+)<`
+    );
+    const m = html.match(re);
+    return m ? Number(m[1]) : null;
+  };
+  assert.equal(optionFor("duplicate"), 1);
+  assert.equal(optionFor("repeat_entity"), 2);
+  assert.equal(optionFor("duplicate_document"), 1);
+});
+
+// --- Option 1: group-header repeat-entity badge -----------------------------
+test("the group header shows a 'Repeat entity · N NDAs' badge for a repeat group", () => {
+  const list = stubNode();
+  const repeatGroup = {
+    counterparty: "Repeat Co",
+    matters: [FLAG_MATTERS[1], FLAG_MATTERS[2]],
+  };
+  CorpusRender.renderGroups(list, { groups: [repeatGroup] }, {}, () => true, "counterparty");
+  const html = list.innerHTML;
+  assert.ok(html.includes("corpus-repeat-entity-badge"), "badge element present");
+  assert.ok(html.includes("Repeat entity · 2 NDAs"), `badge text/N wrong: ${html}`);
+});
+
+test("the group header omits the badge when no matter is a repeat entity", () => {
+  const list = stubNode();
+  const cleanGroup = { counterparty: "Clean Co", matters: [FLAG_MATTERS[3]] };
+  CorpusRender.renderGroups(list, { groups: [cleanGroup] }, {}, () => true, "counterparty");
+  assert.ok(!list.innerHTML.includes("corpus-repeat-entity-badge"));
+});
+
+// --- Option 2: duplicate-document card chip links to the match --------------
+test("the duplicate-document chip renders the %-match + matched title and links by id", () => {
+  const list = stubNode();
+  const group = { counterparty: "Repeat Co", matters: [FLAG_MATTERS[2]] };
+  CorpusRender.renderGroups(list, { groups: [group] }, {}, () => true, "counterparty");
+  const html = list.innerHTML;
+  assert.ok(html.includes("corpus-dupdoc-chip"), "chip element present");
+  // Links to the matched matter id (the jump target).
+  assert.ok(
+    html.includes('data-corpus-dupdoc-target="rep-1"'),
+    "chip carries the matched_matter_id jump target"
+  );
+  // 0.88 -> "88% match", arrow, and the matched title.
+  assert.ok(html.includes("Duplicate document · 88% match"), `chip label wrong: ${html}`);
+  assert.ok(html.includes("Repeat NDA #1"), "chip names the matched title");
+});
+
+test("a matter without duplicate_document renders no chip", () => {
+  const list = stubNode();
+  const group = { counterparty: "Clean Co", matters: [FLAG_MATTERS[3]] };
+  CorpusRender.renderGroups(list, { groups: [group] }, {}, () => true, "counterparty");
+  assert.ok(!list.innerHTML.includes("corpus-dupdoc-chip"));
 });
 
 process.stdout.write(`\ncorpus-model: ${passed} passed\n`);

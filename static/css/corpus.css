@@ -296,6 +296,56 @@
   padding: 2px 8px;
 }
 
+/* Option 1 — passive purple group-header badge: this counterparty has >=2 NDAs. */
+.corpus-repeat-entity-badge {
+  background: rgba(124, 58, 237, 0.12);
+  border: 1px solid rgba(124, 58, 237, 0.28);
+  border-radius: var(--r-pill);
+  color: #6d28d9;
+  font-size: 11px;
+  font-weight: 700;
+  margin-left: 8px;
+  padding: 2px 9px;
+  white-space: nowrap;
+}
+
+/* Option 2 — amber content-near-duplicate chip; links to the matched matter. */
+.corpus-dupdoc-chip {
+  background: #fdf3e1;
+  border: 1px solid #f0dab0;
+  border-radius: var(--r-pill);
+  color: #8a5a12;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  max-width: 260px;
+  overflow: hidden;
+  padding: 2px 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.corpus-dupdoc-chip:hover {
+  background: #f9e8c8;
+  border-color: #e3c382;
+}
+
+.corpus-dupdoc-chip:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+/* Transient highlight when a duplicate-document chip jumps to its match. */
+.corpus-matter--jump-target {
+  animation: corpus-jump-flash 1.6s ease-out;
+}
+
+@keyframes corpus-jump-flash {
+  0% { background: rgba(124, 58, 237, 0.16); }
+  100% { background: transparent; }
+}
+
 .corpus-artifact-count {
   color: var(--ink-muted);
   font-size: 12px;
