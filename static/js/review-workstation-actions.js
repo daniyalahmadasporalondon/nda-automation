@@ -902,10 +902,11 @@ async function refreshSelectedMatterReview() {
       // Clear the live progress state (spinner + AT busy) set on entry...
       studioRefreshReviewButton.classList.remove("is-refreshing");
       studioRefreshReviewButton.removeAttribute("aria-busy");
-      // ...then re-derive the label from the now-current matter state rather than
-      // restoring a stale snapshot: after a successful run on a previously
-      // UNREVIEWED matter the button must flip "Review" -> "Refresh Review"
-      // (and Approve / Send for signature appear via updateExportButtonState).
+      // ...then re-derive state from the now-current matter rather than restoring a
+      // stale snapshot: after a successful run on a previously UNREVIEWED matter the
+      // "Review" button GRAYS (review is current, nothing to do) and the downstream
+      // actions (Approve / Send for signature / Mark reviewed) ENABLE via
+      // updateExportButtonState. The label stays "Review" throughout (no relabel).
       renderReviewRefreshNotice();
     }
     updateExportButtonState();
@@ -981,37 +982,59 @@ function aiReviewRan(matter = state.selectedMatter) {
 function renderReviewRefreshNotice(refresh = state.selectedMatter?.review_refresh || null) {
   const stale = reviewMayBeStale(state.selectedMatter, refresh);
   const message = stale ? staleReviewMessage(refresh || state.selectedMatter?.review_refresh) : "";
-  // The "Review may be stale" indicator stays gated on the stale signal -- it is a
-  // warning, only meaningful when the stored review may no longer be current.
+  // Progressive disclosure: "stale" implies the matter WAS reviewed and has since
+  // drifted, so it is only honest once an AI review has actually run. The broad
+  // reviewMayBeStale() check ALSO fires on an UNREVIEWED matter (the open path sets
+  // review_may_be_stale to flag "no AI review yet"), which would mislabel it. Layer
+  // the ai_review_ran gate ON TOP: on an unreviewed matter relabel the indicator
+  // "Not reviewed" (reusing the corpus "Not reviewed" badge wording) instead of
+  // "Review may be stale". Safe fallback when ai_review_ran is absent: aiReviewRan()
+  // -> hasReviewResults(), i.e. the current/reviewed behavior, so old payloads/
+  // fixtures are unchanged.
+  const reviewed = aiReviewRan();
   if (studioReviewStaleIndicator) {
-    studioReviewStaleIndicator.hidden = !stale;
-    studioReviewStaleIndicator.title = message;
+    if (!reviewed) {
+      // Unreviewed: surface the honest "Not reviewed" state, not a stale warning.
+      studioReviewStaleIndicator.hidden = false;
+      studioReviewStaleIndicator.textContent = "Not reviewed";
+      studioReviewStaleIndicator.title = "No AI review has run on this NDA yet. Use Review to run it.";
+    } else {
+      // Reviewed: the "Review may be stale" warning is meaningful again, and stays
+      // gated on the genuine staleness signal.
+      studioReviewStaleIndicator.hidden = !stale;
+      studioReviewStaleIndicator.textContent = "Review may be stale";
+      studioReviewStaleIndicator.title = message;
+    }
   }
   if (!studioRefreshReviewButton) return;
-  // This button is an always-available manual action: it runs the AI review on
-  // demand whenever a matter is open, not only when the review is flagged stale.
-  // It is hidden only when there is no loaded matter to act on. The AI run is
-  // explicit/user-initiated, so it is storm-safe (the no-auto-AI-on-open safety
-  // is unaffected).
+  // This button is an always-PRESENT manual action: it runs the AI review on
+  // demand whenever a matter is open. It is hidden only when there is no loaded
+  // matter to act on. The AI run is explicit/user-initiated, so it is storm-safe
+  // (the no-auto-AI-on-open safety is unaffected).
   //
-  // Progressive disclosure: it carries the SAME click handler (review-refresh)
-  // either way, but relabels by whether AI review has actually run. On an
-  // UNREVIEWED matter it is the primary "Review" call-to-action (and Approve /
-  // Send for signature are hidden — nothing to approve or send yet); once a
-  // review has run it becomes "Refresh Review" (re-run) and the downstream
-  // actions appear.
+  // No-jump header: the label is ALWAYS "Review" (no "Review"/"Refresh Review"
+  // relabel) and the button never appears/disappears between states — it only
+  // ENABLES or GRAYS. It is interactive when there is something to review
+  // (UNREVIEWED, or a reviewed-but-STALE matter) and DISABLED/grayed when the
+  // review is already current (reviewed && !stale), since a click would be a
+  // no-op. Safe fallback when ai_review_ran is absent: aiReviewRan() ->
+  // hasReviewResults(), i.e. the current/reviewed behavior.
   const reviewLoaded = Boolean(state.selectedMatter?.id) && state.reviewClauses.length > 0;
-  const reviewed = aiReviewRan();
+  // `reviewed` is already resolved above (aiReviewRan()) for the stale indicator.
+  // Actionable when not yet reviewed, or reviewed-but-stale (something to re-run).
+  const actionable = !reviewed || stale;
   studioRefreshReviewButton.hidden = !reviewLoaded;
-  studioRefreshReviewButton.disabled = false;
-  // The unreviewed state is the primary call-to-action; reuse the existing amber
-  // pill styling (the "Review" vs "Refresh Review" label carries the state) and
-  // tag it with a hook class without overriding the pill's own border/colour.
-  studioRefreshReviewButton.classList.toggle("studio-review-cta", reviewLoaded && !reviewed);
-  studioRefreshReviewButton.textContent = reviewed ? "Refresh Review" : "Review";
-  studioRefreshReviewButton.title = reviewed
-    ? (stale ? message : "Re-run the AI review against the active Playbook.")
-    : "Run the AI review against the active Playbook.";
+  // Disabled (grayed via the global button:disabled rule) when the review is
+  // current and there is nothing to do; the .is-refreshing class still drives the
+  // in-flight spinner/disabled state during an actual run.
+  studioRefreshReviewButton.disabled = !reviewLoaded || !actionable;
+  studioRefreshReviewButton.setAttribute("aria-disabled", String(!reviewLoaded || !actionable));
+  studioRefreshReviewButton.textContent = "Review";
+  studioRefreshReviewButton.title = !reviewed
+    ? "Run the AI review against the active Playbook."
+    : stale
+      ? message
+      : "Review is current — re-run is unnecessary.";
 }
 
 function staleReviewMessage(refresh, fallback = "Review is stale. Refresh the review before exporting or sending.") {
@@ -1229,13 +1252,26 @@ function updateApproveReviewControl() {
   if (!studioApproveReviewButton) return;
   const matter = state.selectedMatter;
   const hasReview = hasReviewResults();
-  // Progressive disclosure: there is nothing to approve until an AI review has
-  // actually run, so layer the ai_review_ran gate ON TOP OF the existing
-  // has-review/matter gate (it adds a hide condition, never removes one).
   const reviewed = aiReviewRan(matter);
   const approved = isMatterApproved(matter);
-  studioApproveReviewButton.hidden = !(hasReview && matter?.id && reviewed);
-  if (!hasReview || !matter?.id || !reviewed) {
+  // No-jump header: keep "Approve Review" PRESENT for any loaded matter that has a
+  // review pipeline, so it never appears/disappears between states. It is hidden
+  // only when there is no matter / no review context to act on at all.
+  studioApproveReviewButton.hidden = !(hasReview && matter?.id);
+  if (!hasReview || !matter?.id) {
+    return;
+  }
+  // Until an AI review has actually run there is nothing to approve, so GRAY the
+  // button (present but disabled) rather than hiding it. Layer the ai_review_ran
+  // gate ON TOP of the existing approved/blocked gates. Safe fallback when
+  // ai_review_ran is absent: aiReviewRan() -> hasReviewResults() (enabled).
+  if (!reviewed) {
+    studioApproveReviewButton.disabled = true;
+    studioApproveReviewButton.classList.remove("approved", "blocked");
+    studioApproveReviewButton.textContent = "Approve Review";
+    studioApproveReviewButton.title = "Run the AI review before approving.";
+    studioApproveReviewButton.setAttribute("aria-disabled", "true");
+    renderApproveBlockReasons([]);
     return;
   }
   if (approved) {

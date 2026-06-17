@@ -3648,23 +3648,26 @@ async function testStaleReviewRefreshWiring(page) {
   await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
   await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#reviewView:not([hidden])");
-  // Opening the matter shows the stale indicator + the Refresh Review button
-  // (the matter already carries a stored review, so the button is the "Refresh
-  // Review" re-run, not the unreviewed "Review" call-to-action), and does NOT run
-  // the AI (no /review-refresh POST yet).
+  // Opening the matter shows the stale indicator + the always-present "Review"
+  // button. No-jump header: the button label is ALWAYS "Review" (no
+  // "Review"/"Refresh Review" relabel); because this reviewed matter is stale it is
+  // ENABLED (there is something to re-run). Opening does NOT run the AI (no
+  // /review-refresh POST yet).
   await page.waitForSelector("#studioReviewStaleIndicator:not([hidden])");
   await page.waitForSelector("#studioRefreshReviewButton:not([hidden])");
   await assertTextContains(page.locator("#studioReviewStaleIndicator"), "Review may be stale");
-  await assertTextContains(page.locator("#studioRefreshReviewButton"), "Refresh Review");
+  await assertTextContains(page.locator("#studioRefreshReviewButton"), "Review");
+  assert.equal(await page.locator("#studioRefreshReviewButton").isEnabled(), true);
   assert.equal(refreshCount, 0);
 
   await page.locator("#studioRefreshReviewButton").click();
   await waitForText(page, "#studioFileMeta", "Review refreshed against the active Playbook.");
-  // The Refresh Review button is an always-available manual re-run on a reviewed
-  // matter, so it stays VISIBLE (labeled "Refresh Review") after a non-stale
-  // refresh; only the stale indicator clears.
+  // No-jump header: the "Review" button stays PRESENT (never disappears) and keeps
+  // its label after a non-stale refresh, but GRAYS/disables because the review is
+  // now current (nothing to re-run); the stale indicator clears.
   await page.waitForSelector("#studioRefreshReviewButton:not([hidden])");
-  await assertTextContains(page.locator("#studioRefreshReviewButton"), "Refresh Review");
+  await assertTextContains(page.locator("#studioRefreshReviewButton"), "Review");
+  await page.waitForSelector("#studioRefreshReviewButton:disabled", { state: "attached" });
   await page.waitForSelector("#studioReviewStaleIndicator[hidden]", { state: "attached" });
   assert.equal(await page.locator("#studioExportButton").isEnabled(), true);
   assert.equal(await page.locator("#studioSendButton").isEnabled(), true);
