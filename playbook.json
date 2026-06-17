@@ -671,7 +671,7 @@
         },
         {
           "label": "exclusivity",
-          "pattern": "\\bexclusiv(?:e|ity)\\b|sole and exclusive|deal exclusively|exclusive right to"
+          "pattern": "sole and exclusive|deal exclusively|exclusive right to|exclusive dealing|exclusivity (?:obligation|arrangement|provision)"
         },
         {
           "label": "ip_assignment",

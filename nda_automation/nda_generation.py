@@ -44,6 +44,7 @@ from typing import Any, Callable, Mapping, Protocol
 from docx import Document
 from docx.document import Document as DocxDocument
 
+from . import telemetry
 from .checks.common import _year_count_label
 from .playbook_runtime import ActivePlaybookBundle
 
@@ -126,85 +127,174 @@ SIGNATURE_ANCHOR_BY_ROLE = {
 }
 
 # --------------------------------------------------------------------------- #
-# Untrusted free-text sanitisation
+# Untrusted free-text validation (purpose / business_description)
 # --------------------------------------------------------------------------- #
 # intake.purpose and intake.business_description are free text from the caller
 # that gets filled verbatim into the recital / [BUSINESS DESCRIPTION] slot. That
-# makes them an injection surface: a caller (or an upstream prompt-injection) can
-# put a prohibited LEGAL POSITION (non-solicit, non-compete, non-circumvention,
-# exclusivity, IP assignment, penalty, perpetual confidentiality), a one-way ask,
-# or a "drafter instruction" into those fields and have it land in the generated
-# NDA. The deterministic clause engine never invents these positions, but it also
-# does nothing to stop tainted free text reaching the document. So we neutralise
-# the offending content at the fill boundary, on every path (deterministic, AI,
-# frozen). Each pattern pairs a label (for the manifest/audit) with a regex over
-# the lowercased field; a hit means the field is replaced with a safe value.
-_PROHIBITED_FREE_TEXT_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
-    ("non_compete", re.compile(r"non-?compete|not\b[^.]{0,40}\bcompete\b|engage in any (?:competing|business that competes)|competing business", re.IGNORECASE)),
-    ("non_solicit", re.compile(r"non-?solicit|\bsolicit(?:s|ing)?\b[^.]{0,20}\b(?:employ|staff|hire|personnel)|(?:not|never|refrain from)[^.]{0,30}\bsolicit|solicit or hire", re.IGNORECASE)),
-    ("non_circumvention", re.compile(r"non-?circumvent|circumvent or bypass|bypass (?:the disclosing party|us)|deal directly with", re.IGNORECASE)),
-    ("exclusivity", re.compile(r"\bexclusiv(?:e|ity)\b|deal exclusively|sole and exclusive", re.IGNORECASE)),
-    ("ip_assignment", re.compile(r"\bassigned? to\b|assignment of (?:all )?intellectual property|all (?:right,? )?title and interest", re.IGNORECASE)),
-    ("penalty", re.compile(r"liquidated damages|\bpenalt(?:y|ies)\b|punitive damages", re.IGNORECASE)),
-    ("perpetual_confidentiality", re.compile(r"in perpetuity|perpetual(?:ly)?\b|indefinitely\b|never expire|forever\b", re.IGNORECASE)),
-    ("one_way", re.compile(r"one-?way nda|binding only (?:on|the) (?:the )?receiving party|only (?:the )?receiving party|we receive only", re.IGNORECASE)),
+# makes them a surface for TWO distinct kinds of bad input, and we handle them
+# DIFFERENTLY:
+#
+#   1. INJECTION (the ``drafter_instruction`` family + a one-way *posture* ask):
+#      text trying to manipulate the drafter / AI ("ignore previous instructions",
+#      "note to drafter", "add a clause", "make this one-way"). This is NOT
+#      legitimate business prose the user expects to keep, so we never let it reach
+#      the document AND we surface a clear validation error rather than silently
+#      rewriting it. The patterns are an injection *defence*, so they stay
+#      hardcoded here (they are not a Playbook legal position).
+#
+#   2. PROHIBITED LEGAL POSITION (non_compete, non_solicit, non_circumvention,
+#      exclusivity, ip_assignment, penalty, perpetual_confidentiality, ...): a real
+#      off-position legal restraint asked for in the recital. These are sourced
+#      from the PLAYBOOK (the single source of truth) via
+#      ``prohibited_positions.PROHIBITED_POSITION_PATTERNS`` -- no divergent
+#      hardcoded legal-position list lives here any more. We FLAG-AND-SURFACE: a
+#      clear 400 naming the field and the position so the user can rephrase, rather
+#      than silently substituting safe boilerplate (which let the signed NDA recite
+#      something different from what the user typed).
+#
+# Both kinds raise :class:`FreeTextValidationError` (an ``NdaGenerationError``
+# subclass the generate route already turns into a 400). The audit trail is kept
+# via a telemetry counter per kind and the flagged field/family carried on the
+# raised exception -- generation aborts before a manifest exists, so there is no
+# silent rewrite to record on the document.
+
+# INJECTION patterns -- hardcoded here because they are an injection defence, not a
+# Playbook legal position. ``drafter_instruction`` is prompt-injection; ``one_way``
+# is a posture-manipulation ask (the engine only emits the mutual template, so a
+# free-text "make this one-way" is an attempt to steer the document, not a clause
+# the Playbook models).
+_INJECTION_FREE_TEXT_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
     ("drafter_instruction", re.compile(r"ignore (?:all )?(?:prior|previous) instructions|note to drafter|you are drafting|add a clause|do not mention", re.IGNORECASE)),
+    ("one_way", re.compile(r"one-?way nda|binding only (?:on|the) (?:the )?receiving party|only (?:the )?receiving party|we receive only", re.IGNORECASE)),
 )
 
-# Safe neutral replacements when an injection dominates the field. These keep the
-# recital/description on-position and readable rather than blanking the document.
-_SAFE_PURPOSE = "the proposed business relationship between the parties"
-_SAFE_BUSINESS_DESCRIPTION = "its business activities"
+# Plain-language names for the flagged families, used in the user-facing error so
+# the message is actionable rather than a raw label.
+_FREE_TEXT_FAMILY_LABELS: dict[str, str] = {
+    "drafter_instruction": "drafter instruction",
+    "one_way": "one-way posture request",
+    "non_compete": "non-compete",
+    "non_solicit": "non-solicit",
+    "non_circumvention": "non-circumvention",
+    "exclusivity": "exclusivity",
+    "ip_assignment": "IP assignment",
+    "penalty": "penalty / liquidated damages",
+    "perpetual_confidentiality": "perpetual confidentiality",
+    "auto_renew_lock": "auto-renewal lock",
+}
 
 
-def sanitize_free_text(value: str, *, field_name: str, fallback: str) -> tuple[str, str]:
-    """Neutralise untrusted free text before it is filled into the document.
-
-    Returns ``(safe_value, note)``: when the input carries a prohibited position,
-    a one-way ask, or a drafter instruction, the whole field is replaced with the
-    safe ``fallback`` (surgical excision of a span risks leaving a half-sentence
-    that still reads as a position, so we substitute the field wholesale) and a
-    note like ``"purpose: replaced injected content (non_solicit)"`` is returned
-    for the manifest. Clean input passes through unchanged with an empty note.
-    """
-
-    text = str(value or "").strip()
-    if not text:
-        return fallback, ""
-    hits = [label for label, pattern in _PROHIBITED_FREE_TEXT_PATTERNS if pattern.search(text)]
-    if not hits:
-        return text, ""
-    note = f"{field_name}: replaced injected content ({', '.join(sorted(set(hits)))})"
-    return fallback, note
+def _family_label(label: str) -> str:
+    return _FREE_TEXT_FAMILY_LABELS.get(label, label.replace("_", " "))
 
 
-def _sanitize_intake(intake: "CounterpartyIntake", manifest: "GenerationManifest") -> "CounterpartyIntake":
-    """Return an intake whose free-text fields are safe to fill into the document.
+def detect_injection(text: str) -> str:
+    """Return the first injection family label found in ``text``, or "".
 
-    Only the two free-text slots that flow into prose (purpose, business
-    description) are sanitised; identity fields (names/addresses) are filled into
-    structured slots and checked by the entity gate, not the position scan. Any
-    neutralisation is recorded on the manifest so it is auditable downstream.
-    """
+    Injection = a drafter instruction or a one-way posture ask. Hardcoded defence,
+    deliberately kept separate from the Playbook legal-position scan."""
+    clean = str(text or "").strip()
+    if not clean:
+        return ""
+    for label, pattern in _INJECTION_FREE_TEXT_PATTERNS:
+        if pattern.search(clean):
+            return label
+    return ""
 
-    safe_purpose, purpose_note = sanitize_free_text(
-        intake.purpose, field_name="purpose", fallback=_SAFE_PURPOSE
-    )
-    safe_business, business_note = sanitize_free_text(
-        intake.business_description, field_name="business_description", fallback=_SAFE_BUSINESS_DESCRIPTION
-    )
-    for note in (purpose_note, business_note):
-        if note:
-            manifest.sanitized_fields.append(note)
-    if not purpose_note and not business_note:
-        return intake
-    from dataclasses import replace  # noqa: PLC0415
 
-    return replace(intake, purpose=safe_purpose, business_description=safe_business)
+def detect_prohibited_position(text: str) -> str:
+    """Return the first prohibited legal-position family in ``text``, or "".
+
+    Sourced from the Playbook via ``prohibited_positions`` so this scan and the
+    ship gate / adapter guard can never drift apart."""
+    clean = str(text or "").strip()
+    if not clean:
+        return ""
+    from .prohibited_positions import first_prohibited_position  # noqa: PLC0415
+
+    return first_prohibited_position(clean)
 
 
 class NdaGenerationError(ValueError):
     """Raised when generation inputs are invalid or the template is malformed."""
+
+
+class FreeTextValidationError(NdaGenerationError):
+    """Raised when a free-text intake field (purpose / business_description) carries
+    an injection attempt or a prohibited legal position.
+
+    A subclass of :class:`NdaGenerationError` so the generate route already turns it
+    into a 400 ``{"error": ...}`` with a clear, field-scoped message -- the user is
+    told their wording was rejected and why, instead of having it silently rewritten.
+    Carries the flagged ``field_name``, ``family`` (the raw label) and ``kind``
+    (``"injection"`` | ``"position"``) for telemetry / audit.
+    """
+
+    def __init__(self, message: str, *, field_name: str = "", family: str = "", kind: str = "") -> None:
+        super().__init__(message)
+        self.field_name = field_name
+        self.family = family
+        self.kind = kind
+
+
+def _validate_free_text(value: str, *, field_name: str) -> None:
+    """Validate one free-text field; raise if it is unsafe to fill verbatim.
+
+    Raises :class:`FreeTextValidationError` (-> 400) when the field carries an
+    injection attempt or a prohibited legal position, recording an audit telemetry
+    counter for the flagged kind. Clean input returns ``None``. Identity fields are
+    NOT scanned here (they are structured slots, validated by
+    :func:`validate_intake_identity_fields` and the entity gate)."""
+
+    text = str(value or "").strip()
+    if not text:
+        return
+
+    injection = detect_injection(text)
+    if injection:
+        telemetry.increment("generate_nda_free_text_injection_blocked")
+        raise FreeTextValidationError(
+            f"The {field_name} field contains content that cannot be included "
+            f"({_family_label(injection)}). Please rephrase using plain business language.",
+            field_name=field_name,
+            family=injection,
+            kind="injection",
+        )
+
+    position = detect_prohibited_position(text)
+    if position:
+        telemetry.increment("generate_nda_free_text_position_flagged")
+        raise FreeTextValidationError(
+            f"The {field_name} field describes a prohibited position "
+            f"({_family_label(position)}). Please revise the wording or remove it.",
+            field_name=field_name,
+            family=position,
+            kind="position",
+        )
+
+
+def _validate_intake_free_text(intake: "CounterpartyIntake") -> None:
+    """Validate the free-text intake fields before they are filled into the document.
+
+    FLAG-AND-SURFACE (replacing the old silent-replace): the two free-text slots
+    that flow into prose (purpose, business description) are scanned for an injection
+    attempt or a prohibited legal position, and a hit raises
+    :class:`FreeTextValidationError` (a 400 to the caller) naming the field and the
+    flagged family -- the user's typed wording is NEVER silently substituted, so a
+    generated/signed NDA can never recite something different from what they typed.
+    Identity fields (names/addresses) are filled into structured slots and checked by
+    the entity gate, not the position scan. Returns ``None`` when the intake is clean;
+    the audit trail for a flag is the telemetry counter + the raised exception's
+    ``field_name`` / ``family`` (no document/manifest is produced for a flagged
+    intake)."""
+
+    # purpose first so its error wins when both are dirty (it is the primary recital
+    # field). Each raises on the first flagged family.
+    for value, field_name in (
+        (intake.purpose, "purpose"),
+        (intake.business_description, "business_description"),
+    ):
+        _validate_free_text(value, field_name=field_name)
 
 
 # The counterparty identity fields the caller supplies via intake. Unlike the
@@ -545,10 +635,12 @@ def generate_nda(
         entity_address_id=entity.registered_office_address_id,
     )
 
-    # Neutralise untrusted free text BEFORE it reaches either the document fills
-    # or the AI adapter context, so an injected prohibited position / one-way ask
-    # / drafter instruction can never land in the recital or steer the adapter.
-    intake = _sanitize_intake(intake, manifest)
+    # Validate untrusted free text BEFORE it reaches either the document fills or
+    # the AI adapter context, so an injected drafter-instruction / one-way ask or a
+    # prohibited legal position can never land in the recital or steer the adapter.
+    # A hit raises FreeTextValidationError (-> 400) rather than silently rewriting
+    # the user's wording; nothing is filled and no document is produced.
+    _validate_intake_free_text(intake)
 
     _fill_variable_slots(document, entity, intake, agreement_date, manifest)
 

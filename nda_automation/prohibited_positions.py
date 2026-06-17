@@ -47,7 +47,11 @@ _FALLBACK_PROHIBITED_POSITION_PATTERN_SOURCES: tuple[tuple[str, str], ...] = (
     # hire" and a bare "shall/agree to solicit".
     ("non_solicit", r"non-?solicit|(?:shall|will|may|agree|agrees|undertake|undertakes)\b[^.]{0,25}\bnot\b[^.]{0,25}\bsolicit|(?:shall|will|may|agrees?)\b[^.]{0,15}\bsolicit|refrain from soliciting|solicit or hire"),
     ("non_circumvention", r"non-?circumvent|shall not circumvent|circumvent or bypass|bypass the disclosing party|\bdeal\s+directly\b|introduced\s+part"),
-    ("exclusivity", r"\bexclusiv(?:e|ity)\b|sole and exclusive|deal exclusively|exclusive right to"),
+    # Tightened: the bare ``\bexclusiv(?:e|ity)\b`` over-blocked benign business
+    # adjectives ("exclusive distribution partnership"). Require a positional /
+    # obligational context so a real exclusivity RESTRAINT still trips, an adjective
+    # does not. Kept byte-equal to the Playbook's authored pattern.
+    ("exclusivity", r"sole and exclusive|deal exclusively|exclusive right to|exclusive dealing|exclusivity (?:obligation|arrangement|provision)"),
     ("ip_assignment", r"hereby assigns?\b|assignment of (?:all )?intellectual property|all (?:right,? )?title and interest in"),
     ("perpetual_confidentiality", r"in perpetuity|perpetual(?:ly)?\b|indefinitely\b|never expire|forever\b|for an unlimited (?:time|period)"),
     ("penalty", r"liquidated damages|penalty of|penalt(?:y|ies)\b|punitive damages"),

@@ -122,8 +122,14 @@ AI_ASSESSMENT_STUB_ENV = "NDA_AI_ASSESSMENT_STUB"
 # Paragraph language that marks a prohibited non-circumvention / introduced-party
 # / exclusive-dealing restriction — the same kinds the dynamic non_circumvention
 # clause exists to remove. Mirrors the prohibited intent, not the engine's matcher.
+# The exclusivity alternative is positional (mirroring the tightened Playbook
+# pattern) rather than a bare ``exclusiv`` substring, so a benign business adjective
+# in the recital ("exclusive distribution partnership") does not trip this stub
+# while a real exclusive-dealing RESTRAINT ("deal exclusively", "sole and
+# exclusive") still does.
 _STUB_PROHIBITED_PATTERN = re.compile(
-    r"circumvent|introduced part|deal directly|non-?solicit|exclusiv|"
+    r"circumvent|introduced part|deal directly|non-?solicit|"
+    r"deal exclusively|sole and exclusive|exclusive right to|exclusive dealing|"
     r"(?:hire|recruit|poach|retain).{0,80}introduced|introduced.{0,80}(?:hire|recruit|poach|retain)",
     re.IGNORECASE,
 )
