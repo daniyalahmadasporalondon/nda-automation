@@ -121,6 +121,12 @@ BOARD_INBOX = "gmail_demo"
 BOARD_IN_REVIEW = "in_review"
 BOARD_REVIEWED = "reviewed"
 BOARD_SENT = "sent"
+# Terminal, off-board state. An EXECUTED (fully-signed, 2/2) matter is done work
+# and drops OFF the active board entirely -- it belongs to no kanban column. The
+# rollup emits this sentinel ("") for executed matters and the board endpoint
+# excludes them. A HALF-signed (1/2, not executed) matter is NOT terminal: it is
+# still active outbound work and stays in BOARD_SENT.
+BOARD_NONE = ""
 # Legacy board columns the frontend still canonicalizes (redline_ready->reviewed,
 # signed_closed->sent). We never emit these from the rollup; we only tolerate
 # them as an existing board_column when deriving the phase.
@@ -256,10 +262,23 @@ def _derive_phase_and_status(
 
 # ---- per-phase status derivation -----------------------------------------
 
-def _is_executed(matter: Dict[str, Any]) -> bool:
+def is_matter_executed(matter: Dict[str, Any]) -> bool:
+    """Public predicate: is this matter EXECUTED (fully-signed, 2/2, work done)?
+
+    The shared contract: a matter is executed when ``matter.executed == true``
+    (status ``fully_signed``), set by DocuSign completion or a manual mark. The
+    board endpoint uses this to drop executed matters off the WIP board. A
+    half-signed (1/2) matter never sets this flag, so it stays on the board.
+    """
+    if not isinstance(matter, dict):
+        return False
     if _truthy(matter.get("executed")) or matter.get("executed_at"):
         return True
     return _phase_marker(matter) == PHASE_EXECUTED
+
+
+def _is_executed(matter: Dict[str, Any]) -> bool:
+    return is_matter_executed(matter)
 
 
 def _negotiation_status(matter: Dict[str, Any]) -> str | None:
@@ -445,7 +464,14 @@ def board_column_for(phase: str, status: str, matter: Dict[str, Any]) -> str:
     failed matter stays visible where it already was. Inbox (gmail_demo) is the
     raw-arrival column for un-reviewed gmail imports; once a matter is being
     reviewed it moves to in_review.
+
+    An EXECUTED (fully-signed) matter is terminal work-done: it resolves to the
+    off-board sentinel (BOARD_NONE) and the board endpoint drops it. The board is
+    WIP only, so a finished matter leaves it. A half-signed (sent, not executed)
+    matter is still active and rolls up to BOARD_SENT below.
     """
+    if phase == PHASE_EXECUTED:
+        return BOARD_NONE
     if status in FAILURE_STATUSES:
         # Keep the matter in the column it already occupied; fall back to the
         # phase rollup if no usable board_column is recorded.
@@ -463,7 +489,7 @@ def board_column_for(phase: str, status: str, matter: Dict[str, Any]) -> str:
         return BOARD_IN_REVIEW
     if phase == PHASE_APPROVAL:
         return BOARD_REVIEWED
-    if phase in (PHASE_SENT, PHASE_NEGOTIATION, PHASE_EXECUTED):
+    if phase in (PHASE_SENT, PHASE_NEGOTIATION):
         return BOARD_SENT
     return _canonical_board(matter.get("board_column")) or BOARD_IN_REVIEW
 

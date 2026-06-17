@@ -827,7 +827,11 @@ def _build_app_state_matters(repository, owner_user_id: str) -> dict[str, dict[s
             # Workflow axis = the Repository board column (FE renders it via
             # RepositoryModel.boardColumnLabel). The dead 6-phase phase_label is
             # NOT surfaced; "On file" is a SOURCE state, not a workflow status.
-            "status": str(state.get("board_column") or ""),
+            # An EXECUTED matter rolls up to the off-board sentinel (board_column
+            # == ""), so it leaves the WIP board -- but the corpus is the full
+            # archive and still lists it. Fall back to the workflow phase
+            # ("executed") so its corpus status reads correctly instead of blank.
+            "status": str(state.get("board_column") or state.get("phase") or ""),
             "source": SOURCE_APP,
             "in_app": True,
             "open_matter_url": _open_matter_url(matter_id),

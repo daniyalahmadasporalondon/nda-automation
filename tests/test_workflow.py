@@ -295,14 +295,50 @@ class BoardRollupTests(unittest.TestCase):
         state = workflow_state({"extracted_text": "x", "status": "approved", "approved_at": "2026-01-01"})
         self.assertEqual(state["board_column"], BOARD_REVIEWED)
 
-    def test_sent_and_negotiation_and_executed_roll_up_to_sent(self):
+    def test_sent_and_negotiation_roll_up_to_sent(self):
+        # A half-signed / outbound matter (and a counter-received negotiation) is
+        # still ACTIVE work, so it rolls up to the Sent column.
         for matter in (
             {"extracted_text": "x", "last_outbound_at": "2026-01-02"},
             {"extracted_text": "x", "last_outbound_at": "2026-01-02", "counter_received": True},
-            {"extracted_text": "x", "executed_at": "2026-01-03"},
         ):
             with self.subTest(matter=matter):
                 self.assertEqual(workflow_state(matter)["board_column"], BOARD_SENT)
+
+    def test_executed_rolls_off_the_board(self):
+        # An EXECUTED (fully-signed, 2/2) matter is done work and drops OFF the
+        # WIP board entirely: it resolves to the terminal off-board sentinel
+        # (board_column == ""), not to any active column. This holds even when it
+        # still carries its old outbound/sent stamps.
+        for matter in (
+            {"extracted_text": "x", "executed_at": "2026-01-03"},
+            {"extracted_text": "x", "executed": True},
+            {
+                "extracted_text": "x",
+                "last_outbound_at": "2026-01-02",
+                "board_column": "sent",
+                "executed_at": "2026-01-03",
+            },
+        ):
+            with self.subTest(matter=matter):
+                state = workflow_state(matter)
+                self.assertEqual(state["phase"], PHASE_EXECUTED)
+                self.assertEqual(state["board_column"], workflow.BOARD_NONE)
+                self.assertEqual(state["board_column"], "")
+
+    def test_half_signed_matter_stays_in_sent(self):
+        # A half-signed (1/2) matter never sets executed, so it stays on the
+        # board in Sent as active outbound work.
+        matter = {"extracted_text": "x", "last_outbound_at": "2026-01-02"}
+        self.assertFalse(workflow.is_matter_executed(matter))
+        self.assertEqual(workflow_state(matter)["board_column"], BOARD_SENT)
+
+    def test_is_matter_executed_predicate(self):
+        self.assertTrue(workflow.is_matter_executed({"executed": True}))
+        self.assertTrue(workflow.is_matter_executed({"executed_at": "2026-01-03"}))
+        self.assertFalse(workflow.is_matter_executed({"last_outbound_at": "2026-01-02"}))
+        self.assertFalse(workflow.is_matter_executed({}))
+        self.assertFalse(workflow.is_matter_executed(None))
 
     def test_legacy_board_columns_canonicalize(self):
         self.assertEqual(workflow._canonical_board("redline_ready"), BOARD_REVIEWED)

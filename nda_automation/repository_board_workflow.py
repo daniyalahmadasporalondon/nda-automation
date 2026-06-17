@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import document_rendering, matter_view
+from . import document_rendering, matter_view, workflow
 from .matter_repository import MatterRepository, MatterRepositoryError
 
 BOARD_COLUMNS = {"gmail_demo", "in_review", "reviewed", "sent"}
@@ -33,7 +33,13 @@ class RepositoryBoardWorkflow:
             matters = self._repository.list_matters(owner_user_id)
         except MatterRepositoryError as error:
             raise _repository_error(error) from error
-        return {"matters": matter_view.public_matters(matters)}
+        # The board is work-in-progress only. An EXECUTED (fully-signed, 2/2)
+        # matter is done and drops OFF the board entirely -- it is not bucketed
+        # into any column. A half-signed (1/2, not executed) matter stays (it is
+        # still active outbound work in Sent). Executed is the shared
+        # matter.executed == true contract; see workflow.is_matter_executed.
+        active = [m for m in matters if not workflow.is_matter_executed(m)]
+        return {"matters": matter_view.public_matters(active)}
 
     def detail_card(self, matter_id: str | None, *, owner_user_id: str = "") -> dict[str, Any]:
         matter = self._matter_or_not_found(matter_id, owner_user_id=owner_user_id)

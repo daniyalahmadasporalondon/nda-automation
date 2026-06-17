@@ -55,6 +55,25 @@ const RepositoryModel = (() => {
     return LEGACY_BOARD_COLUMN_IDS[boardColumn] || "gmail_demo";
   }
 
+  function isMatterExecuted(matter) {
+    // Shared contract: a matter is EXECUTED (fully-signed, 2/2, work done) when
+    // matter.executed === true (workflow status "fully_signed" / phase
+    // "executed"), set by DocuSign completion or a manual mark. An executed
+    // matter is dropped from the WIP board -- it belongs to no column. A
+    // half-signed (1/2, not executed) matter never trips this, so it stays in
+    // Sent. The backend already excludes executed matters from the board
+    // payload; this is the frontend backstop so a stale/cached executed matter
+    // is never bucketed into a column either.
+    if (!matter || typeof matter !== "object") return false;
+    if (matter.executed === true) return true;
+    const workflowState = matter.workflow_state;
+    if (workflowState && typeof workflowState === "object") {
+      if (workflowState.phase === "executed") return true;
+      if (workflowState.status === "fully_signed") return true;
+    }
+    return false;
+  }
+
   function matterColumn(matter) {
     const boardColumn = canonicalBoardColumn(matter?.board_column);
     // A manual upload is STORED as "in_review" and normally displayed back as
@@ -169,6 +188,7 @@ const RepositoryModel = (() => {
     counterpartyNeedsConfirmation,
     formatMatterDate,
     formatMatterDateTime,
+    isMatterExecuted,
     manualUploadSubmissionColumn,
     matterColumn,
     matterColumnLabel,

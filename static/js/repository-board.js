@@ -23,9 +23,15 @@ const RepositoryBoard = (() => {
     if (!gmailDemoMatterList) return;
     const mattersByColumn = new Map(RepositoryModel.BOARD_COLUMNS.map((column) => [column.id, []]));
     const query = normalizeSearchText(searchQuery);
-    state.matters.filter((matter) => matterMatchesSearch(matter, query)).forEach((matter) => {
-      mattersByColumn.get(RepositoryModel.matterColumn(matter)).push(matter);
-    });
+    // The board is WIP only: an EXECUTED (fully-signed) matter is done and drops
+    // off the board, so it is never bucketed into a column. The backend already
+    // excludes it from the payload; this is the frontend backstop.
+    state.matters
+      .filter((matter) => !RepositoryModel.isMatterExecuted(matter))
+      .filter((matter) => matterMatchesSearch(matter, query))
+      .forEach((matter) => {
+        mattersByColumn.get(RepositoryModel.matterColumn(matter)).push(matter);
+      });
     mattersByColumn.forEach((matters) => matters.sort(RepositoryModel.compareMatterRecency));
     document.querySelectorAll("[data-repository-count]").forEach((count) => {
       count.textContent = String(mattersByColumn.get(count.dataset.repositoryCount)?.length || 0);
