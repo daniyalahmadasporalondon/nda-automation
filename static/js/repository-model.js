@@ -9,6 +9,10 @@ const RepositoryModel = (() => {
   ];
   const MANUAL_UPLOAD_COLUMN_ID = "manual_upload";
   const MANUAL_UPLOAD_STORAGE_COLUMN_ID = "in_review";
+  // The raw arrival columns a matter sits in BEFORE any AI review runs. An
+  // AI-reviewed matter must escape these and advance to "In Review"; the later
+  // columns (in_review/reviewed/sent) are never pulled backward.
+  const INTAKE_COLUMN_IDS = new Set(["manual_upload", "gmail_demo", "generated"]);
   const BOARD_COLUMN_IDS = new Set(BOARD_COLUMNS.map((column) => column.id));
   const LEGACY_BOARD_COLUMN_IDS = {
     redline_ready: "reviewed",
@@ -53,7 +57,21 @@ const RepositoryModel = (() => {
 
   function matterColumn(matter) {
     const boardColumn = canonicalBoardColumn(matter?.board_column);
-    if (matter?.source_type === "manual_upload" && boardColumn === MANUAL_UPLOAD_STORAGE_COLUMN_ID) {
+    // A manual upload is STORED as "in_review" and normally displayed back as
+    // "Upload" (the remap below). Treat that displayed-as-Upload state as an
+    // intake column for the advance check, so an AI-reviewed upload escapes
+    // "Upload" too.
+    const isUploadDisplay =
+      matter?.source_type === "manual_upload" && boardColumn === MANUAL_UPLOAD_STORAGE_COLUMN_ID;
+    // Forward-only advance: once an AI review has run, an intake matter (Upload /
+    // Inbox / Generated) jumps to "In Review", regardless of source. This OVERRIDES
+    // the manual-upload remap below so AI-reviewed uploads escape "Upload" too. We
+    // only advance intake columns -- reviewed/sent (and an already-in_review
+    // non-upload matter) are left untouched, so nothing is ever pulled backward.
+    if (matter?.ai_review_ran === true && (INTAKE_COLUMN_IDS.has(boardColumn) || isUploadDisplay)) {
+      return "in_review";
+    }
+    if (isUploadDisplay) {
       return MANUAL_UPLOAD_COLUMN_ID;
     }
     return boardColumn;
