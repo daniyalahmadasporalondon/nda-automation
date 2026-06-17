@@ -84,12 +84,11 @@ function htmlEscape(value) {
 // "overview" is FIRST so it is the default sub-tab (normalizeReviewInspectorView
 // falls back to REVIEW_INSPECTOR_VIEWS[0]); it composes the Facts/Roster/Footer
 // at-a-glance pane.
-const REVIEW_INSPECTOR_VIEWS = ["overview", "clause", "structure", "fill"];
+const REVIEW_INSPECTOR_VIEWS = ["overview", "clause", "structure"];
 const REVIEW_INSPECTOR_TITLES = {
   overview: "Overview",
   clause: "Selected Clause",
   structure: "Contract Structure",
-  fill: "Fill Blanks",
 };
 let pendingReviewSendMatterId = null;
 let authSessionController;
@@ -439,9 +438,29 @@ const playbookController = createPlaybookController({
 // counterparty confirm/override, Approve, Send-for-signature, reviewed sign-off,
 // AI refresh). The three component renderers (renderOverviewFacts / Roster /
 // Footer) are bridged onto window by their own files, folded in by the integrator.
+// The Fill (Aspora-entity) tool now lives INSIDE the merged Overview pane rather
+// than in its own inspector tab. It paints into a persistent standalone <section>
+// (created once here, never re-created) that the Overview controller relocates
+// into the bottom of the merged pane on every render. Keeping a single stable
+// element alive across re-renders preserves the Fill controller's bound handlers
+// and per-candidate working state — its render() only touches this element's own
+// innerHTML/querySelector, so it does not need to be document-attached to build.
+const reviewFillSection = document.createElement("section");
+reviewFillSection.className = "ov-section ov-section-fill";
 const reviewOverviewController = createOverviewController({
   state,
   root: studioDetailPanel,
+  // The merged pane folds the existing Fill/Aspora tool in below the Overview
+  // summary. The Overview controller appends this persistent section, then asks
+  // the Fill controller (untouched) to paint into it.
+  fillSection: reviewFillSection,
+  renderFill: () => {
+    if (typeof reviewFillController !== "undefined"
+      && reviewFillController
+      && typeof reviewFillController.render === "function") {
+      reviewFillController.render();
+    }
+  },
 });
 const reviewStructureController = createContractStructureController({
   state,
@@ -456,7 +475,12 @@ const reviewStructureController = createContractStructureController({
 // generator's entity picker uses.
 const reviewFillController = createFillController({
   state,
-  root: studioDetailPanel,
+  // Render into the persistent merged-pane section (see reviewFillSection above)
+  // instead of the whole inspector panel, so the Overview summary above it
+  // survives. review-fill.js is UNCHANGED — it still only uses this root's own
+  // innerHTML/querySelector. Export wiring (currentReviewFills) + the document
+  // highlight hook are unaffected by where this element is mounted.
+  root: reviewFillSection,
   // Re-render the document viewer + source after a CLEAN fill mutates paragraph
   // text/baseline, so the filled text is immediately visible.
   rerenderDocument: () => {

@@ -111,12 +111,12 @@ function renderStudioEmpty() {
   resetReviewEditHistory();
   if (state.reviewInspectorView === "overview") {
     // The Overview controller renders its own "No review yet" empty state when no
-    // AI review has run, so it owns the pane here too.
+    // AI review has run, so it owns the pane here too. The merged Overview pane
+    // also relocates + renders the Fill (Aspora-entity) tool into its bottom
+    // section, so there is no separate "fill" branch any more.
     reviewOverviewController.render();
   } else if (state.reviewInspectorView === "structure") {
     reviewStructureController.render();
-  } else if (state.reviewInspectorView === "fill") {
-    reviewFillController.render();
   } else {
     studioDetailPanel.innerHTML = "";
   }
@@ -1423,15 +1423,13 @@ function highlightSelectedClauseRefs() {
 function renderStudioDetail() {
   updateReviewInspectorTabs();
   if (state.reviewInspectorView === "overview") {
+    // Merged Overview pane: renders the Overview summary AND relocates + renders
+    // the Fill (Aspora-entity) tool into its bottom section. No separate "fill".
     reviewOverviewController.render();
     return;
   }
   if (state.reviewInspectorView === "structure") {
     reviewStructureController.render();
-    return;
-  }
-  if (state.reviewInspectorView === "fill") {
-    reviewFillController.render();
     return;
   }
   const clause = getSelectedReviewClause();
