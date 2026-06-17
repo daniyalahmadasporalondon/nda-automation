@@ -529,10 +529,11 @@ docusignSendController = createDocuSignSendController({
   submitButton: document.querySelector("#docusignSendSubmitButton"),
   triggerButton: document.querySelector("#studioSendForSignatureButton"),
   getMatter: () => state.selectedMatter || null,
-  // Progressive disclosure: hide "Send for signature" on an UNREVIEWED matter
-  // (nothing to send yet). aiReviewRan() reads the ai_review_ran flag with a
-  // clause-presence fallback for old payloads, matching the Approve gate.
-  isTriggerVisible: (matter) => (typeof aiReviewRan === "function" ? aiReviewRan(matter) : true),
+  // No-jump header: "Send for signature" stays PRESENT for any loaded matter and
+  // is GRAYED/disabled (not hidden) on an UNREVIEWED matter — nothing to send yet.
+  // aiReviewRan() reads the ai_review_ran flag with a clause-presence fallback for
+  // old payloads, matching the Approve gate.
+  isTriggerEnabled: (matter) => (typeof aiReviewRan === "function" ? aiReviewRan(matter) : true),
   getAsporaSignatory: () => ({
     name: String(state.personalisationSettings?.signature || "").trim() || "Aspora Legal",
     email: String(state.gmailStatus?.outbound?.email || "").trim(),

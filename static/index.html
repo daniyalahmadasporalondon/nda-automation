@@ -4,10 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260617rw1">
-    <link rel="stylesheet" href="/static/css/repository.css?v=20260617rb1">
+    <link rel="stylesheet" href="/static/styles.css?v=20260617st1">
+    <link rel="stylesheet" href="/static/css/repository.css?v=20260617rb2">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260615r">
-    <link rel="stylesheet" href="/static/css/overview.css?v=20260617ft1">
+    <link rel="stylesheet" href="/static/css/overview.css?v=20260617ovx1">
   </head>
   <body>
     <div class="app-shell">
@@ -469,11 +469,14 @@
                    moved (reviewed-tracking was cut from the Overview scope). -->
               <div class="studio-matter-actions actions" role="group" aria-label="Matter actions">
                 <span id="studioReviewStaleIndicator" class="studio-review-stale-indicator" role="status" aria-live="polite" hidden>Review may be stale</span>
-                <button id="studioRefreshReviewButton" class="studio-refresh-review" type="button" hidden>Refresh with AI</button>
+                <button id="studioRefreshReviewButton" class="studio-refresh-review" type="button" hidden>Review</button>
                 <button id="studioReviewedButton" class="studio-reviewed-btn" type="button" hidden title="Confirm you've checked the flagged clauses — this enables Send Redline">Reviewed</button>
                 <button id="studioApproveReviewButton" class="studio-approve-review" type="button" hidden title="Approve this review">Approve Review</button>
                 <span id="studioSignatureBadge" class="docusign-status-badge" hidden aria-live="polite"></span>
-                <button id="studioSendForSignatureButton" class="studio-send-signature" type="button" hidden title="Send this NDA for e-signature via DocuSign">Send for signature</button>
+                <button id="studioSendForSignatureButton" class="studio-send-signature secondary icon-text" type="button" hidden title="Send this NDA for e-signature via DocuSign">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>
+                  <span>Send for Signature</span>
+                </button>
                 <button id="studioSaveDraftButton" class="secondary" type="button" disabled>Save Draft</button>
                 <button id="studioDiscardDraftButton" class="secondary" type="button" disabled>Reset Draft</button>
                 <button id="studioClearButton" class="secondary" type="button">Clear</button>
@@ -2160,7 +2163,7 @@
     <script src="/static/js/redline-rendering.js?v=20260612c"></script>
     <script src="/static/js/repository-api.js?v=20260616xr1"></script>
     <script src="/static/js/repository-model.js?v=20260615cp1"></script>
-    <script src="/static/js/repository-board.js?v=20260617rb1"></script>
+    <script src="/static/js/repository-board.js?v=20260617rb2"></script>
     <script src="/static/js/repository-send.js?v=20260612c"></script>
     <script src="/static/js/document-download-menu.js?v=20260612c"></script>
     <script src="/static/js/repository-detail.js?v=20260617dv1"></script>
@@ -2177,20 +2180,20 @@
     <script src="/static/js/admin-drive.js?v=20260615j"></script>
     <script src="/static/js/admin-personalisation.js?v=20260611a"></script>
     <script src="/static/js/admin-docusign.js?v=20260615ds1"></script>
-    <script src="/static/js/docusign-send.js?v=20260617rhs1"></script>
+    <script src="/static/js/docusign-send.js?v=20260617sb1"></script>
     <script src="/static/js/contract-structure-view.js?v=20260614b"></script>
     <script src="/static/js/review-fill.js?v=20260617mrg2"></script>
     <!-- Overview inspector sub-tab: the three presentational component renderers
          (bridged onto window) load before the composer that calls them. -->
-    <script src="/static/js/overview/roster.js?v=20260617ov1"></script>
-    <script src="/static/js/overview/footer.js?v=20260617ov1"></script>
-    <script src="/static/js/overview/facts.js?v=20260617ft1"></script>
-    <script src="/static/js/overview/overview-tab.js?v=20260617ft1"></script>
+    <script src="/static/js/overview/roster.js?v=20260617persist1"></script>
+    <script src="/static/js/overview/footer.js?v=20260617persist1"></script>
+    <script src="/static/js/overview/facts.js?v=20260617cp1"></script>
+    <script src="/static/js/overview/overview-tab.js?v=20260617ovx1"></script>
     <script src="/static/js/playbook-draft-runtime.js?v=20260614c"></script>
     <script src="/static/js/playbook-view.js?v=20260614c"></script>
-    <script src="/static/js/review-workstation-actions.js?v=20260617all1"></script>
+    <script src="/static/js/review-workstation-actions.js?v=20260617ush1"></script>
     <script src="/static/js/review-workstation-source.js?v=20260615cp1"></script>
-    <script src="/static/js/review-workstation-rendering.js?v=20260617mrg2"></script>
+    <script src="/static/js/review-workstation-rendering.js?v=20260617ush1"></script>
     <script src="/static/js/review-workstation-format.js?v=20260610d"></script>
     <script src="/static/js/review-workstation-viewer.js?v=20260616xr1"></script>
     <script src="/static/js/viewer-controls.js"></script>
@@ -2199,6 +2202,6 @@
     <script src="/static/js/dashboard-search.js?v=20260614a"></script>
     <script src="/static/js/notifications.js?v=20260615n"></script>
     <script src="/static/js/generator-editor.js?v=20260616dd1"></script>
-    <script src="/static/app.js?v=20260617all1"></script>
+    <script src="/static/app.js?v=20260617ush1"></script>
   </body>
 </html>

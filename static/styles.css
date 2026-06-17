@@ -846,12 +846,14 @@ h3 {
   cursor: pointer;
   display: flex;
   flex: 0 0 auto;
-  font-size: 18px;
-  font-weight: 700;
+  font-size: 16px;
+  font-weight: 600;
   justify-content: center;
   line-height: 1;
   min-height: 38px;
-  width: 38px;
+  min-width: 26px;
+  padding: 0 6px;
+  width: auto;
 }
 
 .term-stepper-btn:hover:not(:disabled) {

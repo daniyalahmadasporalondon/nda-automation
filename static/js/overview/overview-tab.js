@@ -14,10 +14,14 @@
 // the in-memory matter/review state onto their published interfaces and wires
 // their callbacks to the EXISTING review-workstation app logic.
 //
-// EMPTY STATE: before any AI review has run (matter.has_ai_review === false) the
-// roster has nothing to show, so the pane renders an `.ov-empty` "No review yet"
-// block with a "Refresh with AI" button wired to the existing explicit-refresh
-// path (refreshSelectedMatterReview), instead of the roster.
+// PERSISTENT PANE (no appearing/disappearing): the facts -> roster -> footer
+// stack is ALWAYS rendered, even before any AI review has run. Instead of an
+// empty "No review yet" block, pre-review state is shown HONESTLY in place: the
+// roster renders each clause with a muted "Not Reviewed" status (never the
+// deterministic verdict — the no-ghost rule) and the footer's Approve / Send
+// actions render disabled/grayed. `ai_review_ran` is the single flag driving
+// these placeholders; once the review runs, real verdicts + the existing gates
+// take over. Explicit AI refresh stays on the EXISTING header button, not here.
 //
 // Factory returning { render() } that paints into #studioDetailPanel when the
 // Overview sub-tab is active (renderStudioDetail / renderStudioEmpty dispatch).
@@ -108,12 +112,6 @@ function createOverviewController({ state, root, fillSection, renderFill }) {
     callGlobal("submitCounterpartyOverride", value);
   }
 
-  // Explicit AI refresh — the existing endpoint behind the header "Refresh with
-  // AI" button.
-  function onRefresh() {
-    callGlobal("refreshSelectedMatterReview");
-  }
-
   // --- data mapping ----------------------------------------------------------
   // Map the in-memory matter + review state onto the component interfaces. The
   // shapes mirror the finalized backend contract (feat/overview-data): clause
@@ -124,10 +122,11 @@ function createOverviewController({ state, root, fillSection, renderFill }) {
     const matter = state.selectedMatter;
     // Gate verdict surfaces on whether an AI review ACTUALLY ran (ai_review_ran).
     // A deterministic-only matter has has_ai_review=true but ai_review_ran=false,
-    // so renderEmpty()'s "No review yet / Refresh with AI" Pending state fires for
-    // it instead of leaking the deterministic verdict (the last "deterministic
-    // ghost"). Explicit backend flag wins; fall back to "are there any review
-    // clauses" only for matters/fixtures that predate ai_review_ran.
+    // so the roster shows each clause's muted "Not Reviewed" status (and the
+    // footer disables Approve/Send) instead of leaking the deterministic verdict
+    // (the last "deterministic ghost"). Explicit backend flag wins; fall back to
+    // "are there any review clauses" only for matters/fixtures that predate
+    // ai_review_ran.
     if (matter && typeof matter.ai_review_ran === "boolean") return matter.ai_review_ran;
     const hasResults = typeof window !== "undefined" && typeof window.hasReviewResults === "function"
       ? window.hasReviewResults()
@@ -184,6 +183,9 @@ function createOverviewController({ state, root, fillSection, renderFill }) {
         name: String(matter.counterparty || "").trim(),
         confirmed: matter.counterparty_needs_confirmation === false,
       },
+      // The inbound Gmail sender (matter.sender), shown under the counterparty.
+      // Empty for manual uploads -> the facts renderer omits the SENDER line.
+      sender: String(matter.sender || "").trim(),
       facts: {
         governingLaw: matter.governing_law || matter.governing_law_label || "",
         term: matter.term_label || "",
@@ -223,29 +225,6 @@ function createOverviewController({ state, root, fillSection, renderFill }) {
     return { approveDisabled, approveReason };
   }
 
-  // --- empty state -----------------------------------------------------------
-
-  function renderEmpty(container) {
-    container.innerHTML = `
-      <div class="ov-tab ov-tab-empty">
-        <div class="ov-empty" role="status">
-          <p class="ov-empty-title">No review yet</p>
-          <p class="ov-empty-hint">Run the AI review to see clause verdicts, facts, and the approval checklist here.</p>
-          <button type="button" class="ov-empty-refresh" data-ov-action="refresh">Refresh with AI</button>
-        </div>
-      </div>
-    `;
-    const refreshButton = container.querySelector("[data-ov-action='refresh']");
-    if (refreshButton) {
-      refreshButton.addEventListener("click", () => onRefresh());
-    }
-    // The Fill (Aspora-entity) tool scans loaded paragraphs for blanks and is
-    // useful even before any AI review has run, so it stays available below the
-    // empty notice (mirrors the old separate-Fill-tab empty behaviour).
-    const tab = container.querySelector(".ov-tab");
-    mountFillSection(tab);
-  }
-
   // --- compose ---------------------------------------------------------------
 
   function render() {
@@ -258,10 +237,12 @@ function createOverviewController({ state, root, fillSection, renderFill }) {
       return;
     }
 
-    if (!hasAiReview()) {
-      renderEmpty(container);
-      return;
-    }
+    // PERSISTENT pane: the facts -> roster -> footer stack is ALWAYS rendered.
+    // We no longer early-return an empty "No review yet" block when no AI review
+    // has run; instead `aiReviewRan` drives HONEST placeholder states inside the
+    // roster (each clause reads "Not Reviewed") and the footer (Approve / Send
+    // disabled). Absent flag -> reviewed behaviour (the safe fallback).
+    const aiReviewRan = hasAiReview();
 
     container.innerHTML = '<div class="ov-tab"></div>';
     const tab = container.querySelector(".ov-tab");
@@ -302,15 +283,15 @@ function createOverviewController({ state, root, fillSection, renderFill }) {
     mountFillSection(summaryBody);
 
     summaryBody.append(rosterEl, footerEl);
-    composeRoster(rosterEl, clauses);
-    composeFooter(footerEl, footer);
+    composeRoster(rosterEl, clauses, aiReviewRan);
+    composeFooter(footerEl, footer, aiReviewRan);
   }
 
   function composeFacts(el, facts) {
     if (typeof window !== "undefined" && typeof window.renderOverviewFacts === "function") {
       window.renderOverviewFacts(
         el,
-        { counterparty: facts.counterparty, facts: facts.facts },
+        { counterparty: facts.counterparty, sender: facts.sender, facts: facts.facts },
         { onConfirm, onEntityFill },
       );
       return;
@@ -318,11 +299,11 @@ function createOverviewController({ state, root, fillSection, renderFill }) {
     placeholder(el, "Facts", "renderOverviewFacts");
   }
 
-  function composeRoster(el, clauses) {
+  function composeRoster(el, clauses, aiReviewRan) {
     if (typeof window !== "undefined" && typeof window.renderOverviewRoster === "function") {
       window.renderOverviewRoster(
         el,
-        { clauses, currentClauseId: state.selectedReviewClauseId || null },
+        { clauses, currentClauseId: state.selectedReviewClauseId || null, aiReviewRan },
         { onClauseClick },
       );
       return;
@@ -330,11 +311,18 @@ function createOverviewController({ state, root, fillSection, renderFill }) {
     placeholder(el, "Clause roster", "renderOverviewRoster");
   }
 
-  function composeFooter(el, footer) {
+  // Footer is ALWAYS rendered. Before an AI review has run (aiReviewRan===false)
+  // BOTH actions are disabled/grayed — honest "nothing to approve/send yet" — on
+  // top of the EXISTING approve gate (stale-playbook / already-approved). Send is
+  // disabled pre-review too. Once the review has run, the existing gates decide.
+  function composeFooter(el, footer, aiReviewRan) {
     if (typeof window !== "undefined" && typeof window.renderOverviewFooter === "function") {
+      const preReview = aiReviewRan === false;
+      const approveDisabled = preReview || footer.approveDisabled;
+      const approveReason = preReview ? "Run the AI review to approve." : footer.approveReason;
       window.renderOverviewFooter(
         el,
-        { approveDisabled: footer.approveDisabled, approveReason: footer.approveReason },
+        { approveDisabled, approveReason, sendDisabled: preReview },
         { onApprove, onSend },
       );
       return;
