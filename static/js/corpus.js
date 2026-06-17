@@ -52,13 +52,66 @@ const CorpusModel = (() => {
   // Rich, parallel-effort facets. Read defensively from payload.facets[key] (for
   // the option list + counts) and matter.facets[key] (for filtering). Absent today
   // on origin/main; the rail degrades gracefully when they are missing.
-  const RICH_FACET_KEYS = ["governing_law", "non_solicit", "non_compete"];
+  //
+  // The master-filter set adds four SCALAR facets (mutuality / term_band /
+  // review_outcome / origin) that ride the same single-scalar path as
+  // governing_law, plus two MULTI-VALUE array facets (restraint_types /
+  // clauses_present) handled by the MULTI_FACET_KEYS path below (ANY-match).
+  const RICH_FACET_KEYS = [
+    "governing_law",
+    "non_solicit",
+    "non_compete",
+    "mutuality",
+    "term_band",
+    "review_outcome",
+    "restraint_types",
+    "clauses_present",
+    "origin",
+  ];
 
   const RICH_FACET_LABELS = {
     governing_law: "Governing law",
     non_solicit: "Non-solicit",
     non_compete: "Non-compete",
+    mutuality: "Mutuality",
+    term_band: "Term length",
+    review_outcome: "Review outcome",
+    restraint_types: "Restraint type",
+    clauses_present: "Clauses present",
+    origin: "Origin",
   };
+
+  // Multi-value array facets: matter.facets[key] is an ARRAY of values. A matter
+  // matches the facet if it carries ANY selected value (OR within the group). The
+  // sidebar count for a value = matters whose array contains that value. These ride
+  // a distinct read/match path from the single-scalar rich facets above.
+  const MULTI_FACET_KEYS = ["restraint_types", "clauses_present"];
+
+  function isMultiFacet(key) {
+    return MULTI_FACET_KEYS.indexOf(key) !== -1;
+  }
+
+  // Per-facet value -> human label maps for the scalar master-filter facets. Values
+  // absent from a map fall through to a humanised form of the raw value.
+  const FACET_VALUE_LABELS = {
+    mutuality: { mutual: "Mutual", one_way: "One-way" },
+    term_band: { "<=2y": "2 years or less", "3-5y": "3–5 years", ">5y": "Over 5 years" },
+    review_outcome: { clean: "Clean", needs_review: "Needs review", has_fail: "Has fail" },
+    origin: { generated: "Generated", received: "Received" },
+    restraint_types: {
+      non_compete: "Non-compete",
+      non_solicit: "Non-solicit",
+      non_circumvention: "Non-circumvention",
+    },
+  };
+
+  // Humanise an unmapped facet value: "needs_review" -> "Needs review".
+  function humaniseFacetValue(value) {
+    const str = String(value == null ? "" : value);
+    if (!str) return str;
+    const spaced = str.replace(/[_-]+/g, " ");
+    return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+  }
 
   // Clause-presence facets: the backend emits the sentinel value "present" for a
   // matter whose review carried the clause (governing_law-style single scalar). A
@@ -71,12 +124,38 @@ const CorpusModel = (() => {
   }
 
   // Human label for a rich-facet value. Clause-presence facets map "present" ->
-  // "Present"; every other facet labels by its own value (governing-law codes etc.).
+  // "Present"; the master-filter facets use their own value-label map (else a
+  // humanised fallback); every other facet labels by its own value (govlaw codes).
   function richFacetValueLabel(key, value) {
     if (isClausePresenceFacet(key)) {
       return CLAUSE_PRESENCE_VALUE_LABELS[String(value)] || String(value);
     }
+    const map = FACET_VALUE_LABELS[key];
+    if (map) {
+      const mapped = map[String(value)];
+      if (mapped) return mapped;
+      return humaniseFacetValue(value);
+    }
     return String(value);
+  }
+
+  // Defensive read of a multi-value facet's array for a matter. Prefers
+  // matter.facets[key], falls back to top-level matter[key]; returns [] when absent
+  // or not an array. Stringifies entries so the option/count/filter keys agree.
+  function matterFacetValues(matter, key) {
+    if (!matter || typeof matter !== "object") return [];
+    let raw;
+    const facets = matter.facets;
+    if (facets && typeof facets === "object" && Array.isArray(facets[key])) {
+      raw = facets[key];
+    } else if (Array.isArray(matter[key])) {
+      raw = matter[key];
+    } else {
+      return [];
+    }
+    return raw
+      .filter((v) => v != null && v !== "")
+      .map((v) => String(v));
   }
 
   function artifactStageLabel(artifact) {
@@ -208,10 +287,42 @@ const CorpusModel = (() => {
     return `${Math.round(value * 100)}% match`;
   }
 
+  // Security: scheme-allowlist before any URL is interpolated into an href.
+  // Drive/download URLs arrive from the payload (and ultimately from matter
+  // metadata that can be operator/counterparty-influenced), so a hostile value
+  // like "javascript:alert(1)" must never reach an href. Allow only http(s);
+  // neutralise everything else to "" (the caller then renders no link).
+  // Protocol-relative ("//evil") and scheme-relative paths are allowed only when
+  // they are plainly relative (start with "/" but not "//"); anything carrying a
+  // disallowed scheme is dropped.
+  function safeHref(url) {
+    if (url == null) return "";
+    // Strip ALL ASCII control chars + whitespace (incl. embedded NUL/newline/tab)
+    // before inspecting the scheme — browsers ignore these, so "java\tscript:"
+    // collapses to "javascript:" and is then rejected rather than slipping past.
+    const stripped = String(url).replace(/[\u0000-\u0020\u007f]+/g, "");
+    if (!stripped) return "";
+    // A scheme is present when "scheme:" precedes the first "/", "?" or "#".
+    // If a colon appears there, the scheme must be exactly http: or https:.
+    const schemeMatch = stripped.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/);
+    if (schemeMatch) {
+      const scheme = schemeMatch[1].toLowerCase();
+      // Pass legit links through as the original trimmed url (verbatim); only the
+      // scheme check runs on the control-stripped form.
+      if (scheme === "http" || scheme === "https") return String(url).trim();
+      return "";
+    }
+    // Protocol-relative ("//host") carries an implicit scheme we cannot vet -> drop.
+    if (/^\/\//.test(stripped)) return "";
+    // No scheme: a relative URL ("/x", "x", "#frag", "?q") is safe to pass through.
+    return String(url).trim();
+  }
+
   return {
     LIFECYCLE_ORDER,
     RICH_FACET_KEYS,
     RICH_FACET_LABELS,
+    MULTI_FACET_KEYS,
     ROLE_STAGE_LABELS,
     artifactCountLabel,
     artifactStageLabel,
@@ -219,14 +330,17 @@ const CorpusModel = (() => {
     duplicateDocument,
     formatDate,
     isClausePresenceFacet,
+    isMultiFacet,
     isRepeatEntity,
     lifecycleLabel,
     matterFacetValue,
+    matterFacetValues,
     richFacetValueLabel,
     matterTitle,
     monthKey,
     monthLabel,
     railSteps,
+    safeHref,
     similarityLabel,
     sourceLabel,
     statusChip,
@@ -429,34 +543,50 @@ const CorpusRender = (() => {
   function facetPresentInPayload(key, backendOptions, matters) {
     if (backendOptions && backendOptions.length) return true;
     // Even without payload.facets, light the group up if any matter carries the
-    // field (so it works the moment the backend lands per-matter facets).
+    // field (so it works the moment the backend lands per-matter facets). Multi-
+    // value facets are "present" when any matter's array is non-empty.
+    if (CorpusModel.isMultiFacet(key)) {
+      return matters.some((matter) => CorpusModel.matterFacetValues(matter, key).length > 0);
+    }
     return matters.some((matter) => CorpusModel.matterFacetValue(matter, key) !== undefined);
   }
 
   function richFacetOptions(key, backendOptions, matters) {
-    // Prefer the backend's option list + counts when present (read-only).
+    // Prefer the backend's option list + counts when present (read-only). This
+    // path is shared by scalar and multi-value facets (the backend pre-counts).
     if (backendOptions && backendOptions.length) {
       return backendOptions.map((option) => {
         if (option && typeof option === "object") {
           const value = String(option.value != null ? option.value : option.id != null ? option.id : "");
           return {
             value,
-            label: String(option.label || value),
+            label: String(option.label || CorpusModel.richFacetValueLabel(key, value)),
             count: Number(option.count != null ? option.count : 0),
           };
         }
         const value = String(option);
-        return { value, label: value, count: 0 };
+        return { value, label: CorpusModel.richFacetValueLabel(key, value), count: 0 };
       });
     }
     // Otherwise derive options + counts from per-matter facet values.
     const counts = new Map();
-    matters.forEach((matter) => {
-      const value = CorpusModel.matterFacetValue(matter, key);
-      if (value === undefined) return;
-      const str = String(value);
-      counts.set(str, (counts.get(str) || 0) + 1);
-    });
+    if (CorpusModel.isMultiFacet(key)) {
+      // Multi-value: a matter contributes +1 to EACH distinct value it carries, so
+      // the per-value count == matters-whose-array-contains-it. This is the same
+      // membership the filter uses (CorpusView.matterMatchesFacet), so count ==
+      // filtered-result parity holds for the OR-within-group semantics.
+      matters.forEach((matter) => {
+        const seen = new Set(CorpusModel.matterFacetValues(matter, key));
+        seen.forEach((str) => counts.set(str, (counts.get(str) || 0) + 1));
+      });
+    } else {
+      matters.forEach((matter) => {
+        const value = CorpusModel.matterFacetValue(matter, key);
+        if (value === undefined) return;
+        const str = String(value);
+        counts.set(str, (counts.get(str) || 0) + 1);
+      });
+    }
     return Array.from(counts.entries())
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([value, count]) => ({ value, label: CorpusModel.richFacetValueLabel(key, value), count }));
@@ -536,6 +666,11 @@ const CorpusRender = (() => {
     }
     if (CorpusModel.isClausePresenceFacet(key)) {
       // Token reads e.g. "Non-solicit: Present" rather than "...: present".
+      return `${CorpusModel.RICH_FACET_LABELS[key] || key}: ${CorpusModel.richFacetValueLabel(key, value)}`;
+    }
+    // Master-filter + governing-law facets read "Group: Value" (e.g.
+    // "Mutuality: Mutual", "Term length: 3–5 years") so a chip is self-describing.
+    if (CorpusModel.RICH_FACET_KEYS.includes(key)) {
       return `${CorpusModel.RICH_FACET_LABELS[key] || key}: ${CorpusModel.richFacetValueLabel(key, value)}`;
     }
     return String(value);
@@ -691,7 +826,9 @@ const CorpusRender = (() => {
     const key = matter.matter_id || matter.open_in_drive_url || CorpusModel.matterTitle(matter);
     const date = CorpusModel.formatDate(matter.created_at);
     const inApp = Boolean(matter.in_app);
-    const driveUrl = matter.open_in_drive_url || "";
+    // safeHref drops any non-http(s) scheme (e.g. a "javascript:" payload) so a
+    // hostile URL can never reach the Open-in-Drive href; "" suppresses the link.
+    const driveUrl = CorpusModel.safeHref(matter.open_in_drive_url || "");
     const status = CorpusModel.statusChip(matter);
     return `
       <article class="corpus-matter" data-corpus-matter="${html(key)}">
@@ -725,7 +862,10 @@ const CorpusRender = (() => {
 
   function renderDuplicateNote(matter) {
     if (!matter.duplicate) return "";
-    const urls = Array.isArray(matter.duplicate_folder_urls) ? matter.duplicate_folder_urls : [];
+    const rawUrls = Array.isArray(matter.duplicate_folder_urls) ? matter.duplicate_folder_urls : [];
+    // Scheme-allowlist each URL; drop any that neutralise to "" so no link with a
+    // hostile/empty href is rendered. Re-number after filtering for stable labels.
+    const urls = rawUrls.map((url) => CorpusModel.safeHref(url)).filter((url) => url);
     if (!urls.length) return "";
     const links = urls
       .map((url, index) => `<a class="corpus-link" href="${html(url)}" target="_blank" rel="noopener noreferrer">Duplicate folder ${index + 1}</a>`)
@@ -744,8 +884,10 @@ const CorpusRender = (() => {
   function renderArtifactRow(matter, artifact) {
     const stage = CorpusModel.artifactStageLabel(artifact);
     const date = CorpusModel.formatDate(artifact.created_at);
-    const download = artifact.download_url || "";
-    const driveFile = artifact.drive_file_url || "";
+    // Scheme-allowlist both link sources; a non-http(s) value neutralises to ""
+    // and the truthiness guards below render no link for it.
+    const download = CorpusModel.safeHref(artifact.download_url || "");
+    const driveFile = CorpusModel.safeHref(artifact.drive_file_url || "");
     let action = "";
     if (download) {
       action = `<a class="corpus-link corpus-artifact-download" href="${html(download)}" download>Download</a>`;
@@ -916,6 +1058,18 @@ const CorpusView = (() => {
       // the sidebar count agree (count == filtered-result parity).
       for (const value of values) {
         if (CorpusRender.flagMatches(matter, value)) return true;
+      }
+      return false;
+    }
+    if (CorpusModel.isMultiFacet(key)) {
+      // Multi-value array facet (restraint_types / clauses_present): OR within the
+      // group — match if the matter's array contains ANY selected value. This is
+      // the SAME membership richFacetOptions counts, so count == filtered parity.
+      const carried = CorpusModel.matterFacetValues(matter, key);
+      if (!carried.length) return false;
+      const set = new Set(carried);
+      for (const value of values) {
+        if (set.has(String(value))) return true;
       }
       return false;
     }
