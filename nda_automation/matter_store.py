@@ -66,6 +66,9 @@ GMAIL_METADATA_FIELDS = (
 MATTER_UPDATE_FIELDS = {
     "awaiting_signature",
     "board_column",
+    # Lazily-computed content fingerprint for the Corpus duplicate-document signal
+    # (corpus_index caches it here on first build, scalar-compares it thereafter).
+    "content_fingerprint",
     "docusign",
     "drive",
     "executed",

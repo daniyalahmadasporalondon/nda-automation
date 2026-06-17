@@ -1505,5 +1505,185 @@ class CorpusRepeatEntityTests(unittest.TestCase):
         self.assertEqual(payload["facet_counts"]["repeat_entity"], 0)
 
 
+# A realistic NDA body (>100 words) so a word-3-shingle SimHash is meaningful and a
+# small edit stays well above the 0.90 dup threshold (the "same NDA re-sent with a
+# minor tweak" case), mirroring production document lengths.
+_NDA_BODY = (
+    "This Mutual Non-Disclosure Agreement governs the exchange of confidential information "
+    "between the parties. Each party agrees to hold the other party confidential information "
+    "in strict confidence and not to disclose it to any third party without prior written consent. "
+    "The receiving party shall use the confidential information solely for the purpose of evaluating "
+    "a potential business relationship between the parties. This agreement shall remain in effect for "
+    "a period of three years from the effective date. The obligations of confidentiality shall survive "
+    "termination of this agreement. Confidential information does not include information that is publicly "
+    "available through no fault of the receiving party or independently developed without reference to the "
+    "disclosing party confidential information. Each party acknowledges that monetary damages may be inadequate."
+)
+_UNRELATED_BODY = (
+    "This purchase order covers the supply of office furniture including ergonomic chairs, standing desks, "
+    "filing cabinets, and meeting room tables for the new downtown headquarters building. Delivery is "
+    "scheduled for the third quarter and payment terms are net thirty days from the invoice date. The "
+    "vendor warrants that all goods are free from defects in materials and workmanship for one year. "
+    "Any disputes regarding the quality of the goods shall be resolved through good-faith negotiation "
+    "before any party resorts to formal mediation or arbitration under the applicable commercial rules."
+)
+
+
+def _seed_doc_matter(repo, *, owner, counterparty, title, extracted_text):
+    """Seed an app-state matter with a specific ``extracted_text`` for fingerprinting."""
+    return repo.create_matter(
+        source_filename=f"{title}.docx",
+        document_bytes=b"PK\x03\x04 fake docx",
+        extracted_text=extracted_text,
+        review_result={"clauses": [{"id": "mutuality", "decision": "pass"}]},
+        triage={"triage_status": "review"},
+        source_type="manual_upload",
+        board_column="in_review",
+        intake_metadata={"subject": counterparty} if counterparty else None,
+        owner_user_id=owner,
+    )
+
+
+class CorpusDuplicateDocumentTests(unittest.TestCase):
+    """corpus_index emits the duplicate_document signal for near-duplicate content."""
+
+    def setUp(self):
+        corpus_index.invalidate_cache()
+        self.repo = InMemoryMatterRepository()
+
+    def tearDown(self):
+        corpus_index.invalidate_cache()
+
+    def _matters_by_id(self, payload):
+        return {m["matter_id"]: m for m in corpus_index.flatten_corpus(payload)}
+
+    def test_exact_duplicate_content_flags_both_matters(self):
+        # Two matters with byte-identical content (modulo case/whitespace) -> exact dup.
+        a = _seed_doc_matter(self.repo, owner="o", counterparty="Acme", title="Acme NDA", extracted_text=_NDA_BODY)
+        b = _seed_doc_matter(
+            self.repo, owner="o", counterparty="Beta", title="Beta NDA", extracted_text=_NDA_BODY.upper()
+        )
+
+        payload = corpus_index.build_corpus(self.repo, "o", "")
+        matters = self._matters_by_id(payload)
+
+        dup_a = matters[a["id"]]["duplicate_document"]
+        dup_b = matters[b["id"]]["duplicate_document"]
+        self.assertIsNotNone(dup_a)
+        self.assertIsNotNone(dup_b)
+        # Each points at the OTHER matter, not itself.
+        self.assertEqual(dup_a["matched_matter_id"], b["id"])
+        self.assertEqual(dup_b["matched_matter_id"], a["id"])
+        # Exact (normalized) content -> similarity 1.0, and the matched title is carried.
+        self.assertEqual(dup_a["similarity"], 1.0)
+        self.assertEqual(dup_a["matched_title"], "Beta NDA")
+        self.assertEqual(dup_b["matched_title"], "Acme NDA")
+        self.assertEqual(payload["facet_counts"]["duplicate_document"], 2)
+
+    def test_near_duplicate_at_threshold_flags(self):
+        # Same NDA re-sent with one phrase changed -> near-dup above the 0.90 threshold.
+        near = _NDA_BODY.replace("three years", "five years")
+        a = _seed_doc_matter(self.repo, owner="o", counterparty="Acme", title="Acme v1", extracted_text=_NDA_BODY)
+        b = _seed_doc_matter(self.repo, owner="o", counterparty="Beta", title="Beta v2", extracted_text=near)
+
+        payload = corpus_index.build_corpus(self.repo, "o", "")
+        matters = self._matters_by_id(payload)
+
+        dup_a = matters[a["id"]]["duplicate_document"]
+        self.assertIsNotNone(dup_a)
+        self.assertEqual(dup_a["matched_matter_id"], b["id"])
+        self.assertGreaterEqual(dup_a["similarity"], corpus_index.DUPLICATE_SIMILARITY_THRESHOLD)
+        self.assertLess(dup_a["similarity"], 1.0)  # near, not exact
+        self.assertEqual(payload["facet_counts"]["duplicate_document"], 2)
+
+    def test_genuinely_different_docs_do_not_flag(self):
+        a = _seed_doc_matter(self.repo, owner="o", counterparty="Acme", title="NDA", extracted_text=_NDA_BODY)
+        b = _seed_doc_matter(
+            self.repo, owner="o", counterparty="Beta", title="PO", extracted_text=_UNRELATED_BODY
+        )
+
+        payload = corpus_index.build_corpus(self.repo, "o", "")
+        matters = self._matters_by_id(payload)
+
+        self.assertIsNone(matters[a["id"]]["duplicate_document"])
+        self.assertIsNone(matters[b["id"]]["duplicate_document"])
+        self.assertEqual(payload["facet_counts"]["duplicate_document"], 0)
+
+    def test_single_matter_is_never_its_own_duplicate(self):
+        a = _seed_doc_matter(self.repo, owner="o", counterparty="Acme", title="NDA", extracted_text=_NDA_BODY)
+        payload = corpus_index.build_corpus(self.repo, "o", "")
+        matters = self._matters_by_id(payload)
+        self.assertIsNone(matters[a["id"]]["duplicate_document"])
+        self.assertEqual(payload["facet_counts"]["duplicate_document"], 0)
+
+    def test_match_points_at_earliest_other_matter_deterministically(self):
+        # Three identical docs created at distinct times. The two later matters point
+        # at the EARLIEST other (deterministic pointer); the earliest points at the
+        # next-earliest other.
+        a = _seed_doc_matter(self.repo, owner="o", counterparty="A", title="A", extracted_text=_NDA_BODY)
+        b = _seed_doc_matter(self.repo, owner="o", counterparty="B", title="B", extracted_text=_NDA_BODY)
+        c = _seed_doc_matter(self.repo, owner="o", counterparty="C", title="C", extracted_text=_NDA_BODY)
+        # Force a deterministic created_at ordering a < b < c (create_matter stamps
+        # wall-clock times that can collide at sub-ms resolution in a tight loop).
+        self.repo.update_matter_fields(a["id"], {"board_column": "in_review"}, owner_user_id="o")
+        for matter_id, ts in ((a["id"], "2026-01-01T00:00:00Z"), (b["id"], "2026-02-01T00:00:00Z"), (c["id"], "2026-03-01T00:00:00Z")):
+            for stored in self.repo._matters:
+                if stored["id"] == matter_id:
+                    stored["created_at"] = ts
+
+        payload = corpus_index.build_corpus(self.repo, "o", "")
+        matters = self._matters_by_id(payload)
+        # b and c both point at a (the earliest); a points at b (its earliest OTHER).
+        self.assertEqual(matters[b["id"]]["duplicate_document"]["matched_matter_id"], a["id"])
+        self.assertEqual(matters[c["id"]]["duplicate_document"]["matched_matter_id"], a["id"])
+        self.assertEqual(matters[a["id"]]["duplicate_document"]["matched_matter_id"], b["id"])
+        self.assertEqual(payload["facet_counts"]["duplicate_document"], 3)
+
+    def test_fingerprint_computed_once_and_cached(self):
+        # First build computes + persists the fingerprint on each matter; later builds
+        # read the stored fingerprint and never recompute (scalar-compare only).
+        seen: dict[str, int] = {"compute": 0}
+        original = corpus_index.content_fingerprint.compute_fingerprint
+
+        def _counting_compute(text):
+            seen["compute"] += 1
+            return original(text)
+
+        corpus_index.content_fingerprint.compute_fingerprint = _counting_compute
+        try:
+            a = _seed_doc_matter(self.repo, owner="o", counterparty="Acme", title="A", extracted_text=_NDA_BODY)
+            b = _seed_doc_matter(self.repo, owner="o", counterparty="Beta", title="B", extracted_text=_NDA_BODY)
+
+            # First build: two matters lacking a stored fingerprint -> two computes.
+            corpus_index.build_corpus(self.repo, "o", "")
+            self.assertEqual(seen["compute"], 2)
+
+            # The fingerprint was persisted on each matter (the lazy cache).
+            stored_a = self.repo.get_matter(a["id"], owner_user_id="o")
+            self.assertTrue(
+                corpus_index.content_fingerprint.is_valid_fingerprint(
+                    stored_a.get(corpus_index.MATTER_FINGERPRINT_FIELD)
+                )
+            )
+
+            # Second build: both fingerprints are cached -> zero further computes, yet
+            # the dup signal still resolves (proving scalar-compare works off cache).
+            corpus_index.invalidate_cache()
+            payload = corpus_index.build_corpus(self.repo, "o", "")
+            self.assertEqual(seen["compute"], 2)  # unchanged -> no recompute
+            matters = self._matters_by_id(payload)
+            self.assertIsNotNone(matters[a["id"]]["duplicate_document"])
+            self.assertIsNotNone(matters[b["id"]]["duplicate_document"])
+        finally:
+            corpus_index.content_fingerprint.compute_fingerprint = original
+
+    def test_internal_fingerprint_key_never_leaks_into_payload(self):
+        _seed_doc_matter(self.repo, owner="o", counterparty="Acme", title="A", extracted_text=_NDA_BODY)
+        payload = corpus_index.build_corpus(self.repo, "o", "")
+        for matter in corpus_index.flatten_corpus(payload):
+            self.assertNotIn("_content_fingerprint", matter)
+            self.assertIn("duplicate_document", matter)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
