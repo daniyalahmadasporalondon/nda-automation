@@ -133,6 +133,22 @@ const RepositoryBoard = (() => {
 
   function renderMatterCard(matter, options = {}) {
     const issueCount = Number(matter.issue_count || 0);
+    // The issue count is a DISPLAY of a verdict, so it only shows once an AI review
+    // has actually run (ai_review_ran). A deterministic-only matter shows "Pending"
+    // instead -- issue_count's triage/routing/search uses are untouched. Fall back
+    // to "show the count" only for fixtures predating the flag.
+    const aiReviewRan = typeof matter.ai_review_ran === "boolean" ? matter.ai_review_ran : true;
+    // The issue count foot only carries meaning once an AI review has run; an
+    // un-reviewed card's status is carried by the review badge instead (so we
+    // don't show both a "Pending" foot AND a "Not reviewed" badge -- redundant).
+    const issueLabel = aiReviewRan
+      ? `${issueCount} ${issueCount === 1 ? "issue" : "issues"}`
+      : "";
+    // Universal review-status badge across every column. Quiet/green when the AI
+    // has reviewed, amber when it has not -- text label (not colour-only) for a11y.
+    const reviewBadge = aiReviewRan
+      ? `<span class="repository-review-badge reviewed" title="An AI review has been run on this NDA.">AI reviewed</span>`
+      : `<span class="repository-review-badge pending" title="No AI review has run on this NDA yet. Open the matter to review it.">Not reviewed</span>`;
     const date = RepositoryModel.formatMatterDate(matter.received_at || matter.created_at);
     const confirmingDelete = Boolean(options.confirmingDelete);
     return `
@@ -140,6 +156,7 @@ const RepositoryBoard = (() => {
         <span class="repository-card-top">
           <span class="repository-card-badges">
             <span class="repository-source-badge ${html(RepositoryModel.sourceBadgeClass(matter.source_type))}">${html(RepositoryModel.sourceTypeLabel(matter.source_type))}</span>
+            ${reviewBadge}
             ${MatterUtils.reviewStale(matter) ? `<span class="repository-stale-badge" title="${html(MatterUtils.reviewStaleLabel(matter))}">Stale</span>` : ""}
             ${RepositoryModel.counterpartyNeedsConfirmation(matter) ? `<span class="repository-counterparty-badge" title="The counterparty could not be confirmed automatically. Open the matter to confirm who this NDA is with.">Counterparty unconfirmed</span>` : ""}
           </span>
@@ -154,7 +171,7 @@ const RepositoryBoard = (() => {
         ${confirmingDelete ? renderMatterDeleteConfirmation(matter) : ""}
         <span class="repository-card-rule"></span>
         <span class="repository-card-foot">
-          <span>${issueCount} ${issueCount === 1 ? "issue" : "issues"}</span>
+          <span>${html(issueLabel)}</span>
           <span>${html(RepositoryModel.matterColumnLabel(matter))}</span>
         </span>
       </article>

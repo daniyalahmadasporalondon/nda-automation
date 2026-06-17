@@ -120,9 +120,13 @@ function createOverviewController({ state, root, fillSection, renderFill }) {
 
   function hasAiReview() {
     const matter = state.selectedMatter;
-    // Explicit backend flag wins; fall back to "are there any review clauses"
-    // for matters/fixtures that predate has_ai_review.
-    if (matter && typeof matter.has_ai_review === "boolean") return matter.has_ai_review;
+    // Gate verdict surfaces on whether an AI review ACTUALLY ran (ai_review_ran).
+    // A deterministic-only matter has has_ai_review=true but ai_review_ran=false,
+    // so renderEmpty()'s "No review yet / Refresh with AI" Pending state fires for
+    // it instead of leaking the deterministic verdict (the last "deterministic
+    // ghost"). Explicit backend flag wins; fall back to "are there any review
+    // clauses" only for matters/fixtures that predate ai_review_ran.
+    if (matter && typeof matter.ai_review_ran === "boolean") return matter.ai_review_ran;
     const hasResults = typeof window !== "undefined" && typeof window.hasReviewResults === "function"
       ? window.hasReviewResults()
       : Array.isArray(state.reviewClauses) && state.reviewClauses.length > 0;

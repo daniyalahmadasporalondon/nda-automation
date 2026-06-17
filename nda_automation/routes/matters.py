@@ -29,6 +29,7 @@ from ..repository_board_workflow import RepositoryBoardWorkflow, RepositoryBoard
 from ..review_document import STRUCTURAL_METADATA_KEYS, align_document_paragraphs
 from ..review_engine import ActiveReviewEngineError, review_nda_with_active_engine
 from ..review_staleness import review_result_is_stale, review_result_staleness
+from ..review_state import review_was_ai_executed
 from .common import parse_matter_id, request_owner_user_id
 
 AI_FIRST_REVIEW_FEATURE_FLAG = "NDA_AI_FIRST_REVIEW_ENABLED"
@@ -216,14 +217,7 @@ def _matter_has_ai_review(review_result: object) -> bool:
     review exists" is true and the matter should advertise ``review_may_be_stale``.
     A missing/empty review is likewise "no AI review".
     """
-    if not isinstance(review_result, dict) or not review_result:
-        return False
-    engine = review_result.get("active_review_engine")
-    if not isinstance(engine, dict):
-        # Pre-engine-metadata reviews: fall back to the ai_first marker if present.
-        return isinstance(review_result.get("ai_first_review"), dict)
-    executed = str(engine.get("executed_engine") or engine.get("engine") or "").strip()
-    return executed == "ai_first"
+    return review_was_ai_executed(review_result)
 
 
 def _matter_review_text_changed(matter: dict, review_result: object) -> bool:
