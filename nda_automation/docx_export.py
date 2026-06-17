@@ -9,6 +9,7 @@ from typing import Dict, List, NamedTuple, Tuple
 from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
 from . import redline_edit_contract
+from .review_state import review_was_ai_executed
 from .redline_actions import (
     REDLINE_DELETE_PARAGRAPH,
     REDLINE_FORMAT_PARAGRAPH,
@@ -121,35 +122,69 @@ class PdfRedlineAnchorError(DocxExportError):
         )
 
 
+_AI_NOT_RUN_NOTICE = "AI review has not been run on this document."
+
+
 def build_review_report_docx(review_result: ReviewResult, title: str = "NDA Review") -> bytes:
     checked_at = str(review_result.get("checked_at", ""))
+    # P0 gate: this report can ship to the COUNTERPARTY. The verdict/findings
+    # sections (overall status, pass/review/fail counts, per-clause findings) are
+    # only authoritative when the AI engine actually reviewed the matter. A
+    # deterministically-generated review carries verdicts that must NOT be
+    # presented as review notes to a counterparty. ``review_was_ai_executed`` is
+    # the single reliable "the AI ran" signal (see review_state). When it is
+    # False, omit the verdicts and findings and state plainly that AI review has
+    # not run. The Redlined NDA section (the actual content / tracked edits) is
+    # unconditional -- it is the document itself, not a verdict.
+    ai_ran = review_was_ai_executed(review_result)
+    note_text = (
+        "The Redlined NDA section contains native Word tracked changes. Review Notes are explanatory only. "
+        "Track Changes is also enabled for any edits made after opening the file."
+        if ai_ran
+        else (
+            "The Redlined NDA section contains native Word tracked changes. "
+            "Track Changes is also enabled for any edits made after opening the file. "
+            + _AI_NOT_RUN_NOTICE
+        )
+    )
     paragraphs = [
         _paragraph("NDA Redline", style="Title"),
         _paragraph(f"Matter: {title or 'Untitled NDA'}", style="Subtitle"),
-        _paragraph(
-            "The Redlined NDA section contains native Word tracked changes. Review Notes are explanatory only. "
-            "Track Changes is also enabled for any edits made after opening the file.",
-            style="Note",
-        ),
+        _paragraph(note_text, style="Note"),
         _paragraph("Redlined NDA", style="Heading1"),
         *_redlined_nda_section(review_result),
-        _paragraph("Review Notes", style="Heading1"),
-        _paragraph(f"Overall status: {_status_label(str(review_result.get('overall_status', '')))}"),
-        _paragraph(f"Requirements passed: {review_result.get('requirements_passed', 0)}"),
-        _paragraph(f"Requirements needing review: {review_result.get('requirements_needs_review', 0)}"),
-        _paragraph(f"Requirements failed: {review_result.get('requirements_failed', 0)}"),
-        _paragraph(f"Checked at: {checked_at}"),
-        _paragraph("Clause Findings", style="Heading1"),
     ]
 
-    redlines_by_clause = _redlines_by_clause(review_result.get("redline_edits", []))
-    for clause in review_result.get("clauses", []):
-        if not isinstance(clause, dict):
-            continue
-        paragraphs.extend(_clause_section(clause, redlines_by_clause.get(str(clause.get("id")), [])))
+    if ai_ran:
+        paragraphs.extend(
+            [
+                _paragraph("Review Notes", style="Heading1"),
+                _paragraph(f"Overall status: {_status_label(str(review_result.get('overall_status', '')))}"),
+                _paragraph(f"Requirements passed: {review_result.get('requirements_passed', 0)}"),
+                _paragraph(f"Requirements needing review: {review_result.get('requirements_needs_review', 0)}"),
+                _paragraph(f"Requirements failed: {review_result.get('requirements_failed', 0)}"),
+                _paragraph(f"Checked at: {checked_at}"),
+                _paragraph("Clause Findings", style="Heading1"),
+            ]
+        )
+        redlines_by_clause = _redlines_by_clause(review_result.get("redline_edits", []))
+        for clause in review_result.get("clauses", []):
+            if not isinstance(clause, dict):
+                continue
+            paragraphs.extend(_clause_section(clause, redlines_by_clause.get(str(clause.get("id")), [])))
+    else:
+        paragraphs.extend(
+            [
+                _paragraph("Review Notes", style="Heading1"),
+                _paragraph(_AI_NOT_RUN_NOTICE),
+            ]
+        )
 
     document_root = parse_docx_xml(_document_xml("".join(paragraphs)), part_name="word/document.xml")
-    report_comments = _targeted_report_comments(review_result)
+    # Reviewer comments anchored into the body are also AI-review verdicts; only
+    # attach them when the AI actually ran, so deterministic notes never ship as
+    # authoritative review annotations to a counterparty.
+    report_comments = _targeted_report_comments(review_result) if ai_ran else []
     assigned_comments, comments_xml = _comments_xml_with_appended_comments(None, report_comments)
     comments_extended_xml = _comments_extended_xml_for_assigned(None, assigned_comments) if assigned_comments else b""
     if assigned_comments:

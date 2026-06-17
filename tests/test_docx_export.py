@@ -74,6 +74,20 @@ SOURCE_EXPORT_REPORT_LEAKAGE_PHRASES = [
 ]
 
 
+def mark_ai_executed(result):
+    """Stamp the reliable "AI engine ran" marker on a (deterministically built)
+    review result so the report renderer surfaces verdicts/findings/comments.
+
+    ``build_review_report_docx`` gates those sections on
+    ``review_state.review_was_ai_executed`` (P0: never ship deterministic verdicts
+    to a counterparty). Tests that exercise the verdict/finding/comment rendering
+    must therefore present an AI-executed result; ``review_nda`` alone is the
+    deterministic engine and is correctly treated as "AI has not run".
+    """
+    result["active_review_engine"] = {"executed_engine": "ai_first"}
+    return result
+
+
 def docx_xml_roots(docx_bytes):
     with ZipFile(BytesIO(docx_bytes)) as archive:
         assert archive.testzip() is None
@@ -631,7 +645,7 @@ class DocxExportTests(unittest.TestCase):
         self.assertEqual(next_revision_id, 9)
 
     def test_review_report_docx_opens_with_track_changes_enabled(self):
-        result = review_nda("This Agreement shall be governed by the laws of California.")
+        result = mark_ai_executed(review_nda("This Agreement shall be governed by the laws of California."))
 
         docx_bytes = build_review_report_docx(result, title="California NDA")
 
@@ -657,6 +671,50 @@ class DocxExportTests(unittest.TestCase):
         self.assertTrue(any("California" in text for text in deleted_text))
         self.assertFalse(any("This Agreement shall be governed by the laws of California." in text for text in deleted_text))
         self.assertTrue(any("England and Wales" in text for text in inserted_text))
+
+    def test_review_report_docx_omits_verdicts_when_ai_review_has_not_run(self):
+        # P0 gate: this report can ship to the counterparty. A deterministic
+        # review (review_nda alone -> review_was_ai_executed is False) must NOT
+        # present verdicts/counts/per-clause findings as authoritative review
+        # notes. The Redlined NDA content / tracked edits stay intact.
+        result = review_nda("This Agreement shall be governed by the laws of California.")
+        result["review_comments"] = [
+            {
+                "author": "Reviewer",
+                "clause_id": "governing_law",
+                "clause_name": "Governing Law",
+                "paragraph_id": "p1",
+                "text": "Deterministic note that must not ship.",
+            }
+        ]
+
+        docx_bytes = build_review_report_docx(result, title="California NDA")
+
+        assert_docx_package_healthy(self, docx_bytes, require_styles=True)
+        settings_root, document_root, document_xml = docx_xml_roots(docx_bytes)
+        with ZipFile(BytesIO(docx_bytes)) as archive:
+            package_names = set(archive.namelist())
+
+        # The "AI has not run" notice replaces the verdict body.
+        self.assertIn("AI review has not been run on this document.", document_xml)
+        # No verdict / count / per-clause-finding lines.
+        self.assertNotIn("Overall status:", document_xml)
+        self.assertNotIn("Requirements passed:", document_xml)
+        self.assertNotIn("Requirements needing review:", document_xml)
+        self.assertNotIn("Requirements failed:", document_xml)
+        self.assertNotIn("Clause Findings", document_xml)
+        self.assertNotIn("Governing Law - CHECK", document_xml)
+        self.assertNotIn("Template options", document_xml)
+        # Deterministic reviewer comments are not anchored either: no comments
+        # part is emitted and the body carries no comment references.
+        self.assertNotIn("word/comments.xml", package_names)
+        self.assertEqual(document_root.findall(".//w:commentReference", W_NS), [])
+        self.assertNotIn("Deterministic note that must not ship.", document_xml)
+        # The actual NDA content / Redlined NDA section is still present.
+        self.assertIsNotNone(settings_root.find(".//w:trackRevisions", W_NS))
+        self.assertIn("NDA Redline", document_xml)
+        self.assertIn("Redlined NDA", document_xml)
+        self.assertTrue(any("California" in text for text in tracked_deleted_text(document_root)))
 
     def test_review_report_docx_strips_invalid_xml_characters(self):
         result = review_nda("This Agreement shall be governed by the laws of California.\x08\ud800\ufdd0\U0001fffe")
@@ -2728,10 +2786,10 @@ class DocxExportTests(unittest.TestCase):
         self.assertNotIn("Inserted redline paragraph must not steal the comment.", anchored_text)
 
     def test_review_report_docx_writes_native_word_comments(self):
-        result = review_nda(
+        result = mark_ai_executed(review_nda(
             "This Agreement shall be governed by the laws of California.\n\n"
             "The confidentiality obligations survive for three years."
-        )
+        ))
         result["review_comments"] = [
             {
                 "author": "Reviewer",
@@ -2839,10 +2897,10 @@ class DocxExportTests(unittest.TestCase):
         )
 
     def test_review_report_docx_writes_resolved_threaded_comments(self):
-        result = review_nda(
+        result = mark_ai_executed(review_nda(
             "This Agreement shall be governed by the laws of California.\n\n"
             "The confidentiality obligations survive for three years."
-        )
+        ))
         result["review_comments"] = [
             {
                 "id": "root-1",
