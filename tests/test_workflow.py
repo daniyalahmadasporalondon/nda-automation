@@ -58,7 +58,9 @@ def _failed_review() -> dict:
     return {"clauses": [{"id": "governing_law", "decision": "fail"}]}
 
 
-def _no_blocks(matter):  # stand-in for a non-stale, fully-resolved approval gate
+def _no_blocks(matter, **_kwargs):  # stand-in for a non-stale, fully-resolved approval gate
+    # Accept the resolver-threading kwargs (current_playbook_hash_func /
+    # current_runtime_func) the production _approval_status now passes through.
     return []
 
 
@@ -124,7 +126,7 @@ class PhaseStatusDerivationTests(unittest.TestCase):
 
     def test_approval_blocked_on_document_level_block_when_reviewed(self):
         matter = {"extracted_text": "x", "human_reviewed": True, "review_result": _pass_review()}
-        with mock.patch.object(workflow, "_approval_blocks", lambda m: ["stale_playbook"]):
+        with mock.patch.object(workflow, "_approval_blocks", lambda m, **_k: ["stale_playbook"]):
             state = workflow_state(matter)
         self.assertEqual(state["phase"], PHASE_APPROVAL)
         self.assertEqual(state["status"], STATUS_APPROVAL_BLOCKED)
@@ -133,7 +135,7 @@ class PhaseStatusDerivationTests(unittest.TestCase):
         # Per-clause unresolved blocks belong to Review (the reviewer resolves them
         # there); they must NOT surface as an Approval-phase block.
         matter = {"extracted_text": "x", "human_reviewed": True, "review_result": _flagged_review()}
-        with mock.patch.object(workflow, "_approval_blocks", lambda m: ["unresolved_clause:mutuality"]):
+        with mock.patch.object(workflow, "_approval_blocks", lambda m, **_k: ["unresolved_clause:mutuality"]):
             state = workflow_state(matter)
         self.assertEqual(state["phase"], PHASE_REVIEW)
         self.assertEqual(state["status"], STATUS_AWAITING_HUMAN)

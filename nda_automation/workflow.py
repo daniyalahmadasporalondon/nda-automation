@@ -81,6 +81,13 @@ STATUS_APPROVED = "approved"
 STATUS_SENDING = "sending"
 STATUS_SENT_AWAITING_COUNTERPARTY = "sent_awaiting_counterparty"
 STATUS_SEND_FAILED = "send_failed"
+# Signature terminal-not-signed: the counterparty REFUSED (declined) or the
+# envelope was CANCELLED (voided). Both clear the awaiting-signature limbo so a
+# dead/cancelled deal stops reading as "awaiting counterparty" forever. They are
+# split deliberately: declined is a flagged "needs attention" state the user
+# renegotiates/closes; voided returns the matter to a re-sendable state.
+STATUS_SIGNATURE_DECLINED = "signature_declined"
+STATUS_SIGNATURE_VOIDED = "signature_voided"
 # Negotiation
 STATUS_COUNTER_RECEIVED = "counter_received"
 STATUS_RE_REVIEWING = "re_reviewing"
@@ -111,6 +118,12 @@ FAILURE_STATUSES = frozenset({
     STATUS_INTAKE_FAILED,
     STATUS_REVIEW_FAILED,
     STATUS_SEND_FAILED,
+    # A DECLINED signature is a flagged "needs attention" state: the counterparty
+    # refused, so the deal needs a human (renegotiate / re-send / close). It stays
+    # visible on the board (Sent column) rather than dropping off. VOIDED is NOT
+    # here: a voided envelope is a benign "cancelled to reissue" state that returns
+    # the matter to re-sendable, not a failure.
+    STATUS_SIGNATURE_DECLINED,
 })
 
 # Terminal statuses -- no further machine move is expected.
@@ -241,6 +254,14 @@ def _derive_phase_and_status(
     if negotiation is not None:
         return PHASE_NEGOTIATION, negotiation
 
+    # A VOIDED signature envelope (sender cancelled, usually to reissue) returns
+    # the matter to a RE-SENDABLE state: it drops out of the Sent/awaiting limbo and
+    # back to the Approval phase where Send is available again. Checked BEFORE
+    # _sent_status because the recorded outbound / sent board column would otherwise
+    # pin it in "awaiting counterparty" forever.
+    if _truthy(matter.get("signature_voided")):
+        return PHASE_APPROVAL, STATUS_SIGNATURE_VOIDED
+
     sent = _sent_status(matter)
     if sent is not None:
         return PHASE_SENT, sent
@@ -297,6 +318,12 @@ def _negotiation_status(matter: Dict[str, Any]) -> str | None:
 def _sent_status(matter: Dict[str, Any]) -> str | None:
     if _truthy(matter.get("sending")):
         return STATUS_SENDING
+    # A DECLINED signature is a terminal-not-signed state the counterparty refused.
+    # It out-ranks the awaiting-counterparty default so a dead deal stops reading as
+    # "awaiting" forever. It stays in the Sent phase (still on the board) and trips
+    # needs_attention via FAILURE_STATUSES.
+    if _truthy(matter.get("signature_declined")):
+        return STATUS_SIGNATURE_DECLINED
     if _has_outbound(matter) or _canonical_board(matter.get("board_column")) == BOARD_SENT:
         return STATUS_SENT_AWAITING_COUNTERPARTY
     return None
@@ -449,6 +476,11 @@ _NEXT_ACTION_BY_STATUS: Dict[str, tuple[str, str, bool]] = {
     STATUS_SENDING: ("Sending redline", OWNER_SYSTEM, False),
     STATUS_SENT_AWAITING_COUNTERPARTY: ("Await counterparty response", OWNER_HUMAN, False),
     STATUS_SEND_FAILED: ("Retry send (send failed)", OWNER_HUMAN, True),
+    # Counterparty refused: a human must renegotiate / re-send / close. Flagged
+    # (needs_attention) and blocked (the matter cannot advance until they act).
+    STATUS_SIGNATURE_DECLINED: ("Counterparty declined — renegotiate or close", OWNER_HUMAN, True),
+    # Envelope cancelled: Send is available again (re-sendable, not blocked).
+    STATUS_SIGNATURE_VOIDED: ("Re-send for signature", OWNER_HUMAN, False),
     STATUS_COUNTER_RECEIVED: ("Triage counterparty changes", OWNER_HUMAN, False),
     STATUS_RE_REVIEWING: ("Re-reviewing counterparty changes", OWNER_SYSTEM, False),
     STATUS_FULLY_SIGNED: ("Matter executed", OWNER_HUMAN, False),
@@ -619,7 +651,19 @@ def _phase_label(phase: str) -> str:
 
 
 def _status_label(status: str) -> str:
+    explicit = _STATUS_LABELS.get(status)
+    if explicit:
+        return explicit
     return status.replace("_", " ").title()
+
+
+# Human-facing labels that differ from the auto-titlecase default. The two
+# signature terminal-not-signed states carry distinct, action-oriented copy so the
+# board card + matter detail communicate what happened and what to do next.
+_STATUS_LABELS: Dict[str, str] = {
+    STATUS_SIGNATURE_DECLINED: "Declined — needs attention",
+    STATUS_SIGNATURE_VOIDED: "Voided — ready to re-send",
+}
 
 
 _PHASE_BY_STATUS: Dict[str, str] = {
@@ -638,6 +682,8 @@ _PHASE_BY_STATUS: Dict[str, str] = {
     STATUS_SENDING: PHASE_SENT,
     STATUS_SENT_AWAITING_COUNTERPARTY: PHASE_SENT,
     STATUS_SEND_FAILED: PHASE_SENT,
+    STATUS_SIGNATURE_DECLINED: PHASE_SENT,
+    STATUS_SIGNATURE_VOIDED: PHASE_APPROVAL,
     STATUS_COUNTER_RECEIVED: PHASE_NEGOTIATION,
     STATUS_RE_REVIEWING: PHASE_NEGOTIATION,
     STATUS_FULLY_SIGNED: PHASE_EXECUTED,

@@ -100,6 +100,25 @@ const RepositoryModel = (() => {
     return boardColumnLabel(matterColumn(matter));
   }
 
+  // The signature terminal-not-signed statuses the backend derives when a DocuSign
+  // envelope is declined or voided. Data-driven: the backend owns the label; we
+  // only key off the status to know WHEN to surface it over the board-column label.
+  const SIGNATURE_TERMINAL_STATUSES = new Set(["signature_declined", "signature_voided"]);
+
+  // The matter's human-facing status label. Defaults to the board-column label,
+  // but when the backend workflow_state reports a signature terminal-not-signed
+  // state (declined / voided) we surface ITS label ("Declined — needs attention" /
+  // "Voided — ready to re-send") so a dead/cancelled deal no longer reads as a
+  // generic "Sent". Falls back to the column label whenever workflow_state is
+  // absent or not one of those states (fully backward compatible).
+  function statusLabel(matter) {
+    const workflowState = matter && typeof matter.workflow_state === "object" ? matter.workflow_state : null;
+    if (workflowState && SIGNATURE_TERMINAL_STATUSES.has(workflowState.status) && workflowState.label) {
+      return String(workflowState.label);
+    }
+    return matterColumnLabel(matter);
+  }
+
   function manualUploadSubmissionColumn(boardColumn) {
     const column = canonicalBoardColumn(boardColumn);
     return column === MANUAL_UPLOAD_COLUMN_ID ? MANUAL_UPLOAD_STORAGE_COLUMN_ID : column;
@@ -192,6 +211,7 @@ const RepositoryModel = (() => {
     manualUploadSubmissionColumn,
     matterColumn,
     matterColumnLabel,
+    statusLabel,
     matterSender,
     matterSubject,
     playbookMatchLabel,

@@ -28,6 +28,7 @@ from .docusign_integration import (
     SIGNING_ORDERS,
     STATUS_COMPLETED,
     STATUS_CREATED,
+    STATUS_DECLINED,
     STATUS_DELIVERED,
     STATUS_SENT,
     STATUS_VOIDED,
@@ -155,6 +156,22 @@ class FakeDocuSignClient:
             envelope.status = STATUS_VOIDED
             envelope.void_reason = str(reason or "")
             envelope.history.append({"status": STATUS_VOIDED, "at": _now_iso()})
+            return {"envelope_id": envelope_id, "status": envelope.status}
+
+    def decline_envelope(self, envelope_id: str, email: str = "") -> dict[str, Any]:
+        """Simulate the counterparty DECLINING — the envelope becomes terminal
+        ``declined`` (a recipient refused to sign). Test-only control mirroring the
+        real provider's terminal decline; flips the declining recipient's per-party
+        status too so the recipients projection stays consistent."""
+        with self._lock:
+            envelope = self._require(envelope_id)
+            if envelope.status == STATUS_COMPLETED:
+                raise DocuSignError("A completed envelope cannot be declined.")
+            envelope.status = STATUS_DECLINED
+            key = str(email or "").strip().casefold()
+            if key and key in envelope.recipient_status:
+                envelope.recipient_status[key] = STATUS_DECLINED
+            envelope.history.append({"status": STATUS_DECLINED, "at": _now_iso()})
             return {"envelope_id": envelope_id, "status": envelope.status}
 
     # --- simulation controls (tests) ---------------------------------------
