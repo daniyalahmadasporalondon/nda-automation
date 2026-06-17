@@ -1,101 +1,246 @@
 /* ===========================================================================
-   Overview tab — clause roster, review progress, send/approve footer.
-   Reuses the Review Workstation design tokens from styles.css (surfaces, ink,
-   brand, semantic pill colors, radii, shadows). The PASS / REVIEW / FAIL pills
-   mirror the shared `.status` pill recipe (tinted bg + inset 1px border ring +
-   ink color) so verdicts read identically across the app.
-   Only the .ov-* classes live here; .view toggling stays in styles.css.
+   Overview tab — counterparty + facts -> clause roster -> approve/send footer.
+
+   VISUAL DIRECTION (user feedback): flat + minimal. No bubbles — the facts no
+   longer sit in tinted chips and the clause rows are no longer rounded bordered
+   cards; everything flattens to clean rows separated by hairline rules. The
+   verdict status reads as quiet colored TEXT with a thin left-edge accent on the
+   row, not a filled pill. Layout is VERTICAL (a stack, not a row of chips). The
+   entity-name field is small and quiet. Generous whitespace, clear type
+   hierarchy, less chrome.
+
+   All colors come from the shared design tokens in styles.css (ink / surfaces /
+   green-amber-red verdict inks). Only the .ov-* classes live here.
    =========================================================================== */
 
-/* ---------- Tab pane: counterparty/facts -> roster -> footer ---------- */
+/* ---------- Tab pane: vertical stack ---------- */
 
 .ov-tab {
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 14px;
+  gap: 22px;
   min-height: 0;
   min-width: 0;
-  padding: 16px 18px 14px;
+  padding: 22px 22px 16px;
 }
 
-/* ---------- Facts strip (top): counterparty + key facts ---------- */
+/* ---------- Counterparty + facts (top) ---------- */
 
 .ov-counterparty {
-  color: var(--ink);
+  display: flex;
   flex: 0 0 auto;
-  font-size: 16px;
-  font-weight: 850;
-  line-height: 1.15;
+  flex-direction: column;
+  gap: 12px;
   margin: 0;
 }
 
-.ov-facts {
-  align-items: stretch;
+/* Counterparty name + confirm state, stacked on one baseline line. */
+.ov-counterparty-head {
+  align-items: baseline;
   display: flex;
-  flex: 0 0 auto;
   flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.ov-counterparty-name {
+  color: var(--ink);
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ov-counterparty-name--empty {
+  color: var(--ink-muted);
+  font-style: italic;
+  font-weight: 600;
+}
+
+/* Confirmed / unconfirmed state — quiet TEXT, no pill background. */
+.ov-counterparty-status {
+  align-items: baseline;
+  display: inline-flex;
+  flex: 0 0 auto;
   gap: 8px;
 }
 
-.ov-fact {
-  background: var(--bg-soft);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--r-sm);
-  color: var(--ink-soft);
+.ov-counterparty-state--confirmed {
+  color: var(--green-ink);
   font-size: 11px;
-  font-weight: 600;
-  line-height: 1.25;
-  padding: 7px 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
-.ov-fact strong {
-  color: var(--ink);
-  display: block;
-  font-size: 9px;
-  font-weight: 850;
+.ov-counterparty-badge {
+  color: var(--amber-ink);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+/* Confirm — a quiet text-button, not a filled chip. */
+.ov-counterparty-confirm {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--brand-glow);
+  color: var(--brand);
+  cursor: pointer;
+  font-family: var(--text-font);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  padding: 0 0 1px;
+  transition: color 0.16s ease, border-color 0.16s ease;
+}
+
+.ov-counterparty-confirm:hover:not(:disabled) {
+  border-bottom-color: var(--brand);
+  color: var(--brand-strong);
+}
+
+.ov-counterparty-confirm:disabled {
+  color: var(--ink-muted);
+  cursor: not-allowed;
+}
+
+/* Entity-name fill — SMALL + QUIET (user: too prominent). A label above a
+   restrained, mostly-borderless input that only firms up on focus. */
+.ov-counterparty-fill {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 360px;
+}
+
+.ov-counterparty-fill-label {
+  color: var(--ink-muted);
+  font-size: 9.5px;
+  font-weight: 700;
   letter-spacing: 0.08em;
-  margin-bottom: 2px;
   text-transform: uppercase;
 }
 
-/* ---------- Roster: scrollable list of clause rows ---------- */
+.ov-counterparty-fill-input {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border-strong);
+  border-radius: 0;
+  color: var(--ink-soft);
+  font-family: var(--text-font);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 1px 4px;
+  transition: border-color 0.16s ease, color 0.16s ease;
+  width: 100%;
+}
+
+.ov-counterparty-fill-input::placeholder {
+  color: var(--ink-muted);
+}
+
+.ov-counterparty-fill-input:hover {
+  border-bottom-color: var(--lotus);
+}
+
+.ov-counterparty-fill-input:focus {
+  border-bottom-color: var(--brand);
+  color: var(--ink);
+  outline: none;
+}
+
+/* ---------- Facts: flat vertical lines, NO chip backgrounds ----------
+   Governing-law / term were removed (they duplicate roster clauses); typically
+   just the received date remains. Tolerant of zero/one/many facts. */
+
+.ov-facts {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 0;
+}
+
+.ov-facts:empty {
+  display: none;
+}
+
+.ov-fact {
+  align-items: baseline;
+  border: 0;
+  color: var(--ink-soft);
+  display: flex;
+  gap: 10px;
+  justify-content: flex-start;
+  padding: 3px 0;
+}
+
+.ov-fact-label {
+  color: var(--ink-muted);
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  min-width: 84px;
+  text-transform: uppercase;
+}
+
+.ov-fact-value {
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.ov-fact-value--empty {
+  color: var(--ink-muted);
+  font-weight: 500;
+}
+
+/* ---------- Roster: scrollable list of flat clause rows ----------
+   No card containers — rows are hairline-separated lines. A thin colored
+   left-edge accent carries the verdict; the verdict label is quiet colored text. */
 
 .ov-roster {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: 4px;
   min-height: 0;
   overflow-y: auto;
-  padding: 2px;
 }
 
 .ov-row {
   align-items: center;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  border-left: 2px solid transparent;
   color: var(--ink);
   cursor: pointer;
   display: flex;
   flex: 0 0 auto;
-  font-size: 11.5px;
+  font-size: 13px;
   font-weight: 600;
-  gap: 9px;
-  padding: 9px 11px;
+  gap: 12px;
+  padding: 11px 10px 11px 12px;
   text-align: left;
-  transition: background 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+  transition: background 0.14s ease, border-left-color 0.14s ease;
+}
+
+.ov-row:last-child {
+  border-bottom: 0;
 }
 
 .ov-row:hover,
 .ov-row:focus-visible {
   background: var(--bg-soft);
-  border-color: var(--border-strong);
   outline: none;
 }
 
-/* Clause label takes the remaining space, pushing pill + check to the right. */
+/* Clause label takes the remaining space, pushing the verdict to the right. */
+.ov-row__name,
 .ov-row > :first-child {
   flex: 1 1 auto;
   min-width: 0;
@@ -104,50 +249,68 @@
   white-space: nowrap;
 }
 
+/* Current clause: a brand left-edge accent + the faintest tint, no card. */
 .ov-row--current {
   background: var(--bg-softer);
-  border-color: var(--lotus);
-  box-shadow: inset 0 0 0 1px var(--brand-glow), var(--shadow-xs);
+  border-left-color: var(--brand);
 }
 
 .ov-row--current:hover {
-  background: var(--bg-softer);
-  border-color: var(--lotus);
+  background: var(--bg-soft);
 }
 
-/* ---------- Verdict pills — mirror the shared `.status` pill look ---------- */
+/* ---------- Verdict — quiet colored TEXT + a left-edge accent, no pill ----------
+   The .ov-pill markup stays, but it is flattened: no background, no border ring;
+   just small uppercase colored text. The matching left-edge accent on the row
+   gives the at-a-glance scan cue. */
 
 .ov-pill {
-  border-radius: var(--r-pill);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
   flex: 0 0 auto;
-  font-size: 8.5px;
+  font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   line-height: 1;
-  padding: 5px 7px;
+  padding: 0;
   text-transform: uppercase;
   white-space: nowrap;
 }
 
 .ov-pill--pass {
-  background: var(--green-bg);
-  box-shadow: inset 0 0 0 1px var(--green-border);
   color: var(--green-ink);
 }
 
 .ov-pill--review {
-  background: var(--amber-bg);
-  box-shadow: inset 0 0 0 1px var(--amber-border);
   color: var(--amber-ink);
 }
 
 .ov-pill--fail {
-  background: var(--red-bg);
-  box-shadow: inset 0 0 0 1px var(--red-border);
   color: var(--red-ink);
 }
 
-/* Small "reviewed" check mark trailing a row. */
+/* Row left-edge accent keyed off the verdict the row contains. A non-current
+   row tints its left edge to match its verdict so problems read at a glance;
+   the brand accent on the current row takes precedence (declared after). */
+.ov-row:has(.ov-pill--fail) {
+  border-left-color: var(--red-border);
+}
+
+.ov-row:has(.ov-pill--review) {
+  border-left-color: var(--amber-border);
+}
+
+.ov-row:has(.ov-pill--pass) {
+  border-left-color: transparent;
+}
+
+.ov-row--current {
+  border-left-color: var(--brand);
+}
+
+/* Trailing reviewed check (if emitted) stays a quiet inline glyph. */
 .ov-check {
   align-items: center;
   color: var(--green-ink);
@@ -163,57 +326,101 @@
   width: 14px;
 }
 
-/* ---------- Empty state (shell-owned) ----------
-   Shown before any AI review has run (matter.has_ai_review === false): there is
-   no roster to render, so the pane invites the reviewer to run the AI review.
-   The shell's overview-tab.js emits a column card with a title, hint, and a
-   "Refresh with AI" button (.ov-empty-title / .ov-empty-hint / .ov-empty-refresh
-   below), so this is a column flex card, not the centered single-line message. */
+/* ---------- Empty state: before any AI review has run ----------
+   Flat, no dashed card — a calm centered invitation. */
 
 .ov-empty {
-  align-items: center;
-  background: var(--bg-soft);
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--r-md);
+  align-items: flex-start;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
   color: var(--ink-soft);
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 24px 18px;
-  text-align: center;
+  gap: 10px;
+  padding: 14px 0;
+  text-align: left;
 }
 
-/* ---------- Footer: approve / send ----------
-   The reviewed-count progress line was descoped, so the .ov-progress* styles
-   that lived here were dropped (no markup references them anymore). */
+.ov-empty-title {
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 750;
+  margin: 0;
+}
+
+.ov-empty-hint {
+  color: var(--ink-muted);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+  max-width: 40ch;
+}
+
+.ov-empty-refresh {
+  background: var(--brand);
+  border: 0;
+  border-radius: var(--r-sm);
+  color: #ffffff;
+  cursor: pointer;
+  font-family: var(--text-font);
+  font-size: 12px;
+  font-weight: 650;
+  margin-top: 4px;
+  padding: 8px 16px;
+  transition: background 0.16s ease, transform 0.16s ease;
+}
+
+.ov-empty-refresh:hover {
+  background: var(--brand-strong);
+}
+
+.ov-empty-refresh:active {
+  transform: translateY(1px);
+}
+
+/* ---------- Footer: approve / send — flat, hairline top rule ---------- */
 
 .ov-footer {
   align-items: center;
-  background: var(--bg-panel);
+  background: transparent;
   border-top: 1px solid var(--border);
   display: flex;
   flex: 0 0 auto;
   flex-wrap: wrap;
   gap: 10px 12px;
-  margin: 2px -18px -14px;
-  padding: 12px 18px;
+  margin: 6px -22px -16px;
+  padding: 14px 22px;
+}
+
+.ov-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+}
+
+.ov-approve-reason {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .ov-approve,
 .ov-send {
   align-items: center;
   border: 0;
-  border-radius: var(--r-pill);
+  border-radius: var(--r-sm);
   cursor: pointer;
   display: inline-flex;
   flex: 0 0 auto;
   font-family: var(--text-font);
-  font-size: 11px;
-  font-weight: 700;
-  height: 28px;
+  font-size: 12px;
+  font-weight: 650;
+  height: 30px;
   justify-content: center;
-  padding: 0 14px;
-  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, transform 0.14s ease;
+  padding: 0 16px;
+  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease, transform 0.14s ease;
 }
 
 .ov-approve:active:not(:disabled),
@@ -230,18 +437,18 @@
   background: var(--brand-bright);
 }
 
-/* Greyed/disabled approve — works as a class or the native :disabled state. */
+/* Disabled approve — flat muted, no chrome. */
 .ov-approve--disabled,
 .ov-approve:disabled {
   background: var(--slate-bg);
-  box-shadow: inset 0 0 0 1px var(--slate-border);
   color: var(--ink-muted);
   cursor: not-allowed;
   pointer-events: none;
 }
 
+/* Send — quiet outlined secondary. */
 .ov-send {
-  background: var(--bg-panel);
+  background: transparent;
   border: 1px solid var(--border-strong);
   color: var(--ink-soft);
 }
@@ -258,15 +465,9 @@
 }
 
 /* ===========================================================================
-   Shell-owned structure (from feat/overview-shell).
-   The composer (overview-tab.js) emits the tab section stack, the empty-state
-   title/hint/refresh affordances, and a pre-integration placeholder. These
-   selectors are unique to the shell; the component internals above are owned by
-   roster.js / footer.js / facts.js.
+   Shell-owned structure (composer sections + pre-integration placeholder).
    =========================================================================== */
 
-/* The composer wraps each component renderer in its own <section> so an empty
-   one collapses instead of leaving a gap. */
 .ov-section {
   display: block;
 }
@@ -275,53 +476,14 @@
   display: none;
 }
 
-/* The empty-state variant of .ov-tab tightens the gap (the card carries its own
-   internal spacing). */
+/* Empty-state variant tightens the tab gap (the block carries its own spacing). */
 .ov-tab-empty {
   gap: 0;
 }
 
-.ov-empty-title {
-  color: var(--ink);
-  font-size: 15px;
-  font-weight: 700;
-  margin: 0;
-}
-
-.ov-empty-hint {
-  color: var(--ink-muted);
-  font-size: 13px;
-  line-height: 1.45;
-  margin: 0;
-  max-width: 34ch;
-}
-
-.ov-empty-refresh {
-  background: var(--brand);
-  border: 1px solid var(--brand);
-  border-radius: var(--r-sm);
-  color: #ffffff;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-  margin-top: 4px;
-  padding: 7px 14px;
-  transition: background 0.16s ease, transform 0.16s ease;
-}
-
-.ov-empty-refresh:hover {
-  background: var(--brand-strong);
-}
-
-.ov-empty-refresh:active {
-  transform: translateY(1px);
-}
-
-/* Pre-integration placeholder: rendered when a component renderer is not yet
-   present so the shell still mounts cleanly. Never visible once roster/footer/
-   facts ship together (they are folded in on this branch). */
+/* Pre-integration placeholder — flat, only shown before a component is folded in. */
 .ov-placeholder {
-  background: var(--bg-softer);
+  background: transparent;
   border: 1px dashed var(--border-soft);
   border-radius: var(--r-sm);
   color: var(--ink-muted);
