@@ -19,6 +19,10 @@ const FORMAT_JS = fs.readFileSync(
   path.join(ROOT, "static", "js", "review-workstation-format.js"),
   "utf8",
 );
+const RENDERING_JS = fs.readFileSync(
+  path.join(ROOT, "static", "js", "redline-rendering.js"),
+  "utf8",
+);
 
 // Minimal page: the four new controls + bold (as a control twin) and one editable
 // paragraph whose full text is the selection target.
@@ -117,6 +121,34 @@ async function main() {
     await page.selectOption("#studioFormatHighlight", "");
     runs = await activeRuns(page);
     assert.ok(runs && runs.every((r) => !("highlight" in r)), `highlight clear failed, got ${JSON.stringify(runs)}`);
+
+    // ---- CSS-injection defence (run color/highlight rendering) ----------------
+    // inlineRunStyle / highlightCssColor interpolate untrusted run color/highlight
+    // into an inline style="..."; assert a hostile value is neutralised (no extra
+    // declaration, no url() beacon), while legitimate values still render.
+    await page.addScriptTag({ content: RENDERING_JS });
+    const injection = await page.evaluate(() => {
+      const hostileColor = inlineRunStyle({ color: "red;background:url(https://evil/x)" });
+      const hostileColorHash = inlineRunStyle({ color: "#fff;background:url(https://evil/x)" });
+      const hostileHighlight = inlineRunStyle({ highlight: "red;background:url(https://evil/x)" });
+      const validHex = inlineRunStyle({ color: "FF8800" });
+      const validNamed = inlineRunStyle({ highlight: "yellow" });
+      const validBareword = inlineRunStyle({ color: "rebeccapurple" });
+      return { hostileColor, hostileColorHash, hostileHighlight, validHex, validNamed, validBareword };
+    });
+    for (const [label, style] of [
+      ["color", injection.hostileColor],
+      ["color#", injection.hostileColorHash],
+      ["highlight", injection.hostileHighlight],
+    ]) {
+      assert.ok(!/url/i.test(style), `${label}: url() leaked into style: ${style}`);
+      assert.ok(!/background/i.test(style), `${label}: injected background declaration: ${style}`);
+      // A neutralised hostile value emits NO color/background declaration at all.
+      assert.equal(style, "", `${label}: hostile value not dropped, got: ${style}`);
+    }
+    assert.equal(injection.validHex, "color:#FF8800", `valid hex broke: ${injection.validHex}`);
+    assert.equal(injection.validNamed, "background-color:#ffff00", `valid named highlight broke: ${injection.validNamed}`);
+    assert.equal(injection.validBareword, "color:rebeccapurple", `valid bareword color broke: ${injection.validBareword}`);
   } catch (error) {
     failures.push(error);
   } finally {

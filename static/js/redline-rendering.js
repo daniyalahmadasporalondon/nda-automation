@@ -938,8 +938,34 @@ function highlightCssColor(name) {
   const lower = raw.toLowerCase();
   const key = Object.keys(HIGHLIGHT_NAME_CSS).find((k) => k.toLowerCase() === lower);
   if (key) return HIGHLIGHT_NAME_CSS[key];
-  // Unknown name: hand the raw value to CSS, which understands many color names.
-  return raw;
+  // Unknown name: it is an UNTRUSTED value (from an uploaded counterparty DOCX or
+  // a user pick), so it must pass the same CSS-value whitelist as a text color
+  // before it can reach an inline `background-color:` declaration. A hostile value
+  // like "red;background:url(https://evil/x)" is rejected (returns "") so it can
+  // never inject an extra declaration / fire an outbound request on render.
+  return safeCssColor(raw);
+}
+
+// CSS-value whitelist for an untrusted color reaching an inline `style="..."`.
+// `escapeHtml` stops attribute-breakout but NOT CSS-level injection: `;`, `:`,
+// `(`, `)`, and `url` would let an extra declaration ride along (e.g. an outbound
+// `background:url(...)` beacon). So we accept ONLY safe color forms and reject
+// anything containing those characters or the `url` token:
+//   - #RGB / #RRGGBB hex
+//   - rgb()/rgba() with digits, commas, spaces, dots and percent only
+//   - a single bareword named color (letters only -> the CSS named palette)
+// Returns "" (no color emitted) for anything else.
+function safeCssColor(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  // Defence-in-depth: reject the injection characters / token outright, even if a
+  // pattern below would also have failed. `url` is checked case-insensitively.
+  if (/[;:()]/.test(raw) || /url/i.test(raw)) return "";
+  if (/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(raw)) return raw;
+  // rgb()/rgba() never reach here (they contain parens, rejected above), so a
+  // function-form color is intentionally unsupported for untrusted input.
+  if (/^[a-zA-Z]+$/.test(raw)) return raw; // a bareword CSS named color
+  return "";
 }
 
 const PARAGRAPH_TEXT_ALIGNMENTS = new Set(["left", "center", "right", "justify"]);
@@ -1054,7 +1080,12 @@ function inlineRunStyle(run) {
   if (fontStack) declarations.push(`font-family:${fontStack}`);
   const size = Number(run?.size);
   if (Number.isFinite(size) && size > 0) declarations.push(`font-size:${size}pt`);
-  const color = String(run?.color || "").trim();
+  // The run color is UNTRUSTED (uploaded DOCX or user pick). Our toolbar emits a
+  // bare RRGGBB; prefix `#` for that common case, then run EVERYTHING through the
+  // CSS-value whitelist so an injected value can never add an extra declaration.
+  const rawColor = String(run?.color || "").trim();
+  const colorCandidate = /^[0-9a-fA-F]{6}$/.test(rawColor) ? `#${rawColor}` : rawColor;
+  const color = safeCssColor(colorCandidate);
   if (color) declarations.push(`color:${color}`);
   const highlight = highlightCssColor(run?.highlight);
   if (highlight) declarations.push(`background-color:${highlight}`);
