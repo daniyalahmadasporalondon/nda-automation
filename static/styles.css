@@ -2858,7 +2858,16 @@ h3 {
   display: grid;
   flex: 1;
   gap: 8px;
-  grid-template-columns: minmax(540px, 1fr) minmax(320px, 430px);
+  /* Two columns: [document viewer | inspector]. The document panel is capped so
+     its internal right gutter is just wide enough to dock the open comment card
+     (page 844 + wrap pad 20 + card ~340 + dock gap 14 + a small clearance), and
+     the inspector is the flexing column (1fr) that absorbs the rest of the row.
+     Previously the document column was the 1fr flexer, so on wide viewports it
+     ballooned and the left-hugged 844px page floated with a huge empty band on
+     its right where the docked "Add a comment" card sat far from the inspector.
+     Capping the document column and letting the inspector grow closes that dead
+     space from both sides while preserving the card's docking gutter. */
+  grid-template-columns: minmax(540px, 1232px) minmax(360px, 1fr);
   margin: 8px 14px 12px;
   min-height: 0;
 }
