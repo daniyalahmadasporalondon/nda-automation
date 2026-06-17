@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, urlparse
 from .. import (
     app_settings,
     artifact_registry,
+    docusign_connection,
     drive_integration,
     google_connection,
     matter_view,
@@ -48,8 +49,16 @@ def _repository(handler) -> MatterRepository:
 def handle_drive_status(handler, *, send_body: bool = True) -> None:
     owner_user_id = _google_owner_user_id(handler)
     settings = app_settings.drive_settings()
-    connected = bool(owner_user_id) and drive_integration.drive_connected(owner_user_id)
     token_status = _drive_token_status(owner_user_id)
+    if owner_user_id:
+        connected = drive_integration.drive_connected(owner_user_id)
+    else:
+        # No-login / server-global mode (mirrors the Gmail status route, which
+        # resolves the on-disk role token for owner=""). The real-auth per-user
+        # path above is untouched. We only treat Drive as connected here when a
+        # server-global Drive token is actually configured on disk -- otherwise
+        # the panel keeps showing "Sign in with Google" exactly as before.
+        connected = bool(token_status.get("configured")) and drive_integration.drive_connected("")
     setup_status = google_connection.connection_setup_status(
         owner_user_id=owner_user_id,
         connect_url=_drive_connect_url(owner_user_id),
@@ -334,13 +343,22 @@ def _drive_connect_url(owner_user_id: str) -> str:
 
 
 def _drive_token_status(owner_user_id: str) -> dict[str, object]:
-    if not owner_user_id:
-        return {
-            "configured": False,
-            "label": "Sign in with Google",
-            "source": "missing",
-        }
-    return google_connection.role_token_status("drive", owner_user_id=owner_user_id)
+    if owner_user_id:
+        return google_connection.role_token_status("drive", owner_user_id=owner_user_id)
+    # No-login / server-global mode: mirror the Gmail status route and resolve the
+    # on-disk Drive role token for owner="" (this is the branch that already carries
+    # the legacy-gmail-token-with-drive-scope fallback). When NO server-global token
+    # is configured, fall back to the original "Sign in with Google" missing payload
+    # so the signed-out UI is unchanged.
+    if docusign_connection._no_login_mode():
+        server_status = google_connection.role_token_status("drive", owner_user_id="")
+        if server_status.get("configured"):
+            return server_status
+    return {
+        "configured": False,
+        "label": "Sign in with Google",
+        "source": "missing",
+    }
 
 
 def _google_owner_user_id(handler) -> str:
