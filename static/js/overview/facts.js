@@ -78,8 +78,13 @@ function renderCounterparty(name, confirmed) {
 
   // The entity-name fill input absorbs the old "Fill" tab's entity-name function:
   // committing a value (change/Enter) hands the trimmed name to onEntityFill.
+  //
+  // The block carries its own "COUNTERPARTY" field label, matching the "ENTITY
+  // NAME" / "RECEIVED" labels below it. It reuses the shared `ov-fact-label`
+  // small-caps gray label class so the three field labels read as one family.
   return `
     <section class="ov-counterparty"${confirmed ? "" : ' data-ov-state="unconfirmed"'} aria-label="Counterparty">
+      <span class="ov-fact-label ov-counterparty-label">Counterparty</span>
       <div class="ov-counterparty-head">
         ${displayName}
         <span class="ov-counterparty-status">${stateMarkup}</span>

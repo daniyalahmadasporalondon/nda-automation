@@ -35,24 +35,26 @@ function createOverviewController({ state, root, fillSection, renderFill }) {
   // The merged Overview pane renders the at-a-glance summary AROUND the existing
   // Fill/Aspora-entity tool. `fillSection` is a persistent standalone element
   // (owned by app.js) that the UNTOUCHED reviewFillController paints into via
-  // root.innerHTML — so it owns its own markup entirely and the section TITLE must
-  // live OUTSIDE it. We wrap it in a titled section and relocate the whole wrapper
-  // into the pane on each render; `renderFill` repaints the body. The wrapper is
-  // appended to whatever `parent` the caller passes — placement is the caller's
-  // decision (right below the counterparty block, before the roster).
+  // root.innerHTML — so it owns its own markup entirely. We wrap it in a section
+  // and relocate the whole wrapper into the pane on each render; `renderFill`
+  // repaints the body. The wrapper is appended to whatever `parent` the caller
+  // passes — placement is the caller's decision (right below the counterparty
+  // block, before the roster).
+  //
+  // NO outer "Aspora entity" section TITLE is emitted: the Fill tool already
+  // carries its own "Aspora entity" label (the entity-picker field), so an outer
+  // .ov-section-title here would duplicate it. The .ov-section-fill class carries
+  // the section's layout/separator styling directly (see overview.css), so the
+  // title element is not needed structurally either.
   function mountFillSection(parent) {
     if (!parent || !fillSection) return;
     const wrapper = document.createElement("section");
     wrapper.className = "ov-section ov-section-fill";
-    const title = document.createElement("h3");
-    title.className = "ov-section-title";
-    title.textContent = "Aspora entity";
     // Keep the controller's body class on the persistent element it owns.
     fillSection.className = "ov-section-fill-body";
-    wrapper.append(title, fillSection);
+    wrapper.append(fillSection);
     parent.append(wrapper);
-    // The Fill controller paints into fillSection (its root) on demand. Its
-    // root.innerHTML write only touches its own body, leaving the title intact.
+    // The Fill controller paints into fillSection (its root) on demand.
     if (typeof renderFill === "function") renderFill();
   }
 
