@@ -161,7 +161,12 @@ async function main() {
     await waitForServer(AI_FIRST_BASE_URL);
     browser = await chromium.launch(browserLaunchOptions());
 
-    for (const [name, test] of tests) {
+    // Optional substring filter so a single test can be run in isolation:
+    //   TEST_GREP="refresh" node tests/frontend/review-workstation.cjs
+    const grep = (process.env.TEST_GREP || "").toLowerCase();
+    const matchesGrep = ([name]) => !grep || name.toLowerCase().includes(grep);
+
+    for (const [name, test] of tests.filter(matchesGrep)) {
       const context = await browser.newContext({ acceptDownloads: true, viewport: VIEWPORT });
       const page = await context.newPage();
       try {
@@ -172,7 +177,7 @@ async function main() {
       }
     }
 
-    for (const [name, test] of aiFirstTests) {
+    for (const [name, test] of aiFirstTests.filter(matchesGrep)) {
       const context = await browser.newContext({ acceptDownloads: true, viewport: VIEWPORT });
       const page = await context.newPage();
       try {

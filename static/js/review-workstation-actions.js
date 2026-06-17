@@ -6,6 +6,20 @@ let reviewSendModalPreviousFocus = null;
 // reviewer can retry. Generous enough for a legitimately large document.
 const EXPORT_REQUEST_TIMEOUT_MS = 120000;
 
+// Upper bound on the explicit "Refresh Review" request. The server re-runs the
+// full AI review synchronously; measured at ~50s for a short NDA and ~120s+ for a
+// long one. There was previously NO client timeout here, so a genuinely hung
+// socket would leave the button stuck disabled forever. 180s is generous enough
+// to let a legitimately long review (up to ~3 minutes) complete, while still
+// bounding a dead connection so the catch/finally re-enable the button and the
+// reviewer can retry. NOT a tight 45s-style guard — a long review must NOT be
+// mistaken for a failure.
+const REVIEW_REFRESH_TIMEOUT_MS = 180000;
+
+// User-facing copy shown on the matter while the synchronous AI review runs.
+const REVIEW_REFRESH_PROGRESS_MESSAGE =
+  "Reviewing with AI… long documents can take up to ~2 minutes.";
+
 function clearReview() {
   closeReviewSendComposer({ restoreFocus: false });
   pendingReviewSendMatterId = null;
@@ -838,14 +852,32 @@ async function refreshSelectedMatterReview() {
   const previousLabel = studioRefreshReviewButton?.textContent || "Refresh Review";
   if (studioRefreshReviewButton) {
     studioRefreshReviewButton.disabled = true;
-    studioRefreshReviewButton.textContent = "Refreshing";
+    studioRefreshReviewButton.textContent = "Reviewing…";
+    // A live progress state so a ~2-minute wait reads as working, not frozen:
+    // the spinner class animates (CSS), and aria-busy announces it to AT.
+    studioRefreshReviewButton.classList.add("is-refreshing");
+    studioRefreshReviewButton.setAttribute("aria-busy", "true");
   }
-  setFileMeta("Refreshing review against the active Playbook.");
+  setFileMeta(REVIEW_REFRESH_PROGRESS_MESSAGE);
+  // Bound the synchronous AI review so a hung socket cannot leave the button
+  // stuck forever, but stay generous (180s) so a legitimately long review still
+  // completes rather than being aborted and mis-reported as a failure.
+  const refreshAbort = new AbortController();
+  const refreshTimeoutId = window.setTimeout(() => refreshAbort.abort(), REVIEW_REFRESH_TIMEOUT_MS);
   try {
-    const response = await fetch(`/api/matters/${encodeURIComponent(matterId)}/review-refresh`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-    });
+    let response;
+    try {
+      response = await fetch(`/api/matters/${encodeURIComponent(matterId)}/review-refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: refreshAbort.signal,
+      });
+    } catch (fetchError) {
+      if (fetchError?.name === "AbortError") {
+        throw new Error("Review timed out — the server did not respond within ~3 minutes. Please try again.");
+      }
+      throw fetchError;
+    }
     const payload = await response.json();
     if (!response.ok) throw reviewErrorFromPayload(payload, "Review could not refresh");
     const refreshedMatter = matterReviewPayloadToMatter(payload);
@@ -865,9 +897,12 @@ async function refreshSelectedMatterReview() {
       renderOperationError(error, "Review could not refresh.");
     }
   } finally {
+    window.clearTimeout(refreshTimeoutId);
     if (studioRefreshReviewButton?.isConnected) {
       studioRefreshReviewButton.disabled = false;
       studioRefreshReviewButton.textContent = previousLabel;
+      studioRefreshReviewButton.classList.remove("is-refreshing");
+      studioRefreshReviewButton.removeAttribute("aria-busy");
     }
     updateExportButtonState();
   }
