@@ -1101,7 +1101,13 @@ class CorpusMasterFilterFacetTests(unittest.TestCase):
         flat = corpus_index.flatten_corpus(payload)
         counts = payload["facet_counts"]
         # Each emitted count equals the matters that carry that value (parity).
+        # facet_counts unions two shapes: the master-filter facets are
+        # ``{facet: {value: count}}`` (asserted here); repeat_entity (folded in from
+        # corpus-perf-repeat) is a scalar ``{repeat_entity: int}`` with its own
+        # parity coverage elsewhere, so skip non-dict (scalar) entries here.
         for key, by_value in counts.items():
+            if not isinstance(by_value, dict):
+                continue
             for value, count in by_value.items():
                 if key in ("restraint_types", "clauses_present"):
                     hits = [m for m in flat if value in (m["facets"].get(key) or [])]
