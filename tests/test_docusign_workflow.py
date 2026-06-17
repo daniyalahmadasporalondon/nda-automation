@@ -511,3 +511,115 @@ def test_explicit_signer_override_still_wins_over_default(
     assert emails == {"override@aspora.com"}
     # The configured default identity does not appear.
     assert ASPORA_DEFAULT_EMAIL not in emails
+
+
+# ---------------------------------------------------------------------------
+# Drive auto-archive on the "completed"/executed transition (Option A)
+# ---------------------------------------------------------------------------
+def test_completion_fires_drive_sync_with_signed_artifact(matter_with_reviewed, in_memory_matters):
+    """On completion the injected Drive archiver is invoked with the executed
+    matter — which already carries the captured signed artifact."""
+    matter, matter_id = matter_with_reviewed
+    fake = FakeDocuSignClient(auto_complete=True)
+    docusign_workflow.send_for_signature(matter, matter_id, OWNER, repository=in_memory_matters, client=fake)
+
+    calls: list[dict] = []
+
+    def _spy_drive_sync(**kwargs):
+        calls.append(kwargs)
+
+    result = docusign_workflow.sync_signature_status(
+        None,
+        matter_id,
+        OWNER,
+        repository=in_memory_matters,
+        client=fake,
+        drive_sync=_spy_drive_sync,
+    )
+
+    assert result.completed is True
+    assert result.signed_artifact_id  # the signed PDF was captured
+    # The archiver fired exactly once with the executed matter + ids.
+    assert len(calls) == 1
+    archived_matter = calls[0]["matter"]
+    assert calls[0]["matter_id"] == matter_id
+    assert calls[0]["owner_user_id"] == OWNER
+    assert archived_matter["executed"] is True
+    assert archived_matter["status"] == "fully_signed"
+    # The executed matter handed to Drive carries the signed artifact.
+    signed = latest_artifact_for_role(archived_matter, ROLE_SIGNED)
+    assert signed is not None
+    assert signed.id == result.signed_artifact_id
+
+
+def test_drive_sync_not_fired_before_completion(matter_with_reviewed, in_memory_matters):
+    """A non-completed sync must NOT trigger the Drive archive."""
+    matter, matter_id = matter_with_reviewed
+    fake = FakeDocuSignClient()
+    send = docusign_workflow.send_for_signature(
+        matter, matter_id, OWNER, repository=in_memory_matters, client=fake
+    )
+    fake.advance(send.envelope_id)  # -> delivered, not completed
+
+    calls: list[dict] = []
+    result = docusign_workflow.sync_signature_status(
+        None,
+        matter_id,
+        OWNER,
+        repository=in_memory_matters,
+        client=fake,
+        drive_sync=lambda **kw: calls.append(kw),
+    )
+    assert result.completed is False
+    assert calls == []
+
+
+def test_drive_down_is_swallowed_and_executed_transition_completes(
+    matter_with_reviewed, in_memory_matters
+):
+    """A Drive outage during completion is swallowed: the matter still flips to
+    executed/fully-signed and the signed artifact is intact.
+
+    Drives the REAL ``_archive_to_drive`` (default archiver) with ``drive_connected``
+    forced True / auto-intake on, but ``sync_matter_folder`` raising — proving the
+    best-effort guard inside the archiver, not just an injected no-op."""
+    from nda_automation import app_settings, drive_integration
+
+    matter, matter_id = matter_with_reviewed
+    fake = FakeDocuSignClient(auto_complete=True)
+    docusign_workflow.send_for_signature(matter, matter_id, OWNER, repository=in_memory_matters, client=fake)
+
+    orig_connected = drive_integration.drive_connected
+    orig_auto = app_settings.drive_auto_intake_enabled
+    orig_settings = app_settings.drive_settings
+    orig_sync = drive_integration.sync_matter_folder
+    try:
+        drive_integration.drive_connected = lambda owner_user_id="": True
+        app_settings.drive_auto_intake_enabled = lambda: True
+        app_settings.drive_settings = lambda: {"folder_id": "root123"}
+
+        def _boom(**kwargs):
+            raise drive_integration.DriveIntegrationError("Drive is down")
+
+        drive_integration.sync_matter_folder = _boom
+
+        # Must NOT raise even though the Drive sync explodes.
+        result = docusign_workflow.sync_signature_status(
+            None, matter_id, OWNER, repository=in_memory_matters, client=fake
+        )
+    finally:
+        drive_integration.drive_connected = orig_connected
+        app_settings.drive_auto_intake_enabled = orig_auto
+        app_settings.drive_settings = orig_settings
+        drive_integration.sync_matter_folder = orig_sync
+
+    # The executed transition completed regardless of the Drive failure.
+    assert result.completed is True
+    assert result.status == "completed"
+    assert result.signed_artifact_id
+    refreshed = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
+    assert refreshed["executed"] is True
+    assert refreshed["status"] == "fully_signed"
+    assert refreshed["awaiting_signature"] is False
+    # No partial/garbage drive pointer was written (the sync raised before write-back).
+    assert "drive" not in refreshed or not refreshed.get("drive", {}).get("matter_folder_id")

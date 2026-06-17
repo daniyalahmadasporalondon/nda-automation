@@ -80,6 +80,12 @@ _ANCHOR_FOR_ROLE = {
 
 ClientFactory = Callable[..., docusign_integration.DocuSignClient]
 
+# Best-effort Drive archive hook fired on the "completed" transition. Takes the
+# executed matter + ids; returns nothing and must never raise (the live default
+# swallows everything). Injectable so tests can assert it ran / simulate Drive
+# being down without monkeypatching internals.
+DriveSyncFn = Callable[..., None]
+
 
 class DocuSignWorkflowError(RuntimeError):
     """A send-for-signature workflow step could not be completed."""
@@ -211,6 +217,7 @@ def sync_signature_status(
     repository: MatterRepository | None = None,
     client: docusign_integration.DocuSignClient | None = None,
     client_factory: ClientFactory | None = None,
+    drive_sync: DriveSyncFn | None = None,
 ) -> SignatureStatusResult:
     """Fetch the envelope status; on completion store the signed artifact.
 
@@ -221,6 +228,13 @@ def sync_signature_status(
     fully-signed (``executed`` / ``executed_at`` — the markers
     :func:`workflow._is_executed` reads). Idempotent: re-syncing a completed
     matter re-points to the same signed artifact without duplicating it.
+
+    On the same ``completed`` transition it ALSO archives the executed matter to
+    Google Drive (the signed PDF + a fresh ``metadata/matter_summary.json``) via
+    :func:`_archive_to_drive`. That archive is strictly best-effort: a Drive
+    outage / not-connected / any error is swallowed and logged, never blocking the
+    executed transition (the envelope IS done at DocuSign). ``drive_sync`` is
+    injectable for tests; it defaults to the live Drive archiver.
     """
     repository = repository or DiskMatterRepository()
     matter = _load_matter(matter, matter_id, owner_user_id, repository)
@@ -262,6 +276,21 @@ def sync_signature_status(
     updated = repository.update_matter_fields(matter_id, fields, owner_user_id=owner_user_id)
     if updated is None:
         updated = {**matter, **fields}
+
+    if completed:
+        # Best-effort: archive the fully-executed matter (signed PDF + refreshed
+        # matter_summary.json) to its Drive folder. Runs AFTER the matter is
+        # persisted so the signed artifact + executed fields are in the registry
+        # that sync_matter_folder reads. A Drive outage / not-connected / any
+        # error is swallowed inside the archiver and NEVER touches the executed
+        # transition above.
+        archiver = drive_sync or _archive_to_drive
+        archiver(
+            matter=updated,
+            matter_id=matter_id,
+            owner_user_id=owner_user_id,
+            repository=repository,
+        )
 
     return SignatureStatusResult(
         matter=updated,
@@ -545,6 +574,72 @@ def _capture_executed_document(
     except Exception:
         return ""
     return artifact.id if artifact is not None else ""
+
+
+def _archive_to_drive(
+    *,
+    matter: dict[str, Any],
+    matter_id: str,
+    owner_user_id: str,
+    repository: MatterRepository,
+) -> None:
+    """Mirror the fully-executed matter into its Google Drive folder (best-effort).
+
+    Fires on the DocuSign ``completed`` transition so the executed PDF + a fresh
+    ``metadata/matter_summary.json`` land in ``{root}/{counterparty}/{matter}/``.
+    Mirrors the intake auto-sync (:meth:`matter_lifecycle._perform_drive_sync`):
+    it is gated on Drive being connected AND auto-intake being enabled, then calls
+    :func:`drive_integration.sync_matter_folder` and stamps the resulting ``drive``
+    pointer back onto the matter.
+
+    STRICTLY best-effort: every failure path — Drive not connected, auto-intake
+    off, a settings read blowing up, the sync raising, the write-back failing — is
+    swallowed here and recorded via telemetry. This function must NEVER raise, so a
+    Drive outage can never block or fail the "completed"/executed transition that
+    already persisted before we were called.
+    """
+    from . import app_settings, drive_integration, telemetry
+
+    try:
+        connected = drive_integration.drive_connected(owner_user_id)
+        auto_intake = app_settings.drive_auto_intake_enabled()
+    except Exception:
+        telemetry.increment("drive_oncomplete_skipped")
+        return
+    if not connected or not auto_intake:
+        telemetry.increment("drive_oncomplete_skipped")
+        return
+
+    try:
+        root_folder_id = str(app_settings.drive_settings().get("folder_id") or "")
+    except Exception:
+        root_folder_id = ""
+
+    try:
+        synced_at = _now_iso()
+        synced = drive_integration.sync_matter_folder(
+            matter=matter,
+            matter_id=matter_id,
+            owner_user_id=owner_user_id,
+            root_folder_id=root_folder_id,
+            synced_at=synced_at,
+        )
+        repository.update_matter_fields(
+            matter_id,
+            {
+                "drive": {
+                    "matter_folder_id": synced["matter_folder_id"],
+                    "matter_folder_url": synced["matter_folder_url"],
+                    "synced_at": synced_at,
+                    "artifacts": synced["artifacts"],
+                }
+            },
+            owner_user_id=owner_user_id,
+        )
+        telemetry.increment("drive_oncomplete_synced")
+        telemetry.increment("drive_files_synced", amount=int(synced.get("synced_count") or 0))
+    except Exception:
+        telemetry.increment("drive_oncomplete_failed")
 
 
 # ---------------------------------------------------------------------------
