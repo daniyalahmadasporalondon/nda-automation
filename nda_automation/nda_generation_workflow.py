@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
-from . import generation_timing, nda_generation, pdf_export_service, playbook_runtime
+from . import generation_timing, gmail_integration, nda_generation, pdf_export_service, playbook_runtime
 from .nda_generation import CounterpartyIntake
 
 
@@ -41,13 +41,14 @@ class GeneratedNdaWorkflowResult:
 
 
 def generate_nda_from_payload(payload: dict[str, Any], *, owner_user_id: str) -> GeneratedNdaWorkflowResult:
-    entity_id, intake, governing_law_override, address_id = intake_from_payload(payload)
+    entity_id, intake, governing_law_override, address_id, counterparty_email = intake_from_payload(payload)
     return generate_nda_for_matter(
         entity_id,
         intake,
         owner_user_id=owner_user_id,
         governing_law_override=governing_law_override,
         address_id=address_id,
+        counterparty_email=counterparty_email,
     )
 
 
@@ -58,6 +59,7 @@ def generate_nda_for_matter(
     owner_user_id: str,
     governing_law_override: str = "",
     address_id: str = "",
+    counterparty_email: str = "",
 ) -> GeneratedNdaWorkflowResult:
     from .artifact_registry import ROLE_ORIGINAL, latest_artifact_for_role  # noqa: PLC0415
     from .ingestion_service import create_matter_from_document  # noqa: PLC0415
@@ -81,12 +83,23 @@ def generate_nda_for_matter(
     generation_timing.mark_phase("safety gate passed")
 
     filename = generated_filename(intake)
+    intake_metadata: dict[str, Any] = {"generation": result.manifest.to_dict()}
+    # Persist the counterparty contact email so the downstream send-for-signature
+    # path can route to it. ``reply_to`` is the field the send path reads:
+    # gmail_integration.matter_reply_recipient() returns ``reply_to or sender`` and
+    # the frontend defaultSigners() prefers ``recipient_email || reply_to || sender``.
+    # It rides through intake_metadata because matter_store flattens ``reply_to``
+    # (a GMAIL_METADATA_FIELDS member) to a top-level matter field. Only set when a
+    # valid email was supplied; an absent/blank email leaves the matter exactly as
+    # before (send simply has no auto-resolved counterparty signer).
+    if counterparty_email:
+        intake_metadata["reply_to"] = counterparty_email
     matter = create_matter_from_document(
         filename=filename,
         document_bytes=result.docx_bytes,
         source_type="generated",
         board_column="generated",
-        intake_metadata={"generation": result.manifest.to_dict()},
+        intake_metadata=intake_metadata,
         owner_user_id=owner_user_id,
         repository=repository,
         defer_ai_review=True,
@@ -121,12 +134,13 @@ def generated_filename(intake: CounterpartyIntake) -> str:
     return f"NDA - {safe}.docx"
 
 
-def intake_from_payload(payload: dict[str, Any]) -> tuple[str, CounterpartyIntake, str, str]:
+def intake_from_payload(payload: dict[str, Any]) -> tuple[str, CounterpartyIntake, str, str, str]:
     if not isinstance(payload, dict):
         raise GenerationPayloadError("Request body must be a JSON object.")
 
     governing_law_override = governing_law_override_from_payload(payload)
     address_id = address_id_from_payload(payload)
+    counterparty_email = counterparty_email_from_payload(payload)
     entity_id = entity_id_from_payload(payload)
     if not entity_id:
         raise GenerationPayloadError("A signing entity must be selected.")
@@ -166,7 +180,29 @@ def intake_from_payload(payload: dict[str, Any]) -> tuple[str, CounterpartyIntak
         nda_type=field("nda_type") or nda_generation.NDA_TYPE_MUTUAL,
         agreement_date=agreement_date(_first(intake_block, payload, "effective_date", "agreement_date")),
     )
-    return entity_id, intake, governing_law_override, address_id
+    return entity_id, intake, governing_law_override, address_id, counterparty_email
+
+
+def counterparty_email_from_payload(payload: dict[str, Any]) -> str:
+    """The counterparty contact email the user typed at generation, validated.
+
+    The draft-intake form sends it as ``counterparty.email`` (and tolerates a flat
+    ``counterparty_email``); we read both shapes, then run it through the same
+    single-address validator the outbound send path uses
+    (``gmail_integration.recipient_email``). A blank or implausible value returns
+    ``""`` so generation proceeds exactly as before with the email simply unset --
+    never a crash. A valid value is returned canonicalised (lower-cased, display
+    name stripped) so it persists in the form the send path resolves.
+    """
+
+    intake_block = payload.get("intake") if isinstance(payload.get("intake"), dict) else {}
+    counterparty = payload.get("counterparty") if isinstance(payload.get("counterparty"), dict) else {}
+    for source in (counterparty, intake_block, payload):
+        for key in ("email", "counterparty_email"):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return gmail_integration.recipient_email(value)
+    return ""
 
 
 def entity_id_from_payload(payload: dict[str, Any]) -> str:
