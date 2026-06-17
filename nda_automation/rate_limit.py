@@ -79,8 +79,6 @@ def _rate_limit_bucket_name(method: str, path: str) -> str:
         return "matter-backup"
     if method != "POST":
         return ""
-    if path.startswith("/api/matters/") and path.endswith("/ai-first-review"):
-        return "matter-ai-first-review"
     buckets = {
         "/api/review": "review",
         "/api/review/ai-draft-validation": "ai-draft-validation",

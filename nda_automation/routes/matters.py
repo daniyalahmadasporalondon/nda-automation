@@ -6,15 +6,12 @@ import re
 from pathlib import Path
 
 from .. import gmail_integration, matter_render_job, matter_store, matter_summary, matter_view, pdf_export_service, telemetry
-from ..ai_assessor import AIAssessorError
-from ..checker import EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError
+from ..checker import ParagraphAlignmentError
 from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from ..docx_text import DocxExtractionError, extract_docx_paragraphs
-from ..http_auth import _env_flag_enabled
 from ..ingestion_service import create_matter_from_document, is_supported_document_filename
 from ..matter_lifecycle import (
     MatterNotFoundError,
-    MatterReviewUnavailableError,
     RedlineDraftError,
     RepositoryMatterLifecycle,
     ai_first_review_store_metadata as lifecycle_ai_first_review_store_metadata,
@@ -36,7 +33,6 @@ from ..review_staleness import review_result_is_stale, review_result_staleness
 from ..review_state import review_was_ai_executed
 from .common import parse_matter_id, request_owner_user_id
 
-AI_FIRST_REVIEW_FEATURE_FLAG = "NDA_AI_FIRST_REVIEW_ENABLED"
 HTTP_MATTER_SOURCE_COLUMNS = {"manual_upload": "in_review"}
 MANUAL_UPLOAD_BOARD_COLUMNS = {"gmail_demo", "in_review", "reviewed", "sent"}
 
@@ -695,48 +691,6 @@ def handle_matter_counterparty_confirm(handler, path: str) -> None:
 
     telemetry.increment("matter_counterparty_confirmations")
     handler._send_json({"matter": matter_view.public_matter(matter)})
-
-
-def handle_matter_ai_first_review(handler, path: str) -> None:
-    matter_id = parse_matter_id(path, suffix="/ai-first-review")
-    if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
-        return
-    if not _env_flag_enabled(AI_FIRST_REVIEW_FEATURE_FLAG):
-        handler._send_json(
-            {
-                "error": (
-                    "AI-first matter review is disabled. "
-                    f"Set {AI_FIRST_REVIEW_FEATURE_FLAG}=true to run it."
-                )
-            },
-            status=403,
-        )
-        return
-
-    try:
-        ai_first_review = RepositoryMatterLifecycle(_repository(handler)).run_ai_first_review(
-            matter_id,
-            owner_user_id=request_owner_user_id(handler),
-        )
-    except AIAssessorError as error:
-        handler._send_json({"error": str(error)}, status=502)
-        return
-    except MatterNotFoundError:
-        handler._send_json({"error": "Matter not found."}, status=404)
-        return
-    except MatterReviewUnavailableError as error:
-        handler._send_json({"error": str(error)}, status=400)
-        return
-    except (EvidenceProvenanceError, ParagraphAlignmentError, PlaybookTemplateError, ValueError) as error:
-        handler._send_json({"error": f"AI-first review could not be completed: {error}"}, status=500)
-        return
-
-    handler._send_json({
-        "matter": matter_view.public_matter(ai_first_review.matter),
-        "ai_first_review_metadata": ai_first_review.matter.get("ai_first_review_metadata"),
-        "ai_first_review_result": ai_first_review.review_result,
-    })
 
 
 def handle_matter_summary(handler, path: str) -> None:
