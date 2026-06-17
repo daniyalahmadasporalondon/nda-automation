@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 from urllib.parse import parse_qs, quote, urlparse
 
 from .. import (
@@ -38,6 +39,8 @@ from .. import (
 )
 from ..matter_repository import DiskMatterRepository, MatterRepository
 from .common import parse_matter_id, request_owner_user_id
+
+logger = logging.getLogger(__name__)
 
 DOCUSIGN_CONNECT_START_URL = "/api/docusign/connect"
 # DocuSign Connect HMAC signature header. DocuSign sends one header per configured
@@ -522,24 +525,55 @@ def _read_raw_body(handler) -> bytes | None:
 
 
 def _verify_hmac(handler, raw_body: bytes) -> bool:
-    """Verify the Connect HMAC signature; True when valid OR no key is configured.
+    """Verify the Connect HMAC signature (fail-CLOSED when a key is configured).
 
     DocuSign computes base64(HMAC-SHA256(rawBody, secret)) and sends it in
-    ``X-DocuSign-Signature-1``. When no key is configured we cannot verify, so we
-    accept (the operator chose not to enable HMAC); when a key IS configured we
-    require a matching signature.
+    ``X-DocuSign-Signature-1``.
+
+    * When ``NDA_DOCUSIGN_CONNECT_HMAC_KEY`` IS set we REQUIRE a matching
+      signature: a missing or mismatched signature returns ``False`` so the caller
+      rejects with 401 and touches no matter (anti-spoof, finding #22).
+    * When NO key is configured we cannot verify, so the webhook is effectively
+      unauthenticated. We still let the request proceed (so an unconfigured
+      demo/sandbox keeps working) but log a LOUD WARNING every time — silently
+      accepting an unauthenticated state-changing callback is the bug we are
+      fixing. Set the key in production to enforce authentication.
+
+    Uses the constant-time :func:`hmac.compare_digest` for the comparison.
     """
     key = docusign_connection.connect_hmac_key()
     if not key:
+        logger.warning(
+            "DocuSign Connect webhook is UNAUTHENTICATED: %s is not set, so the "
+            "/api/docusign/webhook callback accepts any caller and cannot verify "
+            "that a completion event really came from DocuSign. Set %s (and the "
+            "matching HMAC key in DocuSign Connect) to enforce authentication.",
+            docusign_connection.CONNECT_HMAC_KEY_ENV,
+            docusign_connection.CONNECT_HMAC_KEY_ENV,
+        )
         return True
     provided = handler.headers.get(HMAC_SIGNATURE_HEADER, "")
     if not provided:
+        logger.warning(
+            "Rejected DocuSign Connect webhook: %s is configured but the request "
+            "carried no %s signature header.",
+            docusign_connection.CONNECT_HMAC_KEY_ENV,
+            HMAC_SIGNATURE_HEADER,
+        )
         return False
     import base64
 
     digest = hmac.new(key.encode("utf-8"), raw_body, hashlib.sha256).digest()
     expected = base64.b64encode(digest).decode("ascii")
-    return hmac.compare_digest(expected, provided.strip())
+    valid = hmac.compare_digest(expected, provided.strip())
+    if not valid:
+        logger.warning(
+            "Rejected DocuSign Connect webhook: %s signature did not match the "
+            "configured %s.",
+            HMAC_SIGNATURE_HEADER,
+            docusign_connection.CONNECT_HMAC_KEY_ENV,
+        )
+    return valid
 
 
 def _parse_webhook(raw_body: bytes) -> tuple[str, str]:
