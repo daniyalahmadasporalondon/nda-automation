@@ -3774,7 +3774,7 @@ class ServerTests(unittest.TestCase):
             "stored_filename": "internal.docx",
             "gmail_message_id": "msg_123",
             "gmail_attachment_id": "att_123",
-            "review_result": {"clauses": []},
+            "review_result": {"clauses": [{"id": "mutuality", "decision": "pass"}]},
             "extracted_text": "Text",
             "redline_draft": {"manual_redline_edits": []},
         })
