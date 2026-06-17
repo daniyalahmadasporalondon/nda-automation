@@ -142,4 +142,30 @@ test("buildFilter flags facet matches the duplicate flag", () => {
   assert.equal(matters.filter(filter).length, 1);
 });
 
+// --- month lens: monthKey / monthLabel -------------------------------------
+test("monthKey derives a sortable YYYY-MM key from created_at", () => {
+  assert.equal(CorpusModel.monthKey("2026-06-17T10:00:00Z"), "2026-06");
+  assert.equal(CorpusModel.monthKey("2026-01-02"), "2026-01");
+  assert.equal(CorpusModel.monthKey("2025-12-31T23:59:00Z"), "2025-12");
+});
+
+test("monthKey returns the undated sentinel for blank/invalid dates (sorts last)", () => {
+  assert.equal(CorpusModel.monthKey(""), "0000-00");
+  assert.equal(CorpusModel.monthKey("not-a-date"), "0000-00");
+  assert.equal(CorpusModel.monthKey(undefined), "0000-00");
+});
+
+test("monthLabel renders 'Month YYYY' and 'Undated' for the sentinel", () => {
+  assert.equal(CorpusModel.monthLabel("2026-06"), "June 2026");
+  assert.equal(CorpusModel.monthLabel("2025-12"), "December 2025");
+  assert.equal(CorpusModel.monthLabel("0000-00"), "Undated");
+  assert.equal(CorpusModel.monthLabel(""), "Undated");
+});
+
+test("month keys sort newest-first with undated last", () => {
+  const keys = ["2025-12", "2026-06", "0000-00", "2026-01"];
+  const sorted = keys.slice().sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+  assert.deepEqual(sorted, ["2026-06", "2026-01", "2025-12", "0000-00"]);
+});
+
 process.stdout.write(`\ncorpus-model: ${passed} passed\n`);

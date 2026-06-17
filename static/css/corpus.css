@@ -136,6 +136,59 @@
   font-weight: 600;
 }
 
+/* Group-by lens toggle (Counterparty | Month) in the header. */
+.corpus-group-toggle {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+}
+
+.corpus-group-toggle-label {
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.corpus-group-toggle-btn {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  color: var(--ink-muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  height: 30px;
+  padding: 0 13px;
+}
+
+.corpus-group-toggle-btn:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.corpus-group-toggle-btn[aria-pressed="true"] {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+
+/* Month-lens group head: month name + a repeat-entity duplicate hint. */
+.corpus-group-meta {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.corpus-group-recurring {
+  background: rgba(154, 106, 19, 0.12);
+  border-radius: var(--r-pill);
+  color: #9a6a13;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 9px;
+}
+
 .corpus-matter-list {
   display: flex;
   flex-direction: column;

@@ -6,7 +6,7 @@
     <title>nda automation</title>
     <link rel="stylesheet" href="/static/styles.css?v=20260617r3st1">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260617rb2">
-    <link rel="stylesheet" href="/static/css/corpus.css?v=20260615r">
+    <link rel="stylesheet" href="/static/css/corpus.css?v=20260617mo1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617ovsend1">
   </head>
   <body>
@@ -741,6 +741,11 @@
                 <span class="corpus-summary" id="corpusSummary"></span>
               </div>
               <div class="corpus-header-actions">
+                <div class="corpus-group-toggle" id="corpusGroupToggle" role="group" aria-label="Group corpus by">
+                  <span class="corpus-group-toggle-label">Group by</span>
+                  <button class="corpus-group-toggle-btn" type="button" data-corpus-group-by="counterparty" aria-pressed="true" title="Group matters by counterparty">Counterparty</button>
+                  <button class="corpus-group-toggle-btn" type="button" data-corpus-group-by="month" aria-pressed="false" title="Group matters by month — spot entities that sent more than one NDA in a month">Month</button>
+                </div>
                 <span class="corpus-drive-status" id="corpusDriveStatus" data-corpus-drive-status>Loading</span>
                 <button class="corpus-refresh" type="button" id="corpusRefreshButton" title="Re-list Drive and rebuild the corpus">Refresh</button>
               </div>
@@ -2163,7 +2168,7 @@
     <script src="/static/js/repository-detail.js?v=20260617gfl1"></script>
     <script src="/static/js/repository-actions.js?v=20260617gfl1"></script>
     <script src="/static/js/repository.js?v=20260615g"></script>
-    <script src="/static/js/corpus.js?v=20260617cf1"></script>
+    <script src="/static/js/corpus.js?v=20260617mo1"></script>
     <script src="/static/js/manual-upload.js"></script>
     <script src="/static/js/send-document.js?v=20260606i"></script>
     <script src="/static/js/draft-intake.js?v=20260617gen1"></script>
@@ -2196,6 +2201,6 @@
     <script src="/static/js/dashboard-search.js?v=20260614a"></script>
     <script src="/static/js/notifications.js?v=20260615n"></script>
     <script src="/static/js/generator-editor.js?v=20260616dd1"></script>
-    <script src="/static/app.js?v=20260617hd1"></script>
+    <script src="/static/app.js?v=20260617mo1"></script>
   </body>
 </html>

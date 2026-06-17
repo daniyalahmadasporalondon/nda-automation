@@ -93,6 +93,30 @@ const CorpusModel = (() => {
     return date.toLocaleDateString(undefined, { day: "2-digit", month: "short" });
   }
 
+  const MONTH_NAMES = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+  ];
+
+  // Sortable month key "YYYY-MM" from a matter's created_at. Undated matters fall
+  // into a sentinel "0000-00" bucket that sorts last (oldest) under newest-first.
+  function monthKey(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "0000-00";
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    return `${date.getFullYear()}-${month}`;
+  }
+
+  // Human label "June 2026" for a monthKey; the sentinel reads "Undated".
+  function monthLabel(key) {
+    if (!key || key === "0000-00") return "Undated";
+    const [year, month] = String(key).split("-");
+    const idx = Number(month) - 1;
+    const name = MONTH_NAMES[idx];
+    if (!name || !year) return "Undated";
+    return `${name} ${year}`;
+  }
+
   // Axis A — STATUS chip = the Repository board-column label. The payload field
   // `status` carries board_column; the dead `phase_label` is no longer surfaced.
   // Drive-only matters with no board_column -> "" (caller renders "—").
@@ -146,6 +170,8 @@ const CorpusModel = (() => {
     lifecycleLabel,
     matterFacetValue,
     matterTitle,
+    monthKey,
+    monthLabel,
     railSteps,
     sourceLabel,
     statusChip,
@@ -440,10 +466,18 @@ const CorpusRender = (() => {
   }
 
   // --- groups / matters ------------------------------------------------------
-  function renderGroups(listNode, payload, handlers, filterFn) {
+  // The Corpus has two grouping lenses, never blended:
+  //   * "counterparty" (default) — backend payload.groups, one section per entity.
+  //   * "month" — client-side regroup of the flat matter list into "Month YYYY"
+  //     sections (newest first) so a recurring entity in the same month is
+  //     scannable for duplicate-spotting. Each card keeps its counterparty sub.
+  function renderGroups(listNode, payload, handlers, filterFn, groupBy) {
     if (!listNode) return 0;
-    const groups = Array.isArray(payload.groups) ? payload.groups : [];
     const predicate = typeof filterFn === "function" ? filterFn : () => true;
+    if (groupBy === "month") {
+      return renderMonthGroups(listNode, payload, handlers, predicate);
+    }
+    const groups = Array.isArray(payload.groups) ? payload.groups : [];
     let shown = 0;
     const groupMarkup = groups
       .map((group) => {
@@ -466,6 +500,66 @@ const CorpusRender = (() => {
         <header class="corpus-group-head">
           <h2 class="corpus-group-name">${html(CorpusModel.counterpartyName(group))}</h2>
           <span class="corpus-group-count">${matterCount} ${matterCount === 1 ? "matter" : "matters"}</span>
+        </header>
+        <div class="corpus-matter-list">
+          ${matters.map((matter) => renderMatter(matter)).join("")}
+        </div>
+      </section>
+    `;
+  }
+
+  function renderMonthGroups(listNode, payload, handlers, predicate) {
+    const matters = allMatters(payload).filter(predicate);
+    // Bucket by sortable month key.
+    const buckets = new Map();
+    matters.forEach((matter) => {
+      const key = CorpusModel.monthKey(matter.created_at);
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key).push(matter);
+    });
+    // Newest month first (descending key); the "0000-00" undated sentinel lands last.
+    const orderedKeys = Array.from(buckets.keys()).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+    let shown = 0;
+    const groupMarkup = orderedKeys
+      .map((key) => {
+        const bucket = buckets.get(key).slice().sort((a, b) =>
+          String(b.created_at || "").localeCompare(String(a.created_at || ""))
+        );
+        if (!bucket.length) return "";
+        shown += bucket.length;
+        return renderMonthGroup(key, bucket);
+      })
+      .filter(Boolean)
+      .join("");
+    listNode.innerHTML = groupMarkup;
+    bindEvents(listNode, handlers);
+    return shown;
+  }
+
+  function renderMonthGroup(key, matters) {
+    const matterCount = matters.length;
+    // Count distinct counterparties that recur this month (>=2 matters) — the
+    // duplicate-spotting hint. Cheap-counted off the bucket.
+    const cpCounts = new Map();
+    matters.forEach((matter) => {
+      const name = CorpusModel.counterpartyName(matter);
+      cpCounts.set(name, (cpCounts.get(name) || 0) + 1);
+    });
+    let recurring = 0;
+    cpCounts.forEach((count) => {
+      if (count > 1) recurring += 1;
+    });
+    const recurringNote = recurring
+      ? `<span class="corpus-group-recurring" title="Counterparties with more than one NDA this month">${recurring} repeat ${recurring === 1 ? "entity" : "entities"}</span>`
+      : "";
+    return `
+      <section class="corpus-group corpus-group--month">
+        <header class="corpus-group-head">
+          <h2 class="corpus-group-name">${html(CorpusModel.monthLabel(key))}</h2>
+          <span class="corpus-group-meta">
+            ${recurringNote}
+            <span class="corpus-group-count">${matterCount} ${matterCount === 1 ? "matter" : "matters"}</span>
+          </span>
         </header>
         <div class="corpus-matter-list">
           ${matters.map((matter) => renderMatter(matter)).join("")}
@@ -687,12 +781,13 @@ const CorpusView = (() => {
     tokenField,
     searchClear,
     facetRail,
+    groupToggle,
     openMatter,
   }) {
     let loadedOnce = false;
     let loading = false;
     let lastPayload = null;
-    const state = { activeFacets: new Map(), query: "" };
+    const state = { activeFacets: new Map(), query: "", groupBy: "counterparty" };
 
     function setLoading(isLoading) {
       loading = isLoading;
@@ -767,9 +862,25 @@ const CorpusView = (() => {
       }
       clearEmptyState();
       const filter = buildFilter(state.activeFacets, state.query);
-      const shown = CorpusRender.renderGroups(listNode, lastPayload, handlers, filter);
+      const shown = CorpusRender.renderGroups(listNode, lastPayload, handlers, filter, state.groupBy);
       if (noResultsNode) noResultsNode.hidden = shown !== 0;
       if (listNode) listNode.hidden = shown === 0;
+    }
+
+    function syncGroupToggle() {
+      if (!groupToggle) return;
+      groupToggle.querySelectorAll("[data-corpus-group-by]").forEach((button) => {
+        const pressed = button.dataset.corpusGroupBy === state.groupBy;
+        button.setAttribute("aria-pressed", pressed ? "true" : "false");
+      });
+    }
+
+    function setGroupBy(mode) {
+      const next = mode === "month" ? "month" : "counterparty";
+      if (next === state.groupBy) return;
+      state.groupBy = next;
+      syncGroupToggle();
+      applyFilters();
     }
 
     function render(payload) {
@@ -827,11 +938,18 @@ const CorpusView = (() => {
     if (searchClear) {
       searchClear.addEventListener("click", () => resetFilters());
     }
+    if (groupToggle) {
+      groupToggle.querySelectorAll("[data-corpus-group-by]").forEach((button) => {
+        button.addEventListener("click", () => setGroupBy(button.dataset.corpusGroupBy));
+      });
+      syncGroupToggle();
+    }
 
     return {
       load,
       refresh: () => load({ refresh: true }),
       resetFilters,
+      setGroupBy,
     };
   }
 
