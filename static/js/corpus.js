@@ -272,6 +272,23 @@ const CorpusModel = (() => {
     return null;
   }
 
+  // EXECUTED = a fully-signed agreement (the "library"). The backend resolves
+  // facets.signed to true only for the fully_signed workflow status (see
+  // corpus_index._signed_from_status); anything still in-flight is false/null.
+  // The Corpus DEFAULTS to executed-only; the header toggle widens to all.
+  // Read defensively (facets first, then a top-level matter.signed/executed),
+  // and treat ONLY a strict boolean true as executed — null/undefined/false are
+  // all "in-progress" so the default gate never lets an unsigned matter through.
+  function isExecuted(matter) {
+    if (!matter || typeof matter !== "object") return false;
+    const facets = matter.facets;
+    if (facets && typeof facets === "object") {
+      if (facets.signed === true || facets.executed === true) return true;
+      if (facets.signed === false) return false;
+    }
+    return matter.signed === true || matter.executed === true;
+  }
+
   // Counterparty matches >=2 matters. Read defensively (top-level or facets).
   function isRepeatEntity(matter) {
     if (!matter || typeof matter !== "object") return false;
@@ -330,6 +347,7 @@ const CorpusModel = (() => {
     duplicateDocument,
     formatDate,
     isClausePresenceFacet,
+    isExecuted,
     isMultiFacet,
     isRepeatEntity,
     lifecycleLabel,
@@ -468,9 +486,13 @@ const CorpusRender = (() => {
     { value: "duplicate_document", label: "Duplicate document" },
   ];
 
-  function allMatters(payload) {
+  function allMatters(payload, baseFilter) {
     const groups = Array.isArray(payload.groups) ? payload.groups : [];
-    return groups.flatMap((group) => (Array.isArray(group.matters) ? group.matters : []));
+    const flat = groups.flatMap((group) => (Array.isArray(group.matters) ? group.matters : []));
+    // The optional baseFilter is the executed-only gate (or () => true when the
+    // toggle is widened). Scoping the facet counts to the SAME set the groups
+    // render keeps "sidebar count == filtered-result count" parity in BOTH modes.
+    return typeof baseFilter === "function" ? flat.filter(baseFilter) : flat;
   }
 
   function countBy(matters, predicate) {
@@ -491,9 +513,9 @@ const CorpusRender = (() => {
     return false;
   }
 
-  function renderFacetRail(railNode, payload, activeFacets, handlers) {
+  function renderFacetRail(railNode, payload, activeFacets, handlers, baseFilter) {
     if (!railNode) return;
-    const matters = allMatters(payload);
+    const matters = allMatters(payload, baseFilter);
     const payloadFacets = payload && typeof payload.facets === "object" && payload.facets ? payload.facets : {};
     const sections = [];
 
@@ -1027,11 +1049,25 @@ const CorpusView = (() => {
     });
   }
 
-  // Build a per-matter predicate from active facets + free-text query. AND across
-  // facet keys, OR within a key; free text matches counterparty + title + filenames.
-  function buildFilter(activeFacets, query) {
+  // The executed-only gate: a single predicate, defaulting ON, that admits only
+  // fully-signed matters (the library). The Corpus toggle flips it off to widen
+  // to ALL matters. Kept as its own one-liner so the default is a clean
+  // one-predicate gate layered ahead of the facet/text filters.
+  function executedGate(executedOnly) {
+    if (!executedOnly) return () => true;
+    return (matter) => CorpusModel.isExecuted(matter);
+  }
+
+  // Build a per-matter predicate from the executed gate + active facets + free
+  // text. AND across everything: a matter must pass the executed gate, then every
+  // active facet key (OR within a key), then the free-text match. Free text
+  // matches counterparty + title + filenames. `executedOnly` defaults true so the
+  // Corpus is the executed library unless the caller widens it.
+  function buildFilter(activeFacets, query, executedOnly = true) {
     const text = String(query || "").trim().toLowerCase();
+    const gate = executedGate(executedOnly);
     return (matter) => {
+      if (!gate(matter)) return false;
       if (text && !matterMatchesText(matter, text)) return false;
       for (const [key, values] of activeFacets.entries()) {
         if (!values || !values.size) continue;
@@ -1095,12 +1131,15 @@ const CorpusView = (() => {
     searchClear,
     facetRail,
     groupToggle,
+    executedToggle,
     openMatter,
   }) {
     let loadedOnce = false;
     let loading = false;
     let lastPayload = null;
-    const state = { activeFacets: new Map(), query: "", groupBy: "counterparty" };
+    // executedOnly defaults true: the Corpus opens as the executed (signed)
+    // library; the header toggle flips it to include in-progress matters.
+    const state = { activeFacets: new Map(), query: "", groupBy: "counterparty", executedOnly: true };
 
     function setLoading(isLoading) {
       loading = isLoading;
@@ -1120,11 +1159,31 @@ const CorpusView = (() => {
       if (emptyNode) emptyNode.hidden = true;
     }
 
+    // Summary counts the CURRENTLY-SHOWN set (executed-only by default), not the
+    // backend grand total, so the header reads true for the active mode. When the
+    // toggle widens to all, it falls back to the payload's own counts.
     function renderSummary(payload) {
       if (!summaryNode) return;
-      const matters = Number(payload.matter_count || 0);
-      const counterparties = Number(payload.counterparty_count || 0);
-      summaryNode.textContent = `${counterparties} ${counterparties === 1 ? "counterparty" : "counterparties"} · ${matters} ${matters === 1 ? "matter" : "matters"}`;
+      let matters;
+      let counterparties;
+      if (state.executedOnly) {
+        const groups = Array.isArray(payload.groups) ? payload.groups : [];
+        const cps = new Set();
+        matters = 0;
+        groups.forEach((group) => {
+          const list = (Array.isArray(group.matters) ? group.matters : []).filter((m) =>
+            CorpusModel.isExecuted(m)
+          );
+          if (list.length) cps.add(CorpusModel.counterpartyName(group));
+          matters += list.length;
+        });
+        counterparties = cps.size;
+      } else {
+        matters = Number(payload.matter_count || 0);
+        counterparties = Number(payload.counterparty_count || 0);
+      }
+      const lens = state.executedOnly ? "Executed · " : "";
+      summaryNode.textContent = `${lens}${counterparties} ${counterparties === 1 ? "counterparty" : "counterparties"} · ${matters} ${matters === 1 ? "matter" : "matters"}`;
     }
 
     const handlers = {
@@ -1164,9 +1223,13 @@ const CorpusView = (() => {
     // Re-render groups + facet rail + tokens from the already-fetched payload.
     function applyFilters() {
       if (!lastPayload) return;
-      CorpusRender.renderFacetRail(facetRail, lastPayload, state.activeFacets, handlers);
+      // The executed gate scopes the facet COUNTS to the shown set so sidebar
+      // count == filtered-result count holds in both executed-only and all modes.
+      const gate = executedGate(state.executedOnly);
+      CorpusRender.renderFacetRail(facetRail, lastPayload, state.activeFacets, handlers, gate);
       CorpusRender.renderSearchTokens(tokenField, state.activeFacets, handlers);
       syncClearButton();
+      renderSummary(lastPayload);
 
       const groups = Array.isArray(lastPayload.groups) ? lastPayload.groups : [];
       if (!groups.length) {
@@ -1174,7 +1237,7 @@ const CorpusView = (() => {
         return;
       }
       clearEmptyState();
-      const filter = buildFilter(state.activeFacets, state.query);
+      const filter = buildFilter(state.activeFacets, state.query, state.executedOnly);
       const shown = CorpusRender.renderGroups(listNode, lastPayload, handlers, filter, state.groupBy);
       if (noResultsNode) noResultsNode.hidden = shown !== 0;
       if (listNode) listNode.hidden = shown === 0;
@@ -1196,10 +1259,29 @@ const CorpusView = (() => {
       applyFilters();
     }
 
+    // The executed-only toggle. Two buttons: "Executed only" (default, pressed)
+    // and "Include in-progress". aria-pressed mirrors state.executedOnly so the
+    // active scope is announced.
+    function syncExecutedToggle() {
+      if (!executedToggle) return;
+      executedToggle.querySelectorAll("[data-corpus-executed]").forEach((button) => {
+        const wantsExecuted = button.dataset.corpusExecuted === "executed";
+        const pressed = wantsExecuted === state.executedOnly;
+        button.setAttribute("aria-pressed", pressed ? "true" : "false");
+      });
+    }
+
+    function setExecutedOnly(executedOnly) {
+      const next = Boolean(executedOnly);
+      if (next === state.executedOnly) return;
+      state.executedOnly = next;
+      syncExecutedToggle();
+      applyFilters();
+    }
+
     function render(payload) {
       lastPayload = payload || {};
       CorpusRender.renderDriveStatus(statusNode, lastPayload.drive);
-      renderSummary(lastPayload);
       applyFilters();
     }
 
@@ -1257,16 +1339,25 @@ const CorpusView = (() => {
       });
       syncGroupToggle();
     }
+    if (executedToggle) {
+      executedToggle.querySelectorAll("[data-corpus-executed]").forEach((button) => {
+        button.addEventListener("click", () =>
+          setExecutedOnly(button.dataset.corpusExecuted === "executed")
+        );
+      });
+      syncExecutedToggle();
+    }
 
     return {
       load,
       refresh: () => load({ refresh: true }),
       resetFilters,
       setGroupBy,
+      setExecutedOnly,
     };
   }
 
-  return { buildFilter, createController, fetchCorpus };
+  return { buildFilter, createController, executedGate, fetchCorpus };
 })();
 
 function createCorpusController(options) {
