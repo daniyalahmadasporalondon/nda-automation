@@ -72,9 +72,9 @@ function setupReviewWorkstationActions() {
     markMatterReviewed();
   });
 
-  studioApproveReviewButton?.addEventListener("click", async () => {
-    await approveSelectedReview();
-  });
+  // Approve Review now lives only on the Overview footer, which calls
+  // approveSelectedReview() directly (window.approveSelectedReview). There is no
+  // header Approve button to wire here anymore.
 
   studioSendModalClose?.addEventListener("click", () => closeReviewSendComposer());
   studioSendCancelButton?.addEventListener("click", () => closeReviewSendComposer());
@@ -1037,18 +1037,18 @@ function renderReviewRefreshNotice(refresh = state.selectedMatter?.review_refres
       : "Review is current — re-run is unnecessary.";
 }
 
-function staleReviewMessage(refresh, fallback = "Review is stale. Refresh the review before exporting or sending.") {
+function staleReviewMessage(refresh, fallback = "Review is stale — refresh before sending.") {
   const message = String(refresh?.stale_message || refresh?.message || "").trim();
   if (message) return message;
   const reasons = Array.isArray(refresh?.stale_reasons) ? refresh.stale_reasons : [];
   if (reasons.includes("playbook_changed")) {
-    return "Active Playbook changed. Refresh review before exporting or sending.";
+    return "Playbook changed — refresh before sending.";
   }
   if (reasons.includes("review_engine_version_changed")) {
-    return "Review engine changed. Refresh review before exporting or sending.";
+    return "Review engine changed — refresh before sending.";
   }
   if (reasons.includes("missing_playbook_runtime")) {
-    return "Review was created before Playbook runtime tracking. Refresh review before exporting or sending.";
+    return "Review predates runtime tracking — refresh before sending.";
   }
   return fallback;
 }
@@ -1245,57 +1245,16 @@ function suggestedExportFilenameForContext(matter, document) {
 // blocks_approval the server returned on a 409.
 // ---------------------------------------------------------------------------
 
-// Drive the Approve Review button's enabled/disabled + label state from the
-// local view of staleness and unresolved clauses, so it reflects what a POST
-// would do before the request is sent.
-function updateApproveReviewControl() {
-  if (!studioApproveReviewButton) return;
-  const matter = state.selectedMatter;
-  const hasReview = hasReviewResults();
-  const reviewed = aiReviewRan(matter);
-  const approved = isMatterApproved(matter);
-  // No-jump header: keep "Approve Review" PRESENT for any loaded matter that has a
-  // review pipeline, so it never appears/disappears between states. It is hidden
-  // only when there is no matter / no review context to act on at all.
-  studioApproveReviewButton.hidden = !(hasReview && matter?.id);
-  if (!hasReview || !matter?.id) {
-    return;
-  }
-  // Until an AI review has actually run there is nothing to approve, so GRAY the
-  // button (present but disabled) rather than hiding it. Layer the ai_review_ran
-  // gate ON TOP of the existing approved/blocked gates. Safe fallback when
-  // ai_review_ran is absent: aiReviewRan() -> hasReviewResults() (enabled).
-  if (!reviewed) {
-    studioApproveReviewButton.disabled = true;
-    studioApproveReviewButton.classList.remove("approved", "blocked");
-    studioApproveReviewButton.textContent = "Approve Review";
-    studioApproveReviewButton.title = "Run the AI review before approving.";
-    studioApproveReviewButton.setAttribute("aria-disabled", "true");
-    renderApproveBlockReasons([]);
-    return;
-  }
-  if (approved) {
-    studioApproveReviewButton.disabled = true;
-    studioApproveReviewButton.classList.add("approved");
-    studioApproveReviewButton.classList.remove("blocked");
-    studioApproveReviewButton.textContent = "Approved";
-    studioApproveReviewButton.title = approvedReviewTitle(matter);
-    studioApproveReviewButton.setAttribute("aria-disabled", "true");
-    renderApproveBlockReasons([]);
-    return;
-  }
-  const blocks = approveBlockReasons(matter);
-  const blocked = blocks.length > 0;
-  studioApproveReviewButton.classList.remove("approved");
-  studioApproveReviewButton.classList.toggle("blocked", blocked);
-  studioApproveReviewButton.disabled = blocked;
-  studioApproveReviewButton.textContent = "Approve Review";
-  studioApproveReviewButton.title = blocked
-    ? "Resolve the blockers below before approving"
-    : "Approve this review";
-  studioApproveReviewButton.setAttribute("aria-disabled", String(blocked));
-  renderApproveBlockReasons(blocks);
-}
+// The approve gate now lives ENTIRELY on the Overview footer
+// (static/js/overview/footer.js), which reads the same predicates this used to
+// (approveBlockReasons / isMatterApproved / aiReviewRan) via overview-tab.js's
+// footerData(). There is no header Approve button to paint anymore, and the
+// footer is already (re)rendered by renderStudioDetail() inside the main render
+// funnel (renderStudioResult), so this is now a no-op kept only so its many
+// existing callers (the render funnel + the approve flow) stay valid. The approve
+// flow refreshes the footer explicitly via renderStudioDetail() after it mutates
+// the matter state.
+function updateApproveReviewControl() {}
 
 // Local prediction of the server's blocks_approval reason codes. The only
 // blocker is "stale_playbook" (a data-freshness guard); per-clause reviewer
@@ -1316,29 +1275,10 @@ function isMatterApproved(matter) {
   return String(matter?.status || "").trim().toLowerCase() === "approved";
 }
 
-function approvedReviewTitle(matter) {
-  const approver = String(matter?.approver || "").trim();
-  const approvedAt = matter?.approved_at ? formatReviewTimestamp(matter.approved_at) : "";
-  const parts = ["Review approved"];
-  if (approver) parts.push(`by ${approver}`);
-  if (approvedAt) parts.push(approvedAt);
-  return parts.join(" · ");
-}
-
-function renderApproveBlockReasons(reasons) {
-  if (!studioApproveBlockReasons) return;
-  if (!reasons.length) {
-    studioApproveBlockReasons.hidden = true;
-    studioApproveBlockReasons.innerHTML = "";
-    return;
-  }
-  studioApproveBlockReasons.hidden = false;
-  studioApproveBlockReasons.innerHTML = `
-    <p class="approve-block-title">Approval is blocked:</p>
-    <ul>${reasons.map((reason) => `<li>${escapeHtml(approveBlockReasonLabel(reason))}</li>`).join("")}</ul>
-  `;
-}
-
+// approveBlockReasonLabel maps a block-reason code to human text for the Overview
+// footer's inline reason (window.approveBlockReasonLabel). The header's
+// approved-state title + the #studioApproveBlockReasons list were removed with the
+// header Approve button — the footer surfaces the single first reason itself.
 function approveBlockReasonLabel(reason) {
   const code = String(reason || "").trim();
   if (code === "stale_playbook") {
@@ -1347,13 +1287,15 @@ function approveBlockReasonLabel(reason) {
   return code;
 }
 
+// Invoked by the Overview footer's Approve button (window.approveSelectedReview).
+// The footer owns the button + its gate; this performs the POST and re-renders
+// the Overview pane (renderStudioDetail) on each state transition so the footer's
+// approved/blocked state reflects the result. In-flight feedback is the file-meta
+// status line (the header no longer has a button to relabel "Approving…").
 async function approveSelectedReview() {
   const matterId = state.selectedMatter?.id;
-  if (!matterId || !studioApproveReviewButton) return;
+  if (!matterId) return;
   if (isMatterApproved(state.selectedMatter)) return;
-  const previousLabel = studioApproveReviewButton.textContent;
-  studioApproveReviewButton.disabled = true;
-  studioApproveReviewButton.textContent = "Approving…";
   setFileMeta("Approving this review.");
   try {
     const response = await fetch(`/api/matters/${encodeURIComponent(matterId)}/approve`, {
@@ -1376,7 +1318,6 @@ async function approveSelectedReview() {
         };
       }
       setFileMeta("Approval is blocked. Resolve the listed blockers and try again.");
-      updateApproveReviewControl();
       return;
     }
     if (!response.ok) throw reviewErrorFromPayload(payload, "Review could not be approved");
@@ -1388,15 +1329,12 @@ async function approveSelectedReview() {
     }
     state.reviewResolution = payload.resolution || state.reviewResolution;
     setFileMeta("Review approved. You can download the reviewed DOCX.");
-    updateApproveReviewControl();
   } catch (error) {
     renderOperationError(error, "Review could not be approved.");
   } finally {
-    if (studioApproveReviewButton?.isConnected && studioApproveReviewButton.textContent === "Approving…") {
-      studioApproveReviewButton.textContent = previousLabel;
-      studioApproveReviewButton.disabled = false;
-    }
-    updateApproveReviewControl();
+    // Re-render the Overview footer from the new matter state (approved / blocked
+    // / re-enabled) — its gate is derived, not held on a header button.
+    if (typeof renderStudioDetail === "function") renderStudioDetail();
   }
 }
 

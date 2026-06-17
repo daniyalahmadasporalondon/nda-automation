@@ -91,13 +91,12 @@ function createOverviewController({ state, root, fillSection, renderFill }) {
     callGlobal("approveSelectedReview");
   }
 
-  // Send for signature — the existing DocuSign trigger. Click the real header
-  // button so the existing controller opens its composer (the visibility/enabled
-  // gating already lives on that button); clicking a hidden-but-present button
-  // still fires its handler.
+  // Send for signature — open the existing Review DocuSign composer directly via
+  // the global the shell exposes (window.openReviewDocuSignComposer). The footer
+  // owns the gate now (Send is disabled pre-review), so this only fires once there
+  // is something to send. There is no longer a header Send button to click.
   function onSend() {
-    const button = document.querySelector("#studioSendForSignatureButton");
-    if (button) button.click();
+    callGlobal("openReviewDocuSignComposer");
   }
 
   // Confirm the counterparty as shown — the existing override submit with the

@@ -8445,21 +8445,22 @@ async function testReasoningTrailCollapse(page) {
 async function testApproveReviewGate(page) {
   // "Approve Review" is the single human sign-off: one approval covers the whole
   // matter, so there are no per-clause reviewer decisions. The gate blocks ONLY
-  // on review staleness (a data-freshness guard).
+  // on review staleness (a data-freshness guard). The action now lives on the
+  // Overview inspector footer (.ov-approve), the default sub-tab, NOT the header.
 
   // A fresh review with an unresolved fail/review clause and NO per-clause
-  // decision is approvable: the button is enabled out of the gate.
+  // decision is approvable: the footer Approve button renders enabled.
   await loadReviewWithMatter(page);
 
-  const approveButton = page.locator("#studioApproveReviewButton");
-  await page.waitForFunction(() => !document.querySelector("#studioApproveReviewButton")?.hidden);
+  const approveButton = page.locator("#studioDetailPanel .ov-approve");
+  await page.waitForSelector("#studioDetailPanel .ov-approve");
   assert.equal(await approveButton.isDisabled(), false);
   await assertTextContains(approveButton, "Approve Review");
 
-  // A 409 from the server (stale playbook) re-blocks the button. Wait on the
-  // "blocked" class, which is set only after the 409 RESPONSE is processed — not
-  // the optimistic in-flight "Approving…" disable (which toggles `.disabled`
-  // alone, without `blocked`).
+  // A 409 from the server (stale playbook) re-blocks the footer button: the
+  // server's authoritative block is stashed (state.approveServerBlocks) and the
+  // footer re-renders disabled (.ov-approve--disabled) once the response is
+  // processed.
   await page.route("**/api/matters/matter_review_panel/approve", async (route) => {
     await route.fulfill({
       status: 409,
@@ -8471,16 +8472,19 @@ async function testApproveReviewGate(page) {
     });
   });
   await approveButton.click();
-  await page.waitForFunction(() => document.querySelector("#studioApproveReviewButton")?.classList.contains("blocked"));
+  await page.waitForFunction(() =>
+    document.querySelector("#studioDetailPanel .ov-approve")?.classList.contains("ov-approve--disabled"));
   assert.equal(await approveButton.isDisabled(), true);
 
-  // Clearing the server-induced staleness re-enables the button (no decisions
-  // needed), and a successful approve flips it to the approved state.
+  // Clearing the server-induced staleness re-enables the footer button (no
+  // decisions needed); a re-render reflects the cleared gate. A successful
+  // approve then flips the footer to its terminal disabled state with the
+  // "Review already approved." reason.
   await page.unroute("**/api/matters/matter_review_panel/approve");
   await page.evaluate(() => {
     state.selectedMatter = { ...state.selectedMatter, review_refresh: null };
     state.approveServerBlocks = [];
-    updateApproveReviewControl();
+    renderStudioDetail();
   });
   await page.route("**/api/matters/matter_review_panel/approve", async (route) => {
     await route.fulfill({
@@ -8491,11 +8495,13 @@ async function testApproveReviewGate(page) {
       }),
     });
   });
-  await page.waitForFunction(() => document.querySelector("#studioApproveReviewButton")?.disabled === false
-    && !document.querySelector("#studioApproveReviewButton")?.classList.contains("blocked"));
+  await page.waitForFunction(() =>
+    document.querySelector("#studioDetailPanel .ov-approve")?.disabled === false
+    && !document.querySelector("#studioDetailPanel .ov-approve")?.classList.contains("ov-approve--disabled"));
   await approveButton.click();
-  await page.waitForFunction(() => document.querySelector("#studioApproveReviewButton")?.classList.contains("approved"));
-  await assertTextContains(approveButton, "Approved");
+  await page.waitForFunction(() =>
+    document.querySelector("#studioDetailPanel .ov-approve")?.disabled === true
+    && document.querySelector("#studioDetailPanel")?.innerText.includes("Review already approved."));
 }
 
 // WCAG 1.4.1: the document paragraph verdict must not be conveyed by colour
