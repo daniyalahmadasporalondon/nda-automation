@@ -326,6 +326,40 @@ class TestSignatureAnchors:
         assert left_w > 0 and right_w > 0
         assert abs(left_w - right_w) <= 2, "the two boxes should be balanced"
 
+    def test_anchor_is_the_first_run_on_each_by_line(self, playbook):
+        # DocuSign places a tab with its LOWER-LEFT corner at the anchor's
+        # LOWER-RIGHT corner and grows the (~1in) tab RIGHTWARD. The Aspora box is
+        # flush against the page's RIGHT margin, so an end-of-line anchor would put
+        # the tab origin at the right margin and run the tab off the page's right
+        # edge -> INVALID_USER_OFFSET (HTTP 400). The anchor must therefore be the
+        # FIRST run on the By: line (cell's left edge) so the tab grows into the
+        # blank underscores, on-page, for BOTH party boxes. Lock that here.
+        from io import BytesIO
+
+        document = Document(BytesIO(_generate(playbook).docx_bytes))
+        table = document.tables[0]
+        anchors = (gen.SIGNATURE_ANCHOR_ASPORA, gen.SIGNATURE_ANCHOR_COUNTERPARTY)
+        by_lines_checked = 0
+        for cell in table.rows[0].cells:
+            for paragraph in cell.paragraphs:
+                run_texts = [run.text for run in paragraph.runs]
+                joined = "".join(run_texts)
+                if "By:" not in joined:
+                    continue
+                token = next((a for a in anchors if a in joined), "")
+                if not token:
+                    continue
+                by_lines_checked += 1
+                # The anchor token is the FIRST run on the line; the visible "By:"
+                # text comes AFTER it.
+                assert run_texts[0].strip() == token, (
+                    f"anchor must be the first run on the By: line, got {run_texts!r}"
+                )
+                assert any("By:" in t for t in run_texts[1:]), (
+                    "the visible By: text must follow the leading anchor run"
+                )
+        assert by_lines_checked == 2, "expected an anchored By: line in each party box"
+
 
 # --------------------------------------------------------------------------- #
 # Generation — clauses realign to the Playbook
