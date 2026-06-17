@@ -715,6 +715,8 @@ class ServerTests(unittest.TestCase):
             "NDA_REQUIRE_AUTH": "true",
             "NDA_AUTH_USERNAME": "nda-admin",
             "NDA_AUTH_PASSWORD": "secret",
+            # Admin-gated export: the Basic-auth operator must be a listed admin.
+            "NDA_ADMIN_USERS": "nda-admin",
         }
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
@@ -894,10 +896,55 @@ class ServerTests(unittest.TestCase):
                 # A listed admin clears the gate; the handler then succeeds (200).
                 self.assertEqual(status, 200, f"{method} {path} should allow a listed admin")
 
-    def test_ai_settings_mutators_allow_single_operator_basic_auth(self):
-        # CRITICAL: a solo deployment with NO NDA_ADMIN_USERS configured must NOT
-        # be locked out. The historical break-glass operator is HTTP Basic auth,
-        # which request_is_admin treats as admin when no admin list is set.
+    # GET counterparts that read the same admin-sensitive surface (deployment
+    # status, telemetry, AI settings + audit history, personalisation) and must
+    # be admin-gated identically to their mutators, not readable by any
+    # authenticated user.
+    ADMIN_GET_ENDPOINTS = (
+        "/api/deployment/status",
+        "/api/telemetry",
+        "/api/ai/settings",
+        "/api/admin/personalisation-settings",
+    )
+
+    def test_admin_get_endpoints_deny_non_admin_google_user(self):
+        auth_env = self._google_oauth_auth_env(NDA_ADMIN_USERS="someone-else@example.com")
+        for path in self.ADMIN_GET_ENDPOINTS:
+            with self.subTest(path=path):
+                with tempfile.TemporaryDirectory() as data_dir:
+                    patches = self.matter_store_patches(data_dir)
+                    with patches[0], patches[1], patches[2]:
+                        session_headers, _user = self.google_session_headers()
+                        with patch.dict(os.environ, auth_env):
+                            status, payload = self.request(
+                                "GET", path, headers=session_headers
+                            )
+                self.assertEqual(status, 403, f"GET {path} should be admin-gated")
+                self.assertEqual(payload["error"], server_module.ADMIN_REQUIRED_MESSAGE)
+
+    def test_admin_get_endpoints_allow_listed_admin_google_user(self):
+        for path in self.ADMIN_GET_ENDPOINTS:
+            with self.subTest(path=path):
+                with tempfile.TemporaryDirectory() as data_dir:
+                    patches = self.matter_store_patches(data_dir)
+                    with patches[0], patches[1], patches[2]:
+                        session_headers, user = self.google_session_headers()
+                        admin_env = self._google_oauth_auth_env(
+                            NDA_ADMIN_USERS=f"{user['id']}, other@example.com"
+                        )
+                        with patch.dict(os.environ, admin_env):
+                            status, _payload = self.request(
+                                "GET", path, headers=session_headers
+                            )
+                self.assertEqual(status, 200, f"GET {path} should allow a listed admin")
+
+    def test_ai_settings_mutators_deny_basic_auth_when_admin_list_empty(self):
+        # FAIL-CLOSED: an empty NDA_ADMIN_USERS must NOT make every Basic-auth
+        # caller an admin. On a deployment that shares one Basic credential
+        # across all users, the old "empty list => Basic is admin" fallback
+        # silently granted admin to everyone. With no admin list configured, no
+        # real authenticated caller (including Basic auth on a public host) is
+        # admin; an operator must list themselves in NDA_ADMIN_USERS.
         auth_env = {
             "NDA_REQUIRE_AUTH": "true",
             "NDA_AUTH_USERNAME": "nda-admin",
@@ -910,12 +957,13 @@ class ServerTests(unittest.TestCase):
                     patches = self.matter_store_patches(data_dir)
                     with patches[0], patches[1], patches[2]:
                         with patch.dict(os.environ, auth_env):
-                            status, _payload = self.request(
+                            status, payload = self.request(
                                 method, path, body, headers=self.basic_auth_headers()
                             )
                 self.assertEqual(
-                    status, 200, f"{method} {path} must not lock out a solo Basic-auth operator"
+                    status, 403, f"{method} {path} must fail closed with no admin list"
                 )
+                self.assertEqual(payload["error"], server_module.ADMIN_REQUIRED_MESSAGE)
 
     def test_authenticated_matter_routes_are_owner_scoped(self):
         source_docx = make_docx([
@@ -926,6 +974,9 @@ class ServerTests(unittest.TestCase):
             "NDA_REQUIRE_AUTH": "true",
             "NDA_AUTH_USERNAME": "alice@example.com",
             "NDA_AUTH_PASSWORD": "secret",
+            # Alice exercises the admin-gated backup export below, so she must be
+            # a listed admin under the fail-closed admin gate.
+            "NDA_ADMIN_USERS": "alice@example.com",
             ACTIVE_REVIEW_ENGINE_ENV: "ai_first",
             "NDA_AI_REVIEW_ENABLED": "true",
             "NDA_AI_ASSESSMENT_STUB": "1",
@@ -934,6 +985,10 @@ class ServerTests(unittest.TestCase):
             "NDA_REQUIRE_AUTH": "true",
             "NDA_AUTH_USERNAME": "bob@example.com",
             "NDA_AUTH_PASSWORD": "secret",
+            # Bob exercises the admin-gated backup export below; this test asserts
+            # OWNER-SCOPING (he sees zero of Alice's matters), which is orthogonal
+            # to the admin gate, so list him as admin to keep that assertion live.
+            "NDA_ADMIN_USERS": "bob@example.com",
             ACTIVE_REVIEW_ENGINE_ENV: "ai_first",
             "NDA_AI_REVIEW_ENABLED": "true",
             "NDA_AI_ASSESSMENT_STUB": "1",
@@ -1050,6 +1105,8 @@ class ServerTests(unittest.TestCase):
             "NDA_REQUIRE_AUTH": "true",
             "NDA_AUTH_USERNAME": "nda-admin",
             "NDA_AUTH_PASSWORD": "secret",
+            # Admin-gated GET: the Basic-auth operator must be a listed admin.
+            "NDA_ADMIN_USERS": "nda-admin",
             "NDA_DATA_DIR": "/var/data",
             "NDA_RATE_LIMIT_PER_MINUTE": "120",
         }
@@ -1635,6 +1692,8 @@ class ServerTests(unittest.TestCase):
             "NDA_REQUIRE_AUTH": "true",
             "NDA_AUTH_USERNAME": "nda-admin",
             "NDA_AUTH_PASSWORD": "secret",
+            # Admin-gated GET: the Basic-auth operator must be a listed admin.
+            "NDA_ADMIN_USERS": "nda-admin",
             "NDA_RATE_LIMIT_PER_MINUTE": "0",
         }
         review_text = "Sensitive counterparty NDA text governed by California."
@@ -10109,6 +10168,20 @@ class RateLimitClientKeyTests(unittest.TestCase):
         with patch.dict(os.environ, {"NDA_TRUSTED_PROXY_COUNT": "1"}):
             key = server_module._rate_limit_client_key("10.0.0.1", "", "")
         self.assertEqual(key, "ip:10.0.0.1")
+
+    def test_heaviest_ai_endpoints_are_bucketed(self):
+        # The two heaviest endpoints each fan out to AI work; given the app's
+        # cost-storm history they must be rate-limit bucketed (not short-circuit
+        # to unlimited like an unbucketed path). Distinct bucket names isolate
+        # them from each other and from the review buckets.
+        self.assertEqual(
+            server_module._rate_limit_bucket_name("POST", "/api/generate-nda"),
+            "generate-nda",
+        )
+        self.assertEqual(
+            server_module._rate_limit_bucket_name("POST", "/api/dashboard/assistant"),
+            "dashboard-assistant",
+        )
 
 
 class TelemetryHealthSummaryTest(unittest.TestCase):

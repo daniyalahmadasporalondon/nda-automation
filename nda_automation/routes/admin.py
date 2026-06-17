@@ -14,6 +14,8 @@ from .common import request_owner_user_id, require_admin
 
 
 def handle_deployment_status(handler, *, send_body: bool = True) -> None:
+    if not require_admin(handler, send_body=send_body):
+        return
     handler._send_json(
         {"deployment": _deployment_status_for_host(str(handler.server.server_address[0]))},
         send_body=send_body,
@@ -21,6 +23,8 @@ def handle_deployment_status(handler, *, send_body: bool = True) -> None:
 
 
 def handle_telemetry(handler, *, send_body: bool = True) -> None:
+    if not require_admin(handler, send_body=send_body):
+        return
     # Snapshot once so the health summary derives from the same counters the
     # caller sees (avoids a double snapshot / read race), then surface the
     # derived health block additively alongside the unchanged telemetry block.
@@ -35,6 +39,8 @@ def handle_telemetry(handler, *, send_body: bool = True) -> None:
 
 
 def handle_ai_settings(handler, *, send_body: bool = True) -> None:
+    if not require_admin(handler, send_body=send_body):
+        return
     handler._send_json(
         {
             "ai_review": ai_review.ai_review_status(),
@@ -48,6 +54,8 @@ def handle_ai_settings(handler, *, send_body: bool = True) -> None:
 
 
 def handle_personalisation_settings(handler, *, send_body: bool = True) -> None:
+    if not require_admin(handler, send_body=send_body):
+        return
     handler._send_json(
         {
             "personalisation": app_settings.personalisation_settings(),

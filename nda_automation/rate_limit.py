@@ -86,6 +86,11 @@ def _rate_limit_bucket_name(method: str, path: str) -> str:
         "/api/matters": "matter-upload",
         "/api/export-review-docx": "docx-export",
         "/api/gmail/send-redline": "gmail-send-redline",
+        # The two heaviest endpoints (each fans out to AI generation/assistant
+        # work). Given this app's cost-storm history, bucket them so a single
+        # caller cannot drive an unbounded AI spend storm.
+        "/api/generate-nda": "generate-nda",
+        "/api/dashboard/assistant": "dashboard-assistant",
     }
     return buckets.get(path, "")
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -10,8 +11,10 @@ from urllib.parse import urlparse
 
 from . import app_settings, export_service, matter_store, process_memory, user_store
 from .http_auth import (
+    ADMIN_USERS_ENV,
     AUTH_ALLOWED_HOSTS_ENV,
     AUTH_NOT_CONFIGURED_MESSAGE,
+    _admin_user_ids,
     _auth_method_configured,
     _auth_required_for_host,
     _basic_auth_configured,
@@ -19,7 +22,10 @@ from .http_auth import (
     _google_oauth_configured,
     _is_loopback_host,
 )
+
 from .rate_limit import _rate_limit_per_window
+
+LOGGER = logging.getLogger(__name__)
 
 DURABLE_DATA_DIR_REQUIRED_MESSAGE = "Public deployments must set NDA_DATA_DIR to a durable storage path."
 EPHEMERAL_DATA_DIR_MESSAGE = "NDA_DATA_DIR points at ephemeral storage; use a persistent disk or external store."
@@ -293,6 +299,19 @@ def _validate_public_auth(host: str) -> None:
         return
     if not _auth_method_configured():
         raise RuntimeError(AUTH_NOT_CONFIGURED_MESSAGE)
+    if not _admin_user_ids():
+        # Fail-closed admin gate: with no NDA_ADMIN_USERS configured, no
+        # authenticated caller is treated as admin, so the admin-only endpoints
+        # (telemetry, AI settings, deployment status, personalisation, backup)
+        # are locked out for everyone. Warn loudly so an operator notices the
+        # mis-configuration instead of silently losing admin access.
+        LOGGER.warning(
+            "%s is not set on a public host: admin endpoints are locked for ALL "
+            "authenticated users (fail-closed). Set %s to a comma-separated list "
+            "of admin user ids to grant admin access.",
+            ADMIN_USERS_ENV,
+            ADMIN_USERS_ENV,
+        )
 
 
 def _validate_public_storage(host: str) -> None:
