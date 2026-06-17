@@ -62,7 +62,7 @@ function createFillController({ state, root, rerenderDocument }) {
             pick = entityApi.applyEntitySelection(pick, previous.entityId);
             if (previous.addressId) pick = entityApi.selectAddress(pick, previous.addressId);
           }
-          if (state.reviewInspectorView === "fill") render();
+          if (state.reviewInspectorView === "overview") render();
         }
       })
       .catch(() => {})
