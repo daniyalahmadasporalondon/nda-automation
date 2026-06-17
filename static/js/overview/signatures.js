@@ -55,7 +55,7 @@ function renderOverviewSignatures(containerEl, matter) {
     <section class="ov-signatures" aria-label="Signatures">
       <div class="ov-signatures-head">
         <span class="ov-fact-label">Signatures</span>
-        <span class="${tallyClass}" data-ov-signatures-tally>${escape(tally)}${
+        <span class="${tallyClass}" data-ov-signatures-tally>${escapeHtml(tally)}${
           fullyExecuted ? ' <span class="ov-signatures-executed">Fully executed</span>' : ""
         }</span>
       </div>
@@ -113,11 +113,11 @@ function renderPartyRow(party) {
   const { label, status, signedAt } = party;
   const display = statusDisplay(status, signedAt);
   return `
-    <div class="ov-signature-party" data-ov-signature-role="${escape(label.toLowerCase())}" data-ov-signature-status="${escape(status)}">
-      <span class="ov-signature-party-name">${escape(label)}</span>
-      <span class="ov-signature-party-status ov-signature-party-status--${escape(status)}">
+    <div class="ov-signature-party" data-ov-signature-role="${escapeHtml(label.toLowerCase())}" data-ov-signature-status="${escapeHtml(status)}">
+      <span class="ov-signature-party-name">${escapeHtml(label)}</span>
+      <span class="ov-signature-party-status ov-signature-party-status--${escapeHtml(status)}">
         <span class="ov-signature-party-mark" aria-hidden="true">${display.mark}</span>
-        <span class="ov-signature-party-text">${escape(display.text)}</span>
+        <span class="ov-signature-party-text">${escapeHtml(display.text)}</span>
       </span>
     </div>`;
 }
@@ -151,7 +151,9 @@ function formatSignedDate(value) {
 
 // --- helpers -----------------------------------------------------------------
 
-function escape(value) {
+// File-local HTML escaper. Named escapeHtml (not the bare `escape`) so a classic
+// script declaration never clobbers the browser's built-in window.escape.
+function escapeHtml(value) {
   return typeof window !== "undefined" && typeof window.escapeHtml === "function"
     ? window.escapeHtml(value)
     : String(value == null ? "" : value)
