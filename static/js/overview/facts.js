@@ -28,8 +28,17 @@ function renderOverviewFacts(containerEl, data, handlers) {
   if (!containerEl) return;
 
   const model = data || {};
-  const counterparty = model.counterparty || {};
-  const facts = model.facts || {};
+  // The counterparty arrives either as the shell's {name, confirmed} object or,
+  // from a leaner caller, as a bare name string. Normalize both to {name,
+  // confirmed} so this renderer accepts either contract.
+  const counterparty =
+    typeof model.counterparty === "string"
+      ? { name: model.counterparty, confirmed: false }
+      : model.counterparty || {};
+  // Facts keys are accepted in either the shell's camelCase (governingLaw / term
+  // / receivedDate) or a snake_case/short form (governing_law / term_years /
+  // received_at) so the renderer is tolerant of either data shape.
+  const facts = normalizeFacts(model.facts || {});
   const callbacks = handlers || {};
   const onConfirm = typeof callbacks.onConfirm === "function" ? callbacks.onConfirm : null;
   const onEntityFill = typeof callbacks.onEntityFill === "function" ? callbacks.onEntityFill : null;
@@ -85,6 +94,24 @@ function renderCounterparty(name, confirmed) {
 }
 
 // --- matter-facts strip ------------------------------------------------------
+
+// Accept the shell's camelCase fact keys (governingLaw / term / receivedDate) or
+// a snake_case/short form (governing_law / term_years / received_at). term_years
+// is rendered as "<n> years" when given as a bare number.
+function normalizeFacts(facts) {
+  const f = facts || {};
+  const governingLaw = f.governingLaw != null ? f.governingLaw : f.governing_law;
+  let term = f.term;
+  if (term == null) {
+    if (f.term_label != null) term = f.term_label;
+    else if (f.term_years != null && f.term_years !== "") {
+      const n = Number(f.term_years);
+      term = Number.isFinite(n) ? `${n} year${n === 1 ? "" : "s"}` : String(f.term_years);
+    }
+  }
+  const receivedDate = f.receivedDate != null ? f.receivedDate : f.received_at;
+  return { governingLaw, term, receivedDate };
+}
 
 function renderFacts(facts) {
   const items = [

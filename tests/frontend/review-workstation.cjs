@@ -2306,7 +2306,11 @@ async function testStructuredEvidenceAndRationale(page) {
     );
   }, reviewParagraphs);
 
-  await page.getByRole("button", { name: /Governing Law/ }).click();
+  // Select the Governing Law clause LANE by its lane id (the canonical selector
+  // used across this suite). A by-role/name lookup is now ambiguous: the Overview
+  // sub-tab's roster also renders a role="button" "Governing Law" row, so the
+  // accessible-name match would resolve to two elements.
+  await page.locator('[data-studio-lane-id="governing_law"]').click();
 
   const detailPanel = page.locator("#studioDetailPanel");
   assert.deepEqual(
@@ -5363,7 +5367,7 @@ async function testMatterRedlineDraftPersistence(page) {
   assert.equal((await page.locator("#studioDraftMeta").innerText()).trim(), "");
   assert.equal(await page.locator("#studioSaveDraftButton").isEnabled(), false);
 
-  await page.getByRole("button", { name: /Non-Circumvention/ }).click();
+  await page.locator('[data-studio-lane-id="non_circumvention"]').click();
   await page.locator("#studioDetailPanel [data-export-redline-id][data-export-decision=\"ignore\"]").first().click();
   await assertTextContains(page.locator("#studioDraftMeta"), "Unsaved redline draft changes");
   assert.equal(await page.locator("#studioSaveDraftButton").isEnabled(), true);
@@ -5382,7 +5386,7 @@ async function testMatterRedlineDraftPersistence(page) {
   await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#reviewView:not([hidden])");
   await waitForText(page, "#studioDraftMeta", "Draft redline saved");
-  await page.getByRole("button", { name: /Non-Circumvention/ }).click();
+  await page.locator('[data-studio-lane-id="non_circumvention"]').click();
   const ignoredState = await page.locator('#studioDetailPanel [data-export-redline-id][data-export-decision="ignore"]').first().evaluate((node) => ({
     active: node.classList.contains("active"),
     pressed: node.getAttribute("aria-pressed"),
