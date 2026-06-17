@@ -177,6 +177,37 @@ const CorpusModel = (() => {
     return `${value} ${value === 1 ? "file" : "files"}`;
   }
 
+  // Duplicate-document signal: backend emits matter.duplicate_document =
+  // {matched_matter_id, matched_title, similarity} | null. Read defensively;
+  // returns the object (truthy) or null. Tolerates the field on matter.facets
+  // too, mirroring matterFacetValue's two-place read.
+  function duplicateDocument(matter) {
+    if (!matter || typeof matter !== "object") return null;
+    const direct = matter.duplicate_document;
+    if (direct && typeof direct === "object" && direct.matched_matter_id) return direct;
+    const facets = matter.facets;
+    if (facets && typeof facets === "object") {
+      const viaFacet = facets.duplicate_document;
+      if (viaFacet && typeof viaFacet === "object" && viaFacet.matched_matter_id) return viaFacet;
+    }
+    return null;
+  }
+
+  // Counterparty matches >=2 matters. Read defensively (top-level or facets).
+  function isRepeatEntity(matter) {
+    if (!matter || typeof matter !== "object") return false;
+    if (matter.repeat_entity === true) return true;
+    const facets = matter.facets;
+    return Boolean(facets && typeof facets === "object" && facets.repeat_entity === true);
+  }
+
+  // "92% match" label from a similarity in [0,1]. Defensive against strings.
+  function similarityLabel(similarity) {
+    const value = Number(similarity);
+    if (!Number.isFinite(value)) return "";
+    return `${Math.round(value * 100)}% match`;
+  }
+
   return {
     LIFECYCLE_ORDER,
     RICH_FACET_KEYS,
@@ -185,8 +216,10 @@ const CorpusModel = (() => {
     artifactCountLabel,
     artifactStageLabel,
     counterpartyName,
+    duplicateDocument,
     formatDate,
     isClausePresenceFacet,
+    isRepeatEntity,
     lifecycleLabel,
     matterFacetValue,
     richFacetValueLabel,
@@ -194,6 +227,7 @@ const CorpusModel = (() => {
     monthKey,
     monthLabel,
     railSteps,
+    similarityLabel,
     sourceLabel,
     statusChip,
   };
@@ -307,7 +341,18 @@ const CorpusRender = (() => {
     { value: "drive", label: "On file (Drive)" },
   ];
 
-  const FLAG_FACET_DEFS = [{ value: "duplicate", label: "Duplicate" }];
+  // Flag facets. Three honest, distinct duplicate-class signals:
+  //   * "duplicate"          — the Drive folder-collision flag (matter.duplicate).
+  //                            Labelled "Drive copy" so it can't be read as a
+  //                            content duplicate.
+  //   * "repeat_entity"      — counterparty has >=2 matters (matter.repeat_entity).
+  //   * "duplicate_document" — content near-duplicate of another matter
+  //                            (matter.duplicate_document non-null).
+  const FLAG_FACET_DEFS = [
+    { value: "duplicate", label: "Drive copy" },
+    { value: "repeat_entity", label: "Repeat entity" },
+    { value: "duplicate_document", label: "Duplicate document" },
+  ];
 
   function allMatters(payload) {
     const groups = Array.isArray(payload.groups) ? payload.groups : [];
@@ -320,6 +365,16 @@ const CorpusRender = (() => {
       if (predicate(matter)) n += 1;
     });
     return n;
+  }
+
+  // Single source of truth for whether a matter matches a Flags-facet value.
+  // Reused by the sidebar count (renderFacetRail) and the filter
+  // (CorpusView.matterMatchesFacet) so count == filtered-result parity holds.
+  function flagMatches(matter, value) {
+    if (value === "duplicate") return Boolean(matter && matter.duplicate);
+    if (value === "repeat_entity") return CorpusModel.isRepeatEntity(matter);
+    if (value === "duplicate_document") return CorpusModel.duplicateDocument(matter) !== null;
+    return false;
   }
 
   function renderFacetRail(railNode, payload, activeFacets, handlers) {
@@ -344,11 +399,12 @@ const CorpusRender = (() => {
       })), activeFacets, { rich: false })
     );
 
-    // Flags.
+    // Flags. Each def counts via the SAME predicate the filter uses, so the
+    // sidebar count == the filtered-result count (count/filter parity).
     sections.push(
       facetGroupMarkup("flags", "Flags", FLAG_FACET_DEFS.map((def) => ({
         ...def,
-        count: countBy(matters, (m) => Boolean(m.duplicate)),
+        count: countBy(matters, (m) => flagMatches(m, def.value)),
       })), activeFacets, { rich: false })
     );
 
@@ -526,12 +582,24 @@ const CorpusRender = (() => {
     return shown;
   }
 
+  // Option 1 — passive group-header badge for a repeat-entity counterparty.
+  // Shows "Repeat entity · N NDAs" (purple) when ANY matter in the group is
+  // flagged repeat_entity. N is the count of matters rendered in this group.
+  // No click — it is informational only.
+  function repeatEntityBadge(matters) {
+    const list = Array.isArray(matters) ? matters : [];
+    if (!list.some((m) => CorpusModel.isRepeatEntity(m))) return "";
+    const n = list.length;
+    return `<span class="corpus-repeat-entity-badge" title="This counterparty has more than one NDA on file">Repeat entity · ${html(String(n))} ${n === 1 ? "NDA" : "NDAs"}</span>`;
+  }
+
   function renderGroup(group, matters) {
     const matterCount = matters.length;
     return `
       <section class="corpus-group">
         <header class="corpus-group-head">
           <h2 class="corpus-group-name">${html(CorpusModel.counterpartyName(group))}</h2>
+          ${repeatEntityBadge(matters)}
           <span class="corpus-group-count">${matterCount} ${matterCount === 1 ? "matter" : "matters"}</span>
         </header>
         <div class="corpus-matter-list">
@@ -601,6 +669,22 @@ const CorpusRender = (() => {
     `;
   }
 
+  // Option 2 — amber card chip for a content near-duplicate. Reads
+  // matter.duplicate_document = {matched_matter_id, matched_title, similarity}.
+  // Renders "Duplicate document · NN% match → {matched_title}" as a button that
+  // jumps to (scrolls + expands) the matched matter card. It is a <button> so the
+  // matter-head toggle handler ignores it (it skips clicks on a, button).
+  function renderDuplicateDocumentChip(matter) {
+    const dup = CorpusModel.duplicateDocument(matter);
+    if (!dup) return "";
+    const matchedId = String(dup.matched_matter_id || "");
+    if (!matchedId) return "";
+    const matchedTitle = String(dup.matched_title || "another matter");
+    const sim = CorpusModel.similarityLabel(dup.similarity);
+    const simPart = sim ? `${sim} ` : "";
+    return `<button class="corpus-dupdoc-chip" type="button" data-corpus-dupdoc-target="${html(matchedId)}" title="Near-duplicate content of ${html(matchedTitle)} — jump to it">Duplicate document · ${html(simPart)}→ ${html(matchedTitle)}</button>`;
+  }
+
   function renderMatter(matter) {
     const artifacts = Array.isArray(matter.artifacts) ? matter.artifacts : [];
     const artifactCount = Number(matter.artifact_count ?? artifacts.length);
@@ -621,7 +705,8 @@ const CorpusRender = (() => {
             ${date ? `<span class="corpus-matter-date">${html(date)}</span>` : ""}
             <span class="corpus-status-chip" title="Workflow status">${html(status || "—")}</span>
             ${matter.source ? `<span class="corpus-source-badge corpus-source-${html(matter.source)}" title="${html(CorpusModel.sourceLabel(matter.source))}">${html(CorpusModel.sourceLabel(matter.source) || matter.source)}</span>` : ""}
-            ${matter.duplicate ? `<span class="corpus-duplicate-chip" title="More than one Drive folder maps to this matter">DUPLICATE</span>` : ""}
+            ${matter.duplicate ? `<span class="corpus-duplicate-chip" title="More than one Drive folder maps to this matter">DRIVE COPY</span>` : ""}
+            ${renderDuplicateDocumentChip(matter)}
             <span class="corpus-artifact-count">${html(CorpusModel.artifactCountLabel(artifactCount))}</span>
           </span>
         </header>
@@ -738,9 +823,46 @@ const CorpusRender = (() => {
         }
       });
     });
+    // Duplicate-document chip — jump to (scroll + expand) the matched matter card
+    // within the corpus list. Pure in-page navigation, no refetch.
+    listNode.querySelectorAll("[data-corpus-dupdoc-target]").forEach((chip) => {
+      chip.addEventListener("click", (event) => {
+        event.stopPropagation();
+        event.preventDefault();
+        const targetId = chip.dataset.corpusDupdocTarget;
+        if (!targetId) return;
+        jumpToMatter(listNode, targetId);
+      });
+    });
+  }
+
+  // Scroll the matched matter card into view and expand it. Reuses the existing
+  // disclosure DOM shape so the jumped-to card opens exactly as a manual click.
+  function jumpToMatter(listNode, matterId) {
+    if (!listNode) return;
+    const escaped =
+      typeof CSS !== "undefined" && typeof CSS.escape === "function"
+        ? CSS.escape(matterId)
+        : String(matterId).replace(/"/g, '\\"');
+    const card = listNode.querySelector(`[data-corpus-matter="${escaped}"]`);
+    if (!card) return;
+    const head = card.querySelector("[data-corpus-toggle]");
+    const body = card.querySelector(".corpus-matter-body");
+    if (head && body && head.getAttribute("aria-expanded") !== "true") {
+      head.setAttribute("aria-expanded", "true");
+      body.hidden = false;
+      const disclosure = head.querySelector(".corpus-matter-disclosure");
+      if (disclosure) disclosure.textContent = "▾";
+    }
+    if (typeof card.scrollIntoView === "function") {
+      card.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    card.classList.add("corpus-matter--jump-target");
+    setTimeout(() => card.classList.remove("corpus-matter--jump-target"), 1600);
   }
 
   return {
+    flagMatches,
     renderDriveStatus,
     renderFacetRail,
     renderGroups,
@@ -789,9 +911,13 @@ const CorpusView = (() => {
     if (key === "stage") return values.has(matter.status);
     if (key === "source") return values.has(matter.source);
     if (key === "flags") {
-      // Currently only "duplicate".
-      if (values.has("duplicate") && !matter.duplicate) return false;
-      return true;
+      // OR within the Flags key: a matter matches if it satisfies ANY selected
+      // flag value. Each value reuses CorpusRender.flagMatches so the filter and
+      // the sidebar count agree (count == filtered-result parity).
+      for (const value of values) {
+        if (CorpusRender.flagMatches(matter, value)) return true;
+      }
+      return false;
     }
     if (CorpusModel.RICH_FACET_KEYS.includes(key)) {
       const value = CorpusModel.matterFacetValue(matter, key);
