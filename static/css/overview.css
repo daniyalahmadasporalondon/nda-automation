@@ -25,14 +25,33 @@
   padding: 22px 22px 16px;
 }
 
-/* ---------- Counterparty + facts (top) ---------- */
+/* ---------- Counterparty + facts (top) ----------
+   The facts renderer paints the counterparty block and the facts strip into one
+   container; give it a vertical stack with generous spacing so the
+   COUNTERPARTY / ENTITY NAME / RECEIVED rows breathe (user: too crowded). */
+
+.ov-block-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
 
 .ov-counterparty {
   display: flex;
   flex: 0 0 auto;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
   margin: 0;
+}
+
+/* "COUNTERPARTY" field label — reuses the shared .ov-fact-label small-caps gray
+   look but sits as its own standalone block above the name, so the flex-row
+   min-width that aligns the inline facts labels is dropped and a small gap to the
+   name below is added. */
+.ov-counterparty-label {
+  display: block;
+  margin-bottom: 2px;
+  min-width: 0;
 }
 
 /* Counterparty name + confirm state, stacked on one baseline line. */
@@ -201,7 +220,7 @@
   display: flex;
   gap: 10px;
   justify-content: flex-start;
-  padding: 3px 0;
+  padding: 6px 0;
 }
 
 .ov-fact-label {
@@ -497,6 +516,13 @@
   display: none;
 }
 
+/* Summary body: add breathing room below the facts block (before the clause
+   roster) so the at-a-glance summary doesn't read as cramped (user: too
+   crowded). Margin-based so the roster keeps its own flex/scroll height model. */
+.ov-section-summary-body > .ov-block-facts {
+  margin-bottom: 14px;
+}
+
 /* ---------- Combined-tab stacked SECTIONS (Summary + Aspora entity) ----------
    The combined Overview+Fill pane stacks named SECTIONS — a "Summary" block
    (the flat counterparty/facts/roster/footer above) and an "Aspora entity"
@@ -506,7 +532,8 @@
    that carry a title so the bare facts/roster/footer sub-sections (which bring
    their own spacing + footer rule) are left untouched. */
 
-.ov-section:has(> .ov-section-title) {
+.ov-section:has(> .ov-section-title),
+.ov-section-fill {
   display: flex;
   flex: 0 0 auto;
   flex-direction: column;
@@ -514,12 +541,14 @@
   min-width: 0;
 }
 
-/* Hairline rule + breathing room between consecutive titled sections — the only
-   separator; no border-box, no background, so the stack still reads as one tab. */
+/* Hairline rule + breathing room between the Summary block and the (title-less)
+   Aspora-entity Fill block — the only separator; no border-box, no background, so
+   the stack still reads as one tab. */
+.ov-section:has(> .ov-section-title) + .ov-section-fill,
 .ov-section:has(> .ov-section-title) + .ov-section:has(> .ov-section-title) {
   border-top: 1px solid var(--border);
-  margin-top: 10px;
-  padding-top: 22px;
+  margin-top: 16px;
+  padding-top: 26px;
 }
 
 /* Small, quiet uppercase section label — mirrors the facts/fill mini-labels so
@@ -543,24 +572,16 @@
    own .ov-section-title. Scoped via :has(.fill-*) so it tracks the Fill markup's
    presence regardless of the section's specific modifier class. */
 
-.ov-section:has(> .ov-section-title) .fill-body {
+.ov-section-fill .fill-body {
   padding: 0;
 }
 
-/* A leading fill sub-section sits flush under the section title (the title
-   already supplies the top spacing). Inner fill sub-sections keep their gap. */
-.ov-section:has(> .ov-section-title) .fill-body > .fill-section:first-child,
-.ov-section:has(> .ov-section-title) > .fill-section:first-child {
+/* A leading fill sub-section sits flush at the top of the block (the section
+   separator already supplies the top spacing). Inner fill sub-sections keep
+   their gap. */
+.ov-section-fill .fill-body > .fill-section:first-child,
+.ov-section-fill > .fill-section:first-child {
   margin-top: 0;
-}
-
-/* The .ov-section-title names the block, so a redundant top-level "Fill" label
-   from the Fill tool's own first .fill-section-title is folded away. Inner
-   sub-section titles (slot mappings, blanks) are untouched — only a *leading*
-   one that duplicates the section heading is hidden. */
-.ov-section:has(> .ov-section-title) > .fill-body > .fill-section:first-child > .fill-section-title,
-.ov-section:has(> .ov-section-title) > .fill-section:first-child > .fill-section-title {
-  display: none;
 }
 
 /* Empty-state variant tightens the tab gap (the block carries its own spacing). */
