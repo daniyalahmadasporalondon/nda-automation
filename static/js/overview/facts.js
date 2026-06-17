@@ -12,8 +12,12 @@
 //      "Fill" tab's entity-name function — typing a name and committing it fires
 //      onEntityFill(value).
 //
-//   2. A matter-FACTS strip (`ov-facts`) of `ov-fact` items for governing law,
-//      term, and received date.
+//   2. A matter-FACTS strip (`ov-facts`) of `ov-fact` items for the received
+//      date. Governing law and term were REMOVED from this strip: they duplicate
+//      the "Governing Law" and "Term and Survival" clauses already shown in the
+//      roster, which confused reviewers. The received date is the only fact left,
+//      rendered date-only and human-legibly (e.g. "17 Jun 2026") rather than as a
+//      raw ISO timestamp.
 //
 // The shell owns the shared files (index.html / styles.css) and wires the two
 // callbacks to the app's existing confirm + entity-fill logic, so this module is
@@ -35,9 +39,10 @@ function renderOverviewFacts(containerEl, data, handlers) {
     typeof model.counterparty === "string"
       ? { name: model.counterparty, confirmed: false }
       : model.counterparty || {};
-  // Facts keys are accepted in either the shell's camelCase (governingLaw / term
-  // / receivedDate) or a snake_case/short form (governing_law / term_years /
-  // received_at) so the renderer is tolerant of either data shape.
+  // Facts keys are accepted in either the shell's camelCase (receivedDate) or a
+  // snake_case/short form (received_at) so the renderer is tolerant of either
+  // data shape. (Governing law + term were removed — they duplicate roster
+  // clauses; see normalizeFacts.)
   const facts = normalizeFacts(model.facts || {});
   const callbacks = handlers || {};
   const onConfirm = typeof callbacks.onConfirm === "function" ? callbacks.onConfirm : null;
@@ -95,34 +100,36 @@ function renderCounterparty(name, confirmed) {
 
 // --- matter-facts strip ------------------------------------------------------
 
-// Accept the shell's camelCase fact keys (governingLaw / term / receivedDate) or
-// a snake_case/short form (governing_law / term_years / received_at). term_years
-// is rendered as "<n> years" when given as a bare number.
+// Accept the shell's camelCase received key (receivedDate) or a snake_case/short
+// form (received_at). Governing law and term are intentionally NOT read here:
+// they duplicated the "Governing Law" and "Term and Survival" clauses already in
+// the roster, so they were removed from the facts strip to avoid confusion.
 function normalizeFacts(facts) {
   const f = facts || {};
-  const governingLaw = f.governingLaw != null ? f.governingLaw : f.governing_law;
-  let term = f.term;
-  if (term == null) {
-    if (f.term_label != null) term = f.term_label;
-    else if (f.term_years != null && f.term_years !== "") {
-      const n = Number(f.term_years);
-      term = Number.isFinite(n) ? `${n} year${n === 1 ? "" : "s"}` : String(f.term_years);
-    }
-  }
   const receivedDate = f.receivedDate != null ? f.receivedDate : f.received_at;
-  return { governingLaw, term, receivedDate };
+  return { receivedDate };
 }
 
 function renderFacts(facts) {
-  const items = [
-    ["Governing law", facts.governingLaw],
-    ["Term", facts.term],
-    ["Received", facts.receivedDate],
-  ];
+  const items = [["Received", formatReceivedDate(facts.receivedDate)]];
   return `
     <section class="ov-facts" aria-label="Matter facts">
       ${items.map(([label, value]) => renderFact(label, value)).join("")}
     </section>`;
+}
+
+// The received date arrives as a raw ISO timestamp
+// ("2026-06-17T00:39:30.708994+00:00"). Render it date-only and human-legibly,
+// e.g. "17 Jun 2026" (mirrors the app's short-month toLocaleDateString idiom used
+// by RepositoryModel.formatMatterDate, adding the year). Missing / empty /
+// unparseable values return "" so renderFact falls back to the "—" placeholder.
+function formatReceivedDate(value) {
+  if (value == null) return "";
+  const raw = String(value).trim();
+  if (!raw) return "";
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
 function renderFact(label, value) {
