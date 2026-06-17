@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260617ws1">
+    <link rel="stylesheet" href="/static/styles.css?v=20260617ui1">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260615cp1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260615r">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617tw4">
@@ -257,7 +257,7 @@
                     <input id="draftIntakeCounterpartyName" type="text" autocomplete="organization" placeholder="Acme Corporation" required>
                   </label>
                   <label class="upload-field" for="draftIntakeCounterpartyEmail">
-                    <span>Counterparty email (optional)</span>
+                    <span>Counterparty email (required to send)</span>
                     <input id="draftIntakeCounterpartyEmail" type="email" autocomplete="email" placeholder="deals@acme.com">
                   </label>
                   <label class="upload-field" for="draftIntakeCounterpartyIncorporation">
@@ -272,10 +272,16 @@
                     <span>Counterparty business (recital)</span>
                     <input id="draftIntakeBusinessDescription" type="text" autocomplete="off" placeholder="e.g. cross-border payments">
                   </label>
-                  <label class="upload-field upload-field-wide" for="draftIntakeTerm">
-                    <span>Term</span>
-                    <input id="draftIntakeTerm" type="text" autocomplete="off" placeholder="e.g. 2 years">
-                  </label>
+                  <div class="upload-field upload-field-wide">
+                    <span id="draftIntakeTermLabel">Term</span>
+                    <div class="term-stepper" role="group" aria-labelledby="draftIntakeTermLabel">
+                      <button class="term-stepper-btn" id="draftIntakeTermDecrement" type="button" aria-label="Decrease term by one year" title="Decrease term">&minus;</button>
+                      <input id="draftIntakeTerm" class="term-stepper-input" type="number" inputmode="numeric" min="1" step="1" value="2" autocomplete="off" aria-describedby="draftIntakeTermHint">
+                      <span class="term-stepper-unit" id="draftIntakeTermUnit" aria-hidden="true">years</span>
+                      <button class="term-stepper-btn" id="draftIntakeTermIncrement" type="button" aria-label="Increase term by one year" title="Increase term">+</button>
+                    </div>
+                    <p class="term-stepper-hint" id="draftIntakeTermHint" aria-live="polite"></p>
+                  </div>
                   <label class="upload-field upload-field-wide" for="draftIntakeProjectPurpose">
                     <span>Project / purpose</span>
                     <input id="draftIntakeProjectPurpose" type="text" autocomplete="off" placeholder="e.g. Series B diligence">
@@ -2163,7 +2169,7 @@
     <script src="/static/js/corpus.js?v=20260615q"></script>
     <script src="/static/js/manual-upload.js"></script>
     <script src="/static/js/send-document.js?v=20260606i"></script>
-    <script src="/static/js/draft-intake.js?v=20260616gs2"></script>
+    <script src="/static/js/draft-intake.js?v=20260617gen1"></script>
     <script src="/static/js/auth-session.js?v=20260615h"></script>
     <script src="/static/js/admin-ai.js"></script>
     <script src="/static/js/admin-health.js?v=20260607a"></script>
@@ -2193,6 +2199,6 @@
     <script src="/static/js/dashboard-search.js?v=20260614a"></script>
     <script src="/static/js/notifications.js?v=20260615n"></script>
     <script src="/static/js/generator-editor.js?v=20260616dd1"></script>
-    <script src="/static/app.js?v=20260617mrg2"></script>
+    <script src="/static/app.js?v=20260617gen1"></script>
   </body>
 </html>
