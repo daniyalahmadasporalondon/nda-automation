@@ -36,6 +36,7 @@ from . import (
     artifact_registry,
     drive_integration,
     governing_law_view,
+    playbook_runtime,
     review_state,
     workflow,
 )
@@ -378,6 +379,12 @@ def _empty_facets(*, available: bool) -> dict[str, Any]:
         # (they lack this key, so it defaults False here). Default False so a
         # legacy/degraded facet block never positively matches has_issues.
         "ai_review_ran": False,
+        # True when this matter's counterparty has >=2 distinct matters in the
+        # corpus (a repeat entity). Computed in _group_and_wrap once the whole
+        # corpus is known, so the per-matter facet builders cannot know it; they
+        # default False and _group_and_wrap stamps the real value. False here is
+        # the safe default (a repeat-entity filter never falsely matches).
+        "repeat_entity": False,
         "facets_available": available,
     }
 
@@ -755,15 +762,59 @@ def flatten_corpus(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 # --- app-state pass --------------------------------------------------------
+def _resolve_playbook_resolvers() -> tuple[Callable[[], dict[str, Any]], Callable[[], str]]:
+    """Resolve the active playbook runtime ONCE and return constant resolvers.
+
+    The approval-gate staleness check (workflow_state -> _approval_status ->
+    approval.review_is_stale -> review_result_staleness) otherwise reads, locks
+    (flock) and validates ``playbook.json`` once per matter. ``build_corpus``
+    iterates every matter, so that is an O(matters) playbook read. Resolving the
+    runtime a single time here and threading these constant closures collapses it
+    to one read per build.
+
+    Fail-closed semantics are preserved exactly: if the active playbook cannot be
+    resolved, ``runtime_func`` re-raises (so ``review_result_staleness`` records a
+    ``current_runtime_error`` -> stale) and ``hash_func`` returns "" (mirroring
+    ``approval._current_published_playbook_hash``'s own except->"" behavior).
+    """
+    runtime: dict[str, Any] | None = None
+    error: Exception | None = None
+    try:
+        runtime = playbook_runtime.ensure_active_playbook_runtime()
+    except Exception as exc:  # noqa: BLE001 -- fail closed; mirror the unbatched default.
+        error = exc
+
+    def runtime_func() -> dict[str, Any]:
+        if error is not None:
+            raise error
+        return runtime or {}
+
+    def hash_func() -> str:
+        if runtime is None:
+            return ""
+        return str(runtime.get("active_hash") or "")
+
+    return runtime_func, hash_func
+
+
 def _build_app_state_matters(repository, owner_user_id: str) -> dict[str, dict[str, Any]]:
     """Map matter_id -> a partially-built CorpusMatter from app-state."""
     matters: dict[str, dict[str, Any]] = {}
+    # Resolve the active playbook runtime ONCE per build and thread the constant
+    # resolvers through every matter's workflow_state, instead of paying a
+    # playbook.json flock+read+validate per matter in the approval-gate staleness
+    # check.
+    runtime_func, hash_func = _resolve_playbook_resolvers()
     for matter in repository.list_matters(owner_user_id=owner_user_id):
         matter_id = str(matter.get("id") or "")
         if not matter_id:
             continue
         counterparty = artifact_registry.derive_counterparty(matter)
-        state = workflow.workflow_state(matter)
+        state = workflow.workflow_state(
+            matter,
+            current_playbook_hash_func=hash_func,
+            current_runtime_func=runtime_func,
+        )
         artifacts = artifact_registry.matter_artifacts(matter)
         drive_block = matter.get("drive") if isinstance(matter.get("drive"), dict) else {}
         synced_url = str(drive_block.get("matter_folder_url") or "")
@@ -1253,6 +1304,51 @@ def _summary_artifact_urls(summary: dict[str, Any]) -> dict[str, str]:
     return urls
 
 
+def _normalized_entity_key(counterparty: str) -> str:
+    """Normalize a counterparty name for repeat-entity detection.
+
+    casefold + whitespace-collapse so "Acme Corp" / "acme  corp" read as one
+    entity even when they land in separate display groups. The unknown sentinel
+    ("Unknown Counterparty") returns "" so it never counts as a repeat entity (a
+    bag of unrelated unknowns is not the same counterparty).
+    """
+    token = " ".join(str(counterparty or "").split()).casefold()
+    if not token or token == artifact_registry.COUNTERPARTY_UNKNOWN.casefold():
+        return ""
+    return token
+
+
+def _stamp_repeat_entity(matters: list[dict[str, Any]]) -> int:
+    """Stamp ``facets.repeat_entity`` per matter; return the repeat-entity count.
+
+    A matter is a repeat entity when its normalized counterparty has >=2 DISTINCT
+    matters in the corpus (by matter_id; matters sharing a matter_id -- the same
+    record surfaced from both app-state and Drive -- count once). The unknown
+    sentinel never qualifies (its normalized key is "").
+    """
+    distinct_by_key: dict[str, set[str]] = {}
+    for index, matter in enumerate(matters):
+        key = _normalized_entity_key(str(matter.get("counterparty") or ""))
+        if not key:
+            continue
+        # Fall back to the matter's identity index when it has no matter_id, so two
+        # id-less matters of the same entity still count as two distinct matters.
+        identity = str(matter.get("matter_id") or "") or f"__idx_{index}"
+        distinct_by_key.setdefault(key, set()).add(identity)
+
+    repeat_keys = {key for key, ids in distinct_by_key.items() if len(ids) >= 2}
+    count = 0
+    for matter in matters:
+        facets = matter.get("facets")
+        if not isinstance(facets, dict):
+            continue
+        is_repeat = _normalized_entity_key(str(matter.get("counterparty") or "")) in repeat_keys
+        facets["repeat_entity"] = is_repeat
+        if is_repeat:
+            count += 1
+    return count
+
+
 def _group_and_wrap(matters: list[dict[str, Any]], drive_block: dict[str, Any]) -> dict[str, Any]:
     groups_by_cp: dict[str, list[dict[str, Any]]] = {}
     for matter in matters:
@@ -1260,6 +1356,10 @@ def _group_and_wrap(matters: list[dict[str, Any]], drive_block: dict[str, Any]) 
         matter["counterparty"] = counterparty
         matter["artifact_count"] = len(matter["artifacts"])
         groups_by_cp.setdefault(counterparty, []).append(matter)
+
+    # Stamp the repeat-entity facet now the whole corpus is known (a >=2-distinct-
+    # matters-per-counterparty signal the per-matter facet builders cannot see).
+    repeat_entity_count = _stamp_repeat_entity(matters)
 
     groups: list[dict[str, Any]] = []
     for counterparty in sorted(groups_by_cp, key=lambda name: name.casefold()):
@@ -1281,7 +1381,13 @@ def _group_and_wrap(matters: list[dict[str, Any]], drive_block: dict[str, Any]) 
         "groups": groups,
         "matter_count": matter_count,
         "counterparty_count": len(groups),
-        "facet_counts": _facet_counts(matters),
+        # Top-level facet counts the FE rich-facet rail reads. The master-filter
+        # facet counts (mutuality/term_band/restraint_types/review_outcome/
+        # clauses_present/origin) PLUS repeat_entity (the number of matters whose
+        # counterparty has >=2 distinct matters in corpus, stamped above once the
+        # whole corpus is known). Union of both backend folds; count == filtered
+        # parity holds per facet.
+        "facet_counts": {**_facet_counts(matters), "repeat_entity": repeat_entity_count},
         "drive": drive_block,
     }
 

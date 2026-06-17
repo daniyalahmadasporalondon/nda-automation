@@ -38,7 +38,7 @@ with a DocuSign-shaped seam but no e-signature wiring yet.
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 from .review_state import REVIEW_STATE_CHECK, review_state_from_result
 
@@ -149,18 +149,34 @@ MAX_EVENT_ACTOR_CHARS = 240
 MAX_EVENT_DETAIL_CHARS = 2000
 
 
-def workflow_state(matter: Dict[str, Any]) -> Dict[str, Any]:
+def workflow_state(
+    matter: Dict[str, Any],
+    *,
+    current_playbook_hash_func: Callable[[], str] | None = None,
+    current_runtime_func: Callable[[], Dict[str, Any]] | None = None,
+) -> Dict[str, Any]:
     """Derive the canonical workflow state for a matter (pure, read-only).
 
     Returns ``{version, phase, status, next_action, human_gate, needs_attention,
     attention_reason, board_column, timeline_summary}``. Never mutates ``matter``
     and never persists anything.
+
+    ``current_playbook_hash_func``/``current_runtime_func`` are injectable so a
+    batch caller (corpus_index.build_corpus) can resolve the active playbook
+    runtime ONCE and thread the constant resolvers down through the approval-gate
+    staleness check, instead of re-reading playbook.json per matter. When omitted
+    the staleness check resolves the runtime itself (the unbatched default).
     """
     if not isinstance(matter, dict):
         matter = {}
 
     error = _workflow_error(matter)
-    phase, status = _derive_phase_and_status(matter, error)
+    phase, status = _derive_phase_and_status(
+        matter,
+        error,
+        current_playbook_hash_func=current_playbook_hash_func,
+        current_runtime_func=current_runtime_func,
+    )
     needs_attention = status in FAILURE_STATUSES
     attention_reason = _attention_reason(error) if needs_attention else ""
     next_action = _next_action_for(status, matter)
@@ -182,7 +198,13 @@ def workflow_state(matter: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _derive_phase_and_status(matter: Dict[str, Any], error: Dict[str, Any]) -> tuple[str, str]:
+def _derive_phase_and_status(
+    matter: Dict[str, Any],
+    error: Dict[str, Any],
+    *,
+    current_playbook_hash_func: Callable[[], str] | None = None,
+    current_runtime_func: Callable[[], Dict[str, Any]] | None = None,
+) -> tuple[str, str]:
     """Compute (phase, status) from the matter's existing signals.
 
     Resolution order, latest-lifecycle-stage first, so a matter that has already
@@ -217,7 +239,11 @@ def _derive_phase_and_status(matter: Dict[str, Any], error: Dict[str, Any]) -> t
     if sent is not None:
         return PHASE_SENT, sent
 
-    approval = _approval_status(matter)
+    approval = _approval_status(
+        matter,
+        current_playbook_hash_func=current_playbook_hash_func,
+        current_runtime_func=current_runtime_func,
+    )
     if approval is not None:
         return PHASE_APPROVAL, approval
 
@@ -257,7 +283,12 @@ def _sent_status(matter: Dict[str, Any]) -> str | None:
     return None
 
 
-def _approval_status(matter: Dict[str, Any]) -> str | None:
+def _approval_status(
+    matter: Dict[str, Any],
+    *,
+    current_playbook_hash_func: Callable[[], str] | None = None,
+    current_runtime_func: Callable[[], Dict[str, Any]] | None = None,
+) -> str | None:
     """Approval-phase status, or None if the matter isn't at the approval gate yet.
 
     A matter reaches the approval gate once it carries a review_result whose
@@ -276,7 +307,11 @@ def _approval_status(matter: Dict[str, Any]) -> str | None:
     review_result = matter.get("review_result")
     if not isinstance(review_result, dict):
         return None
-    blocks = _approval_blocks(matter)
+    blocks = _approval_blocks(
+        matter,
+        current_playbook_hash_func=current_playbook_hash_func,
+        current_runtime_func=current_runtime_func,
+    )
     if not blocks:
         # Clean review (auto-cleared all-pass) sits in Review/auto_cleared until a
         # human engages; an engaged reviewer with nothing left to resolve is at
@@ -321,7 +356,12 @@ def _review_status(matter: Dict[str, Any]) -> str | None:
     return None
 
 
-def _approval_blocks(matter: Dict[str, Any]) -> list[str]:
+def _approval_blocks(
+    matter: Dict[str, Any],
+    *,
+    current_playbook_hash_func: Callable[[], str] | None = None,
+    current_runtime_func: Callable[[], Dict[str, Any]] | None = None,
+) -> list[str]:
     """The approval gate's reason codes, via the canonical approval module.
 
     Imported lazily because ``approval`` imports several review modules at load
@@ -329,11 +369,20 @@ def _approval_blocks(matter: Dict[str, Any]) -> list[str]:
     light and avoids a cycle. Failing closed (treat an unreadable gate as "no
     derivable Approval status") just leaves the matter in Review, never advances
     it past a real block.
+
+    The optional resolvers are threaded into ``approval.approval_blocks`` so a
+    batch caller can supply a once-resolved runtime/hash instead of paying a
+    per-matter playbook.json read in the staleness check.
     """
     try:
         from . import approval
 
-        return list(approval.approval_blocks(matter))
+        kwargs: Dict[str, Any] = {}
+        if current_playbook_hash_func is not None:
+            kwargs["current_playbook_hash_func"] = current_playbook_hash_func
+        if current_runtime_func is not None:
+            kwargs["current_runtime_func"] = current_runtime_func
+        return list(approval.approval_blocks(matter, **kwargs))
     except Exception:
         return []
 

@@ -1359,5 +1359,145 @@ class _Clock:
         self._now += float(seconds)
 
 
+def _seed_named_matter(repo, *, owner, counterparty, title="NDA"):
+    """Seed an app-state matter whose derived counterparty is ``counterparty``.
+
+    Drives the counterparty through the email ``subject`` (the deterministic
+    normalize_counterparty path), which for a plain company name is an identity
+    transform -- so the corpus groups the matter under exactly ``counterparty``.
+    An empty ``counterparty`` leaves the matter with no derivable name -> it lands
+    under "Unknown Counterparty". Carries a review_result so the matter reaches the
+    approval-gate staleness check.
+    """
+    return repo.create_matter(
+        source_filename=f"{title}.docx",
+        document_bytes=b"PK\x03\x04 fake docx",
+        extracted_text="This Agreement is mutual.",
+        review_result={"clauses": [{"id": "mutuality", "decision": "pass"}]},
+        triage={"triage_status": "review"},
+        source_type="manual_upload",
+        board_column="in_review",
+        intake_metadata={"subject": counterparty} if counterparty else None,
+        owner_user_id=owner,
+    )
+
+
+class CorpusPerfResolveOnceTests(unittest.TestCase):
+    """The active playbook runtime is resolved ONCE per build_corpus, not per matter."""
+
+    def setUp(self):
+        corpus_index.invalidate_cache()
+        self.repo = InMemoryMatterRepository()
+
+    def tearDown(self):
+        corpus_index.invalidate_cache()
+
+    def test_playbook_runtime_resolved_once_per_build(self):
+        # Several matters that all carry a review_result, so each one reaches the
+        # approval-gate staleness check (workflow_state -> _approval_status ->
+        # approval.review_is_stale -> review_result_staleness). Pre-fix this read
+        # playbook.json once PER MATTER; post-fix it is resolved once per build.
+        for n in range(4):
+            _seed_named_matter(self.repo, owner="owner-a", counterparty=f"Entity {n}", title=f"NDA {n}")
+
+        real = corpus_index.playbook_runtime.ensure_active_playbook_runtime
+        calls = {"n": 0}
+
+        def counting_resolver(*args, **kwargs):
+            calls["n"] += 1
+            return real(*args, **kwargs)
+
+        original = corpus_index.playbook_runtime.ensure_active_playbook_runtime
+        corpus_index.playbook_runtime.ensure_active_playbook_runtime = counting_resolver
+        try:
+            payload = corpus_index.build_corpus(self.repo, "owner-a", "")
+        finally:
+            corpus_index.playbook_runtime.ensure_active_playbook_runtime = original
+
+        # Exactly one playbook resolution for the whole build (the O(matters) read
+        # collapsed to O(1)).
+        self.assertEqual(calls["n"], 1)
+        # And every matter surfaced (the build still ran over all of them).
+        self.assertEqual(payload["matter_count"], 4)
+
+    def test_staleness_verdicts_unchanged_by_batching(self):
+        # The batched resolver must produce byte-identical workflow verdicts to the
+        # unbatched per-matter resolution: status (= board_column) is the same.
+        matters = [
+            _seed_named_matter(self.repo, owner="owner-a", counterparty=f"Entity {n}", title=f"NDA {n}")
+            for n in range(3)
+        ]
+        baseline = {m["id"]: workflow.workflow_state(m) for m in matters}
+
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "")
+        surfaced = {m["matter_id"]: m for g in payload["groups"] for m in g["matters"]}
+        for matter_id, expected in baseline.items():
+            self.assertEqual(surfaced[matter_id]["status"], expected["board_column"])
+
+
+class CorpusRepeatEntityTests(unittest.TestCase):
+    """repeat_entity fires for a counterparty with >=2 distinct matters, not singletons."""
+
+    def setUp(self):
+        corpus_index.invalidate_cache()
+        self.repo = InMemoryMatterRepository()
+
+    def tearDown(self):
+        corpus_index.invalidate_cache()
+
+    def _facets_by_matter(self, payload):
+        return {
+            m["matter_id"]: m["facets"]
+            for g in payload["groups"]
+            for m in g["matters"]
+        }
+
+    def test_repeat_entity_fires_for_two_same_counterparty_not_singletons(self):
+        # Acme has two distinct matters -> both repeat_entity True.
+        a1 = _seed_named_matter(self.repo, owner="owner-a", counterparty="Acme Corp", title="Acme 1")
+        a2 = _seed_named_matter(self.repo, owner="owner-a", counterparty="Acme Corp", title="Acme 2")
+        # Globex has a single matter -> repeat_entity False.
+        g1 = _seed_named_matter(self.repo, owner="owner-a", counterparty="Globex Inc", title="Globex 1")
+
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "")
+        facets = self._facets_by_matter(payload)
+
+        self.assertTrue(facets[a1["id"]]["repeat_entity"])
+        self.assertTrue(facets[a2["id"]]["repeat_entity"])
+        self.assertFalse(facets[g1["id"]]["repeat_entity"])
+        # Facet count = number of matters that are repeat entities (Acme's 2).
+        self.assertEqual(payload["facet_counts"]["repeat_entity"], 2)
+
+    def test_repeat_entity_normalizes_case_and_whitespace(self):
+        # "Acme  Corp" (double space) / "acme corp" normalize to one entity.
+        a1 = _seed_named_matter(self.repo, owner="owner-a", counterparty="Acme  Corp", title="Acme 1")
+        a2 = _seed_named_matter(self.repo, owner="owner-a", counterparty="acme corp", title="Acme 2")
+
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "")
+        facets = self._facets_by_matter(payload)
+        self.assertTrue(facets[a1["id"]]["repeat_entity"])
+        self.assertTrue(facets[a2["id"]]["repeat_entity"])
+        self.assertEqual(payload["facet_counts"]["repeat_entity"], 2)
+
+    def test_unknown_counterparty_never_repeat_entity(self):
+        # Two matters whose subject normalizes to empty both group under "Unknown
+        # Counterparty" but must NOT be treated as a repeat entity (a bag of
+        # unrelated unknowns is not the same counterparty).
+        m1 = _seed_named_matter(self.repo, owner="owner-a", counterparty="Fwd:", title="Mystery 1")
+        m2 = _seed_named_matter(self.repo, owner="owner-a", counterparty="Re:", title="Mystery 2")
+
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "")
+        # Sanity: both landed under the unknown sentinel.
+        unknown_group = next(
+            g for g in payload["groups"] if g["counterparty"] == artifact_registry.COUNTERPARTY_UNKNOWN
+        )
+        self.assertEqual(unknown_group["matter_count"], 2)
+
+        facets = self._facets_by_matter(payload)
+        self.assertFalse(facets[m1["id"]]["repeat_entity"])
+        self.assertFalse(facets[m2["id"]]["repeat_entity"])
+        self.assertEqual(payload["facet_counts"]["repeat_entity"], 0)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
