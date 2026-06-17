@@ -133,6 +133,14 @@ const RepositoryBoard = (() => {
 
   function renderMatterCard(matter, options = {}) {
     const issueCount = Number(matter.issue_count || 0);
+    // The issue count is a DISPLAY of a verdict, so it only shows once an AI review
+    // has actually run (ai_review_ran). A deterministic-only matter shows "Pending"
+    // instead -- issue_count's triage/routing/search uses are untouched. Fall back
+    // to "show the count" only for fixtures predating the flag.
+    const aiReviewRan = typeof matter.ai_review_ran === "boolean" ? matter.ai_review_ran : true;
+    const issueLabel = aiReviewRan
+      ? `${issueCount} ${issueCount === 1 ? "issue" : "issues"}`
+      : "Pending";
     const date = RepositoryModel.formatMatterDate(matter.received_at || matter.created_at);
     const confirmingDelete = Boolean(options.confirmingDelete);
     return `
@@ -154,7 +162,7 @@ const RepositoryBoard = (() => {
         ${confirmingDelete ? renderMatterDeleteConfirmation(matter) : ""}
         <span class="repository-card-rule"></span>
         <span class="repository-card-foot">
-          <span>${issueCount} ${issueCount === 1 ? "issue" : "issues"}</span>
+          <span>${html(issueLabel)}</span>
           <span>${html(RepositoryModel.matterColumnLabel(matter))}</span>
         </span>
       </article>

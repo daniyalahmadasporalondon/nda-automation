@@ -10,12 +10,18 @@ from .gmail_integration import matter_reply_recipient, recipient_email
 from .pdf_export_service import public_matter_document_downloads
 from .reference_resolver import resolve_document_references
 from .review_document import split_document_paragraphs
-from .review_state import aggregate_review_state, result_requires_human_review, review_state_from_result
+from .review_state import (
+    aggregate_review_state,
+    result_requires_human_review,
+    review_state_from_result,
+    review_was_ai_executed,
+)
 from .source_fidelity import source_fidelity_payload
 from .workflow import workflow_state
 
 
 class PublicMatter(TypedDict, total=False):
+    ai_review_ran: bool
     approved_at: str
     approver: str
     artifacts: list[dict[str, Any]]
@@ -180,9 +186,16 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
     # best-effort derivations over the stored review; an absent/unclear value
     # degrades to "" / None rather than guessing, so the UI shows "not specified".
     public.update(_matter_facts_fields(matter))
-    # Whether ANY AI review has run yet -- the single boolean the Overview empty
-    # state ("No review yet") reads instead of probing review_result shape.
+    # Whether ANY review (deterministic OR AI) has produced a stored result -- the
+    # legacy "No review yet" probe. Kept verbatim (callers/tests depend on it); do
+    # NOT repurpose. It is intentionally broader than ``ai_review_ran``.
     public["has_ai_review"] = _matter_has_any_review(matter)
+    # Whether an AI review has ACTUALLY run (executed_engine == "ai_first"). This is
+    # the single boolean every user-facing VERDICT surface gates on: a
+    # deterministic-only matter has has_ai_review=True but ai_review_ran=False, so
+    # the UI shows "Review not run / Pending" instead of deterministic verdicts.
+    # Triage metadata (counterparty/dedup/issue_count routing) is unaffected.
+    public["ai_review_ran"] = _matter_ai_review_ran(matter)
     public["document_downloads"] = public_matter_document_downloads(matter)
     # The artifact registry view: the tracked documents on the matter plus the
     # current_artifact_id pointer ("the version that matters now"). A compact
@@ -353,6 +366,23 @@ def _matter_has_any_review(matter: dict[str, Any]) -> bool:
     """
     review_result = matter.get("review_result")
     if isinstance(review_result, dict) and review_result:
+        return True
+    ai_first = matter.get("ai_first_review_result")
+    return isinstance(ai_first, dict) and bool(ai_first)
+
+
+def _matter_ai_review_ran(matter: dict[str, Any]) -> bool:
+    """True when an AI (ai_first) review has actually run for this matter.
+
+    Reliable signal: ``review_result.active_review_engine.executed_engine ==
+    "ai_first"`` (a completed AI review overwrites ``review_result``). A stored
+    ``ai_first_review_result`` is also accepted as positive provenance. This is the
+    single boolean every user-facing VERDICT surface gates on -- a deterministic-only
+    matter returns False so the UI shows "Review not run / Pending" instead of the
+    deterministic verdict (the last "deterministic ghost"). Triage metadata is
+    unaffected. Delegates to the shared ``review_state.review_was_ai_executed``.
+    """
+    if review_was_ai_executed(matter.get("review_result")):
         return True
     ai_first = matter.get("ai_first_review_result")
     return isinstance(ai_first, dict) and bool(ai_first)

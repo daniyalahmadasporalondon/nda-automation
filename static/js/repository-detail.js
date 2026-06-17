@@ -9,7 +9,16 @@ const RepositoryDetail = (() => {
   }) {
     if (!repositoryMatterPanel) return;
     const reviewResult = matter.review_result || {};
-    const attentionClauses = Array.isArray(reviewResult.clauses)
+    // Only an AI review (ai_review_ran) may surface verdicts/checks/issues. A
+    // deterministic-only matter shows a "Review not run -- Refresh with AI" Pending
+    // state instead of the deterministic counts (the last "deterministic ghost").
+    // Triage metadata (route/counterparty/dedup) is untouched. Fall back to "are
+    // there clauses" only for fixtures predating the flag.
+    const aiReviewRan = typeof matter.ai_review_ran === "boolean"
+      ? matter.ai_review_ran
+      : (Array.isArray(reviewResult.clauses) && reviewResult.clauses.length > 0);
+    const reviewNotRunLabel = "Review not run";
+    const attentionClauses = aiReviewRan && Array.isArray(reviewResult.clauses)
       ? reviewResult.clauses.filter((clause) => clause && clauseStatus(clause).requiresAttention)
       : [];
     const subject = RepositoryModel.matterSubject(matter);
@@ -59,27 +68,29 @@ const RepositoryDetail = (() => {
               <div class="repository-check-grid">
                 <div class="repository-check-card">
                   <span>Pass checks</span>
-                  <strong>${RepositoryModel.reviewCountSummary(matter, reviewResult)}</strong>
+                  <strong>${aiReviewRan ? RepositoryModel.reviewCountSummary(matter, reviewResult) : escapeHtml(reviewNotRunLabel)}</strong>
                 </div>
                 <div class="repository-check-card">
                   <span>Playbook match</span>
-                  <strong>${escapeHtml(RepositoryModel.playbookMatchLabel(matter, reviewResult))}</strong>
+                  <strong>${aiReviewRan ? escapeHtml(RepositoryModel.playbookMatchLabel(matter, reviewResult)) : escapeHtml(reviewNotRunLabel)}</strong>
                 </div>
                 <div class="repository-check-card">
                   <span>Issues</span>
-                  <strong>${Number(matter.issue_count || 0)} ${Number(matter.issue_count || 0) === 1 ? "issue" : "issues"}</strong>
+                  <strong>${aiReviewRan ? `${Number(matter.issue_count || 0)} ${Number(matter.issue_count || 0) === 1 ? "issue" : "issues"}` : escapeHtml(reviewNotRunLabel)}</strong>
                 </div>
                 <div class="repository-check-card">
                   <span>Redline draft</span>
                   <strong>${escapeHtml(matter.has_redline_draft ? "Draft redline saved" : "No custom draft")}</strong>
                 </div>
               </div>
+              ${aiReviewRan ? "" : `<p class="repository-review-pending">Refresh with AI to run a review and see verdicts.</p>`}
             </section>
 
+            ${aiReviewRan ? `
             <section class="repository-detail-issues">
               <h3>Key Failed Clauses</h3>
               ${renderFailedClauses(attentionClauses)}
-            </section>
+            </section>` : ""}
 
             ${RepositorySend.renderSendComposer({
               confirmingSend,

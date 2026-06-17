@@ -12,6 +12,33 @@ CLAUSE_DECISION_REVIEW = "review"
 CLAUSE_DECISION_FAIL = "fail"
 
 
+def review_was_ai_executed(review_result: object) -> bool:
+    """True when the stored review was produced by the AI-first engine.
+
+    The reliable signal is ``active_review_engine.executed_engine == "ai_first"``.
+    A deterministically-generated review (e.g. outbound generation, which pins the
+    deterministic engine and defers AI to on-demand) carries an
+    ``executed_engine`` that is NOT ``ai_first`` -- so "no AI review ran" is true
+    even though a (deterministic) verdict exists. A missing/empty review is likewise
+    "no AI review". Pre-engine-metadata reviews fall back to the ``ai_first_review``
+    marker if present.
+
+    This is deliberately STRICTER than "any review has run": only when this returns
+    True should the UI surface clause verdicts / check counts / issue counts. It is
+    the single source of truth for the deterministic-ghost demotion, shared by
+    ``matter_view.public_matter`` (the ``ai_review_ran`` projection) and
+    ``routes.matters`` (staleness).
+    """
+    if not isinstance(review_result, dict) or not review_result:
+        return False
+    engine = review_result.get("active_review_engine")
+    if not isinstance(engine, dict):
+        # Pre-engine-metadata reviews: fall back to the ai_first marker if present.
+        return isinstance(review_result.get("ai_first_review"), dict)
+    executed = str(engine.get("executed_engine") or engine.get("engine") or "").strip()
+    return executed == "ai_first"
+
+
 def clause_review_state(clause: Dict[str, Any], decision: str | None = None) -> Dict[str, Any]:
     normalized_decision = _normalize_clause_decision(clause, decision)
     state = _state_for_clause_decision(normalized_decision)
