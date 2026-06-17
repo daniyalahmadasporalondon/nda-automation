@@ -98,9 +98,20 @@ def lint_violations_for(playbook: Any) -> list[str]:
         return []
     try:
         violations = lint(playbook)
-    except Exception:  # noqa: BLE001 - a lint bug must never block publishing; fail open to a no-op
-        LOGGER.warning("Playbook consistency lint raised; skipping the lint gate.", exc_info=True)
-        return []
+    except Exception as exc:  # noqa: BLE001 - lint machinery itself broke
+        # FAIL CLOSED. If the lint machinery itself errors we must NOT silently
+        # return a no-op (the old behaviour) -- that turns the hard structural
+        # publish gate off and lets a self-contradictory playbook go live. Surface
+        # the failure loudly AND block, so a broken lint engine cannot be the path
+        # to publishing an unvalidated rulebook.
+        LOGGER.error(
+            "Playbook consistency lint machinery raised; blocking publish (fail-closed).",
+            exc_info=True,
+        )
+        return [
+            f"playbook consistency lint could not run ({type(exc).__name__}: {exc}); "
+            "blocking publish until the lint machinery is healthy"
+        ]
     return [_format_lint_violation(violation) for violation in (violations or [])]
 
 

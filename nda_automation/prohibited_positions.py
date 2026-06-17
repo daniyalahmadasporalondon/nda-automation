@@ -32,6 +32,7 @@ during the term, solicit").
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Pattern
@@ -58,9 +59,26 @@ _FALLBACK_PROHIBITED_POSITION_PATTERN_SOURCES: tuple[tuple[str, str], ...] = (
     ("auto_renew_lock", r"automatically renew|evergreen|may not (?:be )?terminat"),
 )
 
-_PLAYBOOK_PATH = Path(__file__).resolve().parent.parent / "playbook.json"
+_BUNDLED_PLAYBOOK_PATH = Path(__file__).resolve().parent.parent / "playbook.json"
 _PROHIBITED_CLAUSE_ID = "non_circumvention"
 _PROHIBITED_FIELD = "prohibited_position_patterns"
+
+
+def _playbook_path() -> Path:
+    """The live playbook path: the persistent copy when published, else bundled.
+
+    Mirrors ``checker._resolve_playbook_path`` WITHOUT importing checker (to keep
+    this module free of the import cycle): a publish lands the patterns on the
+    NDA_DATA_DIR persistent copy, so the guard must read that copy when it exists,
+    falling back to the in-image bundled copy in dev / before any publish.
+    """
+
+    data_dir = os.environ.get("NDA_DATA_DIR")
+    if data_dir:
+        persistent = Path(data_dir).expanduser() / "playbook.json"
+        if persistent.exists():
+            return persistent
+    return _BUNDLED_PLAYBOOK_PATH
 
 
 def _load_prohibited_position_sources() -> tuple[tuple[str, str], ...]:
@@ -73,7 +91,7 @@ def _load_prohibited_position_sources() -> tuple[tuple[str, str], ...]:
     prohibited-position guard is never silently dropped.
     """
     try:
-        with _PLAYBOOK_PATH.open("r", encoding="utf-8") as handle:
+        with _playbook_path().open("r", encoding="utf-8") as handle:
             playbook = json.load(handle)
         clauses = playbook.get("clauses", []) if isinstance(playbook, dict) else []
         clause = next(

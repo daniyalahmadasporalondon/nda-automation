@@ -1293,3 +1293,71 @@ class TestGenerationAiEnabledFlag:
         )
         stored = artifact_service.get_artifact_bytes(matter["id"], artifact.id, repository=repo)
         assert gen.self_check_generated_nda(stored, playbook=playbook).passed
+
+
+# --------------------------------------------------------------------------- #
+# #34: a non-court venue must NEVER be written into a signed NDA on a law-override
+# --------------------------------------------------------------------------- #
+
+
+class TestForumIsAlwaysACourt:
+    """An overridden governing law must resolve to a COURT, never the bare law name.
+
+    Regression for #34: ``forum = _forum_for_option_id(option_id) or
+    governing_law_value`` wrote the LAW NAME ("DIFC"/"Delaware") into the
+    forum/submission clause when no registry entity defaulted to the overridden
+    option. The forum must be a court, or generation must refuse.
+    """
+
+    def test_every_approved_option_resolves_to_a_court_not_the_law_name(self, playbook):
+        approved = gen._approved_governing_law_options(playbook)
+        for option_id, law_value in approved.items():
+            forum = gen._forum_for_option_id(option_id)
+            assert forum, f"{option_id} resolved no forum"
+            assert forum.strip() != law_value.strip(), (
+                f"{option_id} forum is the bare law name {law_value!r}, not a court"
+            )
+
+    def test_court_map_covers_every_approved_option(self, playbook):
+        approved = set(gen._approved_governing_law_options(playbook))
+        assert approved <= set(gen._COURT_FOR_OPTION_ID), (
+            "every approved governing-law option needs a canonical court fallback"
+        )
+
+    def test_generation_refuses_when_no_court_resolves(self, monkeypatch, playbook):
+        # Simulate the #34 gap: the override option has NO registry entity and NO
+        # court-map entry, so _forum_for_option_id returns "". Generation must
+        # REFUSE (raise) rather than write the law name as the forum.
+        monkeypatch.setattr(gen, "_forum_for_option_id", lambda option_id: "")
+        with pytest.raises(gen.NdaGenerationError) as excinfo:
+            gen.entity_party_from_bundle(
+                _bundle(option_id="india"),
+                playbook,
+                governing_law_option_id="england_and_wales",
+            )
+        assert "court" in str(excinfo.value).lower()
+
+    def test_generation_refuses_when_forum_echoes_the_law_name(self, monkeypatch, playbook):
+        # A resolved value that merely echoes the law name is non-court -> refuse.
+        law_value = gen._approved_governing_law_options(playbook)["delaware"]
+        monkeypatch.setattr(gen, "_forum_for_option_id", lambda option_id: law_value)
+        with pytest.raises(gen.NdaGenerationError):
+            gen.entity_party_from_bundle(
+                _bundle(option_id="india"),
+                playbook,
+                governing_law_option_id="delaware",
+            )
+
+    def test_court_map_fallback_used_when_registry_silent(self, monkeypatch, playbook):
+        # Registry yields nothing for the option, but the court map does -> a real
+        # court is written, generation proceeds.
+        import nda_automation.entity_registry as registry
+
+        monkeypatch.setattr(registry, "list_entities", lambda: [])
+        entity = gen.entity_party_from_bundle(
+            _bundle(option_id="india"),
+            playbook,
+            governing_law_option_id="difc",
+        )
+        assert entity.forum == gen._COURT_FOR_OPTION_ID["difc"]
+        assert entity.forum != gen._approved_governing_law_options(playbook)["difc"]

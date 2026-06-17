@@ -521,7 +521,8 @@ def entity_party_from_bundle(
     if not overridden:
         forum = str(bundle.get("jurisdiction") or "").strip() or governing_law_value
     else:
-        forum = _forum_for_option_id(option_id) or governing_law_value
+        forum = _forum_for_option_id(option_id)
+    forum = _require_court_forum(forum, option_id, governing_law_value)
 
     return EntityParty(
         legal_name=legal_name,
@@ -539,16 +540,38 @@ def entity_party_from_bundle(
     )
 
 
-def _forum_for_option_id(option_id: str) -> str:
-    """The proper forum/jurisdiction for a governing-law option.
+# The proper COURT/VENUE that goes with each Playbook-approved governing-law
+# option id. This is the canonical fallback when no registry entity defaults to
+# an overridden option (so the registry lookup in ``_forum_for_option_id``
+# returns nothing). Without it the old code wrote the bare LAW NAME (e.g. "DIFC",
+# "Delaware") into the forum/submission clause -- a jurisdiction string that is
+# NOT a court. Keyed by the approved-option id from playbook.json.
+_COURT_FOR_OPTION_ID: dict[str, str] = {
+    "india": "the courts of Mumbai, India",
+    "delaware": "the state and federal courts located in the State of Delaware",
+    "england_and_wales": "the courts of England and Wales",
+    "difc": "the DIFC Courts, Dubai",
+    "ontario_canada": "the courts of the Province of Ontario, Canada",
+}
 
-    The Playbook approved_options carry only id/label/value (no forum), but the
-    registry does: each entity registers a ``jurisdiction`` that goes WITH its
-    default governing-law option (e.g. england_and_wales -> "Courts of England and
-    Wales", difc -> "DIFC Courts, Dubai"). So we resolve an overridden option's
-    forum from whichever registry entity defaults to that option. Returns "" if the
-    registry is unavailable or no entity defaults to the option, letting the caller
-    fall back to the law value (flagged in the manifest as forum == law value)."""
+
+def _forum_for_option_id(option_id: str) -> str:
+    """The proper court/forum for a governing-law option.
+
+    The Playbook approved_options carry only id/label/value (no forum). Resolution
+    order:
+
+    1. The registry: each entity registers a ``jurisdiction`` that goes WITH its
+       default governing-law option (e.g. england_and_wales -> "Courts of England
+       and Wales"), so an overridden option's forum is taken from whichever
+       registry entity defaults to that option.
+    2. The canonical :data:`_COURT_FOR_OPTION_ID` court map -- used when NO registry
+       entity defaults to the option (the gap that previously made this return ""
+       and let the caller write the bare law name as the forum).
+
+    Returns "" only for an option id we have no court for at all, which the caller
+    (:func:`_require_court_forum`) turns into a hard refusal rather than writing a
+    non-court venue into a signed NDA."""
 
     try:
         from . import entity_registry  # noqa: PLC0415
@@ -559,9 +582,31 @@ def _forum_for_option_id(option_id: str) -> str:
                 forum = str(bundle.get("jurisdiction") or "").strip()
                 if forum:
                     return forum
-    except Exception:  # noqa: BLE001 - registry absent/!importable -> caller falls back
-        return ""
-    return ""
+    except Exception:  # noqa: BLE001 - registry absent/!importable -> fall to court map
+        pass
+    return _COURT_FOR_OPTION_ID.get(option_id, "")
+
+
+def _require_court_forum(forum: str, option_id: str, governing_law_value: str) -> str:
+    """Hard gate: refuse to write a non-court venue into the NDA.
+
+    The forum/submission clause must name a COURT, not a bare jurisdiction/law
+    label. The old fallback ``forum = _forum_for_option_id(...) or
+    governing_law_value`` wrote the LAW NAME (e.g. "DIFC", "Delaware") whenever no
+    forum resolved -- a value that is not a court. The manifest flagged it but the
+    doc still rendered/sent/signed. We now REFUSE generation rather than emit such
+    a venue: a resolved court is required, and a resolved value that merely echoes
+    the law name is rejected as non-court."""
+
+    forum = str(forum or "").strip()
+    if not forum or forum == governing_law_value.strip():
+        raise NdaGenerationError(
+            f"Refusing to generate: no court/venue is defined for governing-law option "
+            f"{option_id!r} (law {governing_law_value!r}). Writing the law name as the "
+            "forum would put a non-court jurisdiction into a signed NDA. Register a "
+            "forum for this option (entity registry jurisdiction or the court map)."
+        )
+    return forum
 
 
 def _real_or_blank(value: object) -> str:
