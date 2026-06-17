@@ -361,8 +361,9 @@
 }
 
 /* ---------- Roster: scrollable list of flat clause rows ----------
-   No card containers — rows are hairline-separated lines. A thin colored
-   left-edge accent carries the verdict; the verdict label is quiet colored text. */
+   No card containers — rows are hairline-separated lines. NO left-edge accent
+   bar (removed per user feedback — all verdicts); the verdict reads purely as
+   quiet colored text in the row's status pill. */
 
 .ov-roster {
   display: flex;
@@ -376,7 +377,6 @@
   align-items: center;
   background: transparent;
   border: 0;
-  border-left: 2px solid transparent;
   color: var(--ink);
   cursor: pointer;
   display: flex;
@@ -384,9 +384,9 @@
   font-size: 13px;
   font-weight: 600;
   gap: 12px;
-  padding: 11px 10px 11px 12px;
+  padding: 11px 10px;
   text-align: left;
-  transition: background 0.14s ease, border-left-color 0.14s ease;
+  transition: background 0.14s ease;
 }
 
 .ov-row:hover,
@@ -405,20 +405,20 @@
   white-space: nowrap;
 }
 
-/* Current clause: a brand left-edge accent + the faintest tint, no card. */
+/* Current clause: the faintest tint marks selection — no left-edge accent bar
+   (removed with the verdict bars), no card. */
 .ov-row--current {
   background: var(--bg-softer);
-  border-left-color: var(--brand);
 }
 
 .ov-row--current:hover {
   background: var(--bg-soft);
 }
 
-/* ---------- Verdict — quiet colored TEXT + a left-edge accent, no pill ----------
+/* ---------- Verdict — quiet colored TEXT, no pill, no left bar ----------
    The .ov-pill markup stays, but it is flattened: no background, no border ring;
-   just small uppercase colored text. The matching left-edge accent on the row
-   gives the at-a-glance scan cue. */
+   just small uppercase colored text. The left-edge row accent was removed (user
+   feedback — all verdicts), so the colored status text is the sole scan cue. */
 
 .ov-pill {
   background: transparent;
@@ -447,23 +447,9 @@
   color: var(--red-ink);
 }
 
-/* Row left-edge accent keyed off the verdict the row contains. A non-current
-   row tints its left edge to match its verdict so problems read at a glance;
-   the brand accent on the current row takes precedence (declared after). */
-.ov-row:has(.ov-pill--fail) {
-  border-left-color: var(--red-border);
-}
-
-.ov-row:has(.ov-pill--review) {
-  border-left-color: var(--amber-border);
-}
-
-.ov-row:has(.ov-pill--pass) {
-  border-left-color: var(--green-border);
-}
-
-.ov-row--current {
-  border-left-color: var(--brand);
+/* Pre-review honest placeholder — muted, no color (never leaks a verdict). */
+.ov-pill--unreviewed {
+  color: var(--ink-muted);
 }
 
 /* Trailing reviewed check (if emitted) stays a quiet inline glyph. */
@@ -480,59 +466,6 @@
 .ov-check svg {
   height: 14px;
   width: 14px;
-}
-
-/* ---------- Empty state: before any AI review has run ----------
-   Flat, no dashed card — a calm centered invitation. */
-
-.ov-empty {
-  align-items: flex-start;
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  color: var(--ink-soft);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px 0;
-  text-align: left;
-}
-
-.ov-empty-title {
-  color: var(--ink);
-  font-size: 16px;
-  font-weight: 750;
-  margin: 0;
-}
-
-.ov-empty-hint {
-  color: var(--ink-muted);
-  font-size: 13px;
-  line-height: 1.5;
-  margin: 0;
-  max-width: 40ch;
-}
-
-.ov-empty-refresh {
-  background: var(--brand);
-  border: 0;
-  border-radius: var(--r-sm);
-  color: #ffffff;
-  cursor: pointer;
-  font-family: var(--text-font);
-  font-size: 12px;
-  font-weight: 650;
-  margin-top: 4px;
-  padding: 8px 16px;
-  transition: background 0.16s ease, transform 0.16s ease;
-}
-
-.ov-empty-refresh:hover {
-  background: var(--brand-strong);
-}
-
-.ov-empty-refresh:active {
-  transform: translateY(1px);
 }
 
 /* ---------- Footer: approve / send — flat, hairline top rule ---------- */
@@ -609,15 +542,20 @@
   color: var(--ink-soft);
 }
 
-.ov-send:hover:not(:disabled) {
+.ov-send:hover:not(:disabled):not(.ov-send--disabled) {
   background: var(--bg-soft);
   border-color: var(--lotus);
   color: var(--brand);
 }
 
+/* Disabled send — flat muted, no chrome (mirrors disabled approve). */
+.ov-send--disabled,
 .ov-send:disabled {
+  background: var(--slate-bg);
+  border-color: var(--border);
+  color: var(--ink-muted);
   cursor: not-allowed;
-  opacity: 0.5;
+  pointer-events: none;
 }
 
 /* ===========================================================================
@@ -698,11 +636,6 @@
 .ov-section-fill .fill-body > .fill-section:first-child,
 .ov-section-fill > .fill-section:first-child {
   margin-top: 0;
-}
-
-/* Empty-state variant tightens the tab gap (the block carries its own spacing). */
-.ov-tab-empty {
-  gap: 0;
 }
 
 /* Pre-integration placeholder — flat, only shown before a component is folded in. */

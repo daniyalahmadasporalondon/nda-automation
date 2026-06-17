@@ -9,14 +9,17 @@
 //
 //   renderOverviewFooter(
 //     containerEl,
-//     { approveDisabled, approveReason },
+//     { approveDisabled, approveReason, sendDisabled },
 //     { onApprove, onSend },
 //   )
 //
-// The Approve gate is NOT computed here. The shell decides `approveDisabled`
-// from the app's existing stale-playbook / review logic and passes the boolean
-// (plus an optional human-readable `approveReason`) in. This component only
-// renders that decision and routes clicks.
+// BOTH actions are ALWAYS rendered (the footer is persistent — it never
+// appears/disappears with the review). The shell decides the disabled state:
+//   * `approveDisabled` — the app's existing stale-playbook / review gate,
+//     UNIONed with the pre-review "AI review hasn't run yet" state.
+//   * `sendDisabled` — the pre-review gate for Send-for-signature (so both
+//     actions gray out together before the review runs). Absent => enabled.
+// This component renders those decisions and routes clicks; it computes neither.
 //
 // Surface (classes are fixed; a CSS teammate styles them):
 //   .ov-footer            wrapper
@@ -24,6 +27,7 @@
 //   .ov-approve--disabled modifier when `approveDisabled` is true
 //   .ov-approve-reason    inline explanation shown while disabled
 //   .ov-send              Send for signature button
+//   .ov-send--disabled    modifier when `sendDisabled` is true
 //
 // Like the app's other classic controllers (send-document.js, docusign-send.js)
 // this builds DOM with document.createElement and exposes a CommonJS export
@@ -41,6 +45,7 @@ function renderOverviewFooter(containerEl, state, handlers) {
 
   const approveDisabled = Boolean(data.approveDisabled);
   const approveReason = data.approveReason == null ? "" : String(data.approveReason);
+  const sendDisabled = Boolean(data.sendDisabled);
 
   // Idempotent render: clear any prior footer so re-rendering with new state
   // never stacks duplicate footers into the container.
@@ -80,15 +85,22 @@ function renderOverviewFooter(containerEl, state, handlers) {
     actions.appendChild(approve);
   }
 
-  // Send for signature — always available; the host decides when to surface
-  // this footer at all.
+  // Send for signature — ALWAYS rendered. Disabled/grayed pre-review (the host
+  // passes `sendDisabled`); otherwise wired to onSend. The host owns the gate.
   const send = document.createElement("button");
   send.type = "button";
   send.className = "ov-send";
   send.textContent = "Send for signature";
-  send.addEventListener("click", () => {
-    if (onSend) onSend();
-  });
+  if (sendDisabled) {
+    send.classList.add("ov-send--disabled");
+    send.disabled = true;
+    send.setAttribute("aria-disabled", "true");
+  } else {
+    send.disabled = false;
+    send.addEventListener("click", () => {
+      if (onSend) onSend();
+    });
+  }
   actions.appendChild(send);
 
   footer.appendChild(actions);
