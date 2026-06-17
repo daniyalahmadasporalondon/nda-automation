@@ -808,6 +808,13 @@ function reviewErrorFromPayload(payload, fallbackMessage) {
   if (Array.isArray(payload?.stale_reasons)) {
     error.staleReasons = payload.stale_reasons.filter(Boolean).map((item) => String(item));
   }
+  // #31: carry the DocuSign "not connected" hint (and its connect link) through to
+  // the caller's catch so a 409 needs_connect can render a GUIDING message + link
+  // instead of a bare red error. Previously these fields were dropped here.
+  if (payload?.needs_connect) {
+    error.needsConnect = true;
+    if (payload.connect_url) error.connectUrl = String(payload.connect_url);
+  }
   return error;
 }
 

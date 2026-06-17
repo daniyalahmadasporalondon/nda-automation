@@ -172,6 +172,16 @@ function createDocuSignSendController({
       setStatus("Save this review as a matter before sending for signature.", "error");
       return;
     }
+    // #30: never POST a second envelope for a matter already out for signature.
+    // Once a non-terminal envelope exists the send is a no-op — reflect the
+    // already-sent state instead of creating a duplicate. (A terminal envelope —
+    // completed/declined/voided — is NOT active, so a legitimate resend is still
+    // allowed.) The server enforces the same rule (409) as the real backstop.
+    if (hasActiveEnvelope(matter)) {
+      renderSignatureState(matter);
+      setStatus("This NDA has already been sent for signature.", "success");
+      return;
+    }
     const m = model();
     const validation = m
       ? m.validateSigners(collectSigners())
@@ -211,7 +221,14 @@ function createDocuSignSendController({
       // Begin polling the live status so the badge advances to Signed without a reload.
       startPolling(matter.id);
     } catch (error) {
-      setStatus(error.message || "Could not send for signature.", "error");
+      // #31: a 409 needs_connect is a guided dead-end, not a generic failure —
+      // tell the user DocuSign isn't connected and where to connect it, with a
+      // clickable link to the connect flow when the server supplied one.
+      if (error?.needsConnect) {
+        setConnectNeeded(error.connectUrl);
+      } else {
+        setStatus(error.message || "Could not send for signature.", "error");
+      }
     } finally {
       busy = false;
       setSubmitting(false);
@@ -283,6 +300,16 @@ function createDocuSignSendController({
     return String(matter?.docusign?.envelope_id || matter?.signature_envelope_id || "");
   }
 
+  // #30: an "active" envelope = sent AND not yet terminal. A matter with such an
+  // envelope must not be re-sent (it would create a duplicate envelope to the
+  // counterparty). A terminal envelope (completed/declined/voided) is NOT active,
+  // so a legitimate resend after a void/decline is still permitted.
+  function hasActiveEnvelope(matter) {
+    if (!matterEnvelopeId(matter)) return false;
+    const view = matterView(matter);
+    return Boolean(view?.sent) && !view?.terminal;
+  }
+
   // Apply the badge view (text + tone classes + visibility) to one badge node.
   function applyBadge(node, view) {
     if (!node) return;
@@ -311,9 +338,18 @@ function createDocuSignSendController({
       downloadSignedLink.hidden = !view.canDownloadSigned;
     }
     if (submitButton) {
-      // Once sent, the primary button becomes a no-op until a fresh resend is
-      // meaningful; keep it enabled only before the first send.
-      submitButton.disabled = busy;
+      // #30: once the matter has an ACTIVE (sent, non-terminal) envelope the
+      // primary button must be truly inert — disabled AND relabelled — so a second
+      // click can never re-POST and create a duplicate envelope. setSubmitting()
+      // would otherwise re-enable it after the send completes. Before the first
+      // send (or after a terminal envelope, where a resend is legitimate) the
+      // button only reflects the in-flight `busy` state.
+      if (hasActiveEnvelope(matter)) {
+        submitButton.disabled = true;
+        submitButton.textContent = "Sent for signature";
+      } else {
+        submitButton.disabled = busy;
+      }
     }
   }
 
@@ -338,8 +374,18 @@ function createDocuSignSendController({
 
   function setSubmitting(submitting) {
     if (submitButton) {
-      submitButton.disabled = submitting;
-      submitButton.textContent = submitting ? "Sending" : "Send for signature";
+      // #30: when NOT submitting, don't blindly re-enable the primary button — if
+      // the matter now has an active envelope (the send just succeeded) it must
+      // stay inert. The `finally` of a successful send calls setSubmitting(false)
+      // AFTER renderSignatureState already locked the button; defer to the
+      // already-sent state here so it is never re-enabled into a duplicate send.
+      if (!submitting && hasActiveEnvelope(currentMatter())) {
+        submitButton.disabled = true;
+        submitButton.textContent = "Sent for signature";
+      } else {
+        submitButton.disabled = submitting;
+        submitButton.textContent = submitting ? "Sending" : "Send for signature";
+      }
     }
     [cancelButton, closeButton].filter(Boolean).forEach((control) => {
       control.disabled = submitting;
@@ -351,6 +397,24 @@ function createDocuSignSendController({
     statusNode.textContent = message;
     statusNode.classList.toggle("error", tone === "error");
     statusNode.classList.toggle("success", tone === "success");
+  }
+
+  // #31: a guiding "DocuSign isn't connected" message for the composer. When the
+  // server supplied a connect_url, render it as a clickable link to the connect
+  // flow; otherwise the guiding text alone is enough. The URL is HTML-escaped
+  // before it touches innerHTML (it is server-controlled, but escaping keeps the
+  // render path injection-safe regardless).
+  function setConnectNeeded(connectUrl) {
+    if (!statusNode) return;
+    const base = "DocuSign isn't connected — connect it in Admin → Integrations.";
+    const url = String(connectUrl || "").trim();
+    statusNode.classList.add("error");
+    statusNode.classList.remove("success");
+    if (url) {
+      statusNode.innerHTML = `${html(base)} <a href="${html(url)}" data-docusign-connect-link>Connect DocuSign</a>`;
+    } else {
+      statusNode.textContent = base;
+    }
   }
 
   // Drive the trigger button's visibility/label from the matter state: only show

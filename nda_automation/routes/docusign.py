@@ -259,6 +259,17 @@ def handle_send_for_signature(handler, path: str) -> None:
         handler._send_json({"error": "Matter not found."}, status=404)
         return
 
+    # #30 (defense-in-depth): refuse a SECOND send when the matter already carries
+    # an ACTIVE, non-terminal envelope. The frontend disables the button after a
+    # successful send, but a FE-only guard can be bypassed by a direct request, so
+    # the route is the authoritative duplicate-send backstop. A terminal envelope
+    # (completed/declined/voided) is NOT active — a fresh resend after a void is
+    # legitimate and allowed.
+    if _has_active_envelope(matter):
+        telemetry.increment("docusign_send_duplicate_rejected")
+        handler._send_json(_already_sent_payload(matter), status=409)
+        return
+
     signers = payload.get("signers") if isinstance(payload.get("signers"), list) else None
     signing_order = str(payload.get("signing_order") or docusign_integration.DEFAULT_SIGNING_ORDER)
     email_subject = str(payload.get("email_subject") or "")
@@ -473,6 +484,37 @@ def _needs_connect_payload() -> dict:
         "error": "DocuSign is not connected.",
         "needs_connect": True,
         "connect_url": DOCUSIGN_CONNECT_START_URL,
+    }
+
+
+def _has_active_envelope(matter) -> bool:
+    """True when the matter already has a sent, non-terminal DocuSign envelope.
+
+    An envelope is "active" once it has an ``envelope_id`` AND its status is not
+    one of the terminal states (completed/declined/voided). A matter with no
+    envelope, or one whose envelope has reached a terminal state, is free to send
+    (a resend after a void/decline is legitimate). Defensive against the field
+    being absent or a non-dict.
+    """
+    signature = matter.get(docusign_workflow.SIGNATURE_FIELD) if isinstance(matter, dict) else None
+    if not isinstance(signature, dict):
+        return False
+    if not str(signature.get("envelope_id") or "").strip():
+        return False
+    status = str(signature.get("status") or "").strip().lower()
+    return status not in docusign_integration.TERMINAL_STATUSES
+
+
+def _already_sent_payload(matter) -> dict:
+    """409 body for a duplicate send: the matter is already out for signature."""
+    signature = matter.get(docusign_workflow.SIGNATURE_FIELD) if isinstance(matter, dict) else {}
+    envelope_id = str(signature.get("envelope_id") or "") if isinstance(signature, dict) else ""
+    status = str(signature.get("status") or "") if isinstance(signature, dict) else ""
+    return {
+        "error": "This NDA has already been sent for signature.",
+        "already_sent": True,
+        "envelope_id": envelope_id,
+        "status": status,
     }
 
 
