@@ -218,7 +218,6 @@
   align-items: center;
   background: transparent;
   border: 0;
-  border-bottom: 1px solid var(--border-soft);
   border-left: 2px solid transparent;
   color: var(--ink);
   cursor: pointer;
@@ -230,10 +229,6 @@
   padding: 11px 10px 11px 12px;
   text-align: left;
   transition: background 0.14s ease, border-left-color 0.14s ease;
-}
-
-.ov-row:last-child {
-  border-bottom: 0;
 }
 
 .ov-row:hover,

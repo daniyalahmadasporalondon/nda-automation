@@ -3366,6 +3366,12 @@ h3 {
   white-space: nowrap;
 }
 
+/* The display:inline-flex above would otherwise win over the UA [hidden] rule,
+   leaking the "Review may be stale" text on fresh (non-stale) matters. */
+.studio-review-stale-indicator[hidden] {
+  display: none;
+}
+
 .studio-review-stale-indicator::before {
   background: var(--amber);
   border-radius: 50%;

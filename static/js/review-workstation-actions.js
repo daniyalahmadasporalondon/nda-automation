@@ -930,15 +930,25 @@ function reviewMayBeStale(matter = state.selectedMatter, refresh = matter?.revie
 function renderReviewRefreshNotice(refresh = state.selectedMatter?.review_refresh || null) {
   const stale = reviewMayBeStale(state.selectedMatter, refresh);
   const message = stale ? staleReviewMessage(refresh || state.selectedMatter?.review_refresh) : "";
+  // The "Review may be stale" indicator stays gated on the stale signal -- it is a
+  // warning, only meaningful when the stored review may no longer be current.
   if (studioReviewStaleIndicator) {
     studioReviewStaleIndicator.hidden = !stale;
     studioReviewStaleIndicator.title = message;
   }
   if (!studioRefreshReviewButton) return;
-  studioRefreshReviewButton.hidden = !stale;
+  // The Refresh Review button, by contrast, is an always-available manual action:
+  // it lets the operator re-run the AI review on demand whenever a reviewed matter
+  // is open, not only when the review is flagged stale. It is hidden only when
+  // there is no loaded review to refresh. The AI re-run is explicit/user-initiated,
+  // so it is storm-safe (the no-auto-AI-on-open safety is unaffected).
+  const reviewLoaded = Boolean(state.selectedMatter?.id) && state.reviewClauses.length > 0;
+  studioRefreshReviewButton.hidden = !reviewLoaded;
   studioRefreshReviewButton.disabled = false;
-  studioRefreshReviewButton.textContent = "Refresh with AI";
-  studioRefreshReviewButton.title = stale ? message : "";
+  studioRefreshReviewButton.textContent = "Refresh Review";
+  studioRefreshReviewButton.title = stale
+    ? message
+    : "Re-run the AI review against the active Playbook.";
 }
 
 function staleReviewMessage(refresh, fallback = "Review is stale. Refresh the review before exporting or sending.") {
