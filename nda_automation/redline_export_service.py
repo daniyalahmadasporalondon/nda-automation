@@ -30,6 +30,18 @@ from .source_document_policy import (
 
 VERIFIED_EXPORT_HEADER = "word-package; track-revisions"
 
+# Honest "verified" value for the zero-change case: when a PDF-source matter has NO
+# accepted redlines (and no clean fills), the faithful reviewed output IS the original
+# document, served unchanged. There is no lossy reconstruction to content-check, so we
+# must NOT claim a reconstruction was verified -- we mark it as the original instead.
+ORIGINAL_UNCHANGED_EXPORT_HEADER = "original; no-redlines-applied"
+
+# Response header set on a no-redline original export so the route serves it with the
+# original content type / honest verified value rather than the reconstruction stamp.
+ORIGINAL_EXPORT_MARKER_HEADER = "X-Export-Original"
+
+PDF_CONTENT_TYPE = "application/pdf"
+
 
 @dataclass(frozen=True)
 class RedlineExport:
@@ -37,6 +49,7 @@ class RedlineExport:
     filename: str
     saved_path: Path | None = None
     headers: dict[str, str] | None = None
+    content_type: str | None = None
 
 
 class DocxOpenHealthError(DocxExportError):
@@ -182,6 +195,18 @@ def _build_redline_export(
     )
 
     if source_document_bytes is not None and source_filename_is_pdf(source_filename):
+        # Zero-change short circuit: with NO accepted redlines and NO clean fills there
+        # is nothing to apply, so the faithful reviewed output IS the original PDF. The
+        # lossy pdf2docx reconstruction (which can differ from the original text) would
+        # produce a changed-looking document for a no-change matter AND -- because the
+        # post-render coverage gate short-circuits to "pass" when there are no redlines
+        # -- get stamped "verified" with no content check at all. Serve the original PDF
+        # bytes unchanged instead, marked honestly as the original (NOT a verified
+        # reconstruction).
+        if not _has_pending_export_changes(review_result, clean_mode_fills):
+            return _original_pdf_export(
+                source_document_bytes, source_filename, persist=persist, clean=bool(payload.get("clean"))
+            )
         try:
             reconstructed = pdf_docx_reconstruction.reconstruct_pdf_to_docx(source_document_bytes, source_filename)
         except pdf_docx_reconstruction.PdfDocxReconstructionUnavailableError as exc:
@@ -373,6 +398,56 @@ def _validate_export(
         telemetry.increment("docx_export_content_failures")
         print(f"DOCX export content check failed: {len(content_errors)} issue(s)")
         raise DocxOpenHealthError("The exported Word document failed its content-coverage check.", content_errors)
+
+
+def _has_pending_export_changes(review_result: dict, clean_mode_fills: object) -> bool:
+    """True when this export actually changes the source document.
+
+    A change is either an accepted/manual redline (the reconstruction-and-redline path)
+    or a clean fill baked into the body. When BOTH are empty the export is a no-op and
+    the original document can be served unchanged. ``redline_edits`` already reflects the
+    reviewer's accepted selection at this point (selected/manual edits applied, tracked
+    fills merged), so an empty list here means nothing was accepted."""
+    redline_edits = review_result.get("redline_edits")
+    has_redlines = isinstance(redline_edits, list) and any(
+        isinstance(edit, dict) for edit in redline_edits
+    )
+    has_clean_fills = bool(clean_mode_fills)
+    return has_redlines or has_clean_fills
+
+
+def _original_pdf_export(
+    source_document_bytes: bytes,
+    source_filename: str,
+    *,
+    persist: bool,
+    clean: bool,
+) -> RedlineExport:
+    """Serve the original PDF unchanged for a PDF-source matter with no changes to apply.
+
+    Because nothing is applied, the original IS the faithful reviewed output. It is
+    marked honestly via ``X-Export-Original`` so the route serves it with the PDF content
+    type and an honest verified value -- it must NEVER be stamped as a verified
+    reconstruction (no lossy pdf2docx rebuild ran, so there was no fidelity check)."""
+    headers = {ORIGINAL_EXPORT_MARKER_HEADER: ORIGINAL_UNCHANGED_EXPORT_HEADER}
+    filename = _original_pdf_download_filename(source_filename)
+    return RedlineExport(
+        data=source_document_bytes,
+        filename=filename,
+        # A no-change original is not the matter's redline artifact, so it is never
+        # persisted as one (mirrors the clean-export rule). The clean flag is irrelevant
+        # here -- there is nothing to accept -- but honored for symmetry.
+        saved_path=None,
+        headers=headers,
+        content_type=PDF_CONTENT_TYPE,
+    )
+
+
+def _original_pdf_download_filename(source_filename: str) -> str:
+    stem = Path(str(source_filename or "")).stem
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in stem)
+    safe = safe.strip("-_") or "nda"
+    return f"{safe}.pdf"
 
 
 def _raise_for_pdf_redline_coverage(

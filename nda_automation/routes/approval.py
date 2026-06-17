@@ -187,22 +187,32 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
 
     telemetry.increment("reviewed_docx_exports")
     redline_export = reviewed_docx.export
-    headers = {
-        "X-Export-Verified": (
-            redline_export.headers.get("X-PDF-DOCX-Reconstruction")
-            if redline_export.headers and redline_export.headers.get("X-PDF-DOCX-Reconstruction")
+    export_headers = redline_export.headers or {}
+    is_original_export = bool(
+        export_headers.get(redline_export_service.ORIGINAL_EXPORT_MARKER_HEADER)
+    )
+    if is_original_export:
+        # PDF-source matter with no accepted redlines: the original document is served
+        # unchanged. There was no lossy reconstruction to fidelity-check, so it is marked
+        # honestly as the original -- NEVER as a verified reconstruction.
+        verified_value = redline_export_service.ORIGINAL_UNCHANGED_EXPORT_HEADER
+    else:
+        verified_value = (
+            export_headers.get("X-PDF-DOCX-Reconstruction")
+            if export_headers.get("X-PDF-DOCX-Reconstruction")
             else redline_export_service.VERIFIED_EXPORT_HEADER
-        ),
+        )
+    headers = {
+        "X-Export-Verified": verified_value,
         "X-Reviewed-Redline-Count": str(len(reviewed_docx.payload["export_redline_edits"])),
     }
-    if redline_export.headers:
-        headers.update(redline_export.headers)
+    headers.update(export_headers)
     if reviewed_docx.artifact is not None:
         headers["X-Reviewed-Artifact-ID"] = reviewed_docx.artifact.id
     handler._send_download(
         redline_export.data,
         redline_export.filename,
-        DOCX_MIME,
+        redline_export.content_type or DOCX_MIME,
         headers=headers,
         send_body=send_body,
     )
