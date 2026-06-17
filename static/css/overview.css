@@ -540,6 +540,20 @@
   background: transparent;
   border: 1px solid var(--border-strong);
   color: var(--ink-soft);
+  gap: 6px;
+}
+
+/* Pen-signature icon — matches the Generator's `.icon-text svg` (16px, stroked,
+   currentColor) so the footer button mirrors the Generator CTA visually. */
+.ov-send svg {
+  fill: none;
+  flex: 0 0 auto;
+  height: 16px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  width: 16px;
 }
 
 .ov-send:hover:not(:disabled):not(.ov-send--disabled) {

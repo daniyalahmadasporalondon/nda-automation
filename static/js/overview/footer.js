@@ -35,6 +35,30 @@
 // while the browser just calls the global function. We use textContent (never
 // innerHTML) so the reason label can never inject markup.
 
+// Build the pen-signature icon, mirroring the Generator's Send-for-Signature CTA
+// (commit 4db0d31). Uses createElementNS so the SVG renders in the browser; falls
+// back to plain createElement under the Node test stub (which has no NS support —
+// the icon is decorative there and asserted only via the label span).
+const OV_SVG_NS = "http://www.w3.org/2000/svg";
+const OV_SEND_ICON_PATHS = [
+  "M12 19l7-7 3 3-7 7-3-3z",
+  "M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z",
+  "M2 2l7.586 7.586",
+];
+
+function buildSendIcon() {
+  const hasNS = typeof document.createElementNS === "function";
+  const make = (tag, attrs) => {
+    const node = hasNS ? document.createElementNS(OV_SVG_NS, tag) : document.createElement(tag);
+    Object.keys(attrs || {}).forEach((k) => node.setAttribute(k, attrs[k]));
+    return node;
+  };
+  const svg = make("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", focusable: "false" });
+  OV_SEND_ICON_PATHS.forEach((d) => svg.appendChild(make("path", { d })));
+  svg.appendChild(make("circle", { cx: "11", cy: "11", r: "2" }));
+  return svg;
+}
+
 function renderOverviewFooter(containerEl, state, handlers) {
   if (!containerEl) return null;
 
@@ -90,7 +114,14 @@ function renderOverviewFooter(containerEl, state, handlers) {
   const send = document.createElement("button");
   send.type = "button";
   send.className = "ov-send";
-  send.textContent = "Send for signature";
+  // Pen-signature icon + label, mirroring the Generator's Send-for-Signature CTA
+  // (see commit 4db0d31). The SVG is the icon; the <span> carries the label so
+  // future text writes don't clobber the icon. Built via createElementNS so the
+  // SVG namespace is correct and the <span> label is a real text node.
+  send.appendChild(buildSendIcon());
+  const sendLabel = document.createElement("span");
+  sendLabel.textContent = "Send for signature";
+  send.appendChild(sendLabel);
   if (sendDisabled) {
     send.classList.add("ov-send--disabled");
     send.disabled = true;
