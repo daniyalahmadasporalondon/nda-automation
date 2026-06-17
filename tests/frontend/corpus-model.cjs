@@ -122,8 +122,23 @@ test("matterFacetValue reads matter.facets[key] then top-level, else undefined",
   assert.equal(CorpusModel.matterFacetValue({ facets: { governing_law: "" } }, "governing_law"), undefined);
 });
 
-test("RICH_FACET_KEYS = governing_law / non_solicit / non_compete", () => {
-  assert.deepEqual(CorpusModel.RICH_FACET_KEYS, ["governing_law", "non_solicit", "non_compete"]);
+test("RICH_FACET_KEYS carries the originals + the 6 master-filter facets", () => {
+  assert.deepEqual(CorpusModel.RICH_FACET_KEYS, [
+    "governing_law",
+    "non_solicit",
+    "non_compete",
+    "mutuality",
+    "term_band",
+    "review_outcome",
+    "restraint_types",
+    "clauses_present",
+    "origin",
+  ]);
+  // The two array facets are flagged multi-value; the scalar ones are not.
+  assert.deepEqual(CorpusModel.MULTI_FACET_KEYS, ["restraint_types", "clauses_present"]);
+  assert.ok(CorpusModel.isMultiFacet("restraint_types"));
+  assert.ok(CorpusModel.isMultiFacet("clauses_present"));
+  assert.ok(!CorpusModel.isMultiFacet("mutuality"));
 });
 
 // --- buildFilter: AND across keys, OR within a key, free text --------------
@@ -364,6 +379,210 @@ test("a matter without duplicate_document renders no chip", () => {
   const group = { counterparty: "Clean Co", matters: [FLAG_MATTERS[3]] };
   CorpusRender.renderGroups(list, { groups: [group] }, {}, () => true, "counterparty");
   assert.ok(!list.innerHTML.includes("corpus-dupdoc-chip"));
+});
+
+// ===========================================================================
+// Master-filter facets (mutuality / term_band / restraint_types /
+// review_outcome / clauses_present / origin) + the href scheme-allowlist.
+// ===========================================================================
+
+// A small corpus carrying every master-filter contract field. Two scalar matters
+// plus matters carrying multi-value arrays, so AND/OR/parity can all be exercised.
+const MF_MATTERS = [
+  {
+    counterparty: "Acme", title: "Acme NDA", status: "reviewed", source: "app", artifacts: [],
+    facets: {
+      mutuality: "mutual", term_band: "<=2y", review_outcome: "clean", origin: "generated",
+      restraint_types: ["non_compete", "non_solicit"],
+      clauses_present: ["governing_law", "term"],
+    },
+  },
+  {
+    counterparty: "Globex", title: "Globex NDA", status: "sent", source: "drive", artifacts: [],
+    facets: {
+      mutuality: "one_way", term_band: "3-5y", review_outcome: "needs_review", origin: "received",
+      restraint_types: ["non_solicit", "non_circumvention"],
+      clauses_present: ["governing_law"],
+    },
+  },
+  {
+    counterparty: "Initech", title: "Initech NDA", status: "in_review", source: "app", artifacts: [],
+    facets: {
+      mutuality: "mutual", term_band: ">5y", review_outcome: "has_fail", origin: "generated",
+      restraint_types: [],
+      clauses_present: ["term"],
+    },
+  },
+];
+
+// Human labels are mapped (not raw values).
+test("richFacetValueLabel maps the master-filter scalar facet values", () => {
+  assert.equal(CorpusModel.richFacetValueLabel("mutuality", "mutual"), "Mutual");
+  assert.equal(CorpusModel.richFacetValueLabel("mutuality", "one_way"), "One-way");
+  assert.equal(CorpusModel.richFacetValueLabel("term_band", "<=2y"), "2 years or less");
+  assert.equal(CorpusModel.richFacetValueLabel("term_band", "3-5y"), "3–5 years");
+  assert.equal(CorpusModel.richFacetValueLabel("term_band", ">5y"), "Over 5 years");
+  assert.equal(CorpusModel.richFacetValueLabel("review_outcome", "needs_review"), "Needs review");
+  assert.equal(CorpusModel.richFacetValueLabel("origin", "received"), "Received");
+  assert.equal(CorpusModel.richFacetValueLabel("restraint_types", "non_circumvention"), "Non-circumvention");
+  // Unmapped value falls back to a humanised form.
+  assert.equal(CorpusModel.richFacetValueLabel("review_outcome", "weird_state"), "Weird state");
+});
+
+test("matterFacetValues reads the multi-value array defensively", () => {
+  assert.deepEqual(CorpusModel.matterFacetValues(MF_MATTERS[0], "restraint_types"), ["non_compete", "non_solicit"]);
+  assert.deepEqual(CorpusModel.matterFacetValues({ restraint_types: ["non_solicit"] }, "restraint_types"), ["non_solicit"]);
+  assert.deepEqual(CorpusModel.matterFacetValues({}, "restraint_types"), []);
+  assert.deepEqual(CorpusModel.matterFacetValues({ facets: { restraint_types: "x" } }, "restraint_types"), []); // not an array
+});
+
+// Each scalar facet: renders in the rail with the mapped label + parity counts,
+// and filters with count == filtered-result parity.
+[
+  { key: "mutuality", value: "mutual", label: "Mutual", expectN: 2 },
+  { key: "term_band", value: "3-5y", label: "3–5 years", expectN: 1 },
+  { key: "review_outcome", value: "has_fail", label: "Has fail", expectN: 1 },
+  { key: "origin", value: "generated", label: "Generated", expectN: 2 },
+].forEach(({ key, value, label, expectN }) => {
+  test(`scalar facet ${key} renders (label+count) and filters with parity`, () => {
+    const rail = stubNode();
+    const payload = { groups: [{ counterparty: "x", matters: MF_MATTERS }] };
+    CorpusRender.renderFacetRail(rail, payload, new Map(), {});
+    const html = rail.innerHTML;
+    assert.ok(html.includes(CorpusModel.RICH_FACET_LABELS[key]), `${key} group title rendered`);
+    assert.ok(html.includes(label), `${key} value label "${label}" rendered`);
+    const re = new RegExp(
+      `data-facet-key="${key}" data-facet-value="${value.replace(/[<>]/g, (c) => (c === "<" ? "&lt;" : "&gt;"))}"[\\s\\S]*?corpus-facet-count">(\\d+)<`
+    );
+    const m = html.match(re);
+    assert.ok(m, `${key}=${value} option rendered with a count`);
+    assert.equal(Number(m[1]), expectN, `${key}=${value} sidebar count`);
+    // Filter parity: the count equals the number of matters the filter keeps.
+    const filter = CorpusView.buildFilter(new Map([[key, new Set([value])]]), "");
+    assert.equal(MF_MATTERS.filter(filter).length, expectN, `${key}=${value} filtered count == sidebar count`);
+  });
+});
+
+// Multi-value facets: ANY-match within the group, with count==membership parity.
+test("restraint_types (multi-value) counts per-membership and filters ANY-match", () => {
+  const rail = stubNode();
+  const payload = { groups: [{ counterparty: "x", matters: MF_MATTERS }] };
+  CorpusRender.renderFacetRail(rail, payload, new Map(), {});
+  const html = rail.innerHTML;
+  const countFor = (value) => {
+    const m = html.match(new RegExp(`data-facet-key="restraint_types" data-facet-value="${value}"[\\s\\S]*?corpus-facet-count">(\\d+)<`));
+    return m ? Number(m[1]) : null;
+  };
+  // non_compete in 1 matter, non_solicit in 2, non_circumvention in 1.
+  assert.equal(countFor("non_compete"), 1);
+  assert.equal(countFor("non_solicit"), 2);
+  assert.equal(countFor("non_circumvention"), 1);
+  // Filter parity: non_solicit -> the 2 matters that carry it (ANY-match).
+  const fSolicit = CorpusView.buildFilter(new Map([["restraint_types", new Set(["non_solicit"])]]), "");
+  assert.deepEqual(MF_MATTERS.filter(fSolicit).map((m) => m.counterparty), ["Acme", "Globex"]);
+  assert.equal(MF_MATTERS.filter(fSolicit).length, 2);
+  // OR within the group: {non_compete, non_circumvention} -> Acme (compete) + Globex (circ).
+  const fOr = CorpusView.buildFilter(new Map([["restraint_types", new Set(["non_compete", "non_circumvention"])]]), "");
+  assert.deepEqual(MF_MATTERS.filter(fOr).map((m) => m.counterparty), ["Acme", "Globex"]);
+  // A matter with an empty array matches nothing.
+  const fNone = CorpusView.buildFilter(new Map([["restraint_types", new Set(["non_compete"])]]), "");
+  assert.ok(!MF_MATTERS.filter(fNone).some((m) => m.counterparty === "Initech"));
+});
+
+test("clauses_present (multi-value) filters ANY-match with parity", () => {
+  const fGovlaw = CorpusView.buildFilter(new Map([["clauses_present", new Set(["governing_law"])]]), "");
+  assert.deepEqual(MF_MATTERS.filter(fGovlaw).map((m) => m.counterparty), ["Acme", "Globex"]);
+  const fTerm = CorpusView.buildFilter(new Map([["clauses_present", new Set(["term"])]]), "");
+  assert.deepEqual(MF_MATTERS.filter(fTerm).map((m) => m.counterparty), ["Acme", "Initech"]);
+});
+
+// Combination: AND across groups, OR within each group.
+test("master-filter facets combine AND-across-groups / OR-within-group", () => {
+  // mutuality=mutual (Acme, Initech) AND restraint_types has non_compite/non_solicit...
+  // mutuality=mutual AND origin=generated -> Acme + Initech.
+  const f1 = CorpusView.buildFilter(new Map([
+    ["mutuality", new Set(["mutual"])],
+    ["origin", new Set(["generated"])],
+  ]), "");
+  assert.deepEqual(MF_MATTERS.filter(f1).map((m) => m.counterparty), ["Acme", "Initech"]);
+  // AND with a multi-value group: mutuality=mutual AND restraint_types∋non_solicit -> Acme only.
+  const f2 = CorpusView.buildFilter(new Map([
+    ["mutuality", new Set(["mutual"])],
+    ["restraint_types", new Set(["non_solicit"])],
+  ]), "");
+  assert.deepEqual(MF_MATTERS.filter(f2).map((m) => m.counterparty), ["Acme"]);
+  // OR within a scalar group across groups: term_band∈{<=2y,>5y} AND review_outcome∈{clean,has_fail}
+  // -> Acme (<=2y, clean) + Initech (>5y, has_fail); Globex (3-5y, needs_review) excluded.
+  const f3 = CorpusView.buildFilter(new Map([
+    ["term_band", new Set(["<=2y", ">5y"])],
+    ["review_outcome", new Set(["clean", "has_fail"])],
+  ]), "");
+  assert.deepEqual(MF_MATTERS.filter(f3).map((m) => m.counterparty), ["Acme", "Initech"]);
+});
+
+test("a degraded master-filter group renders when no matter carries the field", () => {
+  const rail = stubNode();
+  const bare = [{ counterparty: "x", title: "x", status: "reviewed", source: "app", artifacts: [], facets: {} }];
+  CorpusRender.renderFacetRail(rail, { groups: [{ counterparty: "x", matters: bare }] }, new Map(), {});
+  // The group title still shows (degraded), but no active option exists for it.
+  assert.ok(rail.innerHTML.includes("Mutuality"), "degraded Mutuality group still titled");
+  assert.ok(!/data-facet-key="mutuality" data-facet-value="mutual"/.test(rail.innerHTML), "no live mutual option");
+});
+
+// --- security: href scheme-allowlist ---------------------------------------
+test("safeHref allows http/https and relative URLs", () => {
+  assert.equal(CorpusModel.safeHref("https://drive.google.com/x"), "https://drive.google.com/x");
+  assert.equal(CorpusModel.safeHref("http://example.com/a?b=1#c"), "http://example.com/a?b=1#c");
+  assert.equal(CorpusModel.safeHref("HTTPS://EX.com/x"), "HTTPS://EX.com/x"); // scheme case-insensitive
+  assert.equal(CorpusModel.safeHref("/api/download/123"), "/api/download/123");
+  assert.equal(CorpusModel.safeHref("relative/path.docx"), "relative/path.docx");
+  assert.equal(CorpusModel.safeHref("#frag"), "#frag");
+});
+
+test("safeHref blocks javascript: and other hostile schemes", () => {
+  assert.equal(CorpusModel.safeHref("javascript:alert(1)"), "");
+  assert.equal(CorpusModel.safeHref("JaVaScRiPt:alert(1)"), "");
+  // Control-char smuggling — browsers strip the tab, so it must still be blocked.
+  assert.equal(CorpusModel.safeHref("java\tscript:alert(1)"), "");
+  assert.equal(CorpusModel.safeHref("java\nscript:alert(1)"), "");
+  assert.equal(CorpusModel.safeHref(" javascript:alert(1)"), "");
+  assert.equal(CorpusModel.safeHref("data:text/html;base64,PHN2Zz4="), "");
+  assert.equal(CorpusModel.safeHref("vbscript:msgbox(1)"), "");
+  assert.equal(CorpusModel.safeHref("file:///etc/passwd"), "");
+  assert.equal(CorpusModel.safeHref("//evil.example.com"), ""); // protocol-relative -> dropped
+  assert.equal(CorpusModel.safeHref(null), "");
+  assert.equal(CorpusModel.safeHref(""), "");
+});
+
+test("renderMatter drops a javascript: open_in_drive_url (no hostile href reaches the DOM)", () => {
+  const list = stubNode();
+  const evil = {
+    matter_id: "m1", counterparty: "Bad Co", title: "Bad NDA", status: "reviewed", source: "drive",
+    in_app: false, artifacts: [], open_in_drive_url: "javascript:alert(document.cookie)",
+  };
+  const safe = {
+    matter_id: "m2", counterparty: "Good Co", title: "Good NDA", status: "reviewed", source: "drive",
+    in_app: false, artifacts: [], open_in_drive_url: "https://drive.google.com/ok",
+  };
+  CorpusRender.renderGroups(list, { groups: [{ counterparty: "x", matters: [evil, safe] }] }, {}, () => true, "counterparty");
+  const html = list.innerHTML;
+  assert.ok(!/javascript:/i.test(html), "no javascript: scheme survived into the markup");
+  assert.ok(html.includes("https://drive.google.com/ok"), "the legitimate https Drive link is preserved");
+});
+
+test("renderArtifacts drops a javascript: download_url", () => {
+  const list = stubNode();
+  const matter = {
+    matter_id: "m3", counterparty: "Co", title: "NDA", status: "reviewed", source: "app", in_app: true,
+    artifacts: [
+      { role: "generated", download_url: "javascript:alert(1)" },
+      { role: "reviewed", download_url: "https://app.example.com/d/2" },
+    ],
+  };
+  CorpusRender.renderGroups(list, { groups: [{ counterparty: "x", matters: [matter] }] }, {}, () => true, "counterparty");
+  const html = list.innerHTML;
+  assert.ok(!/javascript:/i.test(html), "no javascript: download href survived");
+  assert.ok(html.includes("https://app.example.com/d/2"), "the legitimate download link is preserved");
 });
 
 process.stdout.write(`\ncorpus-model: ${passed} passed\n`);
