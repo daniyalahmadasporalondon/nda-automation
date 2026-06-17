@@ -135,14 +135,22 @@ def apply_ai_verifier(
         return updated, _summary(status="deferred", records=[])
 
     # Injected verifier crosses the seam as-is (tests, callers). Otherwise resolve
-    # the active one: an OpenRouter-backed pass when explicitly enabled + keyed,
-    # else the always-available offline polarity adversary.
+    # the active one. The verifier may ONLY be the AI (network) pass: only the AI
+    # reviewer and the AI verifier may adjudicate a clause verdict, so when no
+    # verifier is injected and the AI verifier is not enabled (NDA_AI_VERIFIER), the
+    # second pass is a true NO-OP -- it returns the AI reviewer's findings untouched
+    # rather than handing them to deterministic/regex code. resolve_verifier() also
+    # degrades to a no-op when enabled-but-unkeyed, so this never silently re-judges
+    # an AI verdict with the offline polarity engine.
     if verifier is not None:
         active_verifier = verifier
         verifier_kind = "injected"
     else:
+        if not verifier_enabled():
+            # AI verifier off -> no second pass runs; the AI reviewer's verdict stands.
+            return updated, _summary(status="disabled", records=[])
         active_verifier = resolve_verifier()
-        verifier_kind = "ai" if isinstance(active_verifier, OpenRouterVerifier) else "offline"
+        verifier_kind = "ai" if isinstance(active_verifier, OpenRouterVerifier) else "noop"
     section_index = _section_index(contract_structure)
     records: List[Dict[str, object]] = []
     for clause in updated:
@@ -981,14 +989,20 @@ def verifier_enabled() -> bool:
 
 
 def verifier_status() -> Dict[str, object]:
-    """Expose the configured verifier resolver without making a live API call."""
+    """Expose the configured verifier resolver without making a live API call.
+
+    ``active_kind`` is ``"ai"`` when the AI (network) verifier is enabled + keyed,
+    else ``"noop"``: when the AI verifier is unavailable the second pass changes no
+    verdicts (it does NOT fall back to the offline regex polarity engine), so the AI
+    reviewer's decision stands untouched.
+    """
     enabled = verifier_enabled()
     model = str(os.environ.get(VERIFIER_ENV_MODEL, "")).strip() or DEFAULT_VERIFIER_MODEL
     api_key_source = _verifier_api_key_source()
     api_key_configured = bool(api_key_source)
-    active_kind = "ai" if enabled and api_key_configured else "offline"
+    active_kind = "ai" if enabled and api_key_configured else "noop"
     fallback_reason = ""
-    if active_kind == "offline":
+    if active_kind == "noop":
         fallback_reason = "disabled" if not enabled else "missing_openrouter_api_key"
     return {
         "version": AI_VERIFIER_VERSION,
@@ -1002,18 +1016,40 @@ def verifier_status() -> Dict[str, object]:
     }
 
 
-def resolve_verifier() -> VerifierFn:
-    """Resolve the active verifier: an OpenRouter pass when enabled + keyed,
-    else the always-available offline polarity adversary.
+def noop_verifier(_packet: Mapping[str, object]) -> Dict[str, object] | None:
+    """A verifier that adjudicates nothing.
 
-    Never raises: a misconfigured AI verifier degrades to the offline one rather
-    than breaking review. The accuracy lever should fail safe, not fail closed.
+    Returns ``None`` for every packet, which ``_normalize_verdict`` reads as an
+    ``affirm`` with zero confidence -- i.e. the AI reviewer's verdict stands
+    untouched, no decision is ever rewritten.
+
+    This is the resolver's fallback when the AI (network) verifier is not enabled
+    or not keyed. The product rule is that ONLY the AI reviewer and the AI verifier
+    may adjudicate a clause verdict; no deterministic/regex code may rewrite an AI
+    verdict. So when the AI verifier is unavailable the second pass must be a no-op,
+    NOT the offline regex polarity engine (``default_verifier``), which could
+    silently flip an AI PASS/FAIL to REVIEW.
+    """
+    return None
+
+
+def resolve_verifier() -> VerifierFn:
+    """Resolve the active verifier: an OpenRouter (DeepSeek) pass when enabled +
+    keyed, else a NO-OP that changes no verdicts.
+
+    Never raises: a misconfigured AI verifier degrades to the no-op rather than
+    breaking review. The accuracy lever should fail safe, not fail closed.
+
+    It NEVER falls back to the offline regex polarity engine (``default_verifier``):
+    only the AI reviewer and the AI verifier may adjudicate a clause verdict, so
+    when the network verifier is unavailable the AI reviewer's decision must stand
+    untouched rather than be re-judged by deterministic keyword code.
     """
     if not verifier_enabled():
-        return default_verifier
+        return noop_verifier
     api_key = _verifier_api_key()
     if not api_key:
-        return default_verifier
+        return noop_verifier
     try:
         return OpenRouterVerifier(
             api_key=api_key,
@@ -1021,7 +1057,7 @@ def resolve_verifier() -> VerifierFn:
             timeout_seconds=_verifier_timeout(),
         )
     except VerifierError:
-        return default_verifier
+        return noop_verifier
 
 
 def _record_verifier_error(verifier_kind: str) -> None:

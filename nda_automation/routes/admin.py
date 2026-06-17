@@ -270,10 +270,10 @@ def _operational_warnings() -> list[dict[str, str]]:
             "code": "active_engine_environment_pinned",
             "message": "Active review engine is pinned by the backend environment.",
         })
-    if verifier_status.get("enabled") and verifier_status.get("active_kind") == "offline":
+    if verifier_status.get("enabled") and verifier_status.get("active_kind") == "noop":
         warnings.append({
-            "code": "ai_verifier_offline_fallback",
-            "message": "AI verifier is enabled but is running the offline fallback. Configure an OpenRouter key for DeepSeek verification.",
+            "code": "ai_verifier_inactive_no_key",
+            "message": "AI verifier is enabled but no OpenRouter key is configured, so it is inactive (a no-op that changes no verdicts). Configure an OpenRouter key for DeepSeek verification.",
         })
     stored_key_migration = ai_status.get("stored_key_migration")
     if isinstance(stored_key_migration, dict) and stored_key_migration.get("message"):
