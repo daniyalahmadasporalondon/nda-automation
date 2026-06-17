@@ -849,7 +849,6 @@ async function refreshSelectedMatterReview() {
   if (!confirmDiscardUnsavedReviewEdits("Refreshing the review will discard your unsaved redline edits.")) {
     return;
   }
-  const previousLabel = studioRefreshReviewButton?.textContent || "Refresh Review";
   if (studioRefreshReviewButton) {
     studioRefreshReviewButton.disabled = true;
     studioRefreshReviewButton.textContent = "Reviewing…";
@@ -900,9 +899,14 @@ async function refreshSelectedMatterReview() {
     window.clearTimeout(refreshTimeoutId);
     if (studioRefreshReviewButton?.isConnected) {
       studioRefreshReviewButton.disabled = false;
-      studioRefreshReviewButton.textContent = previousLabel;
+      // Clear the live progress state (spinner + AT busy) set on entry...
       studioRefreshReviewButton.classList.remove("is-refreshing");
       studioRefreshReviewButton.removeAttribute("aria-busy");
+      // ...then re-derive the label from the now-current matter state rather than
+      // restoring a stale snapshot: after a successful run on a previously
+      // UNREVIEWED matter the button must flip "Review" -> "Refresh Review"
+      // (and Approve / Send for signature appear via updateExportButtonState).
+      renderReviewRefreshNotice();
     }
     updateExportButtonState();
   }
@@ -962,6 +966,18 @@ function reviewMayBeStale(matter = state.selectedMatter, refresh = matter?.revie
   return Boolean(refresh?.stale || matter?.review_may_be_stale);
 }
 
+// True when an AI review has ACTUALLY run on the open matter. This is the signal
+// for progressive disclosure of the review-header actions: on an UNREVIEWED
+// matter there is nothing to approve or send, so the header collapses to a single
+// "Review" button (which runs the AI review). The explicit backend flag wins;
+// fall back to "are there any review clauses" only for old payloads/fixtures that
+// predate ai_review_ran, so nothing disappears unexpectedly (matches the demote
+// fallback in overview-tab.js hasAiReview()).
+function aiReviewRan(matter = state.selectedMatter) {
+  if (matter && typeof matter.ai_review_ran === "boolean") return matter.ai_review_ran;
+  return hasReviewResults();
+}
+
 function renderReviewRefreshNotice(refresh = state.selectedMatter?.review_refresh || null) {
   const stale = reviewMayBeStale(state.selectedMatter, refresh);
   const message = stale ? staleReviewMessage(refresh || state.selectedMatter?.review_refresh) : "";
@@ -972,18 +988,30 @@ function renderReviewRefreshNotice(refresh = state.selectedMatter?.review_refres
     studioReviewStaleIndicator.title = message;
   }
   if (!studioRefreshReviewButton) return;
-  // The Refresh Review button, by contrast, is an always-available manual action:
-  // it lets the operator re-run the AI review on demand whenever a reviewed matter
-  // is open, not only when the review is flagged stale. It is hidden only when
-  // there is no loaded review to refresh. The AI re-run is explicit/user-initiated,
-  // so it is storm-safe (the no-auto-AI-on-open safety is unaffected).
+  // This button is an always-available manual action: it runs the AI review on
+  // demand whenever a matter is open, not only when the review is flagged stale.
+  // It is hidden only when there is no loaded matter to act on. The AI run is
+  // explicit/user-initiated, so it is storm-safe (the no-auto-AI-on-open safety
+  // is unaffected).
+  //
+  // Progressive disclosure: it carries the SAME click handler (review-refresh)
+  // either way, but relabels by whether AI review has actually run. On an
+  // UNREVIEWED matter it is the primary "Review" call-to-action (and Approve /
+  // Send for signature are hidden — nothing to approve or send yet); once a
+  // review has run it becomes "Refresh Review" (re-run) and the downstream
+  // actions appear.
   const reviewLoaded = Boolean(state.selectedMatter?.id) && state.reviewClauses.length > 0;
+  const reviewed = aiReviewRan();
   studioRefreshReviewButton.hidden = !reviewLoaded;
   studioRefreshReviewButton.disabled = false;
-  studioRefreshReviewButton.textContent = "Refresh Review";
-  studioRefreshReviewButton.title = stale
-    ? message
-    : "Re-run the AI review against the active Playbook.";
+  // The unreviewed state is the primary call-to-action; reuse the existing amber
+  // pill styling (the "Review" vs "Refresh Review" label carries the state) and
+  // tag it with a hook class without overriding the pill's own border/colour.
+  studioRefreshReviewButton.classList.toggle("studio-review-cta", reviewLoaded && !reviewed);
+  studioRefreshReviewButton.textContent = reviewed ? "Refresh Review" : "Review";
+  studioRefreshReviewButton.title = reviewed
+    ? (stale ? message : "Re-run the AI review against the active Playbook.")
+    : "Run the AI review against the active Playbook.";
 }
 
 function staleReviewMessage(refresh, fallback = "Review is stale. Refresh the review before exporting or sending.") {
@@ -1201,9 +1229,13 @@ function updateApproveReviewControl() {
   if (!studioApproveReviewButton) return;
   const matter = state.selectedMatter;
   const hasReview = hasReviewResults();
+  // Progressive disclosure: there is nothing to approve until an AI review has
+  // actually run, so layer the ai_review_ran gate ON TOP OF the existing
+  // has-review/matter gate (it adds a hide condition, never removes one).
+  const reviewed = aiReviewRan(matter);
   const approved = isMatterApproved(matter);
-  studioApproveReviewButton.hidden = !(hasReview && matter?.id);
-  if (!hasReview || !matter?.id) {
+  studioApproveReviewButton.hidden = !(hasReview && matter?.id && reviewed);
+  if (!hasReview || !matter?.id || !reviewed) {
     return;
   }
   if (approved) {

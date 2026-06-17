@@ -3648,16 +3648,23 @@ async function testStaleReviewRefreshWiring(page) {
   await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
   await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#reviewView:not([hidden])");
-  // Opening the matter shows the stale indicator + the Refresh with AI button,
-  // and does NOT run the AI (no /review-refresh POST yet).
+  // Opening the matter shows the stale indicator + the Refresh Review button
+  // (the matter already carries a stored review, so the button is the "Refresh
+  // Review" re-run, not the unreviewed "Review" call-to-action), and does NOT run
+  // the AI (no /review-refresh POST yet).
   await page.waitForSelector("#studioReviewStaleIndicator:not([hidden])");
   await page.waitForSelector("#studioRefreshReviewButton:not([hidden])");
   await assertTextContains(page.locator("#studioReviewStaleIndicator"), "Review may be stale");
+  await assertTextContains(page.locator("#studioRefreshReviewButton"), "Refresh Review");
   assert.equal(refreshCount, 0);
 
-  await page.getByRole("button", { name: "Refresh with AI" }).click();
+  await page.locator("#studioRefreshReviewButton").click();
   await waitForText(page, "#studioFileMeta", "Review refreshed against the active Playbook.");
-  await page.waitForSelector("#studioRefreshReviewButton[hidden]", { state: "attached" });
+  // The Refresh Review button is an always-available manual re-run on a reviewed
+  // matter, so it stays VISIBLE (labeled "Refresh Review") after a non-stale
+  // refresh; only the stale indicator clears.
+  await page.waitForSelector("#studioRefreshReviewButton:not([hidden])");
+  await assertTextContains(page.locator("#studioRefreshReviewButton"), "Refresh Review");
   await page.waitForSelector("#studioReviewStaleIndicator[hidden]", { state: "attached" });
   assert.equal(await page.locator("#studioExportButton").isEnabled(), true);
   assert.equal(await page.locator("#studioSendButton").isEnabled(), true);
