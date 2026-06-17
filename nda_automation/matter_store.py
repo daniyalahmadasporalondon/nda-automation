@@ -403,13 +403,16 @@ def _coerce_counterparty_block(counterparty: object) -> dict[str, Any]:
 
         return _normalize_counterparty_block(counterparty)
     except Exception:  # noqa: BLE001 -- never let a shape-helper import break the write.
+        # ``unreviewed`` is the honest default for a block no AI extraction produced;
+        # an explicit source on the override (e.g. ``human``/``ai_review_preamble``) is
+        # preserved as-is. Mirrors review_result_contract._normalize_counterparty_block.
         block = {
             "name": "",
             "confidence": 0.0,
             "verified": False,
             "first_party": "",
             "second_party": "",
-            "source": "ai_review_preamble",
+            "source": "unreviewed",
         }
         if not isinstance(counterparty, dict):
             return block
@@ -417,7 +420,7 @@ def _coerce_counterparty_block(counterparty: object) -> dict[str, Any]:
         block["name"] = name
         block["first_party"] = str(counterparty.get("first_party") or "").strip()
         block["second_party"] = str(counterparty.get("second_party") or "").strip()
-        block["source"] = str(counterparty.get("source") or "ai_review_preamble").strip() or "ai_review_preamble"
+        block["source"] = str(counterparty.get("source") or "unreviewed").strip() or "unreviewed"
         try:
             confidence = float(counterparty.get("confidence"))
         except (TypeError, ValueError):
