@@ -301,7 +301,7 @@
 }
 
 .ov-row:has(.ov-pill--pass) {
-  border-left-color: transparent;
+  border-left-color: var(--green-border);
 }
 
 .ov-row--current {
