@@ -95,6 +95,54 @@ test("matterColumn: forward-only -- reviewed and sent matters are never pulled b
   assert.equal(RepositoryModel.matterColumn({ source_type: "gmail_demo", board_column: "in_review", ai_review_ran: true }), "in_review");
 });
 
+// --- executed matters drop OFF the board ------------------------------------
+// The board is WIP only. An EXECUTED (fully-signed, 2/2) matter is done work and
+// is never bucketed into a column; a half-signed (1/2, not executed) matter stays.
+test("isMatterExecuted: true only for a fully-signed / executed matter", () => {
+  assert.equal(RepositoryModel.isMatterExecuted({ executed: true }), true);
+  assert.equal(RepositoryModel.isMatterExecuted({ workflow_state: { phase: "executed" } }), true);
+  assert.equal(RepositoryModel.isMatterExecuted({ workflow_state: { status: "fully_signed" } }), true);
+  // Half-signed / active sent matter is NOT executed -> stays on the board.
+  assert.equal(RepositoryModel.isMatterExecuted({ board_column: "sent", workflow_state: { phase: "sent", status: "sent_awaiting_counterparty" } }), false);
+  assert.equal(RepositoryModel.isMatterExecuted({}), false);
+  assert.equal(RepositoryModel.isMatterExecuted(null), false);
+});
+
+test("renderBoard: an executed matter is excluded from every column", () => {
+  const counts = {};
+  global.document = {
+    querySelectorAll(selector) {
+      if (selector === "[data-repository-count]") {
+        return ["gmail_demo", "in_review", "reviewed", "sent", "generated", "manual_upload"].map((id) => ({
+          dataset: { repositoryCount: id },
+          set textContent(value) {
+            counts[id] = value;
+          },
+        }));
+      }
+      return [];
+    },
+    querySelector() {
+      return null;
+    },
+  };
+  const state = {
+    matters: [
+      { id: "active", board_column: "sent", workflow_state: { phase: "sent" } },
+      { id: "executed", board_column: "sent", executed: true, workflow_state: { phase: "executed", status: "fully_signed" } },
+    ],
+    gmailStatus: {},
+  };
+  RepositoryBoard.renderBoard({
+    gmailDemoMatterList: true,
+    handlers: {},
+    state,
+  });
+  // Only the active half-signed matter lands in Sent; the executed one is gone.
+  assert.equal(counts.sent, "1");
+  delete global.document;
+});
+
 // --- the repository card badge ----------------------------------------------
 const BASE_MATTER = {
   id: "m1",

@@ -47,6 +47,37 @@ def test_board_list_and_detail_return_public_payloads():
     assert "stored_filename" not in detailed["matter"]
 
 
+def test_board_excludes_executed_matters_but_keeps_half_signed():
+    # The board is WIP only. A fully-signed (executed) matter drops OFF the board;
+    # a half-signed (sent, not executed) matter stays in Sent; un-executed matters
+    # are unchanged.
+    repo = InMemoryMatterRepository()
+    active = _create_matter(repo, owner_user_id="tenant-a")
+    half_signed = _create_matter(repo, owner_user_id="tenant-a", board_column="sent")
+    repo.update_matter_fields(
+        half_signed["id"],
+        {"last_outbound_at": "2026-01-02"},
+        owner_user_id="tenant-a",
+    )
+    executed = _create_matter(repo, owner_user_id="tenant-a", board_column="sent")
+    repo.update_matter_fields(
+        executed["id"],
+        {"last_outbound_at": "2026-01-02", "executed": True, "executed_at": "2026-01-03"},
+        owner_user_id="tenant-a",
+    )
+    workflow = RepositoryBoardWorkflow(repo)
+
+    listed = workflow.list_board(owner_user_id="tenant-a")
+    listed_ids = {item["id"] for item in listed["matters"]}
+
+    assert active["id"] in listed_ids
+    assert half_signed["id"] in listed_ids
+    assert executed["id"] not in listed_ids
+    # The half-signed matter is still active work, sitting in Sent.
+    half_card = next(item for item in listed["matters"] if item["id"] == half_signed["id"])
+    assert half_card["workflow_state"]["board_column"] == "sent"
+
+
 def test_board_detail_enforces_owner_scope():
     repo = InMemoryMatterRepository()
     matter = _create_matter(repo, owner_user_id="tenant-a")
