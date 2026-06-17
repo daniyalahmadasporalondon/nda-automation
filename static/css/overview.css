@@ -28,7 +28,7 @@
 /* ---------- Counterparty + facts (top) ----------
    The facts renderer paints the counterparty block and the facts strip into one
    container; give it a vertical stack with generous spacing so the
-   COUNTERPARTY / ENTITY NAME / RECEIVED rows breathe (user: too crowded). */
+   COUNTERPARTY / SENDER / RECEIVED rows breathe (user: too crowded). */
 
 .ov-block-facts {
   display: flex;
@@ -54,12 +54,17 @@
   min-width: 0;
 }
 
-/* Counterparty name + confirm state, stacked on one baseline line. */
+/* Counterparty name + Edit + confirm state, on one baseline line. Hidden while
+   the inline editor is open (the [hidden] guard beats the flex display). */
 .ov-counterparty-head {
   align-items: baseline;
   display: flex;
   flex-wrap: wrap;
   gap: 6px 10px;
+}
+
+.ov-counterparty-head[hidden] {
+  display: none;
 }
 
 .ov-counterparty-name {
@@ -153,49 +158,160 @@
   cursor: not-allowed;
 }
 
-/* Entity-name fill — SMALL + QUIET (user: too prominent). A label above a
-   restrained, mostly-borderless input that only firms up on focus. */
-.ov-counterparty-fill {
+/* Edit — a flat, minimal text-button that opens the inline name editor on demand
+   (the name is NOT an always-on free-text input). It sits next to the name,
+   visually quieter than the name itself; same flat treatment as Confirm but in a
+   neutral ink so it doesn't compete with the brand-coloured Confirm. Every
+   3D/pill property inherited from the base `button` rule is neutralised so it
+   renders truly flat. */
+.ov-counterparty-edit {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  border-radius: 0;
+  box-shadow: none;
+  filter: none;
+  text-shadow: none;
+  color: var(--ink-muted);
+  cursor: pointer;
+  display: inline;
+  flex: 0 0 auto;
+  height: auto;
+  font-family: var(--text-font);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  padding: 0 0 1px;
+  transition: color 0.16s ease, border-color 0.16s ease;
+}
+
+.ov-counterparty-edit:hover {
+  border-bottom-color: var(--brand);
+  box-shadow: none;
+  color: var(--brand-strong);
+}
+
+.ov-counterparty-edit:focus,
+.ov-counterparty-edit:focus-visible {
+  box-shadow: none;
+  outline: none;
+}
+
+.ov-counterparty-edit:active {
+  box-shadow: none;
+  transform: none;
+}
+
+/* Inline name editor — revealed only when Edit is clicked (hidden by default via
+   the [hidden] attribute). A restrained, mostly-borderless input that firms up on
+   focus, with quiet Save / Cancel text-buttons. */
+.ov-counterparty-editor[hidden] {
+  display: none;
+}
+
+.ov-counterparty-editor {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
   max-width: 360px;
 }
 
-.ov-counterparty-fill-label {
-  color: var(--ink-muted);
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.ov-counterparty-fill-input {
+.ov-counterparty-edit-input {
   background: transparent;
   border: 0;
   border-bottom: 1px solid var(--border-strong);
   border-radius: 0;
-  color: var(--ink-soft);
+  color: var(--ink);
   font-family: var(--text-font);
-  font-size: 12px;
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 600;
   padding: 3px 1px 4px;
   transition: border-color 0.16s ease, color 0.16s ease;
   width: 100%;
 }
 
-.ov-counterparty-fill-input::placeholder {
+.ov-counterparty-edit-input::placeholder {
   color: var(--ink-muted);
 }
 
-.ov-counterparty-fill-input:hover {
+.ov-counterparty-edit-input:hover {
   border-bottom-color: var(--lotus);
 }
 
-.ov-counterparty-fill-input:focus {
+.ov-counterparty-edit-input:focus {
   border-bottom-color: var(--brand);
   color: var(--ink);
   outline: none;
+}
+
+.ov-counterparty-edit-actions {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+}
+
+/* Save / Cancel — flat text-buttons matching the Confirm/Edit treatment. Save is
+   brand-coloured (the primary commit), Cancel is muted. */
+.ov-counterparty-edit-save,
+.ov-counterparty-edit-cancel {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  border-radius: 0;
+  box-shadow: none;
+  filter: none;
+  text-shadow: none;
+  cursor: pointer;
+  display: inline;
+  height: auto;
+  font-family: var(--text-font);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  padding: 0 0 1px;
+  transition: color 0.16s ease, border-color 0.16s ease;
+}
+
+.ov-counterparty-edit-save {
+  color: var(--brand);
+}
+
+.ov-counterparty-edit-save:hover {
+  border-bottom-color: var(--brand);
+  color: var(--brand-strong);
+}
+
+.ov-counterparty-edit-cancel {
+  color: var(--ink-muted);
+}
+
+.ov-counterparty-edit-cancel:hover {
+  border-bottom-color: var(--lotus);
+  color: var(--ink-soft);
+}
+
+.ov-counterparty-edit-save:focus,
+.ov-counterparty-edit-save:focus-visible,
+.ov-counterparty-edit-cancel:focus,
+.ov-counterparty-edit-cancel:focus-visible {
+  box-shadow: none;
+  outline: none;
+}
+
+/* SENDER line — sits directly under the counterparty name as a flat labelled fact
+   line (reuses the shared .ov-fact / .ov-fact-label family). The wrapper drops the
+   default .ov-fact top padding so it tucks close beneath the name; the line is
+   simply omitted by the renderer when the matter has no sender. */
+.ov-counterparty-sender[hidden] {
+  display: none;
+}
+
+.ov-counterparty-sender {
+  padding: 0;
 }
 
 /* ---------- Facts: flat vertical lines, NO chip backgrounds ----------
