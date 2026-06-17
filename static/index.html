@@ -741,6 +741,11 @@
                 <span class="corpus-summary" id="corpusSummary"></span>
               </div>
               <div class="corpus-header-actions">
+                <div class="corpus-group-toggle corpus-executed-toggle" id="corpusExecutedToggle" role="group" aria-label="Corpus scope">
+                  <span class="corpus-group-toggle-label">Show</span>
+                  <button class="corpus-group-toggle-btn" type="button" data-corpus-executed="executed" aria-pressed="true" title="Only fully-signed (executed) agreements — the library">Executed only</button>
+                  <button class="corpus-group-toggle-btn" type="button" data-corpus-executed="all" aria-pressed="false" title="Include matters still in progress (unsigned)">Include in-progress</button>
+                </div>
                 <div class="corpus-group-toggle" id="corpusGroupToggle" role="group" aria-label="Group corpus by">
                   <span class="corpus-group-toggle-label">Group by</span>
                   <button class="corpus-group-toggle-btn" type="button" data-corpus-group-by="counterparty" aria-pressed="true" title="Group matters by counterparty">Counterparty</button>
@@ -2168,7 +2173,7 @@
     <script src="/static/js/repository-detail.js?v=20260617gfl1"></script>
     <script src="/static/js/repository-actions.js?v=20260617gfl1"></script>
     <script src="/static/js/repository.js?v=20260615g"></script>
-    <script src="/static/js/corpus.js?v=20260617mf1"></script>
+    <script src="/static/js/corpus.js?v=20260617exec1"></script>
     <script src="/static/js/manual-upload.js"></script>
     <script src="/static/js/send-document.js?v=20260606i"></script>
     <script src="/static/js/draft-intake.js?v=20260617gen1"></script>
@@ -2201,6 +2206,6 @@
     <script src="/static/js/dashboard-search.js?v=20260614a"></script>
     <script src="/static/js/notifications.js?v=20260615n"></script>
     <script src="/static/js/generator-editor.js?v=20260616dd1"></script>
-    <script src="/static/app.js?v=20260617mo1"></script>
+    <script src="/static/app.js?v=20260617exec1"></script>
   </body>
 </html>

@@ -135,6 +135,7 @@ const corpusController = createCorpusController({
   searchClear: document.querySelector("#corpusSearchClear"),
   facetRail: document.querySelector("#corpusFacetRail"),
   groupToggle: document.querySelector("#corpusGroupToggle"),
+  executedToggle: document.querySelector("#corpusExecutedToggle"),
   openMatter: (matterId) => {
     repositoryController.openMatter(matterId);
     activateTab("repository");

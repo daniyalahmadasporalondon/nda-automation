@@ -149,18 +149,18 @@ test("buildFilter combines facets (AND across keys) and free text", () => {
   ];
   const facets = new Map();
   facets.set("stage", new Set(["reviewed", "sent"])); // OR within a key
-  const filterA = CorpusView.buildFilter(facets, "");
+  const filterA = CorpusView.buildFilter(facets, "", false);
   assert.deepEqual(matters.filter(filterA).map((m) => m.counterparty), ["Acme Corp", "Globex Inc"]);
 
   // AND across keys: stage in {reviewed,sent} AND source=drive -> only Globex.
   facets.set("source", new Set(["drive"]));
-  const filterB = CorpusView.buildFilter(facets, "");
+  const filterB = CorpusView.buildFilter(facets, "", false);
   assert.deepEqual(matters.filter(filterB).map((m) => m.counterparty), ["Globex Inc"]);
 
   // Free text over counterparty/title/filenames.
-  const filterC = CorpusView.buildFilter(new Map(), "acme");
+  const filterC = CorpusView.buildFilter(new Map(), "acme", false);
   assert.deepEqual(matters.filter(filterC).map((m) => m.counterparty), ["Acme Corp"]);
-  const filterD = CorpusView.buildFilter(new Map(), "g.pdf");
+  const filterD = CorpusView.buildFilter(new Map(), "g.pdf", false);
   assert.deepEqual(matters.filter(filterD).map((m) => m.counterparty), ["Globex Inc"]);
 });
 
@@ -182,9 +182,9 @@ test("buildFilter on non_solicit/non_compete matches only matters carrying the c
     { counterparty: "Solicit Co", title: "Solicit NDA", status: "reviewed", source: "app", artifacts: [], facets: { non_solicit: "present" } },
     { counterparty: "Plain Co", title: "Plain NDA", status: "reviewed", source: "app", artifacts: [], facets: {} },
   ];
-  const nonSolicit = CorpusView.buildFilter(new Map([["non_solicit", new Set(["present"])]]), "");
+  const nonSolicit = CorpusView.buildFilter(new Map([["non_solicit", new Set(["present"])]]), "", false);
   assert.deepEqual(matters.filter(nonSolicit).map((m) => m.counterparty), ["Both Co", "Solicit Co"]);
-  const nonCompete = CorpusView.buildFilter(new Map([["non_compete", new Set(["present"])]]), "");
+  const nonCompete = CorpusView.buildFilter(new Map([["non_compete", new Set(["present"])]]), "", false);
   assert.deepEqual(matters.filter(nonCompete).map((m) => m.counterparty), ["Both Co"]);
   // count == filtered parity: 2 matters carry non_solicit, 1 carries non_compete.
   assert.equal(matters.filter(nonSolicit).length, 2);
@@ -197,7 +197,7 @@ test("buildFilter flags facet matches the duplicate flag", () => {
     { duplicate: false, status: "y", source: "app", artifacts: [] },
   ];
   const facets = new Map([["flags", new Set(["duplicate"])]]);
-  const filter = CorpusView.buildFilter(facets, "");
+  const filter = CorpusView.buildFilter(facets, "", false);
   assert.equal(matters.filter(filter).length, 1);
 });
 
@@ -276,7 +276,7 @@ const FLAG_MATTERS = [
 ];
 
 test("repeat_entity facet filters matters flagged repeat_entity (count parity)", () => {
-  const filter = CorpusView.buildFilter(new Map([["flags", new Set(["repeat_entity"])]]), "");
+  const filter = CorpusView.buildFilter(new Map([["flags", new Set(["repeat_entity"])]]), "", false);
   const matched = FLAG_MATTERS.filter(filter);
   assert.deepEqual(matched.map((m) => m.title), ["Repeat NDA #1", "Repeat NDA #2"]);
   // Sidebar count (flagMatches) == filtered-result count.
@@ -286,7 +286,7 @@ test("repeat_entity facet filters matters flagged repeat_entity (count parity)",
 });
 
 test("duplicate_document facet filters matters with a non-null match (count parity)", () => {
-  const filter = CorpusView.buildFilter(new Map([["flags", new Set(["duplicate_document"])]]), "");
+  const filter = CorpusView.buildFilter(new Map([["flags", new Set(["duplicate_document"])]]), "", false);
   const matched = FLAG_MATTERS.filter(filter);
   assert.deepEqual(matched.map((m) => m.title), ["Repeat NDA #2"]);
   const count = FLAG_MATTERS.filter((m) => CorpusRender.flagMatches(m, "duplicate_document")).length;
@@ -295,7 +295,7 @@ test("duplicate_document facet filters matters with a non-null match (count pari
 });
 
 test("the renamed Drive-copy flag still keys on matter.duplicate", () => {
-  const filter = CorpusView.buildFilter(new Map([["flags", new Set(["duplicate"])]]), "");
+  const filter = CorpusView.buildFilter(new Map([["flags", new Set(["duplicate"])]]), "", false);
   const matched = FLAG_MATTERS.filter(filter);
   assert.deepEqual(matched.map((m) => m.title), ["Drive NDA"]);
   const count = FLAG_MATTERS.filter((m) => CorpusRender.flagMatches(m, "duplicate")).length;
@@ -305,7 +305,8 @@ test("the renamed Drive-copy flag still keys on matter.duplicate", () => {
 test("flags facet ORs within the key across the three duplicate signals", () => {
   const filter = CorpusView.buildFilter(
     new Map([["flags", new Set(["duplicate", "repeat_entity", "duplicate_document"])]]),
-    ""
+    "",
+    false
   );
   // Everything except the clean matter.
   assert.deepEqual(FLAG_MATTERS.filter(filter).map((m) => m.title), [
@@ -458,7 +459,7 @@ test("matterFacetValues reads the multi-value array defensively", () => {
     assert.ok(m, `${key}=${value} option rendered with a count`);
     assert.equal(Number(m[1]), expectN, `${key}=${value} sidebar count`);
     // Filter parity: the count equals the number of matters the filter keeps.
-    const filter = CorpusView.buildFilter(new Map([[key, new Set([value])]]), "");
+    const filter = CorpusView.buildFilter(new Map([[key, new Set([value])]]), "", false);
     assert.equal(MF_MATTERS.filter(filter).length, expectN, `${key}=${value} filtered count == sidebar count`);
   });
 });
@@ -478,21 +479,21 @@ test("restraint_types (multi-value) counts per-membership and filters ANY-match"
   assert.equal(countFor("non_solicit"), 2);
   assert.equal(countFor("non_circumvention"), 1);
   // Filter parity: non_solicit -> the 2 matters that carry it (ANY-match).
-  const fSolicit = CorpusView.buildFilter(new Map([["restraint_types", new Set(["non_solicit"])]]), "");
+  const fSolicit = CorpusView.buildFilter(new Map([["restraint_types", new Set(["non_solicit"])]]), "", false);
   assert.deepEqual(MF_MATTERS.filter(fSolicit).map((m) => m.counterparty), ["Acme", "Globex"]);
   assert.equal(MF_MATTERS.filter(fSolicit).length, 2);
   // OR within the group: {non_compete, non_circumvention} -> Acme (compete) + Globex (circ).
-  const fOr = CorpusView.buildFilter(new Map([["restraint_types", new Set(["non_compete", "non_circumvention"])]]), "");
+  const fOr = CorpusView.buildFilter(new Map([["restraint_types", new Set(["non_compete", "non_circumvention"])]]), "", false);
   assert.deepEqual(MF_MATTERS.filter(fOr).map((m) => m.counterparty), ["Acme", "Globex"]);
   // A matter with an empty array matches nothing.
-  const fNone = CorpusView.buildFilter(new Map([["restraint_types", new Set(["non_compete"])]]), "");
+  const fNone = CorpusView.buildFilter(new Map([["restraint_types", new Set(["non_compete"])]]), "", false);
   assert.ok(!MF_MATTERS.filter(fNone).some((m) => m.counterparty === "Initech"));
 });
 
 test("clauses_present (multi-value) filters ANY-match with parity", () => {
-  const fGovlaw = CorpusView.buildFilter(new Map([["clauses_present", new Set(["governing_law"])]]), "");
+  const fGovlaw = CorpusView.buildFilter(new Map([["clauses_present", new Set(["governing_law"])]]), "", false);
   assert.deepEqual(MF_MATTERS.filter(fGovlaw).map((m) => m.counterparty), ["Acme", "Globex"]);
-  const fTerm = CorpusView.buildFilter(new Map([["clauses_present", new Set(["term"])]]), "");
+  const fTerm = CorpusView.buildFilter(new Map([["clauses_present", new Set(["term"])]]), "", false);
   assert.deepEqual(MF_MATTERS.filter(fTerm).map((m) => m.counterparty), ["Acme", "Initech"]);
 });
 
@@ -503,20 +504,20 @@ test("master-filter facets combine AND-across-groups / OR-within-group", () => {
   const f1 = CorpusView.buildFilter(new Map([
     ["mutuality", new Set(["mutual"])],
     ["origin", new Set(["generated"])],
-  ]), "");
+  ]), "", false);
   assert.deepEqual(MF_MATTERS.filter(f1).map((m) => m.counterparty), ["Acme", "Initech"]);
   // AND with a multi-value group: mutuality=mutual AND restraint_types∋non_solicit -> Acme only.
   const f2 = CorpusView.buildFilter(new Map([
     ["mutuality", new Set(["mutual"])],
     ["restraint_types", new Set(["non_solicit"])],
-  ]), "");
+  ]), "", false);
   assert.deepEqual(MF_MATTERS.filter(f2).map((m) => m.counterparty), ["Acme"]);
   // OR within a scalar group across groups: term_band∈{<=2y,>5y} AND review_outcome∈{clean,has_fail}
   // -> Acme (<=2y, clean) + Initech (>5y, has_fail); Globex (3-5y, needs_review) excluded.
   const f3 = CorpusView.buildFilter(new Map([
     ["term_band", new Set(["<=2y", ">5y"])],
     ["review_outcome", new Set(["clean", "has_fail"])],
-  ]), "");
+  ]), "", false);
   assert.deepEqual(MF_MATTERS.filter(f3).map((m) => m.counterparty), ["Acme", "Initech"]);
 });
 
@@ -583,6 +584,91 @@ test("renderArtifacts drops a javascript: download_url", () => {
   const html = list.innerHTML;
   assert.ok(!/javascript:/i.test(html), "no javascript: download href survived");
   assert.ok(html.includes("https://app.example.com/d/2"), "the legitimate download link is preserved");
+});
+
+// --- Option A: executed-only default + toggle -------------------------------
+// A mixed set: two executed (facets.signed === true), one in-progress
+// (signed === false), one unknown (signed === null). The library default must
+// show ONLY the two executed; widening shows all four.
+const EXEC_MATTERS = [
+  { matter_id: "e1", counterparty: "Signed Co", title: "Executed A", status: "reviewed", source: "app", in_app: true, artifacts: [], facets: { signed: true } },
+  { matter_id: "e2", counterparty: "Signed Co", title: "Executed B", status: "sent", source: "drive", in_app: false, artifacts: [], facets: { signed: true } },
+  { matter_id: "e3", counterparty: "Pending Co", title: "In progress", status: "in_review", source: "app", in_app: true, artifacts: [], facets: { signed: false } },
+  { matter_id: "e4", counterparty: "Unknown Co", title: "Unknown", status: "", source: "drive", in_app: false, artifacts: [], facets: { signed: null } },
+];
+
+test("isExecuted is true only for a strict facets.signed === true", () => {
+  assert.equal(CorpusModel.isExecuted(EXEC_MATTERS[0]), true);
+  assert.equal(CorpusModel.isExecuted(EXEC_MATTERS[2]), false, "signed:false is in-progress");
+  assert.equal(CorpusModel.isExecuted(EXEC_MATTERS[3]), false, "signed:null is in-progress");
+  assert.equal(CorpusModel.isExecuted({}), false, "no facets -> in-progress");
+  // Defensive top-level fallback.
+  assert.equal(CorpusModel.isExecuted({ signed: true }), true);
+  assert.equal(CorpusModel.isExecuted({ executed: true }), true);
+});
+
+test("buildFilter DEFAULTS to executed-only (the library)", () => {
+  const filter = CorpusView.buildFilter(new Map(), "");
+  assert.deepEqual(
+    EXEC_MATTERS.filter(filter).map((m) => m.title),
+    ["Executed A", "Executed B"]
+  );
+});
+
+test("buildFilter widened (executedOnly=false) shows ALL matters", () => {
+  const filter = CorpusView.buildFilter(new Map(), "", false);
+  assert.deepEqual(
+    EXEC_MATTERS.filter(filter).map((m) => m.title),
+    ["Executed A", "Executed B", "In progress", "Unknown"]
+  );
+});
+
+test("executedGate is a clean one-predicate gate, on by default, off when widened", () => {
+  const onGate = CorpusView.executedGate(true);
+  const offGate = CorpusView.executedGate(false);
+  assert.equal(onGate(EXEC_MATTERS[0]), true);
+  assert.equal(onGate(EXEC_MATTERS[2]), false);
+  assert.equal(offGate(EXEC_MATTERS[2]), true, "widened gate admits in-progress");
+});
+
+test("the executed gate composes with facet + text filters (AND)", () => {
+  // Free text "Signed" matches both Signed Co executed matters; still gated.
+  const textFilter = CorpusView.buildFilter(new Map(), "executed");
+  assert.deepEqual(
+    EXEC_MATTERS.filter(textFilter).map((m) => m.title),
+    ["Executed A", "Executed B"]
+  );
+  // A facet that only the in-progress matter satisfies yields nothing in
+  // executed-only mode (gate wins), but matches once widened.
+  const stage = new Map([["stage", new Set(["in_review"])]]);
+  assert.equal(EXEC_MATTERS.filter(CorpusView.buildFilter(stage, "")).length, 0);
+  assert.equal(EXEC_MATTERS.filter(CorpusView.buildFilter(stage, "", false)).length, 1);
+});
+
+test("facet rail counts == filtered set in BOTH modes (count parity)", () => {
+  const payload = { groups: [{ counterparty: "x", matters: EXEC_MATTERS }] };
+  const stageCount = (html, value) => {
+    const m = html.match(
+      new RegExp(`data-facet-key="stage" data-facet-value="${value}"[\\s\\S]*?corpus-facet-count">(\\d+)<`)
+    );
+    return m ? Number(m[1]) : null;
+  };
+
+  // Executed-only: the in_review stage (only the in-progress matter) counts 0,
+  // and that count equals the filtered result for that facet.
+  const railExec = stubNode();
+  CorpusRender.renderFacetRail(railExec, payload, new Map(), {}, CorpusView.executedGate(true));
+  assert.equal(stageCount(railExec.innerHTML, "in_review"), 0, "executed-only hides in_review count");
+  assert.equal(stageCount(railExec.innerHTML, "reviewed"), 1, "executed reviewed count");
+  const execStageFilter = CorpusView.buildFilter(new Map([["stage", new Set(["in_review"])]]), "", true);
+  assert.equal(EXEC_MATTERS.filter(execStageFilter).length, 0, "count == filtered (executed-only)");
+
+  // Widened: the in_review stage now counts 1, matching the filtered result.
+  const railAll = stubNode();
+  CorpusRender.renderFacetRail(railAll, payload, new Map(), {}, CorpusView.executedGate(false));
+  assert.equal(stageCount(railAll.innerHTML, "in_review"), 1, "widened reveals in_review count");
+  const allStageFilter = CorpusView.buildFilter(new Map([["stage", new Set(["in_review"])]]), "", false);
+  assert.equal(EXEC_MATTERS.filter(allStageFilter).length, 1, "count == filtered (widened)");
 });
 
 process.stdout.write(`\ncorpus-model: ${passed} passed\n`);
