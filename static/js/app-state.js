@@ -35,7 +35,9 @@ const AppState = (() => {
       reasoningTrailOpen: {},
       reviewResolution: null,
       approveServerBlocks: [],
-      reviewInspectorView: "clause",
+      // "overview" is the default/first inspector sub-tab — the at-a-glance pane
+      // (facts + clause roster + footer) shown before drilling into a clause.
+      reviewInspectorView: "overview",
       // Inbound-fill tool: records the blanks the user has filled with Aspora
       // entity values. Each entry: { id, paragraph_id, find, value, field, mode }
       // (mode = "clean" | "tracked"). The export payload carries the
@@ -46,7 +48,7 @@ const AppState = (() => {
   }
 
   function resetReviewResults(state) {
-    const reviewInspectorView = state.reviewInspectorView || "clause";
+    const reviewInspectorView = state.reviewInspectorView || "overview";
     Object.assign(state, initialReviewState({ documentViewMode: state.documentViewMode }));
     state.reviewInspectorView = reviewInspectorView;
   }

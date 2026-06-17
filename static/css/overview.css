@@ -163,22 +163,29 @@
   width: 14px;
 }
 
-/* ---------- Empty state ---------- */
+/* ---------- Empty state (shell-owned) ----------
+   Shown before any AI review has run (matter.has_ai_review === false): there is
+   no roster to render, so the pane invites the reviewer to run the AI review.
+   The shell's overview-tab.js emits a column card with a title, hint, and a
+   "Refresh with AI" button (.ov-empty-title / .ov-empty-hint / .ov-empty-refresh
+   below), so this is a column flex card, not the centered single-line message. */
 
 .ov-empty {
   align-items: center;
-  color: var(--ink-muted);
+  background: var(--bg-soft);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  color: var(--ink-soft);
   display: flex;
-  flex: 1 1 auto;
-  font-size: 12.5px;
-  font-weight: 500;
-  justify-content: center;
-  min-height: 160px;
-  padding: 24px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 24px 18px;
   text-align: center;
 }
 
-/* ---------- Footer: progress + approve / send ---------- */
+/* ---------- Footer: approve / send ----------
+   The reviewed-count progress line was descoped, so the .ov-progress* styles
+   that lived here were dropped (no markup references them anymore). */
 
 .ov-footer {
   align-items: center;
@@ -190,32 +197,6 @@
   gap: 10px 12px;
   margin: 2px -18px -14px;
   padding: 12px 18px;
-}
-
-.ov-progress {
-  color: var(--ink-soft);
-  flex: 1 1 160px;
-  font-size: 11px;
-  font-weight: 700;
-  min-width: 0;
-}
-
-.ov-progress-bar {
-  background: var(--bg-chip);
-  border-radius: var(--r-pill);
-  flex: 1 1 100%;
-  height: 5px;
-  margin-top: 7px;
-  overflow: hidden;
-}
-
-/* The fill is the bar's child; width is set inline by the component. */
-.ov-progress-bar > * {
-  background: var(--green);
-  border-radius: inherit;
-  display: block;
-  height: 100%;
-  transition: width 0.24s ease;
 }
 
 .ov-approve,
@@ -274,4 +255,76 @@
 .ov-send:disabled {
   cursor: not-allowed;
   opacity: 0.5;
+}
+
+/* ===========================================================================
+   Shell-owned structure (from feat/overview-shell).
+   The composer (overview-tab.js) emits the tab section stack, the empty-state
+   title/hint/refresh affordances, and a pre-integration placeholder. These
+   selectors are unique to the shell; the component internals above are owned by
+   roster.js / footer.js / facts.js.
+   =========================================================================== */
+
+/* The composer wraps each component renderer in its own <section> so an empty
+   one collapses instead of leaving a gap. */
+.ov-section {
+  display: block;
+}
+
+.ov-section:empty {
+  display: none;
+}
+
+/* The empty-state variant of .ov-tab tightens the gap (the card carries its own
+   internal spacing). */
+.ov-tab-empty {
+  gap: 0;
+}
+
+.ov-empty-title {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.ov-empty-hint {
+  color: var(--ink-muted);
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+  max-width: 34ch;
+}
+
+.ov-empty-refresh {
+  background: var(--brand);
+  border: 1px solid var(--brand);
+  border-radius: var(--r-sm);
+  color: #ffffff;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  margin-top: 4px;
+  padding: 7px 14px;
+  transition: background 0.16s ease, transform 0.16s ease;
+}
+
+.ov-empty-refresh:hover {
+  background: var(--brand-strong);
+}
+
+.ov-empty-refresh:active {
+  transform: translateY(1px);
+}
+
+/* Pre-integration placeholder: rendered when a component renderer is not yet
+   present so the shell still mounts cleanly. Never visible once roster/footer/
+   facts ship together (they are folded in on this branch). */
+.ov-placeholder {
+  background: var(--bg-softer);
+  border: 1px dashed var(--border-soft);
+  border-radius: var(--r-sm);
+  color: var(--ink-muted);
+  font-size: 12px;
+  padding: 12px 14px;
 }
