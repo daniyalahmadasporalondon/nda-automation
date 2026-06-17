@@ -131,7 +131,7 @@ const RepositoryDetail = (() => {
           <p class="repository-detail-message" aria-live="polite"></p>
           <div class="repository-detail-actions">
             <button type="button" class="repository-open-review">Open Review</button>
-            ${MatterUtils.reviewStale(matter) ? '<button type="button" class="secondary repository-refresh-review">Refresh Review</button>' : ""}
+            ${MatterUtils.reviewActionable(matter) ? `<button type="button" class="secondary repository-refresh-review">${MatterUtils.reviewNeverRan(matter) ? "Run AI review" : "Refresh Review"}</button>` : ""}
             <button type="button" class="secondary repository-download-document" aria-haspopup="menu" aria-expanded="false">Download</button>
             <button type="button" class="secondary repository-save-to-drive">Save to Drive</button>
             <button type="button" class="secondary repository-send-redline ${confirmingSend ? "confirming" : ""}" ${canSendRedline ? "" : "disabled"} title="${escapeHtml(sendBlockReason)}">

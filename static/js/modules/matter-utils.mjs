@@ -121,6 +121,23 @@ export function reviewStaleLabel(matter) {
   return "Review is out of date. Refresh against the active Playbook.";
 }
 
+// True when a matter has a review action a user can run right now: it has either
+// never been AI-reviewed (so the FIRST review can be run) OR its stored review is
+// stale against the active Playbook (so it can be refreshed). Drives whether the
+// inspector exposes a "Run AI review" / "Refresh Review" control. Never-reviewed
+// is detected via the explicit ``ai_review_ran === false`` flag; older payloads
+// that lack the flag fall back to the stale-only signal so nothing regresses.
+export function reviewActionable(matter) {
+  if (matter?.ai_review_ran === false) return true;
+  return reviewStale(matter);
+}
+
+// True when a matter has never had an AI review run. Lets the inspector label the
+// review control "Run AI review" (first run) vs "Refresh Review" (re-run).
+export function reviewNeverRan(matter) {
+  return matter?.ai_review_ran === false;
+}
+
 export function gmailSendButtonLabel(blockReason) {
   if (!blockReason) return "";
   if (blockReason.includes("disabled")) return "Outbound Off";
@@ -139,6 +156,8 @@ export const MatterUtils = {
   gmailSendButtonLabel,
   needsHumanReview,
   recipientEmail,
+  reviewActionable,
+  reviewNeverRan,
   reviewStale,
   reviewStaleLabel,
   reviewStaleReasons,

@@ -207,6 +207,33 @@ class ServerTests(unittest.TestCase):
             patch.object(matter_store, "UPLOADS_DIR", data_path / "uploads"),
         )
 
+    def seed_reviewed_upload(
+        self,
+        source_bytes,
+        *,
+        filename="Seed NDA.docx",
+        source_type="manual_upload",
+        board_column="in_review",
+        intake_metadata=None,
+    ):
+        """Seed a REVIEWED matter the way upload used to before defer_ai_review.
+
+        The HTTP upload route now defers the AI review (defer_ai_review=True), so it
+        no longer produces a review_result at create. Many export/send tests only
+        need a matter that already carries a (deterministic) review + redlines as a
+        fixture; this seeds exactly that via the ingestion function with the eager
+        review path (defer_ai_review=False, default deterministic engine), inside
+        whatever matter_store patches the caller has active. Returns the persisted
+        matter dict (with review_result), mirroring the old upload-route side effect.
+        """
+        return ingestion_service.create_matter_from_document(
+            filename=filename,
+            document_bytes=source_bytes,
+            source_type=source_type,
+            board_column=board_column,
+            intake_metadata=intake_metadata,
+        )
+
     def active_playbook_review_runtime(self):
         runtime = playbook_runtime.ensure_active_playbook_runtime()
         return {
@@ -1966,16 +1993,21 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(matter["attachment_filename"], "Acme NDA.docx")
         self.assertEqual(matter["message_snippet"], "Manual upload of Acme NDA.docx.")
         self.assertIn("received_at", matter)
-        # The normal upload path is now AI-first, so the dynamic non-circumvention
-        # clause is reviewed during intake and routes this matter to legal review.
-        self.assertEqual(matter["triage_status"], "legal_review")
-        self.assertGreaterEqual(matter["issue_count"], 1)
+        # Manual upload now DEFERS the AI review (defer_ai_review=True), mirroring
+        # inbound + generation. The matter is created UN-REVIEWED: no AI review has
+        # run, so ai_review_ran is False and there is no triage verdict or issue
+        # count yet. The operator runs the review on demand (Run AI review /
+        # Refresh Review) from the workstation or inspector.
+        self.assertIs(matter["ai_review_ran"], False)
+        self.assertIn(matter.get("triage_status"), (None, "", "pending"))
+        self.assertIn(matter.get("issue_count"), (None, 0))
         self.assertNotIn("review_result", matter)
         self.assertNotIn("extracted_text", matter)
         self.assertNotIn("redline_draft", matter)
         self.assertNotIn("stored_filename", matter)
         self.assertNotIn("gmail_message_id", matter)
-        self.assertIn("review_result", stored_matter)
+        # The matter is persisted un-reviewed: the stored review_result is None.
+        self.assertIsNone(stored_matter.get("review_result"))
         self.assertIn("extracted_text", stored_matter)
         self.assertEqual(stored_bytes, source_docx)
         self.assertEqual(list_status, 200)
@@ -1996,7 +2028,16 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("review_result", review_payload["matter"])
         self.assertNotIn("redline_draft", review_payload["matter"])
         self.assertIn("extracted_text", review_payload)
-        self.assertIn("review_result", review_payload)
+        # The deferred matter has no review yet: the review endpoint reports the
+        # actionable un-reviewed state (review_may_be_stale + a review-refresh URL +
+        # the no-AI/missing-result reasons) instead of carrying a review_result.
+        self.assertNotIn("review_result", review_payload)
+        self.assertIs(review_payload["matter"]["ai_review_ran"], False)
+        self.assertTrue(review_payload["review_may_be_stale"])
+        self.assertIn(
+            "review-refresh", review_payload["review_refresh"]["refresh_url"]
+        )
+        self.assertIn("no_ai_review", review_payload["review_refresh"]["stale_reasons"])
 
     def test_matter_render_status_and_pdf_stream_for_source_pdf(self):
         source_pdf = b"%PDF-1.7\nsource pdf\n%%EOF\n"
@@ -2834,27 +2875,16 @@ class ServerTests(unittest.TestCase):
             block_render.set()
             document_rendering.matter_render_coordinator().reset_for_tests()
 
-    def test_matter_upload_uses_active_ai_first_review_as_saved_review_result(self):
+    def test_matter_upload_defers_ai_review_and_does_not_run_it_at_create(self):
+        # Manual upload now mirrors inbound + generation: the AI review is DEFERRED
+        # (defer_ai_review=True). The matter is created immediately UN-REVIEWED and
+        # the active review engine is NOT invoked synchronously at create -- the
+        # on-demand Review/refresh path runs the AI later. This keeps upload off the
+        # synchronous review path and prevents a transient AI outage from dropping
+        # a manually-uploaded NDA.
         source_docx = make_docx([
             "Each party may disclose Confidential Information to the other party.",
         ])
-        ai_first_result = {
-            "review_mode": "ai_first_compat",
-            "overall_status": "meets_requirements",
-            "requirements_passed": 1,
-            "requirements_needs_review": 0,
-            "requirements_failed": 0,
-            "review_state": {
-                "state": "pass",
-                "overall_status": "meets_requirements",
-                "counts": {"pass": 1, "review": 0, "check": 0},
-            },
-            "paragraphs": [{"id": "p1", "index": 1, "text": "Each party may disclose Confidential Information to the other party."}],
-            "clauses": [{"id": "mutuality", "decision": "pass", "passes": True}],
-            "redline_edits": [],
-            "ai_first_review": {"status": "completed", "mode": "ai_first_assessor"},
-            "active_review_engine": {"engine": "ai_first"},
-        }
 
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
@@ -2864,7 +2894,6 @@ class ServerTests(unittest.TestCase):
                     patch.object(
                         ingestion_service,
                         "review_nda_with_active_engine",
-                        return_value=deepcopy(ai_first_result),
                     ) as active_review,
                 ):
                     status, payload = self.request(
@@ -2878,12 +2907,20 @@ class ServerTests(unittest.TestCase):
                 stored_matter = matter_store.get_matter(payload["matter"]["id"])
 
         self.assertEqual(status, 201)
-        active_review.assert_called_once()
-        self.assertEqual(stored_matter["review_result"]["review_mode"], "ai_first_compat")
-        self.assertEqual(stored_matter["review_result"]["active_review_engine"]["engine"], "ai_first")
-        self.assertEqual(stored_matter["triage_status"], "ready_to_sign")
+        # The review engine is never called at create under the deferred contract.
+        active_review.assert_not_called()
+        # The matter is persisted un-reviewed: no AI review result stored.
+        self.assertFalse(stored_matter.get("review_result"))
+        # The public view (what the frontend reads) reports ai_review_ran False, so
+        # the UI surfaces the "Not reviewed" + Run-AI-review state.
+        self.assertIs(payload["matter"].get("ai_review_ran"), False)
 
-    def test_matter_upload_reports_active_ai_first_failure(self):
+    def test_matter_upload_no_longer_fails_closed_when_ai_unavailable(self):
+        # Because the AI review is deferred, an unavailable AI reviewer no longer
+        # fail-CLOSES the upload with a 502. The matter is created un-reviewed and
+        # the operator runs the review on demand later (which surfaces the no-AI
+        # notification only at that point). The active engine is not even consulted
+        # at create, so a configured-but-broken AI never blocks the import.
         source_docx = make_docx(["Each party may disclose Confidential Information to the other party."])
 
         with tempfile.TemporaryDirectory() as data_dir:
@@ -2906,8 +2943,9 @@ class ServerTests(unittest.TestCase):
                         },
                     )
 
-        self.assertEqual(status, 502)
-        self.assertEqual(payload["error"], "AI-first review failed: no key")
+        self.assertEqual(status, 201)
+        self.assertIn("matter", payload)
+        self.assertIs(payload["matter"].get("ai_review_ran"), False)
 
     def test_stale_matter_review_opens_saved_result_without_implicit_refresh(self):
         active_result = {
@@ -7592,8 +7630,12 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(matter["sender"], "noreply@example.com")
         self.assertEqual(matter["reply_to"], "legal@example.com")
         self.assertEqual(matter["recipient_email"], "legal@example.com")
-        self.assertEqual(matter["can_send_redline"], False)
-        self.assertEqual(matter["send_block_reason"], "Matter needs human review before a redline can be sent.")
+        # Upload now defers the AI review, so no review verdict has flagged this
+        # matter for human review yet -- the needs-human-review send block is no
+        # longer asserted at create (it re-applies once the operator runs the
+        # on-demand review). The recipient resolves cleanly, which is what this
+        # gmail-metadata-stripping test cares about.
+        self.assertEqual(matter["ai_review_ran"], False)
         self.assertEqual(matter["subject"], "Please review our NDA")
         self.assertEqual(matter["received_at"], "2026-05-31T10:15:00+01:00")
         self.assertEqual(matter["message_snippet"], "Hi team, please review the attached NDA.")
@@ -7676,15 +7718,9 @@ class ServerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as data_dir:
             with self.matter_store_patches(data_dir)[0], self.matter_store_patches(data_dir)[1], self.matter_store_patches(data_dir)[2]:
-                create_status, create_payload = self.request(
-                    "POST",
-                    "/api/matters",
-                    {
-                        "filename": "Acme NDA.docx",
-                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
-                    },
-                )
-                matter_id = create_payload["matter"]["id"]
+                matter_id = self.seed_reviewed_upload(
+                    source_docx, filename="Acme NDA.docx"
+                )["id"]
                 export_status, export_payload, export_headers = self.request_with_headers(
                     "POST",
                     "/api/export-review-docx",
@@ -7693,7 +7729,6 @@ class ServerTests(unittest.TestCase):
                     },
                 )
 
-        self.assertEqual(create_status, 201)
         self.assertEqual(export_status, 200)
         self.assertEqual(export_headers["Content-Disposition"], 'attachment; filename="Acme-NDA-redlined.docx"')
         assert_source_export_has_no_report_leakage(
@@ -7712,26 +7747,20 @@ class ServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
-                create_status, create_payload = self.request(
-                    "POST",
-                    "/api/matters",
-                    {
-                        "filename": "Reviewed Text Only NDA.docx",
-                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
-                    },
+                seeded_matter = self.seed_reviewed_upload(
+                    source_docx, filename="Reviewed Text Only NDA.docx"
                 )
                 export_status, export_payload = self.request(
                     "POST",
                     "/api/export-review-docx",
                     {
-                        "matter_id": create_payload["matter"]["id"],
+                        "matter_id": seeded_matter["id"],
                         "reviewed_text": "This Agreement shall be governed by the laws of New York.",
                         "export_redline_edits": [],
                         "manual_redline_edits": [],
                     },
                 )
 
-        self.assertEqual(create_status, 201)
         self.assertEqual(export_status, 409)
         self.assertEqual(
             export_payload["error"],
@@ -7778,19 +7807,14 @@ class ServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
-                create_status, create_payload = self.request(
-                    "POST",
-                    "/api/matters",
-                    {
-                        "filename": "Edited Source NDA.docx",
-                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
-                    },
+                seeded_matter = self.seed_reviewed_upload(
+                    source_docx, filename="Edited Source NDA.docx"
                 )
                 export_status, export_payload = self.request(
                     "POST",
                     "/api/export-review-docx",
                     {
-                        "matter_id": create_payload["matter"]["id"],
+                        "matter_id": seeded_matter["id"],
                         "text": "This Agreement shall be governed by the laws of New York.",
                         "reviewed_text": "This Agreement shall be governed by the laws of New York.",
                         "export_redline_edits": [],
@@ -7798,7 +7822,6 @@ class ServerTests(unittest.TestCase):
                     },
                 )
 
-        self.assertEqual(create_status, 201)
         self.assertEqual(export_status, 409)
         self.assertEqual(
             export_payload["error"],
@@ -7823,19 +7846,14 @@ class ServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
-                create_status, create_payload = self.request(
-                    "POST",
-                    "/api/matters",
-                    {
-                        "filename": "Manual Source NDA.docx",
-                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
-                    },
+                seeded_matter = self.seed_reviewed_upload(
+                    source_docx, filename="Manual Source NDA.docx"
                 )
                 export_status, export_payload, _headers = self.request_with_headers(
                     "POST",
                     "/api/export-review-docx",
                     {
-                        "matter_id": create_payload["matter"]["id"],
+                        "matter_id": seeded_matter["id"],
                         "text": "This Agreement shall be governed by the laws of New York.",
                         "reviewed_text": "This Agreement shall be governed by the laws of New York.",
                         "export_redline_edits": [],
@@ -7843,7 +7861,6 @@ class ServerTests(unittest.TestCase):
                     },
                 )
 
-        self.assertEqual(create_status, 201)
         self.assertEqual(export_status, 200)
         with ZipFile(BytesIO(export_payload)) as archive:
             document_root = ET.fromstring(archive.read("word/document.xml"))
@@ -7890,13 +7907,8 @@ class ServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
-                create_status, create_payload = self.request(
-                    "POST",
-                    "/api/matters",
-                    {
-                        "filename": "Edited Review Source NDA.docx",
-                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
-                    },
+                seeded_matter = self.seed_reviewed_upload(
+                    source_docx, filename="Edited Review Source NDA.docx"
                 )
                 with patch.object(server_module.redline_export_service.docx_package_renderer, "build_source_redline_docx", side_effect=capture_redline_build):
                     with patch.object(server_module.redline_export_service.docx_package_renderer, "validate_docx_open_health", return_value=[]):
@@ -7905,7 +7917,7 @@ class ServerTests(unittest.TestCase):
                                 "POST",
                                 "/api/export-review-docx",
                                 {
-                                    "matter_id": create_payload["matter"]["id"],
+                                    "matter_id": seeded_matter["id"],
                                     "text": edited_text,
                                     "reviewed_text": edited_text,
                                     "export_redline_edits": [],
@@ -7913,7 +7925,6 @@ class ServerTests(unittest.TestCase):
                                 },
                             )
 
-        self.assertEqual(create_status, 201)
         self.assertEqual(export_status, 200)
         self.assertEqual(captured["source_bytes"], source_docx)
         self.assertEqual(captured["paragraph_texts"], [edited_text])
@@ -7930,15 +7941,11 @@ class ServerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as data_dir:
             with self.matter_store_patches(data_dir)[0], self.matter_store_patches(data_dir)[1], self.matter_store_patches(data_dir)[2]:
-                create_status, create_payload = self.request(
-                    "POST",
-                    "/api/matters",
-                    {
-                        "filename": "Acme NDA.pdf",
-                        "content_base64": base64.b64encode(source_pdf).decode("ascii"),
-                    },
+                seeded_matter = self.seed_reviewed_upload(
+                    source_pdf,
+                    filename="Acme NDA.pdf",
                 )
-                matter = create_payload["matter"]
+                matter = matter_view.public_matter(seeded_matter)
                 stored_matter = matter_store.get_matter(matter["id"])
                 with patch.object(
                     server_module.redline_export_service.pdf_docx_reconstruction,
@@ -7956,7 +7963,6 @@ class ServerTests(unittest.TestCase):
                     f"/api/matters/{matter['id']}/render-pdf",
                 )
 
-        self.assertEqual(create_status, 201)
         self.assertEqual(matter["source_filename"], "Acme NDA.pdf")
         self.assertNotIn("review_result", matter)
         self.assertEqual(stored_matter["review_result"]["source"]["type"], "pdf")
@@ -7976,15 +7982,10 @@ class ServerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as data_dir:
             with self.matter_store_patches(data_dir)[0], self.matter_store_patches(data_dir)[1], self.matter_store_patches(data_dir)[2]:
-                create_status, create_payload = self.request(
-                    "POST",
-                    "/api/matters",
-                    {
-                        "filename": "Acme NDA.docx",
-                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
-                    },
+                seeded_matter = self.seed_reviewed_upload(
+                    source_docx, filename="Acme NDA.docx"
                 )
-                matter = create_payload["matter"]
+                matter = matter_view.public_matter(seeded_matter)
                 stored_matter = matter_store.get_matter(matter["id"])
                 (matter_store.UPLOADS_DIR / stored_matter["stored_filename"]).unlink()
                 export_status, export_payload = self.request(
@@ -7993,7 +7994,6 @@ class ServerTests(unittest.TestCase):
                     {"matter_id": matter["id"]},
                 )
 
-        self.assertEqual(create_status, 201)
         self.assertEqual(export_status, 400)
         self.assertEqual(export_payload["error"], "Matter source document is missing from storage.")
 
@@ -8014,15 +8014,9 @@ class ServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
-                create_status, create_payload = self.request(
-                    "POST",
-                    "/api/matters",
-                    {
-                        "filename": "Draft NDA.docx",
-                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
-                    },
-                )
-                matter_id = create_payload["matter"]["id"]
+                matter_id = self.seed_reviewed_upload(
+                    source_docx, filename="Draft NDA.docx"
+                )["id"]
                 save_status, save_payload = self.request(
                     "POST",
                     f"/api/matters/{matter_id}/redline-draft",
@@ -8054,7 +8048,6 @@ class ServerTests(unittest.TestCase):
                 )
                 stored_after_reset = matter_store.get_matter(matter_id)
 
-        self.assertEqual(create_status, 201)
         self.assertEqual(save_status, 200)
         self.assertNotIn("redline_draft", save_payload["matter"])
         self.assertEqual(save_payload["matter"]["has_redline_draft"], True)
@@ -8088,16 +8081,15 @@ class ServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
-                create_status, create_payload = self.request(
-                    "POST",
-                    "/api/matters",
-                    {
-                        "filename": "Saved Draft NDA.docx",
-                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                seeded_matter = self.seed_reviewed_upload(
+                    source_docx,
+                    filename="Saved Draft NDA.docx",
+                    intake_metadata={
                         "sender": "legal@example.com",
+                        "reply_to": "legal@example.com",
                     },
                 )
-                matter = create_payload["matter"]
+                matter = matter_view.public_matter(seeded_matter)
                 stored_matter = matter_store.get_matter(matter["id"])
                 self.assertGreater(len(stored_matter["review_result"].get("redline_edits") or []), 0)
                 draft_status, _draft_payload = self.request(
@@ -8143,7 +8135,6 @@ class ServerTests(unittest.TestCase):
                                     },
                                 )
 
-        self.assertEqual(create_status, 201)
         self.assertEqual(draft_status, 200)
         self.assertEqual(reviewed_status, 200)
         self.assertEqual(export_status, 200)
@@ -8965,16 +8956,15 @@ class ServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
-                create_status, create_payload = self.request(
-                    "POST",
-                    "/api/matters",
-                    {
-                        "filename": "Decision NDA.docx",
-                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                seeded_matter = self.seed_reviewed_upload(
+                    source_docx,
+                    filename="Decision NDA.docx",
+                    intake_metadata={
                         "sender": "legal@example.com",
+                        "reply_to": "legal@example.com",
                     },
                 )
-                matter = create_payload["matter"]
+                matter = matter_view.public_matter(seeded_matter)
                 stored_matter = matter_store.get_matter(matter["id"])
                 self.assertGreater(len(stored_matter["review_result"].get("redline_edits") or []), 0)
                 reviewed_status, _reviewed_payload = self.request(
@@ -9004,7 +8994,6 @@ class ServerTests(unittest.TestCase):
                                     },
                                 )
 
-        self.assertEqual(create_status, 201)
         self.assertEqual(reviewed_status, 200)
         self.assertEqual(send_status, 200)
         self.assertEqual(send_payload["matter"]["board_column"], "sent")
@@ -9018,18 +9007,18 @@ class ServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
-                create_status, create_payload = self.request(
-                    "POST",
-                    "/api/matters",
-                    {
-                        "filename": "Send Edited Source NDA.docx",
-                        "content_base64": base64.b64encode(source_docx).decode("ascii"),
+                seeded_matter = self.seed_reviewed_upload(
+                    source_docx,
+                    filename="Send Edited Source NDA.docx",
+                    intake_metadata={
                         "sender": "legal@example.com",
+                        "reply_to": "legal@example.com",
                     },
                 )
+                matter_id = seeded_matter["id"]
                 reviewed_status, _reviewed_payload = self.request(
                     "POST",
-                    f"/api/matters/{create_payload['matter']['id']}/reviewed",
+                    f"/api/matters/{matter_id}/reviewed",
                     body={"reviewed": True},
                 )
                 with patch.object(server_module.gmail_integration, "validate_outbound_send_ready", return_value={}):
@@ -9038,7 +9027,7 @@ class ServerTests(unittest.TestCase):
                             "POST",
                             "/api/gmail/send-redline",
                             {
-                                "matter_id": create_payload["matter"]["id"],
+                                "matter_id": matter_id,
                                 "confirm_send": True,
                                 "confirm_recipient": "legal@example.com",
                                 "text": "This Agreement shall be governed by the laws of New York.",
@@ -9048,7 +9037,6 @@ class ServerTests(unittest.TestCase):
                             },
                         )
 
-        self.assertEqual(create_status, 201)
         self.assertEqual(reviewed_status, 200)
         self.assertEqual(send_status, 409)
         self.assertIn("Matter source text was edited", send_payload["error"])
@@ -9447,16 +9435,22 @@ class ServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
+                # The HTTP upload route now DEFERS the AI review (defer_ai_review=True),
+                # so it no longer produces a review_result at create. This test
+                # exercises the EXPORT route's server-side redline anchor
+                # re-derivation, which needs a matter that already carries a
+                # deterministic review with redlines. Seed that matter directly
+                # through the ingestion function (which still runs the forced
+                # deterministic review synchronously), then exercise the export route.
                 with self.deterministic_matter_intake():
-                    create_status, create_payload = self.request(
-                        "POST",
-                        "/api/matters",
-                        {
-                            "filename": "Selected Source NDA.docx",
-                            "content_base64": base64.b64encode(source_docx).decode("ascii"),
-                        },
+                    created_matter = ingestion_service.create_matter_from_document(
+                        filename="Selected Source NDA.docx",
+                        document_bytes=source_docx,
+                        source_type="manual_upload",
+                        board_column="manual_upload",
                     )
-                matter_id = create_payload["matter"]["id"]
+                create_status = 201
+                matter_id = created_matter["id"]
                 stored_matter = matter_store.get_matter(matter_id)
                 governing_law_redline = next(
                     edit
