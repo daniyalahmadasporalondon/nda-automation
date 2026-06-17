@@ -362,9 +362,16 @@ def handle_matter_detail(handler, path: str, *, send_body: bool = True) -> None:
 
 
 def refresh_stale_matter_review(matter: dict) -> dict:
+    # The playbook-publish stale-refresh shares the Review-tab AI-only contract:
+    # the AI is the ONLY reviewer. We pin ``_review_tab_ai_only_engine``
+    # (force_engine=ai_first) exactly as the explicit review-refresh route does, so a
+    # playbook publish never re-reviews a stale matter with the deterministic engine.
+    # When the AI reviewer cannot run (AI disabled / key missing / provider error)
+    # ``refresh_review`` swallows the ``ActiveReviewEngineError`` and returns the
+    # matter UNCHANGED -- no deterministic verdict is ever produced.
     return RepositoryMatterLifecycle(DiskMatterRepository()).refresh_review(
         matter,
-        review_engine_func=review_nda_with_active_engine,
+        review_engine_func=_review_tab_ai_only_engine,
         review_staleness_func=review_result_is_stale,
     ).matter
 

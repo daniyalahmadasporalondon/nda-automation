@@ -286,9 +286,17 @@ class PlaybookPublishWorkflowTests(unittest.TestCase):
                 "ai_first_review": {"status": "completed"},
             }
 
-        def review_against_temp_active(text, paragraphs=None):
+        # The publish-stale-refresh path now pins force_engine="ai_first" (the
+        # Review-tab AI-only contract): the deterministic engine must never run a
+        # stale-refresh. Accept + forward force_engine so the temp-active runtime
+        # exercises the same AI-first engine selection the production wrapper pins.
+        forced_engines: list[str | None] = []
+
+        def review_against_temp_active(text, paragraphs=None, force_engine=None):
+            forced_engines.append(force_engine)
             return review_engine.review_nda_with_active_engine(
                 text,
+                force_engine=force_engine,
                 ai_first_review_func=stub_ai_first,
                 playbook_runtime_func=self._active_runtime,
             )
@@ -345,6 +353,9 @@ class PlaybookPublishWorkflowTests(unittest.TestCase):
 
         self.assertEqual(refreshed_matter["review_result"]["playbook_runtime"]["active_hash"], new_active_hash)
         self.assertFalse(is_stale_against_temp_active(refreshed_matter["review_result"]))
+        # The stale-refresh is now AI-only: the refresh call pinned the AI-first engine
+        # (no deterministic fallback), exactly like the explicit Review-tab refresh.
+        self.assertIn(review_engine.REVIEW_ENGINE_AI_FIRST, forced_engines)
 
 
 if __name__ == "__main__":

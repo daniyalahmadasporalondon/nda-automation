@@ -20,7 +20,6 @@ import xml.etree.ElementTree as ET
 
 from nda_automation.checker import (
     EvidenceProvenanceError,
-    ParagraphAlignmentError,
     PlaybookTemplateError,
     REVIEW_ENGINE_VERSION,
     load_playbook,
@@ -28,7 +27,6 @@ from nda_automation.checker import (
 from nda_automation import app_settings
 from nda_automation import document_rendering
 from nda_automation import document_limits
-from nda_automation import docx_text
 from nda_automation.docx_export import DOCX_MIME
 from nda_automation import export_service
 from nda_automation import gmail_integration
@@ -1901,63 +1899,9 @@ class ServerTests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assert_review_payload_contract(payload)
 
-    def test_review_payload_contract_covers_uploaded_docx_flow(self):
-        source_docx = make_docx([
-            "Intro paragraph.",
-            "This Agreement shall be governed by the laws of California.",
-            "The Recipient must not circumvent the Company.",
-        ])
-
-        status, payload = self.request(
-            "POST",
-            "/api/review-document",
-            {
-                "filename": "uploaded.docx",
-                "content_base64": base64.b64encode(source_docx).decode("ascii"),
-            },
-        )
-
-        self.assertEqual(status, 200)
-        self.assert_review_payload_contract(payload, expected_source_type="docx")
-
-    def test_review_document_exposes_source_fidelity_for_tables_and_colors(self):
-        source_docx = make_rich_docx_with_table_and_color()
-
-        status, payload = self.request(
-            "POST",
-            "/api/review-document",
-            {
-                "filename": "rich-uploaded.docx",
-                "content_base64": base64.b64encode(source_docx).decode("ascii"),
-            },
-        )
-
-        self.assertEqual(status, 200)
-        source_fidelity = payload["source_fidelity"]
-        self.assertEqual(source_fidelity["source_type"], "docx")
-        self.assertEqual(source_fidelity["analysis_model"], "paragraphs")
-        self.assertEqual(source_fidelity["render_model"], "source_blocks")
-        self.assertTrue(source_fidelity["capabilities"]["structured_tables"])
-        self.assertTrue(source_fidelity["capabilities"]["run_colors"])
-        self.assertEqual(source_fidelity["summary"]["table_count"], 1)
-        table = next(block for block in source_fidelity["blocks"] if block["type"] == "table")
-        self.assertEqual(table["rows"][0]["cells"][0]["paragraph_ids"], ["p2"])
-        self.assertEqual(table["rows"][0]["cells"][1]["paragraph_ids"], ["p3"])
-        intro = source_fidelity["blocks"][0]
-        self.assertEqual(intro["runs"][1]["text"], "red")
-        self.assertEqual(intro["runs"][1]["color"], "#ff0000")
-
-    def test_docx_review_and_matter_upload_reject_xml_dtd_entities(self):
+    def test_matter_upload_rejects_xml_dtd_entities(self):
         source_docx = make_unsafe_docx()
 
-        review_status, review_payload = self.request(
-            "POST",
-            "/api/review-document",
-            {
-                "filename": "unsafe.docx",
-                "content_base64": base64.b64encode(source_docx).decode("ascii"),
-            },
-        )
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
@@ -1971,38 +1915,8 @@ class ServerTests(unittest.TestCase):
                     },
                 )
 
-        self.assertEqual(review_status, 400)
-        self.assertIn("unsupported XML DTD/entity declarations", review_payload["error"])
         self.assertEqual(matter_status, 400)
         self.assertIn("unsupported XML DTD/entity declarations", matter_payload["error"])
-
-    @requires_pypdf
-    def test_review_payload_contract_covers_uploaded_pdf_flow(self):
-        source_pdf = make_pdf("This Agreement shall be governed by the laws of California.")
-
-        status, payload = self.request(
-            "POST",
-            "/api/review-document",
-            {
-                "filename": "uploaded.pdf",
-                "content_base64": base64.b64encode(source_pdf).decode("ascii"),
-            },
-        )
-
-        self.assertEqual(status, 200)
-        self.assert_review_payload_contract(payload, expected_source_type="pdf")
-        self.assertIn("California", payload["extracted_text"])
-        self.assertEqual(payload["source"]["extraction_quality"]["page_count"], 1)
-        self.assertEqual(payload["source"]["extraction_quality"]["pages_with_text"], 1)
-        self.assertIn("warnings", payload["source"]["extraction_quality"])
-        source_fidelity = payload["source_fidelity"]
-        self.assertEqual(source_fidelity["source_type"], "pdf")
-        self.assertEqual(source_fidelity["preferred_render_mode"], "source_pdf_preview")
-        self.assertTrue(source_fidelity["capabilities"]["faithful_source_preview"])
-        self.assertEqual(source_fidelity["pdf_fidelity"]["analysis_mode"], "extracted_text_only")
-        self.assertEqual(source_fidelity["pdf_fidelity"]["layout_mode"], "original_pdf_page_preview")
-        self.assertEqual(source_fidelity["pdf_fidelity"]["word_conversion"], "unsupported_for_fidelity")
-        self.assertEqual(source_fidelity["pdf_fidelity"]["redlined_docx"], "reconstructed_not_fidelity_preserving")
 
     def test_matter_upload_creates_persisted_manual_matter(self):
         source_docx = make_docx([
@@ -9777,76 +9691,6 @@ class ServerTests(unittest.TestCase):
         self.assertIn(("NON-DISCLOSURE AGREEMENT (NDA)", "Do you see problem?"), revision_states)
         self.assertIn(("This reciprocal confidentiality agreement is dated 2025.", "Hello"), revision_states)
 
-    def test_docx_review_then_export_round_trip_uses_uploaded_source_revisions(self):
-        source_docx = make_docx([
-            "Intro paragraph.",
-            "This Agreement shall be governed by the laws of California.",
-            "The Recipient must not circumvent the Company.",
-        ])
-        content_base64 = base64.b64encode(source_docx).decode("ascii")
-
-        with self.deterministic_review_requests():
-            review_status, review_payload = self.request(
-                "POST",
-                "/api/review-document",
-                {
-                    "filename": "round-trip.docx",
-                    "content_base64": content_base64,
-                },
-            )
-        export_status, export_payload, export_headers = self.request_with_headers(
-            "POST",
-            "/api/export-review-docx",
-            {
-                "reviewed_text": "Stale pasted browser text should not appear in the export.",
-                "filename": "round-trip.docx",
-                "content_base64": content_base64,
-            },
-        )
-
-        self.assertEqual(review_status, 200)
-        self.assertEqual(review_payload["source"]["type"], "docx")
-        self.assertEqual(review_payload["paragraphs"][1]["source_index"], 2)
-        governing_law_redline = next(edit for edit in review_payload["redline_edits"] if edit["clause_id"] == "governing_law")
-        self.assertEqual(governing_law_redline["source_index"], 2)
-        # non_circumvention is now a dynamic clause; the deterministic round-trip
-        # produces the native governing-law redline only.
-        self.assertNotIn("non_circumvention", {edit["clause_id"] for edit in review_payload["redline_edits"]})
-
-        self.assertEqual(export_status, 200)
-        self.assertEqual(export_headers["Content-Disposition"], 'attachment; filename="round-trip-redlined.docx"')
-        assert_source_export_has_no_report_leakage(
-            self,
-            export_payload,
-            extra_forbidden=["Stale pasted browser text should not appear in the export."],
-        )
-        assert_docx_redline_contract(self, export_payload, [governing_law_redline])
-        with ZipFile(BytesIO(export_payload)) as archive:
-            self.assertIsNone(archive.testzip())
-            document_xml = archive.read("word/document.xml").decode("utf-8")
-        document_root = ET.fromstring(document_xml)
-        revision_states = [
-            (
-                revision_text_for_state(paragraph, accepted=False),
-                revision_text_for_state(paragraph, accepted=True),
-            )
-            for paragraph in document_root.findall(".//w:p", W_NS)
-        ]
-        self.assertIn("Intro paragraph.", document_xml)
-        self.assertIn(
-            (
-                "This Agreement shall be governed by the laws of California.",
-                "This Agreement shall be governed by the laws of England and Wales.",
-            ),
-            revision_states,
-        )
-        # non_circumvention is dynamic now, so the deterministic round-trip leaves the
-        # "must not circumvent" paragraph unchanged (same text accepted or rejected).
-        self.assertIn(
-            ("The Recipient must not circumvent the Company.", "The Recipient must not circumvent the Company."),
-            revision_states,
-        )
-
     def test_saved_export_route_returns_exact_docx_bytes(self):
         with tempfile.TemporaryDirectory() as exports_dir:
             with patch.object(export_service, "EXPORTS_DIR", server_module.Path(exports_dir)):
@@ -10094,76 +9938,6 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"], "Provide NDA text to export.")
 
-    def test_document_review_rejects_bad_json(self):
-        status, payload = self.request(
-            "POST",
-            "/api/review-document",
-            "{not json",
-            {"Content-Type": "application/json"},
-        )
-
-        self.assertEqual(status, 400)
-        self.assertEqual(payload["error"], "Request body must be valid JSON.")
-
-    def test_document_review_rejects_non_docx(self):
-        status, payload = self.request(
-            "POST",
-            "/api/review-document",
-            {
-                "filename": "nda.txt",
-                "content_base64": base64.b64encode(b"not a word document").decode("ascii"),
-            },
-        )
-
-        self.assertEqual(status, 400)
-        self.assertEqual(payload["error"], "Upload a .docx Word document or text-based PDF.")
-
-    def test_document_review_rejects_oversize_upload(self):
-        with patch.object(document_limits, "MAX_DOCUMENT_BYTES", 4):
-            status, payload = self.request(
-                "POST",
-                "/api/review-document",
-                {
-                    "filename": "nda.docx",
-                    "content_base64": base64.b64encode(b"too large").decode("ascii"),
-                },
-            )
-
-        self.assertEqual(status, 400)
-        self.assertEqual(payload["error"], "The document is larger than the 10 MB upload limit.")
-
-    def test_document_review_rejects_oversize_pdf_before_extraction(self):
-        with patch.object(document_limits, "MAX_DOCUMENT_BYTES", 4):
-            with patch.object(server_module, "extract_document", side_effect=AssertionError("PDF extraction should not run")) as extract_document:
-                status, payload = self.request(
-                    "POST",
-                    "/api/review-document",
-                    {
-                        "filename": "nda.pdf",
-                        "content_base64": base64.b64encode(b"too large").decode("ascii"),
-                    },
-                )
-
-        self.assertEqual(status, 400)
-        self.assertEqual(payload["error"], "The document is larger than the 10 MB upload limit.")
-        extract_document.assert_not_called()
-
-    def test_document_review_rejects_docx_decompression_bomb(self):
-        source_docx = make_compressed_docx("A" * 4096)
-
-        with patch.object(docx_text, "MAX_DOCX_ENTRY_COMPRESSION_RATIO", 2):
-            status, payload = self.request(
-                "POST",
-                "/api/review-document",
-                {
-                    "filename": "bomb.docx",
-                    "content_base64": base64.b64encode(source_docx).decode("ascii"),
-                },
-            )
-
-        self.assertEqual(status, 400)
-        self.assertEqual(payload["error"], "The Word document uses a suspicious compression ratio.")
-
     def test_matter_upload_rejects_oversize_upload_at_ingestion_boundary(self):
         with patch.object(document_limits, "MAX_DOCUMENT_BYTES", 4):
             status, payload = self.request(
@@ -10197,54 +9971,6 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"], "The document is larger than the 10 MB upload limit.")
         create_matter_from_document.assert_not_called()
-
-    def test_document_review_reports_paragraph_alignment_failure(self):
-        with patch.object(server_module, "extract_document", return_value=("docx", [{"source_index": 1, "text": "Paragraph"}], None)):
-            with patch.object(server_module, "review_nda_with_active_engine", side_effect=ParagraphAlignmentError("alignment failed")):
-                status, payload = self.request(
-                    "POST",
-                    "/api/review-document",
-                    {
-                        "filename": "nda.docx",
-                        "content_base64": base64.b64encode(b"word bytes").decode("ascii"),
-                    },
-                )
-
-        self.assertEqual(status, 400)
-        self.assertEqual(payload["error"], "The extracted document paragraphs could not be aligned to the extracted text.")
-
-    def test_document_review_reports_playbook_template_error(self):
-        with patch.object(server_module, "extract_document", return_value=("docx", [{"source_index": 1, "text": "Paragraph"}], None)):
-            with patch.object(server_module, "review_nda_with_active_engine", side_effect=PlaybookTemplateError("bad template")):
-                status, payload = self.request(
-                    "POST",
-                    "/api/review-document",
-                    {
-                        "filename": "nda.docx",
-                        "content_base64": base64.b64encode(b"word bytes").decode("ascii"),
-                    },
-                )
-
-        self.assertEqual(status, 500)
-        self.assertEqual(payload["error"], server_module.PLAYBOOK_TEMPLATE_ERROR_MESSAGE)
-
-    def test_document_review_reports_real_malformed_playbook_template(self):
-        extracted_paragraphs = [
-            {"source_index": 1, "text": "The confidentiality obligations survive for seven (7) years."}
-        ]
-        with patch.object(server_module, "extract_document", return_value=("docx", extracted_paragraphs, None)):
-            with patch("nda_automation.checker.load_playbook", return_value=self.malformed_template_playbook()):
-                status, payload = self.request(
-                    "POST",
-                    "/api/review-document",
-                    {
-                        "filename": "nda.docx",
-                        "content_base64": base64.b64encode(b"word bytes").decode("ascii"),
-                    },
-                )
-
-        self.assertEqual(status, 500)
-        self.assertEqual(payload["error"], server_module.PLAYBOOK_TEMPLATE_ERROR_MESSAGE)
 
     def test_static_route_blocks_directory_traversal(self):
         status, payload = self.request("GET", "/static/../README.md")
@@ -10309,30 +10035,6 @@ def make_docx(paragraphs):
         return output.getvalue()
 
 
-def make_rich_docx_with_table_and_color():
-    document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-  <w:body>
-    <w:p>
-      <w:r><w:t xml:space="preserve">Intro </w:t></w:r>
-      <w:r><w:rPr><w:color w:val="FF0000"/></w:rPr><w:t>red</w:t></w:r>
-      <w:r><w:t xml:space="preserve"> text.</w:t></w:r>
-    </w:p>
-    <w:tbl>
-      <w:tr>
-        <w:tc><w:p><w:r><w:t>Party</w:t></w:r></w:p></w:tc>
-        <w:tc><w:p><w:r><w:t>Signature</w:t></w:r></w:p></w:tc>
-      </w:tr>
-    </w:tbl>
-    <w:p><w:r><w:t>This Agreement shall be governed by the laws of California.</w:t></w:r></w:p>
-  </w:body>
-</w:document>"""
-    with BytesIO() as output:
-        with ZipFile(output, "w") as archive:
-            archive.writestr("word/document.xml", document_xml)
-        return output.getvalue()
-
-
 def make_unsafe_docx():
     document_xml = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE w:document [
@@ -10341,17 +10043,6 @@ def make_unsafe_docx():
 ]>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:body><w:p><w:r><w:t>&b;</w:t></w:r></w:p></w:body>
-</w:document>"""
-    with BytesIO() as output:
-        with ZipFile(output, "w", ZIP_DEFLATED) as archive:
-            archive.writestr("word/document.xml", document_xml)
-        return output.getvalue()
-
-
-def make_compressed_docx(text):
-    document_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-  <w:body><w:p><w:r><w:t>{escape_xml(text)}</w:t></w:r></w:p></w:body>
 </w:document>"""
     with BytesIO() as output:
         with ZipFile(output, "w", ZIP_DEFLATED) as archive:

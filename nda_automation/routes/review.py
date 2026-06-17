@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import base64
-import binascii
 from urllib.parse import quote
 
 from .. import annotated_pdf_export, redline_export_service, telemetry
@@ -15,19 +13,14 @@ from ..checker import (
     review_nda,
 )
 from ..document_limits import (
-    DocumentSizeError,
-    DOCUMENT_TOO_LARGE_MESSAGE,
     ReviewTextTooLargeError,
-    ensure_document_size,
     ensure_review_text_size,
 )
 from ..docx_export import DOCX_MIME, DocxExportError
 from ..docx_text import DocxExtractionError
-from ..ingestion_service import extract_document, is_supported_document_filename
 from ..matter_repository import DiskMatterRepository, MatterRepository
 from ..pdf_text import PdfExtractionError
 from ..review_engine import ActiveReviewEngineError
-from ..review_result_contract import attach_document_source, extracted_text_from_paragraphs
 from .common import request_owner_user_id
 
 
@@ -77,59 +70,6 @@ def _run_offline_review(review_nda_func, text: str):
         return review_nda_func(text, force_engine="deterministic")
     except TypeError:
         return review_nda_func(text, verify=False, ai_enabled=False)
-
-
-def handle_document_review(handler, *, extract_document_func=extract_document, review_nda_func=review_nda) -> None:
-    telemetry.increment("document_review_requests")
-    payload = handler._read_json_payload()
-    if payload is None:
-        return
-
-    filename = payload.get("filename", "")
-    content_base64 = payload.get("content_base64", "")
-    if not is_supported_document_filename(filename):
-        handler._send_json({"error": "Upload a .docx Word document or text-based PDF."}, status=400)
-        return
-    if not isinstance(content_base64, str) or not content_base64:
-        handler._send_json({"error": "Provide a document to review."}, status=400)
-        return
-
-    try:
-        document_bytes = base64.b64decode(content_base64, validate=True)
-    except (binascii.Error, ValueError):
-        handler._send_json({"error": "The uploaded document could not be decoded."}, status=400)
-        return
-
-    try:
-        ensure_document_size(document_bytes)
-    except DocumentSizeError:
-        handler._send_json({"error": DOCUMENT_TOO_LARGE_MESSAGE}, status=400)
-        return
-
-    try:
-        source_type, extracted_paragraphs, extraction_quality = extract_document_func(filename, document_bytes)
-    except (DocxExtractionError, PdfExtractionError, ValueError) as error:
-        handler._send_json({"error": str(error)}, status=400)
-        return
-
-    extracted_text = extracted_text_from_paragraphs(extracted_paragraphs)
-    try:
-        result = review_nda_func(extracted_text, paragraphs=extracted_paragraphs)
-    except ActiveReviewEngineError as error:
-        handler._send_json({"error": str(error)}, status=502)
-        return
-    except ParagraphAlignmentError:
-        handler._send_json({"error": "The extracted document paragraphs could not be aligned to the extracted text."}, status=400)
-        return
-    attach_document_source(
-        result,
-        filename=filename,
-        document_type=source_type,
-        extracted_paragraphs=extracted_paragraphs,
-        extracted_text=extracted_text,
-        extraction_quality=extraction_quality,
-    )
-    handler._send_json(result)
 
 
 def handle_ai_second_opinion(handler, *, second_opinion_func=ai_second_opinion_for_clause) -> None:
