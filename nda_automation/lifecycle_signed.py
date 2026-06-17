@@ -297,6 +297,17 @@ def mark_matter_executed(
         # The matter vanished between the read and the write (or ownership changed).
         return None
 
+    # Clear any stale ``workflow_error`` so an executed matter can't keep carrying a
+    # contradictory failed-send marker. Without this, the two readers disagree: the
+    # board drops the matter as done (is_matter_executed ignores workflow_error) while
+    # the detail card/corpus render it as an active failed-send. Executed wins, so the
+    # data is made clean going forward (its own dedicated writer, never folded into the
+    # happy-path field write above). Best-effort: a failure here doesn't unset executed.
+    if updated.get("workflow_error"):
+        cleared = repository.set_matter_workflow_error(matter_id, None, owner_user_id=owner_user_id)
+        if cleared is not None:
+            updated = cleared
+
     event = workflow.build_timeline_event(
         workflow.EVENT_EXECUTED,
         phase=workflow.PHASE_EXECUTED,
