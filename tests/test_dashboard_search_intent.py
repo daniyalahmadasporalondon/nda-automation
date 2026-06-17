@@ -284,6 +284,12 @@ class CorpusMatcherTests(unittest.TestCase):
             "human_gate": False,
             "requirements_failed": 0,
             "requirements_needs_review": 0,
+            # Default True: the corpus write-derivation only surfaces non-zero
+            # requirement counts for a matter an AI (ai_first) review actually ran on,
+            # so a helper standing in for a corpus-surfaced matter carries the AI-ran
+            # signal the has_issues consumer gates on. Tests for the deterministic-only
+            # / stale-facet case override this to False explicitly.
+            "ai_review_ran": True,
             "facets_available": True,
         }
         base.update(facets)
@@ -327,6 +333,12 @@ class CorpusMatcherTests(unittest.TestCase):
         self.assertFalse(dsi.corpus_matter_matches_spec(clean, dsi.validate_filter_spec({"has_issues": True})))
         failed = self._matter(requirements_failed=2)
         self.assertTrue(dsi.corpus_matter_matches_spec(failed, dsi.validate_filter_spec({"has_issues": True})))
+        # Gate: a matter with non-zero counts but no AI-ran signal (deterministic-only,
+        # or a stale facet block from before the gate) must NOT match has_issues.
+        deterministic = self._matter(requirements_failed=2, ai_review_ran=False)
+        self.assertFalse(
+            dsi.corpus_matter_matches_spec(deterministic, dsi.validate_filter_spec({"has_issues": True}))
+        )
 
     def test_human_gate_count_matches_fe_set(self):
         # Parity check: the human_gate filter matches the SAME set the FE matcher

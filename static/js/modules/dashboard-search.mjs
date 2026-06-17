@@ -390,13 +390,16 @@ function matterHumanGate(matter) {
   return matter?.workflow_state?.human_gate === true;
 }
 
-// "Has issues" = the review flagged at least one failed OR needs-review requirement.
-// Verdict gate: a deterministic-only matter (ai_review_ran === false) never has AI
-// issues, so the requirement counts below must not be surfaced as "issues" — that
-// would be a deterministic ghost. Only an EXPLICIT false short-circuits; legacy
-// payloads lacking the flag keep the existing count-based behavior.
+// "Has issues" = the review flagged at least one failed OR needs-review requirement,
+// AND an AI (ai_first) review actually ran (ai_review_ran). The ai_review_ran gate
+// mirrors the backend _corpus_matter_has_issues so a deterministic-only verdict, or a
+// stale facet block persisted before the backend gate, never matches this filter —
+// surfacing a deterministic-only count would be a deterministic ghost. Corpus matters
+// carry the flag on facets.ai_review_ran; app-state matters carry it at the top level,
+// so we read both shapes.
 function matterHasIssues(matter) {
-  if (matter?.ai_review_ran === false) return false;
+  const aiReviewRan = matter?.ai_review_ran === true || matter?.facets?.ai_review_ran === true;
+  if (!aiReviewRan) return false;
   const failed = Number(matter?.requirements_failed || 0);
   const needsReview = Number(matter?.requirements_needs_review || 0);
   return (Number.isFinite(failed) && failed > 0) || (Number.isFinite(needsReview) && needsReview > 0);
@@ -757,6 +760,11 @@ function adaptCorpusMatter(corpusMatter) {
     },
     requirements_failed: Number(facets.requirements_failed || 0),
     requirements_needs_review: Number(facets.requirements_needs_review || 0),
+    // Whether an AI (ai_first) review actually ran. matterHasIssues gates on this so
+    // a deterministic-only verdict (or a stale facet block from before the backend
+    // gate) never matches the "has issues" filter -- mirroring the backend consumer
+    // dashboard_search_intent._corpus_matter_has_issues. Absent -> false.
+    ai_review_ran: facets.ai_review_ran === true,
     // Provenance for the open link + Summarize affordance: an app/both matter opens
     // in-app and can be summarized; a Drive-only matter links out to Drive with no
     // in-app deep link and no Summarize (there is no app-state to summarize).

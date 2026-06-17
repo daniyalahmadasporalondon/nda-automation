@@ -617,10 +617,12 @@ class CorpusFacetTests(unittest.TestCase):
         self.assertIn("requirements_needs_review", facets)
 
     def test_app_state_facets_carry_workflow_state_axes_and_counts(self):
-        # A matter with a stored review result that failed a requirement AND is parked
-        # at a human gate surfaces those signals on the corpus facets, so the FE
-        # human_gate / has_issues filters can positively match it (the divergence this
-        # fix closes). The axes come from the SAME workflow_state the Python twin reads.
+        # A matter with a stored AI (ai_first) review result that failed a requirement
+        # AND is parked at a human gate surfaces those signals on the corpus facets, so
+        # the FE human_gate / has_issues filters can positively match it (the divergence
+        # this fix closes). The axes come from the SAME workflow_state the Python twin
+        # reads. The review carries an ai_first active-engine marker so the AI-ran gate
+        # (which suppresses deterministic-only counts) keeps the real counts here.
         matter = self.repo.create_matter(
             source_filename="Stuck NDA.docx",
             document_bytes=b"PK\x03\x04 fake docx",
@@ -629,6 +631,7 @@ class CorpusFacetTests(unittest.TestCase):
                 "requirements_failed": 2,
                 "requirements_needs_review": 1,
                 "clauses": [{"id": "mutuality", "decision": "check"}],
+                "active_review_engine": {"executed_engine": "ai_first"},
             },
             triage={"triage_status": "review"},
             source_type="manual_upload",
@@ -650,8 +653,67 @@ class CorpusFacetTests(unittest.TestCase):
         from nda_automation import dashboard_search_intent as dsi
 
         corpus_matter = _only_matter(payload)
+        self.assertTrue(facets["ai_review_ran"])
         self.assertTrue(
             dsi.corpus_matter_matches_spec(corpus_matter, dsi.validate_filter_spec({"has_issues": True}))
+        )
+
+    def test_deterministic_only_review_does_not_surface_issue_counts(self):
+        # A matter whose stored review_result was NOT produced by the AI (ai_first)
+        # engine -- e.g. outbound generation, which pins the deterministic engine and
+        # defers AI to on-demand -- carries deterministic requirement counts that must
+        # NOT leak into the corpus "has issues" search. The AI-ran gate zeroes the
+        # counts and drops ai_review_ran, so the matter never matches has_issues.
+        matter = self.repo.create_matter(
+            source_filename="Generated NDA.docx",
+            document_bytes=b"PK\x03\x04 fake docx",
+            extracted_text="This Agreement is mutual.",
+            review_result={
+                # Non-zero deterministic counts, but no ai_first active-engine marker.
+                "requirements_failed": 3,
+                "requirements_needs_review": 2,
+                "clauses": [{"id": "mutuality", "decision": "check"}],
+                "active_review_engine": {"executed_engine": "deterministic"},
+            },
+            triage={"triage_status": "review"},
+            source_type="generated",
+            board_column="awaiting_approval",
+            owner_user_id="owner-a",
+        )
+        self.repo.update_matter_fields(
+            matter["id"], {"status": "awaiting_approval"}, owner_user_id="owner-a"
+        )
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "")
+        facets = _only_matter(payload)["facets"]
+        # Deterministic counts are suppressed (gated on the AI-ran signal).
+        self.assertEqual(facets["requirements_failed"], 0)
+        self.assertEqual(facets["requirements_needs_review"], 0)
+        self.assertFalse(facets["ai_review_ran"])
+        from nda_automation import dashboard_search_intent as dsi
+
+        corpus_matter = _only_matter(payload)
+        self.assertFalse(
+            dsi.corpus_matter_matches_spec(corpus_matter, dsi.validate_filter_spec({"has_issues": True}))
+        )
+
+    def test_stale_facets_with_counts_but_no_ai_ran_do_not_match_has_issues(self):
+        # Belt-and-suspenders read gate: even if a STALE facet block (persisted before
+        # this fix) still carries non-zero deterministic counts WITHOUT ai_review_ran,
+        # the consumer must not count it as "has issues".
+        from nda_automation import dashboard_search_intent as dsi
+
+        stale = {
+            "matter_id": "m-stale",
+            "facets": {
+                "requirements_failed": 4,
+                "requirements_needs_review": 1,
+                "schema_version": 1,
+                "facets_available": True,
+                # ai_review_ran absent -> treated as False (the stale-facet shape).
+            },
+        }
+        self.assertFalse(
+            dsi.corpus_matter_matches_spec(stale, dsi.validate_filter_spec({"has_issues": True}))
         )
 
     def test_app_state_matter_without_review_degrades_per_facet_but_available(self):
