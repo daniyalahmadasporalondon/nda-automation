@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -15,6 +17,12 @@ GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 GOOGLE_IDENTITY_SCOPES = ("openid", "email", "profile")
+# Clock-skew leeway for exp/nbf checks. Google ID tokens are short-lived (~1h);
+# a small leeway absorbs clock drift between this server and Google without
+# meaningfully widening the replay window.
+GOOGLE_ID_TOKEN_CLOCK_SKEW_SECONDS = 60
+# The only issuers Google mints ID tokens under. Anything else is forged.
+GOOGLE_ID_TOKEN_ISSUERS = ("accounts.google.com", "https://accounts.google.com")
 
 
 class GoogleIdentityError(RuntimeError):
@@ -45,6 +53,7 @@ def build_google_authorization_url(
     access_type: str = "",
     prompt: str = "select_account",
     login_hint: str = "",
+    nonce: str = "",
 ) -> str:
     client_id = google_client_id()
     if not client_id:
@@ -57,6 +66,11 @@ def build_google_authorization_url(
         "state": state,
         "prompt": prompt,
     }
+    # The nonce is echoed by Google into the ID token (and back out of tokeninfo);
+    # binding it on the callback defeats ID-token replay. The state alone only
+    # protects the code exchange, not the token's freshness.
+    if nonce:
+        params["nonce"] = nonce
     # access_type=offline (with prompt=consent) is needed to get a refresh token
     # when the login also grants Gmail/Drive, so background sync keeps working.
     if access_type:
@@ -88,7 +102,7 @@ def exchange_google_code(code: str, *, redirect_uri: str) -> dict[str, Any]:
     return _json_request(request, "Google OAuth token exchange failed.")
 
 
-def verify_google_id_token(id_token: str) -> dict[str, Any]:
+def verify_google_id_token(id_token: str, *, expected_nonce: str = "") -> dict[str, Any]:
     if not id_token:
         raise GoogleIdentityError("Google OAuth response did not include an ID token.")
     tokeninfo_url = f"{GOOGLE_TOKENINFO_URL}?{urllib.parse.urlencode({'id_token': id_token})}"
@@ -100,7 +114,54 @@ def verify_google_id_token(id_token: str) -> dict[str, Any]:
         raise GoogleIdentityError("Google ID token did not include a subject.")
     if str(tokeninfo.get("email_verified") or "true").lower() == "false":
         raise GoogleIdentityError("Google account email is not verified.")
+    # Issuer: a token from any issuer other than Google's two canonical values is
+    # forged. tokeninfo validated the signature, but NOT the issuer, so an attacker
+    # who can get any Google-signed token would otherwise pass; pin it here.
+    issuer = str(tokeninfo.get("iss") or "").strip()
+    if issuer not in GOOGLE_ID_TOKEN_ISSUERS:
+        raise GoogleIdentityError("Google ID token issuer is not trusted.")
+    # Expiry: tokeninfo does NOT reject an expired token on our behalf, so an
+    # expired (or captured-and-replayed) token would otherwise mint a fresh
+    # 14-day session. Enforce exp with a small clock-skew leeway.
+    now = _now_epoch()
+    expires_at = _claim_epoch(tokeninfo.get("exp"))
+    if expires_at is None:
+        raise GoogleIdentityError("Google ID token did not include an expiry.")
+    if expires_at + GOOGLE_ID_TOKEN_CLOCK_SKEW_SECONDS < now:
+        raise GoogleIdentityError("Google ID token has expired.")
+    # Not-before (optional claim): reject tokens that are not yet valid.
+    not_before = _claim_epoch(tokeninfo.get("nbf"))
+    if not_before is not None and not_before - GOOGLE_ID_TOKEN_CLOCK_SKEW_SECONDS > now:
+        raise GoogleIdentityError("Google ID token is not yet valid.")
+    # Nonce: binds the token to THIS login attempt. The caller stores a fresh
+    # nonce on the OAuth-start flow and passes it here; a mismatch (or a missing
+    # nonce when one was requested) means the token was minted for a different
+    # request and is being replayed.
+    expected_nonce = str(expected_nonce or "").strip()
+    if expected_nonce:
+        token_nonce = str(tokeninfo.get("nonce") or "").strip()
+        if not secrets.compare_digest(token_nonce, expected_nonce):
+            raise GoogleIdentityError("Google ID token nonce does not match this login request.")
     return tokeninfo
+
+
+def _claim_epoch(value: object) -> float | None:
+    """Coerce a numeric JWT time claim (seconds since epoch) to a float.
+
+    tokeninfo returns exp/nbf/iat as strings of integer seconds. Returns None for
+    a missing/blank claim and raises for a present-but-malformed one (so a garbage
+    exp is treated as a verification failure rather than silently skipped).
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise GoogleIdentityError("Google ID token contains a malformed time claim.") from None
+
+
+def _now_epoch() -> float:
+    return time.time()
 
 
 def _json_request(request: urllib.request.Request, error_message: str) -> dict[str, Any]:

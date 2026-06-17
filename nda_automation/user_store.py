@@ -23,6 +23,13 @@ USER_STORE_VERSION = 1
 SESSION_COOKIE_NAME = "nda_session"
 OAUTH_STATE_COOKIE_NAME = "nda_oauth_state"
 SESSION_TTL_SECONDS = 14 * 24 * 60 * 60
+# Sliding inactivity window: a session untouched for longer than this is invalid
+# even if its 14-day absolute TTL has not elapsed. Caps the blast radius of a
+# stolen cookie on an idle account. last_seen_at is refreshed on each use.
+SESSION_IDLE_TTL_SECONDS = 12 * 60 * 60
+# Per-user session cap: when a user logs in beyond this many live sessions, the
+# oldest (by last activity) are evicted so sessions cannot accumulate unbounded.
+MAX_SESSIONS_PER_USER = 10
 LOGIN_STATE_TTL_SECONDS = 10 * 60
 MAX_USER_GMAIL_SYNC_HISTORY = 5
 DEFAULT_USER_GMAIL_SYNC = {
@@ -38,8 +45,8 @@ class UserStoreError(RuntimeError):
     pass
 
 
-def create_login_state(*, next_path: str = "/") -> str:
-    return create_oauth_state(purpose="login", next_path=next_path)
+def create_login_state(*, next_path: str = "/", metadata: dict[str, Any] | None = None) -> str:
+    return create_oauth_state(purpose="login", next_path=next_path, metadata=metadata)
 
 
 def create_oauth_state(
@@ -135,11 +142,14 @@ def create_session(user_id: str) -> str:
         _prune_expired_unlocked(store, now=now)
         if user_id not in store.setdefault("users", {}):
             raise UserStoreError("Session user does not exist.")
-        store.setdefault("sessions", {})[_token_hash(token)] = {
+        sessions = store.setdefault("sessions", {})
+        sessions[_token_hash(token)] = {
             "user_id": user_id,
             "created_at": _iso_from_epoch(now),
+            "last_seen_at": _iso_from_epoch(now),
             "expires_at": _iso_from_epoch(now + SESSION_TTL_SECONDS),
         }
+        _enforce_session_cap_unlocked(sessions, user_id)
         _save_store_unlocked(store)
     return token
 
@@ -152,11 +162,22 @@ def user_for_session_token(token: str) -> dict[str, Any] | None:
     with _locked_user_store():
         store = _load_store_unlocked()
         changed = _prune_expired_unlocked(store, now=now)
-        session = store.setdefault("sessions", {}).get(token_hash)
+        sessions = store.setdefault("sessions", {})
+        session = sessions.get(token_hash)
         user = None
         if isinstance(session, dict):
-            user_id = str(session.get("user_id") or "")
-            user = store.setdefault("users", {}).get(user_id)
+            if _session_is_idle_expired(session, now=now):
+                # A session untouched past the inactivity window is dead even
+                # though its absolute expiry has not passed: drop it and reject.
+                sessions.pop(token_hash, None)
+                changed = True
+            else:
+                user_id = str(session.get("user_id") or "")
+                user = store.setdefault("users", {}).get(user_id)
+                if isinstance(user, dict):
+                    # Slide the inactivity window forward on each valid use.
+                    session["last_seen_at"] = _iso_from_epoch(now)
+                    changed = True
         if changed:
             _save_store_unlocked(store)
     return dict(user) if isinstance(user, dict) else None
@@ -259,6 +280,31 @@ def delete_session(token: str) -> bool:
         if removed:
             _save_store_unlocked(store)
     return removed
+
+
+def delete_all_sessions_for_user(user_id: str) -> int:
+    """Revoke every session for a user ("log out everywhere"). Returns the count.
+
+    Used for sign-out-of-all-devices and as a forced revocation after a
+    credential/security event. Logout that targets only the current cookie does
+    not clear sibling sessions; this does.
+    """
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        return 0
+    with _locked_user_store():
+        store = _load_store_unlocked()
+        sessions = store.setdefault("sessions", {})
+        doomed = [
+            token_hash
+            for token_hash, session in sessions.items()
+            if isinstance(session, dict) and str(session.get("user_id") or "") == user_id
+        ]
+        for token_hash in doomed:
+            sessions.pop(token_hash, None)
+        if doomed:
+            _save_store_unlocked(store)
+    return len(doomed)
 
 
 def public_user(user: dict[str, Any] | None) -> dict[str, str] | None:
@@ -476,12 +522,48 @@ def _prune_expired_unlocked(store: dict[str, Any], *, now: float) -> bool:
         expired = [
             record_key
             for record_key, record in records.items()
-            if not isinstance(record, dict) or _epoch_from_iso(record.get("expires_at")) <= now
+            if not isinstance(record, dict)
+            or _epoch_from_iso(record.get("expires_at")) <= now
+            # Sessions also die on idle; login_states have no last_seen_at so
+            # _session_is_idle_expired is a no-op for them.
+            or (key == "sessions" and _session_is_idle_expired(record, now=now))
         ]
         for record_key in expired:
             records.pop(record_key, None)
             changed = True
     return changed
+
+
+def _session_is_idle_expired(session: dict[str, Any], *, now: float) -> bool:
+    """True when a session has been inactive beyond the sliding idle window.
+
+    A session that predates the last_seen_at field (legacy) falls back to its
+    created_at, so old persisted sessions are subject to the same window.
+    """
+    last_seen = session.get("last_seen_at") or session.get("created_at")
+    last_seen_epoch = _epoch_from_iso(last_seen)
+    if last_seen_epoch <= 0:
+        # No usable activity timestamp: treat as expired rather than immortal.
+        return True
+    return (last_seen_epoch + SESSION_IDLE_TTL_SECONDS) <= now
+
+
+def _enforce_session_cap_unlocked(sessions: dict[str, Any], user_id: str) -> None:
+    """Evict a user's oldest sessions (by last activity) past MAX_SESSIONS_PER_USER."""
+    owned = [
+        (token_hash, session)
+        for token_hash, session in sessions.items()
+        if isinstance(session, dict) and str(session.get("user_id") or "") == user_id
+    ]
+    if len(owned) <= MAX_SESSIONS_PER_USER:
+        return
+    # Keep the most-recently-active MAX_SESSIONS_PER_USER; evict the rest.
+    owned.sort(
+        key=lambda item: _epoch_from_iso(item[1].get("last_seen_at") or item[1].get("created_at")),
+        reverse=True,
+    )
+    for token_hash, _session in owned[MAX_SESSIONS_PER_USER:]:
+        sessions.pop(token_hash, None)
 
 
 def _token_hash(token: str) -> str:

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from copy import deepcopy
 from contextlib import contextmanager
@@ -67,6 +68,16 @@ requires_pypdf = unittest.skipUnless(PYPDF_AVAILABLE, "pypdf is not installed")
 class QuietNdaAutomationHandler(NdaAutomationHandler):
     def log_message(self, format, *args):
         return
+
+
+class _FakeUrlopen(BytesIO):
+    """urlopen() stand-in: a context manager that yields a readable response."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
 
 
 class ServerTests(unittest.TestCase):
@@ -709,6 +720,93 @@ class ServerTests(unittest.TestCase):
         self.assertFalse(logout_payload["authenticated"])
         self.assertEqual(after_logout_status, 401)
         self.assertEqual(after_logout_payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
+
+    def test_oauth_start_requests_nonce_and_callback_rejects_nonce_mismatch(self):
+        """FIX #16: /auth/google/start emits a nonce, and the callback rejects an
+        ID token whose nonce does not match the one bound to this login."""
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "google-client",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
+            "NDA_GOOGLE_OAUTH_REDIRECT_URI": "http://127.0.0.1/auth/google/callback",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patch.dict(os.environ, auth_env):
+                _start_status, _start_payload, start_headers = self.request_with_headers(
+                    "GET", "/auth/google/start?next=/api/matters"
+                )
+                parsed_start = urlparse(start_headers["Location"])
+                start_query = parse_qs(parsed_start.query)
+                state = start_query["state"][0]
+                state_cookie = self.cookie_header(start_headers["Set-Cookie"])
+
+                # The real verifier runs here (NOT mocked): the stub tokeninfo
+                # carries a nonce that does NOT match the one start bound, so the
+                # callback must reject it before minting any session.
+                from nda_automation import google_identity as gi
+
+                with patch(
+                    "nda_automation.routes.auth.google_identity.exchange_google_code",
+                    return_value={"id_token": "id-token"},
+                ), patch(
+                    "urllib.request.urlopen",
+                    return_value=_FakeUrlopen(json.dumps({
+                        "aud": "google-client",
+                        "sub": "google-user-123",
+                        "email": "alice@example.com",
+                        "email_verified": "true",
+                        "iss": "https://accounts.google.com",
+                        "exp": str(int(time.time()) + 3600),
+                        "nonce": "attacker-supplied-nonce",
+                    }).encode("utf-8")),
+                ):
+                    callback_status, callback_payload, callback_headers = self.request_with_headers(
+                        "GET",
+                        f"/auth/google/callback?code=auth-code&state={state}",
+                        headers={"Cookie": state_cookie},
+                    )
+                assert gi  # imported for clarity; verification ran via the route
+
+        # Start advertised a nonce on the Google authorization URL.
+        self.assertIn("nonce", start_query)
+        self.assertTrue(start_query["nonce"][0])
+        # Mismatched nonce -> no session minted.
+        self.assertEqual(callback_status, 502)
+        self.assertIn("nonce", str(callback_payload.get("error", "")).lower())
+        self.assertNotIn("Set-Cookie", callback_headers)
+
+    def test_logout_all_revokes_every_session_for_user(self):
+        """FIX #23: POST /api/auth/logout-all clears all of the user's sessions,
+        not just the current cookie's."""
+        auth_env = {"NDA_REQUIRE_AUTH": "true", "NDA_AUTH_USERNAME": "", "NDA_AUTH_PASSWORD": ""}
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patch.dict(os.environ, auth_env):
+                headers, user = self.google_session_headers()
+                # A second, sibling session for the same user (another device).
+                other_token = user_store.create_session(user["id"])
+                other_headers = {"Cookie": f"{user_store.SESSION_COOKIE_NAME}={other_token}"}
+
+                before_status, before_payload = self.request(
+                    "GET", "/api/auth/status", headers=other_headers
+                )
+                logout_status, logout_payload = self.request(
+                    "POST", "/api/auth/logout-all", headers=headers
+                )
+                after_status, after_payload = self.request(
+                    "GET", "/api/auth/status", headers=other_headers
+                )
+
+        self.assertEqual(before_status, 200)
+        self.assertTrue(before_payload["authenticated"])
+        self.assertEqual(logout_status, 200)
+        self.assertFalse(logout_payload["authenticated"])
+        # The sibling session is now dead too: its cookie no longer authenticates.
+        self.assertEqual(after_status, 200)
+        self.assertFalse(after_payload["authenticated"])
 
     def test_matter_backup_export_requires_auth_when_auth_is_enabled(self):
         auth_env = {
