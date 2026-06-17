@@ -3115,7 +3115,11 @@ class ServerTests(unittest.TestCase):
         # The refresh now re-extracts the original .docx to restore contract
         # structure; the test's source bytes are not a real .docx, so extraction
         # yields no paragraphs and the call falls back to a text-only refresh.
-        active_review.assert_called_once_with("Mutual NDA text.", paragraphs=None)
+        # The Review tab pins the AI-first engine (AI is the only reviewer there), so
+        # the call carries force_engine="ai_first" regardless of the active config.
+        active_review.assert_called_once_with(
+            "Mutual NDA text.", force_engine="ai_first", paragraphs=None
+        )
         self.assertEqual(payload["review_result"]["review_mode"], "ai_first_compat")
         self.assertEqual(payload["review_refresh"]["stale"], False)
         self.assertEqual(payload["review_refresh"]["refresh_method"], "POST")
