@@ -1,10 +1,13 @@
 "use strict";
 
 // Frontend unit test for the counterparty human-confirmation surface:
-//   - RepositoryModel.counterpartyNeedsConfirmation: the pure badge decision
-//     (trust the backend flag; fail open to "needs confirmation" when absent).
-//   - RepositoryBoard.renderMatterCard: the repository card renders the
-//     "Counterparty unconfirmed" badge exactly when the flag is set.
+//   - RepositoryModel.counterpartyNeedsConfirmation: the pure confirmation
+//     decision (trust the backend flag; fail open to "needs confirmation" when
+//     absent). This still drives the Overview-tab Confirm flow.
+//   - RepositoryBoard.renderMatterCard: the board card no longer renders a
+//     "Counterparty unconfirmed" badge -- it was removed from the card; the
+//     other badges (source + review-status) stay. We assert it never appears,
+//     regardless of the flag.
 //
 // Both modules are classic browser scripts that expose CommonJS exports behind a
 // `typeof module !== "undefined"` guard (a no-op in the browser). We require them
@@ -60,21 +63,20 @@ const BASE_MATTER = {
   received_at: "2026-06-15T00:00:00Z",
 };
 
-test("repository card shows the unconfirmed badge when confirmation is needed", () => {
+test("repository card never renders the counterparty-unconfirmed badge (it was removed)", () => {
+  for (const flag of [true, false, undefined]) {
+    const matter = { ...BASE_MATTER };
+    if (flag !== undefined) matter.counterparty_needs_confirmation = flag;
+    const html = RepositoryBoard.renderMatterCard(matter);
+    assert.doesNotMatch(html, /repository-counterparty-badge/);
+    assert.doesNotMatch(html, /Counterparty unconfirmed/);
+  }
+});
+
+test("repository card still renders the other badges (source + review-status)", () => {
   const html = RepositoryBoard.renderMatterCard({ ...BASE_MATTER, counterparty_needs_confirmation: true });
-  assert.match(html, /repository-counterparty-badge/);
-  assert.match(html, /Counterparty unconfirmed/);
-});
-
-test("repository card omits the badge once the counterparty is confirmed", () => {
-  const html = RepositoryBoard.renderMatterCard({ ...BASE_MATTER, counterparty_needs_confirmation: false });
-  assert.doesNotMatch(html, /repository-counterparty-badge/);
-  assert.doesNotMatch(html, /Counterparty unconfirmed/);
-});
-
-test("repository card shows the badge for a matter with no flag at all (fail open)", () => {
-  const html = RepositoryBoard.renderMatterCard({ ...BASE_MATTER });
-  assert.match(html, /repository-counterparty-badge/);
+  assert.match(html, /repository-source-badge/);
+  assert.match(html, /repository-review-badge/);
 });
 
 process.stdout.write(`\n${passed} passed\n`);
