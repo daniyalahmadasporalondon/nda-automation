@@ -145,6 +145,7 @@ def test_explain_review_finding_reads_owner_scoped_review_and_playbook():
         source_filename="Acme NDA.docx",
         extracted_text="The agreement lasts forever.",
         review_result={
+            "active_review_engine": {"executed_engine": "ai_first"},
             "clauses": [
                 {
                     "id": "term",
@@ -199,6 +200,7 @@ def test_summarize_matter_reports_state_risks_and_next_action():
         owner_user_id="tenant-a",
         source_filename="Risky NDA.docx",
         review_result={
+            "active_review_engine": {"executed_engine": "ai_first"},
             "clauses": [
                 {"id": "term", "decision": "fail"},
                 {"id": "assignment", "decision": "review"},
@@ -218,8 +220,87 @@ def test_summarize_matter_reports_state_risks_and_next_action():
 
     assert response["intent"] == "matter_summary"
     assert response["answer"]["matter_id"] == matter["id"]
+    assert response["answer"]["ai_review_ran"] is True
     assert "failed requirement" in response["answer"]["text"]
     assert "need human review" in response["answer"]["text"]
+
+
+def test_summarize_matter_withholds_deterministic_verdicts_when_not_ai_reviewed():
+    # A matter with deterministic-only verdicts (no ai_first execution marker) must
+    # NOT have its failed/needs-review counts reported as review risk. The summary
+    # still describes the workflow phase/next action, but says it's not AI-reviewed.
+    repo = InMemoryMatterRepository()
+    matter = _create_matter(
+        repo,
+        owner_user_id="tenant-a",
+        source_filename="Unreviewed NDA.docx",
+        review_result={
+            "clauses": [
+                {"id": "term", "decision": "fail"},
+                {"id": "assignment", "decision": "review"},
+            ]
+        },
+    )
+
+    response = dashboard_assistant.summarize_matter_response(
+        dashboard_assistant.AssistantContext(
+            "Summarize Unreviewed",
+            repository=repo,
+            owner_user_id="tenant-a",
+        ),
+        {"matter_id": matter["id"]},
+    )
+
+    assert response["intent"] == "matter_summary"
+    assert response["answer"]["matter_id"] == matter["id"]
+    assert response["answer"]["ai_review_ran"] is False
+    # No deterministic verdict leakage: no failed/needs-review risk bits or counts.
+    assert response["answer"]["risks"] == []
+    assert response["answer"]["counts"] == {}
+    assert "failed requirement" not in response["answer"]["text"]
+    assert "need human review" not in response["answer"]["text"]
+    assert "hasn't been AI-reviewed yet" in response["answer"]["text"]
+
+
+def test_explain_review_finding_says_not_ai_reviewed_instead_of_deterministic_verdict():
+    # explain_review_finding on a matter with only deterministic verdicts must NOT
+    # surface a clause verdict/evidence; it returns a clear "not AI-reviewed" answer.
+    repo = InMemoryMatterRepository()
+    matter = _create_matter(
+        repo,
+        owner_user_id="tenant-a",
+        source_filename="Pending NDA.docx",
+        extracted_text="The agreement lasts forever.",
+        review_result={
+            "clauses": [
+                {
+                    "id": "term",
+                    "name": "Confidentiality Term",
+                    "decision": "fail",
+                    "decision_reason": "The term is unlimited.",
+                }
+            ]
+        },
+    )
+
+    response = dashboard_assistant.explain_review_finding_response(
+        dashboard_assistant.AssistantContext(
+            "Explain why Pending term was flagged",
+            repository=repo,
+            owner_user_id="tenant-a",
+        ),
+        {"matter_id": matter["id"], "clause_id": "term"},
+    )
+
+    assert response["intent"] == "review_finding_explanation"
+    assert response["question"] == "explain_review_finding"
+    assert response["answer"]["matter_id"] == matter["id"]
+    assert response["answer"]["ai_review_ran"] is False
+    # No deterministic clause verdict / evidence leaked.
+    assert "verdict" not in response["answer"]
+    assert "clause_id" not in response["answer"]
+    assert "evidence" not in response["answer"]
+    assert "hasn't been AI-reviewed yet" in response["answer"]["text"]
 
 
 def test_search_system_searches_owner_scoped_content_clauses_and_playbook_without_side_effects():
@@ -548,6 +629,7 @@ def test_specific_review_finding_question_explains_finding_over_misrouting_ai():
         owner_user_id="tenant-a",
         source_filename="Acme NDA.docx",
         review_result={
+            "active_review_engine": {"executed_engine": "ai_first"},
             "clauses": [
                 {
                     "id": "confidentiality",
