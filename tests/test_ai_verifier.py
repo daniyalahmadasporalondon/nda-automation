@@ -23,6 +23,7 @@ from nda_automation.ai_verifier import (
     apply_ai_verifier,
     build_verifier_packet,
     default_verifier,
+    noop_verifier,
     resolve_verifier,
     verifier_status,
     verifier_enabled,
@@ -201,74 +202,27 @@ class ApplyVerifierTests(unittest.TestCase):
         self.assertEqual(updated[0]["decision"], "pass")
         self.assertEqual(updated[0]["ai_verifier"]["outcome"], "downgraded")
 
-    def test_offline_refute_never_clears_prohibited_fail_to_pass(self):
-        clauses = [
-            _clause(
-                "non_circumvention",
-                "fail",
-                clause_type="prohibited",
-                confidence=0.70,
-                matched_text="Each party shall not be restricted from dealing with introduced contacts.",
-                evidence=["Each party shall not be restricted from dealing with introduced contacts."],
-            )
-        ]
-        updated, summary = apply_ai_verifier(clauses, source_text=clauses[0]["matched_text"])
-        self.assertEqual(summary["verifier_kind"], "offline")
-        self.assertEqual(updated[0]["decision"], "review")
-        self.assertEqual(updated[0]["ai_verifier"]["outcome"], "flagged_for_review")
-
-    def test_offline_verifier_does_not_clear_freedom_language_with_new_action_restrictions(self):
-        # Covers precise restriction-shaped additions already in _CIRCUMVENTION_ACTION:
-        # hiring/poaching, competition, interference, inducement, and relationship
-        # verbs. Broader terms like "meet", "speak", "support", or "assist" are
-        # intentionally excluded because they can describe innocuous business prose.
-        prefix = "Nothing in this Agreement restricts either party from ordinary market dealings; however, "
-        cases = {
-            "hiring_poaching": "the Recipient may not hire or recruit the Company's employees.",
-            "competition": "the Recipient shall not compete with or negotiate with introduced customers.",
-            "interference": "the Recipient must not interfere with or undermine customer relationships.",
-            "inducement": "the Recipient shall not induce or persuade employees to leave the Company.",
-            "relationship": "the Recipient may not partner with or collaborate with introduced customers.",
-        }
-        for label, restriction in cases.items():
-            with self.subTest(label=label):
-                text = prefix + restriction
-                clauses = [
-                    _clause(
-                        "non_circumvention",
-                        "fail",
-                        clause_type="prohibited",
-                        matched_text=text,
-                        evidence=[text],
-                    )
-                ]
-                updated, summary = apply_ai_verifier(clauses, source_text=text)
-                self.assertEqual(summary["verifier_kind"], "offline")
-                self.assertEqual(updated[0]["decision"], "fail")
-                self.assertFalse(updated[0]["ai_verifier"]["changed"])
-                self.assertEqual(updated[0]["ai_verifier"]["verdict"], VERIFIER_VERDICT_AFFIRM)
-
-    def test_offline_verifier_still_refutes_clean_freedom_controls(self):
-        controls = (
-            "Nothing in this Agreement restricts either party from contacting introduced parties.",
-            "Each party shall not be restricted from dealing with any contact introduced by the other party.",
-            "Each party is free to do business with independently identified customers.",
-        )
-        for text in controls:
-            with self.subTest(text=text):
-                clauses = [
-                    _clause(
-                        "non_circumvention",
-                        "fail",
-                        clause_type="prohibited",
-                        matched_text=text,
-                        evidence=[text],
-                    )
-                ]
-                updated, summary = apply_ai_verifier(clauses, source_text=text)
-                self.assertEqual(summary["verifier_kind"], "offline")
-                self.assertEqual(updated[0]["decision"], "review")
-                self.assertEqual(updated[0]["ai_verifier"]["verdict"], VERIFIER_VERDICT_REFUTE)
+    def test_resolver_path_does_not_auto_run_the_offline_engine(self):
+        # With NDA_AI_VERIFIER off and no injected verifier, the resolver path is a
+        # NO-OP: the offline regex polarity engine never runs, so a finding the engine
+        # would have rewritten (freedom-to-deal carve-out) stays exactly as the AI
+        # reviewer produced it. The offline engine's own verdict logic is covered
+        # directly by DefaultVerifierTests; it is simply no longer on the apply path.
+        with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: ""}, clear=False):
+            clauses = [
+                _clause(
+                    "non_circumvention",
+                    "fail",
+                    clause_type="prohibited",
+                    confidence=0.70,
+                    matched_text="Each party shall not be restricted from dealing with introduced contacts.",
+                    evidence=["Each party shall not be restricted from dealing with introduced contacts."],
+                )
+            ]
+            updated, summary = apply_ai_verifier(clauses, source_text=clauses[0]["matched_text"])
+            self.assertEqual(summary["status"], "disabled")
+            self.assertEqual(updated[0]["decision"], "fail")
+            self.assertNotIn("ai_verifier", updated[0])
 
     def test_refute_escalates_a_suspect_pass_to_review(self):
         # A confidently refuted *pass* (the engine wrongly cleared) must escalate --
@@ -765,8 +719,10 @@ class ReviewNdaIntegrationTests(unittest.TestCase):
     # (decision_source=="deterministic", reason_code "no_non_circumvention_restriction",
     # etc.) -- tested a pathway that no longer exists. Every behavior they covered now
     # lives elsewhere, on the shipping path:
-    #   - offline refute false-flag -> review, evidence-trust intact:
-    #       AIFirstPathIntegrationTests.test_offline_verifier_routes_ai_first_false_flag_to_review
+    #   - an injected AI verifier refutes a false-flag -> review, evidence-trust intact:
+    #       AIFirstPathIntegrationTests.test_injected_ai_verifier_can_refute_an_ai_first_false_flag_to_review
+    #   - AI verifier OFF -> the AI reviewer's verdict stands untouched (no rewrite):
+    #       AIFirstPathIntegrationTests.test_verifier_off_leaves_ai_first_verdict_untouched
     #   - a correct AI pass left untouched:
     #       AIFirstPathIntegrationTests.test_verifier_leaves_correct_ai_first_pass_untouched
     #   - affirm a genuine restriction -> stays fail (no over-correction):
@@ -779,18 +735,27 @@ class ReviewNdaIntegrationTests(unittest.TestCase):
 
 
 class ResolveVerifierTests(unittest.TestCase):
-    """The prod resolver gates the paid OpenRouter pass and fails safe to offline."""
+    """The prod resolver gates the paid OpenRouter pass and fails safe to a NO-OP.
 
-    def test_disabled_resolves_to_offline_adversary(self):
+    Only the AI reviewer and the AI (network) verifier may adjudicate a clause
+    verdict, so when the AI verifier is disabled or unkeyed the resolver returns a
+    no-op that changes nothing -- NEVER the offline regex polarity engine.
+    """
+
+    def test_disabled_resolves_to_noop(self):
         with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: ""}, clear=False):
             self.assertFalse(verifier_enabled())
-            self.assertIs(resolve_verifier(), default_verifier)
+            resolved = resolve_verifier()
+            self.assertIs(resolved, noop_verifier)
+            self.assertIsNot(resolved, default_verifier)
 
-    def test_enabled_without_key_falls_back_to_offline(self):
+    def test_enabled_without_key_falls_back_to_noop(self):
         with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: "1", "OPENROUTER_API_KEY": ""}, clear=False):
             with patch.object(ai_verifier, "_verifier_api_key", return_value=""):
                 self.assertTrue(verifier_enabled())
-                self.assertIs(resolve_verifier(), default_verifier)
+                resolved = resolve_verifier()
+                self.assertIs(resolved, noop_verifier)
+                self.assertIsNot(resolved, default_verifier)
 
     def test_enabled_with_key_resolves_deepseek_backed_verifier(self):
         with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: "true"}, clear=False):
@@ -817,7 +782,9 @@ class ResolveVerifierTests(unittest.TestCase):
         self.assertEqual(status["api_key_source"], "environment")
         self.assertEqual(status["fallback_reason"], "")
 
-    def test_status_warns_when_enabled_verifier_falls_back_offline(self):
+    def test_status_warns_when_enabled_verifier_falls_back_to_noop(self):
+        # Enabled but unkeyed: the verifier degrades to a NO-OP (not the offline
+        # regex engine), so the AI reviewer's verdict stands untouched.
         with patch.dict(
             os.environ,
             {VERIFIER_ENV_ENABLED: "true", "OPENROUTER_API_KEY": ""},
@@ -826,16 +793,19 @@ class ResolveVerifierTests(unittest.TestCase):
             with patch.object(ai_verifier, "_verifier_api_key_source", return_value=""):
                 status = verifier_status()
 
-        self.assertEqual(status["active_kind"], "offline")
+        self.assertEqual(status["active_kind"], "noop")
         self.assertEqual(status["fallback_reason"], "missing_openrouter_api_key")
         self.assertEqual(status["api_key_configured"], False)
 
-    def test_summary_reports_offline_kind_by_default(self):
-        # No env opt-in -> offline adversary, surfaced for observability.
+    def test_no_env_opt_in_is_a_no_op_that_changes_no_verdict(self):
+        # No env opt-in -> the verifier is a NO-OP on the resolver path: the AI
+        # reviewer's verdict stands untouched and no regex engine adjudicates.
         with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: ""}, clear=False):
             clauses = [_clause("non_circumvention", "fail", clause_type="prohibited")]
-            _, summary = apply_ai_verifier(clauses, source_text="x")
-            self.assertEqual(summary["verifier_kind"], "offline")
+            updated, summary = apply_ai_verifier(clauses, source_text="x")
+            self.assertEqual(summary["status"], "disabled")
+            self.assertEqual(updated[0]["decision"], "fail")
+            self.assertNotIn("ai_verifier", updated[0])
 
     def test_summary_reports_injected_kind(self):
         clauses = [_clause("non_circumvention", "fail", clause_type="prohibited")]
@@ -908,10 +878,29 @@ class AIFirstPathIntegrationTests(unittest.TestCase):
             self._assessment("signatures", "pass"),
         ]
 
-    def test_offline_verifier_routes_ai_first_false_flag_to_review(self):
-        # The AI got it wrong: it FAILED a freedom-to-deal carve-out. The verifier,
-        # running on the default offline path, must not silently clear it to pass.
-        result = build_ai_first_review_result(self.SOURCE_TEXT, self._all_assessments("fail"))
+    def test_verifier_off_leaves_ai_first_verdict_untouched(self):
+        # NDA_AI_VERIFIER unset (the conftest default): the verifier is a NO-OP on the
+        # AI-first path. The AI reviewer's verdict stands EXACTLY as produced -- no
+        # deterministic/regex code may rewrite it. Here the AI failed a freedom-to-deal
+        # carve-out; with the verifier off that fail must stand (the AI, not a regex,
+        # owns the verdict).
+        with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: ""}, clear=False):
+            result = build_ai_first_review_result(self.SOURCE_TEXT, self._all_assessments("fail"))
+        nc = next(c for c in result["clauses"] if c["id"] == "non_circumvention")
+        self.assertEqual(nc["decision"], "fail")
+        self.assertEqual(nc["decision_source"], "ai")  # not rewritten by any verifier
+        self.assertNotIn("ai_verifier", nc)
+        self.assertEqual(result["ai_verifier"]["status"], "disabled")
+        self.assertEqual(result["ai_verifier"]["changed_count"], 0)
+
+    def test_injected_ai_verifier_can_refute_an_ai_first_false_flag_to_review(self):
+        # With an AI verifier wired across the seam (mirrors the enabled DeepSeek pass),
+        # an adversarial REFUTE of the AI's false flag routes the clause to human review.
+        result = build_ai_first_review_result(
+            self.SOURCE_TEXT,
+            self._all_assessments("fail"),
+            ai_verifier=_scripted(VERIFIER_VERDICT_REFUTE, confidence=0.95),
+        )
         nc = next(c for c in result["clauses"] if c["id"] == "non_circumvention")
         self.assertEqual(nc["decision"], "review")
         self.assertEqual(nc["decision_source"], "ai_verifier")

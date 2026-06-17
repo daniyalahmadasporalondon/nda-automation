@@ -280,11 +280,15 @@ def reassess_single_clause(
         playbook_clauses_by_id={clause_id: target_clause},
     )
     updated_clause = clause_results_list[0]
+    # Whether the adversarial verifier actually ran is the summary status, not the
+    # caller's ``verify`` intent: with NDA_AI_VERIFIER off the resolver path is a
+    # no-op (status "disabled"), so reporting bool(verify) would over-claim.
+    verifier_status_value = str(ai_verifier_review.get("status") or "") if isinstance(ai_verifier_review, Mapping) else ""
     updated_clause["reassess_metadata"] = {
         "clause_id": clause_id,
         "feature": "review",
         "has_edited_paragraphs": bool(edited_paragraphs),
-        "ai_verifier_ran": bool(verify),
+        "ai_verifier_ran": verifier_status_value not in {"", "disabled", "deferred"},
     }
     timer.total()
     return updated_clause

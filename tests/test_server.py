@@ -4649,7 +4649,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(initial_payload["ai_review"]["environment_enabled"], False)
         self.assertEqual(initial_payload["ai_review"]["api_key_configured"], True)
         self.assertEqual(initial_payload["ai_verifier"]["enabled"], False)
-        self.assertEqual(initial_payload["ai_verifier"]["active_kind"], "offline")
+        self.assertEqual(initial_payload["ai_verifier"]["active_kind"], "noop")
         self.assertEqual(initial_payload["ai_verifier"]["api_key_source"], "environment")
         self.assertEqual(initial_payload["active_review_engine"]["active_engine"], "ai_first")
         self.assertNotIn("server-only-secret", json.dumps(initial_payload))
@@ -4665,7 +4665,10 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(missing_status, 400)
         self.assertEqual(missing_payload["error"], "Provide an AI or runtime review setting to update.")
 
-    def test_ai_settings_endpoint_warns_when_enabled_verifier_falls_back_offline(self):
+    def test_ai_settings_endpoint_warns_when_enabled_verifier_is_inactive_without_key(self):
+        # AI verifier enabled but unkeyed: it is INACTIVE (a no-op that changes no
+        # verdicts) -- it does NOT fall back to the offline regex engine. The operator
+        # is warned so they configure a key for the DeepSeek verifier.
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
@@ -4681,9 +4684,9 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(payload["ai_verifier"]["enabled"], True)
-        self.assertEqual(payload["ai_verifier"]["active_kind"], "offline")
+        self.assertEqual(payload["ai_verifier"]["active_kind"], "noop")
         self.assertEqual(payload["ai_verifier"]["fallback_reason"], "missing_openrouter_api_key")
-        self.assertIn("ai_verifier_offline_fallback", [warning["code"] for warning in payload["operational_warnings"]])
+        self.assertIn("ai_verifier_inactive_no_key", [warning["code"] for warning in payload["operational_warnings"]])
         self.assertNotIn("OPENROUTER_API_KEY", json.dumps(payload))
 
     def test_personalisation_settings_endpoint_persists_text(self):

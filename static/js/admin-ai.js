@@ -270,8 +270,10 @@ const AdminAiView = (() => {
 
     function verifierKindLabel(status = {}) {
       if (status.active_kind === "ai") return "AI via OpenRouter";
-      if (status.enabled === true) return "Offline fallback";
-      return "Offline fallback (AI verifier off)";
+      // The verifier is AI-only: when it is not the AI pass it is a no-op that
+      // changes no verdicts (it never falls back to a deterministic/regex engine).
+      if (status.enabled === true) return "Inactive (no OpenRouter key)";
+      return "Inactive (AI verifier off)";
     }
 
     function verifierModelLabel(status = {}) {
