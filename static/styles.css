@@ -2759,28 +2759,6 @@ h3 {
   min-width: 0;
 }
 
-.back-dot {
-  align-items: center;
-  background: var(--bg-soft);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-pill);
-  color: var(--brand);
-  display: flex;
-  flex: 0 0 auto;
-  font-family: var(--display-font);
-  font-size: 16px;
-  height: 28px;
-  justify-content: center;
-  line-height: 1;
-  transition: background 0.18s ease, transform 0.18s ease;
-  width: 28px;
-}
-
-.back-dot:hover {
-  background: var(--bg-chip);
-  transform: translateX(-2px);
-}
-
 .studio-matter-card h1 {
   font-family: var(--display-font);
   font-size: 16px;
