@@ -58,11 +58,34 @@ def _google_owner_user_id(handler) -> str:
     )
 
 
+def _request_host(handler) -> str:
+    """The server bind host, used to detect no-login (loopback) mode. Defensive."""
+    server = getattr(handler, "server", None)
+    address = getattr(server, "server_address", None)
+    if isinstance(address, (tuple, list)) and address:
+        return str(address[0])
+    return ""
+
+
+def _docusign_owner_user_id(handler) -> str:
+    """The owner DocuSign tokens are stored/read under for this request.
+
+    Identical to :func:`request_owner_user_id` for every authenticated request.
+    In no-login (loopback) mode the request owner is "" — which matter access
+    treats as the single-tenant wildcard but token storage cannot key on — so this
+    substitutes a stable local-dev owner so the OAuth connect persists and
+    ``connected:true`` works. See ``docusign_connection.resolve_owner_user_id``.
+    """
+    return docusign_connection.resolve_owner_user_id(
+        request_owner_user_id(handler), host=_request_host(handler)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Connection: status / connect / callback / disconnect
 # ---------------------------------------------------------------------------
 def handle_docusign_status(handler, *, send_body: bool = True) -> None:
-    owner_user_id = request_owner_user_id(handler)
+    owner_user_id = _docusign_owner_user_id(handler)
     status = docusign_integration.connection_status(owner_user_id=owner_user_id)
     status["signed_in"] = bool(owner_user_id)
     status["connect_url"] = DOCUSIGN_CONNECT_START_URL
@@ -92,7 +115,7 @@ def handle_docusign_connect_start(handler, *, send_body: bool = True) -> None:
     query = parse_qs(urlparse(handler.path).query)
     next_path = query.get("next", ["/"])[0] or "/"
 
-    owner_user_id = request_owner_user_id(handler)
+    owner_user_id = _docusign_owner_user_id(handler)
     if not owner_user_id:
         handler._send_redirect(_error_next(next_path, "signin_required"), send_body=send_body)
         return
@@ -115,7 +138,7 @@ def handle_docusign_connect(handler) -> None:
     to) instead of redirecting server-side. The GET handler above is the path the
     current frontend actually navigates to.
     """
-    owner_user_id = request_owner_user_id(handler)
+    owner_user_id = _docusign_owner_user_id(handler)
     if not owner_user_id:
         handler._send_json({"error": "Sign in before connecting DocuSign."}, status=403)
         return
@@ -166,7 +189,7 @@ def _build_consent_url(handler, owner_user_id: str, next_path: str) -> str:
 
 def handle_docusign_callback(handler, *, send_body: bool = True) -> None:
     """OAuth callback: exchange the code, resolve the account, store the token."""
-    owner_user_id = request_owner_user_id(handler)
+    owner_user_id = _docusign_owner_user_id(handler)
     if not owner_user_id:
         handler._send_json({"error": "Sign in before connecting DocuSign."}, status=403, send_body=send_body)
         return
@@ -196,7 +219,7 @@ def handle_docusign_callback(handler, *, send_body: bool = True) -> None:
 
 
 def handle_docusign_disconnect(handler) -> None:
-    owner_user_id = request_owner_user_id(handler)
+    owner_user_id = _docusign_owner_user_id(handler)
     if not owner_user_id:
         handler._send_json({"error": "Sign in before disconnecting DocuSign."}, status=403)
         return

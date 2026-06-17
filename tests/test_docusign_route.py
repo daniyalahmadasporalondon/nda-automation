@@ -177,6 +177,9 @@ def test_connect_get_next_round_trips_into_oauth_state(repo, monkeypatch):
 def test_connect_get_unauthenticated_redirects_with_error_not_404(repo, monkeypatch):
     monkeypatch.setenv(docusign_connection.CLIENT_ID_ENV, "int-key")
     monkeypatch.setenv(docusign_connection.CLIENT_SECRET_ENV, "secret")
+    # Force a real-auth deployment so an empty request owner is genuinely
+    # unauthenticated (NOT the no-login local-dev path, which substitutes an owner).
+    monkeypatch.setenv("NDA_REQUIRE_AUTH", "1")
     handler = _FakeHandler(repo, owner="", path="/api/docusign/connect?next=%2Fadmin")
     docusign_routes.handle_docusign_connect_start(handler)
     assert handler.status == 302
@@ -222,6 +225,99 @@ def test_disconnect_removes_token(repo, connected):
     handler = _FakeHandler(repo)
     docusign_routes.handle_docusign_disconnect(handler)
     assert handler.response["disconnected"] is True
+
+
+# --------------------------------------------------------------------------
+# no-login (loopback) mode: the OAuth connect must STICK under a local-dev owner
+# --------------------------------------------------------------------------
+@pytest.fixture
+def _no_login_env(monkeypatch):
+    """Put the app in no-login mode: OAuth configured but NO auth method/forcing."""
+    monkeypatch.setenv(docusign_connection.CLIENT_ID_ENV, "int-key")
+    monkeypatch.setenv(docusign_connection.CLIENT_SECRET_ENV, "secret")
+    for var in ("NDA_GOOGLE_OAUTH_CLIENT_ID", "NDA_GOOGLE_OAUTH_CLIENT_SECRET",
+                "NDA_AUTH_USERNAME", "NDA_AUTH_PASSWORD", "NDA_REQUIRE_AUTH"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def _stub_token_exchange(monkeypatch, captured):
+    """Stub the DocuSign OAuth network calls; capture the save_user_token owner."""
+    monkeypatch.setattr(
+        docusign_connection, "exchange_code_for_token",
+        lambda code, redirect_uri="": {"access_token": "at", "refresh_token": "rt", "expires_in": 3600},
+    )
+    monkeypatch.setattr(
+        docusign_connection, "fetch_userinfo",
+        lambda access_token: {
+            "email": "dev@local",
+            "accounts": [{"account_id": "a1", "base_uri": "https://demo.docusign.net",
+                          "account_name": "LocalDev", "is_default": True}],
+        },
+    )
+    real_save = docusign_connection.save_user_token
+
+    def _capture_save(owner_user_id, token_response, account):
+        captured["owner"] = owner_user_id
+        return real_save(owner_user_id, token_response, account)
+
+    monkeypatch.setattr(docusign_connection, "save_user_token", _capture_save)
+
+
+def test_no_login_callback_saves_token_under_local_dev_owner(repo, monkeypatch, _no_login_env):
+    """The callback (empty request owner) must persist a token under a stable owner."""
+    captured = {}
+    _stub_token_exchange(monkeypatch, captured)
+    # An empty request owner = no-login mode (server leaves current_user_id "").
+    state = user_store.create_oauth_state(
+        purpose="docusign",
+        user_id=docusign_connection.local_dev_owner_user_id(),
+        next_path="/admin",
+        metadata={"role": "docusign"},
+    )
+    handler = _FakeHandler(repo, owner="", path=f"/auth/docusign/callback?code=abc&state={state}")
+    docusign_routes.handle_docusign_callback(handler)
+
+    # save_user_token received a NON-EMPTY owner (the local-dev id), not "".
+    assert captured["owner"] == docusign_connection.local_dev_owner_user_id()
+    assert captured["owner"]
+    assert handler.status == 302
+    assert handler.redirect_headers.get("X-DocuSign-Connected") == "1"
+
+
+def test_no_login_status_reads_connected_true_after_callback(repo, monkeypatch, _no_login_env):
+    """A status read in no-login mode reports connected:true once the token is saved."""
+    captured = {}
+    _stub_token_exchange(monkeypatch, captured)
+    state = user_store.create_oauth_state(
+        purpose="docusign",
+        user_id=docusign_connection.local_dev_owner_user_id(),
+        next_path="/",
+        metadata={"role": "docusign"},
+    )
+    connect_handler = _FakeHandler(repo, owner="", path=f"/auth/docusign/callback?code=abc&state={state}")
+    docusign_routes.handle_docusign_callback(connect_handler)
+
+    status_handler = _FakeHandler(repo, owner="")
+    docusign_routes.handle_docusign_status(status_handler)
+    assert status_handler.response["connected"] is True
+    assert status_handler.response["configured"] is True
+    assert status_handler.response["account_label"] == "LocalDev"
+
+
+def test_resolve_owner_unchanged_when_auth_required(monkeypatch):
+    """PROD-SAFETY: with auth forced, an empty owner is NEVER substituted."""
+    monkeypatch.setenv("NDA_REQUIRE_AUTH", "1")
+    assert docusign_connection.resolve_owner_user_id("") == ""
+    # A real authenticated owner always passes through verbatim.
+    assert docusign_connection.resolve_owner_user_id("google:123") == "google:123"
+
+
+def test_resolve_owner_unchanged_when_google_configured(monkeypatch):
+    """PROD-SAFETY: with Google OAuth configured, an empty owner is NOT substituted."""
+    monkeypatch.delenv("NDA_REQUIRE_AUTH", raising=False)
+    monkeypatch.setenv("NDA_GOOGLE_OAUTH_CLIENT_ID", "cid")
+    monkeypatch.setenv("NDA_GOOGLE_OAUTH_CLIENT_SECRET", "csec")
+    assert docusign_connection.resolve_owner_user_id("") == ""
 
 
 # --------------------------------------------------------------------------
