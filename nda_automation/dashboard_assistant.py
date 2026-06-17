@@ -559,6 +559,26 @@ def explain_review_finding_response(
             questions=_matter_question_options(context),
         )
 
+    public = matter_view.public_matter(matter)
+    if not public.get("ai_review_ran"):
+        # No AI review has run for this matter, so the only clause verdicts on
+        # record are deterministic guesses. Surfacing one as "the review finding"
+        # would report a deterministic verdict as if the AI authored it (a
+        # deterministic ghost). Return a clear not-yet-reviewed answer instead of
+        # resolving a clause and explaining its deterministic decision.
+        return _matter_not_ai_reviewed_response(
+            context,
+            matter,
+            public,
+            intent="review_finding_explanation",
+            question="explain_review_finding",
+            domain="review",
+            answer_text=(
+                "hasn't been AI-reviewed yet, so I can't explain a review finding for "
+                "it. Run the AI review first, then I can walk through any clause."
+            ),
+        )
+
     clause, clause_error = _resolve_clause(
         context,
         matter,
@@ -572,7 +592,6 @@ def explain_review_finding_response(
             questions=_clause_question_options(matter),
         )
 
-    public = matter_view.public_matter(matter)
     playbook_clause = _playbook_clause_for(context.playbook, clause)
     verdict = _clause_decision(clause)
     evidence = _clause_evidence(clause)
@@ -638,8 +657,16 @@ def summarize_matter_response(
     phase = str(workflow_state.get("phase") or "").replace("_", " ") or "unknown phase"
     status_label = str(workflow_state.get("label") or workflow_state.get("status") or "").strip()
     next_action = _workflow_next_action(workflow_state) or str(public.get("next_action") or "").strip()
-    risk_bits = _matter_risk_bits(public, review)
-    if risk_bits:
+    # Verdict gate: the failed/needs-review risk bits and the counts are derived from
+    # the stored review verdicts. Those are trustworthy only when an AI review ran;
+    # for a deterministic-only matter they are guesses, and emitting "N failed /
+    # M need review" would report them as authoritative review risk (a deterministic
+    # ghost). When no AI review ran, drop the verdict-derived bits/counts and say so.
+    ai_reviewed = bool(public.get("ai_review_ran"))
+    risk_bits = _matter_risk_bits(public, review) if ai_reviewed else []
+    if not ai_reviewed:
+        risk_text = "this matter hasn't been AI-reviewed yet, so there are no review findings to report"
+    elif risk_bits:
         risk_text = "; ".join(risk_bits)
     else:
         risk_text = "no current review risks were found in the stored review result"
@@ -649,6 +676,7 @@ def summarize_matter_response(
         + (f" ({status_label})" if status_label else "")
         + f". Risk summary: {risk_text}. Next action: {next_text}."
     )
+    counts = review.get("counts") if isinstance(review.get("counts"), Mapping) else {}
     return {
         "intent": "matter_summary",
         "version": DASHBOARD_ASSISTANT_VERSION,
@@ -662,8 +690,9 @@ def summarize_matter_response(
             "phase": str(workflow_state.get("phase") or ""),
             "status": str(workflow_state.get("status") or public.get("status") or ""),
             "next_action": next_text,
+            "ai_review_ran": ai_reviewed,
             "risks": risk_bits,
-            "counts": review.get("counts") if isinstance(review.get("counts"), Mapping) else {},
+            "counts": counts if ai_reviewed else {},
         },
         "citations": _matter_citations([public]),
     }
@@ -755,6 +784,41 @@ def clarification_response(
         "domain": "assistant",
         "message": message,
         "questions": list(questions)[:5],
+    }
+
+
+def _matter_not_ai_reviewed_response(
+    context: AssistantContext,
+    matter: Mapping[str, Any],
+    public: Mapping[str, Any],
+    *,
+    intent: str,
+    question: str,
+    domain: str,
+    answer_text: str,
+) -> dict[str, Any]:
+    """A clear "not AI-reviewed yet" answer, with NO deterministic verdict.
+
+    Used by the verdict-bearing intents (review-finding explanation) when
+    ``ai_review_ran`` is false: a deterministic-only matter has no authoritative
+    review findings, so we say so instead of explaining a deterministic clause
+    decision as if the AI authored it. The answer carries ``ai_review_ran: False``
+    and omits any verdict/evidence/clause fields.
+    """
+    title = _matter_title(public)
+    return {
+        "intent": intent,
+        "version": DASHBOARD_ASSISTANT_VERSION,
+        "query": context.query,
+        "domain": domain,
+        "question": question,
+        "answer": {
+            "text": f'"{title}" {answer_text}',
+            "matter_id": str(matter.get("id") or ""),
+            "matter_title": title,
+            "ai_review_ran": False,
+        },
+        "citations": _matter_citations([public]),
     }
 
 
@@ -1351,9 +1415,18 @@ def _workflow_next_action(workflow_state: Mapping[str, Any]) -> str:
 
 def _matter_risk_bits(public: Mapping[str, Any], review: Mapping[str, Any]) -> list[str]:
     risks: list[str] = []
-    counts = review.get("counts") if isinstance(review.get("counts"), Mapping) else {}
-    failed = _safe_int(public.get("requirements_failed") or counts.get("check"))
-    needs_review = _safe_int(public.get("requirements_needs_review") or counts.get("review"))
+    # The failed / needs-review counts are review VERDICTS; they're authoritative
+    # only when an AI review ran. For a deterministic-only matter they are guesses,
+    # so never surface them as risk (deterministic-ghost demotion). The caller also
+    # gates on this, but guard here so any other consumer is safe too. The
+    # send-block / workflow-attention bits below are not verdict-derived and stay.
+    if public.get("ai_review_ran"):
+        counts = review.get("counts") if isinstance(review.get("counts"), Mapping) else {}
+        failed = _safe_int(public.get("requirements_failed") or counts.get("check"))
+        needs_review = _safe_int(public.get("requirements_needs_review") or counts.get("review"))
+    else:
+        failed = 0
+        needs_review = 0
     if failed:
         risks.append(f"{failed} failed requirement{'s' if failed != 1 else ''}")
     if needs_review:

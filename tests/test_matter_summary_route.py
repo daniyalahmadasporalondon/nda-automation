@@ -131,6 +131,12 @@ class MatterSummaryRouteTests(unittest.TestCase):
 
     def seed_matter(self, *, owner_user_id="nda-admin", with_review=True, extracted_text=NDA_TEXT):
         review_result = review_nda(extracted_text) if with_review else {}
+        if with_review and isinstance(review_result, dict):
+            # The summary digest only seeds the LLM with review verdicts when an AI
+            # review actually ran. Mark this seeded result as ai_first-executed so
+            # the end-to-end grounding test reflects an AI-reviewed matter (the
+            # deterministic-only path is covered by the matter_summary unit tests).
+            review_result["active_review_engine"] = {"executed_engine": "ai_first"}
         return matter_store.create_matter(
             source_filename="acme-nda.txt",
             document_bytes=extracted_text.encode("utf-8"),

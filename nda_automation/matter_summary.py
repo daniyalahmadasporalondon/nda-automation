@@ -45,6 +45,7 @@ from .ai_review import (
     _trusted_https_context,
 )
 from .openrouter_usage import record_openrouter_usage
+from .review_state import review_was_ai_executed
 from .untrusted_text import neutralize_untrusted_text
 
 MATTER_SUMMARY_VERSION = 1
@@ -137,8 +138,18 @@ def _build_review_digest(review_result: Mapping[str, Any] | None) -> dict[str, A
     issue_type, reason, matched_text). Reasons and matched text are neutralized +
     length-capped so a malicious clause snippet can't smuggle instructions, and the
     clause list is capped to keep the packet bounded.
+
+    Verdict gate: a stored review only carries trustworthy clause verdicts/counts
+    when an AI (ai_first) review actually ran (``review_was_ai_executed``). A
+    deterministic-only review_result (e.g. outbound generation pins the deterministic
+    engine and defers AI to on-demand) is NOT authoritative -- seeding the
+    summarization LLM with its pass/review/fail verdicts would have it report
+    deterministic guesses as findings. So when no AI review ran we return
+    ``{"available": False}`` exactly as a missing review would; the model then
+    summarizes from the document text alone and the prompt's grounding rules handle
+    the rest. This is the single deterministic-ghost demotion the verdict surfaces share.
     """
-    if not isinstance(review_result, Mapping):
+    if not isinstance(review_result, Mapping) or not review_was_ai_executed(review_result):
         return {"available": False}
 
     clauses_raw = review_result.get("clauses")
