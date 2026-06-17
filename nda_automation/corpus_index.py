@@ -765,36 +765,12 @@ def flatten_corpus(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def _resolve_playbook_resolvers() -> tuple[Callable[[], dict[str, Any]], Callable[[], str]]:
     """Resolve the active playbook runtime ONCE and return constant resolvers.
 
-    The approval-gate staleness check (workflow_state -> _approval_status ->
-    approval.review_is_stale -> review_result_staleness) otherwise reads, locks
-    (flock) and validates ``playbook.json`` once per matter. ``build_corpus``
-    iterates every matter, so that is an O(matters) playbook read. Resolving the
-    runtime a single time here and threading these constant closures collapses it
-    to one read per build.
-
-    Fail-closed semantics are preserved exactly: if the active playbook cannot be
-    resolved, ``runtime_func`` re-raises (so ``review_result_staleness`` records a
-    ``current_runtime_error`` -> stale) and ``hash_func`` returns "" (mirroring
-    ``approval._current_published_playbook_hash``'s own except->"" behavior).
+    Thin alias over ``playbook_runtime.resolve_playbook_resolvers`` (the shared
+    helper that both this corpus build and ``matter_view.public_matters`` use to
+    collapse the per-matter playbook.json flock+read+validate to one read per
+    batch). Kept as a module-local name so existing call sites/tests stay stable.
     """
-    runtime: dict[str, Any] | None = None
-    error: Exception | None = None
-    try:
-        runtime = playbook_runtime.ensure_active_playbook_runtime()
-    except Exception as exc:  # noqa: BLE001 -- fail closed; mirror the unbatched default.
-        error = exc
-
-    def runtime_func() -> dict[str, Any]:
-        if error is not None:
-            raise error
-        return runtime or {}
-
-    def hash_func() -> str:
-        if runtime is None:
-            return ""
-        return str(runtime.get("active_hash") or "")
-
-    return runtime_func, hash_func
+    return playbook_runtime.resolve_playbook_resolvers()
 
 
 def _build_app_state_matters(repository, owner_user_id: str) -> dict[str, dict[str, Any]]:

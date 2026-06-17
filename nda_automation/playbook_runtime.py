@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .checker import PLAYBOOK_PATH, PlaybookTemplateError, validate_playbook
 from .durable_io import fsync_parent_directory
@@ -308,6 +308,50 @@ def ensure_active_playbook_runtime(
             actor=actor,
             source=source,
         )
+
+
+def resolve_playbook_resolvers(
+    *,
+    runtime_resolver: Callable[[], dict[str, Any]] | None = None,
+) -> tuple[Callable[[], dict[str, Any]], Callable[[], str]]:
+    """Resolve the active playbook runtime ONCE and return constant resolvers.
+
+    The approval-gate staleness check (workflow_state -> _approval_status ->
+    approval.review_is_stale -> review_result_staleness) otherwise reads, locks
+    (flock) and validates ``playbook.json`` once per matter. Batch callers
+    (corpus_index.build_corpus, matter_view.public_matters) iterate every matter,
+    so that is an O(matters) playbook read serialized on one exclusive lock.
+    Resolving the runtime a single time here and threading these constant closures
+    through ``workflow_state`` collapses it to one read per batch.
+
+    Fail-closed semantics are preserved exactly: if the active playbook cannot be
+    resolved, ``runtime_func`` re-raises (so ``review_result_staleness`` records a
+    ``current_runtime_error`` -> stale) and ``hash_func`` returns "" (mirroring
+    ``approval._current_published_playbook_hash``'s own except->"" behavior).
+    """
+    # Resolve via module lookup (not a bound default) so a test/monkeypatch of
+    # ``playbook_runtime.ensure_active_playbook_runtime`` is honored, matching how
+    # the staleness default resolves it.
+    if runtime_resolver is None:
+        runtime_resolver = ensure_active_playbook_runtime
+    runtime: dict[str, Any] | None = None
+    error: Exception | None = None
+    try:
+        runtime = runtime_resolver()
+    except Exception as exc:  # noqa: BLE001 -- fail closed; mirror the unbatched default.
+        error = exc
+
+    def runtime_func() -> dict[str, Any]:
+        if error is not None:
+            raise error
+        return runtime or {}
+
+    def hash_func() -> str:
+        if runtime is None:
+            return ""
+        return str(runtime.get("active_hash") or "")
+
+    return runtime_func, hash_func
 
 
 def ensure_active_playbook_bundle(

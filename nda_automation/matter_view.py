@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, TypedDict
+from typing import Any, Callable, TypedDict
 
-from . import artifact_registry, governing_law_view
+from . import artifact_registry, governing_law_view, playbook_runtime
 from .concept_classifier import classify_document_concepts
 from .contract_structure import build_contract_structure
 from .gmail_integration import matter_reply_recipient, recipient_email
@@ -132,7 +132,13 @@ PUBLIC_MATTER_FIELDS = {
 }
 
 
-def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatter:
+def public_matter(
+    matter: dict[str, Any],
+    *,
+    detail: bool = True,
+    current_playbook_hash_func: Callable[[], str] | None = None,
+    current_runtime_func: Callable[[], dict[str, Any]] | None = None,
+) -> PublicMatter:
     recipient = matter_reply_recipient(matter)
     send_block_reason = ""
     if recipient and _same_email_address(recipient, str(matter.get("gmail_account") or "")):
@@ -166,7 +172,16 @@ def public_matter(matter: dict[str, Any], *, detail: bool = True) -> PublicMatte
     # needs_attention) -- one derived source the UI and automation read instead of
     # guessing from the overlapping status/board/triage fields. Its
     # next_action SUPERSEDES the legacy free-text top-level next_action.
-    workflow = workflow_state(matter)
+    # When called in the board-list batch (public_matters), the resolvers are
+    # passed so the active playbook runtime is resolved ONCE per request rather
+    # than re-read (flock+validate playbook.json) once per matter in the
+    # approval-gate staleness check. The single-matter (detail) path passes
+    # neither and the staleness check lazily resolves the runtime itself.
+    workflow = workflow_state(
+        matter,
+        current_playbook_hash_func=current_playbook_hash_func,
+        current_runtime_func=current_runtime_func,
+    )
     public["workflow_state"] = workflow
     public["next_action"] = workflow["next_action"]["label"]
     # A derived, best-available counterparty name so the dashboard can group/find
@@ -521,7 +536,23 @@ def review_result_with_structure(review_result: dict[str, Any], extracted_text: 
 
 
 def public_matters(matters: list[dict[str, Any]]) -> list[PublicMatter]:
-    return [public_matter(matter, detail=False) for matter in matters]
+    # Resolve the active playbook runtime ONCE for the whole board-list build and
+    # thread the constant resolvers through every matter's workflow_state. Without
+    # this, each matter's approval-gate staleness check
+    # (workflow_state -> _approval_status -> approval.review_is_stale ->
+    # review_result_staleness) re-locks (flock), re-reads and re-validates
+    # playbook.json -- an O(matters) playbook read on every GET /api/matters poll.
+    # Mirrors corpus_index.build_corpus's batched resolvers.
+    runtime_func, hash_func = playbook_runtime.resolve_playbook_resolvers()
+    return [
+        public_matter(
+            matter,
+            detail=False,
+            current_playbook_hash_func=hash_func,
+            current_runtime_func=runtime_func,
+        )
+        for matter in matters
+    ]
 
 
 def _same_email_address(left: str, right: str) -> bool:
