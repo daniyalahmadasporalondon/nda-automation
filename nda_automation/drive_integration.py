@@ -787,11 +787,14 @@ def _summary_facets(matter: dict[str, Any], workflow_state: dict[str, Any]) -> d
     except Exception:
         governing_law = ""
     failed, needs_review = _summary_requirement_counts(matter)
+    has_clauses = _summary_clause_ids(matter)
+    term_years = _summary_term_years(matter)
+    master = _summary_master_filter_facets(matter, has_clauses, term_years)
     return {
         "governing_law": governing_law,
         "signed": _summary_signed(workflow_state),
-        "has_clauses": _summary_clause_ids(matter),
-        "term_years": _summary_term_years(matter),
+        "has_clauses": has_clauses,
+        "term_years": term_years,
         # The review requirement counts the has_issues facet reads. Persisted here so
         # a Drive-only matter (after a /tmp wipe) keeps the signal; corpus_index's
         # _drive_facets reads them back from this block.
@@ -801,8 +804,52 @@ def _summary_facets(matter: dict[str, Any], workflow_state: dict[str, Any]) -> d
         # consumer can gate on it even for a Drive-only matter; corpus_index's
         # _drive_facets reads it back (and treats its absence as False).
         "ai_review_ran": _summary_ai_review_ran(matter),
+        # Master-filter facets, derived by the SAME corpus_index helpers the app-state
+        # pass uses (single source of truth), landed on disk so a Drive-only matter
+        # (after a /tmp wipe) keeps them. corpus_index._drive_facets reads them back.
+        "mutuality": master["mutuality"],
+        "term_band": master["term_band"],
+        "restraint_types": master["restraint_types"],
+        "review_outcome": master["review_outcome"],
+        "clauses_present": master["clauses_present"],
+        "origin": master["origin"],
         "schema_version": 1,
     }
+
+
+def _summary_master_filter_facets(
+    matter: dict[str, Any], has_clauses: list[str], term_years: float | None
+) -> dict[str, Any]:
+    """Derive the 6 master-filter facets for the durable summary.
+
+    Delegates to ``corpus_index`` so the durable values and the app-state values come
+    from ONE implementation and cannot drift. Lazy-imported (corpus_index imports this
+    module) and fully best-effort: any hiccup degrades every facet to its null/empty
+    default so a sync never breaks.
+    """
+    try:
+        from . import corpus_index
+
+        review_result = matter.get("review_result")
+        return {
+            "mutuality": corpus_index._mutuality_from_result(review_result),
+            "term_band": corpus_index._term_band_from_years(term_years),
+            "restraint_types": corpus_index._restraint_types_from_result(review_result),
+            "review_outcome": corpus_index._review_outcome_from_result(review_result),
+            "clauses_present": list(has_clauses),
+            "origin": corpus_index._origin_from_source(
+                matter.get("source_type"), has_gmail=bool(matter.get("gmail_message_id"))
+            ),
+        }
+    except Exception:
+        return {
+            "mutuality": None,
+            "term_band": None,
+            "restraint_types": [],
+            "review_outcome": None,
+            "clauses_present": list(has_clauses) if isinstance(has_clauses, list) else [],
+            "origin": None,
+        }
 
 
 def _summary_ai_review_ran(matter: dict[str, Any]) -> bool:

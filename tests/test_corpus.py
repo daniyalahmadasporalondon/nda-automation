@@ -839,6 +839,396 @@ class CorpusFacetTests(unittest.TestCase):
             )
 
 
+class CorpusMasterFilterFacetTests(unittest.TestCase):
+    """The 6 master-filter facets (mutuality / term_band / restraint_types /
+    review_outcome / clauses_present / origin): derivation, count==filtered parity,
+    Drive-summary round-trip, and null/missing-data handling."""
+
+    def setUp(self):
+        corpus_index.invalidate_cache()
+        self.repo = InMemoryMatterRepository()
+
+    def tearDown(self):
+        corpus_index.invalidate_cache()
+
+    def _facets_for_review(self, review_result, *, source_type="manual_upload", **extra):
+        # A throwaway single-matter repo per call so a test method can derive several
+        # independent matters without them accumulating in one corpus.
+        repo = InMemoryMatterRepository()
+        matter = repo.create_matter(
+            source_filename="MF NDA.docx",
+            document_bytes=b"PK\x03\x04 fake docx",
+            extracted_text="This Agreement is mutual.",
+            review_result=review_result,
+            triage={"triage_status": "review"},
+            source_type=source_type,
+            board_column="in_review",
+            owner_user_id="owner-a",
+            **extra,
+        )
+        self.assertTrue(matter["id"])
+        corpus_index.invalidate_cache()
+        payload = corpus_index.build_corpus(repo, "owner-a", "")
+        return _only_matter(payload)["facets"]
+
+    # --- mutuality ---------------------------------------------------------
+    def test_mutuality_mutual_from_strong_reciprocal_obligation(self):
+        facets = self._facets_for_review(
+            {
+                "active_review_engine": {"executed_engine": "ai_first"},
+                "clauses": [
+                    {
+                        "id": "mutuality",
+                        "decision": "pass",
+                        "mutuality_analysis": {
+                            "strong_mutuality_paragraph_ids": ["p1"],
+                            "one_way_paragraph_ids": [],
+                        },
+                    }
+                ],
+            }
+        )
+        self.assertEqual(facets["mutuality"], "mutual")
+
+    def test_mutuality_one_way_from_one_way_paragraphs(self):
+        # A one-way signal wins even when the clause decision is review/check.
+        facets = self._facets_for_review(
+            {
+                "active_review_engine": {"executed_engine": "ai_first"},
+                "clauses": [
+                    {
+                        "id": "mutuality",
+                        "decision": "review",
+                        "mutuality_analysis": {
+                            "strong_mutuality_paragraph_ids": [],
+                            "one_way_paragraph_ids": ["p5"],
+                        },
+                    }
+                ],
+            }
+        )
+        self.assertEqual(facets["mutuality"], "one_way")
+
+    def test_mutuality_none_when_only_weak_or_absent(self):
+        # A weak label-only signal is not a confident polarity -> None (never guessed).
+        facets = self._facets_for_review(
+            {
+                "active_review_engine": {"executed_engine": "ai_first"},
+                "clauses": [
+                    {
+                        "id": "mutuality",
+                        "decision": "review",
+                        "mutuality_analysis": {"weak_mutuality_paragraph_ids": ["p2"]},
+                    }
+                ],
+            }
+        )
+        self.assertIsNone(facets["mutuality"])
+        # No mutuality clause at all -> None.
+        facets2 = self._facets_for_review(
+            {"clauses": [{"id": "governing_law", "decision": "pass"}]}
+        )
+        self.assertIsNone(facets2["mutuality"])
+
+    # --- term_band ---------------------------------------------------------
+    def test_term_band_buckets_from_term_years(self):
+        # Boundaries: <=2y, 3-5y (>2 and <=5), >5y.
+        for years, band in ((1.0, "<=2y"), (2.0, "<=2y"), (3.0, "3-5y"), (5.0, "3-5y"), (7.0, ">5y")):
+            facets = self._facets_for_review(
+                {"clauses": [{"id": "term_and_survival", "decision": "pass", "term_years": years}]}
+            )
+            self.assertEqual(facets["term_band"], band, f"{years} -> {band}")
+            self.assertEqual(facets["term_years"], years)
+
+    def test_term_band_none_when_term_unknown(self):
+        facets = self._facets_for_review({"clauses": [{"id": "mutuality", "decision": "pass"}]})
+        self.assertIsNone(facets["term_band"])
+        self.assertIsNone(facets["term_years"])
+
+    # --- restraint_types ---------------------------------------------------
+    def test_restraint_types_tagged_from_non_circumvention_flagged_text(self):
+        # The EXISTING prohibited_positions regexes run against the non_circumvention
+        # finding's flagged text; the families found are returned in a stable order.
+        facets = self._facets_for_review(
+            {
+                "active_review_engine": {"executed_engine": "ai_first"},
+                "clauses": [
+                    {
+                        "id": "non_circumvention",
+                        "decision": "fail",
+                        "matched_text": "a non-compete and non-solicit and non-circumvent provision",
+                        "evidence": [],
+                    }
+                ],
+            }
+        )
+        self.assertEqual(facets["restraint_types"], ["non_compete", "non_solicit", "non_circumvention"])
+
+    def test_restraint_types_reads_evidence_paragraphs(self):
+        # Flagged text also comes from the evidence list (string or dict paragraphs).
+        facets = self._facets_for_review(
+            {
+                "active_review_engine": {"executed_engine": "ai_first"},
+                "clauses": [
+                    {
+                        "id": "non_circumvention",
+                        "decision": "review",
+                        "matched_text": "",
+                        "evidence": [{"text": "the parties shall not circumvent each other"}],
+                    }
+                ],
+            }
+        )
+        self.assertEqual(facets["restraint_types"], ["non_circumvention"])
+
+    def test_restraint_types_empty_when_clause_absent_or_no_match(self):
+        # No non_circumvention clause -> [].
+        facets = self._facets_for_review({"clauses": [{"id": "mutuality", "decision": "pass"}]})
+        self.assertEqual(facets["restraint_types"], [])
+        # Clause present but its flagged text trips no restraint family -> [].
+        facets2 = self._facets_for_review(
+            {
+                "active_review_engine": {"executed_engine": "ai_first"},
+                "clauses": [
+                    {
+                        "id": "non_circumvention",
+                        "decision": "pass",
+                        "matched_text": "the parties may freely deal with anyone",
+                        "evidence": [],
+                    }
+                ],
+            }
+        )
+        self.assertEqual(facets2["restraint_types"], [])
+
+    # --- review_outcome ----------------------------------------------------
+    def test_review_outcome_has_fail_needs_review_clean(self):
+        has_fail = self._facets_for_review(
+            {"clauses": [{"id": "a", "decision": "fail"}, {"id": "b", "decision": "pass"}]}
+        )
+        self.assertEqual(has_fail["review_outcome"], "has_fail")
+        needs_review = self._facets_for_review(
+            {"clauses": [{"id": "a", "decision": "review"}, {"id": "b", "decision": "pass"}]}
+        )
+        self.assertEqual(needs_review["review_outcome"], "needs_review")
+        clean = self._facets_for_review({"clauses": [{"id": "a", "decision": "pass"}]})
+        self.assertEqual(clean["review_outcome"], "clean")
+
+    def test_review_outcome_none_when_unreviewed(self):
+        # A review_result with no clause verdicts is unreviewed -> None (never "clean").
+        facets = self._facets_for_review({})
+        self.assertIsNone(facets["review_outcome"])
+
+    # --- clauses_present ---------------------------------------------------
+    def test_clauses_present_mirrors_has_clauses(self):
+        facets = self._facets_for_review(
+            {
+                "active_review_engine": {"executed_engine": "ai_first"},
+                "clauses": [
+                    {"id": "mutuality", "decision": "pass"},
+                    {"id": "governing_law", "decision": "review"},
+                ],
+            }
+        )
+        self.assertEqual(sorted(facets["clauses_present"]), sorted(facets["has_clauses"]))
+        self.assertIn("mutuality", facets["clauses_present"])
+        self.assertIn("governing_law", facets["clauses_present"])
+
+    # --- origin ------------------------------------------------------------
+    def test_origin_generated_vs_received_vs_unknown(self):
+        gen = self._facets_for_review(
+            {"clauses": [{"id": "mutuality", "decision": "pass"}]}, source_type="generated"
+        )
+        self.assertEqual(gen["origin"], "generated")
+        received = self._facets_for_review(
+            {"clauses": [{"id": "mutuality", "decision": "pass"}]}, source_type="manual_upload"
+        )
+        self.assertEqual(received["origin"], "received")
+        gmail = self._facets_for_review(
+            {"clauses": [{"id": "mutuality", "decision": "pass"}]}, source_type="gmail_inbound"
+        )
+        self.assertEqual(gmail["origin"], "received")
+
+    def _seed_review(self, review_result, *, source_type, title):
+        return self.repo.create_matter(
+            source_filename=f"{title}.docx",
+            document_bytes=b"PK\x03\x04 fake docx",
+            extracted_text="This Agreement is mutual.",
+            review_result=review_result,
+            triage={"triage_status": "review"},
+            source_type=source_type,
+            board_column="in_review",
+            owner_user_id="owner-a",
+        )
+
+    # --- facet counts == filtered parity -----------------------------------
+    def test_facet_counts_equal_filtered_matter_counts(self):
+        # Three matters with distinct facet values; the top-level facet_counts must
+        # equal the number of matters a filter on each value would keep.
+        self._seed_review(
+            {
+                "active_review_engine": {"executed_engine": "ai_first"},
+                "clauses": [
+                    {"id": "term_and_survival", "decision": "pass", "term_years": 1.0},
+                    {"id": "mutuality", "decision": "pass",
+                     "mutuality_analysis": {"strong_mutuality_paragraph_ids": ["p1"], "one_way_paragraph_ids": []}},
+                    {"id": "non_circumvention", "decision": "fail",
+                     "matched_text": "a non-compete provision", "evidence": []},
+                ],
+            },
+            source_type="manual_upload",
+            title="MF One",
+        )
+        self._seed_review(
+            {
+                "active_review_engine": {"executed_engine": "ai_first"},
+                "clauses": [
+                    {"id": "term_and_survival", "decision": "pass", "term_years": 4.0},
+                    {"id": "mutuality", "decision": "review",
+                     "mutuality_analysis": {"strong_mutuality_paragraph_ids": [], "one_way_paragraph_ids": ["p3"]}},
+                ],
+            },
+            source_type="generated",
+            title="MF Two",
+        )
+        self._seed_review(
+            {"clauses": [{"id": "term_and_survival", "decision": "pass", "term_years": 9.0}]},
+            source_type="gmail_inbound",
+            title="MF Three",
+        )
+        corpus_index.invalidate_cache()
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "")
+        flat = corpus_index.flatten_corpus(payload)
+        counts = payload["facet_counts"]
+        # Each emitted count equals the matters that carry that value (parity).
+        for key, by_value in counts.items():
+            for value, count in by_value.items():
+                if key in ("restraint_types", "clauses_present"):
+                    hits = [m for m in flat if value in (m["facets"].get(key) or [])]
+                else:
+                    hits = [m for m in flat if m["facets"].get(key) == value]
+                self.assertEqual(count, len(hits), f"{key}={value}: count {count} != filtered {len(hits)}")
+        # Spot-check a few expected values are present with the right counts.
+        self.assertEqual(counts["term_band"]["<=2y"], 1)
+        self.assertEqual(counts["term_band"]["3-5y"], 1)
+        self.assertEqual(counts["term_band"][">5y"], 1)
+        self.assertEqual(counts["mutuality"]["mutual"], 1)
+        self.assertEqual(counts["mutuality"]["one_way"], 1)
+        # manual_upload + gmail_inbound both map to "received"; generated maps to "generated".
+        self.assertEqual(counts["origin"]["received"], 2)
+        self.assertEqual(counts["origin"]["generated"], 1)
+        self.assertEqual(counts["restraint_types"]["non_compete"], 1)
+
+    def test_facet_counts_skip_null_and_empty_values(self):
+        # The _seed_matter helper's review carries one passing clause (mutuality) with
+        # no mutuality_analysis, no term, no non_circ finding -> mutuality/term_band are
+        # null and restraint_types is empty, so NONE of those advertise a value in the
+        # count block (an unknown/empty facet never advertises a value). The known
+        # facets (review_outcome=clean from the passing clause, origin=received from the
+        # manual upload, clauses_present=mutuality) DO appear.
+        _seed_matter(self.repo, owner="owner-a", title="Plain NDA")
+        corpus_index.invalidate_cache()
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "")
+        counts = payload["facet_counts"]
+        self.assertEqual(counts["mutuality"], {})
+        self.assertEqual(counts["term_band"], {})
+        self.assertEqual(counts["restraint_types"], {})
+        self.assertEqual(counts["review_outcome"], {"clean": 1})
+        self.assertEqual(counts["origin"], {"received": 1})
+        self.assertEqual(counts["clauses_present"], {"mutuality": 1})
+
+    # --- Drive-summary round-trip ------------------------------------------
+    def test_drive_only_matter_reads_master_filter_facets_from_summary(self):
+        fake = FakeDriveService()
+        summary = _summary_for("mf-drive-1", counterparty="DriveCo")
+        summary["facets"] = {
+            "governing_law": "india",
+            "signed": True,
+            "has_clauses": ["mutuality", "non_circumvention"],
+            "term_years": 4,
+            "mutuality": "one_way",
+            "term_band": "3-5y",
+            "restraint_types": ["non_compete", "non_solicit"],
+            "review_outcome": "has_fail",
+            "clauses_present": ["mutuality", "non_circumvention"],
+            "origin": "received",
+            "schema_version": 1,
+        }
+        _build_drive_tree(fake, counterparty="DriveCo", summary=summary)
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "owner-a", drive_service=fake)
+        facets = _only_matter(payload)["facets"]
+        self.assertTrue(facets["facets_available"])
+        self.assertEqual(facets["mutuality"], "one_way")
+        # term_band is re-derived from the durable term_years (cannot drift on disk).
+        self.assertEqual(facets["term_band"], "3-5y")
+        self.assertEqual(facets["restraint_types"], ["non_compete", "non_solicit"])
+        self.assertEqual(facets["review_outcome"], "has_fail")
+        self.assertEqual(sorted(facets["clauses_present"]), ["mutuality", "non_circumvention"])
+        self.assertEqual(facets["origin"], "received")
+
+    def test_legacy_drive_summary_without_master_facets_degrades(self):
+        # A summary with a facets block predating the master-filter enrichment leaves
+        # the new facets at their null/empty defaults (never a false positive match).
+        fake = FakeDriveService()
+        summary = _summary_for("mf-legacy-1", counterparty="LegacyCo")
+        summary["facets"] = {
+            "governing_law": "india",
+            "signed": True,
+            "has_clauses": ["mutuality"],
+            "schema_version": 1,
+        }
+        _build_drive_tree(fake, counterparty="LegacyCo", summary=summary)
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "owner-a", drive_service=fake)
+        facets = _only_matter(payload)["facets"]
+        self.assertIsNone(facets["mutuality"])
+        self.assertIsNone(facets["term_band"])
+        self.assertEqual(facets["restraint_types"], [])
+        self.assertIsNone(facets["review_outcome"])
+        self.assertIsNone(facets["origin"])
+        # clauses_present falls back to has_clauses when the durable key is absent.
+        self.assertEqual(facets["clauses_present"], ["mutuality"])
+
+    def test_summary_facets_persist_master_filter_block(self):
+        # drive_integration._summary_facets (the write side) lands the master-filter
+        # facets on disk so a Drive-only matter keeps them after a /tmp wipe.
+        matter = {
+            "id": "m1",
+            "source_type": "generated",
+            "review_result": {
+                "active_review_engine": {"executed_engine": "ai_first"},
+                "clauses": [
+                    {"id": "term_and_survival", "decision": "pass", "term_years": 6.0},
+                    {"id": "non_circumvention", "decision": "fail",
+                     "matched_text": "a non-solicit provision", "evidence": []},
+                    {"id": "mutuality", "decision": "pass",
+                     "mutuality_analysis": {"strong_mutuality_paragraph_ids": ["p1"], "one_way_paragraph_ids": []}},
+                ],
+            },
+        }
+        block = drive_integration._summary_facets(matter, {"status": "fully_signed"})
+        self.assertEqual(block["mutuality"], "mutual")
+        self.assertEqual(block["term_band"], ">5y")
+        self.assertEqual(block["restraint_types"], ["non_solicit"])
+        self.assertEqual(block["review_outcome"], "has_fail")
+        self.assertEqual(block["origin"], "generated")
+        self.assertIn("non_circumvention", block["clauses_present"])
+
+    def test_drive_pass_degrades_on_unexpected_exception_type(self):
+        # P1: an UNEXPECTED Drive exception type (not one of the wrapped
+        # drive_integration errors) must NOT escape build_corpus and kill /api/corpus.
+        # It degrades to an app-state-only corpus (reason=drive_error) so the live
+        # matters always survive.
+        _seed_matter(self.repo, owner="owner-a", title="Survivor NDA")
+        fake = _RaisingDriveService(RuntimeError("raw client/socket error never wrapped"))
+        payload = corpus_index.build_corpus(self.repo, "owner-a", "drive-owner", drive_service=fake)
+        # App-state matters survive (the corpus did not go down)...
+        self.assertEqual(payload["matter_count"], 1)
+        self.assertEqual(_only_matter(payload)["title"], "Survivor NDA")
+        # ...and the Drive side degraded with reason=drive_error.
+        self.assertFalse(payload["drive"]["reconciled"])
+        self.assertEqual(payload["drive"]["reason"], corpus_index.REASON_DRIVE_ERROR)
+
+
 class _RaisingDriveService:
     """A Drive ``service`` double whose first ``files().list`` raises.
 
