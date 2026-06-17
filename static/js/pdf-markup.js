@@ -30,7 +30,13 @@ function createPdfMarkupController({
   escapeHtml,
   getSurfaceRoot,
   matterIsPdf,
+  notify,
 }) {
+  // Surface a user-facing toast on operation failure. No-ops safely when no
+  // notify dependency was injected (e.g. tests construct without one).
+  const showError = (msg) => {
+    if (typeof notify === "function") notify("PDF markup", msg);
+  };
   const TOOLS = [
     { id: "cursor", label: "Cursor", title: "Cursor (no markup)" },
     { id: "comment", label: "Comment", title: "Add a comment pin" },
@@ -535,6 +541,7 @@ function createPdfMarkupController({
         markup.annotations = [];
         markup.loadedMatterId = matterId;
         if (markup.mounted) renderAllOverlays();
+        showError("Could not load saved annotations.");
       });
   }
 
@@ -561,7 +568,10 @@ function createPdfMarkupController({
         if (markup.mounted) renderAllOverlays();
       })
       .catch(() => {
-        /* Surface stays as-is; a failed save simply leaves no overlay. */
+        // No optimistic overlay is added before the POST (the success .then is
+        // what appends + renders), so there is nothing to revert — just surface
+        // the failure so the user knows the annotation was not saved.
+        showError("Could not save annotation — please try again.");
       });
   }
 
@@ -583,7 +593,9 @@ function createPdfMarkupController({
         if (markup.mounted) renderAllOverlays();
       })
       .catch(() => {
-        /* Leave the overlay in place if the delete failed. */
+        // Leave the overlay in place if the delete failed, but tell the user it
+        // did not go through.
+        showError("Could not delete annotation — please try again.");
       });
   }
 
@@ -599,6 +611,7 @@ function createPdfMarkupController({
       })
       .catch(() => {
         /* No download on failure; button is re-enabled below. */
+        showError("Marked-up PDF could not be generated.");
       })
       .finally(() => {
         if (button) button.disabled = false;
