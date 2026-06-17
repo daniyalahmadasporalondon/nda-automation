@@ -222,6 +222,14 @@ const RepositoryDetail = (() => {
 
   function renderMatterTimeline(matter) {
     const reviewResult = matter.review_result || {};
+    // Mirror the verdict gate in renderDetailPanel (lines ~17-19): only an AI
+    // review may surface the "Playbook checks completed" count summary. A
+    // deterministic-only matter has a checked_at but no AI verdict, so the count
+    // tally below would be a "deterministic ghost". Legacy fixtures predating the
+    // flag fall back to "are there clauses".
+    const aiReviewRan = typeof matter.ai_review_ran === "boolean"
+      ? matter.ai_review_ran
+      : (Array.isArray(reviewResult.clauses) && reviewResult.clauses.length > 0);
     const events = [
       {
         detail: matter.attachment_filename || matter.source_filename || "Document received for review.",
@@ -229,7 +237,7 @@ const RepositoryDetail = (() => {
         title: `${RepositoryModel.sourceTypeLabel(matter.source_type)} intake`,
       },
     ];
-    if (reviewResult.checked_at) {
+    if (aiReviewRan && reviewResult.checked_at) {
       events.push({
         detail: `${RepositoryModel.reviewCountSummary(matter, reviewResult)}.`,
         meta: RepositoryModel.formatMatterDateTime(reviewResult.checked_at) || "-",
