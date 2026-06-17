@@ -2671,6 +2671,23 @@ h3 {
   padding: 6px 10px;
 }
 
+/* Header trim — the counterparty confirmation field and the matter-facts meta
+   (Counterparty / Received) now live in the Overview inspector tab's Facts
+   section, so collapse those duplicated display nodes from the header to reduce
+   it toward just the document title. The nodes stay in the DOM (display:none keeps
+   them out of layout but still scriptable — the existing review flow still writes
+   to them), so this is a visual hide, never a removal.
+
+   NOTE: the Approve / Send action buttons also move to the Overview footer, but
+   they are deliberately NOT hidden here yet — the footer component is folded in by
+   the integrator, the existing review flow toggles those buttons' state, and the
+   FE tests drive them. Add their data-ov-moved markers (one-line follow-up) once
+   the footer lands so Approve/Send aren't briefly unreachable. Reviewed / Refresh
+   stay in the header (reviewed-tracking was cut from the Overview scope). */
+.studio-matter-card--overview-trimmed [data-ov-moved] {
+  display: none !important;
+}
+
 .studio-matter-left {
   align-items: center;
   display: flex;

@@ -451,7 +451,9 @@ async function testAccessibleControlState(page) {
   assert.equal(matterCardStyles.borderRadius, "14px");
   assert.equal(matterCardStyles.boxShadow, "rgba(26, 19, 51, 0.2) 0px 10px 30px -20px");
   assert.equal(await page.locator(".studio-check-card").count(), 0);
-  assert.equal(await page.locator(".studio-playbook > h2").innerText(), "SELECTED CLAUSE");
+  // Overview is now the first/default inspector sub-tab, so the panel title reads
+  // "OVERVIEW" on a freshly-opened Review (before drilling into a clause).
+  assert.equal(await page.locator(".studio-playbook > h2").innerText(), "OVERVIEW");
   assert.equal(await page.locator("#studioMatchSummary").innerText(), "0/6");
 
   await page.locator("#dashboardTab").focus();
@@ -2355,6 +2357,9 @@ async function testStructuredEvidenceAndRationale(page) {
 async function testAiSecondOpinionButton(page) {
   await runReview(page, passNda);
 
+  // Overview is the default inspector sub-tab; select a clause to surface the
+  // clause detail this test inspects.
+  await page.locator(".studio-clause-item .studio-clause-select").first().click();
   await assertTextContains(page.locator("#studioDetailPanel"), "ATTACH COMMENT");
   assert.equal(await page.locator('[data-ai-second-opinion-clause-id]').count(), 0);
   assert.equal(await page.locator(".ai-second-opinion-button").count(), 0);
@@ -2366,6 +2371,9 @@ async function testAiSecondOpinionButton(page) {
 async function testAiDraftFixValidationButton(page) {
   await runReview(page, termOnlyRedlineNda);
 
+  // Overview is the default inspector sub-tab; select a clause to surface the
+  // clause detail this test inspects.
+  await page.locator(".studio-clause-item .studio-clause-select").first().click();
   await assertTextContains(page.locator("#studioDetailPanel"), "ATTACH COMMENT");
   assert.equal(await page.locator('[data-ai-draft-validation-redline-id]').count(), 0);
   assert.equal(await page.getByRole("button", { name: /validate draft fix/i }).count(), 0);

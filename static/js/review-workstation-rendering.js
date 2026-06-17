@@ -109,7 +109,11 @@ function renderStudioEmpty() {
   studioOverallTitle.textContent = "Awaiting review";
   studioResultMeta.textContent = "No hard-clause review has run yet.";
   resetReviewEditHistory();
-  if (state.reviewInspectorView === "structure") {
+  if (state.reviewInspectorView === "overview") {
+    // The Overview controller renders its own "No review yet" empty state when no
+    // AI review has run, so it owns the pane here too.
+    reviewOverviewController.render();
+  } else if (state.reviewInspectorView === "structure") {
     reviewStructureController.render();
   } else if (state.reviewInspectorView === "fill") {
     reviewFillController.render();
@@ -1418,6 +1422,10 @@ function highlightSelectedClauseRefs() {
 
 function renderStudioDetail() {
   updateReviewInspectorTabs();
+  if (state.reviewInspectorView === "overview") {
+    reviewOverviewController.render();
+    return;
+  }
   if (state.reviewInspectorView === "structure") {
     reviewStructureController.render();
     return;

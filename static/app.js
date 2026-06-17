@@ -81,8 +81,12 @@ function htmlEscape(value) {
 // Inspector view config — declared early (before the controllers and any init-time
 // render that calls updateReviewInspectorTabs()) so REVIEW_INSPECTOR_VIEWS is never
 // referenced in its temporal dead zone, which would halt the whole script at load.
-const REVIEW_INSPECTOR_VIEWS = ["clause", "structure", "fill"];
+// "overview" is FIRST so it is the default sub-tab (normalizeReviewInspectorView
+// falls back to REVIEW_INSPECTOR_VIEWS[0]); it composes the Facts/Roster/Footer
+// at-a-glance pane.
+const REVIEW_INSPECTOR_VIEWS = ["overview", "clause", "structure", "fill"];
 const REVIEW_INSPECTOR_TITLES = {
+  overview: "Overview",
   clause: "Selected Clause",
   structure: "Contract Structure",
   fill: "Fill Blanks",
@@ -428,6 +432,16 @@ const playbookController = createPlaybookController({
   playbookList,
   clauseDetail,
   renderStudioEmpty,
+});
+// Overview tab: the FIRST inspector sub-tab. Composes the Facts / clause Roster /
+// Footer at-a-glance pane into #studioDetailPanel and wires each component's
+// callbacks to the existing review-workstation flows (clause select+jump,
+// counterparty confirm/override, Approve, Send-for-signature, reviewed sign-off,
+// AI refresh). The three component renderers (renderOverviewFacts / Roster /
+// Footer) are bridged onto window by their own files, folded in by the integrator.
+const reviewOverviewController = createOverviewController({
+  state,
+  root: studioDetailPanel,
 });
 const reviewStructureController = createContractStructureController({
   state,
@@ -1855,7 +1869,9 @@ function activateAdminSection(sectionName) {
 }
 
 function normalizeReviewInspectorView(viewName) {
-  return REVIEW_INSPECTOR_VIEWS.includes(viewName) ? viewName : "clause";
+  // Default to the first configured view ("overview") so a fresh/unknown state
+  // lands on the at-a-glance Overview pane rather than the Clause detail.
+  return REVIEW_INSPECTOR_VIEWS.includes(viewName) ? viewName : REVIEW_INSPECTOR_VIEWS[0];
 }
 
 function setReviewInspectorView(viewName) {

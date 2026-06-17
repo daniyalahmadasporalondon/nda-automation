@@ -1,0 +1,100 @@
+/* Overview inspector tab — styles for the `ov-*` classes.
+ *
+ * OWNERSHIP NOTE: this file is shared with the Overview component teammates
+ * (roster.js / footer.js / facts.js). The rules below cover ONLY the SHELL the
+ * composer (overview-tab.js) emits directly — the tab container, the section
+ * stack, the "No review yet" empty state, and the pre-integration placeholder.
+ * The presentational component internals (`.ov-roster`, `.ov-footer`,
+ * `.ov-facts`, verdict pills, etc.) are authored by the component teammates and
+ * appended/merged into this file by the integrator. Keep additions in their own
+ * section so the merge is clean.
+ */
+
+/* --- tab shell ----------------------------------------------------------- */
+
+.ov-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ov-section {
+  display: block;
+}
+
+.ov-section:empty {
+  display: none;
+}
+
+/* --- empty state (shell-owned) ------------------------------------------- */
+/* Shown before any AI review has run (matter.has_ai_review === false): there is
+   no roster to render, so the pane invites the reviewer to run the AI review. */
+
+.ov-tab-empty {
+  gap: 0;
+}
+
+.ov-empty {
+  align-items: center;
+  background: var(--bg-soft);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  color: var(--ink-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 24px 18px;
+  text-align: center;
+}
+
+.ov-empty-title {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.ov-empty-hint {
+  color: var(--ink-muted);
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+  max-width: 34ch;
+}
+
+.ov-empty-refresh {
+  background: var(--brand);
+  border: 1px solid var(--brand);
+  border-radius: var(--r-sm);
+  color: #ffffff;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  margin-top: 4px;
+  padding: 7px 14px;
+  transition: background 0.16s ease, transform 0.16s ease;
+}
+
+.ov-empty-refresh:hover {
+  background: var(--brand-strong);
+}
+
+.ov-empty-refresh:active {
+  transform: translateY(1px);
+}
+
+/* --- pre-integration placeholder (shell-owned) --------------------------- */
+/* Rendered when a component renderer is not yet folded in, so the shell still
+   mounts cleanly. Never visible once roster/footer/facts ship together. */
+
+.ov-placeholder {
+  background: var(--bg-softer);
+  border: 1px dashed var(--border-soft);
+  border-radius: var(--r-sm);
+  color: var(--ink-muted);
+  font-size: 12px;
+  padding: 12px 14px;
+}
+
+/* === component internals (owned by roster.js / footer.js / facts.js) =======
+   The component teammates' `ov-*` rules are merged in below this line. */

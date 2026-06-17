@@ -4,9 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260616xr1sig1">
+    <link rel="stylesheet" href="/static/styles.css?v=20260617ov1">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260615cp1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260615r">
+    <link rel="stylesheet" href="/static/css/overview.css?v=20260617ov1">
   </head>
   <body>
     <div class="app-shell">
@@ -409,7 +410,14 @@
         </main>
 
         <main class="studio-review view" id="reviewView" role="tabpanel" aria-labelledby="reviewTab" data-view="review" hidden>
-          <header class="studio-matter-card">
+          <!-- Header trimmed: counterparty + matter facts and the Approve / Send /
+               Reviewed / Refresh actions now live in the Overview inspector tab, so
+               those nodes are visually collapsed here (overview.css) to declutter the
+               header toward just the document title. The DOM nodes are KEPT — the
+               existing review flow still toggles their .hidden/state and the Overview
+               footer programmatically clicks #studioSendForSignatureButton — they are
+               only hidden from view, never removed. -->
+          <header class="studio-matter-card studio-matter-card--overview-trimmed">
             <div class="studio-matter-left">
               <span class="back-dot">‹</span>
               <div>
@@ -417,7 +425,7 @@
               </div>
             </div>
             <div class="studio-matter-right">
-              <dl class="studio-matter-meta">
+              <dl class="studio-matter-meta" data-ov-moved="facts">
                 <div>
                   <dt>Counterparty</dt>
                   <dd id="studioCounterpartyMeta">-</dd>
@@ -427,7 +435,7 @@
                   <dd>30/05/2026</dd>
                 </div>
               </dl>
-              <div id="studioCounterpartyField" class="studio-counterparty-field" hidden>
+              <div id="studioCounterpartyField" class="studio-counterparty-field" data-ov-moved="facts" hidden>
                 <div class="studio-counterparty-row">
                   <span class="studio-counterparty-label">Counterparty</span>
                   <span id="studioCounterpartyName" class="studio-counterparty-name">-</span>
@@ -446,6 +454,13 @@
                 </form>
                 <p id="studioCounterpartyStatus" class="studio-counterparty-status" role="status" aria-live="polite" hidden></p>
               </div>
+              <!-- Approve / Send move to the Overview footer, but those header
+                   buttons stay live + visible here for now: the existing review
+                   flow toggles their state and tests drive them, and the Overview
+                   footer component is folded in by the integrator. De-duplicating
+                   (hiding these header buttons) is a one-line follow-up once the
+                   footer lands — see overview.css note. Reviewed/Refresh are NOT
+                   moved (reviewed-tracking was cut from the Overview scope). -->
               <div class="studio-matter-actions actions" role="group" aria-label="Matter actions">
                 <span id="studioReviewStaleIndicator" class="studio-review-stale-indicator" role="status" aria-live="polite" hidden>Review may be stale</span>
                 <button id="studioRefreshReviewButton" class="studio-refresh-review" type="button" hidden>Refresh with AI</button>
@@ -603,7 +618,8 @@
                 </div>
               </section>
               <div class="studio-inspector-tabs" role="tablist" aria-label="Review inspector">
-                <button class="active" type="button" data-review-inspector="clause" role="tab" aria-selected="true">Clause</button>
+                <button class="active" type="button" data-review-inspector="overview" role="tab" aria-selected="true">Overview</button>
+                <button type="button" data-review-inspector="clause" role="tab" aria-selected="false">Clause</button>
                 <button type="button" data-review-inspector="structure" role="tab" aria-selected="false">Structure</button>
                 <button type="button" data-review-inspector="fill" role="tab" aria-selected="false">Fill</button>
               </div>
@@ -2159,19 +2175,25 @@
     <script src="/static/js/docusign-send.js?v=20260615ds2"></script>
     <script src="/static/js/contract-structure-view.js?v=20260614b"></script>
     <script src="/static/js/review-fill.js?v=20260610c"></script>
+    <!-- Overview inspector sub-tab: the three presentational component renderers
+         (bridged onto window) load before the composer that calls them. -->
+    <script src="/static/js/overview/roster.js?v=20260617ov1"></script>
+    <script src="/static/js/overview/footer.js?v=20260617ov1"></script>
+    <script src="/static/js/overview/facts.js?v=20260617ov1"></script>
+    <script src="/static/js/overview/overview-tab.js?v=20260617ov1"></script>
     <script src="/static/js/playbook-draft-runtime.js?v=20260614c"></script>
     <script src="/static/js/playbook-view.js?v=20260614c"></script>
     <script src="/static/js/review-workstation-actions.js?v=20260616xr1"></script>
     <script src="/static/js/review-workstation-source.js?v=20260615cp1"></script>
-    <script src="/static/js/review-workstation-rendering.js?v=20260616xr1"></script>
+    <script src="/static/js/review-workstation-rendering.js?v=20260617ov1"></script>
     <script src="/static/js/review-workstation-format.js?v=20260610d"></script>
     <script src="/static/js/review-workstation-viewer.js?v=20260616xr1"></script>
     <script src="/static/js/viewer-controls.js"></script>
     <script src="/static/js/pdf-markup.js?v=20260615l"></script>
-    <script src="/static/js/app-state.js?v=20260615m"></script>
+    <script src="/static/js/app-state.js?v=20260617ov1"></script>
     <script src="/static/js/dashboard-search.js?v=20260614a"></script>
     <script src="/static/js/notifications.js?v=20260615n"></script>
     <script src="/static/js/generator-editor.js?v=20260616dd1"></script>
-    <script src="/static/app.js?v=20260616xr1"></script>
+    <script src="/static/app.js?v=20260617ov1"></script>
   </body>
 </html>
