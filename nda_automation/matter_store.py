@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable
 from contextlib import contextmanager, suppress
 import hashlib
 import json
@@ -33,6 +34,31 @@ UPLOADS_DIR = DATA_DIR / "uploads"
 GMAIL_INBOUND_CURSORS_PATH = DATA_DIR / "gmail_inbound_cursors.json"
 _MATTERS_LOCK = threading.RLock()
 _GMAIL_CURSOR_LOCK = threading.RLock()
+# --- list_matters read cache (perf #25) -------------------------------------
+# ``list_matters`` is hit by the 15s board poll, the notifications poll, the
+# corpus build and the assistant, and each call previously re-opened and
+# re-parsed EVERY per-matter record file from disk. We cache the parsed full
+# (unfiltered) matter list, keyed by a fingerprint of the records directory:
+# the sorted tuple of every record file's (name, st_mtime_ns, st_size). Any
+# create/update/delete rewrites a record file (atomic tmp+replace) or adds/
+# removes one, which changes the fingerprint, so the very next call detects the
+# change and re-parses. The cache is ONLY consulted/refreshed while the store
+# lock is held (so it observes a consistent on-disk set), and only stores the
+# UNFILTERED list -- owner scoping is always applied AFTER, per call, so the
+# cache can never serve cross-tenant data. ``_CACHE_DISABLED`` lets tests that
+# stress mtime-granularity force the uncached path.
+_LIST_CACHE_LOCK = threading.RLock()
+_list_cache_fingerprint: tuple[tuple[str, int, int], ...] | None = None
+# The cached list is stored as its SERIALIZED JSON blob, not as live dicts. A hit
+# returns ``json.loads(blob)`` — fresh, fully-isolated dicts the caller may freely
+# mutate (preserving the prior uncached contract) — and a JSON round-trip of this
+# JSON-origin data is markedly cheaper than ``copy.deepcopy`` of the parsed list,
+# so the cache is a real speed win and never hands out a shared mutable object.
+_list_cache_blob: str | None = None
+_list_cache_dir: str | None = None
+# Test seam: force list_matters onto the uncached path (e.g. mtime-granularity
+# stress tests that deliberately defeat the fingerprint).
+_CACHE_DISABLED = bool(os.environ.get("NDA_DISABLE_MATTER_LIST_CACHE"))
 # Maximum seconds to wait when acquiring _MATTERS_LOCK or the on-disk flock
 # before giving up and raising MatterStoreError.  30 s is well above any
 # expected critical-section duration while keeping the export endpoint
@@ -108,7 +134,7 @@ def list_matters(owner_user_id: str = "") -> list[dict[str, Any]]:
     with _locked_store():
         matters = [
             matter
-            for matter in _load_matters()
+            for matter in _load_matters_cached()
             if _matter_owner_matches(matter, owner_user_id)
         ]
     return sorted(matters, key=lambda matter: str(matter.get("created_at") or ""), reverse=True)
@@ -357,6 +383,73 @@ def update_matter_review(
             "updated_at": now,
         }
         updated_matter.pop("redline_draft", None)
+        _save_matter_record(updated_matter)
+        return updated_matter
+
+
+def refresh_matter_review(
+    matter_id: str,
+    review_result: dict[str, Any],
+    triage: dict[str, Any],
+    *,
+    expected_updated_at: str = "",
+    owner_user_id: str = "",
+) -> dict[str, Any] | None:
+    """Store a refreshed review WITHOUT clobbering a human edit that raced the AI.
+
+    ``refresh_review`` reads the matter, runs a multi-second AI pass, then writes
+    the result. A mark-reviewed (``human_reviewed=True``) or a saved
+    ``redline_draft`` landing during that window would be silently reverted by the
+    unconditional reset/pop in ``update_matter_review``.
+
+    This writer guards against that. ``expected_updated_at`` is the matter's
+    ``updated_at`` as captured at refresh START (before the AI ran). Under the
+    store lock we re-read the matter:
+
+    * If its ``updated_at`` still equals ``expected_updated_at`` — NOTHING else
+      wrote during the window — we apply the normal refresh semantics: reset
+      ``human_reviewed`` (a fresh review supersedes a prior sign-off) and drop the
+      now-stale ``redline_draft``.
+    * If ``updated_at`` has MOVED — a human (or any) write landed during the
+      window — we still store the fresh ``review_result`` + ``triage`` (the refresh
+      must not be lost), but we PRESERVE the current ``human_reviewed`` flag and the
+      current ``redline_draft`` exactly as they now stand, so the concurrent human
+      edit survives.
+
+    An empty ``expected_updated_at`` falls back to the unconditional
+    ``update_matter_review`` semantics (reset + pop), so existing callers are
+    unaffected.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _locked_store():
+        _ensure_matter_records_from_legacy()
+        matter = _load_matter_record_by_id(matter_id)
+        if matter is None or not _matter_owner_matches(matter, owner_user_id):
+            return None
+        current_updated_at = str(matter.get("updated_at") or "")
+        raced = bool(expected_updated_at) and current_updated_at != str(expected_updated_at)
+        updated_matter = {
+            **matter,
+            "review_result": review_result,
+            **triage,
+            "updated_at": now,
+        }
+        if raced:
+            # A write landed during the AI window. Preserve the human edit: keep the
+            # matter's CURRENT human_reviewed flag and redline_draft (re-read above)
+            # rather than resetting/popping them. ``triage`` may carry a
+            # ``human_reviewed`` key; the explicit re-assignment below makes the
+            # preservation authoritative regardless of triage's contents.
+            updated_matter["human_reviewed"] = matter.get("human_reviewed", False)
+            if isinstance(matter.get("redline_draft"), dict):
+                updated_matter["redline_draft"] = matter["redline_draft"]
+            else:
+                updated_matter.pop("redline_draft", None)
+        else:
+            # Uncontended refresh: a fresh review supersedes any prior human sign-off
+            # and the prior redline draft is now stale.
+            updated_matter["human_reviewed"] = False
+            updated_matter.pop("redline_draft", None)
         _save_matter_record(updated_matter)
         return updated_matter
 
@@ -674,6 +767,48 @@ def update_matter_artifacts(
             **matter,
             "artifacts": list(artifacts),
             "current_artifact_id": str(current_artifact_id or ""),
+            "updated_at": now,
+        }
+        _save_matter_record(updated_matter)
+        return updated_matter
+
+
+def mutate_matter_artifacts(
+    matter_id: str,
+    mutate: Callable[[list[dict[str, Any]], str], tuple[list[dict[str, Any]], str]],
+    owner_user_id: str = "",
+) -> dict[str, Any] | None:
+    """Atomically read-modify-write a matter's artifact registry under ONE lock.
+
+    The fix for the artifact lost-update race: callers that previously did
+    ``get_matter()`` (lock 1) -> compute ``existing + [new]`` in Python ->
+    ``update_matter_artifacts(whole_list)`` (lock 2) opened a window where a
+    concurrent writer's list overwrote the first writer's (orphaned bytes, broken
+    lineage). Here the load, the caller-supplied ``mutate`` transform, and the
+    save all happen inside a single ``_locked_store()`` critical section, so two
+    concurrent registrations serialise and neither is lost.
+
+    ``mutate`` receives the matter's CURRENT ``(artifacts_list, current_artifact_id)``
+    as freshly read under the lock and must return the new ``(artifacts_list,
+    current_artifact_id)``. It runs while the global store lock is held, so it must
+    be fast and pure (no I/O, no further store calls — those would deadlock on the
+    flock or amplify the critical section). Returns the updated matter, or ``None``
+    when the matter is missing / not owned by ``owner_user_id``.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _locked_store():
+        _ensure_matter_records_from_legacy()
+        matter = _load_matter_record_by_id(matter_id)
+        if matter is None or not _matter_owner_matches(matter, owner_user_id):
+            return None
+        current_artifacts = matter.get("artifacts")
+        current_artifacts = list(current_artifacts) if isinstance(current_artifacts, list) else []
+        current_pointer = str(matter.get("current_artifact_id") or "")
+        new_artifacts, new_pointer = mutate(current_artifacts, current_pointer)
+        updated_matter = {
+            **matter,
+            "artifacts": list(new_artifacts),
+            "current_artifact_id": str(new_pointer or ""),
             "updated_at": now,
         }
         _save_matter_record(updated_matter)
@@ -1019,6 +1154,99 @@ def _load_matter_records() -> list[dict[str, Any]]:
     return matters
 
 
+def _records_dir_fingerprint() -> tuple[tuple[str, int, int], ...]:
+    """A cheap, change-sensitive signature of the matter-records directory.
+
+    The sorted tuple of ``(filename, st_mtime_ns, st_size)`` over every record
+    file. Stat-ing is far cheaper than open+json.parse of every record, and any
+    create/update/delete changes a file's mtime/size or the set of files, so the
+    fingerprint moves whenever the parsed result would. ``st_mtime_ns`` gives
+    nanosecond resolution (where the filesystem supports it), and ``st_size`` is
+    an independent second axis, so a same-instant rewrite that happened to keep an
+    identical mtime would still be caught whenever the byte length differs. The
+    cache is additionally write-through-invalidated on every store write, so a
+    same-process write is never even at the mercy of stat granularity.
+    """
+    records_dir = _matter_records_dir()
+    if not records_dir.is_dir():
+        return ()
+    entries: list[tuple[str, int, int]] = []
+    for record_path in records_dir.glob("*.json"):
+        try:
+            stat = record_path.stat()
+        except OSError:
+            # A file vanishing mid-scan (concurrent prune) just means our snapshot
+            # is already out of date; record a sentinel so the fingerprint differs
+            # from any complete read and the cache is not trusted this round.
+            entries.append((record_path.name, -1, -1))
+            continue
+        if not record_path.is_file():
+            continue
+        entries.append((record_path.name, stat.st_mtime_ns, stat.st_size))
+    return tuple(sorted(entries))
+
+
+def _invalidate_list_cache() -> None:
+    """Drop the cached list. Called on every store write (write-through)."""
+    global _list_cache_fingerprint, _list_cache_blob, _list_cache_dir
+    with _LIST_CACHE_LOCK:
+        _list_cache_fingerprint = None
+        _list_cache_blob = None
+        _list_cache_dir = None
+
+
+def _load_matters_cached() -> list[dict[str, Any]]:
+    """``_load_matters`` with an mtime/size-fingerprinted in-memory cache.
+
+    MUST be called under ``_locked_store()`` so the fingerprint and the parse
+    observe a consistent on-disk set (no writer mutating files mid-read). Only
+    used by ``list_matters`` — the read-amplified hot path. The legacy
+    ``matters.json`` path (transient, pre-migration) is never cached: we fall back
+    to the uncached ``_load_matters`` so the rare migration window is always fresh.
+
+    Returns FRESH, fully-isolated dicts on every call (a cache hit deserializes the
+    cached JSON blob), so a caller mutating a returned matter can never corrupt the
+    cache — exactly like the prior uncached path, which returned freshly-parsed
+    dicts.
+    """
+    global _list_cache_fingerprint, _list_cache_blob, _list_cache_dir
+    if MATTERS_PATH.is_file():
+        # Pre-migration legacy file present: do not cache, always read fresh.
+        return _load_matters()
+    if _CACHE_DISABLED:
+        return _load_matters()
+
+    current_dir = str(_matter_records_dir())
+    fingerprint = _records_dir_fingerprint()
+    with _LIST_CACHE_LOCK:
+        if (
+            _list_cache_blob is not None
+            and _list_cache_dir == current_dir
+            and _list_cache_fingerprint == fingerprint
+        ):
+            return json.loads(_list_cache_blob)
+    # Miss (or stale): parse fresh, then re-snapshot the fingerprint AFTER the
+    # parse so a write that races our parse is reflected by a fingerprint mismatch
+    # on the next call rather than being cached against a pre-write fingerprint.
+    parsed = _load_matter_records()
+    fingerprint_after = _records_dir_fingerprint()
+    if fingerprint_after == fingerprint:
+        # Stable across the parse: safe to cache against this fingerprint.
+        blob = json.dumps(parsed)
+        with _LIST_CACHE_LOCK:
+            _list_cache_blob = blob
+            _list_cache_fingerprint = fingerprint_after
+            _list_cache_dir = current_dir
+    else:
+        # The directory changed while we parsed; don't cache a possibly-torn read.
+        # The next call will re-parse against the settled fingerprint.
+        with _LIST_CACHE_LOCK:
+            _list_cache_fingerprint = None
+            _list_cache_blob = None
+            _list_cache_dir = None
+    return parsed
+
+
 def _load_matter_record_by_id(matter_id: str) -> dict[str, Any] | None:
     cleaned_id = _clean_matter_record_id(matter_id)
     if not cleaned_id:
@@ -1052,6 +1280,9 @@ def _write_matter_record(matter: dict[str, Any]) -> None:
     if not matter_id:
         raise MatterStoreError("Matter record must include an id.")
     _write_json_atomic(_matter_records_dir() / f"{matter_id}.json", matter)
+    # Write-through cache invalidation: a record file changed, so the cached list
+    # (if any) is now stale. Runs while the store lock is held by the caller.
+    _invalidate_list_cache()
 
 
 def _delete_matter_record(matter: dict[str, Any] | str) -> None:
@@ -1064,6 +1295,8 @@ def _delete_matter_record(matter: dict[str, Any] | str) -> None:
         _fsync_directory(record_path.parent)
     except OSError as exc:
         raise MatterStoreError("Matter record could not be deleted.") from exc
+    # Write-through cache invalidation: a record file was removed.
+    _invalidate_list_cache()
 
 
 def _ensure_matter_records_from_legacy() -> None:
@@ -1098,13 +1331,23 @@ def _clean_matter_record_id(value: object) -> str:
 
 def _write_json_atomic(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_name(f"{path.name}.tmp")
-    with temporary_path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    temporary_path.replace(path)
+    # A PER-CALL-UNIQUE temp name. A FIXED ``.tmp`` suffix is unsafe when two
+    # writers target the SAME path concurrently (e.g. artifact byte-staging, which
+    # runs OUTSIDE the store lock): both open the same tmp file, the first
+    # ``replace`` moves it onto ``path``, and the second ``replace`` then raises
+    # FileNotFoundError on the now-vanished tmp. The uuid keeps each writer's tmp
+    # private; the final ``replace`` onto ``path`` is still atomic.
+    temporary_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary_path.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary_path.replace(path)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
     _fsync_directory(path.parent)
 
 
@@ -1252,12 +1495,20 @@ def _archive_pruned_source_document(matter: dict[str, Any], archive_dir: Path) -
 
 def _write_bytes_atomic(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_name(f"{path.name}.tmp")
-    with temporary_path.open("wb") as handle:
-        handle.write(payload)
-        handle.flush()
-        os.fsync(handle.fileno())
-    temporary_path.replace(path)
+    # Per-call-unique temp name — see _write_json_atomic. Artifact byte-staging
+    # (put_artifact_document) runs outside the store lock, so two concurrent
+    # same-role registrations can target the same path; a fixed ``.tmp`` would let
+    # one writer's ``replace`` vanish the other's tmp mid-flight (FileNotFoundError).
+    temporary_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary_path.open("wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary_path.replace(path)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
     _fsync_directory(path.parent)
 
 

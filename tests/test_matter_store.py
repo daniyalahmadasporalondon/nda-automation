@@ -840,5 +840,307 @@ class GmailInboundCursorTests(unittest.TestCase):
                     p.stop()
 
 
+class ConcurrentArtifactRegistrationTests(unittest.TestCase):
+    """#17 — concurrent artifact registration must not drop an artifact.
+
+    The old path (get_matter -> compute existing+[new] in Python ->
+    update_matter_artifacts(whole_list)) read and wrote under two separate locks,
+    so a concurrent registration's list overwrote the first. The atomic
+    ``mutate_matter_artifacts`` read-modify-write closes that lost-update window.
+    """
+
+    def matter_store_patches(self, data_dir: str):
+        root = Path(data_dir)
+        return (
+            patch.object(matter_store, "DATA_DIR", root),
+            patch.object(matter_store, "MATTERS_PATH", root / "matters.json"),
+            patch.object(matter_store, "UPLOADS_DIR", root / "uploads"),
+        )
+
+    def test_concurrent_artifact_registration_loses_no_artifact(self):
+        from nda_automation import artifact_service
+        from nda_automation.artifact_registry import (
+            ACTOR_AI,
+            ROLE_REDLINE,
+            SOURCE_GENERATED,
+        )
+
+        thread_count = 12
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                base = repo.create_matter(**_create_kwargs())
+                matter_id = base["id"]
+
+                barrier = threading.Barrier(thread_count)
+                errors: list[BaseException] = []
+                lock = threading.Lock()
+
+                def worker(index: int):
+                    try:
+                        barrier.wait()
+                        artifact_service.add_artifact(
+                            matter_id,
+                            source=SOURCE_GENERATED,
+                            actor=ACTOR_AI,
+                            role=ROLE_REDLINE,
+                            document_bytes=f"redline-{index}".encode(),
+                            make_current=False,
+                        )
+                    except BaseException as error:  # noqa: BLE001 - surfaced below
+                        with lock:
+                            errors.append(error)
+
+                threads = [
+                    threading.Thread(target=worker, args=(index,))
+                    for index in range(thread_count)
+                ]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+
+                self.assertEqual(errors, [])
+                final = repo.get_matter(matter_id)
+                artifacts = final.get("artifacts") or []
+                # Every concurrent registration must survive — no lost update.
+                self.assertEqual(
+                    len(artifacts),
+                    thread_count,
+                    "a concurrent artifact registration was dropped (lost update)",
+                )
+                # Versions must be unique and contiguous 1..N (no two writers
+                # collided on the same version because of a stale read).
+                versions = sorted(int(a.get("version") or 0) for a in artifacts)
+                self.assertEqual(versions, list(range(1, thread_count + 1)))
+
+
+class RefreshReviewRaceTests(unittest.TestCase):
+    """#19 — a human edit that lands during the AI window must survive."""
+
+    def matter_store_patches(self, data_dir: str):
+        root = Path(data_dir)
+        return (
+            patch.object(matter_store, "DATA_DIR", root),
+            patch.object(matter_store, "MATTERS_PATH", root / "matters.json"),
+            patch.object(matter_store, "UPLOADS_DIR", root / "uploads"),
+        )
+
+    def test_human_reviewed_set_during_window_is_not_reverted(self):
+        # Simulate: refresh captured updated_at, then a human marked the matter
+        # reviewed (updated_at moved), THEN the refresh's guarded write lands.
+        # Because expected_updated_at no longer matches, human_reviewed is preserved.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                base = repo.create_matter(**_create_kwargs())
+                matter_id = base["id"]
+                expected_updated_at = base["updated_at"]
+
+                # Human marks reviewed + saves a redline draft DURING the window.
+                repo.update_matter_fields(matter_id, {"human_reviewed": True})
+                repo.update_redline_draft(matter_id, {"edits": ["keep me"]})
+
+                # The refresh's late write, guarded by the stale expected_updated_at.
+                refreshed = repo.refresh_matter_review(
+                    matter_id,
+                    {"clauses": [], "source": "fresh-ai"},
+                    {"triage_status": "review"},
+                    expected_updated_at=expected_updated_at,
+                )
+                self.assertIsNotNone(refreshed)
+                # The fresh review IS stored...
+                self.assertEqual(refreshed["review_result"]["source"], "fresh-ai")
+                # ...but the human edits that raced the AI window SURVIVE.
+                self.assertTrue(
+                    refreshed["human_reviewed"],
+                    "mark-reviewed landing during the AI window was reverted",
+                )
+                self.assertEqual(
+                    refreshed.get("redline_draft"),
+                    {"edits": ["keep me"]},
+                    "redline draft saved during the AI window was dropped",
+                )
+
+    def test_uncontended_refresh_resets_human_reviewed_and_drops_draft(self):
+        # No write during the window: updated_at still matches, so the normal
+        # refresh semantics apply (fresh review supersedes the prior sign-off).
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                base = repo.create_matter(**_create_kwargs())
+                matter_id = base["id"]
+                # Pre-existing sign-off + draft, then refresh with a MATCHING
+                # expected_updated_at (nothing raced the window).
+                repo.update_matter_fields(matter_id, {"human_reviewed": True})
+                marked = repo.update_redline_draft(matter_id, {"edits": ["stale"]})
+                expected_updated_at = marked["updated_at"]
+
+                refreshed = repo.refresh_matter_review(
+                    matter_id,
+                    {"clauses": [], "source": "fresh-ai"},
+                    {"triage_status": "review"},
+                    expected_updated_at=expected_updated_at,
+                )
+                self.assertFalse(refreshed["human_reviewed"])
+                self.assertNotIn("redline_draft", refreshed)
+
+
+class ListMattersCacheTests(unittest.TestCase):
+    """#25 — list_matters cache: fresh-after-write, faster on repeat, never stale."""
+
+    def setUp(self):
+        # Each test gets a pristine module-global cache.
+        matter_store._invalidate_list_cache()
+        self.addCleanup(matter_store._invalidate_list_cache)
+
+    def matter_store_patches(self, data_dir: str):
+        root = Path(data_dir)
+        return (
+            patch.object(matter_store, "DATA_DIR", root),
+            patch.object(matter_store, "MATTERS_PATH", root / "matters.json"),
+            patch.object(matter_store, "UPLOADS_DIR", root / "uploads"),
+        )
+
+    def test_repeat_call_does_not_reparse_records(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                for index in range(10):
+                    repo.create_matter(**_create_kwargs(
+                        source_filename=f"NDA {index}.docx",
+                        document_bytes=f"bytes-{index}".encode(),
+                    ))
+
+                # Prime the cache.
+                first = repo.list_matters()
+                self.assertEqual(len(first), 10)
+
+                # A second call with NOTHING changed must not re-parse any record
+                # file (the perf win). Count _load_matter_record_path invocations.
+                parse_calls = {"count": 0}
+                real_parse = matter_store._load_matter_record_path
+
+                def counting_parse(path):
+                    parse_calls["count"] += 1
+                    return real_parse(path)
+
+                with patch.object(
+                    matter_store, "_load_matter_record_path", side_effect=counting_parse
+                ):
+                    second = repo.list_matters()
+
+                self.assertEqual(len(second), 10)
+                self.assertEqual(
+                    parse_calls["count"],
+                    0,
+                    "an unchanged repeat list_matters re-parsed record files (cache miss)",
+                )
+
+    def test_write_invalidates_cache_immediately(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                repo.create_matter(**_create_kwargs(source_filename="First.docx"))
+
+                primed = repo.list_matters()
+                self.assertEqual(len(primed), 1)
+
+                # A write must make the NEXT list_matters reflect it immediately
+                # (write-through invalidation), with no mtime-granularity wait.
+                created = repo.create_matter(**_create_kwargs(
+                    source_filename="Second.docx", document_bytes=b"second"
+                ))
+                after_create = repo.list_matters()
+                self.assertEqual(len(after_create), 2)
+                self.assertIn(created["id"], {m["id"] for m in after_create})
+
+                # A field update is reflected immediately too.
+                repo.update_matter_fields(created["id"], {"last_outbound_subject": "X"})
+                after_update = repo.list_matters()
+                observed = next(m for m in after_update if m["id"] == created["id"])
+                self.assertEqual(observed.get("last_outbound_subject"), "X")
+
+                # A delete is reflected immediately.
+                repo.delete_matter(created["id"])
+                after_delete = repo.list_matters()
+                self.assertEqual(len(after_delete), 1)
+                self.assertNotIn(created["id"], {m["id"] for m in after_delete})
+
+    def test_external_record_change_is_detected_by_fingerprint(self):
+        # Cross-process correctness proxy: mutate a record file directly (as
+        # another process would), bypassing the in-process write-through. The
+        # fingerprint (mtime_ns + size) must catch it on the next read.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                created = repo.create_matter(**_create_kwargs(source_filename="Ext.docx"))
+                matter_id = created["id"]
+                primed = repo.list_matters()
+                self.assertEqual(primed[0].get("last_outbound_subject"), None)
+
+                # Rewrite the record file out-of-band (simulating another process),
+                # then bump its mtime so the fingerprint definitely advances even on
+                # coarse-resolution filesystems.
+                record_path = matter_store._matter_records_dir() / f"{matter_id}.json"
+                payload = json.loads(record_path.read_text(encoding="utf-8"))
+                payload["last_outbound_subject"] = "external-edit"
+                record_path.write_text(json.dumps(payload), encoding="utf-8")
+                stat = record_path.stat()
+                os.utime(record_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+
+                refreshed = repo.list_matters()
+                self.assertEqual(
+                    refreshed[0].get("last_outbound_subject"),
+                    "external-edit",
+                    "an out-of-band record change was served stale from the cache",
+                )
+
+    def test_cache_never_serves_cross_tenant_data(self):
+        # The cache holds the UNFILTERED list; owner scoping is applied per call
+        # AFTER the cache. So priming with one owner must never leak to another.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                repo.create_matter(**_create_kwargs(
+                    source_filename="A.docx",
+                    intake_metadata={"owner_user_id": "alice"},
+                    owner_user_id="alice",
+                ))
+                repo.create_matter(**_create_kwargs(
+                    source_filename="B.docx",
+                    document_bytes=b"b",
+                    intake_metadata={"owner_user_id": "bob"},
+                    owner_user_id="bob",
+                ))
+
+                # Prime via alice, then read as bob: bob must see only bob's matter.
+                alice_view = repo.list_matters(owner_user_id="alice")
+                self.assertEqual({m.get("owner_user_id") for m in alice_view}, {"alice"})
+                bob_view = repo.list_matters(owner_user_id="bob")
+                self.assertEqual({m.get("owner_user_id") for m in bob_view}, {"bob"})
+                # And the unscoped (single-tenant) view sees both.
+                self.assertEqual(len(repo.list_matters()), 2)
+
+    def test_cached_result_is_isolated_from_caller_mutation(self):
+        # A caller mutating a returned matter must not corrupt the shared cache.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                repo.create_matter(**_create_kwargs(source_filename="Iso.docx"))
+                first = repo.list_matters()
+                first[0]["review_result"] = {"poisoned": True}
+                second = repo.list_matters()
+                self.assertNotEqual(second[0].get("review_result"), {"poisoned": True})
+
+
 if __name__ == "__main__":
     unittest.main()

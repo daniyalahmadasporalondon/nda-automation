@@ -155,6 +155,12 @@ class RepositoryMatterLifecycle:
         staleness_check = review_staleness_func or review_result_is_stale
         was_stale = staleness_check(matter.get("review_result"))
         had_redline_draft = isinstance(matter.get("redline_draft"), dict)
+        # Snapshot the matter's updated_at BEFORE the (multi-second) AI runs. The
+        # guarded store writer below compares against it: if any write (a human
+        # mark-reviewed or a saved redline draft) lands during the AI window, the
+        # updated_at will have moved and those human edits are preserved instead of
+        # being silently reset/popped.
+        expected_updated_at = str(matter.get("updated_at") or "")
         if not was_stale:
             return ReviewRefreshResult(matter=matter, was_stale=False, had_redline_draft=had_redline_draft)
 
@@ -188,10 +194,11 @@ class RepositoryMatterLifecycle:
         from . import generation_priority  # noqa: PLC0415 - keep the dep light/local.
 
         generation_priority.yield_store_to_generation()
-        updated_matter = self._repository.update_matter_review(
+        updated_matter = self._repository.refresh_matter_review(
             matter_id,
             review_result,
             triage,
+            expected_updated_at=expected_updated_at,
             owner_user_id=owner_user_id,
         )
         if updated_matter is None:

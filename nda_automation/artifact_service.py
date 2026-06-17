@@ -66,42 +66,63 @@ def add_artifact(
     if matter is None:
         raise ArtifactMatterNotFoundError(f"Matter {matter_id!r} not found.")
 
-    resolved_stored_filename = stored_filename
-    if document_bytes is not None and not stored_filename:
-        # Stage the bytes first so a persisted artifact record always points at
-        # real bytes. The repository returns the sanitised storage key. The key is
-        # VERSION-AWARE: resolve the SAME version ``register_artifact`` will assign
-        # (the explicit ``version`` if given, else one past the role's highest) so
-        # each version stores under its own key. Without this, registering a v2 of
-        # a role would reuse v1's (matter, actor, role) key and overwrite v1's
-        # bytes — get_artifact_bytes would then return v2's bytes for v1.
-        resolved_version = (
-            version
-            if version is not None
-            else artifact_registry.next_version_for_role(matter, role)
-        )
-        provisional_name = _provisional_stored_name(matter, actor, role, resolved_version)
-        resolved_stored_filename = repository.put_artifact_document(provisional_name, document_bytes)
+    stages_own_bytes = document_bytes is not None and not stored_filename
 
-    artifact, artifacts_list, current_artifact_id = artifact_registry.register_artifact(
-        matter,
-        source=source,
-        actor=actor,
-        role=role,
-        document_bytes=document_bytes,
-        content_hash=content_hash,
-        based_on_artifact_id=based_on_artifact_id,
-        stored_filename=resolved_stored_filename,
-        version=version,
-        make_current=make_current,
-        metadata=metadata,
-    )
-    updated = repository.update_matter_artifacts(
-        matter_id, artifacts_list, current_artifact_id, owner_user_id=owner_user_id
-    )
+    # The whole registry step (version resolution, byte-storage-key naming,
+    # sequence numbering, lineage validation, pointer update) runs INSIDE a single
+    # locked read-modify-write so a concurrent registration can neither overwrite
+    # this one's list (the lost-update fix #17) NOR collide on the same auto-version.
+    # The version is resolved against the artifacts as FRESHLY READ under the store
+    # lock, and the version-keyed byte file is staged with THAT same version — so the
+    # stored-filename version always matches the registry version even under
+    # concurrent same-role registrations (each gets v1, v2, v3, ... and its own key).
+    # ``register_artifact`` is pure; ``put_artifact_document`` writes to the uploads
+    # dir (a different path than the records dir), so staging here does not deadlock
+    # the store lock.
+    captured: dict[str, Any] = {}
+
+    def _mutate(
+        current_artifacts: list[dict[str, Any]], current_pointer: str
+    ) -> tuple[list[dict[str, Any]], str]:
+        working = {
+            **matter,
+            artifact_registry.ARTIFACTS_FIELD: list(current_artifacts),
+            artifact_registry.CURRENT_ARTIFACT_FIELD: current_pointer,
+        }
+        resolved_stored_filename = stored_filename
+        if stages_own_bytes:
+            resolved_version = (
+                version
+                if version is not None
+                else artifact_registry.next_version_for_role(working, role)
+            )
+            provisional_name = _provisional_stored_name(matter, actor, role, resolved_version)
+            resolved_stored_filename = repository.put_artifact_document(
+                provisional_name, document_bytes
+            )
+            forced_version = resolved_version
+        else:
+            forced_version = version
+        artifact, artifacts_list, current_artifact_id = artifact_registry.register_artifact(
+            working,
+            source=source,
+            actor=actor,
+            role=role,
+            document_bytes=document_bytes,
+            content_hash=content_hash,
+            based_on_artifact_id=based_on_artifact_id,
+            stored_filename=resolved_stored_filename,
+            version=forced_version,
+            make_current=make_current,
+            metadata=metadata,
+        )
+        captured["artifact"] = artifact
+        return artifacts_list, current_artifact_id
+
+    updated = repository.mutate_matter_artifacts(matter_id, _mutate, owner_user_id=owner_user_id)
     if updated is None:
         raise ArtifactMatterNotFoundError(f"Matter {matter_id!r} not found.")
-    return artifact
+    return captured["artifact"]
 
 
 def register_reviewed_docx(
@@ -188,23 +209,31 @@ def remove_artifact(
     matter or artifact is not found.
     """
     repository = repository or DiskMatterRepository()
-    matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
-    if matter is None:
-        return None
     target = str(artifact_id or "")
-    remaining = [
-        item.to_dict()
-        for item in artifact_registry.matter_artifacts(matter)
-        if item.id != target
-    ]
-    if len(remaining) == len(artifact_registry.matter_artifacts(matter)):
-        return None  # nothing removed
-    current = str(matter.get(artifact_registry.CURRENT_ARTIFACT_FIELD) or "")
-    if current == target:
-        current = remaining[-1]["id"] if remaining else ""
-    return repository.update_matter_artifacts(
-        matter_id, remaining, current, owner_user_id=owner_user_id
-    )
+    removed_anything: dict[str, bool] = {"removed": False}
+
+    def _mutate(
+        current_artifacts: list[dict[str, Any]], current_pointer: str
+    ) -> tuple[list[dict[str, Any]], str]:
+        remaining = [
+            item for item in current_artifacts
+            if isinstance(item, dict) and str(item.get("id") or "") != target
+        ]
+        if len(remaining) == len(current_artifacts):
+            # Nothing matched: leave the registry untouched (no spurious updated_at bump).
+            return current_artifacts, current_pointer
+        removed_anything["removed"] = True
+        current = current_pointer
+        if current == target:
+            current = str(remaining[-1].get("id") or "") if remaining else ""
+        return remaining, current
+
+    updated = repository.mutate_matter_artifacts(matter_id, _mutate, owner_user_id=owner_user_id)
+    if updated is None:
+        return None  # matter not found / not owned
+    if not removed_anything["removed"]:
+        return None  # nothing removed (preserve the prior contract's None return)
+    return updated
 
 
 def set_current_artifact(
@@ -216,14 +245,27 @@ def set_current_artifact(
 ) -> dict[str, Any]:
     """Point ``current_artifact_id`` at an existing artifact and persist it."""
     repository = repository or DiskMatterRepository()
-    matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
-    if matter is None:
-        raise ArtifactMatterNotFoundError(f"Matter {matter_id!r} not found.")
-    current_artifact_id = artifact_registry.set_current_artifact(matter, artifact_id)
-    artifacts_list = [item.to_dict() for item in artifact_registry.matter_artifacts(matter)]
-    updated = repository.update_matter_artifacts(
-        matter_id, artifacts_list, current_artifact_id, owner_user_id=owner_user_id
-    )
+    validation_error: dict[str, ArtifactRegistryError] = {}
+
+    def _mutate(
+        current_artifacts: list[dict[str, Any]], current_pointer: str
+    ) -> tuple[list[dict[str, Any]], str]:
+        working = {
+            artifact_registry.ARTIFACTS_FIELD: list(current_artifacts),
+            artifact_registry.CURRENT_ARTIFACT_FIELD: current_pointer,
+        }
+        try:
+            new_pointer = artifact_registry.set_current_artifact(working, artifact_id)
+        except ArtifactRegistryError as exc:
+            # Capture and re-raise after the lock releases; the registry list is
+            # left exactly as read (no write) on a bad pointer.
+            validation_error["error"] = exc
+            return current_artifacts, current_pointer
+        return list(current_artifacts), new_pointer
+
+    updated = repository.mutate_matter_artifacts(matter_id, _mutate, owner_user_id=owner_user_id)
+    if validation_error:
+        raise validation_error["error"]
     if updated is None:
         raise ArtifactMatterNotFoundError(f"Matter {matter_id!r} not found.")
     return updated
@@ -293,45 +335,56 @@ def backfill_matter(
     if not stored_filename:
         return []
 
-    working = dict(matter)
-    working[artifact_registry.ARTIFACTS_FIELD] = []
-    working[artifact_registry.CURRENT_ARTIFACT_FIELD] = ""
-
     original_bytes = repository.get_source_document_bytes(matter)
-    original, artifacts_list, current_id = artifact_registry.register_artifact(
-        working,
-        source=_source_for_matter(matter),
-        actor=artifact_registry.ACTOR_COUNTERPARTY,
-        role=ROLE_ORIGINAL,
-        document_bytes=original_bytes,
-        stored_filename=stored_filename,
-        make_current=True,
-        created_at=str(matter.get("created_at") or ""),
-        metadata=_backfill_origin_metadata(matter),
-    )
-    working[artifact_registry.ARTIFACTS_FIELD] = artifacts_list
-    working[artifact_registry.CURRENT_ARTIFACT_FIELD] = current_id
+    has_redline_draft = isinstance(matter.get("redline_draft"), dict)
 
-    if isinstance(matter.get("redline_draft"), dict):
-        _redline, artifacts_list, current_id = artifact_registry.register_artifact(
+    def _mutate(
+        current_artifacts: list[dict[str, Any]], current_pointer: str
+    ) -> tuple[list[dict[str, Any]], str]:
+        # Re-check idempotency against the list as it stands UNDER THE LOCK: a
+        # concurrent backfill (or any registration) that already populated the
+        # registry must win, so this backfill must not clobber it with a freshly
+        # rebuilt list (the lost-update fix for the backfill path).
+        if current_artifacts:
+            return current_artifacts, current_pointer
+
+        working = dict(matter)
+        working[artifact_registry.ARTIFACTS_FIELD] = []
+        working[artifact_registry.CURRENT_ARTIFACT_FIELD] = ""
+
+        original, artifacts_list, current_id = artifact_registry.register_artifact(
             working,
-            source=artifact_registry.SOURCE_GENERATED,
-            actor=artifact_registry.ACTOR_AI,
-            role=ROLE_REDLINE,
-            based_on_artifact_id=original.id,
+            source=_source_for_matter(matter),
+            actor=artifact_registry.ACTOR_COUNTERPARTY,
+            role=ROLE_ORIGINAL,
+            document_bytes=original_bytes,
+            stored_filename=stored_filename,
             make_current=True,
-            metadata={"backfilled_from": "redline_draft"},
+            created_at=str(matter.get("created_at") or ""),
+            metadata=_backfill_origin_metadata(matter),
         )
         working[artifact_registry.ARTIFACTS_FIELD] = artifacts_list
         working[artifact_registry.CURRENT_ARTIFACT_FIELD] = current_id
 
-    repository.update_matter_artifacts(
-        matter_id,
-        working[artifact_registry.ARTIFACTS_FIELD],
-        working[artifact_registry.CURRENT_ARTIFACT_FIELD],
-        owner_user_id=owner_user_id,
-    )
-    return artifact_registry.matter_artifacts(working)
+        if has_redline_draft:
+            _redline, artifacts_list, current_id = artifact_registry.register_artifact(
+                working,
+                source=artifact_registry.SOURCE_GENERATED,
+                actor=artifact_registry.ACTOR_AI,
+                role=ROLE_REDLINE,
+                based_on_artifact_id=original.id,
+                make_current=True,
+                metadata={"backfilled_from": "redline_draft"},
+            )
+            working[artifact_registry.ARTIFACTS_FIELD] = artifacts_list
+            working[artifact_registry.CURRENT_ARTIFACT_FIELD] = current_id
+
+        return working[artifact_registry.ARTIFACTS_FIELD], working[artifact_registry.CURRENT_ARTIFACT_FIELD]
+
+    updated = repository.mutate_matter_artifacts(matter_id, _mutate, owner_user_id=owner_user_id)
+    if updated is None:
+        return []
+    return artifact_registry.matter_artifacts(updated)
 
 
 def backfill_all_matters(
