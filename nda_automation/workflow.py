@@ -229,9 +229,15 @@ def _derive_phase_and_status(
     Resolution order, latest-lifecycle-stage first, so a matter that has already
     moved forward never reads as an earlier phase:
 
-    1. A recorded ``workflow_error`` short-circuits to that phase's failed status.
-    2. Executed: an explicit ``executed_at`` / executed marker (manual "mark
-       signed"; DocuSign-shaped seam later).
+    1. Executed: an explicit ``executed_at`` / executed marker (manual "mark
+       signed"; DocuSign-shaped seam later). Checked BEFORE ``workflow_error`` so
+       a matter that was marked executed while still carrying a stale
+       ``workflow_error`` (e.g. a send failed, then it was signed/executed without
+       the error being cleared) reads as DONE rather than as an active failed-send.
+       This keeps the derived state consistent with ``is_matter_executed`` (which
+       the board uses to drop executed matters), so the two readers can't disagree.
+       Any already-contradictory matter self-heals the moment it's viewed.
+    2. A recorded ``workflow_error`` short-circuits to that phase's failed status.
     3. Negotiation: an explicit ``negotiation`` marker (counter-received). The
        real inbound-thread detection is Track C; we only honor the explicit flag.
     4. Sent: a recorded outbound (``last_outbound_*``) or a ``sent`` board column.
@@ -242,13 +248,13 @@ def _derive_phase_and_status(
        marker -> ai_reviewing/rendering.
     7. Intake: nothing reviewed yet -> received/extracting/extracted.
     """
+    if _is_executed(matter):
+        return PHASE_EXECUTED, STATUS_FULLY_SIGNED
+
     if error:
         failed_status = _FAILURE_STATUS_BY_PHASE.get(str(error.get("phase") or ""))
         if failed_status:
             return _PHASE_BY_STATUS[failed_status], failed_status
-
-    if _is_executed(matter):
-        return PHASE_EXECUTED, STATUS_FULLY_SIGNED
 
     negotiation = _negotiation_status(matter)
     if negotiation is not None:

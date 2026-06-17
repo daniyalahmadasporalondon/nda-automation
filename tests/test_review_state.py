@@ -246,6 +246,81 @@ class ReviewStateTests(unittest.TestCase):
 
         self.assertTrue(result_requires_human_review(review_result))
 
+    def test_explicit_low_confidence_pass_is_forced_to_review(self):
+        # #35(a) -- the LIVE AI-first path. The AI writes an EXPLICIT decision on
+        # every clause, so a {decision:"pass", confidence:0.1} used to short-circuit
+        # the normalizer and skip the confidence<0.75 -> review floor entirely,
+        # clearing the send gate. The floor must now fire on the explicit-pass case.
+        clause = {"id": "governing_law", "decision": "pass", "confidence": 0.1}
+
+        state = clause_review_state(clause)
+
+        self.assertEqual(_normalize_clause_decision(clause), "review")
+        self.assertEqual(state["state"], "review")
+        self.assertTrue(state["blocks_send"])
+        self.assertFalse(clause_passes(clause))
+        self.assertTrue(clause_needs_review(clause))
+
+    def test_explicit_low_confidence_pass_blocks_the_send_gate_at_result_level(self):
+        # End-to-end through the result-level gate the send path consults.
+        review_result = {"clauses": [{"id": "c1", "decision": "pass", "confidence": 0.1}]}
+
+        state = review_state_from_result(review_result)
+
+        self.assertEqual(state["state"], "review")
+        self.assertTrue(state["blocks_send"])
+        self.assertTrue(result_requires_human_review(review_result))
+
+    def test_explicit_confident_pass_still_clears(self):
+        # Guardrail: a high-confidence explicit pass must NOT be escalated.
+        review_result = {"clauses": [{"id": "c1", "decision": "pass", "confidence": 0.95}]}
+
+        state = review_state_from_result(review_result)
+
+        self.assertEqual(state["state"], "pass")
+        self.assertFalse(state["blocks_send"])
+        self.assertFalse(result_requires_human_review(review_result))
+
+    def test_explicit_pass_without_confidence_still_clears(self):
+        # The floor only escalates when a confidence signal is present and below the
+        # threshold; a pass with no confidence at all is left untouched.
+        clause = {"id": "c1", "decision": "pass"}
+
+        self.assertEqual(_normalize_clause_decision(clause), "pass")
+        self.assertTrue(clause_passes(clause))
+
+    def test_low_confidence_floor_never_softens_a_fail(self):
+        # The floor is escalate-only: a fail at low confidence stays a fail (check),
+        # never gets softened to a (lower-blocking) review.
+        clause = {"id": "c1", "decision": "fail", "confidence": 0.1}
+
+        self.assertEqual(_normalize_clause_decision(clause), "fail")
+
+    def test_empty_zero_clause_review_does_not_clear_send_gate(self):
+        # #35(b) -- an AI review that emits NO clauses reads as "nothing to review".
+        # aggregate_review_state([]) is PENDING with every block flag False, so the
+        # send gate used to clear. An empty/zero-clause review must instead require a
+        # human (block) -- "nothing reviewed" is not "reviewed clean".
+        for review_result in (
+            {"clauses": []},
+            {"clauses": []},  # no requirements summary, no status, no nested state
+            {},
+        ):
+            with self.subTest(review_result=review_result):
+                state = review_state_from_result(review_result)
+
+                self.assertEqual(state["state"], "review")
+                self.assertTrue(state["blocks_send"])
+                self.assertTrue(state["requires_human_review"])
+                self.assertTrue(result_requires_human_review(review_result))
+
+    def test_review_with_real_clauses_is_not_treated_as_empty(self):
+        # Guardrail: a result that actually produced clause verdicts is a real review
+        # and follows the normal derivation (here, a clean all-pass clears).
+        review_result = {"clauses": [{"id": "c1", "decision": "pass"}]}
+
+        self.assertFalse(result_requires_human_review(review_result))
+
 
 if __name__ == "__main__":
     unittest.main()

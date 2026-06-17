@@ -134,8 +134,43 @@ def reason_codes_for_clause(clause: Dict[str, Any], decision: str | None = None)
 
 
 def review_state_from_result(review_result: Dict[str, Any]) -> Dict[str, Any]:
+    # An empty / zero-clause review is "nothing was actually reviewed", not a clean
+    # pass: an AI review that emits NO clauses (and carries no requirements summary /
+    # blocking status) must NOT clear the send gate. Without this guard it derived to
+    # PENDING with every block flag False, so a matter with an empty review read as
+    # sendable. Treat it as needs-human-review so it blocks until a human looks.
+    if _review_result_is_empty(review_result):
+        return aggregate_review_state([], pass_count=0, review_count=1, check_count=0)
     state = _derive_review_state_from_result(review_result)
     return _apply_document_level_gates(state, review_result)
+
+
+def _review_result_is_empty(review_result: Dict[str, Any]) -> bool:
+    """True when a review_result reflects "nothing was actually reviewed".
+
+    The empty case: no clause produced a verdict (``clauses`` absent or an empty
+    list), no requirements summary recorded a count, no precomputed ``review_state``
+    is present, and no recognized ``overall_status``. Such a result must block the
+    send gate rather than false-clear it. A result with ANY of those signals is a
+    real review and is left to the normal derivation.
+    """
+    if not isinstance(review_result, dict):
+        # A missing/non-dict review is genuinely "no review" -- but every caller here
+        # already guards ``isinstance(review_result, dict)`` before consulting us, so
+        # this only protects a direct call. Block to be safe.
+        return True
+    clauses = review_result.get("clauses")
+    if isinstance(clauses, list) and any(isinstance(clause, dict) for clause in clauses):
+        return False
+    for key in ("requirements_passed", "requirements_needs_review", "requirements_failed"):
+        if _optional_int(review_result.get(key)) is not None:
+            return False
+    existing = review_result.get("review_state")
+    if isinstance(existing, dict) and existing.get("state"):
+        return False
+    if str(review_result.get("overall_status") or "").strip():
+        return False
+    return True
 
 
 def _derive_review_state_from_result(review_result: Dict[str, Any]) -> Dict[str, Any]:
@@ -250,6 +285,11 @@ def _result_truncation_reason(review_result: Dict[str, Any]) -> str:
 
 
 def result_requires_human_review(review_result: Dict[str, Any]) -> bool:
+    # An empty / zero-clause review never clears the gate: "nothing to review" is not
+    # "reviewed clean". Block it explicitly so a result that emitted no clauses (and no
+    # requirements summary) requires a human before the matter can be sent.
+    if _review_result_is_empty(review_result):
+        return True
     state = review_state_from_result(review_result)
     # An UNRESOLVED fail (check) state must gate the send/clear path exactly like a
     # needs-review state: the AI rejected a required clause, so a human has to
@@ -294,6 +334,16 @@ def _normalize_clause_decision(clause: Dict[str, Any], decision: str | None = No
     has_clause_decision = "decision" in clause
     raw_decision = str(decision if has_supplied_decision else clause.get("decision", "")).strip().lower()
     if raw_decision in {CLAUSE_DECISION_PASS, CLAUSE_DECISION_REVIEW, CLAUSE_DECISION_FAIL}:
+        # Low-confidence safety floor: a clause the AI marked PASS but only at low
+        # semantic confidence is not a trustworthy clearance. The deterministic engine
+        # relied on the confidence < 0.75 -> review rule (decision_arbiter), but the
+        # AI-first engine writes an EXPLICIT decision on every clause, so this used to
+        # short-circuit here and the rule never fired -- a {decision:"pass",
+        # confidence:0.1} cleared the send gate. Re-honor it: a low-confidence pass
+        # becomes review (block + needs-human). A fail/review already blocks, so the
+        # floor only ever escalates a pass; it never softens anything.
+        if raw_decision == CLAUSE_DECISION_PASS and _clause_confidence_below_threshold(clause):
+            return CLAUSE_DECISION_REVIEW
         return raw_decision
     if has_supplied_decision or has_clause_decision:
         return CLAUSE_DECISION_REVIEW
@@ -306,6 +356,21 @@ def _normalize_clause_decision(clause: Dict[str, Any], decision: str | None = No
     from .decision_arbiter import deterministic_decision
 
     return deterministic_decision(clause)
+
+
+def _clause_confidence_below_threshold(clause: Dict[str, Any]) -> bool:
+    """True when the clause carries an explicit confidence under the review floor.
+
+    Reuses decision_arbiter's confidence reader and SEMANTIC_REVIEW_THRESHOLD (the
+    single source for the 0.75 rule) so review_state can't drift from the arbiter.
+    A clause with NO confidence signal at all is not forced to review here -- only a
+    confidence that is present and below the floor escalates. Imported lazily because
+    decision_arbiter imports this module's constants at load time.
+    """
+    from .decision_arbiter import SEMANTIC_REVIEW_THRESHOLD, semantic_confidence
+
+    confidence = semantic_confidence(clause)
+    return confidence is not None and confidence < SEMANTIC_REVIEW_THRESHOLD
 
 
 def _state_for_clause_decision(decision: str) -> str:

@@ -275,6 +275,38 @@ def test_mark_executed_sets_the_three_shared_fields():
     assert workflow._is_executed(updated) is True
 
 
+def test_mark_executed_clears_stale_workflow_error():
+    # #15 -- a matter can carry BOTH a workflow_error (e.g. a send failed) and then
+    # be marked executed without the error being cleared. The two readers then
+    # disagree: the board drops it as done, but the detail card/corpus render it as
+    # an active failed-send. Marking executed must clean the data: clear the
+    # workflow_error so nothing reads the matter as a live failure.
+    from nda_automation import workflow
+
+    repo = InMemoryMatterRepository()
+    matter = _create_matter(repo)
+    repo.set_matter_workflow_error(
+        matter["id"], {"phase": "sent", "message": "send failed"}, owner_user_id=OWNER
+    )
+    with_error = repo.get_matter(matter["id"], owner_user_id=OWNER)
+    assert with_error.get("workflow_error")
+
+    updated = lifecycle_signed.mark_matter_executed(repo, matter["id"], OWNER, actor="a")
+
+    assert updated is not None
+    assert updated["executed"] is True
+    # The stale failure marker is gone from the persisted matter.
+    assert not updated.get("workflow_error")
+    persisted = repo.get_matter(matter["id"], owner_user_id=OWNER)
+    assert not persisted.get("workflow_error")
+    # Both readers now AGREE the matter is executed (done), not a failed send.
+    assert workflow._is_executed(persisted) is True
+    state = workflow.workflow_state(persisted)
+    assert state["phase"] == workflow.PHASE_EXECUTED
+    assert state["status"] == workflow.STATUS_FULLY_SIGNED
+    assert state["needs_attention"] is False
+
+
 def test_mark_executed_leaves_review_state_untouched():
     repo = InMemoryMatterRepository()
     review_result = {"clauses": [{"id": "c1", "status": "pass"}], "active_review_engine": {"executed_engine": "ai_first"}}

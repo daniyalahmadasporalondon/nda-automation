@@ -201,6 +201,26 @@ class PhaseStatusDerivationTests(unittest.TestCase):
         })
         self.assertEqual(state["phase"], PHASE_EXECUTED)
 
+    def test_executed_wins_over_a_stale_workflow_error(self):
+        # #15 -- a matter marked executed while still carrying a workflow_error (a
+        # send failed, then it was signed/executed without the error cleared) must
+        # read as DONE, not as an active failed-send. _derive_phase_and_status now
+        # resolves executed BEFORE the error, so the two readers (is_matter_executed
+        # and the derived phase/status) AGREE and any contradictory matter self-heals
+        # the moment it is viewed.
+        matter = {
+            "extracted_text": "x",
+            "executed_at": "2026-01-03",
+            "last_outbound_at": "2026-01-02",
+            "workflow_error": {"phase": "sent", "code": "send_failed"},
+        }
+        state = workflow_state(matter)
+        self.assertEqual(state["phase"], PHASE_EXECUTED)
+        self.assertEqual(state["status"], STATUS_FULLY_SIGNED)
+        # The board reader and the derived reader no longer disagree.
+        self.assertTrue(workflow.is_matter_executed(matter))
+        self.assertFalse(state["needs_attention"])
+
 
 class HumanGateTests(unittest.TestCase):
     def test_machine_working_statuses_are_not_human_gates(self):
