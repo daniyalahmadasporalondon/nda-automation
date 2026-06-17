@@ -2,7 +2,7 @@ from nda_automation import nda_generation, nda_generation_workflow
 
 
 def test_intake_from_payload_accepts_committed_frontend_shape():
-    entity_id, intake, governing_law_override, address_id = nda_generation_workflow.intake_from_payload(
+    entity_id, intake, governing_law_override, address_id, _email = nda_generation_workflow.intake_from_payload(
         {
             "counterparty": {"name": "Globex International Ltd"},
             "project_purpose": "evaluating a data-sharing integration",
@@ -40,7 +40,7 @@ def test_notes_does_not_leak_into_business_description():
     there is no `notes` fallback, so counsel notes cannot leak to the counterparty.
     """
 
-    _entity_id, intake, _override, _address_id = nda_generation_workflow.intake_from_payload(
+    _entity_id, intake, _override, _address_id, _email = nda_generation_workflow.intake_from_payload(
         {
             "counterparty": {"name": "Globex International Ltd"},
             "notes": "counsel-only: they breached a prior NDA, push hard on remedies",

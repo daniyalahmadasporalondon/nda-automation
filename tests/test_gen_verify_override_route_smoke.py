@@ -93,7 +93,7 @@ def test_route_override_smoke_through_full_gate(entity_id, laws):
     payload = _fe_payload(entity_id, override_option)
 
     # Drive the REAL workflow parser used by the route (where the nesting bug lived).
-    parsed_entity_id, intake, governing_law_override, _address_id = nda_generation_workflow.intake_from_payload(payload)
+    parsed_entity_id, intake, governing_law_override, _address_id, _email = nda_generation_workflow.intake_from_payload(payload)
 
     # The parser must have CARRIED the nested override (not dropped it).
     assert parsed_entity_id == entity_id
@@ -147,7 +147,7 @@ def test_route_drops_nothing_regression_guard():
     the override from signing_entity.governing_law.playbook_option_id. If a future
     refactor reverts to top-level-only reading, this fails loudly."""
     payload = _fe_payload("aspora_technology", "england_and_wales")
-    _eid, _intake, override, _address_id = nda_generation_workflow.intake_from_payload(payload)
+    _eid, _intake, override, _address_id, _email = nda_generation_workflow.intake_from_payload(payload)
     assert override == "england_and_wales", (
         "route parser must read the nested signing_entity.governing_law.playbook_option_id "
         "(the FE shape); a top-level-only parser silently drops the override"
