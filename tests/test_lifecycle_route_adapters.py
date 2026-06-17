@@ -3,13 +3,10 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from unittest.mock import Mock, patch
 
 import pytest
 
 from nda_automation import matter_store
-from nda_automation.ai_assessor import AIAssessorError
-from nda_automation.matter_lifecycle import MatterNotFoundError, MatterReviewUnavailableError
 from nda_automation.routes import matters as matter_routes
 
 
@@ -120,44 +117,3 @@ def test_redline_draft_route_persists_cleaned_draft_and_accepts_null(isolated_ma
     assert reset_handler.status == 200
     assert reset_handler.response["matter"]["has_redline_draft"] is False
     assert "redline_draft" not in matter_store.get_matter(matter["id"])
-
-
-def test_ai_first_route_returns_403_when_feature_flag_disabled():
-    handler = _FakeHandler({})
-
-    with patch.object(matter_routes, "_env_flag_enabled", return_value=False):
-        with patch.object(matter_routes, "RepositoryMatterLifecycle") as lifecycle_cls:
-            matter_routes.handle_matter_ai_first_review(
-                handler,
-                "/api/matters/matter_123/ai-first-review",
-            )
-
-    assert handler.status == 403
-    assert "disabled" in handler.response["error"]
-    lifecycle_cls.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    ("error", "expected_status"),
-    [
-        (MatterReviewUnavailableError("Matter has no extracted text to assess."), 400),
-        (MatterNotFoundError("Matter not found."), 404),
-        (AIAssessorError("AI assessor failed."), 502),
-    ],
-)
-def test_ai_first_route_maps_lifecycle_errors(error, expected_status):
-    handler = _FakeHandler({})
-    lifecycle = Mock()
-    lifecycle.run_ai_first_review.side_effect = error
-
-    with patch.object(matter_routes, "_env_flag_enabled", return_value=True):
-        with patch.object(matter_routes, "DiskMatterRepository", return_value=object()):
-            with patch.object(matter_routes, "RepositoryMatterLifecycle", return_value=lifecycle):
-                matter_routes.handle_matter_ai_first_review(
-                    handler,
-                    "/api/matters/matter_123/ai-first-review",
-                )
-
-    assert handler.status == expected_status
-    assert "error" in handler.response
-    lifecycle.run_ai_first_review.assert_called_once_with("matter_123", owner_user_id="")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from .. import annotated_pdf_export, redline_export_service, telemetry
+from .. import redline_export_service, telemetry
 from ..ai_first_review import ReassessClauseError, reassess_single_clause
 from ..checker import (
     AIDraftValidationError,
@@ -227,54 +227,6 @@ def handle_review_docx_export(handler) -> None:
         redline_export.filename,
         DOCX_MIME,
         headers=headers,
-    )
-
-
-def handle_annotated_pdf_export(handler) -> None:
-    telemetry.increment("annotated_pdf_export_requests")
-    payload = handler._read_json_payload()
-    if payload is None:
-        return
-
-    matter_id = payload.get("matter_id", "")
-    if not isinstance(matter_id, str) or not matter_id.strip():
-        handler._send_json({"error": "Provide a PDF matter id to export."}, status=400)
-        return
-
-    try:
-        annotated_export = annotated_pdf_export.build_matter_annotated_pdf(
-            matter_id.strip(),
-            owner_user_id=request_owner_user_id(handler),
-        )
-    except annotated_pdf_export.StaleAnnotatedPdfReviewError as error:
-        handler._send_json({
-            "error": str(error),
-            "stale_reasons": error.reasons,
-            "review_refresh": error.summary,
-        }, status=409)
-        return
-    except annotated_pdf_export.AnnotatedPdfMatterNotFoundError as error:
-        handler._send_json({"error": str(error)}, status=404)
-        return
-    except annotated_pdf_export.AnnotatedPdfUnsupportedSourceError as error:
-        handler._send_json({"error": str(error)}, status=400)
-        return
-    except annotated_pdf_export.AnnotatedPdfDependencyError as error:
-        handler._send_json({"error": str(error)}, status=500)
-        return
-    except annotated_pdf_export.AnnotatedPdfExportError as error:
-        handler._send_json({"error": str(error)}, status=400)
-        return
-
-    handler._send_download(
-        annotated_export.data,
-        annotated_export.filename,
-        annotated_pdf_export.ANNOTATED_PDF_MIME,
-        headers={
-            "X-Export-Verified": annotated_pdf_export.ANNOTATED_PDF_VERIFICATION_HEADER,
-            "X-PDF-Annotation-Count": str(annotated_export.annotation_count),
-            "X-PDF-Unmatched-Evidence-Count": str(annotated_export.unmatched_evidence_count),
-        },
     )
 
 

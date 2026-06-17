@@ -271,7 +271,6 @@ _POST_EXACT_ROUTES = {
     "/api/ai/settings": admin_routes.handle_ai_settings_update,
     "/api/demo/reset": matter_routes.handle_demo_reset,
     "/api/export-review-docx": review_routes.handle_review_docx_export,
-    "/api/export-annotated-pdf": review_routes.handle_annotated_pdf_export,
     "/api/playbook": _handle_playbook_save_post,
     "/api/playbook/draft": _handle_playbook_draft_save_post,
     "/api/playbook/validate-draft": _handle_playbook_validate_draft_post,
@@ -429,9 +428,6 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 return
             if path.startswith("/api/matters/") and path.endswith("/reviewed"):
                 matter_routes.handle_matter_reviewed_update(self, path)
-                return
-            if path.startswith("/api/matters/") and path.endswith("/ai-first-review"):
-                matter_routes.handle_matter_ai_first_review(self, path)
                 return
             if path.startswith("/api/matters/") and path.endswith("/summary"):
                 matter_routes.handle_matter_summary(self, path)
