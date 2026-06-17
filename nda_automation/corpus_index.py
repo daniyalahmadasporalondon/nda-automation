@@ -34,6 +34,7 @@ from typing import Any, Callable, Optional
 from . import (
     app_settings,
     artifact_registry,
+    content_fingerprint,
     drive_integration,
     governing_law_view,
     playbook_runtime,
@@ -62,6 +63,18 @@ REASON_DRIVE_TIMEOUT = "drive_timeout"
 # ``drive_timeout``) while a healthy crawl — which is a handful of quick calls —
 # finishes well inside the budget and reconciles normally.
 CORPUS_DRIVE_CRAWL_DEADLINE_SECONDS = 4.0
+
+# A matter's document content is flagged as a near-duplicate of ANOTHER matter's
+# when their content fingerprints score at or above this similarity (see
+# content_fingerprint.similarity: 1.0 == exact normalized-text match, else a
+# 64-bit SimHash Hamming similarity). 0.90 maps to a SimHash Hamming distance of at
+# most 6 of 64 bits.
+DUPLICATE_SIMILARITY_THRESHOLD = 0.90
+
+# The matter field the lazily-computed content fingerprint is cached on. The whole
+# matter dict is JSON round-tripped with no field whitelist (see matter_store), so a
+# fingerprint persisted here survives reload and later builds just scalar-compare it.
+MATTER_FINGERPRINT_FIELD = "content_fingerprint"
 
 # Reconciliation provenance for a matter.
 SOURCE_APP = "app"
@@ -797,6 +810,45 @@ def _resolve_playbook_resolvers() -> tuple[Callable[[], dict[str, Any]], Callabl
     return runtime_func, hash_func
 
 
+# Internal key under which a corpus-matter carries its content fingerprint during
+# the build. Used only for the scalar dup-document resolution in _group_and_wrap and
+# POPPED before the payload is returned, so it never leaks into the FE contract.
+_FINGERPRINT_KEY = "_content_fingerprint"
+
+
+def _resolve_fingerprint(
+    repository, owner_user_id: str, matter: dict[str, Any], matter_id: str
+) -> dict[str, Any] | None:
+    """The matter's content fingerprint, computed lazily and cached on first build.
+
+    LAZY-CACHE contract (the perf linchpin): a matter that already carries a current
+    stored ``content_fingerprint`` is returned as-is (no compute) — later builds only
+    scalar-compare. A matter lacking one has its fingerprint computed ONCE here from
+    the ALREADY-AVAILABLE ``extracted_text`` (never a re-extraction), persisted via
+    ``update_matter_fields`` so the next build skips the compute, and returned. A
+    persistence hiccup never breaks the build (the fingerprint is still returned for
+    this build; it just recomputes next time). Returns ``None`` when the document has
+    no fingerprintable content (empty text) — such a matter never participates in dup
+    detection. Never raises.
+    """
+    stored = matter.get(MATTER_FINGERPRINT_FIELD)
+    if content_fingerprint.is_valid_fingerprint(stored):
+        return stored
+    try:
+        fingerprint = content_fingerprint.compute_fingerprint(str(matter.get("extracted_text") or ""))
+    except Exception:  # noqa: BLE001 -- a fingerprint hiccup never breaks the index.
+        return None
+    if fingerprint is None:
+        return None
+    try:
+        repository.update_matter_fields(
+            matter_id, {MATTER_FINGERPRINT_FIELD: fingerprint}, owner_user_id=owner_user_id
+        )
+    except Exception:  # noqa: BLE001 -- persistence is best-effort; recompute next build.
+        pass
+    return fingerprint
+
+
 def _build_app_state_matters(repository, owner_user_id: str) -> dict[str, dict[str, Any]]:
     """Map matter_id -> a partially-built CorpusMatter from app-state."""
     matters: dict[str, dict[str, Any]] = {}
@@ -824,6 +876,12 @@ def _build_app_state_matters(repository, owner_user_id: str) -> dict[str, dict[s
             "counterparty": counterparty,
             "title": _app_title(matter),
             "created_at": str(matter.get("created_at") or ""),
+            # Content fingerprint for dup-document detection: lazily computed +
+            # cached on first build, scalar-compared thereafter (see _group_and_wrap).
+            _FINGERPRINT_KEY: _resolve_fingerprint(repository, owner_user_id, matter, matter_id),
+            # FE contract field (top-level): the dup-document signal, stamped in
+            # _group_and_wrap once the whole corpus is known. None until resolved.
+            "duplicate_document": None,
             # Workflow axis = the Repository board column (FE renders it via
             # RepositoryModel.boardColumnLabel). The dead 6-phase phase_label is
             # NOT surfaced; "On file" is a SOURCE state, not a workflow status.
@@ -1231,6 +1289,10 @@ def _drive_only_matter(matter_id: str, drive_record: dict[str, Any]) -> dict[str
         "open_in_drive_url": drive_record["folder_url"],
         "duplicate": bool(duplicate_urls),
         "duplicate_folder_urls": duplicate_urls,
+        # A Drive-only matter has no in-build extracted_text to fingerprint, so it
+        # carries no fingerprint and never participates in dup-document detection.
+        _FINGERPRINT_KEY: None,
+        "duplicate_document": None,
         "facets": _drive_facets(summary),
         "artifacts": _drive_only_artifacts(summary),
     }
@@ -1288,6 +1350,9 @@ def _orphan_matter(orphan: dict[str, Any]) -> dict[str, Any]:
         "open_in_drive_url": str(orphan.get("folder_url") or ""),
         "duplicate": False,
         "duplicate_folder_urls": [],
+        # A summary-less orphan has no fingerprintable content -> no dup detection.
+        _FINGERPRINT_KEY: None,
+        "duplicate_document": None,
         "facets": _drive_facets(summary),
         "artifacts": _drive_only_artifacts(summary),
     }
@@ -1353,6 +1418,65 @@ def _stamp_repeat_entity(matters: list[dict[str, Any]]) -> int:
     return count
 
 
+def _stamp_duplicate_document(matters: list[dict[str, Any]]) -> int:
+    """Stamp each matter's ``duplicate_document`` signal; return the flagged count.
+
+    Resolves the cross-matter near-duplicate signal now the whole corpus is known
+    (a per-matter facet builder cannot see other matters). For every matter carrying
+    a fingerprint, find the OTHER matters whose fingerprint scores
+    >= ``DUPLICATE_SIMILARITY_THRESHOLD`` against it (scalar
+    ``content_fingerprint.similarity`` only — XOR+popcount / hex ``==``, NEVER a
+    live text diff), and point at a DETERMINISTIC match: the earliest other matter
+    (by ``created_at`` then ``matter_id``), with its title + the similarity.
+
+    "Same matter from app + Drive counts once": app+Drive records merge by matter_id
+    into one corpus-matter BEFORE this runs, and matters sharing a matter_id are
+    skipped as self-matches here, so a matter is never flagged a duplicate of itself.
+
+    Complexity note: this is O(n²) SCALAR comparisons over n fingerprinted matters
+    (each comparison is two 64-bit int ops), NOT an O(n²) text diff. The expensive
+    work (extraction, fingerprint compute) already happened once at cache time.
+    """
+    # Only matters with a real fingerprint can match. Capture (index, matter, fp).
+    candidates: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
+    for index, matter in enumerate(matters):
+        fingerprint = matter.get(_FINGERPRINT_KEY)
+        if content_fingerprint.is_valid_fingerprint(fingerprint):
+            candidates.append((index, matter, fingerprint))
+
+    def _sort_key(item: tuple[int, dict[str, Any], dict[str, Any]]) -> tuple[str, str, int]:
+        index, matter, _fp = item
+        return (str(matter.get("created_at") or ""), str(matter.get("matter_id") or ""), index)
+
+    count = 0
+    for index, matter, fingerprint in candidates:
+        self_id = str(matter.get("matter_id") or "") or f"__idx_{index}"
+        best_match: tuple[tuple[str, str, int], dict[str, Any], float] | None = None
+        for other_index, other, other_fp in candidates:
+            other_id = str(other.get("matter_id") or "") or f"__idx_{other_index}"
+            if other_id == self_id:
+                continue  # never a duplicate of itself (incl. the merged app+Drive record)
+            score = content_fingerprint.similarity(fingerprint, other_fp)
+            if score < DUPLICATE_SIMILARITY_THRESHOLD:
+                continue
+            candidate_key = _sort_key((other_index, other, other_fp))
+            if best_match is None or candidate_key < best_match[0]:
+                best_match = (candidate_key, other, score)
+        if best_match is None:
+            matter["duplicate_document"] = None
+            continue
+        _key, matched, score = best_match
+        matter["duplicate_document"] = {
+            "matched_matter_id": str(matched.get("matter_id") or ""),
+            "matched_title": str(matched.get("title") or "") or "NDA",
+            # Round to 4 dp so the stored similarity is stable/JSON-clean; the FE
+            # renders it as a percentage (e.g. 0.9231 -> "92% match").
+            "similarity": round(float(score), 4),
+        }
+        count += 1
+    return count
+
+
 def _group_and_wrap(matters: list[dict[str, Any]], drive_block: dict[str, Any]) -> dict[str, Any]:
     groups_by_cp: dict[str, list[dict[str, Any]]] = {}
     for matter in matters:
@@ -1364,6 +1488,13 @@ def _group_and_wrap(matters: list[dict[str, Any]], drive_block: dict[str, Any]) 
     # Stamp the repeat-entity facet now the whole corpus is known (a >=2-distinct-
     # matters-per-counterparty signal the per-matter facet builders cannot see).
     repeat_entity_count = _stamp_repeat_entity(matters)
+
+    # Stamp the duplicate-document signal (a cross-matter near-dup the per-matter
+    # builders cannot see), then drop the internal fingerprint key from every matter
+    # so it never leaks into the FE payload.
+    duplicate_document_count = _stamp_duplicate_document(matters)
+    for matter in matters:
+        matter.pop(_FINGERPRINT_KEY, None)
 
     groups: list[dict[str, Any]] = []
     for counterparty in sorted(groups_by_cp, key=lambda name: name.casefold()):
@@ -1391,7 +1522,14 @@ def _group_and_wrap(matters: list[dict[str, Any]], drive_block: dict[str, Any]) 
         # counterparty has >=2 distinct matters in corpus, stamped above once the
         # whole corpus is known). Union of both backend folds; count == filtered
         # parity holds per facet.
-        "facet_counts": {**_facet_counts(matters), "repeat_entity": repeat_entity_count},
+        "facet_counts": {
+            **_facet_counts(matters),
+            "repeat_entity": repeat_entity_count,
+            # duplicate_document is a presence signal (matter.duplicate_document
+            # non-null), not a multi-value facet, so its count is a single int = the
+            # number of flagged matters, matching the FE dup-document facet/chip.
+            "duplicate_document": duplicate_document_count,
+        },
         "drive": drive_block,
     }
 
