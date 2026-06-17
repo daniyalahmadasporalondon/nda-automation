@@ -1140,6 +1140,7 @@ const CorpusView = (() => {
     // executedOnly defaults true: the Corpus opens as the executed (signed)
     // library; the header toggle flips it to include in-progress matters.
     const state = { activeFacets: new Map(), query: "", groupBy: "counterparty", executedOnly: true };
+    let queryDebounceTimer = null;
 
     function setLoading(isLoading) {
       loading = isLoading;
@@ -1221,13 +1222,20 @@ const CorpusView = (() => {
     }
 
     // Re-render groups + facet rail + tokens from the already-fetched payload.
-    function applyFilters() {
+    // The facet RAIL (counts) + facet TOKENS depend only on the matter set + the
+    // active FACET selections — NOT on the free-text query — so a free-text
+    // keystroke can pass { skipFacetRail: true } to re-render only the results
+    // list/summary and skip the (expensive) rail recompute. Counts stay correct
+    // because they never depended on the query.
+    function applyFilters({ skipFacetRail = false } = {}) {
       if (!lastPayload) return;
-      // The executed gate scopes the facet COUNTS to the shown set so sidebar
-      // count == filtered-result count holds in both executed-only and all modes.
-      const gate = executedGate(state.executedOnly);
-      CorpusRender.renderFacetRail(facetRail, lastPayload, state.activeFacets, handlers, gate);
-      CorpusRender.renderSearchTokens(tokenField, state.activeFacets, handlers);
+      if (!skipFacetRail) {
+        // The executed gate scopes the facet COUNTS to the shown set so sidebar
+        // count == filtered-result count holds in both executed-only and all modes.
+        const gate = executedGate(state.executedOnly);
+        CorpusRender.renderFacetRail(facetRail, lastPayload, state.activeFacets, handlers, gate);
+        CorpusRender.renderSearchTokens(tokenField, state.activeFacets, handlers);
+      }
       syncClearButton();
       renderSummary(lastPayload);
 
@@ -1324,7 +1332,14 @@ const CorpusView = (() => {
     if (searchInput) {
       searchInput.addEventListener("input", () => {
         state.query = searchInput.value || "";
-        applyFilters();
+        // Free-text only changed: debounce + skip the facet-rail recompute (counts
+        // are query-independent). Facet clicks / groupBy / refresh / reset still go
+        // through applyFilters() with the rail rebuild intact.
+        if (queryDebounceTimer) clearTimeout(queryDebounceTimer);
+        queryDebounceTimer = setTimeout(() => {
+          queryDebounceTimer = null;
+          applyFilters({ skipFacetRail: true });
+        }, 300);
       });
     }
     if (searchForm) {

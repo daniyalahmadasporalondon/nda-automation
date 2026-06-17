@@ -24,6 +24,12 @@ const RepositoryActions = (() => {
     showMatterReviewLoadError,
     state,
   }) {
+    // Monotonic token so a slow STALE listMatters() (e.g. the 15s auto-refresh
+    // racing an in-flight send or a prior overlapping refresh) that resolves
+    // AFTER a newer loadMatters can't clobber fresh state.matters / the board
+    // (last-write-wins). Mirrors searchRunToken in dashboard-search.js.
+    let loadMattersRunToken = 0;
+
     async function loadGmailStatus() {
       try {
         state.gmailStatus = await api.loadGmailStatus();
@@ -38,8 +44,17 @@ const RepositoryActions = (() => {
 
     async function loadMatters() {
       if (!hasBoard) return;
+      const token = ++loadMattersRunToken;
       try {
-        state.matters = await api.listMatters();
+        const matters = await api.listMatters();
+        // A newer loadMatters (overlapping refresh / a send-triggered reload)
+        // superseded this one — drop this STALE response without touching state
+        // or the DOM, so a slow stale list can't overwrite fresh matters.
+        if (token !== loadMattersRunToken) return;
+        state.matters = matters;
+        // Preserve the richer selected matter (from api.getMatter): if the open
+        // matter is still in the lean list, leave the selected object untouched —
+        // do NOT replace it with the lean entry or re-render/blank the panel.
         if (getSelectedMatter() && !state.matters.find((matter) => matter.id === getSelectedMatter().id)) {
           setSelectedMatter(null);
           renderEmptyPanel();
@@ -49,6 +64,10 @@ const RepositoryActions = (() => {
         }
         renderBoard();
       } catch (error) {
+        // A stale error (from a superseded refresh) must not wipe the board
+        // either — drop it before mutating anything. The current run's own
+        // AuthExpired / generic-error handling below is unaffected.
+        if (token !== loadMattersRunToken) return;
         // A 401 means the session expired, not that the repository is empty.
         // The shared API helper already fired the global auth-expired prompt;
         // do NOT wipe `state.matters` or deselect the open matter — that would

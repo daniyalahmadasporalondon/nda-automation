@@ -17,6 +17,7 @@ const RepositoryView = (() => {
     let pendingSendMatterId = null;
     let pendingDeleteMatterId = null;
     let searchQuery = "";
+    let searchDebounceTimer = null;
     const repositoryWorkspace = repositoryMatterPanel?.closest(".repository-workspace");
     const api = RepositoryApi.create({ reviewErrorFromPayload });
     let actions;
@@ -29,12 +30,22 @@ const RepositoryView = (() => {
     });
     repositorySearchInput?.addEventListener("input", () => {
       searchQuery = repositorySearchInput.value;
-      renderBoard();
+      // Debounce the (full-board) re-render so we don't rebuild the DOM per keystroke.
+      if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(() => {
+        searchDebounceTimer = null;
+        renderBoard();
+      }, 300);
     });
     repositorySearchInput?.addEventListener("keydown", (event) => {
       if (event.key !== "Escape" || !repositorySearchInput.value) return;
       event.preventDefault();
       event.stopPropagation();
+      // Clearing should feel instant: cancel any pending debounce and render now.
+      if (searchDebounceTimer) {
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = null;
+      }
       repositorySearchInput.value = "";
       searchQuery = "";
       renderBoard();

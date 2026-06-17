@@ -513,6 +513,7 @@ const reviewFillController = createFillController({
 const pdfMarkupController = createPdfMarkupController({
   state,
   downloadBlob,
+  notify: notificationsController.notify,
   // escapeHtml is resolved lazily inside the controller (via window.escapeHtml)
   // because it is bridged by a deferred module that runs after this load-time
   // construction; passing it here would capture an undefined reference.

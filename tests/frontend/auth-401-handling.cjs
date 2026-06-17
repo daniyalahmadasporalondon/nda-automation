@@ -252,6 +252,70 @@ async function run() {
     console.log("ok 3 - loadMatters: 500 -> unchanged wipe behaviour (fix is 401-scoped)");
   }
 
+  // ---------------------------------------------------------------------------
+  // 5: run-token — a SLOW (older-token) loadMatters that resolves AFTER a newer
+  //    loadMatters must be DROPPED: it must not overwrite the fresh state.matters
+  //    nor re-render the board. (BUG #28: the 15s auto-refresh racing in-flight.)
+  // ---------------------------------------------------------------------------
+  {
+    const sandbox = makeSandbox();
+    loadClassicScript("js/auth-expired.js", sandbox);
+    loadClassicScript("js/repository-actions.js", sandbox, "RepositoryActions");
+
+    const state = { matters: [{ id: "old" }] };
+    let selectedMatter = null;
+    let boardRenders = 0;
+
+    // First call gets a deferred (slow) list; second call resolves immediately.
+    let releaseSlow;
+    const slowList = new Promise((resolve) => { releaseSlow = resolve; });
+    let call = 0;
+    const lists = [
+      () => slowList, // stale, slow
+      () => Promise.resolve([{ id: "fresh" }]), // newest, fast
+    ];
+
+    const actions = sandbox.RepositoryActions.create({
+      api: { listMatters: async () => lists[call++]() },
+      hasBoard: true,
+      state,
+      getSelectedMatter: () => selectedMatter,
+      setSelectedMatter: (m) => { selectedMatter = m; },
+      getPendingDeleteMatterId: () => null,
+      setPendingDeleteMatterId: () => {},
+      getPendingSendMatterId: () => null,
+      setPendingSendMatterId: () => {},
+      renderBoard: () => { boardRenders += 1; },
+      renderEmptyPanel: () => {},
+      renderDetailPanel: () => {},
+      renderSyncStatus: () => {},
+    });
+
+    const slowRun = actions.loadMatters(); // token 1, in-flight
+    await actions.loadMatters();           // token 2, resolves first -> wins
+    assert.deepEqual(
+      state.matters.map((m) => m.id),
+      ["fresh"],
+      "the newest loadMatters response must land",
+    );
+    const rendersAfterFresh = boardRenders;
+
+    releaseSlow([{ id: "stale" }]); // now release the older-token response
+    await slowRun;
+    assert.deepEqual(
+      state.matters.map((m) => m.id),
+      ["fresh"],
+      "a stale older-token loadMatters must NOT overwrite fresh state.matters",
+    );
+    assert.equal(
+      boardRenders,
+      rendersAfterFresh,
+      "a stale older-token loadMatters must NOT re-render the board",
+    );
+    passed += 1;
+    console.log("ok 4 - loadMatters: stale older-token response dropped (run-token guard)");
+  }
+
   console.log(`\n# ${passed} test group(s) passed`);
 }
 
