@@ -184,6 +184,9 @@ function createOverviewController({ state, root, fillSection, renderFill }) {
         name: String(matter.counterparty || "").trim(),
         confirmed: matter.counterparty_needs_confirmation === false,
       },
+      // The inbound Gmail sender (matter.sender), shown under the counterparty.
+      // Empty for manual uploads -> the facts renderer omits the SENDER line.
+      sender: String(matter.sender || "").trim(),
       facts: {
         governingLaw: matter.governing_law || matter.governing_law_label || "",
         term: matter.term_label || "",
@@ -310,7 +313,7 @@ function createOverviewController({ state, root, fillSection, renderFill }) {
     if (typeof window !== "undefined" && typeof window.renderOverviewFacts === "function") {
       window.renderOverviewFacts(
         el,
-        { counterparty: facts.counterparty, facts: facts.facts },
+        { counterparty: facts.counterparty, sender: facts.sender, facts: facts.facts },
         { onConfirm, onEntityFill },
       );
       return;
