@@ -434,8 +434,30 @@ class ApprovalEndpointTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def _seed_matter(self, *, resolve_all=False, source_docx=True):
+    def _seed_matter(self, *, resolve_all=False, source_docx=True, with_redline=False):
         review_result = _review_result_with_runtime()
+        if with_redline:
+            # The stub AI engine emits zero redlines, so a seeded PDF matter has nothing
+            # to apply -- which now (correctly) serves the original PDF and never runs the
+            # reconstruction. To exercise the reconstruction path (and its
+            # engine-unavailable error) we inject one redline keyed to a flagged clause so
+            # the accepted decision yields a non-empty export_redline_edits.
+            flagged_for_redline = [
+                str(clause.get("id"))
+                for clause in review_result.get("clauses", [])
+                if clause.get("decision") in ("fail", "review")
+            ]
+            target_clause = flagged_for_redline[0]
+            review_result["redline_edits"] = [
+                {
+                    "id": "seeded-redline",
+                    "clause_id": target_clause,
+                    "paragraph_id": "p1",
+                    "action": "replace_paragraph",
+                    "original_text": NDA_PARAGRAPHS[2],
+                    "replacement_text": NDA_PARAGRAPHS[2] + " (amended)",
+                }
+            ]
         triage = triage_review_result(review_result)
         document_bytes = _docx(NDA_PARAGRAPHS) if source_docx else b"%PDF-1.7\nsource pdf\n%%EOF\n"
         matter = matter_store.create_matter(
@@ -641,7 +663,11 @@ class ApprovalEndpointTests(unittest.TestCase):
         self.assertIn("LibreOffice/soffice", payload["error"])
 
     def test_reviewed_docx_reports_unavailable_pdf_reconstruction_engine(self):
-        matter_id, _flagged = self._seed_matter(resolve_all=True, source_docx=False)
+        # WITH a redline (reconstruction IS attempted), an unavailable pdf2docx engine
+        # surfaces the recovery payload -- the with-redlines path is unchanged.
+        matter_id, _flagged = self._seed_matter(
+            resolve_all=True, source_docx=False, with_redline=True
+        )
         approve_status, _, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
         self.assertEqual(approve_status, 200)
 
@@ -660,7 +686,11 @@ class ApprovalEndpointTests(unittest.TestCase):
         )
 
     def test_reviewed_pdf_reports_unavailable_pdf_reconstruction_engine(self):
-        matter_id, _flagged = self._seed_matter(resolve_all=True, source_docx=False)
+        # WITH a redline (reconstruction IS attempted), an unavailable pdf2docx engine
+        # surfaces the recovery payload -- the with-redlines path is unchanged.
+        matter_id, _flagged = self._seed_matter(
+            resolve_all=True, source_docx=False, with_redline=True
+        )
         approve_status, _, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
         self.assertEqual(approve_status, 200)
 
@@ -673,6 +703,36 @@ class ApprovalEndpointTests(unittest.TestCase):
         self.assertEqual(reconstruction["filename"], "mutual-nda.docx")
         self.assertEqual(reconstruction["converter"]["mode"], "pdf_to_docx_reconstruction")
         self.assertEqual(reconstruction["fidelity"]["output"], "reviewed_docx")
+
+    def test_reviewed_docx_zero_redline_pdf_serves_original_not_verified_reconstruction(self):
+        # End-to-end through the real /reviewed-docx route: a PDF-source matter with NO
+        # accepted redlines (the stub engine emits none) must serve the ORIGINAL PDF
+        # unchanged -- NO lossy reconstruction, and NEVER stamped as a verified
+        # reconstruction. (pdf2docx is unavailable in the test env, so if the old code
+        # path ran it would 503 instead of returning the original.)
+        original_pdf = b"%PDF-1.7\nsource pdf\n%%EOF\n"
+        matter_id, _flagged = self._seed_matter(resolve_all=True, source_docx=False)
+        approve_status, _, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
+        self.assertEqual(approve_status, 200)
+
+        status, body, headers = self.request("GET", f"/api/matters/{matter_id}/reviewed-docx")
+
+        self.assertEqual(status, 200)
+        # Faithful output IS the original PDF bytes, served unchanged.
+        self.assertEqual(body, original_pdf)
+        self.assertEqual(headers.get("Content-Type"), "application/pdf")
+        self.assertIn('filename="mutual-nda.pdf"', headers.get("Content-Disposition", ""))
+        # Honest verified value: original, NOT a verified reconstruction.
+        self.assertEqual(
+            headers.get("X-Export-Verified"),
+            redline_export_service.ORIGINAL_UNCHANGED_EXPORT_HEADER,
+        )
+        self.assertEqual(
+            headers.get(redline_export_service.ORIGINAL_EXPORT_MARKER_HEADER),
+            redline_export_service.ORIGINAL_UNCHANGED_EXPORT_HEADER,
+        )
+        self.assertEqual(headers.get("X-Reviewed-Redline-Count"), "0")
+        self.assertNotIn("X-PDF-DOCX-Reconstruction", headers)
 
     def test_reviewed_docx_missing_matter_is_404(self):
         status, payload, _ = self.request("GET", "/api/matters/matter_missing/reviewed-docx")

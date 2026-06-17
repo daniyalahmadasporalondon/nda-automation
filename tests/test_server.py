@@ -2272,7 +2272,20 @@ class ServerTests(unittest.TestCase):
                     "review_state": {},
                 }
             ],
-            "redline_edits": [],
+            # A genuine reviewer redline so the PDF-source path actually runs the
+            # reconstruction (the zero-redline case now serves the original PDF and
+            # skips reconstruction). The fake converter writes a body carrying the
+            # tracked change so the post-render coverage gate is satisfied.
+            "redline_edits": [
+                {
+                    "id": "r1",
+                    "clause_id": "governing_law",
+                    "paragraph_id": "p1",
+                    "action": "replace_paragraph",
+                    "original_text": source_text,
+                    "replacement_text": "This Agreement shall be governed by the laws of England and Wales.",
+                }
+            ],
             "extracted_text": source_text,
             "playbook_runtime": self.active_playbook_review_runtime(),
         }
@@ -2294,6 +2307,19 @@ class ServerTests(unittest.TestCase):
                         "requirements_failed": 0,
                     },
                 )
+                # Accept the redlined clause so the reviewed export actually applies the
+                # redline (reviewed_docx_payload only includes redlines for accepted
+                # clauses); without an accepted change the export now serves the original
+                # PDF instead of reconstructing.
+                matter_store.set_clause_reviewer_decision(
+                    matter["id"],
+                    "governing_law",
+                    {
+                        "action": "accept",
+                        "actor": "reviewer",
+                        "decided_at": "2026-01-01T00:00:00+00:00",
+                    },
+                )
                 matter_store.update_matter_fields(matter["id"], {"status": "approved"})
                 with patch.object(
                     server_module.redline_export_service.pdf_docx_reconstruction,
@@ -2311,16 +2337,36 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(headers["X-Export-Verified"], "pdf2docx")
         self.assertEqual(headers["X-PDF-DOCX-Reconstruction"], "pdf2docx")
         self.assertEqual(headers["X-PDF-DOCX-Converter"], "fake-pdf2docx")
-        self.assertEqual(headers["X-Reviewed-Redline-Count"], "0")
+        self.assertEqual(headers["X-Reviewed-Redline-Count"], "1")
         self.assertTrue(payload.startswith(b"PK"))
 
-    def _ready_redline_matter_fixture(self, *, source_filename, document_bytes, source_type):
+    def _ready_redline_matter_fixture(self, *, source_filename, document_bytes, source_type, with_redline=False):
         """Create an approved, ready-to-sign matter that passes the send gate.
 
         Used by the PDF-reconstruction caveat tests for both PDF and DOCX sources so
         each path reaches the export/send response without tripping human-review.
+
+        ``with_redline`` seeds one accepted reviewer redline. The PDF-source path needs
+        it so the export actually runs the reconstruction -- the zero-redline case now
+        (correctly) serves the original PDF and skips reconstruction entirely. The
+        DOCX-source path is left redline-free (a clean source render), which is the no-op
+        case it has always exercised.
         """
         source_text = "This Agreement shall be governed by the laws of California."
+        redline_edits = (
+            [
+                {
+                    "id": "r1",
+                    "clause_id": "governing_law",
+                    "paragraph_id": "p1",
+                    "action": "replace_paragraph",
+                    "original_text": source_text,
+                    "replacement_text": "This Agreement shall be governed by the laws of England and Wales.",
+                }
+            ]
+            if with_redline
+            else []
+        )
         review_result = {
             "review_engine_version": REVIEW_ENGINE_VERSION,
             "review_state": {
@@ -2338,7 +2384,7 @@ class ServerTests(unittest.TestCase):
                     "review_state": {},
                 }
             ],
-            "redline_edits": [],
+            "redline_edits": redline_edits,
             "extracted_text": source_text,
             "playbook_runtime": self.active_playbook_review_runtime(),
         }
@@ -2356,6 +2402,16 @@ class ServerTests(unittest.TestCase):
                 "requirements_failed": 0,
             },
         )
+        if with_redline:
+            matter_store.set_clause_reviewer_decision(
+                matter["id"],
+                "governing_law",
+                {
+                    "action": "accept",
+                    "actor": "reviewer",
+                    "decided_at": "2026-01-01T00:00:00+00:00",
+                },
+            )
         matter_store.update_matter_fields(matter["id"], {"status": "approved", "human_reviewed": True})
         return matter
 
@@ -2364,6 +2420,7 @@ class ServerTests(unittest.TestCase):
             source_filename="Reviewed NDA.pdf",
             document_bytes=make_pdf("This Agreement shall be governed by the laws of California."),
             source_type="pdf",
+            with_redline=True,
         )
 
     def _docx_redline_matter_fixture(self):
@@ -2526,7 +2583,18 @@ class ServerTests(unittest.TestCase):
                     "review_state": {},
                 }
             ],
-            "redline_edits": [],
+            # One accepted redline so the export attempts reconstruction (the zero-redline
+            # case now serves the original PDF and never reaches the unavailable engine).
+            "redline_edits": [
+                {
+                    "id": "r1",
+                    "clause_id": "governing_law",
+                    "paragraph_id": "p1",
+                    "action": "replace_paragraph",
+                    "original_text": source_text,
+                    "replacement_text": "This Agreement shall be governed by the laws of England and Wales.",
+                }
+            ],
             "extracted_text": source_text,
             "playbook_runtime": self.active_playbook_review_runtime(),
         }
@@ -2546,6 +2614,15 @@ class ServerTests(unittest.TestCase):
                         "requirements_passed": 1,
                         "requirements_needs_review": 0,
                         "requirements_failed": 0,
+                    },
+                )
+                matter_store.set_clause_reviewer_decision(
+                    matter["id"],
+                    "governing_law",
+                    {
+                        "action": "accept",
+                        "actor": "reviewer",
+                        "decided_at": "2026-01-01T00:00:00+00:00",
                     },
                 )
                 matter_store.update_matter_fields(matter["id"], {"status": "approved"})
@@ -7814,6 +7891,25 @@ class ServerTests(unittest.TestCase):
                 seeded_matter = self.seed_reviewed_upload(
                     source_pdf,
                     filename="Acme NDA.pdf",
+                )
+                # Inject one reviewer redline so the export attempts the PDF
+                # reconstruction (the zero-redline case now serves the original PDF
+                # unchanged and never reaches the unavailable engine).
+                seeded_review = dict(seeded_matter["review_result"])
+                seeded_review["redline_edits"] = [
+                    {
+                        "id": "r1",
+                        "clause_id": "governing_law",
+                        "paragraph_id": "p1",
+                        "action": "replace_paragraph",
+                        "original_text": "This Agreement shall be governed by the laws of California.",
+                        "replacement_text": "This Agreement shall be governed by the laws of England and Wales.",
+                    }
+                ]
+                matter_store.update_matter_review(
+                    seeded_matter["id"],
+                    seeded_review,
+                    {"triage_status": "needs_review"},
                 )
                 matter = matter_view.public_matter(seeded_matter)
                 stored_matter = matter_store.get_matter(matter["id"])
