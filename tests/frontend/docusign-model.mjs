@@ -241,7 +241,30 @@ test("buildSendForSignaturePayload: matches the REST contract body shape", () =>
       { name: "Jane", email: "jane@aspora.com", role: "aspora" },
     ],
     signing_order: "sequential",
+    // The counterparty email is echoed back as confirm_recipient so the backend
+    // can refuse a send whose destination does not match the row the operator saw
+    // (the spoofed-inbound-Reply-To defence, mirroring the redline-send composer).
+    confirm_recipient: "cp@acme.com",
   });
+});
+
+test("buildSendForSignaturePayload: confirm_recipient = the counterparty row email", () => {
+  const payload = buildSendForSignaturePayload(
+    [
+      { role: "counterparty", name: "Acme", email: "cp@acme.com" },
+      { role: "aspora", name: "Jane", email: "jane@aspora.com" },
+    ],
+    "parallel",
+  );
+  assert.equal(payload.confirm_recipient, "cp@acme.com");
+});
+
+test("buildSendForSignaturePayload: no counterparty email -> no confirm_recipient key", () => {
+  const payload = buildSendForSignaturePayload(
+    [{ role: "counterparty", name: "Acme", email: "" }],
+    "sequential",
+  );
+  assert.ok(!("confirm_recipient" in payload));
 });
 
 test("buildSendForSignaturePayload: coerces an unknown signing_order to sequential", () => {
@@ -293,6 +316,7 @@ test("generator send: matter view -> defaultSigners derives counterparty + Aspor
       { name: "Jane Aspora", email: "jane@aspora.com", role: "aspora" },
     ],
     signing_order: "sequential",
+    confirm_recipient: "legal@beta.io",
   });
 });
 

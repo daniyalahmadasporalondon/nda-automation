@@ -204,12 +204,24 @@ export function validateSigners(signers) {
 }
 
 // Build the POST /api/matters/<id>/send-for-signature body from the chooser.
+//
+// Includes `confirm_recipient` = the counterparty signer's email exactly as shown
+// in the composer. The counterparty address can originate from an attacker-
+// controlled inbound header (Reply-To/From), so the backend refuses to send unless
+// this confirmation matches the resolved counterparty signer — the same defence
+// the redline-send composer applies. Sending it from the row the operator sees
+// keeps the legit UI send working while closing the spoofed-recipient hole.
 export function buildSendForSignaturePayload(signers, signingOrder = "sequential") {
   const order = signingOrder === "parallel" ? "parallel" : "sequential";
-  return {
-    signers: signers.map((signer) => ({ name: signer.name, email: signer.email, role: signer.role })),
+  const rows = Array.isArray(signers) ? signers : [];
+  const counterparty = rows.find((signer) => (signer?.role || "") === "counterparty") || rows[0] || {};
+  const confirmRecipient = String(counterparty.email || "").trim();
+  const payload = {
+    signers: rows.map((signer) => ({ name: signer.name, email: signer.email, role: signer.role })),
     signing_order: order,
   };
+  if (confirmRecipient) payload.confirm_recipient = confirmRecipient;
+  return payload;
 }
 
 export const DocuSignModel = {

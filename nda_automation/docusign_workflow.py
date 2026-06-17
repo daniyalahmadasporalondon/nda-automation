@@ -32,6 +32,7 @@ from . import (
     docusign_integration,
     entity_registry,
     gmail_integration,
+    gmail_matter_outbox,
     nda_generation,
 )
 from .artifact_registry import (
@@ -97,6 +98,34 @@ class SignerResolutionError(DocuSignWorkflowError):
     pass
 
 
+class AlreadySentError(DocuSignWorkflowError):
+    """The matter already has a live (non-terminal) DocuSign envelope.
+
+    Guards against double-send: a double-click / retry / concurrent create would
+    otherwise mint MULTIPLE real envelopes with only the last one tracked, leaving
+    the earlier ones orphaned (never voided). The route maps this to HTTP 409 with
+    ``already_sent`` so the caller surfaces the existing envelope instead of
+    creating a duplicate. A terminal envelope (completed/declined/voided) does not
+    block a fresh send.
+    """
+
+    def __init__(self, message: str, *, envelope_id: str = "", status: str = "") -> None:
+        super().__init__(message)
+        self.envelope_id = envelope_id
+        self.status = status
+
+
+class RecipientConfirmationError(DocuSignWorkflowError):
+    """The counterparty signer was derived from an inbound (attacker-controlled)
+    header and the caller did not confirm the exact destination address.
+
+    Mirrors :class:`gmail_integration.RecipientConfirmationError` for the Gmail
+    outbound flow: a signature envelope routes a document to a recipient, so the
+    same "confirm the exact address before sending" gate applies. The route maps
+    this to HTTP 400 (a missing/mismatched confirmation, not a server fault).
+    """
+
+
 @dataclass(frozen=True)
 class SendForSignatureResult:
     matter: dict[str, Any]
@@ -123,6 +152,7 @@ def send_for_signature(
     signers: Any | None = None,
     signing_order: str = DEFAULT_SIGNING_ORDER,
     email_subject: str = "",
+    confirm_recipient: str | None = None,
     repository: MatterRepository | None = None,
     client: docusign_integration.DocuSignClient | None = None,
     client_factory: ClientFactory | None = None,
@@ -141,10 +171,25 @@ def send_for_signature(
     repository = repository or DiskMatterRepository()
     matter = _load_matter(matter, matter_id, owner_user_id, repository)
 
+    # Double-send guard: refuse if this matter already has a LIVE (non-terminal)
+    # envelope. Re-read the persisted state FRESH from the repository (the passed
+    # ``matter`` can be a stale in-session copy from before an earlier send), so a
+    # double-click / retry / concurrent create cannot mint a second real envelope
+    # that would orphan the first (never voided). A terminal envelope
+    # (completed/declined/voided) does not block a fresh resend.
+    _guard_no_live_envelope(matter, matter_id, owner_user_id, repository)
+
     document_bytes, document_filename = _resolve_signable_document(
         matter, matter_id, owner_user_id, repository
     )
-    resolved_signers = _resolve_signers(matter, signers)
+    # Resolve the signer set FIRST, then gate on the confirmed recipient BEFORE any
+    # envelope is created — the counterparty signer's email can originate from an
+    # attacker-controlled inbound header (Reply-To/From via matter_reply_recipient),
+    # so a spoofed header must not be able to silently route a signature envelope to
+    # an attacker. Mirrors the Gmail outbound confirm-recipient gate.
+    resolved_signers, header_derived_recipient = _resolve_signers(matter, signers)
+    _require_confirmed_recipient(resolved_signers, header_derived_recipient, confirm_recipient)
+    _guard_recipient_safety(matter, resolved_signers)
     subject = str(email_subject or "").strip() or _default_subject(matter)
 
     docusign_client = _client(client, client_factory, owner_user_id)
@@ -355,8 +400,17 @@ def _with_ext(filename: str, ext: str) -> str:
 # ---------------------------------------------------------------------------
 # Signer resolution
 # ---------------------------------------------------------------------------
-def _resolve_signers(matter: dict[str, Any], override: Any | None) -> list[Signer]:
+def _resolve_signers(
+    matter: dict[str, Any], override: Any | None
+) -> tuple[list[Signer], str]:
     """Derive the envelope's recipients.
+
+    Returns ``(signers, header_derived_recipient)`` where the second element is the
+    counterparty signer email when it was derived from an attacker-controlled
+    inbound header (``matter_reply_recipient`` — the matter's Reply-To/From), or ``""``
+    when no recipient came from an inbound header (an explicit ``override`` list, or
+    a matter with no inbound recipient). The caller uses it to gate on a confirmed
+    recipient before creating the envelope.
 
     When ``override`` is supplied (a non-empty list of {name,email[,anchor,role]})
     it is used verbatim. Otherwise we build the two-party signer set: the
@@ -374,15 +428,21 @@ def _resolve_signers(matter: dict[str, Any], override: Any | None) -> list[Signe
     a later phase.
     """
     if isinstance(override, list) and override:
-        return docusign_integration.normalize_signers(override)
+        # An explicit per-send signer list is operator-supplied, not derived from an
+        # inbound header — no header-derived recipient to confirm.
+        return docusign_integration.normalize_signers(override), ""
 
     generated = _is_generated_nda_matter(matter)
 
     signers: list[dict[str, Any]] = []
+    header_derived_recipient = ""
 
     counterparty = _counterparty_signer(matter)
     if counterparty is not None:
         signers.append(counterparty)
+        # The counterparty email is read verbatim from the matter's inbound
+        # Reply-To/From (matter_reply_recipient) — an attacker-controllable header.
+        header_derived_recipient = str(counterparty.get("email") or "")
 
     aspora = _aspora_signer(matter)
     if aspora is not None:
@@ -400,7 +460,127 @@ def _resolve_signers(matter: dict[str, Any], override: Any | None) -> list[Signe
             if anchor:
                 signer["anchor"] = anchor
 
-    return docusign_integration.normalize_signers(signers)
+    return docusign_integration.normalize_signers(signers), header_derived_recipient
+
+
+def _require_confirmed_recipient(
+    resolved_signers: list[Signer],
+    header_derived_recipient: str,
+    confirm_recipient: str | None,
+) -> None:
+    """Refuse to send unless an inbound-header-derived recipient is confirmed.
+
+    Mirrors :func:`gmail_matter_outbox.require_confirmed_recipient`: when the
+    counterparty signer address was derived from an attacker-controlled inbound
+    header (``matter_reply_recipient``), the caller MUST confirm the exact
+    destination address. A missing or non-matching ``confirm_recipient`` raises
+    :class:`RecipientConfirmationError` (the route maps it to 400) so a spoofed
+    Reply-To can never silently route the envelope to an attacker.
+
+    When no recipient came from an inbound header (an explicit override list, or
+    an Aspora-only / operator-supplied set) there is nothing to confirm — the send
+    proceeds, keeping the internal Aspora signer flowing normally.
+    """
+    if not header_derived_recipient:
+        return
+    confirmed = gmail_matter_outbox.recipient_email(confirm_recipient)
+    if not confirmed:
+        raise RecipientConfirmationError(
+            "Confirm the counterparty signer email address before sending for signature."
+        )
+    if not gmail_matter_outbox.email_addresses_match(confirmed, header_derived_recipient):
+        raise RecipientConfirmationError(
+            "The confirmed recipient does not match the counterparty signer; refusing to send. "
+            f"Confirm sending to {header_derived_recipient}."
+        )
+    # Defensive belt-and-braces: the confirmed address must actually be present in
+    # the signer set we are about to send to (it always is for the derived
+    # counterparty, but this guarantees the confirmation can never be satisfied by
+    # an address that is not a real recipient).
+    if not any(
+        gmail_matter_outbox.email_addresses_match(confirmed, signer.email)
+        for signer in resolved_signers
+    ):
+        raise RecipientConfirmationError(
+            "The confirmed recipient is not among the envelope signers; refusing to send."
+        )
+
+
+def _guard_recipient_safety(matter: dict[str, Any], resolved_signers: list[Signer]) -> None:
+    """Reject duplicate signer addresses and a self-send back to an Aspora account.
+
+    Mirrors :func:`gmail_matter_outbox.ensure_recipient_is_not_own_account`:
+
+    * Duplicate-recipient guard — the same email appearing twice in the signer set
+      (e.g. a counterparty signer whose address equals the Aspora signer's) means a
+      misrouted / collapsed envelope; reject it rather than send.
+    * Self-send guard — the counterparty signer must not be one of Aspora's own
+      addresses (the configured default Aspora signatory, or the matter's inbound
+      Gmail account). A counterparty resolved to an internal address signals a
+      spoofed/own-account matter, exactly the Gmail self-send case.
+
+    Raised as :class:`SignerResolutionError` (the route maps it to 400).
+    """
+    seen: set[str] = set()
+    for signer in resolved_signers:
+        email = str(signer.email or "").strip().casefold()
+        if not email:
+            continue
+        if email in seen:
+            raise SignerResolutionError(
+                f"Duplicate signer email '{signer.email}'; each signer must be a distinct recipient."
+            )
+        seen.add(email)
+
+    own_accounts = {
+        str(matter.get("gmail_account") or "").strip().casefold(),
+    }
+    default_signer = docusign_connection.aspora_default_signer()
+    if default_signer is not None:
+        own_accounts.add(str(default_signer.get("email") or "").strip().casefold())
+    own_accounts.discard("")
+    if not own_accounts:
+        return
+    for signer in resolved_signers:
+        if (signer.role or "") == _ASPORA_SIGNER_ROLE:
+            # Aspora's own signer is SUPPOSED to be an Aspora address — never flag it.
+            continue
+        if str(signer.email or "").strip().casefold() in own_accounts:
+            raise SignerResolutionError(
+                f"Counterparty signer '{signer.email}' is an Aspora/own account; refusing to "
+                "send a signature request to ourselves."
+            )
+
+
+def _guard_no_live_envelope(
+    matter: dict[str, Any],
+    matter_id: str,
+    owner_user_id: str,
+    repository: MatterRepository,
+) -> None:
+    """Raise :class:`AlreadySentError` when a live (non-terminal) envelope exists.
+
+    Re-reads the persisted envelope state FRESH from the repository so a stale
+    in-session ``matter`` cannot hide an envelope an earlier (or concurrent) send
+    already created. The matter store serializes the read with its per-matter lock.
+    """
+    fresh = repository.get_matter(matter_id, owner_user_id=owner_user_id) or matter
+    signature = fresh.get(SIGNATURE_FIELD)
+    if not isinstance(signature, dict):
+        return
+    envelope_id = str(signature.get("envelope_id") or "").strip()
+    if not envelope_id:
+        return
+    status = str(signature.get("status") or "").strip().lower()
+    if status in docusign_integration.TERMINAL_STATUSES:
+        # A finished envelope (signed/declined/voided) does not block a resend.
+        return
+    raise AlreadySentError(
+        f"This matter already has a DocuSign envelope ({envelope_id}) awaiting signature; "
+        "refusing to create a duplicate.",
+        envelope_id=envelope_id,
+        status=status,
+    )
 
 
 def _counterparty_signer(matter: dict[str, Any]) -> dict[str, Any] | None:
@@ -531,7 +711,13 @@ def _capture_executed_document(
     """
     try:
         pdf_bytes = docusign_client.download_completed(envelope_id)
-    except DocuSignError:
+    except (DocuSignError, DocuSignNotConnectedError):
+        # DocuSignNotConnectedError is a SEPARATE taxonomy (a subclass of
+        # DocuSignConnectionError, not DocuSignError), so it must be caught
+        # explicitly: if the token expires BETWEEN the get_envelope_status() that
+        # reported "completed" and this download, the envelope IS signed at
+        # DocuSign — the matter must still flip to executed. The signed-artifact
+        # capture is best-effort and retries on the next sync.
         return ""
     if not pdf_bytes:
         return ""

@@ -237,9 +237,12 @@ def handle_docusign_disconnect(handler) -> None:
 def handle_send_for_signature(handler, path: str) -> None:
     """POST /api/matters/<id>/send-for-signature — create + send a real envelope.
 
-    Body: ``{signers?: [{name,email,anchor?,role?}], signing_order?: parallel|sequential}``.
-    Owner from the authenticated request. A missing/owner-mismatched matter -> 404
-    no-op. A disconnected DocuSign -> 409 with ``needs_connect``.
+    Body: ``{signers?: [{name,email,anchor?,role?}], signing_order?, email_subject?,
+    confirm_recipient?}``. Owner from the authenticated request. A missing/owner-
+    mismatched matter -> 404 no-op. A disconnected DocuSign -> 409 ``needs_connect``.
+    A matter that already has a live envelope -> 409 ``already_sent``. A counterparty
+    signer derived from an attacker-controlled inbound header without a matching
+    ``confirm_recipient`` -> 400 (mirrors the Gmail outbound confirm-recipient gate).
     """
     matter_id = parse_matter_id(path, suffix="/send-for-signature")
     if matter_id is None:
@@ -259,6 +262,13 @@ def handle_send_for_signature(handler, path: str) -> None:
     signers = payload.get("signers") if isinstance(payload.get("signers"), list) else None
     signing_order = str(payload.get("signing_order") or docusign_integration.DEFAULT_SIGNING_ORDER)
     email_subject = str(payload.get("email_subject") or "")
+    # The counterparty signer email can originate from an attacker-controlled
+    # inbound header (Reply-To/From), so require the operator to confirm the exact
+    # destination address. The workflow rejects the send (400) when a header-derived
+    # recipient is unconfirmed or mismatched. ``None`` when absent so the gate can
+    # distinguish "not supplied" from an empty/invalid value.
+    confirm_recipient = payload.get("confirm_recipient")
+    confirm_recipient = str(confirm_recipient) if isinstance(confirm_recipient, str) else None
 
     telemetry.increment("docusign_send_requests")
     try:
@@ -269,11 +279,28 @@ def handle_send_for_signature(handler, path: str) -> None:
             signers=signers,
             signing_order=signing_order,
             email_subject=email_subject,
+            confirm_recipient=confirm_recipient,
             repository=repository,
         )
     except docusign_connection.DocuSignNotConnectedError:
         telemetry.increment("docusign_send_failed")
         handler._send_json(_needs_connect_payload(), status=409)
+        return
+    except docusign_workflow.RecipientConfirmationError as error:
+        telemetry.increment("docusign_send_failed")
+        handler._send_json({"error": str(error)}, status=400)
+        return
+    except docusign_workflow.AlreadySentError as error:
+        telemetry.increment("docusign_send_failed")
+        handler._send_json(
+            {
+                "error": str(error),
+                "already_sent": True,
+                "envelope_id": error.envelope_id,
+                "status": error.status,
+            },
+            status=409,
+        )
         return
     except docusign_workflow.NoSignableDocumentError as error:
         telemetry.increment("docusign_send_failed")

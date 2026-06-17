@@ -28,6 +28,11 @@ from nda_automation.artifact_registry import ACTOR_HUMAN, ROLE_REVIEWED, SOURCE_
 OWNER = "google:route-owner"
 OTHER = "google:other-owner"
 PDF_BYTES = b"%PDF-1.4 reviewed body"
+# The counterparty signer for _matter_with_reviewed is derived from the inbound
+# reply_to (cp@acme.com), so the hardened send path now requires the operator to
+# confirm that exact destination — the same confirm_recipient the FE sends. The
+# legit end-to-end send carries it; tests that exercise a real send include it.
+SEND_PAYLOAD = {"confirm_recipient": "cp@acme.com"}
 
 
 @pytest.fixture(autouse=True)
@@ -325,7 +330,7 @@ def test_resolve_owner_unchanged_when_google_configured(monkeypatch):
 # --------------------------------------------------------------------------
 def test_send_for_signature_success(repo, connected, fake_client):
     matter_id = _matter_with_reviewed(repo)
-    handler = _FakeHandler(repo, payload={})
+    handler = _FakeHandler(repo, payload=dict(SEND_PAYLOAD))
     docusign_routes.handle_send_for_signature(handler, f"/api/matters/{matter_id}/send-for-signature")
     assert handler.status == 201
     assert handler.response["envelope_id"]
@@ -353,7 +358,7 @@ def test_send_for_signature_not_connected_is_409(repo, monkeypatch):
             docusign_connection.DocuSignNotConnectedError("nope")
         ),
     )
-    handler = _FakeHandler(repo, payload={})
+    handler = _FakeHandler(repo, payload=dict(SEND_PAYLOAD))
     docusign_routes.handle_send_for_signature(handler, f"/api/matters/{matter_id}/send-for-signature")
     assert handler.status == 409
     assert handler.response["needs_connect"] is True
@@ -364,7 +369,7 @@ def test_send_for_signature_not_connected_is_409(repo, monkeypatch):
 # --------------------------------------------------------------------------
 def test_signature_status_after_send(repo, connected, fake_client):
     matter_id = _matter_with_reviewed(repo)
-    send_handler = _FakeHandler(repo, payload={})
+    send_handler = _FakeHandler(repo, payload=dict(SEND_PAYLOAD))
     docusign_routes.handle_send_for_signature(send_handler, f"/api/matters/{matter_id}/send-for-signature")
 
     status_handler = _FakeHandler(repo)
@@ -375,7 +380,7 @@ def test_signature_status_after_send(repo, connected, fake_client):
 
 def test_signed_document_download_after_completion(repo, connected, fake_client):
     matter_id = _matter_with_reviewed(repo)
-    send_handler = _FakeHandler(repo, payload={})
+    send_handler = _FakeHandler(repo, payload=dict(SEND_PAYLOAD))
     docusign_routes.handle_send_for_signature(send_handler, f"/api/matters/{matter_id}/send-for-signature")
     envelope_id = repo.get_matter(matter_id, owner_user_id=OWNER)[
         docusign_routes.docusign_workflow.SIGNATURE_FIELD
@@ -390,7 +395,7 @@ def test_signed_document_download_after_completion(repo, connected, fake_client)
 
 def test_signed_document_404_before_completion(repo, connected, fake_client):
     matter_id = _matter_with_reviewed(repo)
-    send_handler = _FakeHandler(repo, payload={})
+    send_handler = _FakeHandler(repo, payload=dict(SEND_PAYLOAD))
     docusign_routes.handle_send_for_signature(send_handler, f"/api/matters/{matter_id}/send-for-signature")
     handler = _FakeHandler(repo)
     docusign_routes.handle_signed_document(handler, f"/api/matters/{matter_id}/signed-document")
@@ -409,7 +414,7 @@ def _webhook_body(envelope_id, status="completed"):
 def test_webhook_completes_matter_and_captures_signed(repo, connected, fake_client, monkeypatch):
     monkeypatch.delenv(docusign_connection.CONNECT_HMAC_KEY_ENV, raising=False)
     matter_id = _matter_with_reviewed(repo)
-    send_handler = _FakeHandler(repo, payload={})
+    send_handler = _FakeHandler(repo, payload=dict(SEND_PAYLOAD))
     docusign_routes.handle_send_for_signature(send_handler, f"/api/matters/{matter_id}/send-for-signature")
     envelope_id = repo.get_matter(matter_id, owner_user_id=OWNER)[
         docusign_routes.docusign_workflow.SIGNATURE_FIELD
@@ -447,7 +452,7 @@ def test_webhook_rejects_bad_hmac_when_key_configured(repo, monkeypatch):
 def test_webhook_accepts_valid_hmac(repo, connected, fake_client, monkeypatch):
     monkeypatch.setenv(docusign_connection.CONNECT_HMAC_KEY_ENV, "the-secret")
     matter_id = _matter_with_reviewed(repo)
-    send_handler = _FakeHandler(repo, payload={})
+    send_handler = _FakeHandler(repo, payload=dict(SEND_PAYLOAD))
     docusign_routes.handle_send_for_signature(send_handler, f"/api/matters/{matter_id}/send-for-signature")
     envelope_id = repo.get_matter(matter_id, owner_user_id=OWNER)[
         docusign_routes.docusign_workflow.SIGNATURE_FIELD

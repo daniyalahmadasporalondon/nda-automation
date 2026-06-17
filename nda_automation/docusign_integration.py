@@ -134,6 +134,15 @@ def normalize_signers(signers: Any, *, signing_order: str = DEFAULT_SIGNING_ORDE
             raise DocuSignError("Each signer must be a name/email object.")
         if not signer.name or not signer.email:
             raise DocuSignError("Each signer needs a name and an email address.")
+        if not _is_single_routable_email(signer.email):
+            # Reject a malformed address (no "@", embedded whitespace) and a
+            # multi-address string (comma/semicolon-joined). DocuSign would route a
+            # multi-address recipient unpredictably, and a comma-joined value is a
+            # classic vector for smuggling an extra (attacker) recipient onto the
+            # envelope — so it is rejected before any envelope is built.
+            raise DocuSignError(
+                f"Signer email '{signer.email}' is not a single valid address."
+            )
         if not _coerce_routing_order(signer.routing_order):
             signer.routing_order = 1 if order == SIGNING_ORDER_PARALLEL else index
         elif order == SIGNING_ORDER_PARALLEL:
@@ -144,6 +153,27 @@ def normalize_signers(signers: Any, *, signing_order: str = DEFAULT_SIGNING_ORDE
     if not result:
         raise DocuSignError("At least one signer is required to send for signature.")
     return result
+
+
+def _is_single_routable_email(email: str) -> bool:
+    """A single, syntactically routable email address.
+
+    Rejects an empty value, any embedded whitespace, a missing ``@``, a missing
+    local part or dotless domain, and — critically — a multi-address string
+    (comma or semicolon separated) so an extra recipient cannot be smuggled onto
+    an envelope via a single signer field.
+    """
+    candidate = str(email or "").strip()
+    if not candidate or any(ch.isspace() for ch in candidate):
+        return False
+    if "," in candidate or ";" in candidate:
+        return False
+    if candidate.count("@") != 1:
+        return False
+    local_part, _at, domain = candidate.rpartition("@")
+    if not local_part or "." not in domain or domain.startswith(".") or domain.endswith("."):
+        return False
+    return True
 
 
 def _coerce_routing_order(value: Any) -> int:

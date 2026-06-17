@@ -129,6 +129,19 @@ function createDocuSignSendController({
     return checked?.value === "parallel" ? "parallel" : "sequential";
   }
 
+  // Fallback payload builder for when the shared model has not loaded yet. Mirrors
+  // DocuSignModel.buildSendForSignaturePayload, including the confirm_recipient
+  // gate (the counterparty signer email the operator sees) so a spoofed inbound
+  // Reply-To cannot silently redirect the signature envelope.
+  function buildFallbackPayload(signers, signingOrder) {
+    const rows = Array.isArray(signers) ? signers : [];
+    const counterparty = rows.find((signer) => (signer?.role || "") === "counterparty") || rows[0] || {};
+    const confirmRecipient = String(counterparty.email || "").trim();
+    const payload = { signers: rows, signing_order: signingOrder };
+    if (confirmRecipient) payload.confirm_recipient = confirmRecipient;
+    return payload;
+  }
+
   function openComposer() {
     const matter = currentMatter();
     if (!matter?.id) {
@@ -182,7 +195,7 @@ function createDocuSignSendController({
     }
     const payload = m
       ? m.buildSendForSignaturePayload(validation.signers, selectedSigningOrder())
-      : { signers: validation.signers, signing_order: selectedSigningOrder() };
+      : buildFallbackPayload(validation.signers, selectedSigningOrder());
 
     busy = true;
     setSubmitting(true);
@@ -216,6 +229,11 @@ function createDocuSignSendController({
     } finally {
       busy = false;
       setSubmitting(false);
+      // Re-apply the signature state AFTER setSubmitting so the double-send lock
+      // (Send disabled once an envelope is out) wins over setSubmitting's blanket
+      // re-enable. A failed send leaves the matter un-sent, so the button stays
+      // enabled for a retry.
+      renderSignatureState(currentMatter());
     }
   }
 
@@ -312,9 +330,13 @@ function createDocuSignSendController({
       downloadSignedLink.hidden = !view.canDownloadSigned;
     }
     if (submitButton) {
-      // Once sent, the primary button becomes a no-op until a fresh resend is
-      // meaningful; keep it enabled only before the first send.
-      submitButton.disabled = busy;
+      // Double-send guard: once an envelope is out (non-terminal), DISABLE the
+      // primary button so a double-click / re-submit cannot mint a second real
+      // envelope (the backend also refuses with 409 already_sent, but disabling
+      // here stops the request from ever firing). Re-enable only before the first
+      // send or after a terminal state where a fresh resend is meaningful.
+      const lockForSent = Boolean(view.sent) && !view.terminal;
+      submitButton.disabled = busy || lockForSent;
     }
   }
 
