@@ -93,12 +93,16 @@ def _tracked_changes_docx():
     return buffer.getvalue()
 
 
-def test_ingest_flags_and_gates_docx_with_tracked_changes(in_memory_matters):
+def test_ingest_flags_and_gates_docx_with_tracked_changes(in_memory_matters, monkeypatch):
+    # The tracked-changes gate is attached by the create-time review. Inbound NDAs
+    # are now created un-reviewed (defer_ai_review skips the review entirely), so
+    # exercise the EAGER review path with the offline deterministic engine pinned to
+    # prove the gate fires when a review runs at create.
+    monkeypatch.setenv("NDA_ACTIVE_REVIEW_ENGINE", "deterministic")
     matter = create_matter_from_document(
         filename="redlined-nda.docx",
         document_bytes=_tracked_changes_docx(),
         repository=in_memory_matters,
-        defer_ai_review=True,
     )
     review_result = matter["review_result"]
 
@@ -119,12 +123,12 @@ def test_ingest_flags_and_gates_docx_with_tracked_changes(in_memory_matters):
     assert matter["triage_status"] != "ready_to_sign"
 
 
-def test_ingest_clean_docx_is_not_flagged(in_memory_matters):
+def test_ingest_clean_docx_is_not_flagged(in_memory_matters, monkeypatch):
+    monkeypatch.setenv("NDA_ACTIVE_REVIEW_ENGINE", "deterministic")
     matter = create_matter_from_document(
         filename="clean-nda.docx",
         document_bytes=_docx(NDA_PARAGRAPHS),
         repository=in_memory_matters,
-        defer_ai_review=True,
     )
     review_result = matter["review_result"]
 

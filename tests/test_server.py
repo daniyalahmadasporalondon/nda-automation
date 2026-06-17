@@ -131,13 +131,24 @@ class ServerTests(unittest.TestCase):
 
     @contextmanager
     def deterministic_matter_intake(self):
-        original = server_module.create_matter_from_document
+        # Force the EAGER intake review onto the OFFLINE deterministic engine so a
+        # real (non-AI, no-network) review_result lands on the matter at create.
+        # (defer_ai_review no longer yields a deterministic first-pass -- it creates
+        # the matter UN-REVIEWED -- and the active-engine env only recognizes
+        # ai_first, so we pin the engine by forcing the review call here.)
+        from nda_automation import ingestion_service as _ingestion_service
 
-        def forced_deterministic_intake(*args, **kwargs):
-            kwargs["defer_ai_review"] = True
-            return original(*args, **kwargs)
+        original_review = _ingestion_service.review_nda_with_active_engine
 
-        with patch.object(server_module, "create_matter_from_document", side_effect=forced_deterministic_intake):
+        def _forced_deterministic_review(*args, **kwargs):
+            kwargs["force_engine"] = "deterministic"
+            return original_review(*args, **kwargs)
+
+        with patch.object(
+            _ingestion_service,
+            "review_nda_with_active_engine",
+            side_effect=_forced_deterministic_review,
+        ):
             yield
 
     def raw_http_request(self, request_text):
@@ -3200,36 +3211,22 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(export_status, 200)
         self.assertEqual(captured_redline_counts, [1])
 
-    def test_gmail_attachment_import_preserves_active_review_engine_result(self):
+    def test_gmail_attachment_import_creates_unreviewed_matter(self):
+        # Inbound Gmail import now creates the matter UN-REVIEWED: NO review runs at
+        # create (the create-time active-engine call is gone -- it was tied to the
+        # OOM/cost storm). The full AI review runs asynchronously off the poll thread.
         source_docx = make_docx(["Each party may disclose Confidential Information to the other party."])
-        active_result = {
-            "review_mode": "ai_first_compat",
-            "overall_status": "meets_requirements",
-            "requirements_passed": 1,
-            "requirements_needs_review": 0,
-            "requirements_failed": 0,
-            "review_state": {
-                "state": "pass",
-                "overall_status": "meets_requirements",
-                "counts": {"pass": 1, "review": 0, "check": 0},
-            },
-            "paragraphs": [{"id": "p1", "index": 1, "text": "Each party may disclose Confidential Information to the other party."}],
-            "clauses": [{"id": "mutuality", "decision": "pass", "passes": True}],
-            "redline_edits": [],
-            "active_review_engine": {
-                "selected_engine": "ai_first",
-                "executed_engine": "ai_first",
-                "engine": "ai_first",
-            },
-        }
 
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
                 with (
+                    # Kill-switch OFF so the async AI review never runs inline here --
+                    # this test pins the CREATE-time behaviour (un-reviewed) only.
+                    patch.dict(os.environ, {"NDA_INBOUND_AI_REVIEW_ENABLED": "false"}),
                     patch.object(gmail_integration, "_gmail_attachment_already_imported", return_value=False),
                     patch.object(gmail_integration, "_attachment_bytes", return_value=source_docx),
-                    patch.object(ingestion_service, "review_nda_with_active_engine", return_value=deepcopy(active_result)) as active_review,
+                    patch.object(ingestion_service, "review_nda_with_active_engine") as active_review,
                 ):
                     matter, skip = gmail_integration._import_inbound_attachment(
                         object(),
@@ -3245,9 +3242,13 @@ class ServerTests(unittest.TestCase):
                 stored_matter = matter_store.get_matter(matter["id"])
 
         self.assertIsNone(skip)
-        active_review.assert_called_once()
+        # The create-time review engine is NEVER called on the inbound poll path.
+        active_review.assert_not_called()
         self.assertEqual(matter["source_type"], "gmail_inbound")
-        self.assertEqual(stored_matter["review_result"]["active_review_engine"]["selected_engine"], "ai_first")
+        # The matter is created un-reviewed -- it still carries the extracted text so
+        # the async AI review can run later -- and nothing crashes on the null review.
+        self.assertIsNone(stored_matter["review_result"])
+        self.assertTrue(str(stored_matter.get("extracted_text") or "").strip())
 
     def test_matter_review_refreshes_stale_clause_decisions(self):
         text = (
@@ -5293,8 +5294,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(stored), 2)
 
     def test_gmail_inbound_import_defers_ai_review_off_the_poll_thread(self):
-        # The inbound poll must run ONLY the fast offline deterministic first-pass
-        # review and NEVER call the AI assessor/verifier in the poll thread (that
+        # The inbound poll must create the matter UN-REVIEWED (no review at create)
+        # and NEVER call the AI assessor/verifier in the poll thread (that
         # Opus+Pro storm + the PDF/extract memory spike is what OOM-crash-looped the
         # single prod worker). Pin the active engine to ai_first -- WITHOUT the
         # defer fix the poll would call assess_nda_with_ai once per attachment -- and
@@ -5374,11 +5375,9 @@ class ServerTests(unittest.TestCase):
         assessor.assert_not_called()
         self.assertEqual(len(imported), 1)
         self.assertEqual(imported[0]["gmail_message_id"], "msg_new")
-        # The persisted first-pass review was produced by the deterministic engine,
-        # not the AI-first engine -- i.e. the AI review was genuinely deferred.
-        engine_metadata = stored_matter["review_result"].get("active_review_engine") or {}
-        self.assertEqual(engine_metadata.get("executed_engine"), "deterministic")
-        self.assertEqual(engine_metadata.get("selected_engine"), "deterministic")
+        # The matter is created UN-REVIEWED on the poll thread: no review runs at
+        # create (no deterministic first-pass), and the AI review is fully deferred.
+        self.assertIsNone(stored_matter["review_result"])
 
     def test_gmail_inbound_skips_already_imported_message_before_content_scan(self):
         # An already-imported message (re-surfaced by the inbox query every poll)
