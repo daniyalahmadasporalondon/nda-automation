@@ -3593,8 +3593,7 @@ h3 {
 }
 
 .studio-viewer-controls .vc-btn[hidden],
-.studio-viewer-controls .studio-reviewed-btn[hidden],
-.studio-viewer-controls .studio-approve-review[hidden] {
+.studio-viewer-controls .studio-reviewed-btn[hidden] {
   display: none;
 }
 
@@ -6791,42 +6790,7 @@ button.active-clause-status:hover {
   background: var(--red-bg);
 }
 
-/* Approve Review button + its block-reason list, in the matter actions row. */
-.studio-approve-review {
-  background: var(--brand);
-  border: 1px solid var(--brand);
-  border-radius: var(--r-pill);
-  color: #ffffff;
-  cursor: pointer;
-  flex: 0 0 auto;
-  font-weight: 750;
-  height: 28px;
-  padding: 0 14px;
-}
-
-.studio-approve-review:hover:not(:disabled) {
-  filter: brightness(1.05);
-}
-
-.studio-approve-review.blocked {
-  background: #ffffff;
-  border-color: var(--amber-border);
-  color: var(--amber-ink);
-  cursor: not-allowed;
-}
-
-.studio-approve-review.approved {
-  background: var(--green-bg);
-  border-color: var(--green-border);
-  color: var(--green-ink);
-  cursor: default;
-}
-
-.studio-approve-review:disabled:not(.approved):not(.blocked) {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
+/* Approve Review block-reason list, in the matter actions row. */
 .studio-reviewed-docx {
   flex: 0 0 auto;
   height: 28px;
@@ -6859,31 +6823,10 @@ button.active-clause-status:hover {
 }
 
 /* ---------------------------------------------------------------------------
-   DocuSign "Send for signature" — matter-action trigger, status badge, and the
-   signer chooser modal. The badge tones reuse the integration-status palette so
-   the sent/awaiting/signed states read consistently with the admin panels.
+   DocuSign "Send for signature" — status badge and the signer chooser modal.
+   The badge tones reuse the integration-status palette so the sent/awaiting/
+   signed states read consistently with the admin panels.
    --------------------------------------------------------------------------- */
-.studio-send-signature {
-  background: var(--brand);
-  border: 1px solid var(--brand);
-  border-radius: var(--r-pill);
-  color: #ffffff;
-  cursor: pointer;
-  flex: 0 0 auto;
-  font-weight: 750;
-  height: 28px;
-  padding: 0 14px;
-}
-
-.studio-send-signature:hover:not(:disabled) {
-  filter: brightness(1.05);
-}
-
-.studio-send-signature:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
 .docusign-status-badge {
   align-items: center;
   background: #fff;

@@ -411,20 +411,6 @@ function renderClauseCommentBlock(clause) {
   `;
 }
 
-// Generic human-readable timestamp formatter (used by the approved-review
-// title). Falls back to the raw value when it isn't a parseable date.
-function formatReviewTimestamp(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return "";
-  const date = new Date(raw);
-  if (Number.isNaN(date.getTime())) return raw;
-  try {
-    return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-  } catch (error) {
-    return date.toISOString();
-  }
-}
-
 function getClauseTotal(clauses = []) {
   return clauses.length || state.playbookClauses.length || 0;
 }
