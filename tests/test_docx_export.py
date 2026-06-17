@@ -3940,6 +3940,264 @@ class DocxExportTests(unittest.TestCase):
         self.assertGreaterEqual(len([text for text in inserted_text if text.startswith("For [Party")]), 2)
         self.assertEqual(paragraph_mark_revisions(document_root, "ins"), [])
 
+    def _build_run_format_docx(self, formatted_text, format_ops, source_rpr=""):
+        # Shared scaffold for the underline/strike/color/highlight round-trip tests:
+        # builds a one-paragraph source doc, runs the format_ops through the tracked
+        # source-redline export, and returns (redlined_bytes, source_text). The
+        # ``source_rpr`` lets a test seed a pre-existing rPr to stress schema ordering.
+        formatted_paragraph = (
+            f"<w:p><w:r>{source_rpr}<w:t>{formatted_text}</w:t></w:r></w:p>"
+        )
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>Intro paragraph.</w:t></w:r></w:p>"
+            f"{formatted_paragraph}</w:body></w:document>"
+        )
+        source_docx = replace_docx_parts(
+            make_source_docx(["placeholder one", "placeholder two"]),
+            {"word/document.xml": document_xml},
+        )
+        extracted = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted)
+        paragraphs = align_document_paragraphs(extracted, source_text)
+        formatted_id = next(
+            str(paragraph["id"])
+            for paragraph in paragraphs
+            if str(paragraph["text"]) == formatted_text
+        )
+        review_result = {
+            "paragraphs": paragraphs,
+            "redline_edits": [
+                {
+                    "id": "fmt-roundtrip-1",
+                    "clause_id": "manual_viewer_edit",
+                    "status": "proposed",
+                    "action": REDLINE_FORMAT_PARAGRAPH,
+                    "action_label": "Format paragraph",
+                    "paragraph_id": formatted_id,
+                    "original_text": formatted_text,
+                    "replacement_text": formatted_text,
+                    "format_ops": format_ops,
+                }
+            ],
+        }
+        return build_source_redline_docx(source_docx, review_result), source_text
+
+    def test_run_underline_strike_color_highlight_round_trip(self):
+        # The hard gate: a single paragraph carrying underline + strike + text color +
+        # named highlight runs must export to a DOCX that (1) opens cleanly under
+        # python-docx, (2) keeps its rPr children in schema order, and (3) serialises
+        # each property correctly (u/strike present, color is a 6-hex, highlight is a
+        # NAMED palette value -- never a raw hex).
+        formatted_text = "This Agreement is governed by the laws of California."
+        u_start = formatted_text.index("Agreement")
+        u_end = u_start + len("Agreement")
+        strike_start = formatted_text.index("governed")
+        strike_end = strike_start + len("governed")
+        color_start = formatted_text.index("laws")
+        color_end = color_start + len("laws")
+        hl_start = formatted_text.index("California")
+        hl_end = hl_start + len("California")
+        format_ops = [
+            {"scope": "run", "property": "underline", "start": u_start, "end": u_end, "from": False, "to": True},
+            {"scope": "run", "property": "strike", "start": strike_start, "end": strike_end, "from": False, "to": True},
+            {"scope": "run", "property": "color", "start": color_start, "end": color_end, "from": "", "to": "FF0000"},
+            {"scope": "run", "property": "highlight", "start": hl_start, "end": hl_end, "from": "", "to": "yellow"},
+        ]
+        redlined_docx, source_text = self._build_run_format_docx(formatted_text, format_ops)
+
+        # (1) Package health + python-docx load (Document(path) must succeed).
+        assert_docx_package_healthy(self, redlined_docx)
+        from docx import Document as _Document
+
+        document = _Document(BytesIO(redlined_docx))
+        self.assertTrue(any(formatted_text == p.text for p in document.paragraphs))
+
+        # Content coverage gate: the text is unchanged, only formatting moved.
+        self.assertEqual(
+            verify_export_content_coverage(redlined_docx, source_text), []
+        )
+
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+
+        def run_text(node):
+            return "".join(t.text or "" for t in node.findall(".//w:t", W_NS))
+
+        formatted = next(
+            p for p in document_root.findall(".//w:p", W_NS) if run_text(p) == formatted_text
+        )
+
+        def covered_rpr(word):
+            run = next(
+                r
+                for r in formatted.findall("w:r", W_NS)
+                if "".join(t.text or "" for t in r.findall("w:t", W_NS)) == word
+            )
+            return run.find("w:rPr", W_NS)
+
+        val_attr = f"{{{W_NS['w']}}}val"
+
+        # (3a) underline -> <w:u w:val="single">.
+        u_rpr = covered_rpr("Agreement")
+        u_el = u_rpr.find("w:u", W_NS)
+        self.assertIsNotNone(u_el)
+        self.assertEqual(u_el.get(val_attr), "single")
+
+        # (3b) strike -> <w:strike> present.
+        strike_rpr = covered_rpr("governed")
+        self.assertIsNotNone(strike_rpr.find("w:strike", W_NS))
+
+        # (3c) color -> <w:color w:val="FF0000"> (6-hex, no leading #).
+        color_rpr = covered_rpr("laws")
+        color_el = color_rpr.find("w:color", W_NS)
+        self.assertIsNotNone(color_el)
+        self.assertEqual(color_el.get(val_attr), "FF0000")
+
+        # (3d) highlight -> NAMED palette value, never a raw hex.
+        highlight_rpr = covered_rpr("California")
+        highlight_el = highlight_rpr.find("w:highlight", W_NS)
+        self.assertIsNotNone(highlight_el)
+        self.assertEqual(highlight_el.get(val_attr), "yellow")
+
+        # (2) rPr child schema order across every covered run: the emitted children
+        # must appear in CT_RPr sequence (strike < color < sz < szCs < highlight < u).
+        canonical = ["rFonts", "b", "bCs", "i", "iCs", "strike", "dstrike",
+                     "color", "sz", "szCs", "highlight", "u", "rPrChange"]
+        order_index = {name: i for i, name in enumerate(canonical)}
+        for rpr in formatted.findall(".//w:rPr", W_NS):
+            local_names = [child.tag.split("}", 1)[-1] for child in list(rpr)]
+            ranked = [order_index[name] for name in local_names if name in order_index]
+            self.assertEqual(ranked, sorted(ranked), f"rPr out of schema order: {local_names}")
+
+    def test_run_format_inserts_before_preexisting_later_rpr_children(self):
+        # Stress the schema-ordering insert: the source run already carries <w:u> and
+        # <w:highlight> (both LATER than strike/color in CT_RPr). Adding strike + color
+        # must place them BEFORE the existing u/highlight, not append them out of order.
+        formatted_text = "Confidential information is defined herein."
+        source_rpr = '<w:rPr><w:u w:val="single"/><w:highlight w:val="green"/></w:rPr>'
+        format_ops = [
+            {"scope": "run", "property": "strike", "start": 0, "end": len(formatted_text), "from": False, "to": True},
+            {"scope": "run", "property": "color", "start": 0, "end": len(formatted_text), "from": "", "to": "0000FF"},
+        ]
+        redlined_docx, _source_text = self._build_run_format_docx(
+            formatted_text, format_ops, source_rpr=source_rpr
+        )
+        assert_docx_package_healthy(self, redlined_docx)
+        from docx import Document as _Document
+
+        _Document(BytesIO(redlined_docx))  # must not raise
+
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        formatted = next(
+            p
+            for p in document_root.findall(".//w:p", W_NS)
+            if "".join(t.text or "" for t in p.findall(".//w:t", W_NS)) == formatted_text
+        )
+        canonical = ["rFonts", "b", "bCs", "i", "iCs", "strike", "dstrike",
+                     "color", "sz", "szCs", "highlight", "u", "rPrChange"]
+        order_index = {name: i for i, name in enumerate(canonical)}
+        covered = next(r for r in formatted.findall("w:r", W_NS) if r.find("w:rPr", W_NS) is not None)
+        rpr = covered.find("w:rPr", W_NS)
+        local_names = [child.tag.split("}", 1)[-1] for child in list(rpr)]
+        # All four props present and in canonical order: strike < color < highlight < u.
+        for name in ("strike", "color", "highlight", "u"):
+            self.assertIn(name, local_names, f"{name} missing from rPr")
+        ranked = [order_index[name] for name in local_names if name in order_index]
+        self.assertEqual(ranked, sorted(ranked), f"rPr out of schema order: {local_names}")
+
+    def test_replacement_runs_preserve_underline_strike_color_highlight(self):
+        # The replace path: a manual replace redline carries replacement_runs with the
+        # four new props. The clean (non-tracked) export must re-emit the inserted text
+        # WITH each property, opening cleanly under python-docx.
+        original_text = "Air India Limited is the FIRST PARTY."
+        edited_text = "Air India Private Limited is the FIRST PARTY."
+        body_paragraph = f"<w:p><w:r><w:t>{original_text}</w:t></w:r></w:p>"
+        document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>Intro paragraph.</w:t></w:r></w:p>"
+            f"{body_paragraph}</w:body></w:document>"
+        )
+        source_docx = replace_docx_parts(
+            make_source_docx(["placeholder one", "placeholder two"]),
+            {"word/document.xml": document_xml},
+        )
+        extracted = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(p["text"]) for p in extracted)
+        paragraphs = align_document_paragraphs(extracted, source_text)
+        pid = next(str(p["id"]) for p in paragraphs if str(p["text"]) == original_text)
+        review_result = {
+            "paragraphs": paragraphs,
+            "redline_edits": [
+                {
+                    "id": "m1",
+                    "clause_id": "manual_viewer_edit",
+                    "status": "proposed",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "action_label": "Your edit",
+                    "is_manual": True,
+                    "whole_paragraph": False,
+                    "paragraph_id": pid,
+                    "original_text": original_text,
+                    "replacement_text": edited_text,
+                    "replacement_runs": [
+                        {"text": "Air India "},
+                        {"text": "Private", "underline": True, "color": "FF0000"},
+                        {"text": " Limited is the "},
+                        {"text": "FIRST PARTY", "strike": True, "highlight": "cyan"},
+                        {"text": "."},
+                    ],
+                }
+            ],
+        }
+
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+        clean_docx = accept_all_revisions(redlined_docx)
+        # A clean (accepted) doc deliberately has Track Changes OFF, so the redline
+        # health check doesn't apply; assert ZIP + XML integrity directly, then load
+        # under python-docx as the "opens without corruption" gate.
+        with ZipFile(BytesIO(clean_docx)) as archive:
+            self.assertIsNone(archive.testzip())
+            for name in archive.namelist():
+                if name.endswith(".xml") or name.endswith(".rels"):
+                    ET.fromstring(archive.read(name))
+        from docx import Document as _Document
+
+        document = _Document(BytesIO(clean_docx))
+        self.assertTrue(any(edited_text == p.text for p in document.paragraphs))
+
+        _settings_root, document_root, _document_xml = docx_xml_roots(clean_docx)
+        formatted = next(
+            p
+            for p in document_root.findall(".//w:p", W_NS)
+            if "".join(t.text or "" for t in p.findall(".//w:t", W_NS)) == edited_text
+        )
+        val_attr = f"{{{W_NS['w']}}}val"
+
+        def run_for(word):
+            return next(
+                r
+                for r in formatted.findall("w:r", W_NS)
+                if "".join(t.text or "" for t in r.findall("w:t", W_NS)) == word
+            )
+
+        underline_rpr = run_for("Private").find("w:rPr", W_NS)
+        self.assertIsNotNone(underline_rpr.find("w:u", W_NS))
+        self.assertEqual(underline_rpr.find("w:color", W_NS).get(val_attr), "FF0000")
+        strike_rpr = run_for("FIRST PARTY").find("w:rPr", W_NS)
+        self.assertIsNotNone(strike_rpr.find("w:strike", W_NS))
+        self.assertEqual(strike_rpr.find("w:highlight", W_NS).get(val_attr), "cyan")
+
+        # Schema order on every rPr in the rebuilt paragraph.
+        canonical = ["rFonts", "b", "bCs", "i", "iCs", "strike", "dstrike",
+                     "color", "sz", "szCs", "highlight", "u", "rPrChange"]
+        order_index = {name: i for i, name in enumerate(canonical)}
+        for rpr in formatted.findall(".//w:rPr", W_NS):
+            local_names = [child.tag.split("}", 1)[-1] for child in list(rpr)]
+            ranked = [order_index[name] for name in local_names if name in order_index]
+            self.assertEqual(ranked, sorted(ranked), f"rPr out of schema order: {local_names}")
+
 
 if __name__ == "__main__":
     unittest.main()

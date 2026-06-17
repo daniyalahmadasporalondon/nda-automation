@@ -37,6 +37,22 @@ function formatItalicButtonElement() {
   return document.getElementById("studioFormatItalic");
 }
 
+function formatUnderlineButtonElement() {
+  return document.getElementById("studioFormatUnderline");
+}
+
+function formatStrikeButtonElement() {
+  return document.getElementById("studioFormatStrike");
+}
+
+function formatColorInputElement() {
+  return document.getElementById("studioFormatColor");
+}
+
+function formatHighlightSelectElement() {
+  return document.getElementById("studioFormatHighlight");
+}
+
 function formatFontSizeSelectElement() {
   return document.getElementById("studioFontSize");
 }
@@ -146,18 +162,35 @@ function normalizeRun(run) {
   const out = { text: String(run?.text || "") };
   if (run?.bold) out.bold = true;
   if (run?.italic) out.italic = true;
+  if (run?.underline) out.underline = true;
+  if (run?.strike) out.strike = true;
   const font = String(run?.font || "").trim();
   if (font) out.font = font;
   const size = Number(run?.size);
   if (Number.isFinite(size) && size > 0) out.size = size;
+  const color = normalizeColorValue(run?.color);
+  if (color) out.color = color;
+  const highlight = String(run?.highlight || "").trim();
+  if (highlight) out.highlight = highlight;
   return out;
 }
 
 function runFormattingMatches(a, b) {
   return Boolean(a?.bold) === Boolean(b?.bold)
     && Boolean(a?.italic) === Boolean(b?.italic)
+    && Boolean(a?.underline) === Boolean(b?.underline)
+    && Boolean(a?.strike) === Boolean(b?.strike)
     && String(a?.font || "").trim() === String(b?.font || "").trim()
-    && Number(a?.size || 0) === Number(b?.size || 0);
+    && Number(a?.size || 0) === Number(b?.size || 0)
+    && normalizeColorValue(a?.color) === normalizeColorValue(b?.color)
+    && String(a?.highlight || "").trim() === String(b?.highlight || "").trim();
+}
+
+// A run-model text color is a 6-hex-digit RRGGBB string (no leading #), upper-cased.
+// Anything malformed normalises to "" (no color override).
+function normalizeColorValue(value) {
+  const hex = String(value || "").trim().replace(/^#/, "").toUpperCase();
+  return /^[0-9A-F]{6}$/.test(hex) ? hex : "";
 }
 
 // True when EVERY character in [start, end) already carries `property` (=value
@@ -176,6 +209,10 @@ function runRangeHasFormatting(paragraph, start, end, property, value) {
     covered = true;
     if (property === "font") {
       if (String(run?.font || "").trim() !== String(value || "").trim()) return false;
+    } else if (property === "color") {
+      if (normalizeColorValue(run?.color) !== normalizeColorValue(value)) return false;
+    } else if (property === "highlight") {
+      if (String(run?.highlight || "").trim() !== String(value || "").trim()) return false;
     } else if (!run?.[property]) {
       return false;
     }
@@ -217,6 +254,15 @@ function bindFormatToolbar() {
   if (boldButton) boldButton.onclick = () => toggleRunFormatting("bold");
   const italicButton = formatItalicButtonElement();
   if (italicButton) italicButton.onclick = () => toggleRunFormatting("italic");
+  const underlineButton = formatUnderlineButtonElement();
+  if (underlineButton) underlineButton.onclick = () => toggleRunFormatting("underline");
+  const strikeButton = formatStrikeButtonElement();
+  if (strikeButton) strikeButton.onclick = () => toggleRunFormatting("strike");
+
+  const colorInput = formatColorInputElement();
+  if (colorInput) colorInput.oninput = () => applyRunColor(colorInput.value);
+  const highlightSelect = formatHighlightSelectElement();
+  if (highlightSelect) highlightSelect.onchange = () => applyRunHighlight(highlightSelect.value);
 
   const fontSelect = formatFontSelectElement();
   if (fontSelect) {
@@ -347,6 +393,51 @@ function applyFontChange(fontName) {
   pushParagraphFormatHistory(paragraph);
   // An empty choice clears the run-level font override over the selection.
   setRunFormatting(paragraph, selection.startOffset, selection.endOffset, "font", next || false);
+  commitParagraphFormatChange();
+}
+
+// Text color picker: applies an RRGGBB color as a run op over the current
+// selection. No selection -> hint. The picker always supplies a value, so this
+// only sets (never clears); a follow-up "clear color" is out of scope here.
+function applyRunColor(hex) {
+  const paragraph = activeFormatParagraph();
+  if (!paragraph) {
+    refreshFormatToolbarState();
+    return;
+  }
+  const selection = selectionForActiveParagraph();
+  if (!selection) {
+    setFileMeta("Select text to color");
+    return;
+  }
+  const next = normalizeColorValue(hex);
+  if (!next) {
+    refreshFormatToolbarState();
+    return;
+  }
+  pushParagraphFormatHistory(paragraph);
+  setRunFormatting(paragraph, selection.startOffset, selection.endOffset, "color", next);
+  commitParagraphFormatChange();
+}
+
+// Highlight dropdown: applies a Word NAMED highlight (yellow/green/...) as a run
+// op over the selection. The empty choice clears the highlight. DOCX w:highlight
+// only accepts the fixed named palette, so the <option> values are those names.
+function applyRunHighlight(name) {
+  const paragraph = activeFormatParagraph();
+  if (!paragraph) {
+    refreshFormatToolbarState();
+    return;
+  }
+  const selection = selectionForActiveParagraph();
+  if (!selection) {
+    setFileMeta("Select text to highlight");
+    return;
+  }
+  const next = String(name || "").trim();
+  pushParagraphFormatHistory(paragraph);
+  // An empty choice clears the highlight over the selection.
+  setRunFormatting(paragraph, selection.startOffset, selection.endOffset, "highlight", next || false);
   commitParagraphFormatChange();
 }
 
@@ -488,7 +579,12 @@ function refreshFormatToolbarState() {
   // entire selection already carries the property. With no selection they fall
   // back to unpressed (the toggle would hint rather than act).
   const selection = hasActive ? selectionForActiveParagraph() : null;
-  [["studioFormatBold", "bold"], ["studioFormatItalic", "italic"]].forEach(([buttonId, property]) => {
+  [
+    ["studioFormatBold", "bold"],
+    ["studioFormatItalic", "italic"],
+    ["studioFormatUnderline", "underline"],
+    ["studioFormatStrike", "strike"],
+  ].forEach(([buttonId, property]) => {
     const button = document.getElementById(buttonId);
     if (!button) return;
     const pressed = Boolean(selection)
@@ -496,6 +592,22 @@ function refreshFormatToolbarState() {
     button.setAttribute("aria-pressed", pressed ? "true" : "false");
     button.disabled = !hasActive;
   });
+
+  // Text color: reflect a uniform selection color in the picker; disable with no
+  // active paragraph. Highlight: reflect a uniform selection highlight name.
+  const colorInput = formatColorInputElement();
+  if (colorInput) {
+    const selectionColor = selection ? uniformSelectionRunValue(paragraph, selection, "color") : null;
+    if (selectionColor) colorInput.value = `#${selectionColor}`;
+    colorInput.disabled = !hasActive;
+  }
+  const highlightSelect = formatHighlightSelectElement();
+  if (highlightSelect) {
+    const selectionHighlight = selection ? uniformSelectionRunValue(paragraph, selection, "highlight") : null;
+    highlightSelect.value = selectionHighlight || "";
+    if (highlightSelect.selectedIndex < 0) highlightSelect.value = "";
+    highlightSelect.disabled = !hasActive;
+  }
 
   const fontSelect = formatFontSelectElement();
   if (fontSelect) {
@@ -523,6 +635,31 @@ function refreshFormatToolbarState() {
     const button = document.getElementById(buttonId);
     if (button) button.disabled = !hasActive;
   });
+}
+
+// Returns the string value of `property` (e.g. "color"|"highlight") shared by
+// every run touching the selection, or null when the selection spans more than
+// one value (so the control shows its empty/default state). Colors normalise to
+// the RRGGBB form so "#aabbcc" and "AABBCC" compare equal.
+function uniformSelectionRunValue(paragraph, selection, property) {
+  const runs = ensureParagraphRuns(paragraph);
+  const { startOffset, endOffset } = selection;
+  const read = (run) => (property === "color"
+    ? normalizeColorValue(run?.color)
+    : String(run?.[property] || "").trim());
+  let cursor = 0;
+  let seen = null;
+  for (const run of runs) {
+    const text = String(run?.text || "");
+    const runStart = cursor;
+    const runEnd = cursor + text.length;
+    cursor = runEnd;
+    if (!text.length || runEnd <= startOffset || runStart >= endOffset) continue;
+    const value = read(run);
+    if (seen === null) seen = value;
+    else if (seen !== value) return null;
+  }
+  return seen || null;
 }
 
 // Returns the font name shared by every run touching the selection, or null when

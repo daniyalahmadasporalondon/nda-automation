@@ -3362,6 +3362,58 @@ h3 {
   font-weight: 600;
 }
 
+.fmt-btn-underline {
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+.fmt-btn-strike {
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: line-through;
+}
+
+.fmt-color,
+.fmt-highlight {
+  align-items: center;
+  cursor: pointer;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.fmt-color .fmt-color-glyph,
+.fmt-highlight .fmt-highlight-glyph {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.fmt-highlight .fmt-highlight-glyph {
+  background: #ffec3d;
+  border-radius: 2px;
+  padding: 0 2px;
+}
+
+.fmt-color input[type="color"] {
+  background: none;
+  border: none;
+  cursor: pointer;
+  height: 20px;
+  padding: 0;
+  width: 22px;
+}
+
+.fmt-color input[type="color"]:disabled,
+.fmt-highlight select:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.fmt-highlight select {
+  max-width: 110px;
+}
+
 .studio-toolbar-left {
   align-items: center;
   display: flex;
