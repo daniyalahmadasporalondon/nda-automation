@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import io
 import json
+import time
 import urllib.error
+from contextlib import contextmanager
 from unittest.mock import patch
 
 from nda_automation import google_identity
@@ -92,3 +94,119 @@ def test_unparseable_body_falls_back_to_raw_snippet():
     text = str(raised)
     assert text.startswith("Google OAuth token exchange failed.")
     assert "not json at all" in text
+
+
+# --- ID-token verification (FIX #16: exp / iss / nbf / nonce) ---------------
+
+class _FakeTokeninfoResponse(io.BytesIO):
+    """Minimal stand-in for the urlopen() context-manager / response object."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+@contextmanager
+def _tokeninfo(claims: dict):
+    """Patch the tokeninfo HTTP call to return `claims` and pin the client id."""
+    env = {google_identity.GOOGLE_OAUTH_CLIENT_ID_ENV: "client-123"}
+    body = json.dumps(claims).encode("utf-8")
+    with patch.dict("os.environ", env, clear=False):
+        with patch(
+            "urllib.request.urlopen",
+            return_value=_FakeTokeninfoResponse(body),
+        ):
+            yield
+
+
+def _valid_claims(**overrides):
+    now = int(time.time())
+    claims = {
+        "aud": "client-123",
+        "sub": "google-user-123",
+        "email": "alice@example.com",
+        "email_verified": "true",
+        "iss": "https://accounts.google.com",
+        "exp": str(now + 3600),
+        "iat": str(now),
+    }
+    claims.update(overrides)
+    return claims
+
+
+def test_valid_token_passes():
+    with _tokeninfo(_valid_claims()):
+        profile = google_identity.verify_google_id_token("id-token")
+    assert profile["sub"] == "google-user-123"
+
+
+def test_expired_token_is_rejected():
+    now = int(time.time())
+    with _tokeninfo(_valid_claims(exp=str(now - 3600))):
+        try:
+            google_identity.verify_google_id_token("id-token")
+        except google_identity.GoogleIdentityError as error:
+            assert "expired" in str(error).lower()
+        else:
+            raise AssertionError("Expected expired token to be rejected")
+
+
+def test_missing_exp_is_rejected():
+    claims = _valid_claims()
+    claims.pop("exp")
+    with _tokeninfo(claims):
+        try:
+            google_identity.verify_google_id_token("id-token")
+        except google_identity.GoogleIdentityError as error:
+            assert "expiry" in str(error).lower()
+        else:
+            raise AssertionError("Expected missing-exp token to be rejected")
+
+
+def test_wrong_issuer_is_rejected():
+    with _tokeninfo(_valid_claims(iss="https://evil.example.com")):
+        try:
+            google_identity.verify_google_id_token("id-token")
+        except google_identity.GoogleIdentityError as error:
+            assert "issuer" in str(error).lower()
+        else:
+            raise AssertionError("Expected wrong-issuer token to be rejected")
+
+
+def test_not_yet_valid_token_is_rejected():
+    now = int(time.time())
+    with _tokeninfo(_valid_claims(nbf=str(now + 3600))):
+        try:
+            google_identity.verify_google_id_token("id-token")
+        except google_identity.GoogleIdentityError as error:
+            assert "not yet valid" in str(error).lower()
+        else:
+            raise AssertionError("Expected not-yet-valid token to be rejected")
+
+
+def test_nonce_mismatch_is_rejected():
+    with _tokeninfo(_valid_claims(nonce="token-nonce")):
+        try:
+            google_identity.verify_google_id_token("id-token", expected_nonce="other-nonce")
+        except google_identity.GoogleIdentityError as error:
+            assert "nonce" in str(error).lower()
+        else:
+            raise AssertionError("Expected nonce mismatch to be rejected")
+
+
+def test_missing_nonce_when_expected_is_rejected():
+    with _tokeninfo(_valid_claims()):  # no nonce claim present
+        try:
+            google_identity.verify_google_id_token("id-token", expected_nonce="expected-nonce")
+        except google_identity.GoogleIdentityError as error:
+            assert "nonce" in str(error).lower()
+        else:
+            raise AssertionError("Expected missing nonce to be rejected")
+
+
+def test_matching_nonce_passes():
+    with _tokeninfo(_valid_claims(nonce="the-nonce")):
+        profile = google_identity.verify_google_id_token("id-token", expected_nonce="the-nonce")
+    assert profile["nonce"] == "the-nonce"

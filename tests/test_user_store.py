@@ -79,6 +79,93 @@ class UserStoreTests(unittest.TestCase):
         self.assertNotIn(token, json.dumps(users_payload))
         self.assertEqual(len(users_payload["sessions"]), 1)
 
+    def _seed_user(self, sub: str = "google-subject"):
+        return user_store.upsert_google_user({
+            "sub": sub,
+            "email": f"{sub}@example.com",
+            "name": "User Example",
+            "picture": "https://example.com/profile.png",
+        })
+
+    def test_idle_timed_out_session_is_invalid(self):
+        """A session untouched past the idle window is rejected even before its
+        absolute TTL elapses (FIX #23 sliding inactivity timeout)."""
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.user_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patches[3]:
+                base = 1_000_000.0
+                with patch.object(user_store, "_now_epoch", return_value=base):
+                    user = self._seed_user()
+                    token = user_store.create_session(user["id"])
+                    # Immediately valid.
+                    self.assertIsNotNone(user_store.user_for_session_token(token))
+                # Jump past the idle window (but well within the 14-day TTL).
+                idle_future = base + user_store.SESSION_IDLE_TTL_SECONDS + 60
+                with patch.object(user_store, "_now_epoch", return_value=idle_future):
+                    self.assertIsNone(user_store.user_for_session_token(token))
+
+    def test_active_use_slides_idle_window_forward(self):
+        """Touching a session refreshes last_seen_at so continuous use never
+        idle-expires (keeps single-session login working)."""
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.user_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patches[3]:
+                base = 2_000_000.0
+                with patch.object(user_store, "_now_epoch", return_value=base):
+                    user = self._seed_user()
+                    token = user_store.create_session(user["id"])
+                # Use it just before the window closes -> slides forward.
+                near_edge = base + user_store.SESSION_IDLE_TTL_SECONDS - 10
+                with patch.object(user_store, "_now_epoch", return_value=near_edge):
+                    self.assertIsNotNone(user_store.user_for_session_token(token))
+                # A second window measured from the refreshed last_seen is still alive.
+                still_alive = near_edge + user_store.SESSION_IDLE_TTL_SECONDS - 10
+                with patch.object(user_store, "_now_epoch", return_value=still_alive):
+                    self.assertIsNotNone(user_store.user_for_session_token(token))
+
+    def test_logout_all_clears_every_session_for_user(self):
+        """delete_all_sessions_for_user revokes all of a user's sessions while
+        leaving other users untouched (FIX #23 log-out-everywhere)."""
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.user_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patches[3]:
+                user = self._seed_user("alice")
+                other = self._seed_user("bob")
+                tokens = [user_store.create_session(user["id"]) for _ in range(3)]
+                other_token = user_store.create_session(other["id"])
+
+                removed = user_store.delete_all_sessions_for_user(user["id"])
+
+                self.assertEqual(removed, 3)
+                for token in tokens:
+                    self.assertIsNone(user_store.user_for_session_token(token))
+                # Bob's session is unaffected.
+                self.assertIsNotNone(user_store.user_for_session_token(other_token))
+
+    def test_per_user_session_cap_evicts_oldest(self):
+        """Logging in beyond MAX_SESSIONS_PER_USER evicts the oldest sessions so
+        they cannot accumulate unbounded (FIX #23 session cap)."""
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.user_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patches[3]:
+                user = self._seed_user()
+                tokens = []
+                base = 3_000_000.0
+                # Create one more than the cap, each a second apart so ordering
+                # by last activity is deterministic.
+                for i in range(user_store.MAX_SESSIONS_PER_USER + 1):
+                    with patch.object(user_store, "_now_epoch", return_value=base + i):
+                        tokens.append(user_store.create_session(user["id"]))
+                # The very first (oldest) token is evicted; the rest survive.
+                with patch.object(
+                    user_store,
+                    "_now_epoch",
+                    return_value=base + user_store.MAX_SESSIONS_PER_USER + 1,
+                ):
+                    self.assertIsNone(user_store.user_for_session_token(tokens[0]))
+                    for token in tokens[1:]:
+                        self.assertIsNotNone(user_store.user_for_session_token(token))
+
 
 if __name__ == "__main__":
     unittest.main()

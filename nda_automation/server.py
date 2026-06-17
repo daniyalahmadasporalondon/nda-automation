@@ -281,6 +281,7 @@ _POST_EXACT_ROUTES = {
 
 _PUBLIC_POST_EXACT_ROUTES = {
     "/api/auth/logout": auth_routes.handle_logout,
+    "/api/auth/logout-all": auth_routes.handle_logout_all,
 }
 
 _DELETE_EXACT_ROUTES = {

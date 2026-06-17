@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from http.cookies import SimpleCookie
 import os
+import secrets
 from urllib.parse import parse_qs, urlparse
 
 from .. import app_settings, google_connection, google_identity, user_store
@@ -132,7 +133,12 @@ def handle_google_start(handler, *, send_body: bool = True) -> None:
         return
     query = parse_qs(urlparse(handler.path).query)
     next_path = query.get("next", ["/"])[0]
-    state = user_store.create_login_state(next_path=next_path)
+    # A fresh nonce binds the ID token Google returns to THIS sign-in. It is
+    # stored server-side in the (single-use, short-TTL) login-state record and
+    # verified on the callback, so a captured/replayed token cannot mint a
+    # session. The state cookie protects the code; the nonce protects the token.
+    nonce = secrets.token_urlsafe(32)
+    state = user_store.create_login_state(next_path=next_path, metadata={"nonce": nonce})
     redirect_uri = _google_redirect_uri(handler)
     # One Google sign-in covers login (identity) AND Gmail+Drive access: request
     # the identity scopes plus the unified connect scopes, with offline access so
@@ -148,6 +154,7 @@ def handle_google_start(handler, *, send_body: bool = True) -> None:
         scopes=scopes,
         access_type="offline",
         prompt="select_account consent",
+        nonce=nonce,
     )
     handler._send_redirect(
         auth_url,
@@ -170,9 +177,13 @@ def handle_google_callback(handler, *, send_body: bool = True) -> None:
     if state_record is None:
         handler._send_json({"error": "Google login state is invalid or expired."}, status=400, send_body=send_body)
         return
+    expected_nonce = str((state_record.get("metadata") or {}).get("nonce") or "")
     try:
         token_response = google_identity.exchange_google_code(code, redirect_uri=_google_redirect_uri(handler))
-        profile = google_identity.verify_google_id_token(str(token_response.get("id_token") or ""))
+        profile = google_identity.verify_google_id_token(
+            str(token_response.get("id_token") or ""),
+            expected_nonce=expected_nonce,
+        )
         user = user_store.upsert_google_user(profile)
         session_token = user_store.create_session(str(user.get("id") or ""))
     except (google_identity.GoogleIdentityError, user_store.UserStoreError) as error:
@@ -202,6 +213,26 @@ def handle_google_callback(handler, *, send_body: bool = True) -> None:
 
 def handle_logout(handler) -> None:
     user_store.delete_session(_cookie_value(handler, user_store.SESSION_COOKIE_NAME))
+    handler._send_json(
+        {"authenticated": False, "user": None},
+        headers={"Set-Cookie": _expired_cookie(handler, user_store.SESSION_COOKIE_NAME)},
+    )
+
+
+def handle_logout_all(handler) -> None:
+    """Log out everywhere: revoke every session for the current user.
+
+    Resolve the user from the cookie BEFORE clearing it, then drop all of that
+    user's sessions (this device included). Falls back to clearing only the
+    current cookie if the session cannot be resolved (e.g. already expired).
+    """
+    token = _cookie_value(handler, user_store.SESSION_COOKIE_NAME)
+    user = user_store.user_for_session_token(token)
+    user_id = str(user.get("id") or "") if isinstance(user, dict) else ""
+    if user_id:
+        user_store.delete_all_sessions_for_user(user_id)
+    else:
+        user_store.delete_session(token)
     handler._send_json(
         {"authenticated": False, "user": None},
         headers={"Set-Cookie": _expired_cookie(handler, user_store.SESSION_COOKIE_NAME)},
