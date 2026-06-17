@@ -1500,6 +1500,10 @@ async function confirmDashboardAssistantAction(action = {}) {
       `/api/matters/${encodeURIComponent(matterId)}/review-refresh`,
       null,
       "Review could not refresh",
+      // The synchronous AI review can take ~2 minutes on a long NDA; bound the
+      // wait generously (180s) so a dead socket recovers without aborting a
+      // legitimately long review.
+      { timeoutMs: 180000 },
     );
     const refreshedMatter = matterReviewPayloadToMatter(payload);
     loadMatterIntoReview(refreshedMatter);
@@ -1572,7 +1576,7 @@ async function confirmDashboardAssistantAction(action = {}) {
   return { statusText: "No supported assistant action was available." };
 }
 
-async function postAssistantActionJson(url, body, fallbackMessage) {
+async function postAssistantActionJson(url, body, fallbackMessage, { timeoutMs = 0 } = {}) {
   const options = {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1580,7 +1584,23 @@ async function postAssistantActionJson(url, body, fallbackMessage) {
   if (body && typeof body === "object") {
     options.body = JSON.stringify(body);
   }
-  const response = await fetch(url, options);
+  // Optional generous bound so a hung server (e.g. a long synchronous AI review)
+  // cannot leave the assistant awaiting forever. 0 disables it (default).
+  const canAbort = typeof AbortController === "function" && timeoutMs > 0;
+  const controller = canAbort ? new AbortController() : null;
+  const timer = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
+  if (controller) options.signal = controller.signal;
+  let response;
+  try {
+    response = await fetch(url, options);
+  } catch (fetchError) {
+    if (fetchError?.name === "AbortError") {
+      throw new Error(`${fallbackMessage} — the server did not respond in time. Please try again.`);
+    }
+    throw fetchError;
+  } finally {
+    if (timer !== null) window.clearTimeout(timer);
+  }
   let payload = {};
   try {
     payload = await response.json();

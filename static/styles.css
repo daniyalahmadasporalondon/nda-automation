@@ -3469,6 +3469,38 @@ h3 {
   color: var(--amber-ink);
 }
 
+/* While the synchronous AI review runs (~50s short, ~120s+ long), the button is
+   disabled and shows a spinning indicator so the wait reads as "working", not
+   "frozen". The global prefers-reduced-motion clamp already neutralises the
+   animation for users who opt out. */
+.studio-refresh-review.is-refreshing {
+  cursor: progress;
+  opacity: 1;
+  padding-left: 22px;
+  position: relative;
+}
+
+.studio-refresh-review.is-refreshing::before {
+  animation: studio-refresh-spin 0.7s linear infinite;
+  border: 2px solid var(--amber-border);
+  border-radius: 50%;
+  border-top-color: var(--amber);
+  box-sizing: border-box;
+  content: "";
+  height: 11px;
+  left: 7px;
+  margin-top: -6px;
+  position: absolute;
+  top: 50%;
+  width: 11px;
+}
+
+@keyframes studio-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .studio-undo-edit {
   align-items: center;
   background: #ffffff;
