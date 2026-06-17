@@ -3061,29 +3061,56 @@ async function testDraftIntakePreviewClampAndGoverningLaw(page) {
   await page.locator("#draftIntakeEntitySelect").selectOption("aspora_technology");
   await page.locator("#draftIntakeCounterpartyName").fill("Acme Corporation");
   await page.locator("#draftIntakeBusinessDescription").fill("cross-border payments");
-  // Ask for 10 years — over the playbook cap of 5; generation would clamp to 5.
-  await page.locator("#draftIntakeTerm").fill("10 years");
+  // The Term field is an integer-years +/- stepper (input[type=number], min 1,
+  // max = the playbook cap of 5, step 1). It clamps to that window at the input
+  // layer — typing an over-cap number is corrected to the cap on every keystroke
+  // (draft-intake.js setTermYears) and the +/- buttons disable at the bounds — so
+  // generation can never be asked for a term it won't honour. Ask for 10 (over the
+  // cap) and confirm the stepper snaps it down to 5 rather than carrying it through.
+  await page.locator("#draftIntakeTerm").fill("10");
+  await page.waitForFunction(
+    () => document.querySelector("#draftIntakeTerm")?.value === "5",
+  );
+  assert.equal(
+    await page.locator("#draftIntakeTerm").evaluate((el) => el.value),
+    "5",
+    "the stepper clamps an over-cap term down to the playbook max",
+  );
+  // The cap is surfaced two ways: the stepper hint names it, and the increment
+  // button disables once at the max (so the user can't step past it).
+  assert.equal(
+    (await page.locator("#draftIntakeTermHint").textContent()).trim(),
+    "Playbook caps the term at 5 years.",
+    "the stepper hint surfaces the playbook term cap",
+  );
+  assert.ok(
+    await page.locator("#draftIntakeTermIncrement").evaluate((el) => el.disabled),
+    "the increment button is disabled at the playbook cap",
+  );
 
-  // The hidden preview source carries the clamped term + the cap note + the law.
+  // The clamped term + the law flow into the hidden preview source.
   const previewText = () =>
     page.evaluate(() => document.querySelector("#draftIntakePreview")?.textContent || "");
   await page.waitForFunction(
-    () => (document.querySelector("#draftIntakePreview")?.textContent || "").includes("capped to 5 years per playbook"),
+    () =>
+      (document.querySelector("#draftIntakePreview")?.textContent || "").includes(
+        "governed by and construed in accordance with the laws of India",
+      ),
   );
   const sourceText = await previewText();
-  assert.ok(sourceText.includes("5 years"), "preview clamps the displayed term to the playbook max");
-  assert.ok(!/\b10 years\b/.test(sourceText), "the over-cap term is not shown verbatim");
+  assert.ok(sourceText.includes("5 years"), "preview shows the clamped term");
+  assert.ok(!/\b10 years\b/.test(sourceText), "the over-cap term is never shown");
   assert.ok(
     sourceText.includes("governed by and construed in accordance with the laws of India"),
     "preview states the governing law",
   );
   assert.ok(!/Courts of/.test(sourceText), "preview names no forum/courts (the clause is law-only)");
 
-  // The clamped term, the cap note, and the law all survive into the visible
-  // editor (the raw #draftIntakePreview is hidden; #generatorEditor is what shows).
+  // The clamped term and the law survive into the visible editor (the raw
+  // #draftIntakePreview is hidden; #generatorEditor is what shows).
   const editorText = await page.locator("#generatorEditor").innerText();
   assert.ok(editorText.includes("5 years"), "editor shows the clamped term");
-  assert.ok(editorText.includes("capped to 5 years per playbook"), "editor shows the cap note");
+  assert.ok(!/\b10 years\b/.test(editorText), "editor never shows the over-cap term");
   assert.ok(
     editorText.includes("construed in accordance with the laws of India"),
     "editor shows the governing law",
@@ -3130,8 +3157,10 @@ async function testDraftIntakePreviewClampAndGoverningLaw(page) {
   assert.equal(capturedGeneratePayload.business_description, "cross-border payments");
   assert.equal(capturedGeneratePayload.counterparty_jurisdiction, "Delaware, USA");
   assert.equal(capturedGeneratePayload.counterparty_registered_office, "1 Market St, San Francisco");
-  // The term goes to the backend verbatim ("10 years"); the backend owns the clamp.
-  assert.equal(capturedGeneratePayload.term, "10 years");
+  // The stepper clamps client-side before sending, so the payload carries the
+  // already-capped "5 years" (not the over-cap "10") — buildDraftPayload sends
+  // intake.term, which setTermYears holds at the clamped value.
+  assert.equal(capturedGeneratePayload.term, "5 years");
 
   await page.unroute("**/api/generate-nda");
 }
