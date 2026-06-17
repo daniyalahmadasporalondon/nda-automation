@@ -1263,28 +1263,66 @@ def _write_signature_cell(
     for paragraph in paragraphs[len(lines):]:
         _set_paragraph_text(paragraph, "")
 
-    # Plant the per-party anchor on the By: line (index 1) as a hidden run, so the
-    # marker is searchable text for DocuSign but invisible in the rendered doc.
+    # Plant the per-party anchor at the START of the By: line (index 1) as a hidden
+    # run, so the marker is searchable text for DocuSign but invisible in the
+    # rendered doc.
+    #
+    # Why the START and not the end: DocuSign places a tab with the LOWER-LEFT
+    # corner of the tab at the LOWER-RIGHT corner of the anchor's bounding box, and
+    # the (~1in-wide) signHere tab then grows RIGHTWARD across the page. The Aspora
+    # signature box is flush against the page's RIGHT margin (see
+    # ``_space_signature_cells_apart``), so an anchor at the END of that box's By:
+    # line sits at the right margin and a rightward-growing tab runs off the right
+    # page edge -> DocuSign rejects the whole envelope with INVALID_USER_OFFSET
+    # (HTTP 400). Anchoring at the START of the line puts the tab origin at the
+    # cell's LEFT edge, so the tab grows into the blank underscores with room to
+    # spare in BOTH the left (counterparty) and right (Aspora) cells.
     if anchor:
         by_paragraph = cell.paragraphs[1]
-        _append_hidden_anchor_run(by_paragraph, anchor)
+        _prepend_hidden_anchor_run(by_paragraph, anchor)
 
 
-def _append_hidden_anchor_run(paragraph: Any, anchor: str) -> None:
-    """Append ``anchor`` to ``paragraph`` as a hidden (white, 1pt) run.
+def _prepend_hidden_anchor_run(paragraph: Any, anchor: str) -> None:
+    """Prepend ``anchor`` to ``paragraph`` as a hidden (white, 1pt) leading run.
 
     The token must be present as searchable text (so DocuSign can locate it) but
-    must not be visible in the executed document. A leading space keeps it off the
-    visible underscores. Colour + tiny size make it effectively invisible without
-    relying on the ``vanish`` property (which some renderers hide from text
-    extraction, which would defeat anchoring).
+    must not be visible in the executed document. It is planted as the FIRST run on
+    the line so DocuSign places the signHere/dateSigned tab at the cell's LEFT edge
+    (the tab grows rightward into the blank underscores, never off the page's right
+    margin — see ``_write_signature_cell``). A trailing space keeps the hidden
+    marker from butting against the visible "By:" text. Colour + tiny size make it
+    effectively invisible without relying on the ``vanish`` property (which some
+    renderers hide from text extraction, which would defeat anchoring).
     """
 
     from docx.shared import Pt, RGBColor  # noqa: PLC0415
 
-    run = paragraph.add_run(" " + anchor)
+    run = paragraph.add_run(anchor + " ")
     run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
     run.font.size = Pt(1)
+    # python-docx appends; move the new run's XML to the FRONT of the paragraph so
+    # the marker is the line's first run (the tab anchors at the left edge).
+    run_element = run._r
+    paragraph._p.remove(run_element)
+    _insert_run_first(paragraph, run_element)
+
+
+def _insert_run_first(paragraph: Any, run_element: Any) -> None:
+    """Insert ``run_element`` as the paragraph's first run-level child.
+
+    A ``<w:p>`` may lead with non-run children (``<w:pPr>`` properties). The run
+    must go AFTER any ``<w:pPr>`` but BEFORE the first existing ``<w:r>``, so the
+    hidden anchor reads as the first text on the line.
+    """
+
+    from docx.oxml.ns import qn  # noqa: PLC0415
+
+    p_element = paragraph._p
+    first_run = p_element.find(qn("w:r"))
+    if first_run is not None:
+        first_run.addprevious(run_element)
+    else:
+        p_element.append(run_element)
 
 
 # --------------------------------------------------------------------------- #
