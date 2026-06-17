@@ -1558,6 +1558,39 @@ _UNRELATED_BODY = (
     "before any party resorts to formal mediation or arbitration under the applicable commercial rules."
 )
 
+# A genuinely-DIFFERENT same-counterparty deal: same template and party (Acme), but a
+# materially different purpose, standard of care, term, and remedy regime. This lands
+# in the ~0.75 SimHash band (measured) -- comfortably below the near threshold -- so it
+# must NOT flag even though the same-counterparty gate would allow it. (The prior
+# fixture here was only a light edit that scored ~0.89, which is actually a near-dup,
+# not a genuinely-different deal; it gave a false sense of separation.)
+_GENUINELY_DIFFERENT_ACME_DEAL = (
+    _india_nda("Acme Technologies Private Limited", "Mumbai", "five years")
+    .replace(
+        "evaluating a potential business relationship between the parties",
+        "a joint product development initiative covering hardware design embedded firmware "
+        "and cloud telemetry services",
+    )
+    .replace(
+        "Each party acknowledges that monetary damages may be inadequate and that injunctive "
+        "relief may be sought",
+        "The parties agree that liquidated damages of five hundred thousand dollars shall apply "
+        "per breach and that either party may terminate on sixty days notice",
+    )
+    .replace(
+        "strict confidence and not to disclose it to any third party without prior written consent",
+        "the highest standard of care and to restrict access to those employees contractors and "
+        "advisors with a strict need to know who are bound by equivalent obligations",
+    )
+)
+
+# A near-identical SAME-counterparty RESEND with only a small (~2-word) edit: this is the
+# common resend the 0.93 threshold MISSED and the 0.88 recalibration now FLAGS. Measured
+# ~0.92 SimHash -- above the new near threshold, below exact.
+_ACME_NDA_RESEND_2WORD_EDIT = _ACME_NDA.replace("three years", "three calendar years").replace(
+    "Mumbai", "Mumbai city"
+)
+
 
 def _seed_doc_matter(repo, *, owner, counterparty, title, extracted_text):
     """Seed an app-state matter with a specific ``extracted_text`` for fingerprinting."""
@@ -1632,6 +1665,99 @@ class CorpusDuplicateDocumentTests(unittest.TestCase):
         self.assertLess(dup_a["similarity"], 1.0)  # near, not exact
         self.assertEqual(payload["facet_counts"]["duplicate_document"], 2)
 
+    def test_same_counterparty_two_word_edit_resend_now_flags(self):
+        # REGRESSION FIX (fix/dup-document-near-tune): a same-counterparty resend with
+        # only a ~2-word edit scores ~0.92 SimHash. Under the prior 0.93 threshold this
+        # was MISSED (a safe-direction false negative); under the recalibrated 0.88 it
+        # MUST now flag. Guard the raw band so the test is a real repro.
+        resend = _ACME_NDA_RESEND_2WORD_EDIT
+        fp_a = corpus_index.content_fingerprint.compute_fingerprint(_ACME_NDA)
+        fp_b = corpus_index.content_fingerprint.compute_fingerprint(resend)
+        raw = corpus_index.content_fingerprint.similarity(fp_a, fp_b)
+        # The whole point: this sits in the gap ABOVE the 0.88 threshold but was missed
+        # by the old 0.93 -- and below 1.0 (a true near-dup, not exact).
+        self.assertGreaterEqual(raw, corpus_index.NEAR_DUPLICATE_SIMILARITY_THRESHOLD)
+        self.assertLess(raw, 0.93, f"fixture must repro the old-threshold MISS (raw={raw})")
+        self.assertLess(raw, 1.0)
+
+        a = _seed_doc_matter(
+            self.repo, owner="o", counterparty="Acme Technologies", title="Acme v1", extracted_text=_ACME_NDA
+        )
+        b = _seed_doc_matter(
+            self.repo, owner="o", counterparty="Acme Technologies", title="Acme v2", extracted_text=resend
+        )
+
+        payload = corpus_index.build_corpus(self.repo, "o", "")
+        matters = self._matters_by_id(payload)
+
+        self.assertIsNotNone(matters[a["id"]]["duplicate_document"])
+        self.assertIsNotNone(matters[b["id"]]["duplicate_document"])
+        self.assertEqual(matters[a["id"]]["duplicate_document"]["matched_matter_id"], b["id"])
+        self.assertEqual(payload["facet_counts"]["duplicate_document"], 2)
+
+    def test_counterparty_name_variant_resend_now_flags(self):
+        # REGRESSION FIX: the same party resends a near-identical doc but the counterparty
+        # NAME is written with a different legal-suffix surface form across the two matters
+        # ("Acme Corp" vs "Acme Corp."). The literal _normalized_entity_key keyed those
+        # DIFFERENTLY, so the same-counterparty gate wrongly DROPPED the resend. The looser
+        # _dup_gate_entity_key (punctuation strip + suffix fold) keys them the SAME, so the
+        # resend now passes the gate and flags. (Same content, only the cp name differs.)
+        resend = _ACME_NDA_RESEND_2WORD_EDIT
+        a = _seed_doc_matter(
+            self.repo, owner="o", counterparty="Acme Corp", title="Acme v1", extracted_text=_ACME_NDA
+        )
+        b = _seed_doc_matter(
+            self.repo, owner="o", counterparty="Acme Corp.", title="Acme v2", extracted_text=resend
+        )
+
+        payload = corpus_index.build_corpus(self.repo, "o", "")
+        matters = self._matters_by_id(payload)
+
+        self.assertIsNotNone(matters[a["id"]]["duplicate_document"])
+        self.assertIsNotNone(matters[b["id"]]["duplicate_document"])
+        self.assertEqual(payload["facet_counts"]["duplicate_document"], 2)
+
+    def test_counterparty_legal_suffix_variant_resend_now_flags(self):
+        # The harder name-variant: "Acme Private Limited" vs "Acme Pvt Ltd" -- different
+        # words entirely, same entity. The dup-gate key folds both legal-suffix forms off
+        # to the bare "acme", so the same-counterparty gate treats them as one party and
+        # the near-identical resend flags.
+        resend = _ACME_NDA_RESEND_2WORD_EDIT
+        a = _seed_doc_matter(
+            self.repo, owner="o", counterparty="Acme Private Limited", title="Acme v1", extracted_text=_ACME_NDA
+        )
+        b = _seed_doc_matter(
+            self.repo, owner="o", counterparty="Acme Pvt Ltd", title="Acme v2", extracted_text=resend
+        )
+
+        payload = corpus_index.build_corpus(self.repo, "o", "")
+        matters = self._matters_by_id(payload)
+
+        self.assertIsNotNone(matters[a["id"]]["duplicate_document"])
+        self.assertIsNotNone(matters[b["id"]]["duplicate_document"])
+        self.assertEqual(payload["facet_counts"]["duplicate_document"], 2)
+
+    def test_dup_gate_entity_key_folds_suffix_variants(self):
+        # Unit-level contract for the dedicated dup-gate key: punctuation + common legal
+        # suffixes fold so name variants of one entity collapse to the same key, while
+        # DIFFERENT entities stay distinct and the unknown sentinel stays empty.
+        key = corpus_index._dup_gate_entity_key
+        self.assertEqual(key("Acme Corp"), key("Acme Corp."))
+        self.assertEqual(key("Acme Corp"), key("Acme Corporation"))
+        self.assertEqual(key("Acme Private Limited"), key("Acme Pvt Ltd"))
+        self.assertEqual(key("Acme Inc"), key("Acme Incorporated"))
+        self.assertEqual(key("Acme Co"), key("Acme Company"))
+        # Distinct entities must NOT collapse.
+        self.assertNotEqual(key("Acme Corp"), key("Globex Corp"))
+        # The unknown sentinel stays empty (never near-dup-matches another unknown).
+        self.assertEqual(key(artifact_registry.COUNTERPARTY_UNKNOWN), "")
+        self.assertEqual(key(""), "")
+        # repeat_entity's literal key is UNCHANGED (the looser fold is dup-gate-only).
+        self.assertNotEqual(
+            corpus_index._normalized_entity_key("Acme Corp"),
+            corpus_index._normalized_entity_key("Acme Corp."),
+        )
+
     def test_cross_counterparty_template_siblings_do_not_flag(self):
         # THE VERIFIER FALSE-POSITIVE CASE: two GENUINELY DIFFERENT deals (Acme/Mumbai/3yr
         # vs Globex/Bangalore/2yr) struck from one template score 0.88-0.91 raw SimHash.
@@ -1660,16 +1786,20 @@ class CorpusDuplicateDocumentTests(unittest.TestCase):
 
     def test_same_counterparty_genuinely_different_deals_do_not_flag(self):
         # Two genuinely-different deals with the SAME counterparty (different purpose,
-        # term, and remedies) score ~0.84 SimHash -> below the recalibrated near
-        # threshold, so they are NOT flagged even though the gate would allow them.
-        deal2 = _india_nda(
-            "Acme Technologies Private Limited", "Mumbai", "five years"
-        ).replace(
-            "evaluating a potential business relationship",
-            "a joint product development initiative covering hardware and embedded firmware",
-        ).replace(
-            "injunctive relief may be sought",
-            "liquidated damages of one hundred thousand dollars shall apply",
+        # standard of care, term, and remedies) score well below the near threshold
+        # (~0.75 SimHash, measured), so they are NOT flagged even though the
+        # same-counterparty gate would allow them. The threshold (now 0.88) cleanly
+        # separates this band from a near-identical resend (~0.92, see the resend test).
+        deal2 = _GENUINELY_DIFFERENT_ACME_DEAL
+        # Guard: the fixture really is in the genuinely-different band, comfortably BELOW
+        # the near threshold (else this test would pass for the wrong reason).
+        fp_a = corpus_index.content_fingerprint.compute_fingerprint(_ACME_NDA)
+        fp_b = corpus_index.content_fingerprint.compute_fingerprint(deal2)
+        raw = corpus_index.content_fingerprint.similarity(fp_a, fp_b)
+        self.assertLess(
+            raw,
+            corpus_index.NEAR_DUPLICATE_SIMILARITY_THRESHOLD,
+            f"different-deal fixture must score below the near threshold (raw={raw})",
         )
         a = _seed_doc_matter(
             self.repo, owner="o", counterparty="Acme Technologies", title="Acme NDA 1", extracted_text=_ACME_NDA

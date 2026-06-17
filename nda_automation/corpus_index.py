@@ -77,14 +77,27 @@ CORPUS_DRIVE_CRAWL_DEADLINE_SECONDS = 4.0
 # matters belong to the same counterparty, so a near-dup reads as "this counterparty
 # sent you two near-identical docs" (a real resend signal complementing
 # repeat_entity), never "two unrelated deals share our template" -- AND (2)
-# recalibrated UP from 0.90 to 0.93 so even WITHIN one counterparty it fires only on
-# a near-identical resend (a small date/value or one-line tweak -- measured ~0.95),
-# not on two genuinely-different deals struck with the same party that happen to
-# reuse the same boilerplate (measured ~0.84). Pure formatting/whitespace/case-only
-# resends normalize to identical text and flag via the exact-dup sha256 path (1.0)
-# regardless. The exact-dup path is unchanged and stays cross-counterparty: identical
-# text is identical regardless of party.
-NEAR_DUPLICATE_SIMILARITY_THRESHOLD = 0.93
+# calibrated to cleanly separate two empirically-measured same-counterparty bands:
+#   * same-cp GENUINELY-DIFFERENT deal (different value/term/scope, same boilerplate)
+#     ~0.84 -- must NOT flag;
+#   * same-cp NEAR-IDENTICAL RESEND (a 1-2 word date/value/one-line edit) ~0.906-0.95
+#     -- MUST flag.
+# The SAME-COUNTERPARTY GATE (not this threshold) is what protects the cross-cp
+# template-sibling pair (also ~0.906): those never reach the threshold because the
+# gate drops them first, so the threshold only has to split the two same-cp bands.
+# 0.93 (the original calibration) sat ABOVE the 0.906 resend floor and MISSED the
+# common 1-2-word resend -- a safe-direction false negative. We lower it to 0.88,
+# which sits 0.04 above the 0.84 different-deal band and 0.026 below the 0.906 resend
+# floor: it flags the 2-word resend while still rejecting the genuinely-different
+# deal, with margin on both sides. (A 64-bit SimHash gives ~1.6%/bit resolution;
+# 0.88 maps to a Hamming distance of <=7 bits, vs the ~6 bits a 0.906 resend differs
+# by and the ~10 bits a 0.84 different-deal differs by.) Widening the SimHash to
+# 128-bit would change the cached fingerprint format and is deliberately avoided --
+# the threshold tweak plus the same-cp gate fully separate the bands. Pure
+# formatting/whitespace/case-only resends normalize to identical text and flag via
+# the exact-dup sha256 path (1.0) regardless. The exact-dup path is unchanged and
+# stays cross-counterparty: identical text is identical regardless of party.
+NEAR_DUPLICATE_SIMILARITY_THRESHOLD = 0.88
 
 # Back-compat alias: the original single-threshold name. Retained so any external
 # reference / test that imported it keeps resolving; it now denotes the near-dup
@@ -1407,6 +1420,83 @@ def _normalized_entity_key(counterparty: str) -> str:
     return token
 
 
+# Common legal-entity suffix variants, longest-phrase-first so multi-word forms
+# ("private limited", "pvt ltd") are matched before their single-word siblings
+# ("limited", "ltd"). Each tuple is a set of surface forms that collapse to one
+# canonical entity for the dup-gate ONLY. NOT applied to ``_normalized_entity_key``
+# (repeat_entity's grouping stays exactly casefold+whitespace) -- see the dedicated
+# helper below for why the dup gate needs the looser key but repeat_entity must not.
+_DUP_GATE_SUFFIXES: tuple[str, ...] = (
+    "private limited",
+    "pvt ltd",
+    "pvt limited",
+    "private ltd",
+    "incorporated",
+    "corporation",
+    "company",
+    "limited",
+    "corp",
+    "inc",
+    "ltd",
+    "llc",
+    "llp",
+    "co",
+    "pvt",
+)
+
+
+def _dup_gate_entity_key(counterparty: str) -> str:
+    """A LOOSER same-counterparty key for the near-dup gate ONLY.
+
+    The near-dup gate must treat a genuine same-counterparty RESEND as same-party even
+    when the counterparty name is written with a different legal-suffix surface form
+    across the two matters -- ``Acme Corp`` vs ``Acme Corp.``, ``Acme Private Limited``
+    vs ``Acme Pvt Ltd``. ``_normalized_entity_key`` (only casefold + whitespace) keys
+    those DIFFERENTLY, so the literal gate would wrongly drop a real resend as
+    "different counterparty" -- a safe-direction false negative.
+
+    This key additionally (a) strips trailing punctuation from each token (so
+    ``Corp.`` == ``Corp``) and (b) folds a trailing run of common legal-entity
+    suffixes (corp/corporation, inc/incorporated, ltd/limited, pvt ltd/private
+    limited, co/company, llc, llp) off the END of the name. The result is the bare
+    entity name, so the variants above all collapse to ``acme``.
+
+    DELIBERATELY SEPARATE from ``_normalized_entity_key``: this looser folding is
+    correct for "is this the same party resending?" but must NOT change
+    repeat_entity's display grouping (which stays the literal casefold+whitespace
+    key). The unknown sentinel still maps to "" so unknown matters never near-dup-match
+    (an empty key never equals another empty key in the gate).
+    """
+    base = _normalized_entity_key(counterparty)
+    if not base:
+        return ""
+    # Strip trailing punctuation off each whitespace token (e.g. "corp." -> "corp",
+    # "inc," -> "inc") before suffix folding so punctuated variants match.
+    tokens = [tok.strip(".,;:&") for tok in base.split()]
+    tokens = [tok for tok in tokens if tok]
+    if not tokens:
+        return ""
+    # Fold a trailing run of legal suffixes off the end. Repeat so chained suffixes
+    # ("pvt ltd" written as two tokens, or "co ltd") all peel away. Longest phrase
+    # first so "private limited"/"pvt ltd" match before "limited"/"ltd".
+    changed = True
+    while changed and tokens:
+        changed = False
+        for suffix in _DUP_GATE_SUFFIXES:
+            suffix_tokens = suffix.split()
+            n = len(suffix_tokens)
+            if len(tokens) > n and tokens[-n:] == suffix_tokens:
+                del tokens[-n:]
+                changed = True
+                break
+    if not tokens:
+        # The whole name was suffixes (degenerate); fall back to the punctuation-
+        # stripped base so two such names still gate on their literal form rather
+        # than all collapsing to "" (which would let unrelated all-suffix names match).
+        return " ".join(tok.strip(".,;:&") for tok in base.split() if tok.strip(".,;:&"))
+    return " ".join(tokens)
+
+
 def _stamp_repeat_entity(matters: list[dict[str, Any]]) -> int:
     """Stamp ``facets.repeat_entity`` per matter; return the repeat-entity count.
 
@@ -1506,7 +1596,11 @@ def _stamp_duplicate_document(matters: list[dict[str, Any]]) -> int:
     for index, matter in enumerate(matters):
         fingerprint = matter.get(_FINGERPRINT_KEY)
         if content_fingerprint.is_valid_fingerprint(fingerprint):
-            cp_key = _normalized_entity_key(str(matter.get("counterparty") or ""))
+            # Looser dup-gate key (suffix/punctuation-folded) so a same-party RESEND
+            # written with a different legal-suffix surface form ("Acme Corp" vs
+            # "Acme Corp." vs "Acme Pvt Ltd") still passes the same-counterparty gate.
+            # NOT _normalized_entity_key -- that literal key would drop the resend.
+            cp_key = _dup_gate_entity_key(str(matter.get("counterparty") or ""))
             candidates.append((index, matter, fingerprint, cp_key))
 
     def _sort_key(item: tuple[int, dict[str, Any], dict[str, Any], str]) -> tuple[str, str, int]:
