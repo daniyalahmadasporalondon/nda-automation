@@ -356,10 +356,35 @@ def _run_format_changed_rpr(
     change_original = _clone_element(original_rpr)
     for stale in list(change_original.findall(_w_tag("rPrChange"))):
         change_original.remove(stale)
+    # Canonicalise the from-state's child order too: a SOURCE run can arrive with
+    # its rPr children already out of CT_RPr sequence, and the nested rPrChange/rPr
+    # is serialised verbatim (not via the re-sorting string serializer).
+    _sort_rpr_children(change_original)
     run_property_change = ET.SubElement(new_rpr, _w_tag("rPrChange"))
     _set_revision_attrs(run_property_change, rev_id)
     run_property_change.append(change_original)
+    # Re-sort the new rPr into canonical CT_RPr order. The per-op setters insert
+    # each new child in order, but a source rPr whose EXISTING children were already
+    # out of sequence (e.g. <w:u> before <w:highlight>) would otherwise stay invalid
+    # and make Word refuse to open / "repair" the file. rPrChange sorts to last.
+    _sort_rpr_children(new_rpr)
     return new_rpr, rev_id + 1
+
+
+def _sort_rpr_children(run_properties: ET.Element) -> None:
+    """Stable-sort an rPr's children into canonical CT_RPr schema order in place.
+
+    Unknown tags keep their relative position at the END (sort key = len(order)),
+    and the stable sort preserves the order of equal-keyed siblings. <w:rPrChange>
+    is last in the order table, so it always sorts to the tail."""
+    children = list(run_properties)
+    children.sort(
+        key=lambda child: _RPR_CHILD_ORDER_INDEX.get(child.tag.split("}", 1)[-1], len(_RPR_CHILD_ORDER))
+    )
+    for child in children:
+        run_properties.remove(child)
+    for child in children:
+        run_properties.append(child)
 
 
 def _set_run_toggle(run_properties: ET.Element, tag: str, enabled: bool) -> None:

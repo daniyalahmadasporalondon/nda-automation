@@ -337,12 +337,22 @@ function formatOpSummary(op) {
 function runOpSummary(op) {
   if (op.property === "bold") return op.to ? "Bold" : "No bold";
   if (op.property === "italic") return op.to ? "Italic" : "No italic";
+  if (op.property === "underline") return op.to ? "Underline" : "No underline";
+  if (op.property === "strike") return op.to ? "Strikethrough" : "No strikethrough";
   if (op.property === "font") {
     const to = String(op.to || "").trim();
     return to ? `Font: ${to} (selection)` : "Default font (selection)";
   }
   if (op.property === "size") {
     return Number(op.to) > 0 ? `Size: ${Number(op.to)} (selection)` : "";
+  }
+  if (op.property === "color") {
+    const to = String(op.to || "").trim();
+    return to ? `Color: #${to} (selection)` : "Default color (selection)";
+  }
+  if (op.property === "highlight") {
+    const to = String(op.to || "").trim();
+    return to ? `Highlight: ${to} (selection)` : "No highlight (selection)";
   }
   return "";
 }
@@ -594,7 +604,7 @@ function runFormatOps(paragraph, baseline) {
   const original = runCharProperties(baseline?.runs, text);
   if (!current || !original) return [];
   const ops = [];
-  ["bold", "italic", "font", "size"].forEach((property) => {
+  ["bold", "italic", "underline", "strike", "font", "size", "color", "highlight"].forEach((property) => {
     let index = 0;
     while (index < text.length) {
       const from = original[property][index];
@@ -632,28 +642,49 @@ function runCharProperties(runs, text) {
   if (!Array.isArray(runs) || !runs.length) {
     // Absent runs = the unformatted baseline: every char is plain.
     return runs === undefined || runs === null
-      ? { bold: new Array(text.length).fill(false), italic: new Array(text.length).fill(false), font: new Array(text.length).fill(""), size: new Array(text.length).fill(0) }
+      ? {
+          bold: new Array(text.length).fill(false),
+          italic: new Array(text.length).fill(false),
+          underline: new Array(text.length).fill(false),
+          strike: new Array(text.length).fill(false),
+          font: new Array(text.length).fill(""),
+          size: new Array(text.length).fill(0),
+          color: new Array(text.length).fill(""),
+          highlight: new Array(text.length).fill(""),
+        }
       : null;
   }
   if (runs.map((run) => String(run?.text || "")).join("") !== text) return null;
   const bold = [];
   const italic = [];
+  const underline = [];
+  const strike = [];
   const font = [];
   const size = [];
+  const color = [];
+  const highlight = [];
   runs.forEach((run) => {
     const runText = String(run?.text || "");
     const isBold = Boolean(run?.bold);
     const isItalic = Boolean(run?.italic);
+    const isUnderline = Boolean(run?.underline);
+    const isStrike = Boolean(run?.strike);
     const fontName = String(run?.font || "").trim();
     const pointSize = Number(run?.size) > 0 ? Number(run?.size) : 0;
+    const colorHex = String(run?.color || "").trim().replace(/^#/, "").toUpperCase();
+    const highlightName = String(run?.highlight || "").trim();
     for (let i = 0; i < runText.length; i += 1) {
       bold.push(isBold);
       italic.push(isItalic);
+      underline.push(isUnderline);
+      strike.push(isStrike);
       font.push(fontName);
       size.push(pointSize);
+      color.push(colorHex);
+      highlight.push(highlightName);
     }
   });
-  return { bold, italic, font, size };
+  return { bold, italic, underline, strike, font, size, color, highlight };
 }
 
 function runPropEqual(a, b) {
@@ -661,10 +692,11 @@ function runPropEqual(a, b) {
   return String(a || "") === String(b || "");
 }
 
-// Contract value for an op: bold/italic -> boolean; font -> Word name string;
-// size -> point number (0 when none).
+// Contract value for an op: bold/italic/underline/strike -> boolean; font/color/
+// highlight -> string; size -> point number (0 when none). color is the bare
+// RRGGBB hex; highlight is the Word named-palette value.
 function runOpValue(property, value) {
-  if (property === "font") return String(value || "");
+  if (property === "font" || property === "color" || property === "highlight") return String(value || "");
   if (property === "size") return Number(value) > 0 ? Number(value) : 0;
   return Boolean(value);
 }
@@ -1047,19 +1079,28 @@ function baselineParagraphForRichText(paragraph) {
   return baseline.find((item) => item.id === paragraph.id) || null;
 }
 
-// True when any character of the run [start, end) carries bold/italic/font that
-// differs from the baseline char-state at that index.
+// True when any character of the run [start, end) carries bold/italic/underline/
+// strike/font/size/color/highlight that differs from the baseline char-state at
+// that index.
 function runDiffersFromBaseline(run, baselineChars, start, end) {
   if (!baselineChars) return false;
   const isBold = Boolean(run?.bold);
   const isItalic = Boolean(run?.italic);
+  const isUnderline = Boolean(run?.underline);
+  const isStrike = Boolean(run?.strike);
   const font = String(run?.font || "").trim();
   const size = Number(run?.size) > 0 ? Number(run?.size) : 0;
+  const color = String(run?.color || "").trim().replace(/^#/, "").toUpperCase();
+  const highlight = String(run?.highlight || "").trim();
   for (let index = start; index < end; index += 1) {
     if (Boolean(baselineChars.bold[index]) !== isBold) return true;
     if (Boolean(baselineChars.italic[index]) !== isItalic) return true;
+    if (Boolean(baselineChars.underline && baselineChars.underline[index]) !== isUnderline) return true;
+    if (Boolean(baselineChars.strike && baselineChars.strike[index]) !== isStrike) return true;
     if (String(baselineChars.font[index] || "") !== font) return true;
     if (Number((baselineChars.size && baselineChars.size[index]) || 0) !== size) return true;
+    if (String((baselineChars.color && baselineChars.color[index]) || "") !== color) return true;
+    if (String((baselineChars.highlight && baselineChars.highlight[index]) || "") !== highlight) return true;
   }
   return false;
 }

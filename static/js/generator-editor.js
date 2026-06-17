@@ -862,10 +862,16 @@ window.generatorEditor = (function () {
       const out = { text: String(r.text || "") };
       if (r.bold) out.bold = true;
       if (r.italic) out.italic = true;
+      if (r.underline) out.underline = true;
+      if (r.strike) out.strike = true;
       const font = String(r.font || "").trim();
       if (font) out.font = font;
       const size = Number(r.size);
       if (Number.isFinite(size) && size > 0) out.size = size;
+      const color = String(r.color || "").trim().replace(/^#/, "").toUpperCase();
+      if (/^[0-9A-F]{6}$/.test(color)) out.color = color;
+      const highlight = String(r.highlight || "").trim();
+      if (highlight) out.highlight = highlight;
       return out;
     });
     copy[0].text = copy[0].text.replace(/^\s+/, "");
