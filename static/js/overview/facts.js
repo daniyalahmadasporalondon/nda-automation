@@ -88,7 +88,7 @@ function renderCounterparty(name, confirmed, sender) {
   // input. The name reads as text; an "Edit" button next to it opens the inline
   // editor on demand.
   const displayName = name
-    ? `<span class="ov-counterparty-name" title="${escape(name)}">${escape(name)}</span>`
+    ? `<span class="ov-counterparty-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>`
     : '<span class="ov-counterparty-name ov-counterparty-name--empty">Unknown counterparty</span>';
 
   // Edit — turns the name into an editable field on demand (NOT always-on). It is
@@ -118,7 +118,7 @@ function renderCounterparty(name, confirmed, sender) {
           type="text"
           class="ov-counterparty-edit-input"
           data-ov-entity-input
-          value="${escape(name)}"
+          value="${escapeHtml(name)}"
           placeholder="Counterparty legal name"
           autocomplete="off"
           spellcheck="false">
@@ -135,7 +135,7 @@ function renderCounterparty(name, confirmed, sender) {
     ? `
       <div class="ov-fact ov-counterparty-sender" data-ov-sender>
         <span class="ov-fact-label">Sender</span>
-        <span class="ov-fact-value">${escape(sender)}</span>
+        <span class="ov-fact-value">${escapeHtml(sender)}</span>
       </div>`
     : "";
 
@@ -192,11 +192,11 @@ function formatReceivedDate(value) {
 function renderFact(label, value) {
   const text = String(value == null ? "" : value).trim();
   const valueMarkup = text
-    ? `<span class="ov-fact-value">${escape(text)}</span>`
+    ? `<span class="ov-fact-value">${escapeHtml(text)}</span>`
     : '<span class="ov-fact-value ov-fact-value--empty">—</span>';
   return `
     <div class="ov-fact">
-      <span class="ov-fact-label">${escape(label)}</span>
+      <span class="ov-fact-label">${escapeHtml(label)}</span>
       ${valueMarkup}
     </div>`;
 }
@@ -283,7 +283,9 @@ function bindEdit(containerEl, onEntityFill) {
 
 // --- helpers -----------------------------------------------------------------
 
-function escape(value) {
+// File-local HTML escaper. Named escapeHtml (not the bare `escape`) so a classic
+// script declaration never clobbers the browser's built-in window.escape.
+function escapeHtml(value) {
   return typeof window !== "undefined" && typeof window.escapeHtml === "function"
     ? window.escapeHtml(value)
     : String(value == null ? "" : value)
