@@ -14,6 +14,14 @@
 // "signed"|"awaiting"|"declined", signed_at }`. We read it from there. With no
 // envelope yet (`docusign` absent / no signers) BOTH parties read "Not sent".
 //
+// Some matters are executed OUTSIDE our DocuSign flow — a counter-signed copy is
+// uploaded, or the matter is manually marked executed. Those carry NO envelope
+// (`docusign.envelope_id` absent) yet are fully executed everywhere else (off the
+// board, in the Corpus executed library). For them we trust the matter-level
+// execution signal (`matter.executed === true` OR `matter.status ===
+// "fully_signed"`) and render 2/2 with both parties signed and an "Executed
+// outside DocuSign." label, rather than the misleading "0/2 — Not sent".
+//
 // The renderer is pure render + escape: it never fetches, never mutates app
 // state, and never reaches outside `containerEl`. The shell owns the shared files
 // (index.html / overview.css) and passes the matter in; we only emit the shared
@@ -28,6 +36,9 @@ const SIG_NOT_SENT = "not_sent";
 
 const ASPORA_ROLE = "aspora";
 
+// Default label for a matter executed outside our DocuSign flow.
+const EXECUTED_OFF_PLATFORM = "Executed outside DocuSign.";
+
 // renderOverviewSignatures(containerEl, matter)
 //
 // `matter` is the public matter object (state.selectedMatter). We read only its
@@ -36,27 +47,36 @@ const ASPORA_ROLE = "aspora";
 function renderOverviewSignatures(containerEl, matter) {
   if (!containerEl) return;
 
-  const parties = signatureParties(matter || {});
+  const view = matter || {};
+  const parties = signatureParties(view);
   const signedCount = parties.filter((p) => p.status === SIG_SIGNED).length;
   const total = parties.length;
   const fullyExecuted = total > 0 && signedCount === total;
+  const offPlatform = isExecutedOffPlatform(view);
 
   // Tally line: "0/2", "1/2", "2/2 — Fully executed". When no envelope exists at
   // all (both parties not-sent) the tally still reads "0/2" but the rows carry
-  // the "Not sent" state so the at-a-glance count is honest either way.
+  // the "Not sent" state so the at-a-glance count is honest either way. For a
+  // matter executed outside DocuSign the tally reads "2/2 — Executed outside
+  // DocuSign." instead of the in-flow "Fully executed".
   const tally = `${signedCount}/${total}`;
   const tallyClass = fullyExecuted
     ? "ov-signatures-tally ov-signatures-tally--executed"
     : signedCount > 0
       ? "ov-signatures-tally ov-signatures-tally--partial"
       : "ov-signatures-tally";
+  const executedLabel = offPlatform ? executedOffPlatformLabel(view) : "Fully executed";
 
   containerEl.innerHTML = `
     <section class="ov-signatures" aria-label="Signatures">
       <div class="ov-signatures-head">
         <span class="ov-fact-label">Signatures</span>
         <span class="${tallyClass}" data-ov-signatures-tally>${escapeHtml(tally)}${
-          fullyExecuted ? ' <span class="ov-signatures-executed">Fully executed</span>' : ""
+          fullyExecuted
+            ? ` <span class="ov-signatures-executed"${
+                offPlatform ? ' data-ov-signatures-off-platform' : ""
+              }>${escapeHtml(executedLabel)}</span>`
+            : ""
         }</span>
       </div>
       <div class="ov-signatures-rows">
@@ -74,8 +94,19 @@ function signatureParties(matter) {
   const docusign = matter && typeof matter.docusign === "object" ? matter.docusign : null;
   const signers = docusign && Array.isArray(docusign.signers) ? docusign.signers : [];
   // The envelope exists once we have an envelope_id; without it nothing was ever
-  // sent, so every party reads "Not sent" regardless of any stale signer data.
+  // sent through our DocuSign flow.
   const sent = !!(docusign && String(docusign.envelope_id || "").trim());
+
+  // Executed outside DocuSign: the matter is fully executed (paper-signed upload
+  // or manual mark-executed) yet has no usable envelope. Trust the matter-level
+  // execution signal and render both parties signed (2/2). The DocuSign-envelope
+  // path below is untouched — this branch only fires when no envelope exists.
+  if (!sent && matterIsExecuted(matter)) {
+    return [
+      partyModel("Aspora", { signature_status: SIG_SIGNED }, true),
+      partyModel("Counterparty", { signature_status: SIG_SIGNED }, true),
+    ];
+  }
 
   const aspora = signers.find((s) => s && s.role === ASPORA_ROLE) || null;
   // The counterparty is the OTHER recipient: the first non-Aspora signer.
@@ -85,6 +116,39 @@ function signatureParties(matter) {
     partyModel("Aspora", aspora, sent),
     partyModel("Counterparty", counterparty, sent),
   ];
+}
+
+// Whether the matter is fully executed per the matter-level lifecycle signal,
+// independent of any DocuSign envelope. The backend marks `executed === true`
+// and/or sets `status === "fully_signed"` once an NDA is counter-signed —
+// including for off-platform (uploaded / manually marked) executions.
+function matterIsExecuted(matter) {
+  if (!matter || typeof matter !== "object") return false;
+  if (matter.executed === true) return true;
+  return String(matter.status || "").trim().toLowerCase() === "fully_signed";
+}
+
+// True only when the matter is executed but carries no DocuSign envelope — the
+// "executed outside DocuSign" surface. Used to swap the header label.
+function isExecutedOffPlatform(matter) {
+  const docusign = matter && typeof matter.docusign === "object" ? matter.docusign : null;
+  const sent = !!(docusign && String(docusign.envelope_id || "").trim());
+  return !sent && matterIsExecuted(matter);
+}
+
+// Human label for an off-platform execution. If the matter view carries a
+// manner-of-execution marker (`signed_via`/`executed_via` — "uploaded" for a
+// counter-signed upload vs anything else for a manual mark) we reflect it;
+// otherwise we fall back to the generic note.
+function executedOffPlatformLabel(matter) {
+  const via = String(
+    (matter && (matter.signed_via || matter.executed_via)) || "",
+  )
+    .trim()
+    .toLowerCase();
+  if (via === "uploaded") return "Executed outside DocuSign (signed copy uploaded).";
+  if (via === "manual") return "Executed outside DocuSign (marked executed).";
+  return EXECUTED_OFF_PLATFORM;
 }
 
 function partyModel(label, signer, sent) {

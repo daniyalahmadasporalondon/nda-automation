@@ -105,6 +105,28 @@ test("both signed -> both signed (2/2)", () => {
   assert.ok(parties.every((p) => p.status === "signed"));
 });
 
+// --- executed outside DocuSign (no envelope) ---------------------------------
+
+test("executed matter with no envelope -> both parties signed (2/2)", () => {
+  // Paper-signed upload / manual mark-executed: executed everywhere else but no
+  // DocuSign envelope. Must NOT read 0/2 "Not sent".
+  const parties = signatureParties({ executed: true, docusign: {} });
+  assert.ok(parties.every((p) => p.status === "signed"));
+  assert.equal(parties[0].label, "Aspora");
+  assert.equal(parties[1].label, "Counterparty");
+});
+
+test("fully_signed status with no envelope -> both parties signed (2/2)", () => {
+  const parties = signatureParties({ status: "fully_signed" });
+  assert.ok(parties.every((p) => p.status === "signed"));
+});
+
+test("NOT-executed matter with no envelope still reads not_sent (unchanged)", () => {
+  const parties = signatureParties({ executed: false, docusign: {} });
+  assert.equal(parties[0].status, "not_sent");
+  assert.equal(parties[1].status, "not_sent");
+});
+
 test("missing per-recipient status on a sent envelope reads awaiting (was sent)", () => {
   const matter = {
     docusign: {
@@ -170,6 +192,37 @@ test("render 2/2 shows the fully-executed marker", () => {
   assert.match(c.innerHTML, /ov-signatures-tally--executed[^>]*data-ov-signatures-tally/);
   assert.match(c.innerHTML, /2\/2/);
   assert.match(c.innerHTML, /Fully executed/);
+  // The DocuSign-envelope path must NOT be relabelled as off-platform.
+  assert.doesNotMatch(c.innerHTML, /Executed outside DocuSign/);
+  assert.doesNotMatch(c.innerHTML, /data-ov-signatures-off-platform/);
+});
+
+test("render executed-no-envelope -> 2/2 + Executed outside DocuSign", () => {
+  const c = makeContainer();
+  renderOverviewSignatures(c, { executed: true, docusign: {} });
+  assert.match(c.innerHTML, /ov-signatures-tally--executed[^>]*data-ov-signatures-tally/);
+  assert.match(c.innerHTML, /data-ov-signatures-tally[^>]*>2\/2/);
+  assert.match(c.innerHTML, /data-ov-signatures-off-platform/);
+  assert.match(c.innerHTML, /Executed outside DocuSign\./);
+  assert.doesNotMatch(c.innerHTML, /Fully executed/);
+  // Both party rows read signed, not "Not sent".
+  assert.doesNotMatch(c.innerHTML, /Not sent/);
+  assert.match(c.innerHTML, /data-ov-signature-role="aspora"[^>]*data-ov-signature-status="signed"/);
+  assert.match(c.innerHTML, /data-ov-signature-role="counterparty"[^>]*data-ov-signature-status="signed"/);
+});
+
+test("render off-platform label reflects signed_via=uploaded when present", () => {
+  const c = makeContainer();
+  renderOverviewSignatures(c, { executed: true, signed_via: "uploaded" });
+  assert.match(c.innerHTML, /Executed outside DocuSign \(signed copy uploaded\)\./);
+});
+
+test("render not-executed-no-envelope still reads 0/2 Not sent (regression guard)", () => {
+  const c = makeContainer();
+  renderOverviewSignatures(c, { executed: false, docusign: {} });
+  assert.match(c.innerHTML, /data-ov-signatures-tally[^>]*>0\/2/);
+  assert.match(c.innerHTML, /Not sent/);
+  assert.doesNotMatch(c.innerHTML, /Executed outside DocuSign/);
 });
 
 test("render escapes a hostile signed_at / role without breaking attributes", () => {
