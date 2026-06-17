@@ -50,6 +50,17 @@ REASON_NOT_CONNECTED = "not_connected"
 REASON_DRIVE_ERROR = "drive_error"
 REASON_RATE_LIMITED = "rate_limited"
 REASON_DRIVE_SKIPPED = "drive_skipped"
+REASON_DRIVE_TIMEOUT = "drive_timeout"
+
+# Wall-clock budget for the whole Drive crawl. The crawl makes a chain of blocking
+# Google Drive HTTP calls (find_folder / list_child_folders / find_child_file /
+# download_file_bytes), each of which can stall on the Drive client's own (much
+# longer) socket timeout when the Drive backend is unhealthy. Without a bound the
+# crawl can hang ~30s before failing, and ``/api/corpus`` times out with it. A
+# short overall deadline makes the failing/slow case give up fast (reason
+# ``drive_timeout``) while a healthy crawl — which is a handful of quick calls —
+# finishes well inside the budget and reconciles normally.
+CORPUS_DRIVE_CRAWL_DEADLINE_SECONDS = 4.0
 
 # Reconciliation provenance for a matter.
 SOURCE_APP = "app"
@@ -301,6 +312,16 @@ def invalidate_cache(owner_user_id: str = "") -> None:
             _DRIVE_CACHE.clear()
 
 
+class _DriveCrawlTimeout(Exception):
+    """Internal sentinel: the Drive crawl blew its wall-clock deadline.
+
+    Raised by the crawl's deadline checks and caught in :func:`_drive_pass`, where
+    it degrades to an app-state-only corpus with ``drive.reason='drive_timeout'``.
+    Kept private to this module so the Drive client / drive_integration contract is
+    untouched.
+    """
+
+
 def _now_epoch(clock: Optional[Callable[[], float]]) -> float:
     if clock is not None:
         return float(clock())
@@ -309,6 +330,24 @@ def _now_epoch(clock: Optional[Callable[[], float]]) -> float:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _crawl_deadline(clock: Optional[Callable[[], float]]) -> Callable[[], None]:
+    """Build a no-arg guard that raises :class:`_DriveCrawlTimeout` once the crawl
+    has been running longer than ``CORPUS_DRIVE_CRAWL_DEADLINE_SECONDS``.
+
+    The crawl calls this guard *before* each blocking Drive request, so a slow or
+    hung crawl bails out within roughly one request of the budget rather than
+    grinding through every remaining call. Uses the injected ``clock`` (so tests
+    can drive the deadline deterministically) and falls back to wall-clock time.
+    """
+    started_at = _now_epoch(clock)
+
+    def _check() -> None:
+        if (_now_epoch(clock) - started_at) >= CORPUS_DRIVE_CRAWL_DEADLINE_SECONDS:
+            raise _DriveCrawlTimeout()
+
+    return _check
 
 
 # --- public entrypoint -----------------------------------------------------
@@ -473,7 +512,19 @@ def _drive_pass(
             return cached
 
     try:
-        crawl = _crawl_drive(drive_owner_user_id, drive_service=drive_service)
+        crawl = _crawl_drive(
+            drive_owner_user_id,
+            drive_service=drive_service,
+            deadline=_crawl_deadline(clock),
+        )
+    except _DriveCrawlTimeout:
+        # The crawl blew its short wall-clock budget — give up fast instead of
+        # letting the Drive client's long socket timeout hang /api/corpus.
+        return {
+            "drive": _drive_block(connected=True, reconciled=False, reason=REASON_DRIVE_TIMEOUT),
+            "drive_matters": {},
+            "drive_orphans": [],
+        }
     except drive_integration.DriveRateLimitError:
         return {
             "drive": _drive_block(connected=True, reconciled=False, reason=REASON_RATE_LIMITED),
@@ -544,15 +595,27 @@ def _store_drive_cache(
         }
 
 
-def _crawl_drive(drive_owner_user_id: str, *, drive_service: Any | None) -> dict[str, Any]:
+def _crawl_drive(
+    drive_owner_user_id: str,
+    *,
+    drive_service: Any | None,
+    deadline: Callable[[], None] | None = None,
+) -> dict[str, Any]:
     """Read-only crawl of the app-owned ``NDAs`` tree -> reconciliation records.
 
     Layout: ``{root_parent}/NDAs/{counterparty}/{matter}/metadata/matter_summary.json``.
     Each matter folder's summary is the reconciliation record. Folders without a
     parseable summary become degraded "orphan" entries naming the folder.
+
+    ``deadline`` (when supplied) is a no-arg guard called before each blocking Drive
+    request; it raises :class:`_DriveCrawlTimeout` once the crawl's wall-clock budget
+    is spent, so a slow/hung Drive backend bails out fast instead of hanging.
     """
+    check_deadline = deadline if deadline is not None else (lambda: None)
+
     settings = app_settings.drive_settings()
     parent_id = str(settings.get("folder_id") or "")
+    check_deadline()
     root_id = drive_integration.find_folder(
         name=drive_integration.DEFAULT_ROOT_FOLDER_NAME,
         parent_id=parent_id,
@@ -564,6 +627,7 @@ def _crawl_drive(drive_owner_user_id: str, *, drive_service: Any | None) -> dict
     if not root_id:
         return {"drive_matters": drive_matters, "drive_orphans": drive_orphans}
 
+    check_deadline()
     counterparty_folders = drive_integration.list_child_folders(
         parent_id=root_id, owner_user_id=drive_owner_user_id, service=drive_service
     )
@@ -572,6 +636,7 @@ def _crawl_drive(drive_owner_user_id: str, *, drive_service: Any | None) -> dict
         cp_id = str(cp_folder.get("id") or "")
         if not cp_id:
             continue
+        check_deadline()
         matter_folders = drive_integration.list_child_folders(
             parent_id=cp_id, owner_user_id=drive_owner_user_id, service=drive_service
         )
@@ -582,7 +647,10 @@ def _crawl_drive(drive_owner_user_id: str, *, drive_service: Any | None) -> dict
                 continue
             folder_url = drive_integration.folder_web_url(folder_id)
             summary = _read_matter_summary(
-                folder_id, drive_owner_user_id, drive_service=drive_service
+                folder_id,
+                drive_owner_user_id,
+                drive_service=drive_service,
+                deadline=check_deadline,
             )
             if summary is None:
                 drive_orphans.append(
@@ -631,7 +699,10 @@ def _read_matter_summary(
     drive_owner_user_id: str,
     *,
     drive_service: Any | None,
+    deadline: Callable[[], None] | None = None,
 ) -> dict[str, Any] | None:
+    check_deadline = deadline if deadline is not None else (lambda: None)
+    check_deadline()
     metadata_id = drive_integration.find_folder(
         name=drive_integration.METADATA_FOLDER_NAME,
         parent_id=matter_folder_id,
@@ -640,6 +711,7 @@ def _read_matter_summary(
     )
     if not metadata_id:
         return None
+    check_deadline()
     summary_file_id = drive_integration.find_child_file(
         name=drive_integration.MATTER_SUMMARY_FILENAME,
         parent_id=metadata_id,
@@ -648,6 +720,7 @@ def _read_matter_summary(
     )
     if not summary_file_id:
         return None
+    check_deadline()
     raw = drive_integration.download_file_bytes(
         file_id=summary_file_id, owner_user_id=drive_owner_user_id, service=drive_service
     )
