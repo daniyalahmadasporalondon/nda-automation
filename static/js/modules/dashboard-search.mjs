@@ -391,7 +391,12 @@ function matterHumanGate(matter) {
 }
 
 // "Has issues" = the review flagged at least one failed OR needs-review requirement.
+// Verdict gate: a deterministic-only matter (ai_review_ran === false) never has AI
+// issues, so the requirement counts below must not be surfaced as "issues" — that
+// would be a deterministic ghost. Only an EXPLICIT false short-circuits; legacy
+// payloads lacking the flag keep the existing count-based behavior.
 function matterHasIssues(matter) {
+  if (matter?.ai_review_ran === false) return false;
   const failed = Number(matter?.requirements_failed || 0);
   const needsReview = Number(matter?.requirements_needs_review || 0);
   return (Number.isFinite(failed) && failed > 0) || (Number.isFinite(needsReview) && needsReview > 0);

@@ -51,6 +51,15 @@ const RepositorySend = (() => {
   // fabricate them (see report: backend plumbing follow-up).
   function renderChangeSummary(matter) {
     const reviewResult = matter.review_result || {};
+    // Verdict gate (mirror repository-detail.js ~17-19): the flagged-issue count is
+    // an AI verdict. A deterministic-only matter (ai_review_ran === false) must not
+    // claim "Redline addresses N flagged clauses" — the AI never flagged them. Only
+    // an explicit false suppresses; legacy payloads lacking the flag fall back to
+    // "are there clauses" and keep the existing behavior.
+    const aiReviewRan = typeof matter.ai_review_ran === "boolean"
+      ? matter.ai_review_ran
+      : (Array.isArray(reviewResult.clauses) && reviewResult.clauses.length > 0);
+    if (!aiReviewRan) return "";
     const attentionCount = Array.isArray(reviewResult.clauses)
       ? reviewResult.clauses.filter((clause) => clause && clauseStatus(clause).requiresAttention).length
       : 0;

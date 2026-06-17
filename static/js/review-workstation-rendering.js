@@ -234,6 +234,22 @@ function renderStudioResult(result) {
 }
 
 function renderStudioSummary(clauses) {
+  // Verdict gate: this overall PASS/FAIL/REVIEW mark + tally is the most
+  // authoritative-looking surface in the studio. It must NEVER show a verdict the
+  // AI never issued. On a deterministic-only matter (ai_review_ran === false) the
+  // backend aggregate is absent and the code below would fall back to a JS
+  // clauseStatus() recount — a "deterministic ghost". Gate the whole summary on
+  // aiReviewRan() and render the same "Awaiting review" Pending state as
+  // renderStudioEmpty() instead. Legacy payloads predating the flag fall back to
+  // "are there review results" (aiReviewRan default), so nothing regresses.
+  if (!aiReviewRan()) {
+    studioMatchSummary.textContent = `0/${getClauseTotal(clauses)}`;
+    studioResultMark.textContent = "-";
+    studioResultMark.className = "";
+    studioOverallTitle.textContent = "Not reviewed";
+    studioResultMeta.textContent = "No AI review has run yet. Run Review to see verdicts.";
+    return;
+  }
   // The overall verdict is NOT re-derived from JS clause counts here. The backend
   // ran the canonical aggregate (aggregate_review_state -> review_state, including
   // the document-level send gates) and attaches it as latestReviewResult.review_state.
