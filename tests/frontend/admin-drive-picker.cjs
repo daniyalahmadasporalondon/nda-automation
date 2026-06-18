@@ -13,11 +13,18 @@
 //   * the returned folders render as a clickable list;
 //   * clicking a folder's "Open >" drills in (GET ?parent=<id>) and pushes a crumb;
 //   * a breadcrumb click jumps back up the trail;
-//   * highlighting a folder + "Use this folder" fills BOTH the id and name fields
-//     and closes the modal;
+//   * highlighting a folder + "Use this folder" fills the id field, captures the
+//     real name, and closes the modal;
 //   * a Drive-disconnected (409) response surfaces the error in the picker status
 //     without throwing;
 //   * the manual paste-an-ID + Save flow is untouched (no picker dependency).
+//
+// Folder UX improvements covered here too:
+//   (A) the manual "Root folder name" input is GONE — the controller no longer
+//       takes driveFolderNameInput, yet a picker-based Save still posts the
+//       captured folder_name; a hand-typed id posts without a stale folder_name;
+//   (B) "+ New folder" POSTs {parent, name}; on {id, name} it adds + selects the
+//       new folder (filling the id field) and surfaces create errors inline.
 
 const assert = require("node:assert/strict");
 const path = require("node:path");
@@ -235,7 +242,6 @@ function mountController() {
 
   const driveFolderForm = new FakeElement("form");
   const driveFolderIdInput = new FakeElement("input");
-  const driveFolderNameInput = new FakeElement("input");
   const driveFolderSaveButton = new FakeElement("button");
 
   const driveBrowseButton = new FakeElement("button");
@@ -248,6 +254,16 @@ function mountController() {
   const drivePickerBreadcrumb = new FakeElement("nav");
   const drivePickerStatus = new FakeElement("p");
   const drivePickerSelection = new FakeElement("span");
+
+  // "+ New folder" controls.
+  const drivePickerNewToggle = new FakeElement("button");
+  const drivePickerNewRow = new FakeElement("div");
+  drivePickerNewRow.hidden = true;
+  const drivePickerNewInput = new FakeElement("input");
+  const drivePickerNewCreate = new FakeElement("button");
+  const drivePickerNewCancel = new FakeElement("button");
+  const drivePickerNewError = new FakeElement("p");
+  drivePickerNewError.hidden = true;
 
   const state = { driveStatus: {} };
   const reviewErrorFromPayload = (payload, fallback) =>
@@ -263,7 +279,6 @@ function mountController() {
     driveEnabledToggle: new FakeElement("button"),
     driveFolderForm,
     driveFolderIdInput,
-    driveFolderNameInput,
     driveFolderSaveButton,
     driveBrowseButton,
     drivePickerBackdrop,
@@ -274,6 +289,12 @@ function mountController() {
     drivePickerBreadcrumb,
     drivePickerStatus,
     drivePickerSelection,
+    drivePickerNewToggle,
+    drivePickerNewRow,
+    drivePickerNewInput,
+    drivePickerNewCreate,
+    drivePickerNewCancel,
+    drivePickerNewError,
     reviewErrorFromPayload,
   });
 
@@ -284,7 +305,6 @@ function mountController() {
     folderMessage,
     driveFolderForm,
     driveFolderIdInput,
-    driveFolderNameInput,
     driveFolderSaveButton,
     driveBrowseButton,
     drivePickerBackdrop,
@@ -295,6 +315,12 @@ function mountController() {
     drivePickerBreadcrumb,
     drivePickerStatus,
     drivePickerSelection,
+    drivePickerNewToggle,
+    drivePickerNewRow,
+    drivePickerNewInput,
+    drivePickerNewCreate,
+    drivePickerNewCancel,
+    drivePickerNewError,
   };
 }
 
@@ -363,11 +389,17 @@ function openSpanOf(folderBtn) {
     assert.deepEqual(names, ["Acme Corp"]);
   });
 
-  await test('selecting + "Use this folder" fills BOTH id and name and closes', async () => {
+  await test('selecting + "Use this folder" fills the id, captures the name (no name input), and saving posts folder_name', async () => {
     const ui = mountController();
-    installFetch((url) => {
+    // The manual name field was removed: the controller must not require it.
+    assert.equal(ui.driveFolderNameInput, undefined, "no manual name input in the harness");
+
+    const calls = installFetch((url) => {
       if (url === "/api/admin/drive-folders?parent=root") {
         return { payload: { parent: "root", folders: [{ id: "f_clients", name: "Clients" }] } };
+      }
+      if (url === "/api/admin/drive-settings") {
+        return { payload: { drive: { enabled: true, folder_id: "f_clients", folder_name: "Clients" } } };
       }
       return {};
     });
@@ -386,8 +418,14 @@ function openSpanOf(folderBtn) {
     await flush();
 
     assert.equal(ui.driveFolderIdInput.value, "f_clients", "id field filled");
-    assert.equal(ui.driveFolderNameInput.value, "Clients", "name field filled");
     assert.equal(ui.drivePickerBackdrop.hidden, true, "modal closed after select");
+
+    // Saving carries the captured name even though there is no name input.
+    await ui.driveFolderForm.submit();
+    await flush();
+    const saveCall = calls.find((c) => c.url === "/api/admin/drive-settings");
+    assert.ok(saveCall, "posted to /api/admin/drive-settings");
+    assert.deepEqual(saveCall.body, { folder_id: "f_clients", folder_name: "Clients" }, "picker-captured id+name posted");
   });
 
   await test("Drive-disconnected (409) surfaces a status, does not throw", async () => {
@@ -407,13 +445,14 @@ function openSpanOf(folderBtn) {
     assert.equal(ui.drivePickerStatus.hidden, false);
   });
 
-  await test("manual paste + Save still works (no picker dependency)", async () => {
+  await test("manual paste + Save still works and omits a stale folder_name", async () => {
     const ui = mountController();
+    // A hand-typed id has no captured name: the save posts only folder_id, and
+    // the banner resolves the real name server-side.
     ui.driveFolderIdInput.value = "1pasted_id";
-    ui.driveFolderNameInput.value = "Pasted Folder";
     const calls = installFetch((url) => {
       if (url === "/api/admin/drive-settings") {
-        return { payload: { drive: { enabled: true, folder_id: "1pasted_id", folder_name: "Pasted Folder" } } };
+        return { payload: { drive: { enabled: true, folder_id: "1pasted_id", folder_name: "Resolved" } } };
       }
       return {};
     });
@@ -423,7 +462,104 @@ function openSpanOf(folderBtn) {
 
     const saveCall = calls.find((c) => c.url === "/api/admin/drive-settings");
     assert.ok(saveCall, "posted to /api/admin/drive-settings");
-    assert.deepEqual(saveCall.body, { folder_id: "1pasted_id", folder_name: "Pasted Folder" }, "manual id+name posted");
+    assert.deepEqual(saveCall.body, { folder_id: "1pasted_id" }, "manual id posted without a stale name");
+  });
+
+  await test('"+ New folder" POSTs {parent, name}, then adds + selects + fills the form', async () => {
+    const ui = mountController();
+    const calls = installFetch((url, body) => {
+      if (url === "/api/admin/drive-folders?parent=root") {
+        return { payload: { parent: "root", folders: [{ id: "f_clients", name: "Clients" }] } };
+      }
+      if (url === "/api/admin/drive-folders") {
+        // The create POST. Echo back a created id + name.
+        return { payload: { id: "f_new", name: body.name } };
+      }
+      return {};
+    });
+
+    await ui.driveBrowseButton.click();
+    await flush();
+
+    // Reveal the inline input, type a name, click Create.
+    await ui.drivePickerNewToggle.click();
+    await flush();
+    assert.equal(ui.drivePickerNewRow.hidden, false, "new-folder input revealed");
+    ui.drivePickerNewInput.value = "Project X";
+    await ui.drivePickerNewCreate.click();
+    await flush();
+
+    const createCall = calls.find((c) => c.url === "/api/admin/drive-folders" && c.method === "POST");
+    assert.ok(createCall, "POSTed to /api/admin/drive-folders");
+    assert.deepEqual(createCall.body, { parent: "root", name: "Project X" }, "posted {parent, name}");
+
+    // The new folder is added to the list, selected, and the id field filled.
+    const newBtn = folderButton(ui, "Project X");
+    assert.ok(newBtn, "new folder rendered in the list");
+    assert.ok(newBtn.classList.contains("selected"), "new folder highlighted");
+    assert.equal(ui.driveFolderIdInput.value, "f_new", "id field filled with the new folder id");
+    assert.equal(ui.drivePickerNewRow.hidden, true, "new-folder input closed");
+
+    // And the captured name flows into a subsequent save.
+    const saveCalls = installFetch((url) => {
+      if (url === "/api/admin/drive-settings") {
+        return { payload: { drive: { enabled: true, folder_id: "f_new", folder_name: "Project X" } } };
+      }
+      return {};
+    });
+    await ui.driveFolderForm.submit();
+    await flush();
+    const saveCall = saveCalls.find((c) => c.url === "/api/admin/drive-settings");
+    assert.deepEqual(saveCall.body, { folder_id: "f_new", folder_name: "Project X" }, "created folder name carried into save");
+  });
+
+  await test('"+ New folder" surfaces a create error inline without throwing', async () => {
+    const ui = mountController();
+    installFetch((url) => {
+      if (url === "/api/admin/drive-folders?parent=root") {
+        return { payload: { parent: "root", folders: [] } };
+      }
+      if (url === "/api/admin/drive-folders") {
+        return { ok: false, status: 409, payload: { error: "Google Drive is not connected." } };
+      }
+      return {};
+    });
+
+    await ui.driveBrowseButton.click();
+    await flush();
+    await ui.drivePickerNewToggle.click();
+    await flush();
+    ui.drivePickerNewInput.value = "Doomed";
+    await ui.drivePickerNewCreate.click();
+    await flush();
+
+    assert.match(ui.drivePickerNewError.textContent, /not connected/i, "create error shown inline");
+    assert.equal(ui.drivePickerNewError.hidden, false, "error visible");
+    // The input row stays open so the admin can retry; nothing was filled/closed.
+    assert.equal(ui.drivePickerNewRow.hidden, false, "new-folder input stays open on error");
+    assert.equal(ui.driveFolderIdInput.value, "", "id field untouched on error");
+    assert.equal(ui.drivePickerBackdrop.hidden, false, "modal stays open on error");
+  });
+
+  await test('"+ New folder" rejects an empty name without POSTing', async () => {
+    const ui = mountController();
+    const calls = installFetch((url) => {
+      if (url === "/api/admin/drive-folders?parent=root") {
+        return { payload: { parent: "root", folders: [] } };
+      }
+      return {};
+    });
+
+    await ui.driveBrowseButton.click();
+    await flush();
+    await ui.drivePickerNewToggle.click();
+    await flush();
+    ui.drivePickerNewInput.value = "   ";
+    await ui.drivePickerNewCreate.click();
+    await flush();
+
+    assert.ok(!calls.some((c) => c.url === "/api/admin/drive-folders" && c.method === "POST"), "no create POST for an empty name");
+    assert.match(ui.drivePickerNewError.textContent, /name/i, "empty-name error shown");
   });
 
   process.stdout.write(`\nadmin-drive-picker.cjs: ${passed} passed\n`);

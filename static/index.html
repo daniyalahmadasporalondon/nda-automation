@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260618gmailfix">
+    <link rel="stylesheet" href="/static/styles.css?v=20260618drivefolder">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260618dra1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260617dup1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
@@ -1788,10 +1788,8 @@
                         <input id="adminDriveFolderIdInput" type="text" autocomplete="off" spellcheck="false" placeholder="Google Drive folder ID">
                         <button class="secondary" id="adminDriveBrowseButton" type="button">Browse Drive</button>
                       </div>
-                      <label for="adminDriveFolderNameInput">Root folder name (optional)</label>
-                      <input id="adminDriveFolderNameInput" type="text" autocomplete="off" spellcheck="false" placeholder="Display name for the root folder">
                       <div class="integration-search-actions">
-                        <p data-admin-drive="folder-message">Per-matter subfolders are created inside this root folder when set. Or click "Browse Drive" to pick a folder.</p>
+                        <p data-admin-drive="folder-message">Per-matter subfolders are created inside this root folder when set. Click "Browse Drive" to pick or create a folder — its name is captured automatically.</p>
                         <button class="secondary" id="adminDriveFolderSaveButton" type="submit">Save folder</button>
                       </div>
                     </form>
@@ -1803,7 +1801,16 @@
                           <h4 id="adminDrivePickerTitle">Browse Google Drive</h4>
                           <button class="drive-picker-close" id="adminDrivePickerClose" type="button" aria-label="Close folder browser">&times;</button>
                         </div>
-                        <nav class="drive-picker-breadcrumb" id="adminDrivePickerBreadcrumb" aria-label="Folder path"></nav>
+                        <div class="drive-picker-toolbar">
+                          <nav class="drive-picker-breadcrumb" id="adminDrivePickerBreadcrumb" aria-label="Folder path"></nav>
+                          <button class="secondary drive-picker-new-toggle" id="adminDrivePickerNewToggle" type="button">+ New folder</button>
+                        </div>
+                        <div class="drive-picker-new-row" id="adminDrivePickerNewRow" hidden>
+                          <input id="adminDrivePickerNewInput" type="text" autocomplete="off" spellcheck="false" placeholder="New folder name" aria-label="New folder name">
+                          <button class="primary" id="adminDrivePickerNewCreate" type="button">Create</button>
+                          <button class="secondary" id="adminDrivePickerNewCancel" type="button">Cancel</button>
+                        </div>
+                        <p class="drive-picker-new-error" id="adminDrivePickerNewError" hidden></p>
                         <div class="drive-picker-body">
                           <p class="drive-picker-status" id="adminDrivePickerStatus" hidden></p>
                           <ul class="drive-picker-list" id="adminDrivePickerList"></ul>
@@ -2244,7 +2251,7 @@
     <script src="/static/js/admin-ai.js?v=20260618aiconfig"></script>
     <script src="/static/js/admin-health.js?v=20260617a401"></script>
     <script src="/static/js/admin-integrations.js?v=20260618gmailfix"></script>
-    <script src="/static/js/admin-drive.js?v=20260618drivepanel"></script>
+    <script src="/static/js/admin-drive.js?v=20260618drivefolder"></script>
     <script src="/static/js/admin-personalisation.js?v=20260611a"></script>
     <script src="/static/js/admin-docusign.js?v=20260617a401"></script>
     <script src="/static/js/docusign-send.js?v=20260617dsfix1"></script>
@@ -2269,6 +2276,6 @@
     <script src="/static/js/dashboard-search.js?v=20260614a"></script>
     <script src="/static/js/notifications.js?v=20260617aio1"></script>
     <script src="/static/js/generator-editor.js?v=20260617a"></script>
-    <script src="/static/app.js?v=20260618depstatus1"></script>
+    <script src="/static/app.js?v=20260618drivefolder"></script>
   </body>
 </html>
