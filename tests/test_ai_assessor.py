@@ -433,6 +433,24 @@ class AIAssessorProviderAdapterTests(unittest.TestCase):
         self.assertIsInstance(reviewer, OpenRouterAIAssessmentReviewer)
         self.assertEqual(reviewer.model, DEFAULT_OPENROUTER_MODEL)
 
+    def test_configured_assessor_uses_180s_default_timeout(self):
+        # The whole review is ONE model call over the entire packet, so a large
+        # doc (120+ paragraphs) can make Opus take ~2 min; the default must clear
+        # that worst case. Regression guard for the old 20s fail-closed timeout.
+        with (
+            patch("nda_automation.ai_assessor._configured_api_key", side_effect=lambda provider: f"{provider}-key"),
+            patch.dict("os.environ", {"NDA_AI_ASSESSMENT_STUB": ""}, clear=False),
+        ):
+            reviewer = configured_ai_assessment_reviewer({
+                "enabled": True,
+                "provider": "openrouter",
+                "model": DEFAULT_OPENROUTER_MODEL,
+                # timeout_seconds omitted -> must fall back to the 180s default.
+            })
+
+        self.assertIsInstance(reviewer, OpenRouterAIAssessmentReviewer)
+        self.assertEqual(reviewer.timeout_seconds, 180)
+
     def test_configured_reviewer_rejects_old_provider(self):
         with patch.dict("os.environ", {"NDA_AI_ASSESSMENT_STUB": ""}, clear=False):
             with self.assertRaisesRegex(AIAssessorError, "Unsupported AI provider: legacy"):

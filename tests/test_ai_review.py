@@ -563,6 +563,46 @@ class AIProviderAdapterTests(unittest.TestCase):
             boom({"clause": {"id": "mutuality"}, "paragraphs": []})
 
 
+class AIReviewTimeoutDefaultTests(unittest.TestCase):
+    """The single review POST covers the whole packet, so a large doc makes the
+    model take ~2 min. The default per-request timeout must clear that worst
+    case; the previous 20s default timed out and fail-closed the review."""
+
+    def test_default_timeout_constant_is_180_seconds(self):
+        self.assertEqual(ai_review.DEFAULT_AI_TIMEOUT_SECONDS, 180)
+
+    def test_legacy_reviewer_uses_180s_default_timeout(self):
+        reviewer = ai_review.OpenRouterAIReviewer(api_key="k")
+        self.assertEqual(reviewer.timeout_seconds, 180)
+
+    def test_settings_default_timeout_flows_to_both_call_sites(self):
+        # Both the AI-first assessor and the legacy reviewer resolve their
+        # timeout from _ai_review_settings()["timeout_seconds"]; with no env
+        # override it must be the 180s default.
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("NDA_AI_TIMEOUT_SECONDS", None)
+            settings = ai_review._ai_review_settings()
+        self.assertEqual(settings["timeout_seconds"], 180)
+
+    def test_env_override_still_wins_over_default(self):
+        with patch.dict("os.environ", {"NDA_AI_TIMEOUT_SECONDS": "90"}, clear=False):
+            settings = ai_review._ai_review_settings()
+        self.assertEqual(settings["timeout_seconds"], 90)
+
+    def test_env_override_flows_into_legacy_reviewer_build(self):
+        with patch.dict("os.environ", {"NDA_AI_TIMEOUT_SECONDS": "77"}, clear=False):
+            settings = ai_review._ai_review_settings()
+            with patch(
+                "nda_automation.ai_review._configured_api_key",
+                side_effect=lambda provider: f"{provider}-key",
+            ):
+                reviewer = ai_review._configured_reviewer(
+                    {**settings, "provider": "openrouter", "model": ai_review.DEFAULT_OPENROUTER_MODEL}
+                )
+        self.assertIsInstance(reviewer, ai_review.OpenRouterAIReviewer)
+        self.assertEqual(reviewer.timeout_seconds, 77)
+
+
 def _http_error(code):
     import io
     import urllib.error
