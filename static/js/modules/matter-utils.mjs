@@ -138,6 +138,23 @@ export function reviewNeverRan(matter) {
   return matter?.ai_review_ran === false;
 }
 
+// True when an AI review is currently running in the background for this matter.
+// The backend now schedules the review asynchronously (POST /review-refresh
+// returns 202) and stamps `review_status` on every matter payload. An
+// `in_progress` status means a worker is mid-review; the board and review header
+// surface a "Reviewing…" affordance and downstream actions stay disabled until it
+// resolves to `completed`/`failed`/`idle`.
+export function reviewInProgress(matter) {
+  return String(matter?.review_status || "") === "in_progress";
+}
+
+// True when the most recent background review failed (e.g. the worker crashed or
+// the server aged out a stuck in_progress past its TTL). Drives the inline error +
+// Retry affordance.
+export function reviewFailed(matter) {
+  return String(matter?.review_status || "") === "failed";
+}
+
 export function gmailSendButtonLabel(blockReason) {
   if (!blockReason) return "";
   if (blockReason.includes("disabled")) return "Outbound Off";
@@ -157,6 +174,8 @@ export const MatterUtils = {
   needsHumanReview,
   recipientEmail,
   reviewActionable,
+  reviewFailed,
+  reviewInProgress,
   reviewNeverRan,
   reviewStale,
   reviewStaleLabel,

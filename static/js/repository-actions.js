@@ -216,7 +216,18 @@ const RepositoryActions = (() => {
         }
         renderBoard();
         const refresh = reviewMatter?.review_refresh || {};
-        if (refresh.stale) {
+        // The AI review now runs ASYNCHRONOUSLY: POST /review-refresh returns
+        // in_progress and a worker does the heavy work. The board card already shows
+        // a live "Reviewing…" badge (driven by review_status); the inspector reports
+        // that the review STARTED rather than claiming a finished refresh. Opening
+        // the matter into the Review tab tracks it to completion.
+        if (MatterUtils.reviewInProgress(reviewMatter)) {
+          setPanelMessage("Review started. It will update on the board when it finishes.");
+          if (refreshButton?.isConnected) {
+            refreshButton.disabled = false;
+            refreshButton.textContent = previousLabel;
+          }
+        } else if (refresh.stale) {
           setPanelMessage(MatterUtils.reviewStaleLabel(reviewMatter) || "Review is still stale.");
         } else if (refresh.redline_draft_cleared) {
           setPanelMessage(refresh.message || "Review refreshed. Saved redline draft was cleared.");

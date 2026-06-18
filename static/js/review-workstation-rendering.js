@@ -126,11 +126,25 @@ function renderStudioEmpty() {
 }
 
 function updateExportButtonState() {
-  const canExport = state.reviewClauses.length && (studioNdaText.value.trim() || state.reviewSourceText.trim());
-  const staleReview = Boolean(state.selectedMatter?.review_refresh?.stale);
+  // While a background AI review runs for the selected matter, the rendered review
+  // is mid-flight: block Download/Send (and Approve) until it resolves. Treated
+  // alongside staleReview as a "review not ready to act on" gate.
+  //
+  // This runs at LOAD time too (emptyState -> renderStudioEmpty), which can fire
+  // BEFORE the global-bridge module defines window.MatterUtils. Guard the lookup so
+  // the first paint never throws a ReferenceError (mirrors how the existing
+  // MatterUtils calls below sit behind the studioSendButton early-return).
+  const reviewInProgress = typeof MatterUtils !== "undefined"
+    && MatterUtils.reviewInProgress(state.selectedMatter);
+  const canExport = state.reviewClauses.length
+    && (studioNdaText.value.trim() || state.reviewSourceText.trim())
+    && !reviewInProgress;
+  const staleReview = Boolean(state.selectedMatter?.review_refresh?.stale) || reviewInProgress;
   if (studioExportButton) {
     studioExportButton.disabled = !canExport || staleReview;
-    studioExportButton.title = staleReview ? "Refresh review before downloading" : "Download";
+    studioExportButton.title = reviewInProgress
+      ? "Reviewing… download available once the AI review finishes"
+      : staleReview ? "Refresh review before downloading" : "Download";
   }
   if (!studioSendButton) {
     updateRedlineDraftControls();

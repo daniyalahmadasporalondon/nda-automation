@@ -6,19 +6,301 @@ let reviewSendModalPreviousFocus = null;
 // reviewer can retry. Generous enough for a legitimately large document.
 const EXPORT_REQUEST_TIMEOUT_MS = 120000;
 
-// Upper bound on the explicit "Refresh Review" request. The server re-runs the
-// full AI review synchronously; measured at ~50s for a short NDA and ~120s+ for a
-// long one. There was previously NO client timeout here, so a genuinely hung
-// socket would leave the button stuck disabled forever. 180s is generous enough
-// to let a legitimately long review (up to ~3 minutes) complete, while still
-// bounding a dead connection so the catch/finally re-enable the button and the
-// reviewer can retry. NOT a tight 45s-style guard — a long review must NOT be
-// mistaken for a failure.
-const REVIEW_REFRESH_TIMEOUT_MS = 180000;
+// Background-review polling cadence. The AI review now runs ASYNCHRONOUSLY on the
+// server: POST /review-refresh returns 202 in milliseconds and a worker does the
+// heavy ~145–245s review. The client schedules the POST then POLLS the matter's
+// review_status until it resolves. There is NO synchronous request timeout anymore
+// — the request returns immediately, so the old 180s abort is gone.
+const REVIEW_POLL_INTERVAL_MS = 3500; // fast cadence for the first minute
+const REVIEW_POLL_BACKOFF_INTERVAL_MS = 8000; // slower cadence after the backoff point
+const REVIEW_POLL_BACKOFF_AFTER_MS = 60000; // ease off after ~60s of polling
+// HARD STOP. A crashed worker that never flips review_status away from
+// in_progress must not poll forever. After ~300s we stop and surface a failure +
+// Retry. (The server independently ages a stuck in_progress to `failed` at ~300s,
+// so this is the client-side backstop for the case the matter read itself wedges.)
+const REVIEW_POLL_TTL_MS = 300000;
 
-// User-facing copy shown on the matter while the synchronous AI review runs.
+// User-facing copy shown on the matter while the background AI review runs.
 const REVIEW_REFRESH_PROGRESS_MESSAGE =
-  "Reviewing with AI… long documents can take up to ~2 minutes.";
+  "Reviewing with AI… this runs in the background and can take a couple of minutes.";
+
+// ---------------------------------------------------------------------------
+// In-flight background-review poll controller.
+//
+// One poll runs at a time (single in-flight guard, keyed by matter id). While a
+// review is in_progress for the SELECTED matter we re-read that matter every few
+// seconds via GET /api/matters/<id> and react to its review_status:
+//   in_progress -> keep the spinner, keep polling (back off after ~60s)
+//   completed   -> stop, load the now-current matter + render results, re-enable
+//   failed      -> stop, show review_error + a Retry button
+//   idle        -> stop, "Review is current"
+// A hard TTL (~300s) stops a poll whose worker crashed without recording failure.
+// ---------------------------------------------------------------------------
+
+// The single in-flight poll. Null when no background review is being tracked.
+//   { matterId, timer, startedAt, stopped }
+let reviewPollController = null;
+
+// True when a background review is currently being tracked (single in-flight guard).
+function reviewPollInFlight() {
+  return Boolean(reviewPollController && !reviewPollController.stopped);
+}
+
+function reviewPollInFlightForMatter(matterId) {
+  return Boolean(
+    reviewPollController
+    && !reviewPollController.stopped
+    && reviewPollController.matterId === matterId,
+  );
+}
+
+// Tear down the active poll: clear its timer and mark it stopped so any pending
+// async tick is a no-op. Idempotent.
+function stopReviewPoll() {
+  if (!reviewPollController) return;
+  reviewPollController.stopped = true;
+  if (reviewPollController.timer !== null && reviewPollController.timer !== undefined) {
+    window.clearTimeout(reviewPollController.timer);
+  }
+  reviewPollController = null;
+}
+
+// Render the in-flight "Reviewing…" state on the review header: animate the
+// spinner (is-refreshing), announce busy (aria-busy), disable the button, and
+// disable the downstream Approve/Send actions while the background review runs.
+function enterReviewInFlightUi() {
+  // A fresh run supersedes any prior failed state — drop the stale Retry button.
+  clearReviewRetryButton();
+  if (studioRefreshReviewButton) {
+    studioRefreshReviewButton.disabled = true;
+    studioRefreshReviewButton.textContent = "Reviewing…";
+    studioRefreshReviewButton.classList.add("is-refreshing");
+    studioRefreshReviewButton.setAttribute("aria-busy", "true");
+  }
+  setFileMeta(REVIEW_REFRESH_PROGRESS_MESSAGE);
+  // Approve / Send / Download must not act on a matter whose review is mid-flight.
+  updateExportButtonState();
+}
+
+// Clear the in-flight header state (spinner + aria-busy). Button enable/label are
+// re-derived from the now-current matter by renderReviewRefreshNotice().
+function exitReviewInFlightUi() {
+  if (studioRefreshReviewButton?.isConnected) {
+    studioRefreshReviewButton.classList.remove("is-refreshing");
+    studioRefreshReviewButton.removeAttribute("aria-busy");
+  }
+}
+
+// Begin polling the background review for `matterId`. Single in-flight: starting a
+// new poll for the same matter is a no-op (the existing poll already covers it);
+// starting one for a DIFFERENT matter supersedes the old poll.
+function startReviewPoll(matterId) {
+  if (!matterId) return;
+  if (reviewPollInFlightForMatter(matterId)) return;
+  stopReviewPoll();
+  reviewPollController = {
+    matterId,
+    timer: null,
+    startedAt: Date.now(),
+    stopped: false,
+  };
+  scheduleReviewPollTick(reviewPollController);
+}
+
+function scheduleReviewPollTick(controller) {
+  if (!controller || controller.stopped) return;
+  const elapsed = Date.now() - controller.startedAt;
+  const interval = elapsed >= REVIEW_POLL_BACKOFF_AFTER_MS
+    ? REVIEW_POLL_BACKOFF_INTERVAL_MS
+    : REVIEW_POLL_INTERVAL_MS;
+  controller.timer = window.setTimeout(() => runReviewPollTick(controller), interval);
+}
+
+async function runReviewPollTick(controller) {
+  if (!controller || controller.stopped) return;
+  controller.timer = null;
+
+  // HARD STOP: a worker that crashed without flipping review_status must not poll
+  // forever. After the TTL, surface a failure + Retry and stop.
+  if (Date.now() - controller.startedAt >= REVIEW_POLL_TTL_MS) {
+    if (controller === reviewPollController) handleReviewPollTimeout(controller.matterId);
+    return;
+  }
+
+  // If the reviewer navigated away from this matter, stop tracking it (the
+  // background review still completes server-side; reopening picks up the result).
+  if (state.selectedMatter?.id !== controller.matterId) {
+    stopReviewPoll();
+    exitReviewInFlightUi();
+    return;
+  }
+
+  let matter = null;
+  try {
+    // GET /api/matters/<id> is the lightweight matter read. It carries the current
+    // review_status (and, once completed, the full review_result we then load).
+    matter = await pollReviewMatter(controller.matterId);
+  } catch (error) {
+    // A transient read failure must not kill the poll — keep trying until the TTL.
+    if (controller === reviewPollController && !controller.stopped) {
+      scheduleReviewPollTick(controller);
+    }
+    return;
+  }
+  // Superseded (matter switched) or torn down while awaiting — drop this result.
+  if (controller !== reviewPollController || controller.stopped) return;
+  if (!matter || state.selectedMatter?.id !== controller.matterId) {
+    stopReviewPoll();
+    exitReviewInFlightUi();
+    return;
+  }
+
+  const status = String(matter.review_status || "");
+  if (status === "in_progress") {
+    // Still working: refresh the lean board entry's badge and keep polling.
+    if (typeof repositoryController?.loadMatters === "function") {
+      repositoryController.loadMatters();
+    }
+    scheduleReviewPollTick(controller);
+    return;
+  }
+
+  // Terminal: stop the poll before reacting so no further ticks fire.
+  stopReviewPoll();
+  exitReviewInFlightUi();
+
+  if (status === "failed") {
+    handleReviewFailed(matter);
+    return;
+  }
+  // completed | idle (and any unexpected terminal value): load the now-current
+  // matter so the rendered results reflect the finished review.
+  await applyCompletedReview(controller.matterId, status);
+}
+
+// Read the selected matter fresh from the server WITHOUT clobbering the in-flight
+// header (openMatter would re-render the board/inspector; the poll only needs the
+// matter's current review_status). GET /api/matters/<id> -> { matter }.
+async function pollReviewMatter(matterId) {
+  const response = await fetch(`/api/matters/${encodeURIComponent(matterId)}`, {
+    method: "GET",
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!response.ok) throw new Error(`Matter read failed (${response.status})`);
+  const payload = await response.json();
+  return payload?.matter || payload || null;
+}
+
+// completed/idle terminal: pull the full review (with review_result) and render it.
+async function applyCompletedReview(matterId, status) {
+  // The review finished cleanly — drop any prior failed-state Retry button.
+  clearReviewRetryButton();
+  try {
+    const payload = await fetchMatterReviewPayload(matterId);
+    if (payload) {
+      loadMatterIntoReview(matterReviewPayloadToMatter(payload));
+    }
+    if (typeof repositoryController?.loadMatters === "function") {
+      await repositoryController.loadMatters();
+    }
+    setFileMeta(
+      status === "idle"
+        ? "Review is current."
+        : "Review refreshed against the active Playbook.",
+    );
+  } catch (error) {
+    renderOperationError(error, "Review completed but could not load.");
+  } finally {
+    renderReviewRefreshNotice();
+    updateExportButtonState();
+  }
+}
+
+// Read the matter's full review payload (review_result + extracted_text + draft).
+// Reuses the existing /review read so completed results render identically to the
+// open path.
+async function fetchMatterReviewPayload(matterId) {
+  const response = await fetch(`/api/matters/${encodeURIComponent(matterId)}/review`, {
+    method: "GET",
+    headers: { "Content-Type": "application/json" },
+  });
+  const payload = await response.json();
+  if (!response.ok) throw reviewErrorFromPayload(payload, "Review could not load");
+  return payload;
+}
+
+// A failed background review: stop the spinner, surface review_error, and render a
+// Retry button that re-POSTs review-refresh.
+function handleReviewFailed(matter) {
+  if (state.selectedMatter?.id === matter.id) {
+    state.selectedMatter = { ...state.selectedMatter, ...matter };
+  }
+  const message = String(matter.review_error || "").trim()
+    || "The AI review failed. Please retry.";
+  renderReviewFailedNotice(message);
+  setFileMeta(message);
+  renderReviewRefreshNotice();
+  updateExportButtonState();
+}
+
+// The TTL backstop fired: the worker never recorded a terminal status. Treat it as
+// a failure with a Retry affordance.
+function handleReviewPollTimeout(matterId) {
+  stopReviewPoll();
+  exitReviewInFlightUi();
+  const message = "The AI review is taking longer than expected. Please retry.";
+  if (state.selectedMatter?.id === matterId) {
+    state.selectedMatter = { ...state.selectedMatter, review_status: "failed", review_error: message };
+  }
+  renderReviewFailedNotice(message);
+  setFileMeta(message);
+  renderReviewRefreshNotice();
+  updateExportButtonState();
+}
+
+// Render the failed-review state. The error TEXT goes into the studio result
+// header region (#studioResultMeta lives in an sr-only section, so it is for the
+// screen-reader/overall-status announcement). The user-visible, CLICKABLE Retry
+// button is rendered into the visible toolbar status row beside #studioFileMeta —
+// appending an interactive control into the sr-only result region leaves it
+// visually clipped/off-screen and unclickable.
+function renderReviewFailedNotice(message) {
+  if (studioOverallTitle) studioOverallTitle.textContent = "Review failed";
+  if (studioResultMark) {
+    studioResultMark.textContent = "!";
+    studioResultMark.className = "check";
+  }
+  if (studioResultMeta) studioResultMeta.textContent = `${message} Retry`;
+  showReviewRetryButton();
+}
+
+// Insert (or move) the visible Retry button into the toolbar status row, right
+// after #studioFileMeta. Idempotent: a single button instance is reused.
+function showReviewRetryButton() {
+  if (!studioFileMeta) return;
+  const host = studioFileMeta.parentElement || studioFileMeta;
+  let retry = host.querySelector(".review-retry-button");
+  if (!retry) {
+    retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "secondary review-retry-button";
+    retry.textContent = "Retry";
+    retry.addEventListener("click", () => {
+      refreshSelectedMatterReview();
+    });
+  }
+  // Place it directly after the file-meta text so it reads as "<error> [Retry]".
+  if (studioFileMeta.nextSibling !== retry) {
+    studioFileMeta.after(retry);
+  }
+  retry.hidden = false;
+}
+
+// Remove the visible Retry button (any non-failed render path). Best-effort.
+function clearReviewRetryButton() {
+  const retry = studioFileMeta?.parentElement?.querySelector(".review-retry-button");
+  if (retry) retry.remove();
+}
 
 function clearReview() {
   closeReviewSendComposer({ restoreFocus: false });
@@ -38,6 +320,10 @@ function clearReview() {
 
 function resetReviewResults() {
   cancelViewerReviewRefresh();
+  // Stop tracking any background review when the review workspace is cleared. The
+  // server-side review still completes; reopening the matter picks up the result.
+  stopReviewPoll();
+  clearReviewRetryButton();
   pendingReviewSendMatterId = null;
   AppState.resetReviewResults(state);
   updateReviewUndoButtonState();
@@ -982,6 +1268,15 @@ function formatLossBucketList(buckets) {
   return `${head}, and ${labels[labels.length - 1]}`;
 }
 
+// Kick off a BACKGROUND AI review for the selected matter and poll until it
+// finishes. The server now does the heavy work asynchronously:
+//   POST /review-refresh -> 202 { review_status: "in_progress", ... } (scheduled)
+//                        -> 200 { review_status: "idle", matter }     (nothing to do)
+//                        -> 200 { ai_review_unavailable: true }       (AI off)
+//                        -> 503 { error, review_status: "idle" }      (queue full)
+// On 202 we enter the in-flight spinner state and start polling review_status; we
+// do NOT await the heavy review result here (the POST returns in milliseconds, so
+// there is no synchronous request timeout anymore).
 async function refreshSelectedMatterReview() {
   const matterId = state.selectedMatter?.id;
   if (!matterId) return;
@@ -991,75 +1286,98 @@ async function refreshSelectedMatterReview() {
   if (!confirmDiscardUnsavedReviewEdits("Refreshing the review will discard your unsaved redline edits.")) {
     return;
   }
-  if (studioRefreshReviewButton) {
-    studioRefreshReviewButton.disabled = true;
-    studioRefreshReviewButton.textContent = "Reviewing…";
-    // A live progress state so a ~2-minute wait reads as working, not frozen:
-    // the spinner class animates (CSS), and aria-busy announces it to AT.
-    studioRefreshReviewButton.classList.add("is-refreshing");
-    studioRefreshReviewButton.setAttribute("aria-busy", "true");
-  }
-  setFileMeta(REVIEW_REFRESH_PROGRESS_MESSAGE);
-  // Bound the synchronous AI review so a hung socket cannot leave the button
-  // stuck forever, but stay generous (180s) so a legitimately long review still
-  // completes rather than being aborted and mis-reported as a failure.
-  const refreshAbort = new AbortController();
-  const refreshTimeoutId = window.setTimeout(() => refreshAbort.abort(), REVIEW_REFRESH_TIMEOUT_MS);
+  // A background review is already tracked for this matter — clicking again is a
+  // no-op (single in-flight guard); the spinner is already up.
+  if (reviewPollInFlightForMatter(matterId)) return;
+
+  // Optimistically enter the in-flight UI so the click feels instant; if the POST
+  // turns out to be a no-op (idle) or unavailable, the branches below restore it.
+  enterReviewInFlightUi();
   try {
-    let response;
+    const response = await fetch(`/api/matters/${encodeURIComponent(matterId)}/review-refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    let payload = {};
     try {
-      response = await fetch(`/api/matters/${encodeURIComponent(matterId)}/review-refresh`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: refreshAbort.signal,
-      });
-    } catch (fetchError) {
-      if (fetchError?.name === "AbortError") {
-        throw new Error("Review timed out — the server did not respond within ~3 minutes. Please try again.");
-      }
-      throw fetchError;
+      payload = await response.json();
+    } catch (_parseError) {
+      payload = {};
     }
-    const payload = await response.json();
+
+    // 503: the review queue is full. Surface it and let the reviewer retry; no poll.
+    if (response.status === 503) {
+      stopReviewPoll();
+      exitReviewInFlightUi();
+      const message = String(payload?.error || "").trim()
+        || "The review queue is full. Please try again shortly.";
+      renderReviewFailedNotice(message);
+      setFileMeta(message);
+      renderReviewRefreshNotice();
+      updateExportButtonState();
+      return;
+    }
+
     if (!response.ok) throw reviewErrorFromPayload(payload, "Review could not refresh");
-    const refreshedMatter = matterReviewPayloadToMatter(payload);
-    loadMatterIntoReview(refreshedMatter);
-    await repositoryController.loadMatters();
+
+    // AI is the only reviewer on the Review tab. When it cannot run the matter is
+    // left "not reviewed" (no deterministic fallback) — surface that honestly.
     if (payload.ai_review_unavailable) {
-      // AI is the only reviewer on the Review tab. When it cannot run the matter is
-      // left "not reviewed" (no deterministic fallback) -- surface that honestly via
-      // the existing in-app notification system instead of claiming a fresh review.
+      stopReviewPoll();
+      exitReviewInFlightUi();
       const message =
         payload.ai_review_unavailable_message ||
         "Review can't be completed — no AI reviewer available.";
+      if (payload.matter?.id) {
+        state.selectedMatter = { ...state.selectedMatter, ...payload.matter };
+      }
       notifyReviewUnavailable(message);
       setFileMeta(message);
-    } else if (payload.review_refresh?.stale) {
-      setFileMeta(staleReviewMessage(payload.review_refresh));
-    } else if (payload.review_refresh?.redline_draft_cleared) {
-      setFileMeta(payload.review_refresh.message || "Review refreshed. Saved redline draft was cleared.");
-    } else {
-      setFileMeta("Review refreshed against the active Playbook.");
+      renderReviewRefreshNotice();
+      updateExportButtonState();
+      return;
     }
+
+    // Adopt the matter the server returned (carries review_status + flags) so the
+    // board/inspector reflect the scheduled state on the next render.
+    if (payload.matter?.id) {
+      state.selectedMatter = { ...state.selectedMatter, ...payload.matter };
+    }
+
+    const status = String(payload.review_status || "");
+    if (response.status === 202 || status === "in_progress") {
+      // Scheduled (or already pending): keep the spinner up and start polling.
+      // Refresh the board so the card shows the "Reviewing…" badge immediately.
+      if (typeof repositoryController?.loadMatters === "function") {
+        repositoryController.loadMatters();
+      }
+      startReviewPoll(matterId);
+      return;
+    }
+
+    // 200 idle: nothing to do (the stored review is already current). No poll.
+    stopReviewPoll();
+    exitReviewInFlightUi();
+    if (payload.review_refresh?.stale) {
+      setFileMeta(staleReviewMessage(payload.review_refresh));
+    } else {
+      setFileMeta("Review is current.");
+    }
+    if (typeof repositoryController?.loadMatters === "function") {
+      await repositoryController.loadMatters();
+    }
+    renderReviewRefreshNotice();
+    updateExportButtonState();
   } catch (error) {
+    stopReviewPoll();
+    exitReviewInFlightUi();
     if (isStaleReviewError(error)) {
       handleStaleReviewOperationError(error, "Review could not refresh.");
     } else {
+      renderReviewFailedNotice(error.message || "Review could not refresh.");
       renderOperationError(error, "Review could not refresh.");
     }
-  } finally {
-    window.clearTimeout(refreshTimeoutId);
-    if (studioRefreshReviewButton?.isConnected) {
-      studioRefreshReviewButton.disabled = false;
-      // Clear the live progress state (spinner + AT busy) set on entry...
-      studioRefreshReviewButton.classList.remove("is-refreshing");
-      studioRefreshReviewButton.removeAttribute("aria-busy");
-      // ...then re-derive state from the now-current matter rather than restoring a
-      // stale snapshot: after a successful run on a previously UNREVIEWED matter the
-      // "Review" button GRAYS (review is current, nothing to do) and the downstream
-      // actions (Approve / Send for signature / Mark reviewed) ENABLE via
-      // updateExportButtonState. The label stays "Review" throughout (no relabel).
-      renderReviewRefreshNotice();
-    }
+    renderReviewRefreshNotice();
     updateExportButtonState();
   }
 }
