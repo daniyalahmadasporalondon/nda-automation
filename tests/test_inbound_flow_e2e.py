@@ -81,9 +81,12 @@ class _PagedMessages:
     id is enough for the rest of the path, which reads payload via the transport).
     """
 
-    def __init__(self, inbox_size: int) -> None:
+    def __init__(self, inbox_size: int, *, senders: dict[str, str] | None = None) -> None:
         self.message_ids = [f"msg_{i:03d}" for i in range(inbox_size)]
         self.max_results_seen: list[int] = []
+        # Optional per-message-id raw ``From`` header. Messages absent from this map
+        # carry no From header (today's default), so the DocuSign matcher fails open.
+        self._senders = dict(senders or {})
 
     def list(self, *, userId: str, q: str, maxResults: int, pageToken: str = ""):
         self.max_results_seen.append(maxResults)
@@ -97,7 +100,9 @@ class _PagedMessages:
         })
 
     def get(self, *, userId: str, id: str, format: str):
-        return _Executable({"id": id, "payload": {}})
+        sender = self._senders.get(id)
+        headers = [{"name": "From", "value": sender}] if sender else []
+        return _Executable({"id": id, "payload": {"headers": headers}})
 
 
 class _PagedUsers:
@@ -109,8 +114,8 @@ class _PagedUsers:
 
 
 class _PagedService:
-    def __init__(self, inbox_size: int) -> None:
-        self.users_api = _PagedUsers(_PagedMessages(inbox_size))
+    def __init__(self, inbox_size: int, *, senders: dict[str, str] | None = None) -> None:
+        self.users_api = _PagedUsers(_PagedMessages(inbox_size, senders=senders))
 
     def users(self) -> _PagedUsers:
         return self.users_api
@@ -170,9 +175,15 @@ class _FullInboundTransport(_PublicOnlyInboxTransport):
     ParagraphAlignmentError = gmail_integration.ParagraphAlignmentError
     DocumentSizeError = gmail_integration.DocumentSizeError
 
-    def __init__(self, inbox_size: int, *, import_limit: int) -> None:
+    def __init__(
+        self,
+        inbox_size: int,
+        *,
+        import_limit: int,
+        senders: dict[str, str] | None = None,
+    ) -> None:
         super().__init__()
-        self.service = _PagedService(inbox_size)
+        self.service = _PagedService(inbox_size, senders=senders)
         self.repository = InMemoryMatterRepository()
         self.ai_engine = _RecordingAiEngine()
         self._import_limit = import_limit
@@ -186,6 +197,10 @@ class _FullInboundTransport(_PublicOnlyInboxTransport):
     # -- message-level seams --------------------------------------------- #
     def is_self_or_outbound_message(self, message: dict[str, Any], account_email: str) -> bool:
         return False
+
+    def is_docusign_notification(self, message: dict[str, Any]) -> bool:
+        # REAL deterministic domain-only matcher over the message's From header.
+        return gmail_integration._is_docusign_notification(message)
 
     def reviewable_attachments(self, payload: dict[str, Any]) -> list[dict[str, str]]:
         # One reviewable PDF attachment per message.
@@ -408,6 +423,107 @@ def test_inbound_flow_e2e_single_message_round_trip(import_limit_20):
     # The background AI review ran exactly once (on that extracted text) and persisted.
     assert transport.ai_engine.calls == [matter["extracted_text"]]
     assert matter["review_result"]["active_review_engine"]["executed_engine"] == "ai_first"
+
+
+# --------------------------------------------------------------------------- #
+# DocuSign envelope-notification skip: a notification email with a valid-looking
+# PDF attachment must NOT become a phantom inbound matter -- it is skipped + ledger-
+# marked BEFORE the import budget, no review scheduled. A real NDA still imports.
+# --------------------------------------------------------------------------- #
+def test_inbound_flow_e2e_docusign_notification_is_skipped_not_imported(import_limit_20):
+    """A single DocuSign notification (valid PDF attachment) -> skipped, never a matter."""
+    transport = _FullInboundTransport(
+        inbox_size=1,
+        import_limit=import_limit_20,
+        senders={"msg_000": "DocuSign <dse@docusign.net>"},
+    )
+
+    result = gmail_matter_inbox.import_inbound_matters(
+        transport=transport,
+        limit=999,
+        owner_user_id="owner_1",
+    )
+
+    # Nothing imported, the repository stays empty, and the skip reason is recorded.
+    assert result["imported"] == []
+    assert transport.created_matter_ids == []
+    assert transport.repository.list_matters(owner_user_id="owner_1") == []
+    reasons = [s.get("reason") for s in result["skipped"]]
+    assert "docusign_notification" in reasons
+    # The skip happens BEFORE the import-budget slot + the heavy path, so the AI
+    # review is NEVER scheduled (the recording engine recorded zero calls).
+    assert transport.ai_engine.calls == []
+
+    # The message was ledger-marked: a SECOND poll re-skips it cheaply -- it never
+    # reaches reviewable_attachments / the download path again.
+    again = gmail_matter_inbox.import_inbound_matters(
+        transport=transport,
+        limit=999,
+        owner_user_id="owner_1",
+    )
+    assert again["imported"] == []
+    assert transport.repository.list_matters(owner_user_id="owner_1") == []
+    assert transport.ai_engine.calls == []
+
+
+def test_inbound_flow_e2e_real_nda_mentioning_docusign_still_imports(import_limit_20):
+    """A genuine NDA from a real sender still imports even if it mentions DocuSign.
+
+    The match is DOMAIN-ONLY, so a normal sender (jane@acme.com) is unaffected even
+    though the fixture text is a real NDA. This is the non-regression guard.
+    """
+    transport = _FullInboundTransport(
+        inbox_size=1,
+        import_limit=import_limit_20,
+        senders={"msg_000": "Jane Counsel <jane@acme.com>"},
+    )
+
+    result = gmail_matter_inbox.import_inbound_matters(
+        transport=transport,
+        limit=999,
+        owner_user_id="owner_1",
+    )
+
+    assert len(result["imported"]) == 1
+    assert "docusign_notification" not in [s.get("reason") for s in result["skipped"]]
+    matter_id = str(result["imported"][0]["id"])
+    matter = transport.repository.get_matter(matter_id, owner_user_id="owner_1")
+    assert matter is not None
+    assert matter["source_type"] == "gmail_inbound"
+    # The background AI review ran exactly once and persisted.
+    assert transport.ai_engine.calls == [matter["extracted_text"]]
+    assert matter["review_result"]["active_review_engine"]["executed_engine"] == "ai_first"
+
+
+def test_inbound_flow_e2e_transport_without_docusign_guard_degrades_gracefully(import_limit_20):
+    """A transport lacking is_docusign_notification behaves exactly as today (no skip).
+
+    The inbox guards the predicate with getattr + callable(), so an older/fake
+    transport without it does not crash and does not skip -- it imports as before.
+    """
+
+    class _NoDocusignGuardTransport(_FullInboundTransport):
+        # Older/fake transport: the predicate simply does not exist.
+        is_docusign_notification = property(
+            lambda self: (_ for _ in ()).throw(AttributeError("no such attribute"))
+        )
+
+    # Even a message FROM docusign.net imports here, because the guard can't fire.
+    transport = _NoDocusignGuardTransport(
+        inbox_size=1,
+        import_limit=import_limit_20,
+        senders={"msg_000": "DocuSign <dse@docusign.net>"},
+    )
+
+    result = gmail_matter_inbox.import_inbound_matters(
+        transport=transport,
+        limit=999,
+        owner_user_id="owner_1",
+    )
+
+    # No crash; today's behavior preserved -> the message imports as a matter.
+    assert len(result["imported"]) == 1
+    assert "docusign_notification" not in [s.get("reason") for s in result["skipped"]]
 
 
 # --------------------------------------------------------------------------- #

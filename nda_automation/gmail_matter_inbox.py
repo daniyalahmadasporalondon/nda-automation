@@ -339,6 +339,23 @@ def _scan_pass(
                 _mark_processed(context, message_id)
                 continue
 
+            # DocuSign envelope-notification emails (from the docusign.net family)
+            # carry a PDF attachment and pass the structural fetch query, but they
+            # are never inbound counterparty NDAs -- importing them spawns phantom
+            # matters. Skip + ledger-mark them BEFORE the import-budget slot so a
+            # skip costs no budget and future polls re-skip cheaply without a
+            # re-fetch. Callable-guard via getattr so older/fake transports lacking
+            # the predicate degrade to today's behavior (no skip, no crash). The
+            # match is DOMAIN-ONLY: a real NDA that mentions DocuSign still imports.
+            is_docusign_notification = getattr(transport, "is_docusign_notification", None)
+            if callable(is_docusign_notification) and is_docusign_notification(message):
+                context.skipped.append({"message_id": message_id, "reason": "docusign_notification"})
+                # TERMINAL outcome (mirrors self/outbound above): a DocuSign
+                # notification is structurally never reviewable -- mark it so the
+                # next poll skips it before the fetch + AI calls.
+                _mark_processed(context, message_id)
+                continue
+
             attachments = list(transport.reviewable_attachments(message.get("payload") or {}))
             if not attachments:
                 context.skipped.append({"message_id": message_id, "reason": "no_reviewable_attachment"})

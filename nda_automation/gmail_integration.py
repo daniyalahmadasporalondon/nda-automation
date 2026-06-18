@@ -9,7 +9,7 @@ import re
 import threading
 import time
 from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
+from email.utils import getaddresses, parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -142,6 +142,15 @@ NDA_MESSAGE_QUERY = _gmail_search_terms_query(app_settings.DEFAULT_GMAIL_INBOUND
 # resolving to the same envelope.
 DEFAULT_INBOUND_QUERY = GMAIL_INBOUND_BASE_QUERY
 DEFAULT_INBOUND_QUERY_WITH_AI_SELECTOR = DEFAULT_INBOUND_QUERY
+
+# DocuSign envelope-notification emails (signature requests/completions, "your
+# document is ready", reminders) arrive from the docusign.net family and carry a
+# PDF attachment, so the structural fetch query above happily surfaces them. They
+# are never inbound counterparty NDAs to triage -- importing them spawns phantom
+# matters. The match is DOMAIN-ONLY (never subject/body): a real NDA that merely
+# mentions DocuSign must still pass. Covers dse@docusign.net, dse_demo@,
+# dse_na1..4@, dse_eu1@, eumail.docusign.net, mail.docusign.net, etc.
+DOCUSIGN_NOTIFICATION_DOMAINS = ("docusign.net",)
 
 # Per-poll import ceiling. This is the GENTLE CATCH-UP knob: it bounds how many
 # inbound messages a SINGLE poll cycle downloads + triages (deepseek-v4-pro
@@ -788,6 +797,35 @@ def _is_self_or_outbound_message(message: dict[str, Any], account_email: str) ->
     headers = message.get("payload", {}).get("headers") or []
     sender = recipient_email(_header(headers, "From"))
     return bool(sender and _email_addresses_match(sender, account_email))
+
+
+def _is_docusign_notification(message: dict[str, Any]) -> bool:
+    """Return True iff the message is a DocuSign envelope-notification email.
+
+    DOMAIN-ONLY match on the raw ``From`` header: the sender's domain must be
+    ``docusign.net`` or a subdomain (``*.docusign.net``). Subject/body/filename
+    are intentionally NOT consulted -- a genuine counterparty NDA that merely
+    mentions DocuSign must still be imported.
+
+    Fail-open: a malformed ``From`` (no parseable address, or more than one
+    address) returns False so a real NDA is never wrongly skipped.
+    """
+    headers = message.get("payload", {}).get("headers") or []
+    raw_from = _header(headers, "From")
+    if not raw_from:
+        return False
+    parsed = getaddresses([raw_from])
+    # Exactly one address; anything ambiguous (0 or 2+) fails open.
+    if len(parsed) != 1:
+        return False
+    _name, address = parsed[0]
+    address = (address or "").strip().lower()
+    if "@" not in address:
+        return False
+    domain = address.rsplit("@", 1)[1].strip()
+    if not domain:
+        return False
+    return any(domain == base or domain.endswith("." + base) for base in DOCUSIGN_NOTIFICATION_DOMAINS)
 
 
 def _email_addresses_match(left: str, right: str) -> bool:
