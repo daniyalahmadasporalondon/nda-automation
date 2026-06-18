@@ -89,6 +89,8 @@ const tests = [
   ["imports repository matters and re-reviews as fresh text", testRepositoryMatterImportAndFreshReview],
   ["opens repository matters into review repeatedly", testRepositoryOpenReviewRepeatedly],
   ["wires stale review refresh controls", testStaleReviewRefreshWiring],
+  ["shows a Retry button when the background review fails and re-posts on Retry", testAsyncReviewFailedShowsRetry],
+  ["shows a live Reviewing badge on the board while review_status is in_progress", testBoardReviewingBadge],
   ["flags stale matters on the board and refreshes from the inspector", testRepositoryStaleBadgeAndRefresh],
   ["clears repository board after load errors", testRepositoryLoadErrorClearsBoard],
   ["uploads local NDAs through the dashboard upload modal", testManualUploadModal],
@@ -3600,6 +3602,18 @@ async function testStaleReviewRefreshWiring(page) {
     updated_at: "2026-06-01T09:01:00+00:00",
   };
   let refreshCount = 0;
+  // The background review is ASYNC: POST /review-refresh returns 202 in_progress,
+  // then the client POLLS GET /api/matters/<id> until review_status flips. Drive
+  // that with a small state machine: the first poll still reports in_progress, the
+  // next reports completed (so the spinner -> result transition is exercised).
+  let refreshScheduled = false;
+  let pollCount = 0;
+  const completedMatter = {
+    ...matter,
+    review_status: "completed",
+    ai_review_ran: true,
+    review_refresh: { refreshed: true, stale: false, stale_reasons: [] },
+  };
 
   await page.route("**/api/gmail/status", async (route) => {
     await route.fulfill({
@@ -3619,7 +3633,7 @@ async function testStaleReviewRefreshWiring(page) {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ matters: [matter] }),
+        body: JSON.stringify({ matters: [refreshScheduled ? completedMatter : matter] }),
       });
       return;
     }
@@ -3632,35 +3646,51 @@ async function testStaleReviewRefreshWiring(page) {
       return;
     }
     if (requestUrl.pathname.endsWith("/review-refresh")) {
-      // The explicit "Refresh with AI" button is the ONLY caller of this route.
+      // The explicit "Review" button is the ONLY caller of this route. It now
+      // returns 202 in_progress (the heavy work runs in the background).
       refreshCount += 1;
+      refreshScheduled = true;
       await route.fulfill({
-        status: 200,
+        status: 202,
         contentType: "application/json",
         body: JSON.stringify({
-          extracted_text: reviewText,
-          matter,
-          review_may_be_stale: false,
-          review_refresh: {
-            refreshed: true,
-            stale: false,
-            stale_reasons: [],
-          },
-          review_result: reviewResult,
+          review_status: "in_progress",
+          job_scheduled: true,
+          matter: { ...matter, review_status: "in_progress", review_started_at: "2026-06-01T09:02:00+00:00" },
         }),
       });
       return;
     }
     if (requestUrl.pathname.endsWith("/review")) {
-      // Open path: stored review + review_may_be_stale, no AI run.
+      // Read path. Before refresh: stored review + review_may_be_stale, no AI run.
+      // After the poll reports completed, the client re-reads /review for results.
       await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
           extracted_text: reviewText,
-          matter,
-          review_may_be_stale: true,
+          matter: refreshScheduled ? completedMatter : matter,
+          review_may_be_stale: !refreshScheduled,
+          review_refresh: refreshScheduled
+            ? { refreshed: true, stale: false, stale_reasons: [] }
+            : null,
           review_result: reviewResult,
+        }),
+      });
+      return;
+    }
+    // Bare GET /api/matters/<id> — the poll read. First tick still in_progress, then
+    // completed, so the spinner state and its resolution are both exercised.
+    if (/\/api\/matters\/[^/]+$/.test(requestUrl.pathname) && route.request().method() === "GET") {
+      pollCount += 1;
+      const status = pollCount >= 2 ? "completed" : "in_progress";
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          matter: status === "completed"
+            ? completedMatter
+            : { ...matter, review_status: "in_progress" },
         }),
       });
       return;
@@ -3692,17 +3722,204 @@ async function testStaleReviewRefreshWiring(page) {
   assert.equal(refreshCount, 0);
 
   await page.locator("#studioRefreshReviewButton").click();
+  // 202 -> in-flight: the button shows the "Reviewing…" spinner state immediately
+  // (no 180s synchronous block), aria-busy is set, and the button is disabled.
+  await page.waitForSelector("#studioRefreshReviewButton.is-refreshing", { state: "attached" });
+  await assertTextContains(page.locator("#studioRefreshReviewButton"), "Reviewing");
+  assert.equal(await page.locator("#studioRefreshReviewButton").getAttribute("aria-busy"), "true");
+  assert.equal(refreshCount, 1);
+
+  // The poll flips review_status to completed -> results render, spinner clears,
+  // stale indicator clears, and downstream actions re-enable.
   await waitForText(page, "#studioFileMeta", "Review refreshed against the active Playbook.");
-  // No-jump header: the "Review" button stays PRESENT (never disappears) and keeps
-  // its label after a non-stale refresh, but GRAYS/disables because the review is
-  // now current (nothing to re-run); the stale indicator clears.
+  await page.waitForSelector("#studioRefreshReviewButton:not(.is-refreshing)", { state: "attached" });
   await page.waitForSelector("#studioRefreshReviewButton:not([hidden])");
   await assertTextContains(page.locator("#studioRefreshReviewButton"), "Review");
-  await page.waitForSelector("#studioRefreshReviewButton:disabled", { state: "attached" });
   await page.waitForSelector("#studioReviewStaleIndicator[hidden]", { state: "attached" });
   assert.equal(await page.locator("#studioExportButton").isEnabled(), true);
   assert.equal(await page.locator("#studioSendButton").isEnabled(), true);
   assert.equal(refreshCount, 1);
+
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters**");
+}
+
+// Dedicated async-review coverage: a failed background review surfaces the error
+// message + a Retry button, and clicking Retry re-POSTs /review-refresh.
+async function testAsyncReviewFailedShowsRetry(page) {
+  const reviewText = "This Agreement shall be governed by the laws of India.";
+  const reviewResult = {
+    checked_at: "2026-06-01T09:01:00+00:00",
+    clauses: [{
+      decision: "pass",
+      id: "governing_law",
+      issue_label: "Pass",
+      name: "Governing Law",
+      passes: true,
+      requirement: "Use an approved governing law.",
+      structure_context: {},
+      review_state: { state: "pass" },
+      why: "Approved governing law found.",
+    }],
+    overall_status: "meets_requirements",
+    paragraphs: [{ id: "p1", index: 1, source_index: 1, text: reviewText }],
+    redline_edits: [],
+    requirements_failed: 0,
+    requirements_needs_review: 0,
+    requirements_passed: 1,
+  };
+  const matter = {
+    id: "matter_async_fail",
+    attachment_filename: "Async Fail NDA.docx",
+    board_column: "in_review",
+    can_send_redline: true,
+    document_title: "Async Fail NDA",
+    extracted_text: reviewText,
+    issue_count: 0,
+    message_snippet: reviewText,
+    received_at: "2026-06-01T09:00:00+00:00",
+    recipient_email: "legal@example.com",
+    review_result: reviewResult,
+    sender: "Legal Team <legal@example.com>",
+    source_filename: "Async Fail NDA.docx",
+    source_type: "manual_upload",
+    subject: "Async Fail NDA",
+    triage_status: "approved",
+    updated_at: "2026-06-01T09:01:00+00:00",
+    ai_review_ran: true,
+    review_stale: true,
+    review_refresh: { stale: true, stale_reasons: ["playbook_changed"] },
+  };
+  let refreshCount = 0;
+  let scheduled = false;
+
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        gmail: {
+          inbound: { ready: true, email: "inbound@example.com" },
+          outbound: { ready: true, email: "daniyal.ahmad@aspora.com" },
+        },
+      }),
+    });
+  });
+  await page.route("**/api/matters**", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    const method = route.request().method();
+    if (requestUrl.pathname === "/api/matters" && method === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matters: [matter] }) });
+      return;
+    }
+    if (requestUrl.pathname.endsWith("/stage")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter }) });
+      return;
+    }
+    if (requestUrl.pathname.endsWith("/review-refresh")) {
+      refreshCount += 1;
+      scheduled = true;
+      await route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        body: JSON.stringify({
+          review_status: "in_progress",
+          job_scheduled: true,
+          matter: { ...matter, review_status: "in_progress" },
+        }),
+      });
+      return;
+    }
+    if (requestUrl.pathname.endsWith("/review")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ extracted_text: reviewText, matter, review_may_be_stale: true, review_result: reviewResult }),
+      });
+      return;
+    }
+    // Poll read: the background review FAILED.
+    if (/\/api\/matters\/[^/]+$/.test(requestUrl.pathname) && method === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          matter: { ...matter, review_status: scheduled ? "failed" : "in_progress", review_error: "AI reviewer crashed mid-run." },
+        }),
+      });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter }) });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector(".repository-card");
+  await page.locator(".repository-card").click();
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+  await page.getByRole("button", { name: "Open Review" }).click();
+  await page.waitForSelector("#reviewView:not([hidden])");
+  await page.waitForSelector("#studioRefreshReviewButton:not([hidden])");
+
+  await page.locator("#studioRefreshReviewButton").click();
+  // 202 in-flight, then the poll reports failed -> error message + a visible,
+  // clickable Retry button in the toolbar status row.
+  await waitForText(page, "#studioFileMeta", "AI reviewer crashed mid-run.");
+  await page.waitForSelector(".review-retry-button:visible");
+  assert.equal(refreshCount, 1);
+  // The spinner cleared once the failure resolved.
+  await page.waitForSelector("#studioRefreshReviewButton:not(.is-refreshing)", { state: "attached" });
+
+  // Retry re-POSTs /review-refresh.
+  await page.locator(".review-retry-button").click();
+  await page.waitForSelector("#studioRefreshReviewButton.is-refreshing", { state: "attached" });
+  assert.equal(refreshCount, 2);
+
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters**");
+}
+
+// The board card shows a live "Reviewing…" badge while review_status is in_progress.
+async function testBoardReviewingBadge(page) {
+  const matter = {
+    id: "matter_board_reviewing",
+    attachment_filename: "Board Reviewing NDA.docx",
+    board_column: "in_review",
+    document_title: "Board Reviewing NDA",
+    issue_count: 0,
+    message_snippet: "Reviewing in background.",
+    received_at: "2026-06-01T09:00:00+00:00",
+    recipient_email: "legal@example.com",
+    sender: "Legal Team <legal@example.com>",
+    source_filename: "Board Reviewing NDA.docx",
+    source_type: "manual_upload",
+    subject: "Board Reviewing NDA",
+    triage_status: "approved",
+    updated_at: "2026-06-01T09:01:00+00:00",
+    ai_review_ran: false,
+    review_status: "in_progress",
+  };
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ gmail: { inbound: { ready: true, email: "inbound@example.com" }, outbound: { ready: true, email: "daniyal.ahmad@aspora.com" } } }),
+    });
+  });
+  await page.route("**/api/matters**", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.pathname === "/api/matters" && route.request().method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matters: [matter] }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter }) });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector(".repository-card");
+  await page.waitForSelector(".repository-review-badge.reviewing");
+  await assertTextContains(page.locator(".repository-review-badge.reviewing"), "Reviewing");
 
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/matters**");

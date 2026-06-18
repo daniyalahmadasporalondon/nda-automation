@@ -21,7 +21,7 @@ import {
   renderInlineToken,
   needsInlineSpace,
 } from "./inline-diff.mjs";
-import { MatterUtils } from "./matter-utils.mjs?v=20260618asyncrev1";
+import { MatterUtils } from "./matter-utils.mjs";
 import {
   isSupportedSendFilename,
   isValidRecipientEmail,

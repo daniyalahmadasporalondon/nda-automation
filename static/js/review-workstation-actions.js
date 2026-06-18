@@ -69,6 +69,8 @@ function stopReviewPoll() {
 // spinner (is-refreshing), announce busy (aria-busy), disable the button, and
 // disable the downstream Approve/Send actions while the background review runs.
 function enterReviewInFlightUi() {
+  // A fresh run supersedes any prior failed state — drop the stale Retry button.
+  clearReviewRetryButton();
   if (studioRefreshReviewButton) {
     studioRefreshReviewButton.disabled = true;
     studioRefreshReviewButton.textContent = "Reviewing…";
@@ -191,6 +193,8 @@ async function pollReviewMatter(matterId) {
 
 // completed/idle terminal: pull the full review (with review_result) and render it.
 async function applyCompletedReview(matterId, status) {
+  // The review finished cleanly — drop any prior failed-state Retry button.
+  clearReviewRetryButton();
   try {
     const payload = await fetchMatterReviewPayload(matterId);
     if (payload) {
@@ -254,27 +258,48 @@ function handleReviewPollTimeout(matterId) {
   updateExportButtonState();
 }
 
-// Render the failed-review banner with an inline Retry button that re-runs the
-// background review. Reuses the studio result header region.
+// Render the failed-review state. The error TEXT goes into the studio result
+// header region (#studioResultMeta lives in an sr-only section, so it is for the
+// screen-reader/overall-status announcement). The user-visible, CLICKABLE Retry
+// button is rendered into the visible toolbar status row beside #studioFileMeta —
+// appending an interactive control into the sr-only result region leaves it
+// visually clipped/off-screen and unclickable.
 function renderReviewFailedNotice(message) {
   if (studioOverallTitle) studioOverallTitle.textContent = "Review failed";
   if (studioResultMark) {
     studioResultMark.textContent = "!";
     studioResultMark.className = "check";
   }
-  if (!studioResultMeta) return;
-  studioResultMeta.textContent = "";
-  const text = document.createElement("span");
-  text.textContent = `${message} `;
-  studioResultMeta.append(text);
-  const retry = document.createElement("button");
-  retry.type = "button";
-  retry.className = "secondary review-retry-button";
-  retry.textContent = "Retry";
-  retry.addEventListener("click", () => {
-    refreshSelectedMatterReview();
-  });
-  studioResultMeta.append(retry);
+  if (studioResultMeta) studioResultMeta.textContent = `${message} Retry`;
+  showReviewRetryButton();
+}
+
+// Insert (or move) the visible Retry button into the toolbar status row, right
+// after #studioFileMeta. Idempotent: a single button instance is reused.
+function showReviewRetryButton() {
+  if (!studioFileMeta) return;
+  const host = studioFileMeta.parentElement || studioFileMeta;
+  let retry = host.querySelector(".review-retry-button");
+  if (!retry) {
+    retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "secondary review-retry-button";
+    retry.textContent = "Retry";
+    retry.addEventListener("click", () => {
+      refreshSelectedMatterReview();
+    });
+  }
+  // Place it directly after the file-meta text so it reads as "<error> [Retry]".
+  if (studioFileMeta.nextSibling !== retry) {
+    studioFileMeta.after(retry);
+  }
+  retry.hidden = false;
+}
+
+// Remove the visible Retry button (any non-failed render path). Best-effort.
+function clearReviewRetryButton() {
+  const retry = studioFileMeta?.parentElement?.querySelector(".review-retry-button");
+  if (retry) retry.remove();
 }
 
 function clearReview() {
@@ -298,6 +323,7 @@ function resetReviewResults() {
   // Stop tracking any background review when the review workspace is cleared. The
   // server-side review still completes; reopening the matter picks up the result.
   stopReviewPoll();
+  clearReviewRetryButton();
   pendingReviewSendMatterId = null;
   AppState.resetReviewResults(state);
   updateReviewUndoButtonState();
