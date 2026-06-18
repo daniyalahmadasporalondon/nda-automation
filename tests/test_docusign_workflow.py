@@ -427,9 +427,18 @@ def test_sent_generated_document_actually_contains_the_anchor_strings(
 ):
     """The anchor is only useful if DocuSign can FIND it: the bytes the envelope
     carries must contain both party tokens. We assert on the document the workflow
-    actually sends (captured from the recording client)."""
+    actually sends (captured from the recording client).
+
+    The workflow converts the generated DOCX to a PDF when LibreOffice is
+    available (``_as_pdf``) and otherwise sends the DOCX bytes unchanged, so the
+    captured bytes are PDF in a soffice/prod environment and DOCX without it.
+    Extract the text with the matching extractor for whichever format was sent;
+    both extractors recover the literal anchor tokens, so the assertion stays
+    live in either environment instead of breaking on the format it didn't expect.
+    """
     from nda_automation import nda_generation
     from nda_automation.docx_text import extract_docx_text
+    from nda_automation.pdf_text import extract_pdf_text
 
     matter, matter_id, _result = generated_matter
     client = _RecordingClient()
@@ -438,7 +447,10 @@ def test_sent_generated_document_actually_contains_the_anchor_strings(
     )
     # The fake stored the exact document bytes it was sent.
     sent_bytes = next(iter(client._envelopes.values())).document_bytes  # type: ignore[attr-defined]
-    text = extract_docx_text(sent_bytes)
+    if sent_bytes[:5] == b"%PDF-":
+        text = extract_pdf_text(sent_bytes)
+    else:
+        text = extract_docx_text(sent_bytes)
     assert nda_generation.SIGNATURE_ANCHOR_COUNTERPARTY in text
     assert nda_generation.SIGNATURE_ANCHOR_ASPORA in text
 
