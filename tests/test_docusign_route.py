@@ -359,6 +359,53 @@ def test_send_for_signature_not_connected_is_409(repo, monkeypatch):
     assert handler.response["needs_connect"] is True
 
 
+def test_send_for_signature_dead_grant_is_409_needs_reconnect(repo, monkeypatch):
+    """A revoked/expired DocuSign grant on send surfaces a RECONNECT prompt (not a
+    generic outage, and distinct from the never-connected case)."""
+    matter_id = _matter_with_reviewed(repo)
+    monkeypatch.setattr(
+        docusign_integration,
+        "get_client",
+        lambda *, owner_user_id="": (_ for _ in ()).throw(
+            docusign_connection.DocuSignReconnectRequiredError(
+                "Your DocuSign authorization is no longer valid. Reconnect DocuSign to continue."
+            )
+        ),
+    )
+    handler = _FakeHandler(repo, payload={})
+    docusign_routes.handle_send_for_signature(handler, f"/api/matters/{matter_id}/send-for-signature")
+    assert handler.status == 409
+    assert handler.response["needs_reconnect"] is True
+    # Still carries connect_url so an existing connect-only FE can route the user.
+    assert handler.response["connect_url"] == docusign_routes.DOCUSIGN_CONNECT_START_URL
+    assert "reconnect" in handler.response["error"].lower()
+
+
+def test_status_reports_needs_reconnect_after_dead_grant(repo, monkeypatch):
+    """The status panel surfaces needs_reconnect once a refresh found the grant dead."""
+    monkeypatch.setenv(docusign_connection.CLIENT_ID_ENV, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+    monkeypatch.setenv(docusign_connection.CLIENT_SECRET_ENV, "secret")
+    docusign_connection.save_user_token(
+        OWNER,
+        {"access_token": "old", "refresh_token": "rt", "expires_in": -10},
+        {"account_id": "a1", "base_uri": "https://demo.docusign.net", "account_name": "Acme", "email": "u@x.com"},
+    )
+
+    def dead_refresh(request, timeout=15):
+        raise docusign_connection.urllib.error.HTTPError(
+            "https://account-d.docusign.com/oauth/token", 400, "err", {}, None
+        )
+
+    monkeypatch.setattr(docusign_connection.urllib.request, "urlopen", dead_refresh)
+    with pytest.raises(docusign_connection.DocuSignReconnectRequiredError):
+        docusign_connection.access_token_for_user(OWNER)
+
+    handler = _FakeHandler(repo, owner=OWNER)
+    docusign_routes.handle_docusign_status(handler)
+    assert handler.response["needs_reconnect"] is True
+    assert "reconnect_message" in handler.response
+
+
 def test_send_for_signature_duplicate_on_active_envelope_is_409(repo, connected, fake_client):
     """#30: a SECOND send on a matter with an active envelope is refused (409),
     not allowed to create a duplicate envelope to the counterparty."""

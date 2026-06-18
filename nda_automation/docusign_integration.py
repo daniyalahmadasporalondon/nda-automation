@@ -630,6 +630,15 @@ def connection_status(*, owner_user_id: str) -> dict[str, Any]:
     ``configured`` reflects whether the OAuth app credentials are set in env (so
     the connect button can even start). ``account_label`` is the resolved account
     name/email for the panel.
+
+    Two diagnosability signals are also surfaced (both additive):
+
+    * ``config_health`` — an OFFLINE check of whether the app credentials are
+      present + well-formed (a typo'd integration key shows as ``client_id_malformed``
+      instead of looking like a DocuSign outage at connect time).
+    * ``needs_reconnect`` — set when the user's stored grant was found to be dead on
+      the last token refresh (consent revoked / refresh expired). The panel can then
+      prompt a reconnect instead of showing a generic outage.
     """
     configured = docusign_connection.oauth_configured()
     connected = bool(owner_user_id) and docusign_connection.is_connected(owner_user_id)
@@ -637,14 +646,23 @@ def connection_status(*, owner_user_id: str) -> dict[str, Any]:
     label = ""
     if connected:
         label = account.get("account_name") or account.get("email") or account.get("account_id") or "DocuSign"
-    return {
+    reconnect_required = connected and docusign_connection.needs_reconnect(owner_user_id)
+    status = {
         "connected": connected,
         "configured": configured,
         "production": docusign_connection.is_production(),
         "auth_server": docusign_connection.auth_server(),
         "account_label": label,
         "account": account or {"account_id": "", "base_uri": "", "account_name": "", "email": ""},
+        "config_health": docusign_connection.config_health(),
+        "needs_reconnect": reconnect_required,
     }
+    if reconnect_required:
+        status["reconnect_message"] = (
+            "Your DocuSign authorization is no longer valid (access was revoked or "
+            "expired). Reconnect DocuSign to continue sending for signature."
+        )
+    return status
 
 
 def _segment(value: str) -> str:

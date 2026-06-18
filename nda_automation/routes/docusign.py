@@ -213,6 +213,27 @@ def handle_docusign_callback(handler, *, send_body: bool = True) -> None:
         userinfo = docusign_connection.fetch_userinfo(str(token_response.get("access_token") or ""))
         account = docusign_connection.default_account(userinfo)
         docusign_connection.save_user_token(owner_user_id, token_response, account)
+    except docusign_connection.DocuSignCredentialError as error:
+        # The app credentials (integration key / secret) were REJECTED by DocuSign —
+        # a typo'd NDA_DOCUSIGN_CLIENT_ID/_SECRET, not an outage. Attribute it
+        # specifically (502 + a config flag) so the operator fixes the env var
+        # instead of waiting out a phantom DocuSign outage.
+        telemetry.increment("docusign_connect_credential_rejected")
+        handler._send_json(
+            {"error": str(error), "credential_error": True, "needs_config": True},
+            status=502,
+            send_body=send_body,
+        )
+        return
+    except docusign_connection.DocuSignTransientError as error:
+        # DocuSign was unreachable / answered transiently: retry-able, credentials OK.
+        telemetry.increment("docusign_connect_transient_failed")
+        handler._send_json(
+            {"error": str(error), "transient": True},
+            status=503,
+            send_body=send_body,
+        )
+        return
     except docusign_connection.DocuSignConnectionError as error:
         handler._send_json({"error": str(error)}, status=502, send_body=send_body)
         return
@@ -285,6 +306,14 @@ def handle_send_for_signature(handler, path: str) -> None:
             email_subject=email_subject,
             repository=repository,
         )
+    except docusign_connection.DocuSignReconnectRequiredError as error:
+        # The user's DocuSign authorization is dead (revoked / expired beyond
+        # refresh). Distinct from a transient outage: tell them to RECONNECT instead
+        # of leaving a generic "DocuSign unavailable" blip that never resolves.
+        telemetry.increment("docusign_send_failed")
+        telemetry.increment("docusign_send_needs_reconnect")
+        handler._send_json(_needs_reconnect_payload(str(error)), status=409)
+        return
     except docusign_connection.DocuSignNotConnectedError:
         telemetry.increment("docusign_send_failed")
         handler._send_json(_needs_connect_payload(), status=409)
@@ -482,6 +511,23 @@ def handle_docusign_webhook(handler) -> None:
 def _needs_connect_payload() -> dict:
     return {
         "error": "DocuSign is not connected.",
+        "needs_connect": True,
+        "connect_url": DOCUSIGN_CONNECT_START_URL,
+    }
+
+
+def _needs_reconnect_payload(message: str = "") -> dict:
+    """409 body for a dead DocuSign grant: the user must RECONNECT (not a new connect).
+
+    Carries both ``needs_reconnect`` (the dead-grant signal) and ``needs_connect`` +
+    ``connect_url`` so an existing frontend that only knows the connect flow still
+    routes the user to the consent screen — the reconnect uses the same connect URL.
+    """
+    return {
+        "error": message or (
+            "Your DocuSign authorization is no longer valid. Reconnect DocuSign to continue."
+        ),
+        "needs_reconnect": True,
         "needs_connect": True,
         "connect_url": DOCUSIGN_CONNECT_START_URL,
     }
