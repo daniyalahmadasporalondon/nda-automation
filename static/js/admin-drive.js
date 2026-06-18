@@ -10,9 +10,20 @@ const AdminDriveView = (() => {
     driveFolderForm,
     driveFolderIdInput,
     driveFolderSaveButton,
+    // Name-first display layer. The raw id stays in driveFolderIdInput (the single
+    // source of truth Save reads); these surface the friendly folder NAME and let a
+    // power-user reveal the raw id field via "Edit ID". All optional: if the markup
+    // is absent the field falls back to the plain raw-id behaviour.
+    driveFolderDisplay,
+    driveFolderDisplayName,
+    driveFolderDisplayId,
+    driveFolderIdRow,
+    driveFolderEditIdButton,
     // Folder-picker controls ("Browse Drive"). All optional: if the modal markup
     // is absent the picker is simply inert and the paste-an-ID flow is unchanged.
     driveBrowseButton,
+    // Second "Browse Drive" button living in the raw-id row (Edit-ID mode). Optional.
+    driveBrowseButtonAlt,
     drivePickerBackdrop,
     drivePickerClose,
     drivePickerCancel,
@@ -49,6 +60,8 @@ const AdminDriveView = (() => {
     let capturedFolderId = ""; // the id capturedFolderName belongs to.
 
     driveBrowseButton?.addEventListener("click", openPicker);
+    driveBrowseButtonAlt?.addEventListener("click", openPicker);
+    driveFolderEditIdButton?.addEventListener("click", showFolderIdEditor);
     drivePickerClose?.addEventListener("click", closePicker);
     drivePickerCancel?.addEventListener("click", closePicker);
     drivePickerSelect?.addEventListener("click", confirmPickerSelection);
@@ -315,6 +328,9 @@ const AdminDriveView = (() => {
       if (driveFolderIdInput) driveFolderIdInput.value = id;
       capturedFolderId = id;
       capturedFolderName = name;
+      // Re-render the name-first display so the admin immediately sees the picked
+      // folder's NAME (not the opaque id) before clicking Save.
+      renderFolderDisplay();
     }
 
     // --- "+ New folder" -----------------------------------------------------
@@ -527,6 +543,43 @@ const AdminDriveView = (() => {
       // re-picking still carries the known name for this id.
       capturedFolderId = String(folder?.id || "");
       capturedFolderName = String(folder?.name || "");
+      renderFolderDisplay();
+    }
+
+    // --- Name-first folder display -----------------------------------------
+    // The raw id always lives in driveFolderIdInput (Save's single source of
+    // truth). This decides which of the two faces the admin sees:
+    //   * a known id  -> the read-only NAME display (id shown as muted secondary
+    //     text); the friendly name is preferred, falling back to the id when the
+    //     name isn't known (e.g. a stored id loaded with no name yet).
+    //   * no id at all -> the raw-id editor row, so the admin can paste/browse.
+    // If the display markup is absent the raw row is simply always shown.
+    function renderFolderDisplay() {
+      if (!driveFolderDisplay) return;
+      const id = String(driveFolderIdInput?.value || "").trim();
+      if (!id) {
+        showFolderIdEditor();
+        return;
+      }
+      const name = id === capturedFolderId ? String(capturedFolderName || "").trim() : "";
+      if (driveFolderDisplayName) driveFolderDisplayName.textContent = name || id;
+      if (driveFolderDisplayId) {
+        // Show the id as secondary muted text. When the name is unknown the big
+        // line already shows the id, so don't repeat it underneath.
+        driveFolderDisplayId.textContent = name ? id : "";
+        driveFolderDisplayId.hidden = !name;
+      }
+      driveFolderDisplay.hidden = false;
+      if (driveFolderIdRow) driveFolderIdRow.hidden = true;
+    }
+
+    // "Edit ID": reveal the raw-id input so a power user can paste/edit an id by
+    // hand. Hides the name display. Also the no-id fallback so the field is never
+    // blank-and-stuck.
+    function showFolderIdEditor() {
+      if (driveFolderDisplay) driveFolderDisplay.hidden = true;
+      if (driveFolderIdRow) driveFolderIdRow.hidden = false;
+      driveFolderIdInput?.focus?.();
     }
 
     function renderError(message) {

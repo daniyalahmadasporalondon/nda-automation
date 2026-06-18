@@ -160,6 +160,15 @@ class FakeElement {
   }
 }
 
+// admin-drive.js references a page-global escapeHtml (defined by another script
+// in the browser) when it renders the connection panel. Shim it so the tests
+// that exercise the full status render (load()) don't hit a ReferenceError.
+global.escapeHtml = (value) => String(value == null ? "" : value)
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;");
+
 // A tiny document shim so the controller's createElement/appendChild work.
 global.document = {
   createElement(tag) {
@@ -244,7 +253,16 @@ function mountController() {
   const driveFolderIdInput = new FakeElement("input");
   const driveFolderSaveButton = new FakeElement("button");
 
+  // Name-first display layer (mirrors the shipped markup defaults).
+  const driveFolderDisplay = new FakeElement("div");
+  driveFolderDisplay.hidden = true;
+  const driveFolderDisplayName = new FakeElement("span");
+  const driveFolderDisplayId = new FakeElement("span");
+  const driveFolderIdRow = new FakeElement("div");
+  const driveFolderEditIdButton = new FakeElement("button");
+
   const driveBrowseButton = new FakeElement("button");
+  const driveBrowseButtonAlt = new FakeElement("button");
   const drivePickerBackdrop = new FakeElement("div");
   drivePickerBackdrop.hidden = true;
   const drivePickerClose = new FakeElement("button");
@@ -283,7 +301,13 @@ function mountController() {
     driveFolderForm,
     driveFolderIdInput,
     driveFolderSaveButton,
+    driveFolderDisplay,
+    driveFolderDisplayName,
+    driveFolderDisplayId,
+    driveFolderIdRow,
+    driveFolderEditIdButton,
     driveBrowseButton,
+    driveBrowseButtonAlt,
     drivePickerBackdrop,
     drivePickerClose,
     drivePickerCancel,
@@ -310,7 +334,13 @@ function mountController() {
     driveFolderForm,
     driveFolderIdInput,
     driveFolderSaveButton,
+    driveFolderDisplay,
+    driveFolderDisplayName,
+    driveFolderDisplayId,
+    driveFolderIdRow,
+    driveFolderEditIdButton,
     driveBrowseButton,
+    driveBrowseButtonAlt,
     drivePickerBackdrop,
     drivePickerClose,
     drivePickerCancel,
@@ -624,6 +654,101 @@ function openSpanOf(folderBtn) {
 
     assert.ok(!calls.some((c) => c.url === "/api/admin/drive-folders" && c.method === "POST"), "no create POST for an empty name");
     assert.match(ui.drivePickerNewError.textContent, /name/i, "empty-name error shown");
+  });
+
+  await test('after picking a folder the display shows the NAME but Save still posts the ID', async () => {
+    const ui = mountController();
+    const calls = installFetch((url) => {
+      if (url === "/api/admin/drive-folders?parent=root") {
+        return { payload: { parent: "root", folders: [{ id: "1cfBpCWLKMhjwtZqx6XK", name: "NDAs" }] } };
+      }
+      if (url === "/api/admin/drive-settings") {
+        return { payload: { drive: { enabled: true, folder_id: "1cfBpCWLKMhjwtZqx6XK", folder_name: "NDAs" } } };
+      }
+      return {};
+    });
+
+    await ui.driveBrowseButton.click();
+    await flush();
+    const ndasBtn = folderButton(ui, "NDAs");
+    await ndasBtn.dispatchEvent({ type: "click", target: ndasBtn, stopPropagation() {} });
+    await flush();
+    await ui.drivePickerSelect.click();
+    await flush();
+
+    // The admin sees the friendly NAME prominently; the opaque id is muted
+    // secondary text. The raw-id editor is hidden.
+    assert.equal(ui.driveFolderDisplay.hidden, false, "name display shown");
+    assert.equal(ui.driveFolderDisplayName.textContent, "NDAs", "name shown prominently");
+    assert.equal(ui.driveFolderDisplayId.textContent, "1cfBpCWLKMhjwtZqx6XK", "id shown as secondary text");
+    assert.equal(ui.driveFolderIdRow.hidden, true, "raw-id editor hidden while a name is shown");
+
+    // But the underlying value Save reads is the real ID, not the name.
+    await ui.driveFolderForm.submit();
+    await flush();
+    const saveCall = calls.find((c) => c.url === "/api/admin/drive-settings");
+    assert.deepEqual(saveCall.body, { folder_id: "1cfBpCWLKMhjwtZqx6XK", folder_name: "NDAs" }, "Save posts the real id (not the name)");
+  });
+
+  await test('"Edit ID" reveals the raw-id field; manual id entry still saves that id', async () => {
+    const ui = mountController();
+    // Load a stored folder so the name display is showing.
+    ui.state.driveStatus = {};
+    const calls = installFetch((url) => {
+      if (url === "/api/admin/drive-settings") {
+        return { payload: { drive: { enabled: true, folder_id: "1manual_id", folder_name: "Resolved" } } };
+      }
+      return {};
+    });
+    // Simulate a loaded folder (name-first display visible).
+    ui.controller; // controller already mounted
+    // Drive renderFolderForm via a status render is internal; emulate by
+    // toggling Edit ID directly, then typing a raw id.
+    await ui.driveFolderEditIdButton.click();
+    await flush();
+    assert.equal(ui.driveFolderIdRow.hidden, false, "Edit ID reveals the raw-id row");
+    assert.equal(ui.driveFolderDisplay.hidden, true, "name display hidden in edit mode");
+
+    ui.driveFolderIdInput.value = "1manual_id";
+    await ui.driveFolderForm.submit();
+    await flush();
+    const saveCall = calls.find((c) => c.url === "/api/admin/drive-settings");
+    assert.deepEqual(saveCall.body, { folder_id: "1manual_id" }, "manual id is saved as the id (no stale name)");
+  });
+
+  await test('load with a stored id but no known name falls back to showing the id (not blank)', async () => {
+    const ui = mountController();
+    installFetch((url) => {
+      if (url === "/api/drive/status") {
+        // A stored root folder id with no name resolved server-side.
+        return { payload: { connected: true, folder: { id: "1storedonly", name: "" } } };
+      }
+      return {};
+    });
+
+    await ui.controller.load();
+    await flush();
+
+    assert.equal(ui.driveFolderDisplay.hidden, false, "display shown for a stored id");
+    assert.equal(ui.driveFolderDisplayName.textContent, "1storedonly", "id shown as the headline when no name is known");
+    assert.equal(ui.driveFolderDisplayId.hidden, true, "no duplicate secondary id line when name is unknown");
+    assert.equal(ui.driveFolderIdInput.value, "1storedonly", "raw id preserved for Save");
+  });
+
+  await test('load with no folder set shows the raw-id editor (never blank-and-stuck)', async () => {
+    const ui = mountController();
+    installFetch((url) => {
+      if (url === "/api/drive/status") {
+        return { payload: { connected: true, folder: null } };
+      }
+      return {};
+    });
+
+    await ui.controller.load();
+    await flush();
+
+    assert.equal(ui.driveFolderIdRow.hidden, false, "raw-id editor visible when no folder is set");
+    assert.equal(ui.driveFolderDisplay.hidden, true, "name display hidden when nothing to show");
   });
 
   process.stdout.write(`\nadmin-drive-picker.cjs: ${passed} passed\n`);

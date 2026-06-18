@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260618driveback">
+    <link rel="stylesheet" href="/static/styles.css?v=20260618drivename">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260618asyncrev1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260618nodl1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
@@ -1784,10 +1784,24 @@
                     <h3>NDAs root folder (optional)</h3>
                     <p class="integration-subsection-help" data-admin-drive="folder-help">Each matter syncs into its own subfolder under this root, organised as {counterparty}/{matter}. Leave blank to create an "NDAs" folder in My Drive.</p>
                     <form class="integration-search-form" id="adminDriveFolderForm">
-                      <label for="adminDriveFolderIdInput">Root folder ID</label>
-                      <div class="integration-input-row">
+                      <label for="adminDriveFolderIdInput">Root folder</label>
+                      <!-- Name-first display: the admin sees the friendly folder NAME;
+                           the raw id is kept (hidden) in #adminDriveFolderIdInput, which
+                           stays the single source of truth that Save reads. "Edit ID"
+                           reveals the raw input for power users pasting an id by hand. -->
+                      <div class="drive-folder-display" id="adminDriveFolderDisplay" hidden>
+                        <div class="drive-folder-display-text">
+                          <span class="drive-folder-display-name" id="adminDriveFolderDisplayName"></span>
+                          <span class="drive-folder-display-id" id="adminDriveFolderDisplayId"></span>
+                        </div>
+                        <div class="drive-folder-display-actions">
+                          <button class="secondary" id="adminDriveBrowseButton" type="button">Browse Drive</button>
+                          <button class="link-button" id="adminDriveFolderEditIdButton" type="button">Edit ID</button>
+                        </div>
+                      </div>
+                      <div class="integration-input-row" id="adminDriveFolderIdRow">
                         <input id="adminDriveFolderIdInput" type="text" autocomplete="off" spellcheck="false" placeholder="Google Drive folder ID">
-                        <button class="secondary" id="adminDriveBrowseButton" type="button">Browse Drive</button>
+                        <button class="secondary" id="adminDriveBrowseButtonAlt" type="button">Browse Drive</button>
                       </div>
                       <div class="integration-search-actions">
                         <p data-admin-drive="folder-message">Per-matter subfolders are created inside this root folder when set. Click "Browse Drive" to pick or create a folder — its name is captured automatically.</p>
@@ -2253,7 +2267,7 @@
     <script src="/static/js/admin-ai.js?v=20260618aiconfig"></script>
     <script src="/static/js/admin-health.js?v=20260617a401"></script>
     <script src="/static/js/admin-integrations.js?v=20260618gmailfix"></script>
-    <script src="/static/js/admin-drive.js?v=20260618driveback"></script>
+    <script src="/static/js/admin-drive.js?v=20260618drivename"></script>
     <script src="/static/js/admin-personalisation.js?v=20260611a"></script>
     <script src="/static/js/admin-docusign.js?v=20260617a401"></script>
     <script src="/static/js/docusign-send.js?v=20260618dsrefresh1"></script>
@@ -2278,6 +2292,6 @@
     <script src="/static/js/dashboard-search.js?v=20260614a"></script>
     <script src="/static/js/notifications.js?v=20260617aio1"></script>
     <script src="/static/js/generator-editor.js?v=20260617a"></script>
-    <script src="/static/app.js?v=20260618driveback"></script>
+    <script src="/static/app.js?v=20260618drivename"></script>
   </body>
 </html>
