@@ -3340,6 +3340,11 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(stored_matter["triage_status"], "needs_redline")
 
     def test_explicit_stale_matter_refresh_uses_active_review_engine_result(self):
+        """ASYNC contract: POST /review-refresh returns 202 immediately, enqueues the
+        AI review onto the worker pool, and NEVER runs the engine inline. The review
+        result (ai_first engine) lands on the stored matter only after the worker
+        body runs. The route must not call review_nda_with_active_engine inline.
+        """
         active_result = {
             "review_engine_version": REVIEW_ENGINE_VERSION,
             "review_mode": "ai_first_compat",
@@ -3374,45 +3379,78 @@ class ServerTests(unittest.TestCase):
         }
         active_result["playbook_runtime"] = self.active_playbook_review_runtime()
 
-        with tempfile.TemporaryDirectory() as data_dir:
-            patches = self.matter_store_patches(data_dir)
-            with patches[0], patches[1], patches[2]:
-                matter = matter_store.create_matter(
-                    source_filename="Acme NDA.docx",
-                    document_bytes=b"source docx bytes",
-                    extracted_text="Mutual NDA text.",
-                    review_result={"clauses": []},
-                    triage={
-                        "triage_status": "needs_redline",
-                        "next_action": "Review redline",
-                        "issue_count": 1,
-                        "requirements_passed": 0,
-                        "requirements_needs_review": 0,
-                        "requirements_failed": 1,
-                    },
-                )
-                with (
-                    patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first"}),
-                    patch.object(matter_routes, "review_nda_with_active_engine", return_value=deepcopy(active_result)) as active_review,
-                ):
-                    status, payload = self.request("POST", f"/api/matters/{matter['id']}/review-refresh")
-                stored_matter = matter_store.get_matter(matter["id"])
+        # Swap in a fresh, isolated pool so the real enqueue never fires heavy work.
+        orig_pool = ingestion_service._INBOUND_REVIEW_POOL
+        pool = ingestion_service._InboundReviewWorkerPool()
+        pool.configure(lambda mid, owner: None)  # no-op handler -- never runs heavy work
+        ingestion_service._INBOUND_REVIEW_POOL = pool
+        with ingestion_service._ON_DEMAND_REVIEW_LOCK:
+            ingestion_service._ON_DEMAND_REVIEW_MATTERS.clear()
+        # Force _ai_first_review_enabled() to True so the route sees AI as available.
+        orig_ai_enabled = matter_routes._ai_first_review_enabled
+        matter_routes._ai_first_review_enabled = lambda: True
+        try:
+            with tempfile.TemporaryDirectory() as data_dir:
+                patches = self.matter_store_patches(data_dir)
+                with patches[0], patches[1], patches[2]:
+                    matter = matter_store.create_matter(
+                        source_filename="Acme NDA.docx",
+                        document_bytes=b"source docx bytes",
+                        extracted_text="Mutual NDA text.",
+                        review_result={"clauses": []},
+                        triage={
+                            "triage_status": "needs_redline",
+                            "next_action": "Review redline",
+                            "issue_count": 1,
+                            "requirements_passed": 0,
+                            "requirements_needs_review": 0,
+                            "requirements_failed": 1,
+                        },
+                    )
+                    # Spy: assert the route did NOT call the engine inline.
+                    engine_calls: list = []
+                    orig_engine = matter_routes.review_nda_with_active_engine
+                    matter_routes.review_nda_with_active_engine = lambda *a, **k: engine_calls.append("x") or {}
+                    try:
+                        with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first"}):
+                            status, payload = self.request("POST", f"/api/matters/{matter['id']}/review-refresh")
+                    finally:
+                        matter_routes.review_nda_with_active_engine = orig_engine
 
-        self.assertEqual(status, 200)
-        # The refresh now re-extracts the original .docx to restore contract
-        # structure; the test's source bytes are not a real .docx, so extraction
-        # yields no paragraphs and the call falls back to a text-only refresh.
-        # The Review tab pins the AI-first engine (AI is the only reviewer there), so
-        # the call carries force_engine="ai_first" regardless of the active config.
-        active_review.assert_called_once_with(
-            "Mutual NDA text.", force_engine="ai_first", paragraphs=None
-        )
-        self.assertEqual(payload["review_result"]["review_mode"], "ai_first_compat")
-        self.assertEqual(payload["review_refresh"]["stale"], False)
-        self.assertEqual(payload["review_refresh"]["refresh_method"], "POST")
-        self.assertEqual(payload["review_refresh"]["refresh_url"], f"/api/matters/{matter['id']}/review-refresh")
-        self.assertEqual(stored_matter["review_result"]["active_review_engine"]["selected_engine"], "ai_first")
-        self.assertEqual(stored_matter["triage_status"], "ready_to_sign")
+                    # --- 202 contract assertions ---
+                    self.assertEqual(status, 202)
+                    self.assertEqual(payload["review_status"], "in_progress")
+                    self.assertTrue(payload["job_scheduled"])
+                    self.assertEqual(engine_calls, [], "route must NOT run the AI engine inline")
+                    # The enqueue stamps in_progress on the stored matter.
+                    self.assertEqual(matter_store.get_matter(matter["id"])["review_status"], "in_progress")
+
+                    # --- Land the completed review via the worker body directly ---
+                    from nda_automation.matter_repository import DiskMatterRepository as _DiskRepo
+                    with patch.dict(os.environ, {"NDA_INBOUND_AI_REVIEW_ENABLED": "true"}):
+                        ingestion_service._perform_inbound_ai_review(
+                            str(matter["id"]),
+                            repository=_DiskRepo(),
+                            owner_user_id="",
+                            review_engine_func=lambda t, **kw: deepcopy(active_result),
+                        )
+
+                    # --- Eventual completed-state assertions (preserve original intent) ---
+                    stored_matter = matter_store.get_matter(matter["id"])
+                    self.assertEqual(
+                        stored_matter["review_result"]["active_review_engine"]["executed_engine"],
+                        "ai_first",
+                    )
+                    self.assertEqual(
+                        stored_matter["review_result"]["active_review_engine"]["selected_engine"],
+                        "ai_first",
+                    )
+                    self.assertEqual(stored_matter["review_status"], "completed")
+        finally:
+            ingestion_service._INBOUND_REVIEW_POOL = orig_pool
+            matter_routes._ai_first_review_enabled = orig_ai_enabled
+            with ingestion_service._ON_DEMAND_REVIEW_LOCK:
+                ingestion_service._ON_DEMAND_REVIEW_MATTERS.clear()
 
     def test_get_review_refresh_query_is_read_only(self):
         active_result = {
@@ -3471,6 +3509,11 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(stored_matter["triage_status"], "needs_redline")
 
     def test_stale_matter_refresh_clears_saved_redline_draft_before_export(self):
+        """ASYNC contract: POST /review-refresh returns 202 immediately. The stale
+        redline_draft is cleared and the fresh review result (with 1 redline_edit)
+        lands on the stored matter only after the worker body runs -- not inline in
+        the route. The export that follows must see the refreshed review (1 redline).
+        """
         source_text = "This Agreement shall be governed by the laws of California."
         source_docx = make_docx([source_text])
         refreshed_redline = {
@@ -3521,57 +3564,83 @@ class ServerTests(unittest.TestCase):
             captured_redline_counts.append(len(review_result.get("redline_edits") or []))
             return source_docx
 
-        with tempfile.TemporaryDirectory() as data_dir:
-            patches = self.matter_store_patches(data_dir)
-            with patches[0], patches[1], patches[2]:
-                matter = matter_store.create_matter(
-                    source_filename="Draft NDA.docx",
-                    document_bytes=source_docx,
-                    extracted_text=source_text,
-                    review_result={"clauses": []},
-                    triage={
-                        "triage_status": "needs_redline",
-                        "next_action": "Review redline",
-                        "issue_count": 1,
-                        "requirements_passed": 0,
-                        "requirements_needs_review": 0,
-                        "requirements_failed": 1,
-                    },
-                )
-                matter_store.update_redline_draft(
-                    matter["id"],
-                    {
-                        "redline_decisions": {"redline-governing-law-old": False},
-                        "template_selections": {"redline-governing-law-old": "india"},
-                        "export_redline_edits": [],
-                        "manual_redline_edits": [],
-                    },
-                )
-                self.assertIn("redline_draft", matter_store.get_matter(matter["id"]))
-                with (
-                    patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first"}),
-                    patch.object(matter_routes, "review_nda_with_active_engine", return_value=deepcopy(active_result)),
-                ):
-                    review_status, review_payload = self.request("POST", f"/api/matters/{matter['id']}/review-refresh")
-                stored_after_refresh = matter_store.get_matter(matter["id"])
-                with patch.object(server_module.redline_export_service.docx_package_renderer, "build_source_redline_docx", side_effect=capture_redline_build):
-                    with patch.object(server_module.redline_export_service.docx_package_renderer, "validate_docx_open_health", return_value=[]):
-                        export_status, _export_payload = self.request(
-                            "POST",
-                            "/api/export-review-docx",
-                            {"matter_id": matter["id"]},
+        # Swap in a fresh, isolated pool so the real enqueue never fires heavy work.
+        orig_pool = ingestion_service._INBOUND_REVIEW_POOL
+        pool = ingestion_service._InboundReviewWorkerPool()
+        pool.configure(lambda mid, owner: None)  # no-op handler -- never runs heavy work
+        ingestion_service._INBOUND_REVIEW_POOL = pool
+        with ingestion_service._ON_DEMAND_REVIEW_LOCK:
+            ingestion_service._ON_DEMAND_REVIEW_MATTERS.clear()
+        orig_ai_enabled = matter_routes._ai_first_review_enabled
+        matter_routes._ai_first_review_enabled = lambda: True
+        try:
+            with tempfile.TemporaryDirectory() as data_dir:
+                patches = self.matter_store_patches(data_dir)
+                with patches[0], patches[1], patches[2]:
+                    matter = matter_store.create_matter(
+                        source_filename="Draft NDA.docx",
+                        document_bytes=source_docx,
+                        extracted_text=source_text,
+                        review_result={"clauses": []},
+                        triage={
+                            "triage_status": "needs_redline",
+                            "next_action": "Review redline",
+                            "issue_count": 1,
+                            "requirements_passed": 0,
+                            "requirements_needs_review": 0,
+                            "requirements_failed": 1,
+                        },
+                    )
+                    matter_store.update_redline_draft(
+                        matter["id"],
+                        {
+                            "redline_decisions": {"redline-governing-law-old": False},
+                            "template_selections": {"redline-governing-law-old": "india"},
+                            "export_redline_edits": [],
+                            "manual_redline_edits": [],
+                        },
+                    )
+                    self.assertIn("redline_draft", matter_store.get_matter(matter["id"]))
+
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first"}):
+                        review_status, review_payload = self.request("POST", f"/api/matters/{matter['id']}/review-refresh")
+
+                    # --- 202 contract assertions ---
+                    self.assertEqual(review_status, 202)
+                    self.assertEqual(review_payload["review_status"], "in_progress")
+                    self.assertTrue(review_payload["job_scheduled"])
+
+                    # --- Land the completed review via the worker body directly ---
+                    from nda_automation.matter_repository import DiskMatterRepository as _DiskRepo
+                    with patch.dict(os.environ, {"NDA_INBOUND_AI_REVIEW_ENABLED": "true"}):
+                        ingestion_service._perform_inbound_ai_review(
+                            str(matter["id"]),
+                            repository=_DiskRepo(),
+                            owner_user_id="",
+                            review_engine_func=lambda t, **kw: deepcopy(active_result),
                         )
 
-        self.assertEqual(review_status, 200)
-        self.assertEqual(review_payload["review_refresh"]["stale"], False)
-        self.assertTrue(review_payload["review_refresh"]["refreshed"])
-        self.assertTrue(review_payload["review_refresh"]["redline_draft_cleared"])
-        self.assertIn("re-analyzed", review_payload["review_refresh"]["message"])
-        self.assertFalse(review_payload["matter"]["has_redline_draft"])
-        self.assertNotIn("redline_draft", review_payload)
-        self.assertNotIn("redline_draft", stored_after_refresh)
-        self.assertEqual(export_status, 200)
-        self.assertEqual(captured_redline_counts, [1])
+                    # --- Eventual completed-state assertions (preserve original intent) ---
+                    stored_after_refresh = matter_store.get_matter(matter["id"])
+                    # The worker persist path clears stale redline drafts.
+                    self.assertNotIn("redline_draft", stored_after_refresh)
+                    self.assertEqual(stored_after_refresh["review_status"], "completed")
+
+                    # Export uses the refreshed review (1 redline_edit from active_result).
+                    with patch.object(server_module.redline_export_service.docx_package_renderer, "build_source_redline_docx", side_effect=capture_redline_build):
+                        with patch.object(server_module.redline_export_service.docx_package_renderer, "validate_docx_open_health", return_value=[]):
+                            export_status, _export_payload = self.request(
+                                "POST",
+                                "/api/export-review-docx",
+                                {"matter_id": matter["id"]},
+                            )
+                    self.assertEqual(export_status, 200)
+                    self.assertEqual(captured_redline_counts, [1])
+        finally:
+            ingestion_service._INBOUND_REVIEW_POOL = orig_pool
+            matter_routes._ai_first_review_enabled = orig_ai_enabled
+            with ingestion_service._ON_DEMAND_REVIEW_LOCK:
+                ingestion_service._ON_DEMAND_REVIEW_MATTERS.clear()
 
     def test_gmail_attachment_import_creates_unreviewed_matter(self):
         # Inbound Gmail import now creates the matter UN-REVIEWED: NO review runs at
@@ -3613,6 +3682,11 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(str(stored_matter.get("extracted_text") or "").strip())
 
     def test_matter_review_refreshes_stale_clause_decisions(self):
+        """ASYNC contract: POST /review-refresh returns 202 immediately. The real AI
+        stub (NDA_AI_ASSESSMENT_STUB=1) runs via the worker body directly, producing
+        the grounded-downgrade verdict for term_and_survival. Assertions are on the
+        STORED matter after the worker body completes -- not the 202 response body.
+        """
         text = (
             "TERM AND TERMINATION: This Agreement is effective from the date hereof, "
             "and shall terminate on the earlier of: (i) the date on which a definitive agreement "
@@ -3633,43 +3707,77 @@ class ServerTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as data_dir:
-            with self.matter_store_patches(data_dir)[0], self.matter_store_patches(data_dir)[1], self.matter_store_patches(data_dir)[2]:
-                matter = matter_store.create_matter(
-                    source_filename="Air India NDA.docx",
-                    document_bytes=b"source docx bytes",
-                    extracted_text=text,
-                    review_result=stale_review,
-                    triage={
-                        "triage_status": "needs_redline",
-                        "next_action": "Review redline",
-                        "issue_count": 1,
-                        "requirements_passed": 0,
-                        "requirements_needs_review": 0,
-                        "requirements_failed": 1,
-                    },
-                )
-                with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
-                    review_status, review_payload = self.request("POST", f"/api/matters/{matter['id']}/review-refresh")
-                stored_matter = matter_store.get_matter(matter["id"])
+        # Swap in a fresh, isolated pool so the real enqueue never fires heavy work.
+        orig_pool = ingestion_service._INBOUND_REVIEW_POOL
+        pool = ingestion_service._InboundReviewWorkerPool()
+        pool.configure(lambda mid, owner: None)  # no-op handler -- never runs heavy work
+        ingestion_service._INBOUND_REVIEW_POOL = pool
+        with ingestion_service._ON_DEMAND_REVIEW_LOCK:
+            ingestion_service._ON_DEMAND_REVIEW_MATTERS.clear()
+        orig_ai_enabled = matter_routes._ai_first_review_enabled
+        matter_routes._ai_first_review_enabled = lambda: True
+        try:
+            with tempfile.TemporaryDirectory() as data_dir:
+                patches = self.matter_store_patches(data_dir)
+                with patches[0], patches[1], patches[2]:
+                    matter = matter_store.create_matter(
+                        source_filename="Air India NDA.docx",
+                        document_bytes=b"source docx bytes",
+                        extracted_text=text,
+                        review_result=stale_review,
+                        triage={
+                            "triage_status": "needs_redline",
+                            "next_action": "Review redline",
+                            "issue_count": 1,
+                            "requirements_passed": 0,
+                            "requirements_needs_review": 0,
+                            "requirements_failed": 1,
+                        },
+                    )
+                    with patch.dict(os.environ, {ACTIVE_REVIEW_ENGINE_ENV: "ai_first", "NDA_AI_REVIEW_ENABLED": "true", "NDA_AI_ASSESSMENT_STUB": "1"}):
+                        review_status, review_payload = self.request("POST", f"/api/matters/{matter['id']}/review-refresh")
 
-        term_clause = next(
-            clause
-            for clause in review_payload["review_result"]["clauses"]
-            if clause["id"] == "term_and_survival"
-        )
-        self.assertEqual(review_status, 200)
-        self.assertEqual(review_payload["review_result"]["review_engine_version"], REVIEW_ENGINE_VERSION)
-        self.assertEqual(review_payload["review_result"]["active_review_engine"]["selected_engine"], "ai_first")
-        self.assertEqual(term_clause["status"], "check")
-        self.assertFalse(term_clause["passes"])
-        self.assertEqual(term_clause["decision"], "review")
-        self.assertTrue(term_clause["needs_review"])
-        self.assertEqual(term_clause["reason_code"], "ungrounded_finding")
-        self.assertIn("could not tie this to a specific quote", term_clause["finding"])
-        self.assertEqual(stored_matter["review_result"]["review_engine_version"], REVIEW_ENGINE_VERSION)
-        self.assertEqual(stored_matter["requirements_failed"], review_payload["review_result"]["requirements_failed"])
-        self.assertEqual(stored_matter["requirements_needs_review"], review_payload["review_result"]["requirements_needs_review"])
+                    # --- 202 contract assertions ---
+                    self.assertEqual(review_status, 202)
+                    self.assertEqual(review_payload["review_status"], "in_progress")
+                    self.assertTrue(review_payload["job_scheduled"])
+
+                    # --- Land the completed review via the worker body using the real AI stub ---
+                    from nda_automation.matter_repository import DiskMatterRepository as _DiskRepo
+                    with patch.dict(os.environ, {
+                        ACTIVE_REVIEW_ENGINE_ENV: "ai_first",
+                        "NDA_AI_REVIEW_ENABLED": "true",
+                        "NDA_AI_ASSESSMENT_STUB": "1",
+                        "NDA_INBOUND_AI_REVIEW_ENABLED": "true",
+                    }):
+                        ingestion_service._perform_inbound_ai_review(
+                            str(matter["id"]),
+                            repository=_DiskRepo(),
+                            owner_user_id="",
+                            review_engine_func=ingestion_service.review_nda_with_active_engine,
+                        )
+
+                    # --- Eventual completed-state assertions (preserve original intent) ---
+                    stored_matter = matter_store.get_matter(matter["id"])
+                    self.assertEqual(stored_matter["review_result"]["review_engine_version"], REVIEW_ENGINE_VERSION)
+                    self.assertEqual(stored_matter["review_status"], "completed")
+
+                    term_clause = next(
+                        clause
+                        for clause in stored_matter["review_result"]["clauses"]
+                        if clause["id"] == "term_and_survival"
+                    )
+                    self.assertEqual(term_clause["status"], "check")
+                    self.assertFalse(term_clause["passes"])
+                    self.assertEqual(term_clause["decision"], "review")
+                    self.assertTrue(term_clause["needs_review"])
+                    self.assertEqual(term_clause["reason_code"], "ungrounded_finding")
+                    self.assertIn("could not tie this to a specific quote", term_clause["finding"])
+        finally:
+            ingestion_service._INBOUND_REVIEW_POOL = orig_pool
+            matter_routes._ai_first_review_enabled = orig_ai_enabled
+            with ingestion_service._ON_DEMAND_REVIEW_LOCK:
+                ingestion_service._ON_DEMAND_REVIEW_MATTERS.clear()
 
     def test_matter_upload_supports_manual_upload_source(self):
         source_docx = make_docx([
