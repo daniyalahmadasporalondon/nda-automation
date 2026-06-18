@@ -268,8 +268,6 @@ function createOverviewController({ state, root, fillSection, renderFill }) {
 
     const factsEl = document.createElement("div");
     factsEl.className = "ov-block ov-block-facts";
-    const signaturesEl = document.createElement("div");
-    signaturesEl.className = "ov-block ov-block-signatures";
     const rosterEl = document.createElement("div");
     rosterEl.className = "ov-block ov-block-roster";
     const footerEl = document.createElement("div");
@@ -279,28 +277,15 @@ function createOverviewController({ state, root, fillSection, renderFill }) {
     // ASPORA ENTITY section: the existing Fill tool, relocated to sit RIGHT BELOW
     // the counterparty/facts block and BEFORE the clause roster. It mounts into the
     // summary body, between facts and roster, so the order reads:
-    //   counterparty/facts -> Aspora-entity Fill -> signatures -> clause roster -> approve/send.
+    //   counterparty/facts -> Aspora-entity Fill -> clause roster -> approve/send.
+    // (Per-party signatures live ONLY in the card-detail inspector pop-up, which
+    // carries its own verified copy — they are deliberately NOT shown here.)
     composeFacts(factsEl, facts);
     mountFillSection(summaryBody);
-
-    // SIGNATURES: the two parties' e-signature status (0/2, 1/2, 2/2), read from
-    // the matter's DocuSign envelope block. Sits after the Fill tool and before
-    // the clause roster so the "where does this matter stand" status reads top to
-    // bottom: facts -> Aspora entity -> who has signed -> the clause detail.
-    summaryBody.append(signaturesEl);
-    composeSignatures(signaturesEl);
 
     summaryBody.append(rosterEl, footerEl);
     composeRoster(rosterEl, clauses, aiReviewRan);
     composeFooter(footerEl, footer, aiReviewRan);
-  }
-
-  function composeSignatures(el) {
-    if (typeof window !== "undefined" && typeof window.renderOverviewSignatures === "function") {
-      window.renderOverviewSignatures(el, state.selectedMatter || {});
-      return;
-    }
-    placeholder(el, "Signatures", "renderOverviewSignatures");
   }
 
   function composeFacts(el, facts) {
