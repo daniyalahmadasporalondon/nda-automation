@@ -85,6 +85,7 @@ class PublicMatter(TypedDict, total=False):
     board_column: str
     can_send_redline: bool
     counterparty: str
+    counterparty_email: str
     counterparty_confidence: float
     counterparty_needs_confirmation: bool
     counterparty_source: str
@@ -254,6 +255,23 @@ def public_matter(
     # "Unknown Counterparty". One source of truth: artifact_registry.derive_counterparty
     # (the same name drive_integration files under), so the UI and Drive never drift.
     public["counterparty"] = artifact_registry.derive_counterparty(matter)
+    # The ACTUAL party the NDA was sent to for signature. When a DocuSign envelope
+    # exists, the envelope's COUNTERPARTY signer is who really received it, which can
+    # diverge from the inbound reply recipient that ``recipient_email`` reflects (e.g.
+    # the operator re-pointed the envelope, or sent generated paper to a different
+    # contact). For DISPLAY ONLY we surface the real signer here so the card never
+    # shows a stale reply address as "who got the envelope".
+    #
+    # IMPORTANT: this is intentionally a SEPARATE field. ``recipient_email`` stays the
+    # reply recipient byte-for-byte so the Gmail redline send/confirm contract
+    # (``confirm_recipient`` validated against ``matter_reply_recipient``) is unchanged.
+    # When there is no envelope (manual/Gmail-only matters) this falls back to the
+    # reply recipient, so existing matters render exactly as before.
+    counterparty_recipient = _docusign_counterparty_recipient(matter)
+    public["counterparty_email"] = counterparty_recipient.get("email") or recipient
+    counterparty_name = counterparty_recipient.get("name")
+    if counterparty_name:
+        public["counterparty"] = counterparty_name
     # Surface the AI-extracted-counterparty provenance the human-confirmation UI
     # needs alongside the display name: the raw confidence/verified/source from the
     # stored extraction dict, plus a single derived needs_confirmation flag. The
@@ -315,6 +333,55 @@ def matter_artifacts_view(matter: dict[str, Any]) -> list[dict[str, Any]]:
             "is_current": bool(current_id) and artifact.id == current_id,
         })
     return view
+
+
+# The role the DocuSign workflow stamps on the counterparty (external) signer when
+# it builds the envelope's signer set (``docusign_workflow._COUNTERPARTY_SIGNER_ROLE``).
+# Kept as a literal here to avoid importing the send module into the read-only view
+# (no cycle, no send code pulled into the board poll). The Aspora INTERNAL signer
+# carries role ``"aspora"`` and must never be shown as the counterparty.
+_DOCUSIGN_ASPORA_ROLE = "aspora"
+
+
+def _docusign_counterparty_recipient(matter: dict[str, Any]) -> dict[str, str]:
+    """The actual DocuSign COUNTERPARTY signer (name+email) for display, or ``{}``.
+
+    DISPLAY-ONLY, pure-derive, fail-open. Returns ``{}`` (so callers fall back to the
+    existing reply-recipient behaviour) whenever there is no usable envelope signer:
+    no ``docusign`` block, no sent envelope, a missing/malformed ``signers`` list, or
+    no signer that is unambiguously the counterparty.
+
+    Selection: the envelope's ``signers`` is a list of
+    ``{name, email, routing_order, role, anchor}`` dicts. The counterparty is the
+    signer whose ``role`` is NOT ``"aspora"`` (the single Aspora internal signer). We
+    pick the FIRST such signer with a valid email. If a list somehow contains only the
+    Aspora signer (or no valid counterparty email), we return ``{}`` and fall back --
+    we never surface the Aspora internal signer as the counterparty.
+
+    Never raises: any odd/missing field degrades to ``{}`` rather than breaking the
+    board poll.
+    """
+    docusign = matter.get("docusign")
+    if not isinstance(docusign, dict):
+        return {}
+    # Only trust the signer set once an envelope actually exists (was sent). A bare
+    # ``docusign`` block with no envelope id has no real recipient yet.
+    if not str(docusign.get("envelope_id") or "").strip():
+        return {}
+    signers = docusign.get("signers")
+    if not isinstance(signers, list):
+        return {}
+    for signer in signers:
+        if not isinstance(signer, dict):
+            continue
+        role = str(signer.get("role") or "").strip().casefold()
+        if role == _DOCUSIGN_ASPORA_ROLE:
+            continue
+        email = recipient_email(signer.get("email"))
+        if not email:
+            continue
+        return {"name": str(signer.get("name") or "").strip(), "email": email}
+    return {}
 
 
 COUNTERPARTY_CONFIRMATION_THRESHOLD = 0.75
