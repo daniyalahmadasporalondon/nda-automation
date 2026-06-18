@@ -264,7 +264,17 @@ def gmail_status(owner_user_id: str = "") -> dict[str, Any]:
         else:
             role_status["email"] = str(profile.get("emailAddress") or "")
             if enabled and _is_valid_email_address(role_status["email"]):
-                role_status["ready"] = True
+                # The profile fetch proving a *basic* call succeeds is NOT proof the
+                # connection can actually import: the token may be missing the import
+                # scope, or the cached profile may pre-date an expiry/revocation that
+                # the real poll would hit. Enforce scope adequacy + a read-only
+                # credential probe so "ready" reflects reality, not just reachability.
+                block_reason = _gmail_readiness_block_reason(role, role_status["token"], owner_user_id=owner_user_id)
+                if block_reason:
+                    role_status["error"] = block_reason
+                    role_status["reason"] = block_reason
+                else:
+                    role_status["ready"] = True
             elif enabled:
                 role_status["error"] = f"Gmail {role} profile did not include a valid email address."
             else:
@@ -272,6 +282,85 @@ def gmail_status(owner_user_id: str = "") -> dict[str, Any]:
         status[role] = role_status
     _apply_account_consistency(status)
     return status
+
+
+def _scope_short_name(scope: str) -> str:
+    # "https://www.googleapis.com/auth/gmail.modify" -> "gmail.modify"
+    tail = str(scope or "").rstrip("/").rsplit("/", 1)[-1]
+    return tail or str(scope or "")
+
+
+def _gmail_credential_probe(role: str, owner_user_id: str = "") -> None:
+    """Read-only credential health probe for the STATUS path only.
+
+    Loads the role's stored OAuth credential and confirms it can still authenticate
+    a future poll WITHOUT performing any Gmail import/poll/list call and WITHOUT
+    forcing a network round-trip. It validates structurally:
+      * the token file is present and parseable as OAuth user credentials, and
+      * the credential is either still valid, OR carries a refresh_token (so the
+        poller's existing refresh-on-expiry path can recover it).
+    A token that is expired AND has no usable refresh_token can never authenticate,
+    so it is surfaced as a broken connection. Raises GmailIntegrationError when the
+    credential cannot authenticate. Isolated as a seam so the status endpoint never
+    triggers or alters the poller and so tests can simulate token states.
+    """
+    token_path = google_connection.token_path_for_role(
+        role, owner_user_id=owner_user_id, integration_label="Gmail"
+    )
+    if not token_path.is_file():
+        raise GmailIntegrationError(f"Gmail {role} token file is missing — reconnect Gmail.")
+    payload = google_connection.read_token_json(token_path)
+    # A token with no refresh_token cannot recover once its access token expires;
+    # the poller's refresh-on-expiry path has nothing to refresh with. Surface this
+    # explicitly (the OAuth credential loader also rejects such tokens).
+    if not str(payload.get("refresh_token") or "").strip():
+        raise GmailIntegrationError(f"Gmail {role} token expired or revoked — reconnect Gmail.")
+    try:
+        from google.oauth2.credentials import Credentials
+    except ImportError as exc:  # pragma: no cover - exercised only without google libs
+        raise GmailIntegrationError("Google API packages are not installed.") from exc
+    try:
+        credentials = Credentials.from_authorized_user_file(str(token_path))
+    except Exception as exc:
+        raise GmailIntegrationError(f"Gmail {role} token could not be read — reconnect Gmail.") from exc
+    if credentials is None:
+        raise GmailIntegrationError(f"Gmail {role} token is not valid — reconnect Gmail.")
+    # A valid credential needs nothing. An expired credential is only recoverable if
+    # it carries a refresh_token; without one it can never re-authenticate.
+    if not credentials.valid and not getattr(credentials, "refresh_token", None):
+        raise GmailIntegrationError(f"Gmail {role} token expired or revoked — reconnect Gmail.")
+
+
+def _gmail_readiness_block_reason(
+    role: str,
+    token_status: dict[str, object] | None,
+    *,
+    owner_user_id: str = "",
+) -> str:
+    """Return a specific reason the Gmail role is NOT actually ready, or "".
+
+    Status-reporting only. This enforces what ``gmail_status`` already computes but
+    never consulted: (1) the token's required-scope adequacy, and (2) that the
+    credential can still authenticate (read-only structural probe). It performs NO
+    Gmail import/poll/list call and runs only when the status endpoint is read,
+    never on the poller's schedule.
+    """
+    scope_status = (token_status or {}).get("scope_status")
+    if isinstance(scope_status, dict) and scope_status.get("ok") is False:
+        missing = scope_status.get("missing")
+        missing_names = (
+            ", ".join(_scope_short_name(scope) for scope in missing)
+            if isinstance(missing, list) and missing
+            else "required Gmail scope"
+        )
+        return f"Reconnect Gmail — missing permission: {missing_names}"
+
+    try:
+        _gmail_credential_probe(role, owner_user_id=owner_user_id)
+    except GmailIntegrationError as error:
+        message = str(error).strip()
+        return message or "Gmail connection cannot authenticate — reconnect Gmail."
+    return ""
 
 
 def gmail_inbound_parsing_summary() -> dict[str, object]:

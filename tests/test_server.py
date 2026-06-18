@@ -4619,8 +4619,14 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status["account_match"], True)
         self.assertEqual(status["inbound"]["configured"], True)
         self.assertEqual(status["outbound"]["configured"], True)
-        self.assertEqual(status["inbound"]["ready"], True)
-        self.assertEqual(status["outbound"]["ready"], True)
+        # The local-data tokens here carry no scopes, so readiness must reflect
+        # reality: the profile fetch succeeding does NOT make the connection ready
+        # when the required import scope is missing.
+        self.assertEqual(status["inbound"]["ready"], False)
+        self.assertEqual(status["outbound"]["ready"], False)
+        self.assertIn("missing permission", status["inbound"]["reason"])
+        self.assertIn("gmail.readonly", status["inbound"]["reason"])
+        self.assertEqual(status["inbound"]["error"], status["inbound"]["reason"])
         self.assertEqual(status["inbound"]["email"], "legal@aspora.com")
         self.assertEqual(status["inbound"]["token"]["configured"], True)
         self.assertEqual(status["inbound"]["token"]["label"], "data/gmail/inbound-token.json")
@@ -4630,6 +4636,145 @@ class ServerTests(unittest.TestCase):
             "https://www.googleapis.com/auth/gmail.readonly",
             status["inbound"]["token"]["scope_status"]["missing"],
         )
+
+    def _gmail_readiness_fake_service(self, email="legal@aspora.com"):
+        class FakeExecutable:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        class FakeUsers:
+            def __init__(self, addr):
+                self.addr = addr
+
+            def getProfile(self, userId):
+                return FakeExecutable({"emailAddress": self.addr})
+
+        class FakeGmailService:
+            def __init__(self, addr):
+                self.users_api = FakeUsers(addr)
+
+            def users(self):
+                return self.users_api
+
+        return FakeGmailService(email)
+
+    def _write_role_tokens(self, *, inbound_payload, outbound_payload):
+        token_dir = matter_store.DATA_DIR / "gmail"
+        token_dir.mkdir(parents=True, exist_ok=True)
+        (token_dir / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["inbound"]).write_text(
+            json.dumps(inbound_payload), encoding="utf-8"
+        )
+        (token_dir / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["outbound"]).write_text(
+            json.dumps(outbound_payload), encoding="utf-8"
+        )
+
+    def test_gmail_status_missing_scope_reports_not_ready_with_reason(self):
+        # A token that fetched the profile fine but is missing the required import
+        # scope must NOT read as ready — the dashboard "ready" lie.
+        no_scope = {
+            "client_id": "google-client",
+            "client_secret": "secret",
+            "refresh_token": "refresh-token",
+            "scopes": [],
+            "token": "access-token",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                self._write_role_tokens(inbound_payload=no_scope, outbound_payload=no_scope)
+                with patch.dict(os.environ, {
+                    gmail_integration.ROLE_TOKEN_ENV["inbound"]: "",
+                    gmail_integration.ROLE_TOKEN_ENV["outbound"]: "",
+                }, clear=False):
+                    with patch.object(
+                        gmail_integration,
+                        "_gmail_service",
+                        return_value=self._gmail_readiness_fake_service(),
+                    ):
+                        status = gmail_integration.gmail_status()
+
+        self.assertEqual(status["inbound"]["ready"], False)
+        self.assertIn("missing permission", status["inbound"]["reason"])
+        self.assertIn("gmail.readonly", status["inbound"]["reason"])
+        self.assertEqual(status["inbound"]["error"], status["inbound"]["reason"])
+
+    def test_gmail_status_expired_unrefreshable_token_reports_not_ready(self):
+        # An expired token with no refresh_token can never re-authenticate the poll,
+        # so it must read as not-ready with a reconnect reason — even though the
+        # cached/basic profile call "works".
+        unrefreshable = {
+            "client_id": "google-client",
+            "client_secret": "secret",
+            "scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+            "token": "access-token",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            # No refresh_token => once the access token lapses it can never recover.
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                self._write_role_tokens(inbound_payload=unrefreshable, outbound_payload=unrefreshable)
+                with patch.dict(os.environ, {
+                    gmail_integration.ROLE_TOKEN_ENV["inbound"]: "",
+                    gmail_integration.ROLE_TOKEN_ENV["outbound"]: "",
+                }, clear=False):
+                    with patch.object(
+                        gmail_integration,
+                        "_gmail_service",
+                        return_value=self._gmail_readiness_fake_service(),
+                    ):
+                        status = gmail_integration.gmail_status()
+
+        self.assertEqual(status["inbound"]["ready"], False)
+        self.assertIn("reconnect", status["inbound"]["reason"].lower())
+        self.assertIn("expired or revoked", status["inbound"]["reason"])
+        self.assertEqual(status["inbound"]["error"], status["inbound"]["reason"])
+
+    def test_gmail_status_healthy_token_stays_ready(self):
+        # Full scopes + a refresh_token = a connection the poller can keep using.
+        # Readiness must be unchanged (True) and carry no block reason.
+        inbound_ok = {
+            "client_id": "google-client",
+            "client_secret": "secret",
+            "refresh_token": "refresh-token",
+            "scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+            "token": "access-token",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+        outbound_ok = {
+            "client_id": "google-client",
+            "client_secret": "secret",
+            "refresh_token": "refresh-token",
+            "scopes": [
+                "https://www.googleapis.com/auth/gmail.send",
+                "https://www.googleapis.com/auth/gmail.metadata",
+            ],
+            "token": "access-token",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                self._write_role_tokens(inbound_payload=inbound_ok, outbound_payload=outbound_ok)
+                with patch.dict(os.environ, {
+                    gmail_integration.ROLE_TOKEN_ENV["inbound"]: "",
+                    gmail_integration.ROLE_TOKEN_ENV["outbound"]: "",
+                }, clear=False):
+                    with patch.object(
+                        gmail_integration,
+                        "_gmail_service",
+                        return_value=self._gmail_readiness_fake_service(),
+                    ):
+                        status = gmail_integration.gmail_status()
+
+        self.assertEqual(status["inbound"]["ready"], True)
+        self.assertEqual(status["outbound"]["ready"], True)
+        self.assertNotIn("reason", status["inbound"])
+        self.assertNotIn("error", status["inbound"])
 
     def test_gmail_status_surfaces_and_caches_profile_rate_limit(self):
         class FakeRateLimitError(Exception):
@@ -4704,8 +4849,28 @@ class ServerTests(unittest.TestCase):
             token_path = server_module.Path(token_dir)
             inbound_token = token_path / "inbound.json"
             outbound_token = token_path / "outbound.json"
-            inbound_token.write_text("{}", encoding="utf-8")
-            outbound_token.write_text("{}", encoding="utf-8")
+            # Fully-scoped, refreshable tokens so this test isolates the account
+            # mismatch: inbound is otherwise ready, and outbound is blocked purely
+            # because its resolved account differs from inbound's.
+            inbound_token.write_text(json.dumps({
+                "client_id": "google-client",
+                "client_secret": "secret",
+                "refresh_token": "refresh-token",
+                "scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+                "token": "access-token",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }), encoding="utf-8")
+            outbound_token.write_text(json.dumps({
+                "client_id": "google-client",
+                "client_secret": "secret",
+                "refresh_token": "refresh-token",
+                "scopes": [
+                    "https://www.googleapis.com/auth/gmail.send",
+                    "https://www.googleapis.com/auth/gmail.metadata",
+                ],
+                "token": "access-token",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }), encoding="utf-8")
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
                 with patch.dict(os.environ, {
@@ -4724,11 +4889,10 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status["inbound"]["token"]["configured"], True)
         self.assertEqual(status["inbound"]["token"]["label"], gmail_integration.ROLE_TOKEN_ENV["inbound"])
         self.assertEqual(status["inbound"]["token"]["source"], "environment")
-        self.assertEqual(status["inbound"]["token"]["scope_status"]["ok"], False)
-        self.assertIn(
-            "https://www.googleapis.com/auth/gmail.readonly",
-            status["inbound"]["token"]["scope_status"]["missing"],
-        )
+        # Inbound's token is fully scoped now, so scope is satisfied and inbound is
+        # ready; outbound is blocked solely by the account mismatch.
+        self.assertEqual(status["inbound"]["token"]["scope_status"]["ok"], True)
+        self.assertEqual(status["inbound"]["token"]["scope_status"]["missing"], [])
         self.assertNotIn(str(token_path), json.dumps(status))
 
     def test_gmail_settings_endpoint_persists_toggles(self):
