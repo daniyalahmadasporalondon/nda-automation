@@ -131,6 +131,43 @@ class ResidualPerpetualFalsePositiveTests(unittest.TestCase):
         self.assertFalse(clause["passes"])
         self.assertTrue(_is_indefinite_flag(clause))
 
+    # ---- BYPASS regression: a leading scoping signal must NOT launder an ordinary-CI
+    # perpetuity (the P0 the carve-out-led demotion originally let through). The
+    # perpetuity must attach to the carve-out OBJECT; when ordinary Confidential
+    # Information is the operative/conjoined subject held in perpetuity, KEEP the flag.
+
+    def test_carve_out_led_signal_with_ordinary_ci_held_perpetually_still_fails(self) -> None:
+        # "With respect to trade secrets," opens the sentence, but ORDINARY CI ("the
+        # Confidential Information") is the thing held in perpetuity. The decoy in-cap
+        # five-year term must not launder it.
+        clause = _term_clause(
+            "Confidentiality survives for five (5) years. With respect to trade "
+            "secrets, the Confidential Information shall be held in perpetuity."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertTrue(_is_indefinite_flag(clause))
+
+    def test_legal_carve_out_led_signal_with_ordinary_ci_held_perpetually_still_fails(self) -> None:
+        clause = _term_clause(
+            "Confidentiality survives for five (5) years. As to applicable law, the "
+            "Confidential Information shall be held in perpetuity."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertTrue(_is_indefinite_flag(clause))
+
+    def test_carve_out_led_signal_with_conjoined_ordinary_ci_perpetually_still_fails(self) -> None:
+        # Ordinary CI is conjoined into the perpetual obligation behind the signal.
+        clause = _term_clause(
+            "Confidentiality survives for five (5) years. With respect to trade "
+            "secrets, the Confidential Information and all ordinary confidential "
+            "materials shall be held in perpetuity."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertTrue(_is_indefinite_flag(clause))
+
 
 if __name__ == "__main__":
     unittest.main()
