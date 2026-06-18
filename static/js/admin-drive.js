@@ -114,6 +114,7 @@ const AdminDriveView = (() => {
       renderToggleIntent(status);
       renderConnect(status);
       renderFolderForm(status.folder || null);
+      renderFilingBanner(status);
       setFact("connection", overallLabel);
       setFact("account", status.account || (connected ? "Connected account" : signedIn ? "Signed in Google session" : "No account connected"));
       setFact("folder", folderLabel(status.folder));
@@ -191,6 +192,7 @@ const AdminDriveView = (() => {
       setFact("account", "Unknown");
       setFact("folder", "Unknown");
       setFact("enabled-copy", "Unknown");
+      setFact("filing-location", "Currently filing NDAs in: Unknown");
       setFact("folder-message", message);
       renderConnect(state.driveStatus || {});
       renderToggle(state.driveStatus?.connected === true);
@@ -233,6 +235,31 @@ const AdminDriveView = (() => {
     function setFact(key, value) {
       const node = driveCard?.querySelector(`[data-admin-drive="${key}"]`) || driveFacts?.querySelector(`[data-admin-drive="${key}"]`);
       if (node) node.textContent = value;
+    }
+
+    // Always-visible confirmation of the REAL filing destination, so a blank or
+    // cleared root folder no longer silently falls back with no on-screen signal.
+    // Prefers the server-resolved filing_location.label (which resolves the
+    // configured folder's real name); falls back to a label derived from the
+    // cached folder when the field is absent (e.g. a settings-save refresh).
+    function renderFilingBanner(status = {}) {
+      setFact("filing-location", `Currently filing NDAs in: ${filingLocationLabel(status)}`);
+    }
+
+    function filingLocationLabel(status = {}) {
+      const location = status.filing_location;
+      if (location && typeof location === "object") {
+        const label = String(location.label || "").trim();
+        if (label) return label;
+      }
+      const folder = status.folder;
+      if (folder) {
+        const name = String(folder.name || "").trim();
+        const id = String(folder.id || "").trim();
+        const display = name || id;
+        if (display) return `${display} / NDAs`;
+      }
+      return "My Drive / NDAs (default location)";
     }
 
     function folderLabel(folder) {

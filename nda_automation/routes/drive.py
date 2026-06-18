@@ -79,13 +79,26 @@ def handle_drive_status(handler, *, send_body: bool = True) -> None:
         account = drive_integration.drive_account_email(owner_user_id)
     folder = None
     folder_id = str(settings.get("folder_id") or "")
+    folder_name = str(settings.get("folder_name") or "")
     if folder_id:
-        folder = {"id": folder_id, "name": str(settings.get("folder_name") or "")}
+        folder = {"id": folder_id, "name": folder_name}
+    # Confirm the ACTUAL filing destination so a blank/cleared root folder no
+    # longer silently falls back with no signal of where NDAs land. When Drive is
+    # connected we resolve the configured folder's real name via the Drive API;
+    # when blank we report the explicit My Drive / NDAs default. Never crashes:
+    # the helper degrades to the best available label, and the live name lookup is
+    # only attempted while connected (no service is passed otherwise).
+    filing_location = drive_integration.resolve_filing_location(
+        root_folder_id=folder_id,
+        folder_name=folder_name,
+        owner_user_id=owner_user_id if connected else "",
+    )
     handler._send_json(
         {
             "connected": connected,
             "account": account,
             "folder": folder,
+            "filing_location": filing_location,
             "enabled": bool(settings.get("enabled", False)),
             "signed_in": bool(owner_user_id),
             "user_scoped": bool(owner_user_id),

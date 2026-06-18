@@ -338,6 +338,70 @@ class DriveIntegrationModuleTests(unittest.TestCase):
 
         self.assertEqual(drive_integration.drive_account_email(service=_Boom()), "")
 
+    def test_resolve_filing_location_blank_reports_default(self):
+        # No admin root folder set -> explicit My Drive / NDAs default, no Drive call.
+        class _NoCalls:
+            def files(self):
+                raise AssertionError("blank folder must not call Drive")
+
+        location = drive_integration.resolve_filing_location(
+            root_folder_id="", folder_name="", service=_NoCalls()
+        )
+        self.assertFalse(location["configured"])
+        self.assertEqual(location["folder_id"], "")
+        self.assertEqual(location["folder_name"], "NDAs")
+        self.assertEqual(location["label"], "My Drive / NDAs (default location)")
+
+    def test_resolve_filing_location_configured_resolves_real_name(self):
+        # Configured folder -> resolve the folder's real NAME via files().get.
+        class _NamedFiles:
+            def get(self, *, fileId, fields):  # noqa: N803
+                assert fileId == "folder_42"
+                assert fields == "name"
+                return _FakeExecutable({"name": "Legal — Signed NDAs"})
+
+        class _NamedService:
+            def files(self):
+                return _NamedFiles()
+
+        location = drive_integration.resolve_filing_location(
+            root_folder_id="folder_42",
+            folder_name="stale stored name",
+            service=_NamedService(),
+        )
+        self.assertTrue(location["configured"])
+        self.assertEqual(location["folder_id"], "folder_42")
+        # The live API name wins over the stored name.
+        self.assertEqual(location["folder_name"], "Legal — Signed NDAs")
+        self.assertEqual(location["label"], "Legal — Signed NDAs / NDAs")
+
+    def test_resolve_filing_location_falls_back_when_lookup_unavailable(self):
+        # Drive disconnected / API hiccup -> no crash; fall back to stored name.
+        class _Boom:
+            def files(self):
+                raise RuntimeError("not connected")
+
+        location = drive_integration.resolve_filing_location(
+            root_folder_id="folder_7",
+            folder_name="Contracts",
+            service=_Boom(),
+        )
+        self.assertTrue(location["configured"])
+        self.assertEqual(location["folder_name"], "Contracts")
+        self.assertEqual(location["label"], "Contracts / NDAs")
+
+    def test_resolve_filing_location_falls_back_to_id_when_no_name(self):
+        # No live name and no stored name -> the raw id is the last-resort label.
+        class _Boom:
+            def files(self):
+                raise RuntimeError("nope")
+
+        location = drive_integration.resolve_filing_location(
+            root_folder_id="folder_9", folder_name="", service=_Boom()
+        )
+        self.assertEqual(location["folder_name"], "folder_9")
+        self.assertEqual(location["label"], "folder_9 / NDAs")
+
     def test_drive_service_missing_token_raises_not_connected(self):
         with patch.object(
             gmail_integration,
@@ -1064,6 +1128,7 @@ class DriveRouteTests(unittest.TestCase):
                 "connected",
                 "account",
                 "folder",
+                "filing_location",
                 "enabled",
                 "signed_in",
                 "user_scoped",
@@ -1076,6 +1141,13 @@ class DriveRouteTests(unittest.TestCase):
         )
         self.assertTrue(payload["enabled"])
         self.assertEqual(payload["folder"], {"id": "folder_1", "name": "NDAs"})
+        # A configured root folder is reported as the actual filing destination.
+        # Not connected here, so the live name lookup is skipped and the helper
+        # falls back to the stored folder name.
+        self.assertTrue(payload["filing_location"]["configured"])
+        self.assertEqual(payload["filing_location"]["folder_id"], "folder_1")
+        self.assertEqual(payload["filing_location"]["folder_name"], "NDAs")
+        self.assertEqual(payload["filing_location"]["label"], "NDAs / NDAs")
         # No Google session in the loopback test client, so not connected.
         self.assertFalse(payload["connected"])
         self.assertFalse(payload["signed_in"])
@@ -1085,6 +1157,25 @@ class DriveRouteTests(unittest.TestCase):
         self.assertEqual(payload["token"]["label"], "Sign in with Google")
         self.assertEqual(payload["setup"]["state"], "missing_oauth_config")
         self.assertEqual(payload["recovery"]["state"], "missing_oauth_config")
+
+    def test_drive_status_blank_folder_reports_default_filing_location(self):
+        # No root folder configured -> status confirms the My Drive / NDAs default
+        # destination (the silent-fallback fix) and does not crash while disconnected.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                app_settings.update_drive_settings(
+                    {"enabled": True, "folder_id": "", "folder_name": ""}
+                )
+                status, payload, _headers = self.request("GET", "/api/drive/status")
+        self.assertEqual(status, 200)
+        self.assertIsNone(payload["folder"])
+        self.assertFalse(payload["connected"])
+        self.assertFalse(payload["filing_location"]["configured"])
+        self.assertEqual(
+            payload["filing_location"]["label"],
+            "My Drive / NDAs (default location)",
+        )
 
     def test_drive_status_signed_in_without_token_points_to_drive_connect(self):
         auth_env = {
