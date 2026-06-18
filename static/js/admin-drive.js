@@ -74,14 +74,22 @@ const AdminDriveView = (() => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(requestPayload),
         });
+        // parseOkJson rejects with the server's {error} message on a non-2xx, so the
+        // success copy + persisted-settings render below are reached ONLY when the
+        // backend actually validated the folder (exists + is a folder + writable).
         const payload = await window.AuthExpired.parseOkJson(response, "Drive folder could not save", reviewErrorFromPayload);
         applyDriveSettings(payload.drive || {});
+        setOverall("Saved", "ready");
         setFact("folder-message", folderId
-          ? "NDAs root folder saved. Per-matter subfolders are created inside it."
+          ? "NDAs root folder verified and saved. Per-matter subfolders are created inside it."
           : "Cleared the root folder. An \"NDAs\" folder is created in My Drive.");
       } catch (error) {
-        setOverall(error.message || "Save failed", "blocked");
-        setFact("folder-message", error.message || "Drive folder could not save");
+        // The 400 carries the specific reason (folder not found / not a folder / no
+        // write permission / Drive auth expired). Surface it inline on the Save action
+        // so the admin sees exactly why nothing was saved.
+        const message = (error && error.message) || "Drive folder could not save";
+        setOverall("Not saved", "blocked");
+        setFact("folder-message", message);
       } finally {
         setFolderControlsDisabled(false);
       }

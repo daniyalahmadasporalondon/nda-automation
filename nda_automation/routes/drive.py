@@ -302,6 +302,48 @@ def handle_drive_settings_update(handler) -> None:
         if not isinstance(folder_id, str):
             handler._send_json({"error": "Drive folder id must be a string."}, status=400)
             return
+        # Fast format pre-check (no Drive call): reject path-traversal/URLs/spaces
+        # exactly as persistence would, so a malformed id returns the same clear 400
+        # without attempting a live lookup.
+        try:
+            cleaned_folder_id = app_settings._clean_drive_folder_id(folder_id)
+        except app_settings.AppSettingsError as error:
+            handler._send_json({"error": str(error)}, status=400)
+            return
+        # Live validation: a NON-BLANK root folder id must EXIST, be a folder, and be
+        # WRITABLE by the connected Drive account before we persist it. Blank is always
+        # allowed (auto-create "NDAs" in My Drive) and skips the Drive call. This closes
+        # the silent-failure gap where a typo'd/deleted/unshared folder id saved fine and
+        # only failed later at upload time.
+        if cleaned_folder_id:
+            drive_token_owner_user_id = _google_owner_user_id(handler)
+            try:
+                drive_integration.validate_root_folder(
+                    cleaned_folder_id,
+                    owner_user_id=drive_token_owner_user_id,
+                )
+            except drive_integration.DriveNotConnectedError:
+                handler._send_json(
+                    {
+                        "error": (
+                            "Connect Google Drive before setting a root folder, so the "
+                            "folder can be verified."
+                        ),
+                        "needs_connect": True,
+                        "connect_url": DRIVE_CONNECT_URL,
+                    },
+                    status=400,
+                )
+                return
+            except drive_integration.DriveRateLimitError as error:
+                handler._send_json({"error": str(error)}, status=429)
+                return
+            except drive_integration.DriveFolderValidationError as error:
+                handler._send_json({"error": str(error)}, status=400)
+                return
+            except drive_integration.DriveIntegrationError as error:
+                handler._send_json({"error": str(error)}, status=400)
+                return
         updates["folder_id"] = folder_id
     if "folder_name" in payload:
         folder_name = payload.get("folder_name")

@@ -1258,6 +1258,125 @@ def drive_connected(owner_user_id: str = "") -> bool:
     return True
 
 
+class DriveFolderValidationError(DriveIntegrationError):
+    """The admin-supplied root folder id failed live validation against Drive.
+
+    Distinct from :class:`DriveNotConnectedError` (Drive auth missing/expired) and
+    the generic API error so the settings route can map a bad *value* to a 400 with
+    a specific, actionable message and refuse to persist it. ``DriveNotConnectedError``
+    deliberately remains a sibling under ``DriveIntegrationError`` so the route can
+    distinguish "fix the folder id" (400) from "reconnect Drive" (also surfaced as a
+    clear 400 on the save action, but with a connect-oriented message).
+    """
+
+
+def validate_root_folder(
+    folder_id: str,
+    *,
+    owner_user_id: str = "",
+    service: Any | None = None,
+) -> None:
+    """Verify an admin-supplied root folder id against the connected Drive account.
+
+    Confirms, BEFORE the value is persisted, that the folder (a) EXISTS, (b) is a
+    folder, and (c) is WRITABLE by the connected Drive account (``capabilities
+    .canAddChildren``), and is not trashed. Raises :class:`DriveFolderValidationError`
+    with a specific, user-facing message on any failure, or
+    :class:`DriveNotConnectedError` when Drive is not connected / the token is
+    invalid. Returns ``None`` on success.
+
+    A BLANK ``folder_id`` is always valid (it means "auto-create an NDAs folder in
+    My Drive") and is accepted without any Drive call — callers should still pass it
+    through so the contract is uniform.
+
+    ``drive.file`` caveat: this app can only ``get`` a folder it itself created.
+    A genuinely existing, writable, but *not app-created* folder will surface as a
+    404 here and be reported as "not found / not shared with this app". That is the
+    correct, honest signal — under ``drive.file`` such a folder is NOT usable as a
+    parent anyway, so saving it would still fail silently at upload time. The message
+    tells the admin to pick a folder this app created (or leave it blank).
+    """
+    fid = str(folder_id or "").strip()
+    if not fid:
+        return  # blank = auto-create "NDAs" in My Drive; nothing to validate.
+
+    drive_service = service or _drive_service(owner_user_id)
+    try:
+        meta = drive_service.files().get(
+            fileId=fid,
+            fields="id,mimeType,trashed,capabilities/canAddChildren",
+        ).execute()
+    except Exception as exc:  # noqa: BLE001 - normalised below into a user-facing error
+        _raise_folder_validation_error(exc, fid)
+
+    if not isinstance(meta, dict):
+        meta = {}
+    if str(meta.get("mimeType") or "") != FOLDER_MIME:
+        raise DriveFolderValidationError(
+            "That Drive id is not a folder. Paste the id of a Google Drive folder "
+            "(open the folder in Drive and copy the id from its URL), or leave it "
+            "blank to auto-create an \"NDAs\" folder."
+        )
+    if meta.get("trashed") is True:
+        raise DriveFolderValidationError(
+            "That Drive folder is in the trash. Restore it or pick another folder, "
+            "or leave the field blank to auto-create an \"NDAs\" folder."
+        )
+    capabilities = meta.get("capabilities")
+    can_add = bool(capabilities.get("canAddChildren")) if isinstance(capabilities, dict) else False
+    if not can_add:
+        raise DriveFolderValidationError(
+            "The connected Drive account cannot add files to that folder (no write "
+            "permission). Share the folder with the connected account as an Editor, "
+            "or leave the field blank to auto-create an \"NDAs\" folder."
+        )
+
+
+def _raise_folder_validation_error(error: Exception, folder_id: str) -> None:
+    """Map a ``files().get`` failure into a specific, user-facing validation error.
+
+    A 404 (or generic HttpError whose status reads as not-found) becomes a "folder
+    not found / not shared with this app" message; an auth failure becomes a
+    "reconnect Drive" message; anything else a safe generic. Rate-limit errors are
+    surfaced verbatim so the admin knows to retry.
+    """
+    retry_after_epoch = gmail_integration._gmail_retry_after_epoch(error)
+    if retry_after_epoch:
+        raise DriveRateLimitError(
+            gmail_integration._gmail_rate_limit_message(retry_after_epoch).replace("Gmail", "Drive"),
+            retry_after_epoch=retry_after_epoch,
+        ) from error
+
+    status = _http_error_status(error)
+    if status in (401, 403):
+        # 403 on a GET here is auth/permission at the account level (not the
+        # folder's canAddChildren, which we check explicitly above).
+        raise DriveFolderValidationError(
+            "Google Drive access has expired or was revoked. Reconnect Google Drive, "
+            "then save the folder again."
+        ) from error
+    if status == 404:
+        raise DriveFolderValidationError(
+            "No Drive folder with that id was found (or it is not shared with this "
+            "app). Check the id, share the folder with the connected account, or leave "
+            "the field blank to auto-create an \"NDAs\" folder."
+        ) from error
+    raise DriveFolderValidationError(
+        "That Drive folder could not be verified. Check the folder id and that Google "
+        "Drive is connected, then try again."
+    ) from error
+
+
+def _http_error_status(error: Exception) -> int:
+    """Best-effort HTTP status from a googleapiclient ``HttpError`` (else 0)."""
+    resp = getattr(error, "resp", None)
+    status = getattr(resp, "status", None)
+    try:
+        return int(status)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _raise_drive_api_error(error: Exception, fallback_message: str) -> None:
     retry_after_epoch = gmail_integration._gmail_retry_after_epoch(error)
     if retry_after_epoch:

@@ -1160,9 +1160,14 @@ class DriveRouteTests(unittest.TestCase):
         self.assertEqual(payload["recovery"]["state"], "ready")
 
     def test_drive_settings_update_persists_via_route(self):
+        # A non-blank folder id is now live-validated against Drive before persisting,
+        # so this happy-path test mocks a writable folder so validation passes.
+        service = _FakeGetService(meta=_writable_folder_meta("folder_99"))
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
-            with patches[0], patches[1], patches[2]:
+            with patches[0], patches[1], patches[2], patch.object(
+                drive_integration, "_drive_service", return_value=service
+            ):
                 status, payload, _headers = self.request(
                     "POST",
                     "/api/admin/drive-settings",
@@ -1289,6 +1294,265 @@ class DriveRouteTests(unittest.TestCase):
         self.assertTrue(location.startswith("https://accounts.google.com"))
         self.assertIn("scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file", location)
         self.assertNotIn("gmail", location)
+
+
+# --- Root-folder validation fakes + tests ----------------------------------
+class _FakeGet:
+    """A files().get() that returns canned folder metadata or raises an HttpError."""
+
+    def __init__(self, *, meta=None, error=None, recorder=None):
+        self._meta = meta
+        self._error = error
+        self._recorder = recorder
+
+    def get(self, *, fileId, fields):  # noqa: N803
+        if self._recorder is not None:
+            self._recorder.append({"fileId": fileId, "fields": fields})
+        if self._error is not None:
+            raise self._error
+        return _FakeExecutable(self._meta)
+
+
+class _FakeGetService:
+    def __init__(self, *, meta=None, error=None):
+        self._meta = meta
+        self._error = error
+        self.get_calls: list[dict] = []
+
+    def files(self):
+        return _FakeGet(meta=self._meta, error=self._error, recorder=self.get_calls)
+
+
+def _http_error(status):
+    class _Resp:
+        pass
+
+    error = Exception(f"http {status}")
+    resp = _Resp()
+    resp.status = status
+    error.resp = resp
+    return error
+
+
+def _writable_folder_meta(fid="folder_OK"):
+    return {
+        "id": fid,
+        "mimeType": drive_integration.FOLDER_MIME,
+        "trashed": False,
+        "capabilities": {"canAddChildren": True},
+    }
+
+
+class DriveFolderValidationTests(unittest.TestCase):
+    """Unit tests for drive_integration.validate_root_folder (no network)."""
+
+    def test_blank_folder_skips_validation(self):
+        # Blank id = auto-create "NDAs"; no Drive call, no raise.
+        service = _FakeGetService(error=_http_error(404))
+        drive_integration.validate_root_folder("", service=service)
+        self.assertEqual(service.get_calls, [])
+
+    def test_valid_writable_folder_passes(self):
+        service = _FakeGetService(meta=_writable_folder_meta("folder_OK"))
+        drive_integration.validate_root_folder("folder_OK", service=service)
+        self.assertEqual(len(service.get_calls), 1)
+        # Confirms we request the existence + writability fields.
+        self.assertIn("capabilities/canAddChildren", service.get_calls[0]["fields"])
+        self.assertIn("mimeType", service.get_calls[0]["fields"])
+
+    def test_nonexistent_folder_raises_not_found(self):
+        service = _FakeGetService(error=_http_error(404))
+        with self.assertRaises(drive_integration.DriveFolderValidationError) as ctx:
+            drive_integration.validate_root_folder("missing", service=service)
+        self.assertIn("found", str(ctx.exception).lower())
+
+    def test_non_folder_id_raises(self):
+        meta = _writable_folder_meta()
+        meta["mimeType"] = DOCX_MIME  # a file, not a folder
+        service = _FakeGetService(meta=meta)
+        with self.assertRaises(drive_integration.DriveFolderValidationError) as ctx:
+            drive_integration.validate_root_folder("a_file", service=service)
+        self.assertIn("not a folder", str(ctx.exception).lower())
+
+    def test_non_writable_folder_raises(self):
+        meta = _writable_folder_meta()
+        meta["capabilities"] = {"canAddChildren": False}
+        service = _FakeGetService(meta=meta)
+        with self.assertRaises(drive_integration.DriveFolderValidationError) as ctx:
+            drive_integration.validate_root_folder("ro_folder", service=service)
+        self.assertIn("write permission", str(ctx.exception).lower())
+
+    def test_trashed_folder_raises(self):
+        meta = _writable_folder_meta()
+        meta["trashed"] = True
+        service = _FakeGetService(meta=meta)
+        with self.assertRaises(drive_integration.DriveFolderValidationError) as ctx:
+            drive_integration.validate_root_folder("trashed_folder", service=service)
+        self.assertIn("trash", str(ctx.exception).lower())
+
+    def test_auth_failure_maps_to_reconnect_message(self):
+        service = _FakeGetService(error=_http_error(403))
+        with self.assertRaises(drive_integration.DriveFolderValidationError) as ctx:
+            drive_integration.validate_root_folder("any", service=service)
+        self.assertIn("reconnect", str(ctx.exception).lower())
+
+    def test_disconnected_token_raises_not_connected(self):
+        # No injected service -> resolves _drive_service, which raises when the role
+        # token is missing. We patch the builder to raise the not-connected error.
+        with patch.object(
+            drive_integration,
+            "_drive_service",
+            side_effect=drive_integration.DriveNotConnectedError("Drive is not connected."),
+        ):
+            with self.assertRaises(drive_integration.DriveNotConnectedError):
+                drive_integration.validate_root_folder("any")
+
+    def test_rate_limit_surfaces(self):
+        service = _FakeGetService(error=_make_rate_limit_error())
+        with self.assertRaises(drive_integration.DriveRateLimitError):
+            drive_integration.validate_root_folder("any", service=service)
+
+
+class DriveFolderValidationRouteTests(unittest.TestCase):
+    """Route tests for POST /api/admin/drive-settings folder validation."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), QuietDriveHandler)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.host, cls.port = cls.server.server_address
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=5)
+
+    def setUp(self):
+        server_module._reset_rate_limits()
+        telemetry.reset()
+
+    def request(self, method, path, body=None, headers=None):
+        request_headers = dict(headers or {})
+        request_body = body
+        if isinstance(body, dict):
+            request_body = json.dumps(body).encode("utf-8")
+            request_headers = {"Content-Type": "application/json", **request_headers}
+        connection = http.client.HTTPConnection(self.host, self.port, timeout=5)
+        try:
+            connection.request(method, path, body=request_body, headers=request_headers)
+            response = connection.getresponse()
+            raw_body = response.read()
+            content_type = response.getheader("Content-Type", "")
+            payload = json.loads(raw_body.decode("utf-8")) if "application/json" in content_type else raw_body
+            return response.status, payload
+        finally:
+            connection.close()
+
+    def _data_patches(self, data_dir):
+        data_path = matter_store.Path(data_dir)
+        return (
+            patch.object(matter_store, "DATA_DIR", data_path),
+            patch.object(matter_store, "MATTERS_PATH", data_path / "matters.json"),
+            patch.object(matter_store, "UPLOADS_DIR", data_path / "uploads"),
+        )
+
+    def test_valid_folder_saves_and_persists(self):
+        service = _FakeGetService(meta=_writable_folder_meta("folder_OK"))
+        with tempfile.TemporaryDirectory() as data_dir:
+            p0, p1, p2 = self._data_patches(data_dir)
+            with p0, p1, p2, patch.object(drive_integration, "_drive_service", return_value=service):
+                status, payload = self.request(
+                    "POST", "/api/admin/drive-settings", {"folder_id": "folder_OK"}
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["drive"]["folder_id"], "folder_OK")
+                # Persisted.
+                self.assertEqual(app_settings.drive_settings()["folder_id"], "folder_OK")
+
+    def test_nonexistent_folder_rejected_and_not_persisted(self):
+        service = _FakeGetService(error=_http_error(404))
+        with tempfile.TemporaryDirectory() as data_dir:
+            p0, p1, p2 = self._data_patches(data_dir)
+            with p0, p1, p2, patch.object(drive_integration, "_drive_service", return_value=service):
+                status, payload = self.request(
+                    "POST", "/api/admin/drive-settings", {"folder_id": "missing"}
+                )
+                self.assertEqual(status, 400)
+                self.assertIn("found", payload["error"].lower())
+                # NOT persisted.
+                self.assertEqual(app_settings.drive_settings()["folder_id"], "")
+
+    def test_non_folder_rejected_and_not_persisted(self):
+        meta = _writable_folder_meta()
+        meta["mimeType"] = DOCX_MIME
+        service = _FakeGetService(meta=meta)
+        with tempfile.TemporaryDirectory() as data_dir:
+            p0, p1, p2 = self._data_patches(data_dir)
+            with p0, p1, p2, patch.object(drive_integration, "_drive_service", return_value=service):
+                status, payload = self.request(
+                    "POST", "/api/admin/drive-settings", {"folder_id": "a_file"}
+                )
+                self.assertEqual(status, 400)
+                self.assertIn("not a folder", payload["error"].lower())
+                self.assertEqual(app_settings.drive_settings()["folder_id"], "")
+
+    def test_non_writable_rejected_and_not_persisted(self):
+        meta = _writable_folder_meta()
+        meta["capabilities"] = {"canAddChildren": False}
+        service = _FakeGetService(meta=meta)
+        with tempfile.TemporaryDirectory() as data_dir:
+            p0, p1, p2 = self._data_patches(data_dir)
+            with p0, p1, p2, patch.object(drive_integration, "_drive_service", return_value=service):
+                status, payload = self.request(
+                    "POST", "/api/admin/drive-settings", {"folder_id": "ro_folder"}
+                )
+                self.assertEqual(status, 400)
+                self.assertIn("write permission", payload["error"].lower())
+                self.assertEqual(app_settings.drive_settings()["folder_id"], "")
+
+    def test_drive_disconnected_returns_clear_400_not_persisted(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            p0, p1, p2 = self._data_patches(data_dir)
+            disconnected = drive_integration.DriveNotConnectedError("Drive is not connected.")
+            with p0, p1, p2, patch.object(drive_integration, "_drive_service", side_effect=disconnected):
+                status, payload = self.request(
+                    "POST", "/api/admin/drive-settings", {"folder_id": "folder_OK"}
+                )
+                self.assertEqual(status, 400)
+                self.assertIn("connect google drive", payload["error"].lower())
+                self.assertTrue(payload.get("needs_connect"))
+                self.assertEqual(app_settings.drive_settings()["folder_id"], "")
+
+    def test_blank_folder_still_allowed_no_drive_call(self):
+        # A blank id must save without any Drive lookup (auto-create path preserved).
+        service = _FakeGetService(error=_http_error(404))  # would raise IF called
+        with tempfile.TemporaryDirectory() as data_dir:
+            p0, p1, p2 = self._data_patches(data_dir)
+            with p0, p1, p2, patch.object(drive_integration, "_drive_service", return_value=service):
+                # Seed a value first, then clear it.
+                app_settings.update_drive_settings({"folder_id": "seed_id"})
+                status, payload = self.request(
+                    "POST", "/api/admin/drive-settings", {"folder_id": ""}
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["drive"]["folder_id"], "")
+                self.assertEqual(service.get_calls, [])
+                self.assertEqual(app_settings.drive_settings()["folder_id"], "")
+
+    def test_malformed_folder_id_rejected_before_drive_call(self):
+        # The fast format pre-check rejects path-traversal without any Drive lookup.
+        service = _FakeGetService(meta=_writable_folder_meta())
+        with tempfile.TemporaryDirectory() as data_dir:
+            p0, p1, p2 = self._data_patches(data_dir)
+            with p0, p1, p2, patch.object(drive_integration, "_drive_service", return_value=service):
+                status, payload = self.request(
+                    "POST", "/api/admin/drive-settings", {"folder_id": "../escape"}
+                )
+                self.assertEqual(status, 400)
+                self.assertIn("folder id", payload["error"].lower())
+                self.assertEqual(service.get_calls, [])
 
 
 if __name__ == "__main__":
