@@ -56,6 +56,32 @@ NON_CONFIDENTIAL_DURATION_SUBJECT_PATTERN = (
     r"liabilit(?:y|ies)|claim|claims|insurance|employment|records?|books?|tax\s+records?|"
     r"audit\s+records?)\b"
 )
+# The bare "indefinite words" -- perpetual / perpetually / indefinitely / in
+# perpetuity -- are only a survival problem when they govern CONFIDENTIALITY.
+# When the same word governs a non-survival object ("perpetual LICENSE", "remain
+# indefinitely AVAILABLE", "perpetual RIGHT to use"), it is benign and must not
+# trip the indefinite-survival flag. The object vocabulary is playbook-sourced
+# (``indefinite_non_survival_objects``); this fallback only applies when the key
+# is absent so behaviour degrades safely. Object words shorter/ambiguous enough to
+# also be confidentiality nouns are deliberately excluded.
+INDEFINITE_POLARITY_WORDS = ("perpetual", "perpetually", "indefinitely", "perpetuity")
+DEFAULT_INDEFINITE_NON_SURVIVAL_OBJECTS = (
+    "license",
+    "licence",
+    "right",
+    "rights",
+    "access",
+    "available",
+    "availability",
+    "royalty",
+    "royalties",
+    "grant",
+    "easement",
+    "ownership",
+    "title",
+    "warranty",
+    "warranties",
+)
 GENERIC_NON_SURVIVAL_DURATION_TERMS = {
     "after termination",
     "continue",
@@ -108,6 +134,7 @@ def _check_term_and_survival(
         for pattern in indefinite_patterns
         for match in re.finditer(pattern, term_normalized)
         if not _is_allowed_carve_out_fragment(term_normalized, match.start(), match.end(), clause)
+        and not _is_benign_indefinite_match(term_normalized, match, clause)
     ]
 
     if has_term_over_cap:
@@ -460,6 +487,102 @@ def _attach_survival_analysis(result: ClauseResult, reference_analysis: Dict[str
     }
 
 
+def _indefinite_non_survival_objects(clause: Dict[str, object]) -> List[str]:
+    configured = clause.get("indefinite_non_survival_objects")
+    if isinstance(configured, list):
+        objects = [str(term).lower().strip() for term in configured if str(term).strip()]
+    else:
+        objects = list(DEFAULT_INDEFINITE_NON_SURVIVAL_OBJECTS)
+    return objects
+
+
+def _is_benign_indefinite_match(
+    normalized: str, match: "re.Match[str]", clause: Dict[str, object]
+) -> bool:
+    """Demote an indefinite-survival hit that does not actually make CONFIDENTIALITY
+    indefinite.
+
+    Two narrowly-scoped, principled demotions (both precision-preserving against the
+    genuine perpetual riders, which are about confidentiality and uncapped):
+
+    * POLARITY (CO-15 class): an "indefinite word" (perpetual / perpetually /
+      indefinitely / in perpetuity) that governs a NON-survival object -- "a
+      perpetual *license* to use the platform", "remain indefinitely *available*" --
+      is benign. The object vocabulary is playbook-sourced. A genuine
+      "...confidential in perpetuity" / "continue indefinitely" hit is NOT followed
+      by such an object, so it still fires.
+
+    * CAPPED DURATION CONNECTOR (CO-6 class): a bare "for so/as long as" is only a
+      duration *connector*, not inherently perpetual. When its own sentence also
+      states an explicit numeric cap ("...for as long as it is employed ... and for
+      two (2) years following termination"), the survival is capped and the hit is
+      benign. The genuine uncapped rider ("...and for so long as it retains
+      commercial value") has no numeric period in its sentence and still fires.
+
+    DELIBERATELY OMITTED -- a "carve-out-led sentence" demotion (sparing a legitimate
+    trade-secret-ONLY perpetual rider, e.g. "with respect to trade secrets, the
+    obligations of confidentiality shall survive perpetually") is NOT implemented
+    here. Every attempt leaked: a leading scoping signal can be paired with an
+    ordinary-CI subject held in perpetuity anywhere in the sentence (before OR after
+    the trigger, via synonyms / word-order), turning a benign mild false-positive
+    into a SERIOUS false-negative -- a real abusive ordinary-CI perpetual rider
+    passing clean. Per the asymmetry (a spared FP is cheap; a leaked FN is not), such
+    a rider is intentionally left to flag for review rather than risk laundering an
+    ordinary-CI perpetuity. The separate, sentence-local carve-out scoping in
+    ``_is_allowed_carve_out_fragment`` still passes the well-formed carve-out cases it
+    already covered; only the broad "signal-leads-the-sentence" shortcut is gone.
+
+    Fail-safe: any unexpected input is swallowed and treated as NOT benign (keep the
+    flag) so a malformed clause never silently passes review.
+    """
+    try:
+        token = normalized[match.start():match.end()].strip().lower()
+        fragment, relative_start, relative_end = _term_fragment_bounds(
+            normalized, match.start(), match.end()
+        )
+
+        # --- POLARITY demotion: indefinite word -> non-survival object ---
+        if any(word in token for word in INDEFINITE_POLARITY_WORDS):
+            objects = _indefinite_non_survival_objects(clause)
+            if objects:
+                object_alt = "|".join(re.escape(obj).replace(r"\ ", r"\s+") for obj in objects)
+                # Allow up to two filler words ("a perpetual license", "remain
+                # indefinitely available", "perpetual right to use") between the
+                # indefinite word and the governed object.
+                after = fragment[relative_end:]
+                if re.match(rf"(?:\W+\w+){{0,2}}\W+(?:{object_alt})\b", after):
+                    return True
+
+        # --- CAPPED-DURATION demotion: "for so/as long as" ---
+        if re.fullmatch(r"for\s+(?:so|as)\s+long\s+as", token):
+            # (a) An explicit numeric period AFTER the connector (within its own
+            #     governed clause -- "for as long as X, and for two (2) years")
+            #     caps the survival, so the bare connector is not perpetual. The
+            #     numeric term must FOLLOW the connector: a number that precedes it
+            #     caps a DIFFERENT (prior) clause and must not launder an uncapped
+            #     "...except trade secrets survive for so long as they remain secret"
+            #     rider, so we look only at the text after the connector.
+            if re.search(YEAR_TERM_PATTERN, fragment[relative_end:]):
+                return True
+            # (b) The connector governs the AGREEMENT TERM, not confidentiality
+            #     survival ("this Agreement shall continue in effect for so long as
+            #     the parties have a business relationship") -- a benign relationship-
+            #     scoped agreement term, with ordinary CI capped in a separate clause.
+            #     A genuine CI rider ("...obligations continue ... for so long as it
+            #     retains commercial value") is governed by confidentiality, not the
+            #     Agreement, so it still fires.
+            before_connector = fragment[:relative_start]
+            if re.search(AGREEMENT_TERM_DURATION_PATTERN, before_connector) and not re.search(
+                ORDINARY_SURVIVAL_SUBJECT_PATTERN, before_connector
+            ):
+                return True
+    except Exception:
+        # Fail-safe: never let a guard crash the board poll; keep the (stricter)
+        # flag if the input is unexpected.
+        return False
+    return False
+
+
 def _is_allowed_carve_out_year(normalized: str, term: Dict[str, int], clause: Dict[str, object]) -> bool:
     return _is_allowed_carve_out_fragment(normalized, term["start"], term["end"], clause)
 
@@ -472,6 +595,10 @@ def _is_allowed_carve_out_fragment(normalized: str, start: int, end: int, clause
     return bool(
         any(_carve_out_scoped_before_term(fragment, relative_start, pattern) for pattern in carve_out_patterns)
         or any(_term_scoped_to_carve_out(fragment, relative_end, pattern) for pattern in carve_out_patterns)
+        or any(
+            _carve_out_governs_term_sentence(fragment, relative_start, relative_end, pattern)
+            for pattern in carve_out_patterns
+        )
     )
 
 
@@ -487,6 +614,18 @@ def _carve_out_scoped_before_term(fragment: str, term_start: int, carve_out_patt
         return False
     if re.search(ORDINARY_SURVIVAL_SUBJECT_PATTERN, before_term[last_carve_out.end():]):
         return False
+    # Ordinary CI must not CO-GOVERN the survival as a conjoined subject in the
+    # SAME sub-clause as the carve-out, e.g. "the confidential information and trade
+    # secrets shall remain confidential in perpetuity" -- an ordinary-CI perpetual
+    # rider wearing a carve-out word, which must still FAIL. (Pre-existing hole the
+    # comma-bounded window left open; closed here as part of widening the scope.)
+    # Only the carve-out's own sub-clause is inspected: an exception/scoping connector
+    # ("except", "other than", "save for", "with respect to", ...) starts the carve-out
+    # clause, so an ordinary capped term in a PRIOR clause ("...survive for five years,
+    # except trade secrets ...") is correctly left untouched.
+    leading_scope = _carve_out_subclause_lead(before_term, last_carve_out.start())
+    if _ordinary_ci_subject_present(leading_scope):
+        return False
     return True
 
 
@@ -498,6 +637,133 @@ def _term_scoped_to_carve_out(fragment: str, term_end: int, carve_out_pattern: s
             after_term,
         )
     )
+
+
+def _carve_out_governs_term_sentence(
+    fragment: str, term_start: int, term_end: int, carve_out_pattern: str
+) -> bool:
+    """Allow a perpetual trigger when the carve-out term GOVERNS it sentence-locally.
+
+    Covers the common natural phrasings the comma-bounded window used to fail:
+      - "trade secrets shall be kept confidential for as long as ..." (carve-out
+        is the sentence subject; the trigger itself is the survival verb)
+      - "personal data shall be retained for as long as data-protection law requires"
+      - "with respect to trade secrets, confidentiality shall continue in perpetuity"
+
+    Precision is preserved two ways: (1) the carve-out term must appear in the
+    SAME sentence as the trigger (the comma split is gone, but the sentence split
+    survives, so an ordinary-CI perpetual rider in a different sentence is still
+    rejected upstream by the no-carve-out-in-fragment guard); (2) ordinary CI must
+    not co-govern the trigger -- if an ordinary-confidentiality survival subject
+    sits between the carve-out term and the trigger (e.g. "trade secrets and the
+    confidentiality obligations survive in perpetuity"), the carve-out does not
+    get credit and the rider still fails.
+    """
+    before_term = fragment[:term_start]
+    carve_out_matches = list(re.finditer(carve_out_pattern, before_term))
+    after_signal_scope = False
+    if not carve_out_matches:
+        # The carve-out may trail the trigger behind an explicit scoping signal,
+        # e.g. "...shall continue for as long as required, for trade secrets", or
+        # behind a requirement/necessity idiom that itself names the carve-out, e.g.
+        # "...retained for as long as required by applicable law" / "...as long as
+        # data-protection law requires". These are textbook longer-survival carve-outs.
+        after_term = _fragment_after_term_until_next_duration(fragment, term_end)
+        return bool(
+            re.search(
+                rf"\b(?:for|as\s+to|with\s+respect\s+to|in\s+respect\s+of|"
+                rf"solely\s+for|limited\s+to|in\s+the\s+case\s+of|"
+                rf"required\s+by|require[ds]?\s+by|as\s+required\s+by|"
+                rf"mandated\s+by|necessary\s+(?:to\s+comply\s+with|for|under)|"
+                rf"to\s+comply\s+with|to\s+satisfy)\s+"
+                rf"(?:the\s+)?(?:applicable\s+)?{carve_out_pattern}\b",
+                after_term,
+            )
+            # "...for as long as <carve-out term> requires/mandates/permits": the
+            # carve-out term leads the requirement that sets the longer period.
+            or re.search(
+                rf"\b{carve_out_pattern}\b\s+(?:law\s+)?"
+                rf"(?:requires?|require[ds]?|mandates?|permits?|allows?|so\s+requires?)\b",
+                after_term,
+            )
+        )
+
+    last_carve_out = carve_out_matches[-1]
+    # An ordinary-CI subject must not CO-GOVERN the trigger. If ordinary
+    # confidentiality is itself (also) the thing surviving -- whether it sits
+    # between the carve-out term and the trigger ("trade secrets and the
+    # confidentiality obligations survive in perpetuity") or leads the carve-out as
+    # a conjoined subject ("the confidential information and trade secrets ... in
+    # perpetuity") -- the rider is an ordinary-CI perpetual and must still fail.
+    between = before_term[last_carve_out.end():]
+    if _ordinary_ci_subject_present(between):
+        return False
+    leading_scope = before_term[:last_carve_out.start()]
+    # An explicit scoping signal ("with respect to trade secrets, ...") narrows the
+    # survival to the carve-out even when ordinary CI was the subject of a prior
+    # (already-comma-or-semicolon-bounded) clause; otherwise an ordinary-CI subject
+    # in front of the carve-out means ordinary CI co-governs the trigger -> fail.
+    if re.search(
+        r"\b(?:with\s+respect\s+to|as\s+to|in\s+respect\s+of|in\s+the\s+case\s+of|"
+        r"for|regarding|concerning)\s*$",
+        leading_scope.rstrip(),
+    ):
+        after_signal_scope = True
+    if not after_signal_scope and _ordinary_ci_subject_present(
+        _carve_out_subclause_lead(leading_scope, len(leading_scope))
+    ):
+        return False
+    # Carve-out leads the clause (subject position): nothing but the carve-out
+    # and connective words precede it, or a scoping signal introduces it.
+    return True
+
+
+# Ordinary-confidentiality SUBJECT noun phrases (the thing whose survival is being
+# set), used to detect ordinary-CI co-governing a perpetual trigger so a carve-out
+# mention cannot launder an ordinary-CI perpetual rider. Broader than
+# ORDINARY_SURVIVAL_SUBJECT_PATTERN because here we are scanning a subject slot, not
+# a subject+verb collocation.
+ORDINARY_CI_SUBJECT_PATTERN = (
+    r"\b(?:confidentiality\s+(?:obligations?|undertakings?|provisions?|duties?)"
+    r"|(?:confidential\s+)?information"
+    r"|(?:the|all|such|any)\s+(?:confidential\s+)?information"
+    r"|obligations?\s+of\s+confidentiality"
+    r"|confidentiality\s+obligations?"
+    r"|(?:ordinary\s+)?confidential(?:ity)?\s+(?:obligations?|undertakings?|provisions?|duties?))\b"
+)
+
+
+def _ordinary_ci_subject_present(text: str) -> bool:
+    return bool(
+        re.search(ORDINARY_CI_SUBJECT_PATTERN, text)
+        or re.search(ORDINARY_SURVIVAL_SUBJECT_PATTERN, text)
+    )
+
+
+# Connectors that introduce a carve-out sub-clause; an ordinary capped term sitting
+# in front of one of these is a SEPARATE clause and must not be read as co-governing
+# the carve-out's (longer) survival.
+CARVE_OUT_EXCEPTION_CONNECTOR_PATTERN = (
+    r"\b(?:except(?:ing|\s+that|\s+for)?|other\s+than|save\s+(?:for|as|that)?|"
+    r"but\s+(?:for|not)|provided\s+that|with\s+respect\s+to|as\s+to|in\s+respect\s+of|"
+    r"in\s+the\s+case\s+of|regarding|concerning|for)\b"
+)
+
+
+def _carve_out_subclause_lead(before_term: str, carve_out_start: int) -> str:
+    """Text from the carve-out's own sub-clause start up to the carve-out term.
+
+    Anchors at the last exception/scoping connector before the carve-out so that an
+    ordinary capped term in a PRIOR clause ("...survive for five years, except trade
+    secrets...") is excluded, while a conjoined ordinary-CI subject in the SAME
+    sub-clause ("...the confidential information and trade secrets...") is retained
+    and therefore rejected by the co-governance guard.
+    """
+    leading = before_term[:carve_out_start]
+    connectors = list(re.finditer(CARVE_OUT_EXCEPTION_CONNECTOR_PATTERN, leading))
+    if connectors:
+        return leading[connectors[-1].end():]
+    return leading
 
 
 def _fragment_after_term_until_next_duration(fragment: str, term_end: int) -> str:
@@ -529,13 +795,23 @@ def _carve_out_context_patterns(clause: Dict[str, object]) -> List[str]:
 
 
 def _term_fragment_bounds(normalized: str, start: int, end: int) -> tuple[str, int, int]:
+    # Scope the carve-out window at SENTENCE/CLAUSE granularity (``.`` and ``;``),
+    # not at comma granularity. A legitimate longer-survival carve-out routinely
+    # reads "...survive five years; with respect to trade secrets, ... in perpetuity"
+    # or "...retained for as long as required by applicable law" -- the carve-out
+    # term ("trade secrets", "applicable law") sits in a DIFFERENT comma-segment
+    # from the perpetual trigger, so a comma-bounded window wrongly failed it.
+    # Sentence bounds keep "with respect to trade secrets, ... in perpetuity"
+    # together while still walling the trigger off from an unrelated ordinary-CI
+    # perpetual rider that lives in a different sentence (precision preserved by
+    # the directional scoping guards below, which reject ordinary-CI bleed).
     left_candidates = [
         normalized.rfind(separator, 0, start)
-        for separator in (".", ";", ",")
+        for separator in (".", ";")
     ]
     right_candidates = [
         position
-        for position in (normalized.find(separator, end) for separator in (".", ";", ","))
+        for position in (normalized.find(separator, end) for separator in (".", ";"))
         if position != -1
     ]
     left = max(left_candidates) + 1
