@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from typing import Any
 
 from .checks.common import (
@@ -19,8 +20,21 @@ from .redline_defaults import playbook_redline_text
 from .review_document import Paragraph
 from .review_state import CLAUSE_DECISION_FAIL, CLAUSE_DECISION_PASS, CLAUSE_DECISION_REVIEW
 
-AI_ASSESSMENT_CONTRACT_VERSION = 2
+AI_ASSESSMENT_CONTRACT_VERSION = 3
+# Contract versions this validator still ACCEPTS on the wire. v2 sent a single
+# ``proposed_redline`` object; v3 sends a ``proposed_edits`` LIST and may use the
+# sentence-level ``strike_span``/``replace_span`` sugar. Old stored matters and
+# single-edit clauses keep parsing via the v2 compat shim (see A.3). The cleaned
+# output always stamps the current version.
+AI_ASSESSMENT_ACCEPTED_CONTRACT_VERSIONS = (2, 3)
 AI_REDLINE_NO_CHANGE = "no_change"
+# Sentence-level span actions (v3-only sugar). They are LOWERED at parse time to an
+# ordinary ``replace_paragraph`` whose replacement is the paragraph with the span
+# cut/substituted (see ``apply_span``), so NO downstream consumer learns a new
+# action and no new index/identity rule is introduced.
+AI_REDLINE_STRIKE_SPAN = "strike_span"
+AI_REDLINE_REPLACE_SPAN = "replace_span"
+AI_REDLINE_SPAN_ACTIONS = (AI_REDLINE_STRIKE_SPAN, AI_REDLINE_REPLACE_SPAN)
 # Cap on the number of structured reasoning steps carried onto a parsed
 # assessment. The reviewer method has five named steps (locate/read/apply/cite/
 # decide); the cap leaves headroom for sub-steps while bounding a runaway list.
@@ -32,11 +46,20 @@ AI_ASSESSMENT_ISSUE_TYPES = (
     ISSUE_TYPE_PRESENT_BUT_WRONG,
     ISSUE_TYPE_UNCLEAR,
 )
-AI_ASSESSMENT_REDLINE_ACTIONS = (
+# Paragraph-level actions: the only actions any DOWNSTREAM consumer ever sees,
+# because spans are lowered to ``replace_paragraph`` at parse time.
+AI_ASSESSMENT_PARAGRAPH_REDLINE_ACTIONS = (
     AI_REDLINE_NO_CHANGE,
     REDLINE_REPLACE_PARAGRAPH,
     REDLINE_INSERT_AFTER_PARAGRAPH,
     REDLINE_DELETE_PARAGRAPH,
+)
+# Wire-accepted actions: the four paragraph actions PLUS the two v3 span actions a
+# fresh model response may emit (and which we lower before storing).
+AI_ASSESSMENT_REDLINE_ACTIONS = (
+    *AI_ASSESSMENT_PARAGRAPH_REDLINE_ACTIONS,
+    AI_REDLINE_STRIKE_SPAN,
+    AI_REDLINE_REPLACE_SPAN,
 )
 
 AI_CLAUSE_ASSESSMENT_SCHEMA: dict[str, object] = {
@@ -89,16 +112,44 @@ AI_CLAUSE_ASSESSMENT_SCHEMA: dict[str, object] = {
                 "additionalProperties": False,
             },
         },
+        # Legacy single redline (v2). Still accepted and parsed into a 1-element
+        # ``proposed_edits`` list so old stored matters and single-edit clauses keep
+        # working without migration.
         "proposed_redline": {
             "type": "object",
             "properties": {
                 "action": {"type": "string", "enum": list(AI_ASSESSMENT_REDLINE_ACTIONS)},
                 "paragraph_id": {"type": "string"},
+                "anchor_quote": {"type": "string"},
+                "original_text": {"type": "string"},
+                "replacement": {"type": ["string", "null"]},
                 "text": {"type": "string"},
                 "jurisdiction": {"type": "string"},
+                "rationale": {"type": "string"},
             },
             "required": ["action"],
             "additionalProperties": False,
+        },
+        # v3 multi-edit list. One edit per defective span. ``strike_span`` /
+        # ``replace_span`` carry a verbatim ``anchor_quote`` and are lowered to a
+        # whole-paragraph ``replace_paragraph`` at parse time.
+        "proposed_edits": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": list(AI_ASSESSMENT_REDLINE_ACTIONS)},
+                    "paragraph_id": {"type": "string"},
+                    "anchor_quote": {"type": "string"},
+                    "original_text": {"type": "string"},
+                    "replacement": {"type": ["string", "null"]},
+                    "text": {"type": "string"},
+                    "jurisdiction": {"type": "string"},
+                    "rationale": {"type": "string"},
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
         },
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "blocks_send": {"type": "boolean"},
@@ -109,7 +160,9 @@ AI_CLAUSE_ASSESSMENT_SCHEMA: dict[str, object] = {
         "issue_type",
         "rationale",
         "evidence",
-        "proposed_redline",
+        # Either ``proposed_redline`` (v2) or ``proposed_edits`` (v3) satisfies the
+        # redline requirement; the validator enforces "at least one" below rather
+        # than via the static schema (JSON-Schema "anyOf" would reject neither).
         "confidence",
         "blocks_send",
     ],
@@ -177,13 +230,17 @@ def validate_ai_clause_assessment(
     for key in assessment:
         if str(key) not in allowed_keys:
             errors.append(f"{location}: unsupported field {key}")
+    payload_version = AI_ASSESSMENT_CONTRACT_VERSION
     if "schema_version" in assessment:
         try:
             schema_version = int(assessment.get("schema_version"))
         except (TypeError, ValueError):
             schema_version = -1
-        if schema_version != AI_ASSESSMENT_CONTRACT_VERSION:
-            errors.append(f"{location}: schema_version must be {AI_ASSESSMENT_CONTRACT_VERSION}")
+        if schema_version not in AI_ASSESSMENT_ACCEPTED_CONTRACT_VERSIONS:
+            accepted = ", ".join(str(v) for v in AI_ASSESSMENT_ACCEPTED_CONTRACT_VERSIONS)
+            errors.append(f"{location}: schema_version must be one of {accepted}")
+        else:
+            payload_version = schema_version
 
     # Preserve packet order: the reviewed paragraphs arrive as an ordered list,
     # and document-wide grounding needs a STABLE, deterministic concatenation. An
@@ -214,35 +271,49 @@ def validate_ai_clause_assessment(
     confidence = _required_confidence(assessment, location, errors)
     blocks_send = _required_bool(assessment, "blocks_send", location, errors)
     evidence = _validated_evidence(assessment, paragraph_by_id, ordered_paragraphs, location, errors)
-    proposed_redline = _validated_proposed_redline(
+    proposed_edits, all_edits_degraded = _validated_proposed_edits(
         assessment,
         paragraph_by_id,
         location,
         errors,
+        payload_version=payload_version,
         playbook_clause=clauses_by_id.get(clause_id),
     )
+    # The first edit is the legacy "primary" redline that existing readers (e.g.
+    # ``ai_first_assessment.proposed_redline_action``) consume; keep it in the
+    # cleaned output so nothing downstream that still reads ``proposed_redline``
+    # breaks. An empty list collapses to a no_change so the field is always present.
+    proposed_redline = deepcopy(proposed_edits[0]) if proposed_edits else {"action": AI_REDLINE_NO_CHANGE}
 
     # One clause whose redline could neither be authored by the AI nor defaulted
-    # from the Playbook must not discard every other (correct) assessment. The
-    # validator already collapsed it to a no-text no_change flag; keep the verdict
-    # actionable without violating the decision<->action coupling below: a blank
-    # fail becomes a human-review flag (never a silent pass), a blank review stays
-    # a review. The decision/rationale survive so a human still sees the finding.
-    if proposed_redline.pop("_degraded_no_text", False):
+    # from the Playbook (or whose only span(s) failed to anchor) must not discard
+    # every other (correct) assessment. The validator collapsed each unusable edit
+    # to a no-text no_change flag; keep the verdict actionable without violating the
+    # decision<->action coupling below: a blank fail becomes a human-review flag
+    # (never a silent pass), a blank review stays a review. The decision/rationale
+    # survive so a human still sees the finding. Mirrors the historical singular
+    # ``_degraded_no_text`` behaviour, generalized to "ALL edits degraded".
+    if all_edits_degraded:
         rationale = _with_degrade_note(rationale)
         if decision == CLAUSE_DECISION_FAIL:
             decision = CLAUSE_DECISION_REVIEW
             blocks_send = True
 
+    has_actionable_edit = any(
+        edit.get("action") != AI_REDLINE_NO_CHANGE for edit in proposed_edits
+    )
+
     if decision == CLAUSE_DECISION_PASS and issue_type != ISSUE_TYPE_NONE:
         errors.append(f"{location}: pass decisions must use issue_type none")
     if decision in {CLAUSE_DECISION_FAIL, CLAUSE_DECISION_REVIEW} and issue_type == ISSUE_TYPE_NONE:
         errors.append(f"{location}: fail/review decisions must not use issue_type none")
-    if decision == CLAUSE_DECISION_PASS and proposed_redline.get("action") != AI_REDLINE_NO_CHANGE:
+    if decision == CLAUSE_DECISION_PASS and has_actionable_edit:
         errors.append(f"{location}: pass decisions must use proposed_redline.action no_change")
-    if decision == CLAUSE_DECISION_FAIL and proposed_redline.get("action") == AI_REDLINE_NO_CHANGE:
+    if decision == CLAUSE_DECISION_FAIL and not has_actionable_edit:
         errors.append(f"{location}: fail decisions require a proposed redline action")
-    if decision == CLAUSE_DECISION_REVIEW and proposed_redline.get("action") not in {AI_REDLINE_NO_CHANGE, REDLINE_REPLACE_PARAGRAPH, REDLINE_INSERT_AFTER_PARAGRAPH, REDLINE_DELETE_PARAGRAPH}:
+    if decision == CLAUSE_DECISION_REVIEW and any(
+        edit.get("action") not in AI_ASSESSMENT_PARAGRAPH_REDLINE_ACTIONS for edit in proposed_edits
+    ):
         errors.append(f"{location}: review decisions have an unsupported proposed redline action")
     if decision == CLAUSE_DECISION_FAIL and issue_type != ISSUE_TYPE_MISSING and not evidence:
         errors.append(f"{location}: fail decisions require at least one valid evidence item unless issue_type is missing")
@@ -257,6 +328,7 @@ def validate_ai_clause_assessment(
         "rationale": rationale,
         "evidence": evidence,
         "proposed_redline": proposed_redline,
+        "proposed_edits": proposed_edits,
         "confidence": confidence,
         "blocks_send": bool(blocks_send),
         "validation_status": "contract_valid",
@@ -612,37 +684,253 @@ def _ellipsis_segments_appear_in_order(quote: str, text: str) -> bool:
     return True
 
 
-def _validated_proposed_redline(
+def clause_proposed_edits(clause: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Backward-compatible accessor for a clause's proposed edit list.
+
+    Returns ``clause["proposed_edits"]`` when present (v3 clause results), else
+    wraps the legacy singular ``clause["proposed_redline"]`` into a 1-element list
+    (v2 stored matters). A no_change-only / missing redline yields ``[]`` so callers
+    can treat "no edits" uniformly. NEVER raises.
+    """
+    if not isinstance(clause, Mapping):
+        return []
+    edits = clause.get("proposed_edits")
+    if isinstance(edits, list):
+        return [dict(edit) for edit in edits if isinstance(edit, Mapping)]
+    single = clause.get("proposed_redline")
+    if isinstance(single, Mapping):
+        return [dict(single)]
+    return []
+
+
+def apply_span(paragraph_text: str, anchor_quote: str, replacement: str) -> str | None:
+    """Apply a sentence-level span edit to a paragraph, returning the new text.
+
+    Locates ``anchor_quote`` inside ``paragraph_text`` using the SAME typographic
+    glyph-folding + whitespace-collapse normalization already used for evidence
+    grounding (:func:`_normalize_quote_text`), then performs the cut on the
+    ORIGINAL (un-normalized) text at the matched offsets so punctuation/casing is
+    preserved. ``replacement`` substitutes the span (``replace_span``); an empty
+    ``replacement`` strikes it (``strike_span``) and trims one adjacent connector
+    space so the surrounding text reads cleanly.
+
+    Returns the new paragraph text, or ``None`` when the anchor cannot be located
+    verbatim (glyph-folded) — the caller degrades that edit to a no-op. NEVER
+    raises: any unexpected failure also returns ``None`` (degrade-safe).
+    """
+    try:
+        original = str(paragraph_text or "")
+        anchor = str(anchor_quote or "")
+        if not anchor.strip():
+            return None
+        match = _locate_span_offsets(original, anchor)
+        if match is None:
+            return None
+        start, end = match
+        replacement_text = str(replacement or "")
+        if replacement_text:
+            return original[:start] + replacement_text + original[end:]
+        # Strike: drop the span and one adjacent connector space (prefer the
+        # leading space so "A, B and C" -> "A and C" reads cleanly; fall back to
+        # the trailing space at a paragraph start).
+        before = original[:start]
+        after = original[end:]
+        if before.endswith(" "):
+            before = before[:-1]
+        elif after.startswith(" "):
+            after = after[1:]
+        result = before + after
+        return result
+    except Exception:  # pragma: no cover - degrade-safe guard
+        return None
+
+
+def _locate_span_offsets(original: str, anchor: str) -> tuple[int, int] | None:
+    """Find ``anchor`` inside ``original`` and return ORIGINAL-text [start, end).
+
+    Matches on glyph-folded text so curly quotes / dashes / nbsp in either string
+    line up, but collapses NO whitespace (to keep a 1:1 character mapping between
+    the folded and original strings, since folding is a per-character translation).
+    Returns ``None`` when the folded anchor is empty or not a substring.
+    """
+    folded_original = _fold_typographic_glyphs(original)
+    folded_anchor = _fold_typographic_glyphs(anchor).strip()
+    if not folded_anchor:
+        return None
+    # _fold_typographic_glyphs only maps the ellipsis glyph to a 3-char string;
+    # if either string contains one, character offsets would shift, so fall back to
+    # a normalized-equality check that refuses to guess an offset.
+    if "…" in original or "…" in anchor:
+        return None
+    index = folded_original.find(folded_anchor)
+    if index < 0:
+        return None
+    return index, index + len(folded_anchor)
+
+
+def _validated_proposed_edits(
     assessment: Mapping[str, Any],
     paragraph_by_id: Mapping[str, str],
     location: str,
     errors: list[str],
     *,
+    payload_version: int,
     playbook_clause: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    proposed_redline = assessment.get("proposed_redline")
-    if not isinstance(proposed_redline, Mapping):
-        errors.append(f"{location}: proposed_redline must be an object")
-        return {"action": ""}
-    allowed_keys = {"action", "paragraph_id", "text", "jurisdiction"}
+) -> tuple[list[dict[str, Any]], bool]:
+    """Validate and normalize the proposed edit list (v2 singular or v3 list).
+
+    Returns ``(edits, all_degraded)``: a list of cleaned paragraph-level edits
+    (spans already lowered to ``replace_paragraph``), and a flag that is True only
+    when at least one edit was present but EVERY actionable edit degraded to a
+    no-op (so the caller downgrades the clause to human review).
+    """
+    raw_edits, source_error = _raw_proposed_edits(assessment, location, payload_version)
+    if source_error is not None:
+        errors.append(source_error)
+        return [{"action": ""}], False
+    if not raw_edits:
+        # No redline supplied at all. Mirror the historical empty-object behaviour:
+        # a single no_change edit, which the coupling checks treat as "no action".
+        return [{"action": AI_REDLINE_NO_CHANGE}], False
+
+    cleaned_edits: list[dict[str, Any]] = []
+    actionable_count = 0
+    degraded_count = 0
+    for index, raw_edit in enumerate(raw_edits):
+        edit_location = location if len(raw_edits) == 1 else f"{location}.proposed_edits[{index}]"
+        cleaned, degraded = _validated_single_edit(
+            raw_edit,
+            paragraph_by_id,
+            edit_location,
+            errors,
+            payload_version=payload_version,
+            playbook_clause=playbook_clause,
+        )
+        cleaned_edits.append(cleaned)
+        if degraded:
+            degraded_count += 1
+            actionable_count += 1
+        elif cleaned.get("action") != AI_REDLINE_NO_CHANGE:
+            actionable_count += 1
+
+    all_edits_degraded = actionable_count > 0 and degraded_count == actionable_count
+    return cleaned_edits, all_edits_degraded
+
+
+def _raw_proposed_edits(
+    assessment: Mapping[str, Any],
+    location: str,
+    payload_version: int,
+) -> tuple[list[Mapping[str, Any]], str | None]:
+    """Extract the raw edit list from a v2 (singular) or v3 (list) payload.
+
+    Returns ``(edits, error)``. ``proposed_edits`` (v3) wins when present; otherwise
+    the legacy singular ``proposed_redline`` is wrapped into a 1-element list. A
+    structurally wrong shape yields ``([], error)``.
+    """
+    if "proposed_edits" in assessment:
+        raw = assessment.get("proposed_edits")
+        if not isinstance(raw, list):
+            return [], f"{location}: proposed_edits must be a list"
+        edits = [item for item in raw if isinstance(item, Mapping)]
+        if len(edits) != len(raw):
+            return [], f"{location}: proposed_edits items must be objects"
+        return edits, None
+    if "proposed_redline" in assessment:
+        single = assessment.get("proposed_redline")
+        if not isinstance(single, Mapping):
+            return [], f"{location}: proposed_redline must be an object"
+        return [single], None
+    return [], None
+
+
+def _validated_single_edit(
+    proposed_redline: Mapping[str, Any],
+    paragraph_by_id: Mapping[str, str],
+    location: str,
+    errors: list[str],
+    *,
+    payload_version: int,
+    playbook_clause: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Validate a single edit object and lower any span action.
+
+    Returns ``(cleaned_edit, degraded)``. ``degraded`` is True when the edit was an
+    actionable redline that could not be realized (no Playbook wording, or a span
+    whose anchor was not found) and was collapsed to a no_change no-op.
+    """
+    allowed_keys = {
+        "action",
+        "paragraph_id",
+        "anchor_quote",
+        "original_text",
+        "replacement",
+        "text",
+        "jurisdiction",
+        "rationale",
+    }
     for key in proposed_redline:
         if str(key) not in allowed_keys:
-            errors.append(f"{location}: proposed_redline has unsupported field {key}")
+            errors.append(f"{location}: proposed edit has unsupported field {key}")
 
     action = str(proposed_redline.get("action") or "").strip()
     if action not in AI_ASSESSMENT_REDLINE_ACTIONS:
-        errors.append(f"{location}: proposed_redline.action must be one of {', '.join(AI_ASSESSMENT_REDLINE_ACTIONS)}")
-    text = str(proposed_redline.get("text") or "").strip()
+        errors.append(
+            f"{location}: action must be one of {', '.join(AI_ASSESSMENT_REDLINE_ACTIONS)}"
+        )
+    # Span actions are v3-only sugar; a v2 payload may never use them.
+    if action in AI_REDLINE_SPAN_ACTIONS and payload_version < 3:
+        errors.append(f"{location}: {action} requires schema_version 3")
+
     paragraph_id = str(proposed_redline.get("paragraph_id") or "").strip()
     jurisdiction = str(proposed_redline.get("jurisdiction") or "").strip()
+    rationale = str(proposed_redline.get("rationale") or "").strip()
+    # ``replacement`` is the v3 name; ``text`` is the legacy alias kept for compat.
+    replacement_raw = proposed_redline.get("replacement")
+    if replacement_raw is None:
+        replacement_raw = proposed_redline.get("text")
+    text = str(replacement_raw or "").strip()
+    anchor_quote = str(proposed_redline.get("anchor_quote") or "").strip()
+
+    degraded_no_text = False
+    # Span provenance preserved on the lowered edit so the redline builder can
+    # COALESCE several spans on the SAME paragraph by re-composing each cut onto the
+    # original paragraph text (a single full-paragraph replacement per span would
+    # otherwise clobber its sibling). Only set for an actually-lowered span.
+    span_action = ""
+    span_anchor = ""
+    span_replacement = ""
+
+    # ---- Span lowering (strike_span / replace_span -> replace_paragraph) ----
+    if action in AI_REDLINE_SPAN_ACTIONS:
+        lowered = _lower_span_edit(
+            action,
+            paragraph_id,
+            anchor_quote,
+            text,
+            paragraph_by_id,
+            location,
+            errors,
+        )
+        if lowered is None:
+            # Anchor not found / structurally unusable: degrade THIS edit to a
+            # no-op. The caller downgrades the clause to review if ALL edits degrade.
+            cleaned: dict[str, Any] = {"action": AI_REDLINE_NO_CHANGE}
+            if rationale:
+                cleaned["rationale"] = rationale
+            return cleaned, True
+        span_action = action
+        span_anchor = anchor_quote
+        span_replacement = text if action == AI_REDLINE_REPLACE_SPAN else ""
+        action = REDLINE_REPLACE_PARAGRAPH
+        text = lowered
 
     # The AI supplies judgment; the Playbook supplies the wording. The model
-    # decides clauses well but routinely leaves proposed_redline.text blank when
-    # flagging one — which used to reject the WHOLE document. When the AI omits
-    # the replacement wording for a replace/insert, default it from the clause's
+    # decides clauses well but routinely leaves the replacement text blank when
+    # flagging one — which used to reject the WHOLE document. When the AI omits the
+    # replacement wording for a replace/insert, default it from the clause's
     # canonical Playbook template (governing_law derives it from the approved law).
     # An AI-authored, non-empty text remains an optional override and is kept as-is.
-    degraded_no_text = False
     if action in {REDLINE_REPLACE_PARAGRAPH, REDLINE_INSERT_AFTER_PARAGRAPH} and not text:
         template_text = playbook_redline_text(playbook_clause)
         if template_text:
@@ -650,27 +938,73 @@ def _validated_proposed_redline(
         else:
             # No Playbook wording is available for this clause (e.g. a prohibited
             # clause whose fix is deletion, mislabelled as a replace). Degrade just
-            # THIS clause to a no-text flag instead of discarding every assessment;
-            # the caller keeps the decision/rationale and routes it for human review.
+            # THIS edit to a no-op instead of discarding every assessment.
             degraded_no_text = True
             action = AI_REDLINE_NO_CHANGE
 
     if action in {REDLINE_REPLACE_PARAGRAPH, REDLINE_DELETE_PARAGRAPH}:
         if not paragraph_id:
-            errors.append(f"{location}: proposed_redline.paragraph_id is required for {action}")
+            errors.append(f"{location}: paragraph_id is required for {action}")
         elif paragraph_id not in paragraph_by_id:
-            errors.append(f"{location}: proposed_redline.paragraph_id does not exist: {paragraph_id}")
+            errors.append(f"{location}: paragraph_id does not exist: {paragraph_id}")
 
-    cleaned: dict[str, Any] = {"action": action}
+    cleaned = {"action": action}
     if paragraph_id and action != AI_REDLINE_NO_CHANGE:
         cleaned["paragraph_id"] = paragraph_id
     if text:
         cleaned["text"] = text
     if jurisdiction:
         cleaned["jurisdiction"] = jurisdiction
-    if degraded_no_text:
-        cleaned["_degraded_no_text"] = True
-    return cleaned
+    if rationale:
+        cleaned["rationale"] = rationale
+    # Carry span provenance so same-paragraph spans can be re-composed during
+    # redline coalescing. Display/consumers that only read action+text ignore it.
+    if span_action:
+        cleaned["span_action"] = span_action
+        cleaned["span_anchor_quote"] = span_anchor
+        if span_action == AI_REDLINE_REPLACE_SPAN:
+            cleaned["span_replacement"] = span_replacement
+    return cleaned, degraded_no_text
+
+
+def _lower_span_edit(
+    action: str,
+    paragraph_id: str,
+    anchor_quote: str,
+    replacement: str,
+    paragraph_by_id: Mapping[str, str],
+    location: str,
+    errors: list[str],
+) -> str | None:
+    """Lower a span edit to the replacement text for a whole-paragraph replace.
+
+    Returns the new paragraph text (paragraph with the span cut/substituted), or
+    ``None`` when the edit is structurally unusable (missing/unknown paragraph_id,
+    missing anchor_quote, or an anchor that does not appear verbatim). A structural
+    contract violation (missing/unknown id, missing anchor) records an ``errors``
+    entry; an unanchorable-but-well-formed span does NOT (it degrades to review).
+    """
+    if not paragraph_id:
+        errors.append(f"{location}: paragraph_id is required for {action}")
+        return None
+    paragraph_text = paragraph_by_id.get(paragraph_id)
+    if paragraph_text is None:
+        errors.append(f"{location}: paragraph_id does not exist: {paragraph_id}")
+        return None
+    if not anchor_quote:
+        errors.append(f"{location}: anchor_quote is required for {action}")
+        return None
+    span_replacement = replacement if action == AI_REDLINE_REPLACE_SPAN else ""
+    new_text = apply_span(paragraph_text, anchor_quote, span_replacement)
+    if new_text is None:
+        # Well-formed but the anchor could not be located verbatim: a no-op
+        # degrade, NOT a contract error (the clause is downgraded to review).
+        return None
+    if new_text == paragraph_text:
+        # The span resolved to a no-change (e.g. replace with identical text):
+        # treat as a degrade so it does not masquerade as an actionable redline.
+        return None
+    return new_text
 
 
 def _paragraph_ids_for_quote(quote: str, paragraph_by_id: Mapping[str, str]) -> list[str]:

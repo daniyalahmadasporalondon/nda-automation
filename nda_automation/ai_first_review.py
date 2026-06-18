@@ -11,6 +11,7 @@ from .ai_assessment_contract import (
     AI_REDLINE_NO_CHANGE,
     _fold_typographic_glyphs,
     _normalize_quote_text,
+    clause_proposed_edits,
     validate_ai_clause_assessments,
 )
 from .checker import REVIEW_ENGINE_VERSION, _build_redline_edits, load_playbook, validate_playbook
@@ -662,7 +663,12 @@ def _clause_result_from_assessment(
     matched_paragraphs = _matched_paragraphs(
         paragraphs, assessment, _reference_index(review_context)
     )
-    proposed_redline = assessment.get("proposed_redline")
+    # Category A: a clause may carry a LIST of proposed edits (v3). The compat
+    # accessor reads ``proposed_edits`` when present, else wraps the legacy singular
+    # ``proposed_redline`` (v2 stored matters). ``proposed_redline`` is kept on the
+    # result as the FIRST/primary edit so legacy readers keep working.
+    proposed_edits = clause_proposed_edits(assessment)
+    proposed_redline = deepcopy(proposed_edits[0]) if proposed_edits else {"action": AI_REDLINE_NO_CHANGE}
     if not isinstance(proposed_redline, Mapping):
         proposed_redline = {"action": AI_REDLINE_NO_CHANGE}
     blocks_send = bool(assessment.get("blocks_send"))
@@ -729,6 +735,7 @@ def _clause_result_from_assessment(
         "recommended_option": _assessment_recommended_option(assessment, playbook_clause, decision),
         "blocks_send": blocks_send,
         "proposed_redline": deepcopy(proposed_redline),
+        "proposed_edits": deepcopy(proposed_edits),
         "reasoning_steps": reasoning_steps,
         "reason_code": reason_codes[0],
         "reason_codes": reason_codes,
@@ -746,6 +753,14 @@ def _clause_result_from_assessment(
     for field in _PLAYBOOK_RESULT_FIELDS:
         if field in playbook_clause:
             result[field] = deepcopy(playbook_clause[field])
+    # Category A: the ORDERED, de-duplicated union of every edit's paragraph_id, so
+    # the redline builder can place an edit on ANY cited paragraph (not only the
+    # evidence-driven first match). This is an ADDITIONAL target set alongside
+    # ``matched_paragraph_ids`` (which stays the evidence matcher's output), document
+    # order preferred via the matched set, then any further edit targets appended.
+    result["redline_target_paragraph_ids"] = _redline_target_paragraph_ids(
+        proposed_edits, result["matched_paragraph_ids"]
+    )
     # PURELY ADDITIVE: record a detected ordinary term-in-years scalar for the
     # term_and_survival clause so the corpus `term_years` facet (and the "5-year NDA"
     # search) resolves on AI-reviewed matters too. It is derived deterministically from
@@ -772,6 +787,7 @@ def _clause_result_from_assessment(
         "recommended_option": result.get("recommended_option"),
         "blocks_send": blocks_send,
         "proposed_redline_action": str(proposed_redline.get("action") or ""),
+        "proposed_edit_count": len(proposed_edits),
         "evidence_count": len(result["matched_paragraph_ids"]),
         "grounding_status": grounding["status"],
     }
@@ -900,10 +916,44 @@ def _assessment_text(assessment: Mapping[str, Any], *keys: str, fallback: str) -
     return fallback
 
 
+def _redline_target_paragraph_ids(
+    proposed_edits: Sequence[Mapping[str, Any]],
+    matched_paragraph_ids: Sequence[str],
+) -> list[str]:
+    """Ordered, de-duplicated union of every edit's target paragraph_id.
+
+    The matched (evidence-driven) paragraph order leads, then any further edit
+    targets are appended in edit order. Edits without a paragraph_id (a pure
+    no_change) contribute nothing. Returns ``[]`` when no edit names a paragraph.
+    """
+    edit_targets: list[str] = []
+    for edit in proposed_edits:
+        if not isinstance(edit, Mapping):
+            continue
+        paragraph_id = str(edit.get("paragraph_id") or "").strip()
+        if paragraph_id:
+            edit_targets.append(paragraph_id)
+    if not edit_targets:
+        return []
+    edit_target_set = set(edit_targets)
+    ordered: list[str] = []
+    seen: set[str] = set()
+    # Document order first (the matched set is already in packet order), restricted
+    # to ids an edit actually targets, then any remaining edit targets in edit order.
+    for paragraph_id in list(matched_paragraph_ids) + edit_targets:
+        paragraph_id = str(paragraph_id).strip()
+        if paragraph_id and paragraph_id in edit_target_set and paragraph_id not in seen:
+            ordered.append(paragraph_id)
+            seen.add(paragraph_id)
+    return ordered
+
+
 def _assessment_fix_text(assessment: Mapping[str, Any], decision: str) -> str:
-    proposed_redline = assessment.get("proposed_redline")
-    if isinstance(proposed_redline, Mapping):
-        text = str(proposed_redline.get("text") or "").strip()
+    # Read the primary edit via the v2/v3 compat accessor so a v3 assessment that
+    # carries only ``proposed_edits`` still yields its fix text.
+    primary_edit = next(iter(clause_proposed_edits(assessment)), None)
+    if isinstance(primary_edit, Mapping):
+        text = str(primary_edit.get("text") or "").strip()
         if text:
             return text
     return _assessment_text(
