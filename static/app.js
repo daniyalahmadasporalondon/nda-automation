@@ -231,7 +231,10 @@ const dashboardSearchController = createDashboardSearchController({
 // seeds silently so the existing inbox never floods on load.
 const notificationsController = createNotificationsController({
   container: document.querySelector("#toastStack"),
+  bellNode: document.querySelector("#reviewerNotificationsBell"),
   openMatter: (matterId) => {
+    // Opening a matter is "viewing" it: clear its unread before the jump.
+    notificationsController.markSeen(String(matterId));
     repositoryController.openMatter(matterId);
     activateTab("repository");
   },
@@ -248,6 +251,9 @@ const notificationsController = createNotificationsController({
 // instead of a cryptic JSON parse error. Kept to a single line so this file stays
 // merge-friendly with other in-flight branches.
 globalThis.AuthExpired?.register?.({ notify: notificationsController.notify });
+// Expose a tiny mark-seen hook so the repository board (a decoupled module) can
+// clear a matter's reviewer-attention unread when the reviewer opens it.
+globalThis.ReviewerNotifications = { markSeen: notificationsController.markSeen };
 const manualUploadController = createManualUploadController({
   modalNode: manualUploadModal,
   closeButton: manualUploadModalClose,
@@ -753,8 +759,10 @@ Promise.resolve(repositoryController.loadMatters()).then(() => {
   dashboardSearchController.refresh();
   renderDashboardInboxTable();
   // Silent seed: record the inbox already present at load so only genuinely new
-  // inbound NDAs toast during the session.
+  // inbound NDAs toast during the session, and snapshot each matter's attention
+  // state so only genuine TRANSITIONS notify (already-flagged matters stay quiet).
   notificationsController.observe(state.matters);
+  notificationsController.observeTransitions(state.matters);
 });
 repositoryController.loadGmailStatus();
 authSessionController.load();
@@ -769,6 +777,7 @@ window.setInterval(() => {
     Promise.resolve(repositoryController.loadMatters()).then(() => {
       renderDashboardInboxTable();
       notificationsController.observe(state.matters);
+      notificationsController.observeTransitions(state.matters);
     });
     repositoryController.loadGmailStatus();
   } else {
@@ -1316,6 +1325,7 @@ function activateTab(tabName) {
     Promise.resolve(repositoryController.loadMatters()).then(() => {
       renderDashboardInboxTable();
       notificationsController.observe(state.matters);
+      notificationsController.observeTransitions(state.matters);
     });
     repositoryController.loadGmailStatus();
   }
@@ -1560,6 +1570,7 @@ async function confirmDashboardAssistantAction(action = {}) {
     await Promise.resolve(repositoryController.loadMatters()).then(() => {
       renderDashboardInboxTable();
       notificationsController.observe(state.matters);
+      notificationsController.observeTransitions(state.matters);
     });
     adminIntegrationsController.load();
     authSessionController.load();

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260618drivename">
+    <link rel="stylesheet" href="/static/styles.css?v=20260619revnotif1">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260618asyncrev1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260618nodl1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
@@ -679,6 +679,21 @@
                 <input id="repositorySearchInput" type="search" autocomplete="off" placeholder="Search cards">
               </label>
               <div class="repository-header-actions">
+                <button
+                  type="button"
+                  id="reviewerNotificationsBell"
+                  class="reviewer-bell"
+                  data-unread-count="0"
+                  data-has-unread="false"
+                  aria-label="No matters need your attention"
+                  title="No matters need your attention"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/>
+                    <path d="M13.7 21a2 2 0 0 1-3.4 0"/>
+                  </svg>
+                  <span class="reviewer-bell-count" data-unread-count hidden>0</span>
+                </button>
                 <span class="repository-sync-status" data-repository-sync-status>Sync status loading</span>
               </div>
             </header>
@@ -2257,7 +2272,7 @@
     <script src="/static/js/repository-send.js?v=20260617gfl1"></script>
     <script src="/static/js/document-download-menu.js?v=20260612c"></script>
     <script src="/static/js/repository-detail.js?v=20260618dra1"></script>
-    <script src="/static/js/repository-actions.js?v=20260618asyncrev1"></script>
+    <script src="/static/js/repository-actions.js?v=20260619revnotif1"></script>
     <script src="/static/js/repository.js?v=20260618deb1"></script>
     <script src="/static/js/corpus.js?v=20260618nodl1"></script>
     <script src="/static/js/manual-upload.js?v=20260617hyg1"></script>
@@ -2290,8 +2305,8 @@
     <script src="/static/js/pdf-markup.js?v=20260618err1"></script>
     <script src="/static/js/app-state.js?v=20260617ov1"></script>
     <script src="/static/js/dashboard-search.js?v=20260614a"></script>
-    <script src="/static/js/notifications.js?v=20260617aio1"></script>
+    <script src="/static/js/notifications.js?v=20260619revnotif1"></script>
     <script src="/static/js/generator-editor.js?v=20260617a"></script>
-    <script src="/static/app.js?v=20260618drivename"></script>
+    <script src="/static/app.js?v=20260619revnotif1"></script>
   </body>
 </html>

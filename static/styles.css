@@ -10931,6 +10931,68 @@ body.modal-open {
   background: rgba(255, 255, 255, 0.28);
 }
 
+/* Reviewer-attention toast: a LOUD amber/red gradient (distinct from the brand
+   "new inbound" toast) so a "→ Needs review" nudge reads as something to act on. */
+.toast--attention {
+  background: linear-gradient(135deg, #b45309 0%, #d97706 100%);
+  box-shadow: 0 18px 45px -18px rgba(146, 64, 14, 0.6);
+}
+
+/* The reviewer-attention bell in the repository header. Quiet by default; a red
+   count badge appears only when there is unread attention. */
+.reviewer-bell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--border, rgba(15, 23, 42, 0.12));
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-muted, #475569);
+  cursor: pointer;
+}
+
+.reviewer-bell:hover {
+  color: var(--text, #0f172a);
+  border-color: var(--border-strong, rgba(15, 23, 42, 0.24));
+}
+
+.reviewer-bell svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.reviewer-bell[data-has-unread="true"] {
+  color: var(--danger, #c0392b);
+  border-color: var(--danger, #c0392b);
+}
+
+.reviewer-bell-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: var(--danger, #c0392b);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
