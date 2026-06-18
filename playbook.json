@@ -391,6 +391,8 @@
             "label": "India",
             "value": "India",
             "default": false,
+            "court_name": "the courts of Mumbai, India",
+            "forum_jurisdiction": "Mumbai, India",
             "aliases": [
               "indian"
             ],
@@ -403,6 +405,8 @@
             "label": "Delaware",
             "value": "Delaware",
             "default": false,
+            "court_name": "the state and federal courts located in the State of Delaware",
+            "forum_jurisdiction": "State of Delaware",
             "entity_prefixes": [
               "state",
               "commonwealth"
@@ -413,6 +417,8 @@
             "label": "England and Wales",
             "value": "England and Wales",
             "default": true,
+            "court_name": "the courts of England and Wales",
+            "forum_jurisdiction": "England and Wales",
             "aliases": [
               "english",
               "england"
@@ -423,6 +429,8 @@
             "label": "DIFC",
             "value": "DIFC",
             "default": false,
+            "court_name": "the DIFC Courts, Dubai",
+            "forum_jurisdiction": "Dubai International Financial Centre",
             "aliases": [
               "dubai international financial centre",
               "dubai international financial center"
@@ -433,6 +441,8 @@
             "label": "Ontario, Canada",
             "value": "Ontario, Canada",
             "default": false,
+            "court_name": "the courts of the Province of Ontario, Canada",
+            "forum_jurisdiction": "Province of Ontario, Canada",
             "aliases": [
               "ontario",
               "canadian",

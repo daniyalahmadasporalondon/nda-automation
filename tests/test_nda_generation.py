@@ -579,6 +579,66 @@ class TestGoverningLawOverride:
 
 
 # --------------------------------------------------------------------------- #
+# Forum is Playbook-sourced (the law -> court pairing is data, not a hardcode)
+# --------------------------------------------------------------------------- #
+
+
+class TestForumFromPlaybook:
+    """The override forum falls back to the Playbook option's ``court_name`` when no
+    registry entity defaults to the option -- the single-source-of-truth pairing
+    that replaced the hardcoded ``_COURT_FOR_OPTION_ID`` map. These tests force the
+    Playbook-fallback path by emptying the registry, then prove the emitted court
+    FOLLOWS the Playbook (mutating the option's court changes the output)."""
+
+    @staticmethod
+    def _empty_registry(monkeypatch):
+        from nda_automation import entity_registry
+
+        monkeypatch.setattr(entity_registry, "list_entities", lambda: [])
+
+    def test_court_falls_back_to_playbook_when_registry_empty(self, playbook, monkeypatch):
+        # No registry entity -> the only court source is the Playbook option.
+        self._empty_registry(monkeypatch)
+        for option in _governing_law_options(playbook):
+            forum = gen._forum_for_option_id(option["id"], playbook)
+            assert forum == option["court_name"], option["id"]
+
+    def test_override_court_follows_a_mutated_playbook(self, playbook, monkeypatch):
+        # Empty the registry so the Playbook is the authoritative court source, then
+        # mutate the option's court -- the generated draft's forum must track it. This
+        # is the proof the pairing is NOT hardcoded.
+        self._empty_registry(monkeypatch)
+        mutated = deepcopy(playbook)
+        difc_option = next(o for o in _governing_law_options(mutated) if o["id"] == "difc")
+        difc_option["court_name"] = "the courts of Atlantis"
+
+        india_bundle = _bundle(option_id="india")
+        entity = gen.entity_party_from_bundle(
+            india_bundle, mutated, governing_law_option_id="difc"
+        )
+        assert entity.governing_law_value == "DIFC"
+        assert entity.forum == "the courts of Atlantis"
+        # The unmutated Playbook still yields the canonical DIFC court.
+        unmutated_entity = gen.entity_party_from_bundle(
+            _bundle(option_id="india"), playbook, governing_law_option_id="difc"
+        )
+        assert unmutated_entity.forum == "the DIFC Courts, Dubai"
+
+    def test_no_court_resolving_refuses_to_emit_a_venue(self, playbook, monkeypatch):
+        # Registry empty AND the Playbook option carries no court -> the gate must
+        # refuse generation rather than write the bare law name as the forum.
+        self._empty_registry(monkeypatch)
+        mutated = deepcopy(playbook)
+        difc_option = next(o for o in _governing_law_options(mutated) if o["id"] == "difc")
+        difc_option.pop("court_name", None)
+
+        with pytest.raises(gen.NdaGenerationError):
+            gen.entity_party_from_bundle(
+                _bundle(option_id="india"), mutated, governing_law_option_id="difc"
+            )
+
+
+# --------------------------------------------------------------------------- #
 # Entity address selection (user picks a non-default registered office)
 # --------------------------------------------------------------------------- #
 
@@ -1312,23 +1372,28 @@ class TestForumIsAlwaysACourt:
     def test_every_approved_option_resolves_to_a_court_not_the_law_name(self, playbook):
         approved = gen._approved_governing_law_options(playbook)
         for option_id, law_value in approved.items():
-            forum = gen._forum_for_option_id(option_id)
+            forum = gen._forum_for_option_id(option_id, playbook)
             assert forum, f"{option_id} resolved no forum"
             assert forum.strip() != law_value.strip(), (
                 f"{option_id} forum is the bare law name {law_value!r}, not a court"
             )
 
-    def test_court_map_covers_every_approved_option(self, playbook):
-        approved = set(gen._approved_governing_law_options(playbook))
-        assert approved <= set(gen._COURT_FOR_OPTION_ID), (
-            "every approved governing-law option needs a canonical court fallback"
-        )
+    def test_playbook_carries_a_court_for_every_approved_option(self, playbook):
+        # The canonical court fallback now lives IN the Playbook (each approved
+        # option's ``court_name``), not a hardcoded module map. Every approved
+        # option must carry one so an override can always resolve a court.
+        from nda_automation import governing_law_forum as glf
+
+        approved = gen._approved_governing_law_options(playbook)
+        for option_id in approved:
+            court = glf.court_name_for_law(playbook, option_id)
+            assert court, f"{option_id} has no court_name in the Playbook"
 
     def test_generation_refuses_when_no_court_resolves(self, monkeypatch, playbook):
         # Simulate the #34 gap: the override option has NO registry entity and NO
-        # court-map entry, so _forum_for_option_id returns "". Generation must
+        # Playbook court, so _forum_for_option_id returns "". Generation must
         # REFUSE (raise) rather than write the law name as the forum.
-        monkeypatch.setattr(gen, "_forum_for_option_id", lambda option_id: "")
+        monkeypatch.setattr(gen, "_forum_for_option_id", lambda option_id, playbook: "")
         with pytest.raises(gen.NdaGenerationError) as excinfo:
             gen.entity_party_from_bundle(
                 _bundle(option_id="india"),
@@ -1340,7 +1405,7 @@ class TestForumIsAlwaysACourt:
     def test_generation_refuses_when_forum_echoes_the_law_name(self, monkeypatch, playbook):
         # A resolved value that merely echoes the law name is non-court -> refuse.
         law_value = gen._approved_governing_law_options(playbook)["delaware"]
-        monkeypatch.setattr(gen, "_forum_for_option_id", lambda option_id: law_value)
+        monkeypatch.setattr(gen, "_forum_for_option_id", lambda option_id, playbook: law_value)
         with pytest.raises(gen.NdaGenerationError):
             gen.entity_party_from_bundle(
                 _bundle(option_id="india"),
@@ -1348,10 +1413,12 @@ class TestForumIsAlwaysACourt:
                 governing_law_option_id="delaware",
             )
 
-    def test_court_map_fallback_used_when_registry_silent(self, monkeypatch, playbook):
-        # Registry yields nothing for the option, but the court map does -> a real
-        # court is written, generation proceeds.
+    def test_playbook_court_used_when_registry_silent(self, monkeypatch, playbook):
+        # Registry yields nothing for the option, but the Playbook option carries a
+        # court -> a real court is written, generation proceeds. The court is read
+        # FROM the Playbook (single source of truth), not a hardcoded map.
         import nda_automation.entity_registry as registry
+        from nda_automation import governing_law_forum as glf
 
         monkeypatch.setattr(registry, "list_entities", lambda: [])
         entity = gen.entity_party_from_bundle(
@@ -1359,5 +1426,5 @@ class TestForumIsAlwaysACourt:
             playbook,
             governing_law_option_id="difc",
         )
-        assert entity.forum == gen._COURT_FOR_OPTION_ID["difc"]
+        assert entity.forum == glf.court_name_for_law(playbook, "difc")
         assert entity.forum != gen._approved_governing_law_options(playbook)["difc"]

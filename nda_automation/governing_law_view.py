@@ -37,6 +37,8 @@ from . import artifact_registry
 # (the dashboard list view is a hot path) does not re-read the Playbook each call.
 _OPTION_LOOKUP_CACHE: dict[str, str] | None = None
 _OPTION_IDS_CACHE: tuple[str, ...] | None = None
+# option_id (lowercase) -> the Playbook label to show in the UI's interpreted line.
+_OPTION_LABELS_CACHE: dict[str, str] | None = None
 
 
 def governing_law_option_ids() -> tuple[str, ...]:
@@ -50,6 +52,25 @@ def governing_law_option_ids() -> tuple[str, ...]:
     if _OPTION_IDS_CACHE is None:
         _build_option_caches()
     return _OPTION_IDS_CACHE or ()
+
+
+def governing_law_label(option_id: object) -> str:
+    """The friendly UI label for a governing-law option id, sourced from the Playbook.
+
+    Reads the matching approved option's ``label`` (falling back to its ``value``)
+    so the dashboard's interpreted line ("Governed by ...") shows exactly the label
+    the Playbook defines. Falls back to a title-cased id for any option not in the
+    active Playbook (a future option, or an unavailable Playbook), so callers always
+    get a human-readable string -- never an empty one.
+    """
+    token = str(option_id or "").strip()
+    if not token:
+        return ""
+    global _OPTION_LABELS_CACHE
+    if _OPTION_LABELS_CACHE is None:
+        _build_option_caches()
+    label = (_OPTION_LABELS_CACHE or {}).get(token.lower())
+    return label or token.replace("_", " ").title()
 
 
 def normalize_governing_law(value: object) -> str:
@@ -137,15 +158,17 @@ def _option_lookup() -> dict[str, str]:
 
 def reset_caches() -> None:
     """Drop the cached Playbook option maps (tests / a Playbook republish)."""
-    global _OPTION_LOOKUP_CACHE, _OPTION_IDS_CACHE
+    global _OPTION_LOOKUP_CACHE, _OPTION_IDS_CACHE, _OPTION_LABELS_CACHE
     _OPTION_LOOKUP_CACHE = None
     _OPTION_IDS_CACHE = None
+    _OPTION_LABELS_CACHE = None
 
 
 def _build_option_caches() -> None:
-    global _OPTION_LOOKUP_CACHE, _OPTION_IDS_CACHE
+    global _OPTION_LOOKUP_CACHE, _OPTION_IDS_CACHE, _OPTION_LABELS_CACHE
     options = _approved_governing_law_options()
     lookup: dict[str, str] = {}
+    labels: dict[str, str] = {}
     ids: list[str] = []
     for option in options:
         option_id = str(option.get("id") or "").strip()
@@ -153,6 +176,9 @@ def _build_option_caches() -> None:
             continue
         ids.append(option_id.lower())
         lookup[option_id.lower()] = option_id.lower()
+        label = str(option.get("label") or option.get("value") or "").strip()
+        if label:
+            labels[option_id.lower()] = label
         for key in ("value", "label"):
             token = str(option.get(key) or "").strip().lower()
             if token:
@@ -165,6 +191,7 @@ def _build_option_caches() -> None:
                     lookup.setdefault(token, option_id.lower())
     _OPTION_LOOKUP_CACHE = lookup
     _OPTION_IDS_CACHE = tuple(ids)
+    _OPTION_LABELS_CACHE = labels
 
 
 def _approved_governing_law_options() -> list[Mapping[str, Any]]:

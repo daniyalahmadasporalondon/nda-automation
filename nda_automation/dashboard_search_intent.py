@@ -789,17 +789,6 @@ _PHASE_LABELS = {
     workflow.PHASE_NEGOTIATION: "Negotiation",
     workflow.PHASE_EXECUTED: "Executed",
 }
-# Friendly labels for the governing-law option ids (the interpreted line). Falls back
-# to a title-cased id for any future option not listed here.
-_GOVERNING_LAW_LABELS = {
-    "india": "India",
-    "delaware": "Delaware",
-    "england_and_wales": "England and Wales",
-    "difc": "DIFC",
-    "ontario_canada": "Ontario, Canada",
-}
-
-
 def describe_filter_spec(spec: Mapping[str, Any]) -> str:
     """A short, human-readable description of the applied filter for the UI's
     "Showing: <interpreted>" line, e.g. "In review · older than 7 days".
@@ -835,7 +824,7 @@ def describe_filter_spec(spec: Mapping[str, Any]) -> str:
         parts.append("Unsigned")
     governing_law = spec.get("governing_law")
     if isinstance(governing_law, str) and governing_law:
-        parts.append(f"Governed by {_GOVERNING_LAW_LABELS.get(governing_law, governing_law.replace('_', ' ').title())}")
+        parts.append(f"Governed by {governing_law_view.governing_law_label(governing_law)}")
     term_years = spec.get("term_years")
     if isinstance(term_years, int) and not isinstance(term_years, bool):
         year_word = "year" if term_years == 1 else "years"
