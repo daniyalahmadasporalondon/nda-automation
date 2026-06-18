@@ -63,15 +63,32 @@ class ResidualPerpetualFalsePositiveTests(unittest.TestCase):
         self.assertEqual(clause["status"], "match")
         self.assertTrue(clause["passes"])
 
-    def test_carve_out_led_perpetually_does_not_flag(self) -> None:
-        # The sentence OPENS with "With respect to trade secrets," so the perpetual
-        # survival is a legitimate trade-secret carve-out, not ordinary CI.
+    def test_trade_secret_only_perpetual_rider_now_flags_after_demotion_removed(self) -> None:
+        # REMOVAL PATH: the broad "carve-out-led sentence" demotion was deleted
+        # because it could not be made bypass-proof against post-trigger / synonym /
+        # word-order attacks that launder an ordinary-CI perpetuity (a serious
+        # false-negative). The asymmetry favours flagging: a legitimate
+        # trade-secret-ONLY perpetual rider now gets a benign review flag rather than
+        # a clean pass. This pins that accepted behaviour so a future "fix" that
+        # silently re-passes it (and reopens the bypass class) trips this test.
         clause = _term_clause(
             "With respect to trade secrets, the obligations of confidentiality shall "
             "survive perpetually. All other Confidential Information is protected for "
             "three (3) years."
         )
+        self.assertTrue(_is_indefinite_flag(clause))
+        self.assertFalse(clause["passes"])
+
+    def test_well_formed_inline_trade_secret_carveout_still_passes(self) -> None:
+        # Precision floor: a well-formed inline carve-out is still cleared by the
+        # untouched sentence-local _is_allowed_carve_out_fragment guard -- removing the
+        # broad signal-leads demotion must NOT regress the carve-outs already covered.
+        clause = _term_clause(
+            "The confidentiality obligations survive five (5) years; with respect to "
+            "trade secrets, confidentiality shall continue in perpetuity."
+        )
         self.assertFalse(_is_indefinite_flag(clause))
+        self.assertTrue(clause["passes"])
 
     # ---- CO-6 (CAPPED DURATION CONNECTOR): bare "for so/as long as" ----
 
@@ -163,6 +180,49 @@ class ResidualPerpetualFalsePositiveTests(unittest.TestCase):
             "Confidentiality survives for five (5) years. With respect to trade "
             "secrets, the Confidential Information and all ordinary confidential "
             "materials shall be held in perpetuity."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertTrue(_is_indefinite_flag(clause))
+
+    # ---- BYPASS regression round 2: ordinary CI named AFTER the trigger (the
+    # post-trigger / synonym / word-order attacks that defeated the whole-sentence
+    # scan and drove removal of the carve-out-led demotion). All must FAIL.
+
+    def test_post_trigger_ci_after_perpetuity_still_fails(self) -> None:
+        clause = _term_clause(
+            "Confidentiality survives for five (5) years. With respect to trade "
+            "secrets, the obligations shall survive in perpetuity for all Confidential "
+            "Information."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertTrue(_is_indefinite_flag(clause))
+
+    def test_post_trigger_as_to_ci_after_perpetually_still_fails(self) -> None:
+        clause = _term_clause(
+            "Confidentiality survives for five (5) years. With respect to trade "
+            "secrets, the obligations shall survive perpetually as to the Confidential "
+            "Information."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertTrue(_is_indefinite_flag(clause))
+
+    def test_indefinitely_then_trailing_ci_still_fails(self) -> None:
+        clause = _term_clause(
+            "The duty continues indefinitely with respect to all Confidential "
+            "Information disclosed."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertTrue(_is_indefinite_flag(clause))
+
+    def test_law_led_including_ci_and_data_still_fails(self) -> None:
+        clause = _term_clause(
+            "Confidentiality survives for five (5) years. As to applicable law, the "
+            "obligations shall survive perpetually, including the Confidential "
+            "Information and all data."
         )
         self.assertEqual(clause["status"], "check")
         self.assertFalse(clause["passes"])

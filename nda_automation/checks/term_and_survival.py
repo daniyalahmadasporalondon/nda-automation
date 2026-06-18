@@ -82,17 +82,6 @@ DEFAULT_INDEFINITE_NON_SURVIVAL_OBJECTS = (
     "warranty",
     "warranties",
 )
-# Ordinary-CI DATA/MATERIAL noun phrases -- the information itself, not a carve-out
-# term and not a survival-obligation collocation. Used by the carve-out-led demotion
-# to detect when ordinary Confidential Information (rather than the carved-out object)
-# is the thing actually held in perpetuity, so a leading "with respect to trade
-# secrets, the Confidential Information shall be held in perpetuity" rider is NOT
-# laundered by the scoping signal and keeps its flag.
-ORDINARY_CI_DATA_SUBJECT_PATTERN = (
-    r"\b(?:the\s+|all\s+|any\s+|such\s+|each\s+|ordinary\s+)*"
-    r"(?:confidential\s+information|confidential\s+materials?|"
-    r"proprietary\s+information|information|materials?|data)\b"
-)
 GENERIC_NON_SURVIVAL_DURATION_TERMS = {
     "after termination",
     "continue",
@@ -530,6 +519,19 @@ def _is_benign_indefinite_match(
       benign. The genuine uncapped rider ("...and for so long as it retains
       commercial value") has no numeric period in its sentence and still fires.
 
+    DELIBERATELY OMITTED -- a "carve-out-led sentence" demotion (sparing a legitimate
+    trade-secret-ONLY perpetual rider, e.g. "with respect to trade secrets, the
+    obligations of confidentiality shall survive perpetually") is NOT implemented
+    here. Every attempt leaked: a leading scoping signal can be paired with an
+    ordinary-CI subject held in perpetuity anywhere in the sentence (before OR after
+    the trigger, via synonyms / word-order), turning a benign mild false-positive
+    into a SERIOUS false-negative -- a real abusive ordinary-CI perpetual rider
+    passing clean. Per the asymmetry (a spared FP is cheap; a leaked FN is not), such
+    a rider is intentionally left to flag for review rather than risk laundering an
+    ordinary-CI perpetuity. The separate, sentence-local carve-out scoping in
+    ``_is_allowed_carve_out_fragment`` still passes the well-formed carve-out cases it
+    already covered; only the broad "signal-leads-the-sentence" shortcut is gone.
+
     Fail-safe: any unexpected input is swallowed and treated as NOT benign (keep the
     flag) so a malformed clause never silently passes review.
     """
@@ -550,36 +552,6 @@ def _is_benign_indefinite_match(
                 after = fragment[relative_end:]
                 if re.match(rf"(?:\W+\w+){{0,2}}\W+(?:{object_alt})\b", after):
                     return True
-
-            # CARVE-OUT-LED SENTENCE: a sentence that OPENS with an explicit scoping
-            # signal naming a longer-survival carve-out term ("With respect to trade
-            # secrets, ... shall survive perpetually") demotes the perpetual trigger
-            # ONLY when the perpetuity genuinely ATTACHES TO THE CARVE-OUT -- not when
-            # ordinary Confidential Information is the operative or conjoined subject
-            # held in perpetuity. A leading scoping signal alone is NOT enough: a rider
-            # like "With respect to trade secrets, the Confidential Information shall be
-            # held in perpetuity" (or "...the Confidential Information and all ordinary
-            # confidential materials shall be held in perpetuity") makes ORDINARY CI
-            # perpetual and must keep its flag, even though the sentence opens with the
-            # signal. So we demote only when NO ordinary-CI data/material noun sits
-            # between the carve-out term and the trigger as the governed subject.
-            for carve_out_pattern in _carve_out_context_patterns(clause):
-                signal = re.match(
-                    r"\s*(?:with\s+respect\s+to|as\s+to|in\s+respect\s+of|"
-                    r"in\s+the\s+case\s+of|as\s+regards|regarding|concerning)\s+"
-                    rf"(?:the\s+)?(?:applicable\s+)?{carve_out_pattern}\b",
-                    fragment,
-                )
-                if not signal:
-                    continue
-                # The window from the carve-out term to the perpetual trigger holds the
-                # governed subject. If ordinary CI (the information/materials itself)
-                # appears there, ordinary CI -- not the carve-out -- is what is held in
-                # perpetuity, so KEEP the flag.
-                governed_subject = fragment[signal.end():relative_start]
-                if re.search(ORDINARY_CI_DATA_SUBJECT_PATTERN, governed_subject):
-                    break
-                return True
 
         # --- CAPPED-DURATION demotion: "for so/as long as" ---
         if re.fullmatch(r"for\s+(?:so|as)\s+long\s+as", token):
