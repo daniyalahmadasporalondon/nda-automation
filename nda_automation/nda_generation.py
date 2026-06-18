@@ -512,12 +512,14 @@ def entity_party_from_bundle(
 
     address, chosen_address_id = select_bundle_address(bundle, address_id)
     signatory = bundle.get("signatory") or {}
-    # The entity's registered forum is correct for its default law. When the law is
-    # overridden to a different option, derive the forum that goes WITH the chosen
-    # option (each approved option's proper forum is registered against the entity
-    # that defaults to it, e.g. england_and_wales -> "Courts of England and Wales"),
-    # so we never pair one jurisdiction's law with another's courts. If that lookup
-    # is unavailable, fall back to the law value rather than the wrong forum.
+    # ENTITY-FORUM: the entity's registry forum (its ``jurisdiction`` field) is the
+    # SOURCE OF TRUTH for the court written into the clause, and is correct for its
+    # default law (e.g. aspora_technology -> "courts in Bengaluru, Karnataka"). When
+    # the law is overridden to a different option, derive the forum that goes WITH
+    # the chosen option from whichever registry entity defaults to it (e.g.
+    # england_and_wales -> "courts in England and Wales"), so we never pair one
+    # jurisdiction's law with another's courts. If that lookup is unavailable, fall
+    # back to the law value rather than the wrong forum.
     if not overridden:
         forum = str(bundle.get("jurisdiction") or "").strip() or governing_law_value
     else:
@@ -545,16 +547,18 @@ def _forum_for_option_id(option_id: str, playbook: Mapping[str, Any]) -> str:
 
     Resolution order:
 
-    1. The registry: each entity registers a ``jurisdiction`` that goes WITH its
-       default governing-law option (e.g. england_and_wales -> "Courts of England
-       and Wales"), so an overridden option's forum is taken from whichever
-       registry entity defaults to that option.
-    2. The Playbook itself: each ``governing_law`` approved option carries the
-       proper ``court_name`` for its law (the single source of truth, read via
-       :func:`governing_law_forum.court_name_for_law`). Used when NO registry entity
-       defaults to the option -- the gap that previously made this return "" and let
-       the caller write the bare law name as the forum. The court string lives in
-       ``playbook.json`` now, not a hardcoded duplicate in this module.
+    1. The registry (the SOURCE OF TRUTH): each entity registers a ``jurisdiction``
+       that goes WITH its default governing-law option (e.g. england_and_wales ->
+       "courts in England and Wales", india -> "courts in Bengaluru, Karnataka" for
+       aspora_technology), so an overridden option's forum is taken from whichever
+       registry entity defaults to that option. The CITY-level court is entity-
+       specific -- two India entities sit in different cities (Bengaluru vs
+       Gandhinagar) -- which is exactly why a per-jurisdiction value cannot express it.
+    2. The Playbook itself, via :func:`governing_law_forum.court_name_for_law`: a
+       defensive last resort. The per-option ``court_name`` was REMOVED from the
+       Playbook (it cannot express the per-entity city), so this now resolves "" for
+       every live option -- the gate turns that into a hard refusal. Every approved
+       option has a defaulting registry entity, so path 1 always resolves first.
 
     Returns "" only for an option id we have no court for at all, which the caller
     (:func:`_require_court_forum`) turns into a hard refusal rather than writing a
@@ -1163,10 +1167,19 @@ def _fill_variable_slots(
         raise NdaGenerationError("Template is missing the Aspora (SECOND party) paragraph.")
 
     # Single-occurrence slots, filled across body paragraphs.
+    #
+    # [FORUM] is the entity-specific court/venue (the SOURCE OF TRUTH is the
+    # signing entity's registry ``jurisdiction`` field, surfaced here as
+    # ``entity.forum``). It is rendered into the "Governing law and jurisdiction"
+    # clause alongside [GOVERNING LAW], e.g. "...laws of India, and courts in
+    # Bengaluru, Karnataka shall have exclusive jurisdiction...". The forum was
+    # already gate-validated as a real court in entity_party_from_bundle
+    # (_require_court_forum), so it is never the bare law name.
     global_fills = {
         "[•] day of [•], [YEAR]": f"{day} day of {month}, {year}",
         "[BUSINESS DESCRIPTION]": intake.business_description,
         "[GOVERNING LAW]": entity.governing_law_value,
+        "[FORUM]": entity.forum,
     }
     for paragraph in document.paragraphs:
         text = paragraph.text
@@ -1196,6 +1209,7 @@ def _fill_variable_slots(
             "[REGISTERED OFFICE ADDRESS] (second party)": entity.registered_office,
             "[BUSINESS DESCRIPTION]": intake.business_description,
             "[GOVERNING LAW]": entity.governing_law_value,
+            "[FORUM]": entity.forum,
             # Empty -> the signature block renders a blank fill-line for signing.
             "[AUTHORISED SIGNATORY]": entity.signatory_name or "(blank fill-line)",
             "[DESIGNATION]": entity.signatory_title or "(blank fill-line)",
@@ -1908,6 +1922,7 @@ _TEMPLATE_SLOTS = frozenset(
         "[REGISTERED OFFICE ADDRESS]",
         "[BUSINESS DESCRIPTION]",
         "[GOVERNING LAW]",
+        "[FORUM]",
         "[AUTHORISED SIGNATORY]",
         "[DESIGNATION]",
         "[YEAR]",

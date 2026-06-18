@@ -1,11 +1,9 @@
-"""The canonical GOVERNING-LAW -> COURT/FORUM pairing, sourced from the Playbook.
+"""The canonical GOVERNING-LAW -> FORUM-JURISDICTION pairing, sourced from the Playbook.
 
-This module is the single source of truth for "which court goes with which
-approved governing law". Both the generation side (which writes the
-forum/submission clause into a drafted NDA) and the review side (which detects a
-mismatched law/forum pairing in a counterparty's document) read the pairing FROM
-the Playbook's ``governing_law`` approved options here, so neither carries a
-hardcoded duplicate that can silently diverge from ``playbook.json``.
+This module reads the jurisdiction-level law/forum pairing FROM the Playbook's
+``governing_law`` approved options, so the review side (which detects a
+mismatched law/forum pairing in a counterparty's document) carries no hardcoded
+duplicate that can silently diverge from ``playbook.json``.
 
 The Playbook's ``governing_law.rules.approved_options`` carry, per option:
 
@@ -13,15 +11,25 @@ The Playbook's ``governing_law.rules.approved_options`` carry, per option:
       "id": "england_and_wales",
       "label": "England and Wales",
       "value": "England and Wales",
-      "court_name": "the courts of England and Wales",
       "forum_jurisdiction": "England and Wales",
       ...
     }
 
-``court_name`` is the proper COURT/VENUE string to write into the submission
-clause (a court, not a bare jurisdiction). ``forum_jurisdiction`` is the
-jurisdiction whose courts have authority (the descriptor the review-side detector
-pairs against the law). Both are read straight off the matching approved option.
+``forum_jurisdiction`` is the JURISDICTION whose courts have authority (the
+jurisdiction-level descriptor the review-side detector pairs against the law). It
+is read straight off the matching approved option.
+
+NOTE on ``court_name``: the per-option ``court_name`` was REMOVED from the
+Playbook. A per-jurisdiction court value cannot express the city-level forum
+correctly -- two India signing entities require DIFFERENT cities (Aspora
+Technology -> Bengaluru, Karnataka; Aspora Financial Services -> Gandhinagar,
+Gujarat), and a single ``india`` ``court_name`` can only carry one. So the
+CITY-LEVEL COURT/VENUE written into a generated NDA now comes ONLY from the
+signing entity (the ``entity_registry`` ``jurisdiction`` field), never from this
+jurisdiction-level pairing. ``court_name_for_law`` / ``canonical_forum_for_law``
+still expose ``court_name`` defensively -- it resolves to ``""`` now that the
+field is absent -- so any remaining caller stays well-defined, but the live
+Playbook supplies no court string here.
 
 Public API (a parallel review-side build depends on this -- the signature is
 stable):
