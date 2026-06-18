@@ -171,6 +171,18 @@ AI_ASSESSMENT_INSTRUCTIONS = [
         "genuine prohibition and freedom-preserving language can co-exist in one paragraph; assess each on its own terms."
     ),
     (
+        "For term and survival, a survival period defined by a CONDITION rather than a fixed length of time is "
+        "effectively perpetual and must fail or review (never pass) when it governs ordinary confidentiality. Treat "
+        "value-conditioned wording ('until it ceases to have commercial value', 'for as long as it retains value', "
+        "'while it is still useful') and relationship-conditioned wording ('until the disclosing party releases it in "
+        "writing', 'so long as it remains confidential', 'so long as it remains secret') as indefinite survival, not a "
+        "fixed term. A separate clean fixed period (e.g. five years) does NOT cure a condition-based rider that still "
+        "keeps ordinary confidential information protected indefinitely -- assess the longest-surviving obligation. The "
+        "only exception is when the condition is expressly scoped to trade secrets, legal or regulatory obligations, "
+        "personal data, or data-protection duties; the same condition applied to ordinary confidentiality fails or, "
+        "when the scope is unclear, reviews."
+    ),
+    (
         "When the language is ambiguous, borderline, internally conflicting, or you cannot tell with confidence whether "
         "it passes or fails, return review. Never guess a pass or fail to avoid a review; escalation is the correct "
         "answer when the text does not clearly decide it."

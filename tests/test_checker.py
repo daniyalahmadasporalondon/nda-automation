@@ -341,6 +341,118 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(term_clause["status"], "match")
         self.assertIn("within the cap of five years", term_clause["finding"])
 
+    def _term_clause(self, result):
+        return next(
+            clause for clause in result["clauses"] if clause["id"] == "term_and_survival"
+        )
+
+    def test_term_and_survival_flags_value_conditioned_perpetual_rider(self):
+        # A value-conditioned survival rider keeps ordinary confidentiality alive
+        # indefinitely even though a clean <=5yr period sits alongside it. This must
+        # NOT silently pass.
+        result = review_nda(
+            """
+            Mutual Non-Disclosure Agreement
+
+            Article 1 Confidentiality
+
+            The Receiving Party shall protect Confidential Information and not disclose it.
+
+            Article 2 Term and Survival
+
+            The confidentiality obligations survive for a period of three (3) years
+            after termination, and the Receiving Party shall treat the Confidential
+            Information as confidential until it ceases to have commercial value.
+
+            Article 3 Governing Law
+            This Agreement shall be governed by the laws of England and Wales.
+            """
+        )
+
+        term_clause = self._term_clause(result)
+        self.assertIn(term_clause["decision"], {"fail", "review"})
+        self.assertFalse(term_clause["passes"])
+        self.assertIn("indefinite", term_clause["finding"].lower())
+
+    def test_term_and_survival_flags_relationship_conditioned_perpetual_rider(self):
+        # A relationship-conditioned rider ("until the disclosing Party releases it
+        # in writing") is effectively perpetual and must not silently pass.
+        result = review_nda(
+            """
+            Mutual Non-Disclosure Agreement
+
+            Article 1 Confidentiality
+
+            The Receiving Party shall protect Confidential Information and not disclose it.
+
+            Article 2 Term and Survival
+
+            The confidentiality obligations survive for a period of three (3) years
+            after termination, and shall remain in force until the disclosing Party
+            releases it in writing.
+
+            Article 3 Governing Law
+            This Agreement shall be governed by the laws of England and Wales.
+            """
+        )
+
+        term_clause = self._term_clause(result)
+        self.assertIn(term_clause["decision"], {"fail", "review"})
+        self.assertFalse(term_clause["passes"])
+        self.assertIn("indefinite", term_clause["finding"].lower())
+
+    def test_term_and_survival_passes_clean_fixed_three_year_survival(self):
+        # No condition-based rider: a clean fixed <=5yr survival must still pass and
+        # must not be falsely flagged by the new perpetual-rider vocabulary.
+        result = review_nda(
+            """
+            Mutual Non-Disclosure Agreement
+
+            Article 1 Confidentiality
+
+            The Receiving Party shall protect Confidential Information and not disclose it.
+
+            Article 2 Term and Survival
+
+            The confidentiality obligations survive for a period of three (3) years
+            after termination.
+
+            Article 3 Governing Law
+            This Agreement shall be governed by the laws of England and Wales.
+            """
+        )
+
+        term_clause = self._term_clause(result)
+        self.assertEqual(term_clause["decision"], "pass")
+        self.assertTrue(term_clause["passes"])
+        self.assertIn("within the cap of five years", term_clause["finding"])
+
+    def test_term_and_survival_allows_trade_secret_scoped_value_survival(self):
+        # A condition-based longer survival expressly scoped to TRADE SECRETS is a
+        # legitimate carve-out: it must still pass (no false positive).
+        result = review_nda(
+            """
+            Mutual Non-Disclosure Agreement
+
+            Article 1 Confidentiality
+
+            The Receiving Party shall protect Confidential Information and not disclose it.
+
+            Article 2 Term and Survival
+
+            The confidentiality obligations survive for a period of three (3) years
+            after termination, except that trade secrets remain protected for as long
+            as they retain commercial value.
+
+            Article 3 Governing Law
+            This Agreement shall be governed by the laws of England and Wales.
+            """
+        )
+
+        term_clause = self._term_clause(result)
+        self.assertEqual(term_clause["decision"], "pass")
+        self.assertTrue(term_clause["passes"])
+
     def test_term_and_survival_uses_resolved_references_to_confidentiality_articles(self):
         result = review_nda(
             """

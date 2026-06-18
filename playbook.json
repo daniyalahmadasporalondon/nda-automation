@@ -485,10 +485,14 @@
         "after termination",
         "ordinary confidentiality obligations or the agreement term are subject to the five-year cap",
         "audit, tax, payment, warranty, indemnity, insurance, employment, and records-retention periods are duration decoys unless they set the confidentiality term",
-        "long or indefinite survival can pass only when scoped to trade secrets, legal obligations, regulatory duties, personal data, or data-protection obligations"
+        "long or indefinite survival can pass only when scoped to trade secrets, legal obligations, regulatory duties, personal data, or data-protection obligations",
+        "a survival period defined by a condition rather than a fixed length of time is effectively perpetual",
+        "value-conditioned survival (until the information ceases to have commercial value, retains value, or is no longer useful) makes ordinary confidentiality perpetual and must fail or review",
+        "relationship-conditioned survival (until the disclosing party releases it in writing, so long as it remains confidential, or so long as it remains secret) makes ordinary confidentiality perpetual and must fail or review",
+        "a clean fixed survival period such as five years does not cure a separate clause that also keeps ordinary confidential information protected on a value-based or relationship-based condition"
       ],
       "rationale": "Ordinary confidentiality should be time-limited; indefinite language is only acceptable for narrow trade-secret or legal exceptions.",
-      "evidence_guidance": "Prefer paragraphs containing duration language plus a year count or indefinite survival wording. Count only durations tied to the agreement term or ordinary confidentiality obligations; ignore audit, tax, payment, warranty, indemnity, insurance, employment, books-and-records, and records-retention periods unless they expressly set confidentiality survival. Long or indefinite survival is acceptable only when scoped to trade secrets, legal obligations, regulatory duties, personal data, or data-protection obligations; the same long period for ordinary confidentiality fails.",
+      "evidence_guidance": "Prefer paragraphs containing duration language plus a year count or indefinite survival wording. Count only durations tied to the agreement term or ordinary confidentiality obligations; ignore audit, tax, payment, warranty, indemnity, insurance, employment, books-and-records, and records-retention periods unless they expressly set confidentiality survival. A survival period defined by a CONDITION instead of a fixed length of time is effectively perpetual: value-based phrasing (until the information ceases to have commercial value, retains value, or is no longer useful) and relationship-based phrasing (until the disclosing party releases it in writing, so long as it remains confidential or secret) keep ordinary confidentiality alive indefinitely and must fail or, when scope is unclear, review. A separate clean fixed period such as five years does NOT cure a condition-based survival rider that still governs ordinary confidential information. Long, indefinite, or condition-based survival is acceptable only when expressly scoped to trade secrets, legal obligations, regulatory duties, personal data, or data-protection obligations; the same condition or long period applied to ordinary confidentiality fails.",
       "rules": {
         "version": 1,
         "clause_type": "required",
@@ -547,7 +551,21 @@
         "perpetual confidentiality",
         "for so long as",
         "for as long as",
-        "for so long as the information remains confidential"
+        "for so long as the information remains confidential",
+        "as long as it remains confidential",
+        "as long as it remains secret",
+        "so long as it remains confidential",
+        "so long as it remains secret",
+        "until it ceases to have commercial value",
+        "ceases to have commercial value",
+        "ceases to have value",
+        "retains commercial value",
+        "retains value",
+        "commercial value",
+        "until released in writing",
+        "until the disclosing party releases",
+        "until released by the disclosing party",
+        "no longer useful"
       ],
       "longer_survival_carve_out_terms": [
         "trade secret",

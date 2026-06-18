@@ -121,6 +121,22 @@ class AIAssessmentPromptTests(unittest.TestCase):
         # The reasoning method is referenced from the instruction list too.
         self.assertIn("locate, read carefully, apply, cite, decide", instructions)
 
+    def test_instructions_teach_condition_based_survival_is_perpetual(self):
+        packet = build_ai_assessment_packet(SOURCE_TEXT, playbook=load_playbook())
+        instructions = " ".join(packet["instructions"])
+
+        # A survival period gated on a CONDITION rather than a fixed length is perpetual.
+        self.assertIn("survival period defined by a CONDITION", instructions)
+        self.assertIn("effectively perpetual", instructions)
+        # Value- and relationship-conditioned wording are named explicitly.
+        self.assertIn("ceases to have commercial value", instructions)
+        self.assertIn("until the disclosing party releases it in", instructions)
+        self.assertIn("so long as it remains confidential", instructions)
+        # A clean fixed period does not cure a separate condition-based rider.
+        self.assertIn("does NOT cure a condition-based rider", instructions)
+        # The legitimate trade-secret / legal carve-out is preserved, not blanket-failed.
+        self.assertIn("trade secrets", instructions)
+
     def test_system_prompt_teaches_polarity_and_escalation(self):
         packet = build_ai_assessment_packet(SOURCE_TEXT, playbook=load_playbook())
         prompt = build_ai_assessment_prompt(packet)
