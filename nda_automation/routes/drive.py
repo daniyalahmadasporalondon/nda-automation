@@ -37,6 +37,9 @@ DRIVE_CONNECT_URL = "/auth/drive/start"
 # Drive has its OWN OAuth callback path. It must not reuse the Gmail redirect
 # (NDA_GMAIL_OAUTH_REDIRECT_URI), which points at /auth/gmail/callback.
 DRIVE_OAUTH_REDIRECT_URI_ENV = "NDA_DRIVE_OAUTH_REDIRECT_URI"
+# Upper bound on a user-supplied new-folder name (Drive itself tolerates long
+# names; this keeps the admin "New folder" input sane and bounds the request).
+MAX_DRIVE_FOLDER_NAME_LENGTH = 255
 
 
 def _repository(handler) -> MatterRepository:
@@ -345,6 +348,77 @@ def handle_drive_folders(handler, *, send_body: bool = True) -> None:
         {"parent": parent, "folders": folders_sorted},
         send_body=send_body,
     )
+
+
+def handle_drive_create_folder(handler) -> None:
+    """Create a new folder under ``parent`` in the connected Drive (admin-only).
+
+    The write counterpart of :func:`handle_drive_folders`: powers the "New folder"
+    action in the admin "Browse Drive" picker so the admin can build a destination
+    folder without leaving the app. Admin-gated exactly like the list endpoint and
+    the other drive-settings routes, and only ever writes into the CONNECTED
+    account's own Drive (the Drive client is built from that account's OAuth token,
+    so there is no cross-account surface).
+
+    Request: ``{"parent": <id>, "name": <str>}`` — ``parent`` defaults to ``"root"``
+    (My Drive root); ``name`` is required, trimmed, length-bounded, and must contain
+    no control characters. Response: ``200 {"id","name"}``. Errors mirror the list
+    endpoint: bad name -> 400, Drive not connected / token expired -> 409,
+    rate-limit -> 429, any other Drive failure -> 502.
+    """
+    if not require_admin(handler):
+        return
+
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+
+    raw_name = payload.get("name")
+    if not isinstance(raw_name, str):
+        handler._send_json({"error": "A folder name is required."}, status=400)
+        return
+    name = raw_name.strip()
+    if not name:
+        handler._send_json({"error": "A folder name is required."}, status=400)
+        return
+    if len(name) > MAX_DRIVE_FOLDER_NAME_LENGTH:
+        handler._send_json(
+            {"error": f"Folder name must be {MAX_DRIVE_FOLDER_NAME_LENGTH} characters or fewer."},
+            status=400,
+        )
+        return
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+        handler._send_json({"error": "Folder name must not contain control characters."}, status=400)
+        return
+
+    raw_parent = payload.get("parent", "root")
+    if not isinstance(raw_parent, str):
+        handler._send_json({"error": "Drive parent folder id must be a string."}, status=400)
+        return
+    parent = raw_parent.strip() or "root"
+
+    drive_token_owner_user_id = _google_owner_user_id(handler)
+    if not drive_integration.drive_connected(drive_token_owner_user_id):
+        handler._send_json(_needs_connect_payload(), status=409)
+        return
+
+    try:
+        folder = drive_integration.create_folder(
+            name=name,
+            parent_id=parent,
+            owner_user_id=drive_token_owner_user_id,
+        )
+    except drive_integration.DriveNotConnectedError:
+        handler._send_json(_needs_connect_payload(), status=409)
+        return
+    except drive_integration.DriveRateLimitError as error:
+        handler._send_json({"error": str(error)}, status=429)
+        return
+    except drive_integration.DriveIntegrationError as error:
+        handler._send_json({"error": str(error)}, status=502)
+        return
+
+    handler._send_json({"id": folder["id"], "name": folder["name"]})
 
 
 def handle_drive_settings_update(handler) -> None:

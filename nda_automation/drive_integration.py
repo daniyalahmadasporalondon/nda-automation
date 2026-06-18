@@ -422,6 +422,47 @@ def list_child_folders(*, parent_id: str, owner_user_id: str = "", service: Any 
     return folders
 
 
+def create_folder(
+    *,
+    name: str,
+    parent_id: str = "root",
+    owner_user_id: str = "",
+    service: Any | None = None,
+) -> dict[str, str]:
+    """Create a new Drive folder ``name`` under ``parent_id`` (admin folder-picker).
+
+    Unconditionally creates a folder (unlike :func:`find_or_create_folder`, which
+    is find-first/idempotent) so the admin "New folder" action always produces a
+    fresh folder even when one of that name already exists. Reuses the SAME
+    connected-account ``_drive_service`` machinery :func:`list_child_folders` uses,
+    so it is cross-account-safe: the Drive client is built from the connected
+    account's own OAuth token and can only ever write into that account's Drive.
+
+    ``parent_id`` defaults to ``"root"`` (My Drive root). Returns ``{"id","name"}``
+    from the created folder. The Drive error taxonomy (not-connected / rate-limit /
+    generic) is raised exactly like the other write primitives so the route maps it
+    consistently with the list endpoint.
+    """
+    folder_name = str(name or "").strip()
+    if not folder_name:
+        raise DriveIntegrationError("A Drive folder name is required.")
+    parent = str(parent_id or "").strip() or "root"
+    drive_service = service or _drive_service(owner_user_id)
+
+    body: dict[str, Any] = {
+        "name": folder_name,
+        "mimeType": FOLDER_MIME,
+        "parents": [parent],
+    }
+    try:
+        created = drive_service.files().create(body=body, fields="id,name").execute()
+    except Exception as exc:
+        _raise_drive_api_error(exc, "Drive folder creation failed.")
+    if not isinstance(created, dict) or not created.get("id"):
+        raise DriveIntegrationError("Drive folder creation returned no id.")
+    return {"id": str(created["id"]), "name": str(created.get("name") or folder_name)}
+
+
 def find_child_file(*, name: str, parent_id: str, owner_user_id: str = "", service: Any | None = None) -> str:
     """Return the id of a non-trashed, non-folder file named ``name`` under ``parent_id``."""
     file_name = str(name or "").strip()

@@ -271,6 +271,10 @@ _POST_EXACT_ROUTES = {
     "/api/docusign/connect": docusign_routes.handle_docusign_connect,
     "/api/docusign/disconnect": docusign_routes.handle_docusign_disconnect,
     "/api/admin/drive-settings": drive_routes.handle_drive_settings_update,
+    # POST /api/admin/drive-folders creates a new folder under ``parent`` (the
+    # write counterpart of the GET browse route above). Admin-gated inside the
+    # handler, like the other drive-admin routes.
+    "/api/admin/drive-folders": drive_routes.handle_drive_create_folder,
     "/api/admin/personalisation-settings": admin_routes.handle_personalisation_settings_update,
     "/api/ai/api-key": admin_routes.handle_ai_api_key_update,
     "/api/ai/settings": admin_routes.handle_ai_settings_update,

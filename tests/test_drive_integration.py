@@ -774,6 +774,66 @@ class DriveV2IntegrationTests(unittest.TestCase):
             )
 
 
+# --- create_folder fake (records the files().create body) ------------------
+class _FakeCreateFolderService:
+    """A Drive service whose ``files().create`` records its args and returns an id.
+
+    Models only the single call ``create_folder`` makes:
+    ``files().create(body=..., fields="id,name").execute()``. Records the last body
+    so a test can assert the folder mimeType + parents, and can be primed to raise
+    (rate-limit / generic) to exercise the error taxonomy.
+    """
+
+    def __init__(self, *, created=None, error=None):
+        self._created = created if created is not None else {"id": "f_new", "name": "Reports"}
+        self._error = error
+        self.last_body = None
+        self.last_fields = ""
+
+    def files(self):
+        return self
+
+    def create(self, *, body, fields):
+        self.last_body = body
+        self.last_fields = fields
+        if self._error is not None:
+            raise self._error
+        return _FakeExecutable(self._created)
+
+
+class CreateFolderIntegrationTests(unittest.TestCase):
+    def test_create_folder_under_root_records_correct_drive_call(self):
+        fake = _FakeCreateFolderService(created={"id": "f_new", "name": "Reports"})
+        result = drive_integration.create_folder(name="Reports", service=fake)
+        self.assertEqual(result, {"id": "f_new", "name": "Reports"})
+        # The Drive create body carries the folder mimeType and parents=[root].
+        self.assertEqual(fake.last_body["name"], "Reports")
+        self.assertEqual(fake.last_body["mimeType"], drive_integration.FOLDER_MIME)
+        self.assertEqual(fake.last_body["parents"], ["root"])
+        self.assertEqual(fake.last_fields, "id,name")
+
+    def test_create_folder_under_explicit_parent(self):
+        fake = _FakeCreateFolderService(created={"id": "f_child", "name": "Acme"})
+        result = drive_integration.create_folder(name="Acme", parent_id="f_clients", service=fake)
+        self.assertEqual(result["id"], "f_child")
+        self.assertEqual(fake.last_body["parents"], ["f_clients"])
+
+    def test_create_folder_trims_name_and_defaults_blank_parent_to_root(self):
+        fake = _FakeCreateFolderService(created={"id": "f_x", "name": "Trimmed"})
+        drive_integration.create_folder(name="  Trimmed  ", parent_id="  ", service=fake)
+        self.assertEqual(fake.last_body["name"], "Trimmed")
+        self.assertEqual(fake.last_body["parents"], ["root"])
+
+    def test_create_folder_rejects_empty_name(self):
+        with self.assertRaises(drive_integration.DriveIntegrationError):
+            drive_integration.create_folder(name="   ", service=_FakeCreateFolderService())
+
+    def test_create_folder_maps_rate_limit(self):
+        fake = _FakeCreateFolderService(error=_make_rate_limit_error())
+        with self.assertRaises(drive_integration.DriveRateLimitError):
+            drive_integration.create_folder(name="Reports", service=fake)
+
+
 # --- app_settings drive settings tests -------------------------------------
 class DriveSettingsTests(unittest.TestCase):
     @contextmanager
@@ -1443,6 +1503,85 @@ class DriveRouteTests(unittest.TestCase):
                 with patch.dict(os.environ, auth_env):
                     status, payload, _headers = self.request(
                         "GET", "/api/admin/drive-folders", headers=session_headers
+                    )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"], server_module.ADMIN_REQUIRED_MESSAGE)
+
+    # --- POST /api/admin/drive-folders (create-folder) ----------------------
+    def test_create_folder_under_root_returns_200_and_calls_drive(self):
+        fake = _FakeCreateFolderService(created={"id": "f_new", "name": "Reports"})
+        with patch.object(drive_integration, "drive_connected", return_value=True):
+            with patch.object(drive_integration, "_drive_service", return_value=fake):
+                status, payload, _headers = self.request(
+                    "POST", "/api/admin/drive-folders", {"name": "Reports"}
+                )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, {"id": "f_new", "name": "Reports"})
+        # The Drive create body carried the folder mimeType + default root parent.
+        self.assertEqual(fake.last_body["mimeType"], drive_integration.FOLDER_MIME)
+        self.assertEqual(fake.last_body["parents"], ["root"])
+
+    def test_create_folder_under_a_parent(self):
+        fake = _FakeCreateFolderService(created={"id": "f_child", "name": "Acme"})
+        with patch.object(drive_integration, "drive_connected", return_value=True):
+            with patch.object(drive_integration, "_drive_service", return_value=fake):
+                status, payload, _headers = self.request(
+                    "POST", "/api/admin/drive-folders", {"parent": "f_clients", "name": "Acme"}
+                )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, {"id": "f_child", "name": "Acme"})
+        self.assertEqual(fake.last_body["parents"], ["f_clients"])
+
+    def test_create_folder_empty_name_returns_400(self):
+        # A blank/whitespace name is rejected with a 400 before any Drive call.
+        fake = _FakeCreateFolderService()
+        with patch.object(drive_integration, "drive_connected", return_value=True):
+            with patch.object(drive_integration, "_drive_service", return_value=fake):
+                status, payload, _headers = self.request(
+                    "POST", "/api/admin/drive-folders", {"name": "   "}
+                )
+        self.assertEqual(status, 400)
+        self.assertIn("name", payload["error"].lower())
+        # No Drive call was attempted.
+        self.assertIsNone(fake.last_body)
+
+    def test_create_folder_not_connected_returns_409(self):
+        with patch.object(drive_integration, "drive_connected", return_value=False):
+            status, payload, _headers = self.request(
+                "POST", "/api/admin/drive-folders", {"name": "Reports"}
+            )
+        self.assertEqual(status, 409)
+        self.assertTrue(payload["needs_connect"])
+        self.assertEqual(payload["connect_url"], "/auth/drive/start")
+
+    def test_create_folder_denies_non_admin_google_user(self):
+        # Admin-gated exactly like the GET browse route: a per-user Google account
+        # not in NDA_ADMIN_USERS is refused with 403 before any Drive call.
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "google-client",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
+            "NDA_ADMIN_USERS": "",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                user = user_store.upsert_google_user({
+                    "sub": "create-folder-user",
+                    "email": "creator@example.com",
+                    "name": "Creator User",
+                    "picture": "",
+                })
+                token = user_store.create_session(user["id"])
+                session_headers = {"Cookie": f"{user_store.SESSION_COOKIE_NAME}={token}"}
+                with patch.dict(os.environ, auth_env):
+                    status, payload, _headers = self.request(
+                        "POST",
+                        "/api/admin/drive-folders",
+                        {"name": "Reports"},
+                        headers=session_headers,
                     )
         self.assertEqual(status, 403)
         self.assertEqual(payload["error"], server_module.ADMIN_REQUIRED_MESSAGE)
