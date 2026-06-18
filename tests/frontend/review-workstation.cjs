@@ -5194,7 +5194,9 @@ async function testUserGmailSessionControls(page) {
       }),
     });
   });
+  let deploymentStatusRequestCount = 0;
   await page.route("**/api/deployment/status", async (route) => {
+    deploymentStatusRequestCount += 1;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -5207,6 +5209,15 @@ async function testUserGmailSessionControls(page) {
           ],
         },
       }),
+    });
+  });
+  // Admin health panel reads /api/telemetry; mock it so opening the health
+  // section does not hit the live server in this UI-only test.
+  await page.route("**/api/telemetry", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ telemetry: { counters: {} }, health: { status: "ok", alerts: [] } }),
     });
   });
   await page.route(gmailStatusRoute, async (route) => {
@@ -5250,7 +5261,17 @@ async function testUserGmailSessionControls(page) {
 
   await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
   await waitForText(page, "[data-session-user]", "Hi, Alice!");
-  await assertTextContains(page.locator("#sessionStrip"), "Set NDA_ALLOWED_HOSTS to the deployed Render hostname.");
+  // Deployment status is admin-only and loaded on demand from the admin health
+  // section -- NOT on app boot. A non-admin authenticated user must never trigger
+  // the admin-only /api/deployment/status fetch on normal load (it would 403), so
+  // the session-strip deployment warning is absent until the admin health section
+  // is opened.
+  assert.equal(deploymentStatusRequestCount, 0, "deployment status must not be fetched on boot");
+  assert.equal(
+    (await page.locator("#sessionStrip").textContent()).includes("Set NDA_ALLOWED_HOSTS to the deployed Render hostname."),
+    false,
+    "deployment warning must not render before the admin health section is opened",
+  );
   await page.locator("[data-session-account-toggle]").click();
   await page.locator("[data-session-account-menu]").waitFor({ state: "visible" });
   await page.locator("[data-session-gmail-sync]").waitFor({ state: "visible" });
@@ -5277,6 +5298,15 @@ async function testUserGmailSessionControls(page) {
   assert.equal(await page.locator("#adminGmailSetupPanel [data-gmail-disconnect-role]").count(), 0);
   await assertTextContains(page.locator("#adminGmailSyncHistory"), "4 imported / 0 skipped / 0 duplicates / 1 stale duplicates removed / 0 review failures");
 
+  // Opening the admin health section loads deployment status on demand. This is
+  // the ONLY path that fetches the admin-only endpoint, and it (re)renders the
+  // session-strip deployment warning.
+  const deploymentRequestPromise = page.waitForRequest((request) => request.url().endsWith("/api/deployment/status"));
+  await page.locator('[data-admin-section="health"]').click();
+  await deploymentRequestPromise;
+  assert.equal(deploymentStatusRequestCount, 1, "deployment status fetched once, on admin health open");
+  await waitForText(page, "#sessionStrip", "Set NDA_ALLOWED_HOSTS to the deployed Render hostname.");
+
   const disconnectRequestPromise = page.waitForRequest((request) => request.url().endsWith("/api/gmail/disconnect"));
   await page.locator("[data-session-account-toggle]").click();
   await page.locator("[data-session-gmail-disconnect]").click();
@@ -5288,6 +5318,7 @@ async function testUserGmailSessionControls(page) {
 
   await page.unroute("**/api/auth/status");
   await page.unroute("**/api/deployment/status");
+  await page.unroute("**/api/telemetry");
   await page.unroute(gmailStatusRoute);
   await page.unroute("**/api/matters");
   await page.unroute("**/api/gmail/import");

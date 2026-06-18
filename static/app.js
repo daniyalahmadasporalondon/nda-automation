@@ -1949,6 +1949,10 @@ function activateAdminSection(sectionName) {
   }
   if (sectionName === "health") {
     adminHealthController.load();
+    // Deployment status is admin-only; load it on demand here (not on app boot)
+    // so a non-admin authenticated user never triggers the admin-only 403 on
+    // normal load. This also (re)renders the session-strip deployment warning.
+    authSessionController.refreshDeploymentStatus();
   }
   if (sectionName === "drive") {
     adminDriveController.load();

@@ -72,7 +72,18 @@ const AuthSessionView = (() => {
     async function load() {
       if (!root) return;
       render();
-      await Promise.all([loadAuthStatus(), loadGmailStatus(), loadDeploymentStatus()]);
+      // Deployment status is an admin-only endpoint (it surfaces operational/infra
+      // detail -- auth/OAuth config, disk + memory headroom, which integrations are
+      // configured, boot counts). It is loaded on demand from the admin health
+      // section (see refreshDeploymentStatus), NOT here, so a non-admin authenticated
+      // user never hits the admin-only 403 on normal app load.
+      await Promise.all([loadAuthStatus(), loadGmailStatus()]);
+      render();
+    }
+
+    async function refreshDeploymentStatus() {
+      if (!root) return;
+      await loadDeploymentStatus();
       render();
     }
 
@@ -363,7 +374,7 @@ const AuthSessionView = (() => {
       root?.classList.toggle("has-warning", Boolean(message));
     }
 
-    return { load };
+    return { load, refreshDeploymentStatus };
   }
 
   function legacyGmailLabel(gmailStatus) {
