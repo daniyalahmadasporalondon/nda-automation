@@ -735,6 +735,16 @@ def _expected_accepted_source_paragraphs(
     expected = list(source_paragraphs)
     errors: List[str] = []
     expected_insertions_by_source_index: Dict[int, List[str]] = {}
+    # Each source paragraph may be destructively rewritten (replace/delete) by AT MOST
+    # one redline. Category A coalesces every same-paragraph span of a clause into a
+    # single replace_paragraph before export, so a SECOND destructive edit on the same
+    # paragraph means coalescing did not happen: silently keeping only one (the prior
+    # behavior overwrote expected[index] in place) would build the gate's expected
+    # sequence from the surviving edit alone and could PASS an export that dropped the
+    # other -- defeating the fail-closed guarantee. We fail closed instead. Distinct
+    # blocks of one physical paragraph carry distinct paragraph_index values (the unique
+    # block key), so legitimate per-block edits never collide here.
+    destructive_index_owner: Dict[int, str] = {}
     if not isinstance(expected_redline_edits, list):
         return expected, []
 
@@ -748,6 +758,17 @@ def _expected_accepted_source_paragraphs(
         if source_index < 1 or source_index > len(source_paragraphs):
             errors.append(f"Redline {_redline_label(redline)} targets missing source paragraph {source_index}.")
             continue
+
+        if action in (REDLINE_REPLACE_PARAGRAPH, REDLINE_DELETE_PARAGRAPH):
+            previous_owner = destructive_index_owner.get(source_index)
+            if previous_owner is not None:
+                errors.append(
+                    f"Redlines {previous_owner} and {_redline_label(redline)} both rewrite source "
+                    f"paragraph {source_index}; the clause's edits were not coalesced, so the export "
+                    "may have silently dropped one of them."
+                )
+                continue
+            destructive_index_owner[source_index] = _redline_label(redline)
 
         if action == REDLINE_REPLACE_PARAGRAPH:
             expected[source_index - 1] = _normalize_export_text(redline.get("replacement_text"))

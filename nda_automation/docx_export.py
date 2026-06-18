@@ -784,6 +784,49 @@ def _redline_anchor_texts(redline: RedlineEdit, review_paragraphs_by_id: Dict[st
     return redline_edit_contract.redline_anchor_texts(redline, review_paragraphs_by_id)
 
 
+def _residual_same_paragraph_collision(primary_edits: List[RedlineEdit]) -> RedlineEdit | None:
+    """Detect a residual same-``<w:p>`` collision the upstream coalescer should have
+    folded into a single edit.
+
+    Category A lets one clause emit MULTIPLE span-level edits; the engine COALESCES
+    every span that targets one paragraph of one clause into ONE ``replace_paragraph``
+    before export (so the composed cuts land on a single rebuilt ``<w:p>``). If two
+    NON-INSERTION primary edits CARRYING THE SAME ``clause_id`` still arrive on one
+    physical paragraph here, coalescing did not happen: rebuilding the ``<w:p>`` from
+    each edit's text independently would have the SECOND edit silently clobber the
+    first (only one of the clause's spans would survive -- silent redline loss on an
+    outbound legal document). We fail safe (the caller raises) rather than corrupt.
+
+    The legitimate multi-edit case -- two edits from DIFFERENT clauses presenting
+    ALTERNATIVE whole-paragraph replacements (e.g. a governing-law and a term redline
+    both rewriting one combined sentence) -- is NOT a collision: each lands on its own
+    tracked paragraph by design (the alternatives are shown side by side), so it is
+    keyed out by the distinct ``clause_id``. Edits with no ``clause_id`` (manual viewer
+    edits, legacy redlines) are never treated as a same-clause collision; their
+    historical multi-alternative behavior is preserved."""
+    seen_clause_ids: set[str] = set()
+    for edit in primary_edits:
+        clause_id = str(edit.get("clause_id") or "").strip()
+        if not clause_id:
+            continue
+        if clause_id in seen_clause_ids:
+            return edit
+        seen_clause_ids.add(clause_id)
+    return None
+
+
+def _same_paragraph_collision_error(redline: RedlineEdit) -> str:
+    clause = str(redline.get("clause_id") or redline.get("clause_name") or "").strip()
+    paragraph = str(redline.get("paragraph_id") or redline.get("source_index") or "").strip()
+    suffix = f" (clause {clause})" if clause else ""
+    located = f" on paragraph {paragraph}" if paragraph else ""
+    return (
+        "The uploaded Word document received two uncoalesced redlines for the same clause "
+        f"on one paragraph{located}{suffix}; applying both would silently drop one edit. "
+        "Re-run the review so the clause's edits are coalesced before exporting."
+    )
+
+
 def _apply_redline_edits_to_source_document(
     document_root: ET.Element,
     redlines: object,
@@ -853,6 +896,18 @@ def _apply_redline_edits_to_source_document(
                 source_paragraph.parent.insert(paragraph_position + offset, block_paragraph)
             insert_position = paragraph_position + len(block_paragraphs)
         else:
+            # Belt-and-suspenders against the one real multi-edit hazard (spec C.2):
+            # two NON-INSERTION edits of the SAME clause resolving to this one physical
+            # <w:p>. The engine coalesces a clause's same-paragraph spans into a single
+            # replace upstream; if an uncoalesced pair still arrives, the loop below
+            # would rebuild the <w:p> from each edit independently and the second would
+            # silently clobber the first (dropping one of the clause's edits). Fail
+            # safe -- never corrupt -- before any mutation. Distinct-clause alternative
+            # replaces (no shared clause_id) are NOT a collision and keep landing as
+            # separate tracked paragraphs.
+            collision = _residual_same_paragraph_collision(primary_edits)
+            if collision is not None:
+                raise DocxExportError(_same_paragraph_collision_error(collision))
             primary_applied = False
             for primary_edit in primary_edits:
                 primary_paragraph, revision_id = _source_tracked_primary_redline_paragraph(

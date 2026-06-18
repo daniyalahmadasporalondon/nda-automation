@@ -4198,6 +4198,375 @@ class DocxExportTests(unittest.TestCase):
             ranked = [order_index[name] for name in local_names if name in order_index]
             self.assertEqual(ranked, sorted(ranked), f"rPr out of schema order: {local_names}")
 
+    # ------------------------------------------------------------------ #
+    # Category A: multi-edit-per-clause export + span-level strikes + the
+    # same-<w:p> collision fail-safe (U3) and coverage-gate reconciliation (U4).
+    # ------------------------------------------------------------------ #
+
+    def test_category_a_multi_edit_per_clause_applies_every_edit(self):
+        # A single Category-A clause emits MULTIPLE edits, one per defective span,
+        # each targeting a DISTINCT paragraph. All must land as tracked changes --
+        # the multi-edit application loop already supports this; this pins it.
+        para_one = "The Receiving Party shall not solicit any employee of the Disclosing Party."
+        para_two = "The Receiving Party shall pay a penalty of $50,000 for each breach."
+        # Span-derived replacements (each strikes a prohibited span and rewrites it):
+        replace_one = "The Receiving Party shall protect the confidential information of the Disclosing Party."
+        replace_two = "The Receiving Party shall be liable for actual damages for each breach."
+        source_docx = make_source_docx([para_one, para_two])
+        review_result = {
+            "overall_status": "does_not_meet_requirements",
+            "checked_at": "2026-06-01T00:00:00+00:00",
+            "paragraphs": [
+                {"id": "p1", "index": 1, "source_index": 1, "text": para_one},
+                {"id": "p2", "index": 2, "source_index": 2, "text": para_two},
+            ],
+            "clauses": [],
+            "redline_edits": [
+                {
+                    "id": "r1",
+                    "clause_id": "non_circumvention",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p1",
+                    "paragraph_index": 1,
+                    "source_index": 1,
+                    "original_text": para_one,
+                    "replacement_text": replace_one,
+                },
+                {
+                    "id": "r2",
+                    "clause_id": "non_circumvention",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p2",
+                    "paragraph_index": 2,
+                    "source_index": 2,
+                    "original_text": para_two,
+                    "replacement_text": replace_two,
+                },
+            ],
+        }
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        paragraphs = document_root.findall(".//w:body/w:p", W_NS)
+        states = [
+            (
+                revision_text_for_state(paragraph, accepted=False),
+                revision_text_for_state(paragraph, accepted=True),
+            )
+            for paragraph in paragraphs
+        ]
+        self.assertIn((para_one, replace_one), states)
+        self.assertIn((para_two, replace_two), states)
+        assert_track_changes_contract(self, redlined_docx, review_result["redline_edits"])
+
+    def test_category_a_span_replace_renders_word_level_strike_not_whole_paragraph(self):
+        # A span-derived replace_paragraph (replacement = paragraph minus a prohibited
+        # span, no internal newline) MUST diff to a surgical sub-span strike, NOT a
+        # whole-paragraph del/ins. This is the cheap span mechanism: the export reuses
+        # the audited word-diff path, so only the struck words carry w:del markup.
+        original = (
+            "The Receiving Party shall keep the information confidential and shall not "
+            "solicit any employee of the Disclosing Party for two years."
+        )
+        # Strike only the prohibited non-solicit span; the rest survives verbatim.
+        replacement = (
+            "The Receiving Party shall keep the information confidential for two years."
+        )
+        source_docx = make_source_docx([original])
+        review_result = {
+            "overall_status": "does_not_meet_requirements",
+            "checked_at": "2026-06-01T00:00:00+00:00",
+            "paragraphs": [{"id": "p1", "index": 1, "source_index": 1, "text": original}],
+            "clauses": [],
+            "redline_edits": [
+                {
+                    "id": "r1",
+                    "clause_id": "non_circumvention",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p1",
+                    "paragraph_index": 1,
+                    "source_index": 1,
+                    "original_text": original,
+                    "replacement_text": replacement,
+                }
+            ],
+        }
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        target = document_root.findall(".//w:body/w:p", W_NS)[0]
+        # The deleted markup carries ONLY the struck span's words, not the whole
+        # paragraph -- proving a surgical strike, not a whole-paragraph del.
+        deleted_text = revision_text_for_state(
+            next(child for child in target if child.tag.endswith("}del")), accepted=False
+        ) if any(child.tag.endswith("}del") for child in target) else "".join(
+            revision_text_for_state(d, accepted=False)
+            for d in target.findall("w:del", W_NS)
+        )
+        self.assertIn("solicit", deleted_text)
+        self.assertNotIn("keep", deleted_text)
+        self.assertNotIn("confidential", deleted_text)
+        # Some original words survive OUTSIDE any revision run (untracked context),
+        # which a whole-paragraph del/ins would not leave.
+        plain_runs = [
+            r for r in target.findall("w:r", W_NS)
+            if not any(
+                parent.tag.endswith("}del") or parent.tag.endswith("}ins")
+                for parent in [target]
+            )
+        ]
+        self.assertTrue(plain_runs, "span replace should leave untracked context runs")
+        # Accepted view == the replacement; rejected view == the original.
+        self.assertEqual(revision_text_for_state(target, accepted=True), replacement)
+        self.assertEqual(revision_text_for_state(target, accepted=False), original)
+
+    def test_category_a_same_paragraph_collision_fails_safe(self):
+        # Two NON-INSERTION edits of the SAME clause resolving to ONE physical <w:p>
+        # is a residual uncoalesced collision (the engine should have folded the
+        # clause's same-paragraph spans into one replace). Applying both would have
+        # the second clobber the first -- silent redline loss. The export must fail
+        # SAFE (raise) rather than corrupt.
+        original = "The Receiving Party shall not solicit employees and shall not compete."
+        source_docx = make_source_docx([original])
+        review_result = {
+            "overall_status": "does_not_meet_requirements",
+            "checked_at": "2026-06-01T00:00:00+00:00",
+            "paragraphs": [{"id": "p1", "index": 1, "source_index": 1, "text": original}],
+            "clauses": [],
+            "redline_edits": [
+                {
+                    "id": "r1",
+                    "clause_id": "non_circumvention",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p1",
+                    "paragraph_index": 1,
+                    "source_index": 1,
+                    "original_text": original,
+                    "replacement_text": "The Receiving Party shall not compete.",
+                },
+                {
+                    "id": "r2",
+                    "clause_id": "non_circumvention",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p1",
+                    "paragraph_index": 1,
+                    "source_index": 1,
+                    "original_text": original,
+                    "replacement_text": "The Receiving Party shall not solicit employees.",
+                },
+            ],
+        }
+        with self.assertRaises(DocxExportError) as caught:
+            build_source_redline_docx(source_docx, review_result)
+        self.assertIn("coalesced", str(caught.exception).lower())
+
+    def test_category_a_distinct_clause_alternatives_on_same_paragraph_still_land(self):
+        # Regression guard: two edits from DIFFERENT clauses presenting ALTERNATIVE
+        # whole-paragraph replacements of one combined sentence is NOT a collision --
+        # each lands on its own tracked paragraph (the historical behavior). The
+        # same-clause collision guard must NOT trip on distinct clause_ids.
+        original = "This Agreement is governed by California. Confidentiality survives for seven years."
+        governing_law_replacement = "This Agreement is governed by the laws of England and Wales."
+        term_replacement = "Confidentiality survives for a fixed period of up to five years."
+        source_docx = make_source_docx([original])
+        review_result = {
+            "overall_status": "does_not_meet_requirements",
+            "checked_at": "2026-06-01T00:00:00+00:00",
+            "paragraphs": [{"id": "p1", "index": 1, "source_index": 1, "text": original}],
+            "clauses": [],
+            "redline_edits": [
+                {
+                    "id": "r1",
+                    "clause_id": "governing_law",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p1",
+                    "source_index": 1,
+                    "original_text": original,
+                    "replacement_text": governing_law_replacement,
+                },
+                {
+                    "id": "r2",
+                    "clause_id": "term_and_survival",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p1",
+                    "source_index": 1,
+                    "original_text": original,
+                    "replacement_text": term_replacement,
+                },
+            ],
+        }
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        states = [
+            (
+                revision_text_for_state(paragraph, accepted=False),
+                revision_text_for_state(paragraph, accepted=True),
+            )
+            for paragraph in document_root.findall(".//w:body/w:p", W_NS)
+        ]
+        self.assertIn((original, governing_law_replacement), states)
+        self.assertIn((original, term_replacement), states)
+
+    def test_category_a_coverage_gate_reconciles_multiple_strikes(self):
+        # The content-coverage gate reconciles MULTIPLE span-derived strike replaces,
+        # one per distinct paragraph, in a single export.
+        para_one = "The Receiving Party shall not solicit any employee for two years."
+        para_two = "The Receiving Party shall not engage in any competing business."
+        replace_one = "The Receiving Party shall not for two years."
+        replace_two = "The Receiving Party shall."
+        source_text = f"{para_one}\n\n{para_two}"
+        source_docx = make_source_docx([para_one, para_two])
+        review_result = {
+            "overall_status": "does_not_meet_requirements",
+            "checked_at": "2026-06-01T00:00:00+00:00",
+            "extracted_text": source_text,
+            "paragraphs": [
+                {"id": "p1", "index": 1, "source_index": 1, "text": para_one},
+                {"id": "p2", "index": 2, "source_index": 2, "text": para_two},
+            ],
+            "clauses": [],
+            "redline_edits": [
+                {
+                    "id": "r1",
+                    "clause_id": "non_circumvention",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p1",
+                    "paragraph_index": 1,
+                    "source_index": 1,
+                    "original_text": para_one,
+                    "replacement_text": replace_one,
+                },
+                {
+                    "id": "r2",
+                    "clause_id": "non_circumvention",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_id": "p2",
+                    "paragraph_index": 2,
+                    "source_index": 2,
+                    "original_text": para_two,
+                    "replacement_text": replace_two,
+                },
+            ],
+        }
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+        self.assertEqual(
+            verify_export_content_coverage(
+                redlined_docx,
+                source_text,
+                expected_redline_edits=review_result["redline_edits"],
+            ),
+            [],
+        )
+
+    def test_category_a_coverage_gate_catches_dropped_redline(self):
+        # Fail-closed preserved: if an expected redline never lands in the export
+        # bytes, the coverage gate must report it (never silently pass a drop).
+        para_one = "The Receiving Party shall not solicit any employee for two years."
+        para_two = "The Receiving Party shall not engage in any competing business."
+        replace_one = "The Receiving Party shall not for two years."
+        replace_two = "The Receiving Party shall."
+        source_text = f"{para_one}\n\n{para_two}"
+        # Build an export where ONLY r1 landed (r2 was dropped): the second paragraph
+        # is the untouched original.
+        source_docx = make_source_docx([para_one, para_two])
+        landed_only_r1 = build_source_redline_docx(
+            source_docx,
+            {
+                "overall_status": "does_not_meet_requirements",
+                "checked_at": "2026-06-01T00:00:00+00:00",
+                "extracted_text": source_text,
+                "paragraphs": [
+                    {"id": "p1", "index": 1, "source_index": 1, "text": para_one},
+                    {"id": "p2", "index": 2, "source_index": 2, "text": para_two},
+                ],
+                "clauses": [],
+                "redline_edits": [
+                    {
+                        "id": "r1",
+                        "clause_id": "non_circumvention",
+                        "action": REDLINE_REPLACE_PARAGRAPH,
+                        "paragraph_id": "p1",
+                        "paragraph_index": 1,
+                        "source_index": 1,
+                        "original_text": para_one,
+                        "replacement_text": replace_one,
+                    }
+                ],
+            },
+        )
+        # The gate is told BOTH r1 and r2 were expected; r2 never landed.
+        expected_both = [
+            {
+                "id": "r1",
+                "clause_id": "non_circumvention",
+                "action": REDLINE_REPLACE_PARAGRAPH,
+                "paragraph_id": "p1",
+                "paragraph_index": 1,
+                "source_index": 1,
+                "original_text": para_one,
+                "replacement_text": replace_one,
+            },
+            {
+                "id": "r2",
+                "clause_id": "non_circumvention",
+                "action": REDLINE_REPLACE_PARAGRAPH,
+                "paragraph_id": "p2",
+                "paragraph_index": 2,
+                "source_index": 2,
+                "original_text": para_two,
+                "replacement_text": replace_two,
+            },
+        ]
+        errors = verify_export_content_coverage(
+            landed_only_r1,
+            source_text,
+            expected_redline_edits=expected_both,
+        )
+        self.assertTrue(errors, "coverage gate must flag the dropped r2 redline")
+
+    def test_category_a_coverage_gate_fails_closed_on_same_paragraph_collision(self):
+        # U4 fail-closed: two destructive (replace/delete) edits keyed to the SAME
+        # expected source paragraph means the clause's edits were NOT coalesced.
+        # The prior behavior silently overwrote the expectation with the second edit,
+        # which could pass an export that dropped the first. The gate must now report
+        # the collision rather than reconcile against one survivor.
+        original = "The Receiving Party shall not solicit employees and shall not compete."
+        errors = docx_health._expected_accepted_source_paragraphs(
+            [docx_health._normalize_export_text(original)],
+            [
+                {
+                    "id": "r1",
+                    "clause_id": "non_circumvention",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_index": 1,
+                    "source_index": 1,
+                    "original_text": original,
+                    "replacement_text": "The Receiving Party shall not compete.",
+                },
+                {
+                    "id": "r2",
+                    "clause_id": "non_circumvention",
+                    "action": REDLINE_REPLACE_PARAGRAPH,
+                    "paragraph_index": 1,
+                    "source_index": 1,
+                    "original_text": original,
+                    "replacement_text": "The Receiving Party shall not solicit employees.",
+                },
+            ],
+        )[1]
+        self.assertTrue(errors, "two destructive edits on one paragraph must fail closed")
+        self.assertIn("coalesced", " ".join(errors).lower())
+
+    def test_category_a_pdf_coverage_no_redline_case_unchanged(self):
+        # PDF-source coverage path is unchanged for the no-redline case: an empty /
+        # no-op expected list is trivially covered (no false positive).
+        from nda_automation.docx_health import verify_pdf_reconstruction_redline_coverage
+
+        empty_docx = make_source_docx(["Some reconstructed body paragraph."])
+        self.assertEqual(verify_pdf_reconstruction_redline_coverage(empty_docx, []), [])
+        self.assertEqual(verify_pdf_reconstruction_redline_coverage(empty_docx, None), [])
+
 
 if __name__ == "__main__":
     unittest.main()
