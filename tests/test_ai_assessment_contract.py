@@ -735,6 +735,34 @@ class ApplySpanTests(unittest.TestCase):
     def test_empty_anchor_returns_none(self):
         self.assertIsNone(apply_span("any text", "", "x"))
 
+    def test_duplicate_anchor_degrades_and_leaves_paragraph_unchanged(self):
+        # A1-01: the anchor appears twice. apply_span must refuse to guess which
+        # occurrence to cut (degrade to None); the paragraph stays byte-identical.
+        text = "The Receiving Party shall not disclose. The Receiving Party shall not retain."
+        self.assertIsNone(apply_span(text, "The Receiving Party shall not", "x"))
+        # Strike form degrades identically (no arbitrary first-occurrence cut).
+        self.assertIsNone(apply_span(text, "The Receiving Party shall not ", ""))
+
+    def test_substring_inside_word_degrades_but_standalone_word_lowers(self):
+        # A1-08: "compete" must NOT cut inside "competent" — degrade to None and
+        # leave "competent" untouched.
+        text = "The parties remain competent to perform their obligations."
+        self.assertIsNone(apply_span(text, "compete", "cooperate"))
+        # But "compete" as a STANDALONE word still lowers correctly.
+        standalone = "The Receiving Party shall not compete with the Disclosing Party."
+        result = apply_span(standalone, "compete", "cooperate")
+        self.assertEqual(
+            result,
+            "The Receiving Party shall not cooperate with the Disclosing Party.",
+        )
+
+    def test_unique_boundary_aligned_anchor_still_lowers(self):
+        # Regression: a legitimately unique, boundary-aligned anchor must still
+        # lower to the correct replacement (no over-degrade from the new guards).
+        text = "The term is five years from the Effective Date."
+        result = apply_span(text, "five years", "three years")
+        self.assertEqual(result, "The term is three years from the Effective Date.")
+
 
 if __name__ == "__main__":
     unittest.main()

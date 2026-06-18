@@ -751,7 +751,10 @@ def _locate_span_offsets(original: str, anchor: str) -> tuple[int, int] | None:
     Matches on glyph-folded text so curly quotes / dashes / nbsp in either string
     line up, but collapses NO whitespace (to keep a 1:1 character mapping between
     the folded and original strings, since folding is a per-character translation).
-    Returns ``None`` when the folded anchor is empty or not a substring.
+    Returns ``None`` when the folded anchor is empty or not a substring, when it
+    matches NON-UNIQUELY (more than one occurrence — refuse to guess), or when the
+    match is not WORD-BOUNDARY aligned (so "compete" cannot cut inside
+    "competent"). Each of these degrades the span edit to a no-op upstream.
     """
     folded_original = _fold_typographic_glyphs(original)
     folded_anchor = _fold_typographic_glyphs(anchor).strip()
@@ -762,10 +765,35 @@ def _locate_span_offsets(original: str, anchor: str) -> tuple[int, int] | None:
     # a normalized-equality check that refuses to guess an offset.
     if "…" in original or "…" in anchor:
         return None
+    # Every other fold is a 1:1 per-character translation, so offsets in
+    # ``folded_original`` map directly onto ``original`` — the uniqueness and
+    # word-boundary guards below run on the folded text but the returned offsets
+    # index the original text without shift.
     index = folded_original.find(folded_anchor)
     if index < 0:
         return None
-    return index, index + len(folded_anchor)
+    end = index + len(folded_anchor)
+    # Uniqueness guard (A1-01): a non-unique anchor would let ``find`` cut an
+    # arbitrary first occurrence. If the folded anchor appears more than once,
+    # refuse to guess which one the model meant and degrade to review/no-op.
+    if folded_original.find(folded_anchor, index + 1) >= 0:
+        return None
+    # Word-boundary guard (A1-08): require the match to sit on token boundaries so
+    # an anchor like "compete" cannot cut the interior of "competent". The
+    # character immediately before/after the match must be a non-word character
+    # (or the string start/end). Only enforced when the anchor itself begins/ends
+    # on a word character — a punctuation-edged anchor has no boundary to honour.
+    if folded_anchor[:1].isalnum() or folded_anchor[:1] == "_":
+        if index > 0:
+            prev_char = folded_original[index - 1]
+            if prev_char.isalnum() or prev_char == "_":
+                return None
+    if folded_anchor[-1:].isalnum() or folded_anchor[-1:] == "_":
+        if end < len(folded_original):
+            next_char = folded_original[end]
+            if next_char.isalnum() or next_char == "_":
+                return None
+    return index, end
 
 
 def _validated_proposed_edits(
