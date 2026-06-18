@@ -277,6 +277,52 @@ def handle_drive_upload_matter(handler) -> None:
     )
 
 
+def handle_drive_folders(handler, *, send_body: bool = True) -> None:
+    """List the connected Drive account's folders under ``parent`` (admin-only).
+
+    Powers the "Browse Drive" folder picker in the admin Drive settings panel:
+    the user drills through their OWN Drive folder tree and selects a root folder
+    instead of pasting an id. Admin-gated exactly like the other drive-settings
+    routes, and only ever lists the CONNECTED account's own Drive — the Drive
+    client is built from that account's OAuth token, so there is no cross-account
+    surface. ``parent`` defaults to ``"root"`` (My Drive root).
+
+    Response: ``{"parent": <id>, "folders": [{"id","name"}, ...]}``. Drive not
+    connected / token expired surfaces as 409 with a connect prompt.
+    """
+    if not require_admin(handler, send_body=send_body):
+        return
+
+    query = parse_qs(urlparse(handler.path).query)
+    parent = (query.get("parent", ["root"])[0] or "root").strip() or "root"
+
+    drive_token_owner_user_id = _google_owner_user_id(handler)
+    if not drive_integration.drive_connected(drive_token_owner_user_id):
+        handler._send_json(_needs_connect_payload(), status=409, send_body=send_body)
+        return
+
+    try:
+        folders = drive_integration.list_child_folders(
+            parent_id=parent,
+            owner_user_id=drive_token_owner_user_id,
+        )
+    except drive_integration.DriveNotConnectedError:
+        handler._send_json(_needs_connect_payload(), status=409, send_body=send_body)
+        return
+    except drive_integration.DriveRateLimitError as error:
+        handler._send_json({"error": str(error)}, status=429, send_body=send_body)
+        return
+    except drive_integration.DriveIntegrationError as error:
+        handler._send_json({"error": str(error)}, status=502, send_body=send_body)
+        return
+
+    folders_sorted = sorted(folders, key=lambda rec: str(rec.get("name") or "").lower())
+    handler._send_json(
+        {"parent": parent, "folders": folders_sorted},
+        send_body=send_body,
+    )
+
+
 def handle_drive_settings_update(handler) -> None:
     if not require_admin(handler):
         return

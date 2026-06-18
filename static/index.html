@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260617fmt2">
+    <link rel="stylesheet" href="/static/styles.css?v=20260618picker1">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260617rb2">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260617dup1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
@@ -1782,14 +1782,39 @@
                     <p class="integration-subsection-help" data-admin-drive="folder-help">Each matter syncs into its own subfolder under this root, organised as {counterparty}/{matter}. Leave blank to create an "NDAs" folder in My Drive.</p>
                     <form class="integration-search-form" id="adminDriveFolderForm">
                       <label for="adminDriveFolderIdInput">Root folder ID</label>
-                      <input id="adminDriveFolderIdInput" type="text" autocomplete="off" spellcheck="false" placeholder="Google Drive folder ID">
+                      <div class="integration-input-row">
+                        <input id="adminDriveFolderIdInput" type="text" autocomplete="off" spellcheck="false" placeholder="Google Drive folder ID">
+                        <button class="secondary" id="adminDriveBrowseButton" type="button">Browse Drive</button>
+                      </div>
                       <label for="adminDriveFolderNameInput">Root folder name (optional)</label>
                       <input id="adminDriveFolderNameInput" type="text" autocomplete="off" spellcheck="false" placeholder="Display name for the root folder">
                       <div class="integration-search-actions">
-                        <p data-admin-drive="folder-message">Per-matter subfolders are created inside this root folder when set.</p>
+                        <p data-admin-drive="folder-message">Per-matter subfolders are created inside this root folder when set. Or click "Browse Drive" to pick a folder.</p>
                         <button class="secondary" id="adminDriveFolderSaveButton" type="submit">Save folder</button>
                       </div>
                     </form>
+
+                    <!-- Drive folder picker modal (hidden until "Browse Drive"). -->
+                    <div class="drive-picker-backdrop" id="adminDriverPickerBackdrop" hidden>
+                      <div class="drive-picker-modal" role="dialog" aria-modal="true" aria-labelledby="adminDrivePickerTitle">
+                        <div class="drive-picker-header">
+                          <h4 id="adminDrivePickerTitle">Browse Google Drive</h4>
+                          <button class="drive-picker-close" id="adminDrivePickerClose" type="button" aria-label="Close folder browser">&times;</button>
+                        </div>
+                        <nav class="drive-picker-breadcrumb" id="adminDrivePickerBreadcrumb" aria-label="Folder path"></nav>
+                        <div class="drive-picker-body">
+                          <p class="drive-picker-status" id="adminDrivePickerStatus" hidden></p>
+                          <ul class="drive-picker-list" id="adminDrivePickerList"></ul>
+                        </div>
+                        <div class="drive-picker-footer">
+                          <span class="drive-picker-selection" id="adminDrivePickerSelection"></span>
+                          <div class="drive-picker-actions">
+                            <button class="secondary" id="adminDrivePickerCancel" type="button">Cancel</button>
+                            <button class="secondary" id="adminDrivePickerSelect" type="button" disabled>Use this folder</button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                   </section>
 
                   <dl class="integration-facts" id="adminDriveFacts">
@@ -2217,7 +2242,7 @@
     <script src="/static/js/admin-ai.js?v=20260618aiavail1"></script>
     <script src="/static/js/admin-health.js?v=20260617a401"></script>
     <script src="/static/js/admin-integrations.js?v=20260616gsc1"></script>
-    <script src="/static/js/admin-drive.js?v=20260617a401"></script>
+    <script src="/static/js/admin-drive.js?v=20260618picker1"></script>
     <script src="/static/js/admin-personalisation.js?v=20260611a"></script>
     <script src="/static/js/admin-docusign.js?v=20260617a401"></script>
     <script src="/static/js/docusign-send.js?v=20260617dsfix1"></script>

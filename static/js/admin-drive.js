@@ -11,11 +11,37 @@ const AdminDriveView = (() => {
     driveFolderIdInput,
     driveFolderNameInput,
     driveFolderSaveButton,
+    // Folder-picker controls ("Browse Drive"). All optional: if the modal markup
+    // is absent the picker is simply inert and the paste-an-ID flow is unchanged.
+    driveBrowseButton,
+    drivePickerBackdrop,
+    drivePickerClose,
+    drivePickerCancel,
+    drivePickerSelect,
+    drivePickerList,
+    drivePickerBreadcrumb,
+    drivePickerStatus,
+    drivePickerSelection,
     reviewErrorFromPayload,
   }) {
     driveRefreshButton?.addEventListener("click", load);
     driveEnabledToggle?.addEventListener("click", updateDriveEnabled);
     driveFolderForm?.addEventListener("submit", saveFolderSettings);
+
+    // --- Drive folder picker state + wiring --------------------------------
+    // Breadcrumb trail of folders we've drilled into, root-first. Each entry is
+    // {id, name}. "My Drive" (id "root") is always the first crumb.
+    let pickerTrail = [{ id: "root", name: "My Drive" }];
+    let pickerSelected = null; // {id, name} of the highlighted folder, or null.
+
+    driveBrowseButton?.addEventListener("click", openPicker);
+    drivePickerClose?.addEventListener("click", closePicker);
+    drivePickerCancel?.addEventListener("click", closePicker);
+    drivePickerSelect?.addEventListener("click", confirmPickerSelection);
+    drivePickerBackdrop?.addEventListener("click", (event) => {
+      // Click on the dimmed backdrop (not the dialog itself) closes the picker.
+      if (event.target === drivePickerBackdrop) closePicker();
+    });
 
     async function load() {
       if (!driveCard) return;
@@ -85,6 +111,160 @@ const AdminDriveView = (() => {
       } finally {
         setFolderControlsDisabled(false);
       }
+    }
+
+    // --- Folder picker ------------------------------------------------------
+    function openPicker() {
+      if (!drivePickerBackdrop) return;
+      // Always start the browse at My Drive root. (We don't try to resolve the
+      // pasted id back to a path — root is the predictable, single source.)
+      pickerTrail = [{ id: "root", name: "My Drive" }];
+      pickerSelected = null;
+      drivePickerBackdrop.hidden = false;
+      renderBreadcrumb();
+      renderSelection();
+      loadFolders("root");
+    }
+
+    function closePicker() {
+      if (drivePickerBackdrop) drivePickerBackdrop.hidden = true;
+    }
+
+    function currentParentId() {
+      return pickerTrail.length ? pickerTrail[pickerTrail.length - 1].id : "root";
+    }
+
+    async function loadFolders(parentId) {
+      setPickerStatus("Loading folders...");
+      if (drivePickerList) drivePickerList.innerHTML = "";
+      pickerSelected = null;
+      renderSelection();
+      try {
+        const response = await fetch(`/api/admin/drive-folders?parent=${encodeURIComponent(parentId)}`);
+        const payload = await window.AuthExpired.parseOkJson(response, "Drive folders could not load", reviewErrorFromPayload);
+        renderFolders(Array.isArray(payload.folders) ? payload.folders : []);
+      } catch (error) {
+        setPickerStatus(error.message || "Drive folders could not load");
+      }
+    }
+
+    function renderFolders(folders) {
+      if (!drivePickerList) return;
+      drivePickerList.innerHTML = "";
+      if (!folders.length) {
+        setPickerStatus("No subfolders here. \"Use this folder\" selects the current folder.");
+        return;
+      }
+      setPickerStatus("");
+      for (const folder of folders) {
+        const id = String(folder.id || "");
+        const name = String(folder.name || "");
+        if (!id) continue;
+        const li = document.createElement("li");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "drive-picker-folder";
+        const nameSpan = document.createElement("span");
+        nameSpan.className = "drive-picker-folder-name";
+        nameSpan.textContent = name || id;
+        const openSpan = document.createElement("span");
+        openSpan.className = "drive-picker-open";
+        openSpan.textContent = "Open >";
+        button.appendChild(nameSpan);
+        button.appendChild(openSpan);
+        // Single click = select (highlight); the "Open >" affordance drills in.
+        button.addEventListener("click", (event) => {
+          if (event.target === openSpan) {
+            drillInto({ id, name });
+          } else {
+            selectFolder({ id, name }, button);
+          }
+        });
+        openSpan.addEventListener("click", (event) => {
+          event.stopPropagation();
+          drillInto({ id, name });
+        });
+        li.appendChild(button);
+        drivePickerList.appendChild(li);
+      }
+    }
+
+    function selectFolder(folder, button) {
+      pickerSelected = folder;
+      if (drivePickerList) {
+        for (const node of drivePickerList.querySelectorAll(".drive-picker-folder")) {
+          node.classList.toggle("selected", node === button);
+        }
+      }
+      renderSelection();
+    }
+
+    function drillInto(folder) {
+      pickerTrail.push({ id: folder.id, name: folder.name || folder.id });
+      renderBreadcrumb();
+      loadFolders(folder.id);
+    }
+
+    function jumpToCrumb(index) {
+      if (index < 0 || index >= pickerTrail.length) return;
+      pickerTrail = pickerTrail.slice(0, index + 1);
+      renderBreadcrumb();
+      loadFolders(currentParentId());
+    }
+
+    function renderBreadcrumb() {
+      if (!drivePickerBreadcrumb) return;
+      drivePickerBreadcrumb.innerHTML = "";
+      pickerTrail.forEach((crumb, index) => {
+        if (index > 0) {
+          const sep = document.createElement("span");
+          sep.className = "drive-picker-crumb-sep";
+          sep.textContent = "/";
+          drivePickerBreadcrumb.appendChild(sep);
+        }
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = crumb.name || crumb.id;
+        const isLast = index === pickerTrail.length - 1;
+        if (isLast) button.disabled = true;
+        else button.addEventListener("click", () => jumpToCrumb(index));
+        drivePickerBreadcrumb.appendChild(button);
+      });
+    }
+
+    function renderSelection() {
+      const target = pickerSelected || currentFolderAsSelection();
+      if (drivePickerSelection) {
+        drivePickerSelection.textContent = target
+          ? `Selected: ${target.name || target.id}`
+          : "";
+      }
+      if (drivePickerSelect) drivePickerSelect.disabled = !target;
+    }
+
+    // When nothing is explicitly highlighted, "Use this folder" picks the folder
+    // we've drilled INTO (the current breadcrumb tail) — except the synthetic
+    // My-Drive root, which is not a real selectable root folder id.
+    function currentFolderAsSelection() {
+      const tail = pickerTrail[pickerTrail.length - 1];
+      if (!tail || tail.id === "root") return null;
+      return tail;
+    }
+
+    function confirmPickerSelection() {
+      const target = pickerSelected || currentFolderAsSelection();
+      if (!target) return;
+      if (driveFolderIdInput) driveFolderIdInput.value = target.id || "";
+      if (driveFolderNameInput) driveFolderNameInput.value = target.name || "";
+      setFact("folder-message", `Picked "${target.name || target.id}". Click "Save folder" to apply.`);
+      closePicker();
+    }
+
+    function setPickerStatus(message) {
+      if (!drivePickerStatus) return;
+      const text = String(message || "");
+      drivePickerStatus.textContent = text;
+      drivePickerStatus.hidden = !text;
     }
 
     // POST /api/admin/drive-settings returns only {enabled, folder_id, folder_name}.
@@ -344,7 +524,7 @@ const AdminDriveView = (() => {
       return unique.length ? `Missing: ${unique.join(", ")}` : "";
     }
 
-    return { load };
+    return { load, openPicker, closePicker };
   }
 
   return { createController };
@@ -352,4 +532,10 @@ const AdminDriveView = (() => {
 
 function createAdminDriveController(options) {
   return AdminDriveView.createController(options);
+}
+
+// Node test-harness export (no-op in the browser): lets the FE unit test drive
+// the real controller (and the folder-picker wiring) without a live DOM.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { AdminDriveView, createAdminDriveController };
 }

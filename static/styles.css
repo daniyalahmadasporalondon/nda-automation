@@ -10921,3 +10921,178 @@ body.modal-open {
     scroll-behavior: auto !important;
   }
 }
+
+/* ---------- Drive folder picker modal (admin-drive.js "Browse Drive") -------- */
+
+.integration-input-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.integration-input-row > input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.integration-input-row > button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.drive-picker-backdrop[hidden] {
+  display: none;
+}
+
+.drive-picker-backdrop {
+  align-items: center;
+  background: rgba(17, 17, 26, 0.32);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 22px;
+  position: fixed;
+  z-index: 1000;
+}
+
+.drive-picker-modal {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  box-shadow: 0 24px 80px -34px rgba(17, 17, 26, 0.55);
+  display: flex;
+  flex-direction: column;
+  max-height: min(640px, calc(100vh - 44px));
+  width: min(560px, calc(100vw - 32px));
+}
+
+.drive-picker-header {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  padding: 16px 18px;
+}
+
+.drive-picker-header h4 {
+  margin: 0;
+}
+
+.drive-picker-close {
+  background: none;
+  border: none;
+  color: var(--text-muted, inherit);
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.drive-picker-breadcrumb {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 10px 18px;
+}
+
+.drive-picker-breadcrumb button {
+  background: none;
+  border: none;
+  color: var(--accent, #3b6cf6);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+
+.drive-picker-breadcrumb button[disabled] {
+  color: var(--text-muted, inherit);
+  cursor: default;
+}
+
+.drive-picker-breadcrumb .drive-picker-crumb-sep {
+  color: var(--text-muted, inherit);
+}
+
+.drive-picker-body {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow: auto;
+  padding: 0 18px;
+}
+
+.drive-picker-status {
+  color: var(--text-muted, inherit);
+  margin: 12px 0;
+}
+
+.drive-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.drive-picker-list li {
+  border-bottom: 1px solid var(--border);
+}
+
+.drive-picker-folder {
+  align-items: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 10px 6px;
+  text-align: left;
+  width: 100%;
+}
+
+.drive-picker-folder:hover {
+  background: var(--bg-subtle, rgba(0, 0, 0, 0.04));
+}
+
+.drive-picker-folder.selected {
+  background: var(--accent-subtle, rgba(59, 108, 246, 0.12));
+}
+
+.drive-picker-folder .drive-picker-folder-name {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drive-picker-folder .drive-picker-open {
+  color: var(--accent, #3b6cf6);
+  flex: 0 0 auto;
+}
+
+.drive-picker-footer {
+  align-items: center;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 14px 18px;
+}
+
+.drive-picker-selection {
+  color: var(--text-muted, inherit);
+  font-size: 13px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drive-picker-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
