@@ -158,6 +158,160 @@ class SameParagraphCoalesceTests(unittest.TestCase):
         self.assertEqual(len(edits), 2)
 
 
+class CrossClauseMutationBoundTests(unittest.TestCase):
+    """A7-03: an edit may only redline the clause's OWN matched paragraphs."""
+
+    def _doc(self):
+        return [
+            {"id": "p11", "index": 1, "text": "Recipient shall not circumvent the Discloser."},
+            {"id": "p_sig", "index": 2, "text": "Signed: Daniyal Ahmad, Aspora."},
+            {"id": "p_gov", "index": 3, "text": "Governed by the laws of England and Wales."},
+        ]
+
+    def test_cross_clause_edit_targeting_signature_and_govlaw_is_dropped(self):
+        # The non_circ clause cites only p11, but its edits target p_sig and p_gov.
+        clause = _prohibited_clause(
+            matched_paragraph_ids=["p11"],
+            proposed_edits=[
+                {
+                    "action": "replace_paragraph",
+                    "paragraph_id": "p_sig",
+                    "text": "Attacker Name",
+                },
+                {
+                    "action": "delete_paragraph",
+                    "paragraph_id": "p_gov",
+                },
+            ],
+        )
+        paragraphs_by_id = _paragraphs_by_id(self._doc())
+        edits = _redlines_from_ai_edits(clause, paragraphs_by_id, 1)
+        # BOTH cross-clause edits dropped: nothing built, no foreign paragraph touched.
+        self.assertEqual(edits, [])
+        targeted = {e["paragraph_id"] for e in edits if "paragraph_id" in e}
+        self.assertNotIn("p_sig", targeted)
+        self.assertNotIn("p_gov", targeted)
+        notes = " ".join(clause.get("catA_dropped_edits", []))
+        self.assertIn("p_sig", notes)
+        self.assertIn("p_gov", notes)
+        self.assertIn("outside the clause's matched set", notes)
+
+    def test_legitimate_edit_on_own_matched_paragraph_still_applies(self):
+        clause = _prohibited_clause(
+            matched_paragraph_ids=["p11"],
+            proposed_edits=[
+                {
+                    "action": "replace_paragraph",
+                    "paragraph_id": "p11",
+                    "text": "Recipient may deal freely with the Discloser.",
+                    "span_action": "strike_span",
+                    "span_anchor_quote": "shall not circumvent the Discloser",
+                }
+            ],
+        )
+        edits = _redlines_from_ai_edits(clause, _paragraphs_by_id(self._doc()), 1)
+        self.assertEqual(len(edits), 1)
+        self.assertEqual(edits[0]["paragraph_id"], "p11")
+        self.assertNotIn("shall not circumvent", edits[0]["replacement_text"])
+
+    def test_empty_matched_set_fails_safe_by_dropping_every_edit(self):
+        # Fail-safe: no matched_paragraph_ids means NO paragraph is owned; do NOT
+        # widen to the whole document — every edit is dropped.
+        clause = _prohibited_clause(
+            matched_paragraph_ids=[],
+            proposed_edits=[
+                {"action": "replace_paragraph", "paragraph_id": "p11", "text": "x"},
+                {"action": "replace_paragraph", "paragraph_id": "p_sig", "text": "Attacker Name"},
+            ],
+        )
+        edits = _redlines_from_ai_edits(clause, _paragraphs_by_id(self._doc()), 1)
+        self.assertEqual(edits, [])
+
+
+class LengthAndCountCapTests(unittest.TestCase):
+    """A6-05: oversized anchor/replacement and runaway edit counts are dropped."""
+
+    def test_oversized_replacement_is_dropped(self):
+        from nda_automation.clause_outcomes import CATA_MAX_REPLACEMENT_CHARS
+
+        clause = _prohibited_clause(
+            proposed_edits=[
+                {
+                    "action": "replace_paragraph",
+                    "paragraph_id": "p1",
+                    "text": "x" * (CATA_MAX_REPLACEMENT_CHARS + 1),
+                }
+            ]
+        )
+        edits = _redlines_from_ai_edits(clause, _paragraphs_by_id(), 1)
+        self.assertEqual(edits, [])
+        self.assertIn("exceeds", " ".join(clause.get("catA_dropped_edits", [])))
+
+    def test_oversized_anchor_quote_is_dropped(self):
+        from nda_automation.clause_outcomes import CATA_MAX_ANCHOR_QUOTE_CHARS
+
+        clause = _prohibited_clause(
+            proposed_edits=[
+                {
+                    "action": "replace_paragraph",
+                    "paragraph_id": "p1",
+                    "text": "ok",
+                    "anchor_quote": "a" * (CATA_MAX_ANCHOR_QUOTE_CHARS + 1),
+                }
+            ]
+        )
+        edits = _redlines_from_ai_edits(clause, _paragraphs_by_id(), 1)
+        self.assertEqual(edits, [])
+
+    def test_too_many_edits_drops_all(self):
+        from nda_automation.clause_outcomes import CATA_MAX_EDITS_PER_CLAUSE
+
+        clause = _prohibited_clause(
+            proposed_edits=[
+                {"action": "replace_paragraph", "paragraph_id": "p1", "text": "ok"}
+                for _ in range(CATA_MAX_EDITS_PER_CLAUSE + 1)
+            ]
+        )
+        edits = _redlines_from_ai_edits(clause, _paragraphs_by_id(), 1)
+        self.assertEqual(edits, [])
+        self.assertIn("exceeds", " ".join(clause.get("catA_dropped_edits", [])))
+
+
+class NonStringReplacementTests(unittest.TestCase):
+    """A6-06: a non-string replacement is dropped, never str()-coerced to a repr."""
+
+    def test_dict_replacement_is_dropped_no_repr_in_output(self):
+        clause = _prohibited_clause(
+            proposed_edits=[
+                {
+                    "action": "replace_paragraph",
+                    "paragraph_id": "p1",
+                    "replacement": {"evil": "payload"},
+                }
+            ]
+        )
+        edits = _redlines_from_ai_edits(clause, _paragraphs_by_id(), 1)
+        self.assertEqual(edits, [])
+        # No Python repr of the dict leaked into any built redline text.
+        rendered = " ".join(str(e.get("replacement_text", "")) for e in edits)
+        self.assertNotIn("evil", rendered)
+        self.assertNotIn("{", rendered)
+
+    def test_list_anchor_is_dropped(self):
+        clause = _prohibited_clause(
+            proposed_edits=[
+                {
+                    "action": "replace_paragraph",
+                    "paragraph_id": "p1",
+                    "text": "ok",
+                    "anchor_quote": ["not", "a", "string"],
+                }
+            ]
+        )
+        edits = _redlines_from_ai_edits(clause, _paragraphs_by_id(), 1)
+        self.assertEqual(edits, [])
+
+
 class NativeClauseAndDeterministicPathTests(unittest.TestCase):
     def test_clause_has_span_edits_detects_span_provenance(self):
         self.assertTrue(

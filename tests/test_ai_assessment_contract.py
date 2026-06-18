@@ -764,5 +764,75 @@ class ApplySpanTests(unittest.TestCase):
         self.assertEqual(result, "The term is three years from the Effective Date.")
 
 
+class ApplySpanControlBidiStripTests(unittest.TestCase):
+    """A7-04: control / bidi-override / zero-width chars are stripped from the
+    replacement text before it is spliced into the paragraph."""
+
+    def test_rtl_override_stripped_from_replacement(self):
+        text = "The term is five years from the Effective Date."
+        # Replacement carries an RTL override (U+202E) and a pop (U+202C).
+        result = apply_span(text, "five years", "three‮years‬")
+        self.assertIsNotNone(result)
+        self.assertNotIn("‮", result)
+        self.assertNotIn("‬", result)
+        self.assertIn("threeyears", result)
+
+    def test_zero_width_chars_stripped_from_replacement(self):
+        text = "The term is five years from the Effective Date."
+        # ZWSP (U+200B), ZWNJ (U+200C), ZWJ (U+200D), BOM (U+FEFF) inside replacement.
+        result = apply_span(text, "five years", "thr​ee‌ye‍ars﻿")
+        self.assertIsNotNone(result)
+        for ch in ("​", "‌", "‍", "﻿"):
+            self.assertNotIn(ch, result)
+        self.assertIn("threeyears", result)
+
+    def test_ordinary_whitespace_preserved(self):
+        # tabs/newlines in a replacement are legitimate redline text, not stripped.
+        text = "The term is five years from the Effective Date."
+        result = apply_span(text, "five years", "a\tb")
+        self.assertIn("a\tb", result)
+
+
+class NonStringReplacementContractTests(unittest.TestCase):
+    """A6-06: the contract degrades an edit whose replacement/anchor is non-string
+    rather than str()-coercing a Python repr into the document."""
+
+    def test_dict_replacement_degrades_to_noop_with_error(self):
+        from nda_automation.ai_assessment_contract import _validated_single_edit
+
+        errors: list[str] = []
+        cleaned, degraded = _validated_single_edit(
+            {"action": REDLINE_REPLACE_PARAGRAPH, "paragraph_id": "p1", "replacement": {"x": 1}},
+            {"p1": "Some paragraph text."},
+            "clause.proposed_redline",
+            errors,
+            payload_version=3,
+        )
+        self.assertTrue(degraded)
+        self.assertEqual(cleaned["action"], "no_change")
+        # No repr leaked into the cleaned edit text.
+        self.assertNotIn("text", cleaned)
+        self.assertTrue(any("must be a string" in e for e in errors))
+
+    def test_list_anchor_quote_degrades(self):
+        from nda_automation.ai_assessment_contract import _validated_single_edit
+
+        errors: list[str] = []
+        cleaned, degraded = _validated_single_edit(
+            {
+                "action": "replace_span",
+                "paragraph_id": "p1",
+                "anchor_quote": ["not", "string"],
+                "replacement": "ok",
+            },
+            {"p1": "Some paragraph text."},
+            "clause.proposed_redline",
+            errors,
+            payload_version=3,
+        )
+        self.assertTrue(degraded)
+        self.assertEqual(cleaned["action"], "no_change")
+
+
 if __name__ == "__main__":
     unittest.main()

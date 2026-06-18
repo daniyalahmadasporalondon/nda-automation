@@ -32,6 +32,15 @@ from .redline_actions import (
 
 RedlineBuildFn = Callable[[ClauseResult, Dict[str, Paragraph], int], List[RedlineEdit]]
 SIGNATURE_MARKER_LINE_PATTERN = r"^\s*(?:by|title|date)\s*:"
+
+# Category-A A6-05 length/count caps. An AI edit may only carry so many cuts per
+# clause and so large an anchor/replacement before it is treated as runaway and
+# dropped (degrade-safe). These bound the document text we are willing to splice
+# in from a single model response so a malformed/adversarial edit cannot smuggle a
+# multi-MB replacement (or hundreds of cuts) into one paragraph.
+CATA_MAX_EDITS_PER_CLAUSE = 32
+CATA_MAX_ANCHOR_QUOTE_CHARS = 4096  # a few KB: an anchor is a sentence-level span
+CATA_MAX_REPLACEMENT_CHARS = 65536  # ~64KB: a paragraph-sized replacement, no more
 MISSING_INSERTION_ANCHOR_PATTERNS_BY_CLAUSE = {
     "confidential_information": (
         r"\b(?:each|both|either)\s+part(?:y|ies)\b",
@@ -202,6 +211,17 @@ def _redlines_from_ai_edits(
     edits = clause_proposed_edits(clause)
     if not edits:
         return []
+    # A6-05 count cap: refuse a runaway edit list outright (degrade-safe). The cap
+    # is applied to the raw list before any per-edit work so a flood cannot cost us.
+    if len(edits) > CATA_MAX_EDITS_PER_CLAUSE:
+        _note_dropped_edit(
+            clause, f"edit list exceeds {CATA_MAX_EDITS_PER_CLAUSE} edits ({len(edits)}); all dropped"
+        )
+        return []
+    # A7-03 clause-ownership bound: an edit may ONLY target a paragraph this clause
+    # itself matched/cited. Computed once; the empty set (fail-safe) drops every edit
+    # rather than widening to the whole document.
+    owned_paragraph_ids = _clause_owned_paragraph_ids(clause)
 
     # Group usable edits by target paragraph, preserving first-seen paragraph order.
     grouped: Dict[str, Dict[str, Any]] = {}
@@ -214,9 +234,30 @@ def _redlines_from_ai_edits(
         action = str(edit.get("action") or "").strip()
         if not action or action == AI_REDLINE_NO_CHANGE:
             continue
+        # A6-06: a present-but-non-string text/anchor field is dropped, never
+        # str()-coerced into a Python repr inside the document.
+        nonstring_reason = _edit_has_nonstring_text(edit)
+        if nonstring_reason is not None:
+            _note_dropped_edit(clause, f"{action} edit dropped: {nonstring_reason}")
+            continue
+        # A6-05: an over-long anchor/replacement is dropped (degrade), never spliced.
+        length_reason = _edit_exceeds_length_caps(edit)
+        if length_reason is not None:
+            _note_dropped_edit(clause, f"{action} edit dropped: {length_reason}")
+            continue
         paragraph_id = str(edit.get("paragraph_id") or "").strip()
         if not paragraph_id:
             _note_dropped_edit(clause, f"{action} edit has no paragraph_id")
+            continue
+        # A7-03: drop any edit whose target is NOT one of the clause's OWN matched
+        # paragraphs — a non_circumvention edit cannot reach the signature block or
+        # the governing-law line. Enforced before the existence check so a smuggled
+        # (but real) paragraph_id is still rejected.
+        if paragraph_id not in owned_paragraph_ids:
+            _note_dropped_edit(
+                clause,
+                f"{action} edit targets paragraph {paragraph_id} outside the clause's matched set; dropped",
+            )
             continue
         paragraph = paragraphs_by_id.get(paragraph_id)
         if paragraph is None:
@@ -337,6 +378,68 @@ def _edit_replacement_text(edit: Mapping[str, Any]) -> str:
     if value is None:
         value = edit.get("text")
     return str(value or "").strip()
+
+
+def _clause_owned_paragraph_ids(clause: ClauseResult) -> set[str]:
+    """The set of paragraph ids this clause may legitimately redline.
+
+    Category-A A7-03 (cross-clause mutation defense): an AI edit may only target a
+    paragraph the clause itself LOCATED/CITED — i.e. one of its
+    ``matched_paragraph_ids`` (the evidence matcher's output). It must NOT be able
+    to rewrite an unrelated, sensitive paragraph (the signature block, the
+    governing-law line) just because that paragraph exists in the global document.
+
+    ``redline_target_paragraph_ids`` is intentionally NOT consulted here: that field
+    is the OVER-BROAD union of every edit's own ``paragraph_id`` (including the
+    smuggled cross-clause target), so trusting it would let the attack bootstrap its
+    own authorization. The matched set is the evidence-grounded source of truth.
+
+    Fail-SAFE: if the matched set is empty/unavailable, return the empty set so the
+    caller DROPS every edit (never widen to the whole document). NEVER raises.
+    """
+    try:
+        paragraph_ids = clause.get("matched_paragraph_ids", []) if isinstance(clause, Mapping) else []
+        if not isinstance(paragraph_ids, list):
+            return set()
+        return {str(paragraph_id).strip() for paragraph_id in paragraph_ids if str(paragraph_id).strip()}
+    except Exception:  # pragma: no cover - fail-safe guard, drop rather than widen
+        return set()
+
+
+def _edit_exceeds_length_caps(edit: Mapping[str, Any]) -> str | None:
+    """A6-05: reason string if an edit's anchor/replacement exceeds the byte caps.
+
+    Returns a short telemetry reason when the edit's ``anchor_quote`` (or its lowered
+    ``span_anchor_quote``) or its replacement text (``replacement``/``text``/
+    ``span_replacement``) is over-long, else ``None``. Length is measured on the raw
+    string value so a multi-MB blob is caught BEFORE it is spliced into a paragraph.
+    """
+    anchor_value = edit.get("anchor_quote")
+    if anchor_value is None:
+        anchor_value = edit.get("span_anchor_quote")
+    if isinstance(anchor_value, str) and len(anchor_value) > CATA_MAX_ANCHOR_QUOTE_CHARS:
+        return f"anchor_quote exceeds {CATA_MAX_ANCHOR_QUOTE_CHARS} chars"
+    for key in ("replacement", "text", "span_replacement"):
+        value = edit.get(key)
+        if isinstance(value, str) and len(value) > CATA_MAX_REPLACEMENT_CHARS:
+            return f"{key} exceeds {CATA_MAX_REPLACEMENT_CHARS} chars"
+    return None
+
+
+def _edit_has_nonstring_text(edit: Mapping[str, Any]) -> str | None:
+    """A6-06: reason string if a text field is present but NOT a string.
+
+    A dict/list/int where a string is expected must DROP the edit, never be
+    ``str()``-coerced — coercing would splice a Python repr (``{'x': 1}``) into the
+    rendered document as if it were redline text. A genuinely absent field (None /
+    missing) is fine; only a present non-string value is rejected.
+    """
+    for key in ("anchor_quote", "span_anchor_quote", "replacement", "text", "span_replacement"):
+        if key in edit:
+            value = edit.get(key)
+            if value is not None and not isinstance(value, str):
+                return f"{key} is not a string ({type(value).__name__})"
+    return None
 
 
 def _note_dropped_edit(clause: ClauseResult, reason: str) -> None:

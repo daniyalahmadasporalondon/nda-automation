@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import Any
@@ -703,6 +704,50 @@ def clause_proposed_edits(clause: Mapping[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+# Explicit Unicode control / bidi-override / zero-width characters that must NEVER
+# survive into a rendered redline (A7-04). The named ranges (bidi embeds/overrides
+# U+202A–U+202E, isolates U+2066–U+2069, zero-width family U+200B–U+200F, BOM
+# U+FEFF) plus a category sweep (Cc control, Cf format) below catch spoofing chars
+# the typographic glyph-fold table intentionally does not cover.
+_EXPLICIT_CONTROL_BIDI_CHARS = frozenset(
+    chr(codepoint)
+    for codepoint in (
+        *range(0x202A, 0x202F),  # LRE RLE PDF LRO RLO
+        *range(0x2066, 0x206A),  # LRI RLI FSI PDI
+        *range(0x200B, 0x2010),  # ZWSP ZWNJ ZWJ LRM RLM
+        0xFEFF,  # zero-width no-break space / BOM
+    )
+)
+
+
+def _strip_control_bidi(value: str) -> str:
+    """Remove Unicode control / bidi-override / zero-width chars from ``value``.
+
+    Drops the explicit bidi/zero-width set above plus any character in the Unicode
+    ``Cc`` (control) or ``Cf`` (format) categories — EXCEPT ordinary whitespace
+    (tab/newline/carriage-return), which is legitimate redline text. Used to sanitize
+    replacement text before it is spliced into a paragraph so a spoofing char can't
+    corrupt downstream rendering. NEVER raises (degrade-safe).
+    """
+    try:
+        text = str(value or "")
+        if not text:
+            return text
+        cleaned: list[str] = []
+        for char in text:
+            if char in ("\t", "\n", "\r"):
+                cleaned.append(char)
+                continue
+            if char in _EXPLICIT_CONTROL_BIDI_CHARS:
+                continue
+            if unicodedata.category(char) in ("Cc", "Cf"):
+                continue
+            cleaned.append(char)
+        return "".join(cleaned)
+    except Exception:  # pragma: no cover - degrade-safe guard
+        return str(value or "")
+
+
 def apply_span(paragraph_text: str, anchor_quote: str, replacement: str) -> str | None:
     """Apply a sentence-level span edit to a paragraph, returning the new text.
 
@@ -727,7 +772,11 @@ def apply_span(paragraph_text: str, anchor_quote: str, replacement: str) -> str 
         if match is None:
             return None
         start, end = match
-        replacement_text = str(replacement or "")
+        # A7-04: strip Unicode control / bidi-override / zero-width chars from the
+        # replacement before it is spliced into the paragraph, so spoofing characters
+        # (RTL override U+202E, zero-width space/joiner U+200B–U+200F, U+202A–U+202E,
+        # other Cf/control) can never survive into a rendered redline.
+        replacement_text = _strip_control_bidi(str(replacement or ""))
         if replacement_text:
             return original[:start] + replacement_text + original[end:]
         # Strike: drop the span and one adjacent connector space (prefer the
@@ -909,6 +958,19 @@ def _validated_single_edit(
     # Span actions are v3-only sugar; a v2 payload may never use them.
     if action in AI_REDLINE_SPAN_ACTIONS and payload_version < 3:
         errors.append(f"{location}: {action} requires schema_version 3")
+
+    # A6-06: a present-but-non-string text/anchor field must DROP/degrade the edit,
+    # NOT be str()-coerced into a Python repr that escapes into the document text.
+    # A genuinely absent field (None / missing) stays acceptable.
+    for _field in ("replacement", "text", "anchor_quote"):
+        _value = proposed_redline.get(_field)
+        if _value is not None and not isinstance(_value, str):
+            errors.append(f"{location}: {_field} must be a string when present")
+            cleaned_drop: dict[str, Any] = {"action": AI_REDLINE_NO_CHANGE}
+            _rationale = proposed_redline.get("rationale")
+            if isinstance(_rationale, str) and _rationale.strip():
+                cleaned_drop["rationale"] = _rationale.strip()
+            return cleaned_drop, True
 
     paragraph_id = str(proposed_redline.get("paragraph_id") or "").strip()
     jurisdiction = str(proposed_redline.get("jurisdiction") or "").strip()
