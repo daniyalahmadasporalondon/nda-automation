@@ -11034,6 +11034,51 @@ body.modal-open {
   color: var(--text-muted, inherit);
 }
 
+.drive-picker-toolbar {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.drive-picker-toolbar .drive-picker-breadcrumb {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.drive-picker-new-toggle {
+  flex: 0 0 auto;
+  margin-right: 18px;
+  white-space: nowrap;
+}
+
+.drive-picker-new-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  padding: 0 18px 10px;
+}
+
+.drive-picker-new-row[hidden] {
+  display: none;
+}
+
+.drive-picker-new-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.drive-picker-new-error {
+  color: var(--danger, #c0392b);
+  font-size: 13px;
+  margin: 0;
+  padding: 0 18px 8px;
+}
+
+.drive-picker-new-error[hidden] {
+  display: none;
+}
+
 .drive-picker-body {
   flex: 1 1 auto;
   min-height: 120px;

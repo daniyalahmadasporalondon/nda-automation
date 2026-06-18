@@ -9,7 +9,6 @@ const AdminDriveView = (() => {
     driveEnabledToggle,
     driveFolderForm,
     driveFolderIdInput,
-    driveFolderNameInput,
     driveFolderSaveButton,
     // Folder-picker controls ("Browse Drive"). All optional: if the modal markup
     // is absent the picker is simply inert and the paste-an-ID flow is unchanged.
@@ -22,6 +21,13 @@ const AdminDriveView = (() => {
     drivePickerBreadcrumb,
     drivePickerStatus,
     drivePickerSelection,
+    // "+ New folder" controls inside the picker. All optional.
+    drivePickerNewToggle,
+    drivePickerNewRow,
+    drivePickerNewInput,
+    drivePickerNewCreate,
+    drivePickerNewCancel,
+    drivePickerNewError,
     reviewErrorFromPayload,
   }) {
     driveRefreshButton?.addEventListener("click", load);
@@ -33,6 +39,12 @@ const AdminDriveView = (() => {
     // {id, name}. "My Drive" (id "root") is always the first crumb.
     let pickerTrail = [{ id: "root", name: "My Drive" }];
     let pickerSelected = null; // {id, name} of the highlighted folder, or null.
+    // The manual "Root folder name" input was removed; the real folder name is
+    // captured here when the admin picks/creates a folder in the browser, and
+    // included as folder_name on save. The banner resolves it for display
+    // regardless, so an empty value is harmless (it is simply omitted).
+    let capturedFolderName = "";
+    let capturedFolderId = ""; // the id capturedFolderName belongs to.
 
     driveBrowseButton?.addEventListener("click", openPicker);
     drivePickerClose?.addEventListener("click", closePicker);
@@ -42,6 +54,11 @@ const AdminDriveView = (() => {
       // Click on the dimmed backdrop (not the dialog itself) closes the picker.
       if (event.target === drivePickerBackdrop) closePicker();
     });
+
+    // "+ New folder": reveal an inline name input, then POST a create request.
+    drivePickerNewToggle?.addEventListener("click", openNewFolderInput);
+    drivePickerNewCancel?.addEventListener("click", closeNewFolderInput);
+    drivePickerNewCreate?.addEventListener("click", createFolder);
 
     async function load() {
       if (!driveCard) return;
@@ -88,7 +105,10 @@ const AdminDriveView = (() => {
     async function saveFolderSettings(event) {
       event.preventDefault();
       const folderId = driveFolderIdInput?.value.trim() || "";
-      const folderName = driveFolderNameInput?.value.trim() || "";
+      // Only carry the captured name when it still matches the id in the field —
+      // a hand-typed/edited id has no captured name, so we omit folder_name and
+      // let the banner resolve the real name server-side.
+      const folderName = folderId && folderId === capturedFolderId ? capturedFolderName.trim() : "";
       setFolderControlsDisabled(true);
       setOverall("Saving", "pending");
       setFact("folder-message", "Saving Drive folder settings...");
@@ -129,6 +149,7 @@ const AdminDriveView = (() => {
       pickerTrail = [{ id: "root", name: "My Drive" }];
       pickerSelected = null;
       drivePickerBackdrop.hidden = false;
+      closeNewFolderInput();
       renderBreadcrumb();
       renderSelection();
       loadFolders("root");
@@ -262,10 +283,122 @@ const AdminDriveView = (() => {
     function confirmPickerSelection() {
       const target = pickerSelected || currentFolderAsSelection();
       if (!target) return;
-      if (driveFolderIdInput) driveFolderIdInput.value = target.id || "";
-      if (driveFolderNameInput) driveFolderNameInput.value = target.name || "";
+      selectResolvedFolder(target);
       setFact("folder-message", `Picked "${target.name || target.id}". Click "Save folder" to apply.`);
       closePicker();
+    }
+
+    // Fill the Root folder ID field and capture the folder's real name so the
+    // save can include folder_name (the manual name field having been removed).
+    function selectResolvedFolder(folder) {
+      const id = String(folder.id || "");
+      const name = String(folder.name || "");
+      if (driveFolderIdInput) driveFolderIdInput.value = id;
+      capturedFolderId = id;
+      capturedFolderName = name;
+    }
+
+    // --- "+ New folder" -----------------------------------------------------
+    function openNewFolderInput() {
+      setNewFolderError("");
+      if (drivePickerNewRow) drivePickerNewRow.hidden = false;
+      if (drivePickerNewInput) {
+        drivePickerNewInput.value = "";
+        drivePickerNewInput.disabled = false;
+        drivePickerNewInput.focus?.();
+      }
+    }
+
+    function closeNewFolderInput() {
+      if (drivePickerNewRow) drivePickerNewRow.hidden = true;
+      if (drivePickerNewInput) drivePickerNewInput.value = "";
+      setNewFolderError("");
+      setNewFolderBusy(false);
+    }
+
+    async function createFolder() {
+      const name = drivePickerNewInput?.value.trim() || "";
+      if (!name) {
+        setNewFolderError("Enter a folder name.");
+        return;
+      }
+      const parent = currentParentId();
+      setNewFolderError("");
+      setNewFolderBusy(true);
+      try {
+        const response = await fetch("/api/admin/drive-folders", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parent, name }),
+        });
+        // parseOkJson rejects with the server's {error} on a non-2xx (409 not
+        // connected / 400 bad name / 429 / 502), surfaced inline below.
+        const payload = await window.AuthExpired.parseOkJson(response, "Folder could not be created", reviewErrorFromPayload);
+        const created = { id: String(payload.id || ""), name: String(payload.name || name) };
+        if (!created.id) {
+          setNewFolderError("Folder could not be created");
+          return;
+        }
+        // Add the new folder to the current list and select it (fill the form).
+        appendFolderToList(created);
+        selectResolvedFolder(created);
+        setFact("folder-message", `Created "${created.name}". Click "Save folder" to apply.`);
+        closeNewFolderInput();
+        closePicker();
+      } catch (error) {
+        setNewFolderError((error && error.message) || "Folder could not be created");
+      } finally {
+        setNewFolderBusy(false);
+      }
+    }
+
+    function setNewFolderBusy(busy) {
+      if (drivePickerNewInput) drivePickerNewInput.disabled = busy;
+      if (drivePickerNewCreate) drivePickerNewCreate.disabled = busy;
+    }
+
+    function setNewFolderError(message) {
+      if (!drivePickerNewError) return;
+      const text = String(message || "");
+      drivePickerNewError.textContent = text;
+      drivePickerNewError.hidden = !text;
+    }
+
+    // Render one folder row into the existing list (reuses the same markup as
+    // renderFolders) and highlight it as the current selection.
+    function appendFolderToList(folder) {
+      if (!drivePickerList) return;
+      // A "No subfolders here" status would otherwise sit above the new row.
+      setPickerStatus("");
+      const id = String(folder.id || "");
+      const name = String(folder.name || "");
+      if (!id) return;
+      const li = document.createElement("li");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "drive-picker-folder";
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "drive-picker-folder-name";
+      nameSpan.textContent = name || id;
+      const openSpan = document.createElement("span");
+      openSpan.className = "drive-picker-open";
+      openSpan.textContent = "Open >";
+      button.appendChild(nameSpan);
+      button.appendChild(openSpan);
+      button.addEventListener("click", (event) => {
+        if (event.target === openSpan) {
+          drillInto({ id, name });
+        } else {
+          selectFolder({ id, name }, button);
+        }
+      });
+      openSpan.addEventListener("click", (event) => {
+        event.stopPropagation();
+        drillInto({ id, name });
+      });
+      li.appendChild(button);
+      drivePickerList.appendChild(li);
+      selectFolder({ id, name }, button);
     }
 
     function setPickerStatus(message) {
@@ -371,7 +504,10 @@ const AdminDriveView = (() => {
 
     function renderFolderForm(folder) {
       if (driveFolderIdInput) driveFolderIdInput.value = folder?.id || "";
-      if (driveFolderNameInput) driveFolderNameInput.value = folder?.name || "";
+      // Seed the captured name from the persisted folder so a later save without
+      // re-picking still carries the known name for this id.
+      capturedFolderId = String(folder?.id || "");
+      capturedFolderName = String(folder?.name || "");
     }
 
     function renderError(message) {
@@ -408,7 +544,6 @@ const AdminDriveView = (() => {
 
     function setFolderControlsDisabled(disabled) {
       if (driveFolderIdInput) driveFolderIdInput.disabled = disabled;
-      if (driveFolderNameInput) driveFolderNameInput.disabled = disabled;
       if (driveFolderSaveButton) driveFolderSaveButton.disabled = disabled;
     }
 

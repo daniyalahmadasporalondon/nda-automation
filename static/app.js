@@ -381,7 +381,6 @@ adminDriveController = createAdminDriveController({
   driveEnabledToggle: document.querySelector("#adminDriveEnabledToggle"),
   driveFolderForm: document.querySelector("#adminDriveFolderForm"),
   driveFolderIdInput: document.querySelector("#adminDriveFolderIdInput"),
-  driveFolderNameInput: document.querySelector("#adminDriveFolderNameInput"),
   driveFolderSaveButton: document.querySelector("#adminDriveFolderSaveButton"),
   driveBrowseButton: document.querySelector("#adminDriveBrowseButton"),
   drivePickerBackdrop: document.querySelector("#adminDriverPickerBackdrop"),
@@ -392,6 +391,13 @@ adminDriveController = createAdminDriveController({
   drivePickerBreadcrumb: document.querySelector("#adminDrivePickerBreadcrumb"),
   drivePickerStatus: document.querySelector("#adminDrivePickerStatus"),
   drivePickerSelection: document.querySelector("#adminDrivePickerSelection"),
+  // "+ New folder" controls inside the picker (all optional).
+  drivePickerNewToggle: document.querySelector("#adminDrivePickerNewToggle"),
+  drivePickerNewRow: document.querySelector("#adminDrivePickerNewRow"),
+  drivePickerNewInput: document.querySelector("#adminDrivePickerNewInput"),
+  drivePickerNewCreate: document.querySelector("#adminDrivePickerNewCreate"),
+  drivePickerNewCancel: document.querySelector("#adminDrivePickerNewCancel"),
+  drivePickerNewError: document.querySelector("#adminDrivePickerNewError"),
   reviewErrorFromPayload,
 });
 adminDocuSignController = createAdminDocuSignController({
