@@ -22,98 +22,177 @@ STANDARD_EXCLUSIONS = (
 
 
 class FlagsTheNegationTrickTests(unittest.TestCase):
-    def test_noun_then_negation_is_flagged(self):
-        text = (
+    """Recall: every shape of a real negation of a named exclusions noun is caught,
+    with OR without a 'notwithstanding'/'foregoing' lead-in."""
+
+    def _assert_flagged(self, text):
+        result = detect_carveout_negation(_matter(text))
+        self.assertIsNotNone(result, f"expected a flag for: {text!r}")
+        self.assertEqual(result["reason_code"], REASON_CODE)
+        return result
+
+    def test_notwithstanding_exclusions_shall_not_apply(self):
+        result = self._assert_flagged(
             STANDARD_EXCLUSIONS
             + " 9. Override. Notwithstanding the foregoing, the exclusions in "
             "Section 2 shall not apply where the Discloser deems the information "
             "sensitive."
         )
-        result = detect_carveout_negation(_matter(text))
-        self.assertIsNotNone(result)
-        self.assertEqual(result["reason_code"], REASON_CODE)
         self.assertIn("Section 2", result["message"])
 
-    def test_negation_then_noun_is_flagged(self):
-        text = (
+    def test_foregoing_exceptions_are_void(self):
+        self._assert_flagged(
             STANDARD_EXCLUSIONS
-            + " Notwithstanding anything herein, the foregoing exclusions shall "
-            "not be applicable to any information the Discloser later designates "
-            "as proprietary."
+            + " The foregoing exceptions are void and of no effect with respect to "
+            "any information designated Restricted by the Disclosing Party."
         )
-        result = detect_carveout_negation(_matter(text))
-        self.assertIsNotNone(result)
-        self.assertEqual(result["reason_code"], REASON_CODE)
 
-    def test_exceptions_are_void_is_flagged(self):
-        text = (
+    def test_section_exceptions_are_inapplicable_without_lead_in(self):
+        # No 'notwithstanding'/'foregoing' lead-in at all -- still a real negation.
+        self._assert_flagged(
             STANDARD_EXCLUSIONS
-            + " Notwithstanding the above, the foregoing exceptions are void and "
-            "of no effect."
+            + " The exceptions in Section 4 are inapplicable to any Confidential "
+            "Information relating to the Disclosing Party's customers or pricing."
         )
-        result = detect_carveout_negation(_matter(text))
-        self.assertIsNotNone(result)
-        self.assertEqual(result["reason_code"], REASON_CODE)
 
-    def test_carveouts_inapplicable_is_flagged(self):
-        text = (
+    def test_carveouts_of_no_force_or_effect_without_lead_in(self):
+        # Opens "For the avoidance of doubt", no override lead-in.
+        self._assert_flagged(
             STANDARD_EXCLUSIONS
-            + " Notwithstanding any other provision to the contrary, the Section 2 "
-            "carve-outs are inapplicable."
+            + " For the avoidance of doubt, the carve-outs in Section 2 shall be of "
+            "no force or effect, and the Receiving Party shall treat all disclosed "
+            "information as Confidential Information."
         )
-        result = detect_carveout_negation(_matter(text))
-        self.assertIsNotNone(result)
+
+    def test_supersede_and_override_the_exclusions(self):
+        self._assert_flagged(
+            STANDARD_EXCLUSIONS
+            + " In the event of any conflict, the confidentiality obligations shall "
+            "supersede and override the exclusions stated above, which shall yield "
+            "to the Disclosing Party's interest."
+        )
+
+    def test_exceptions_deemed_deleted_and_struck(self):
+        self._assert_flagged(
+            STANDARD_EXCLUSIONS
+            + " The parties agree that the Standard Exceptions paragraph above is "
+            "deemed deleted and struck from this Agreement in its entirety."
+        )
+
+    def test_no_exception_shall_be_available(self):
+        # Universal-quantifier disapplication; opens "Provided, however".
+        self._assert_flagged(
+            STANDARD_EXCLUSIONS
+            + " Provided, however, that no exception, exclusion, or carve-out shall "
+            "be available to the Receiving Party with respect to any Confidential "
+            "Information disclosed under this Agreement."
+        )
+
+    def test_preceding_sentence_backref_negation_of_required_by_law(self):
+        # The negated noun is "the preceding sentence" -- valid only because the prior
+        # sentence stated a required-by-law carve-out.
+        self._assert_flagged(
+            "The obligations of confidentiality shall not apply where disclosure is "
+            "required by law, court order, or governmental authority.\n"
+            "Notwithstanding anything to the contrary, the preceding sentence shall "
+            "not apply, and the Receiving Party shall not disclose any Confidential "
+            "Information even where compelled by law, without prior written consent."
+        )
 
 
 class StaysSilentTests(unittest.TestCase):
+    """Precision: benign uses, affirmations, and the normal exclusions clause itself
+    must NEVER flag."""
+
+    def _assert_silent(self, text):
+        self.assertIsNone(
+            detect_carveout_negation(_matter(text)),
+            f"expected silence for: {text!r}",
+        )
+
     def test_normal_exclusions_clause_is_silent(self):
-        # The standard carve-outs on their own must never be flagged.
-        result = detect_carveout_negation(_matter(STANDARD_EXCLUSIONS))
-        self.assertIsNone(result)
+        self._assert_silent(STANDARD_EXCLUSIONS)
+
+    def test_obligations_not_apply_is_the_normal_clause_not_a_negation(self):
+        # "the obligations ... shall not apply to public information" IS the exclusions
+        # clause working correctly; the verb governs 'obligations', not an exclusions noun.
+        self._assert_silent(
+            "EXCLUSIONS. The obligations of confidentiality shall not apply to "
+            "information that is publicly available, independently developed, or "
+            "required to be disclosed by law."
+        )
 
     def test_benign_notwithstanding_survival_is_silent(self):
-        text = (
+        self._assert_silent(
             STANDARD_EXCLUSIONS
             + " Notwithstanding any termination of this Agreement, the "
             "confidentiality obligations shall survive for five years."
         )
-        self.assertIsNone(detect_carveout_negation(_matter(text)))
 
     def test_benign_notwithstanding_disclosure_carveout_is_silent(self):
-        # This is itself a carve-out (a lawful-disclosure permission), not a negation
-        # of the exclusions.
-        text = (
+        # Itself a carve-out (a lawful-disclosure permission), not a negation.
+        self._assert_silent(
             STANDARD_EXCLUSIONS
             + " Notwithstanding the foregoing, either party may disclose "
-            "Confidential Information as required by law."
+            "Confidential Information to the extent required by applicable law."
         )
-        self.assertIsNone(detect_carveout_negation(_matter(text)))
 
-    def test_notwithstanding_obligations_not_diminished_is_silent(self):
-        text = (
+    def test_notwithstanding_in_liability_clause_is_silent(self):
+        self._assert_silent(
             STANDARD_EXCLUSIONS
-            + " Notwithstanding the foregoing, nothing herein shall be construed "
-            "to diminish the confidentiality obligations of the Receiving Party."
+            + " Notwithstanding anything to the contrary in this Agreement, in no "
+            "event shall either party be liable for indirect or consequential "
+            "damages."
         )
-        self.assertIsNone(detect_carveout_negation(_matter(text)))
+
+    def test_notwithstanding_in_assignment_clause_is_silent(self):
+        self._assert_silent(
+            STANDARD_EXCLUSIONS
+            + " Notwithstanding the foregoing, either party may assign this "
+            "Agreement to an affiliate or in connection with a merger."
+        )
+
+    def test_residuals_clause_is_silent(self):
+        self._assert_silent(
+            STANDARD_EXCLUSIONS
+            + " Notwithstanding any other provision, either party may use Residuals "
+            "(information retained in the unaided memory of its personnel) for any "
+            "purpose."
+        )
+
+    def test_affirming_exclusions_shall_apply_is_silent(self):
+        # Inverted-polarity trap: 'the exclusions in Section 2 SHALL APPLY in full'.
+        self._assert_silent(
+            STANDARD_EXCLUSIONS
+            + " Notwithstanding anything to the contrary herein, the exclusions in "
+            "Section 2 shall apply in full and nothing shall limit the Receiving "
+            "Party's right to rely on them."
+        )
 
     def test_required_by_law_disapplication_is_silent(self):
         # Disapplying an exclusion only to the extent required by law restores a
         # lawful carve-out; it does not gut the protection.
-        text = (
+        self._assert_silent(
             STANDARD_EXCLUSIONS
             + " Notwithstanding the foregoing, the exclusions shall not apply to "
             "the extent required by applicable law."
         )
-        self.assertIsNone(detect_carveout_negation(_matter(text)))
 
-    def test_plain_document_without_notwithstanding_is_silent(self):
-        text = (
+    def test_backref_negation_without_exclusions_target_is_silent(self):
+        # "the preceding sentence shall not apply" but the preceding sentence is an
+        # unrelated notices clause -- no exclusion negated.
+        self._assert_silent(
+            "All notices under this Agreement shall be delivered by email.\n"
+            "Notwithstanding the foregoing, the preceding sentence shall not apply "
+            "to notices of termination, which must be sent by registered post."
+        )
+
+    def test_plain_document_without_trigger_is_silent(self):
+        self._assert_silent(
             "This Mutual Non-Disclosure Agreement governs the exchange of "
             "Confidential Information between the parties. The exclusions in "
             "Section 2 apply to publicly available information."
         )
-        self.assertIsNone(detect_carveout_negation(_matter(text)))
 
 
 class FailSafeTests(unittest.TestCase):
