@@ -1249,6 +1249,62 @@ def drive_account_email(owner_user_id: str = "", *, service: Any | None = None) 
     return str(user.get("emailAddress") or "")
 
 
+def resolve_filing_location(
+    *,
+    root_folder_id: str = "",
+    folder_name: str = "",
+    owner_user_id: str = "",
+    service: Any | None = None,
+) -> dict[str, Any]:
+    """Describe where NDAs are ACTUALLY filed, for the admin status panel.
+
+    Confirms the real destination so a blank/cleared root folder no longer
+    silently falls back with no signal of where files land:
+
+    * When ``root_folder_id`` is set, the matter tree is filed under that folder
+      (with an app-owned ``NDAs`` subfolder inside it — see
+      :func:`_resolve_root_folder`). We resolve the configured folder's real NAME
+      via ``files().get(fileId, fields=name)`` so the panel shows the folder name,
+      not the raw id; if that lookup is unavailable (not connected, API hiccup) we
+      fall back to the stored ``folder_name``, then to the raw id.
+    * When ``root_folder_id`` is blank, the app creates ``NDAs`` in My Drive root,
+      so we report an explicit default-location label.
+
+    Never raises: any failure degrades to the best label available so
+    ``/api/drive/status`` always answers.
+
+    Returns ``{"configured", "folder_id", "folder_name", "label"}`` where
+    ``configured`` is whether an admin root folder is set and ``label`` is the
+    human-readable destination line the banner renders.
+    """
+    folder_id = str(root_folder_id or "").strip()
+    stored_name = str(folder_name or "").strip()
+    if not folder_id:
+        return {
+            "configured": False,
+            "folder_id": "",
+            "folder_name": DEFAULT_ROOT_FOLDER_NAME,
+            "label": f"My Drive / {DEFAULT_ROOT_FOLDER_NAME} (default location)",
+        }
+
+    resolved_name = ""
+    try:
+        drive_service = service or _drive_service(owner_user_id)
+        meta = drive_service.files().get(fileId=folder_id, fields="name").execute()
+        if isinstance(meta, dict):
+            resolved_name = str(meta.get("name") or "").strip()
+    except Exception:
+        resolved_name = ""
+
+    display_name = resolved_name or stored_name or folder_id
+    return {
+        "configured": True,
+        "folder_id": folder_id,
+        "folder_name": display_name,
+        "label": f"{display_name} / {DEFAULT_ROOT_FOLDER_NAME}",
+    }
+
+
 def drive_connected(owner_user_id: str = "") -> bool:
     """Whether the signed-in user has a usable Drive credential."""
     try:
