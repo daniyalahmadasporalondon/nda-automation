@@ -238,6 +238,13 @@ const AdminIntegrationsView = (() => {
         const payload = await postGmailSettings({ import_limit: limit }, "Gmail import limit could not save");
         state.gmailStatus = payload.gmail || state.gmailStatus || {};
         await load();
+        // Honesty: the backend keeps a safety cap. If it reduced the requested
+        // value, surface the warning inline so the effective (capped) value the
+        // input now shows is explained rather than looking like a silent revert.
+        if (payload.warning) {
+          setOverall("Capped", "blocked");
+          setFact("import-limit-copy", payload.warning);
+        }
       } catch (error) {
         setOverall(error.message || "Save failed", "blocked");
         // Restore the input to the last-known-good value first, then surface the
@@ -276,8 +283,10 @@ const AdminIntegrationsView = (() => {
     async function updateGmailSearchTerms() {
       const terms = parseSearchTerms(gmailSearchTermsInput?.value || "");
       if (!terms.length) {
+        // Mirror the server's honest rejection: an empty field is NOT silently
+        // reverted to the defaults; the admin must add a term for the save to take.
         setOverall("Add terms", "blocked");
-        setFact("search-terms-copy", "Add at least one search term.");
+        setFact("search-terms-copy", "Add at least one Gmail search term — it can't be empty.");
         return;
       }
       setSearchTermsDisabled(true);
@@ -294,7 +303,10 @@ const AdminIntegrationsView = (() => {
         await load();
       } catch (error) {
         setOverall(error.message || "Save failed", "blocked");
+        // Surface the server's 400 inline next to the field, then restore the
+        // last-known-good terms, so the admin sees the save did NOT take.
         renderSearchTerms(state.gmailStatus || {});
+        setFact("search-terms-copy", error.message || "Gmail search terms could not save.");
       } finally {
         setSearchTermsDisabled(false);
       }
@@ -377,8 +389,15 @@ const AdminIntegrationsView = (() => {
       renderIntakePlaybook(status);
       setFact("inbound-email", accountLabel(inbound));
       setFact("outbound-email", accountLabel(outbound));
-      setFact("inbound-configured", inbound.error || configuredLabel(inbound));
-      setFact("outbound-configured", outbound.error || configuredLabel(outbound));
+      // Honesty: the scheduler checks the MASTER gate (sync_enabled) first, so
+      // when polling is off the per-role inbound/outbound config is inert no
+      // matter how it is configured. Say so rather than showing "Yes" for a row
+      // that cannot run -- a non-blocking grey + label, the stored values are
+      // left untouched.
+      const inactiveSuffix = pollingPaused ? " — Gmail sync is off, inactive" : "";
+      setFact("inbound-configured", (inbound.error || configuredLabel(inbound)) + inactiveSuffix);
+      setFact("outbound-configured", (outbound.error || configuredLabel(outbound)) + inactiveSuffix);
+      if (gmailCard) gmailCard.classList.toggle("gmail-sync-off", pollingPaused);
       setFact("inbound-token-source", tokenSourceLabel(inbound));
       setFact("outbound-token-source", tokenSourceLabel(outbound));
       setFact("default-query", inbound.query || DEFAULT_QUERY_FALLBACK);

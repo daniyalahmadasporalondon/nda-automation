@@ -4571,14 +4571,56 @@ class ServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
+                # Seed a non-default baseline so we can prove the rejected empty
+                # submission does NOT silently revert to the built-in defaults.
+                self.request(
+                    "POST",
+                    "/api/gmail/settings",
+                    {"inbound_search_terms": ["custom term"]},
+                )
                 status, payload = self.request(
                     "POST",
                     "/api/gmail/settings",
                     {"inbound_search_terms": ["", "  "]},
                 )
+                settings_after = app_settings.gmail_settings()
 
         self.assertEqual(status, 400)
-        self.assertEqual(payload["error"], "Provide at least one Gmail inbound search term.")
+        # Honest, consistent message; the save did NOT take and was NOT silently
+        # defaulted -- the previously-saved custom term is still in force.
+        self.assertEqual(payload["error"], "Add at least one Gmail search term — it can't be empty.")
+        self.assertEqual(settings_after["inbound_search_terms"], ["custom term"])
+        self.assertNotEqual(
+            settings_after["inbound_search_terms"],
+            list(app_settings.DEFAULT_GMAIL_INBOUND_SEARCH_TERMS),
+        )
+
+    def test_gmail_settings_helper_does_not_silently_default_empty_terms(self):
+        # The backend write helper must be HONEST + consistent with the route: an
+        # empty list submitted directly to update_gmail_settings must NOT revive
+        # the defaults; the empty value is dropped and the prior value preserved.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                app_settings.update_gmail_settings({"inbound_search_terms": ["seed term"]})
+                app_settings.update_gmail_settings({"inbound_search_terms": []})
+                settings_after = app_settings.gmail_settings()
+
+        self.assertEqual(settings_after["inbound_search_terms"], ["seed term"])
+
+    def test_gmail_settings_saves_valid_inbound_search_terms(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                status, payload = self.request(
+                    "POST",
+                    "/api/gmail/settings",
+                    {"inbound_search_terms": ["alpha", "beta"]},
+                )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["gmail_settings"]["inbound_search_terms"], ["alpha", "beta"])
+        self.assertNotIn("warning", payload)
 
     def test_gmail_status_uses_local_data_tokens_when_env_paths_are_missing(self):
         class FakeExecutable:
@@ -7133,6 +7175,42 @@ class ServerTests(unittest.TestCase):
             app_settings.MAX_GMAIL_IMPORT_LIMIT_CLAMP,
         )
         self.assertEqual(app_settings.MAX_GMAIL_IMPORT_LIMIT_CLAMP, 40)
+        # Honesty: a clamped-down request must carry a warning naming the cap, and
+        # the effective (capped) value must be the one returned for display.
+        self.assertEqual(
+            payload["warning"],
+            "Import limit capped at 40 (max safe per-poll value).",
+        )
+
+    def test_gmail_settings_endpoint_within_cap_import_limit_has_no_warning(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                status, payload = self.request(
+                    "POST",
+                    "/api/gmail/settings",
+                    {"import_limit": 30},
+                )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["gmail_settings"]["import_limit"], 30)
+        # A within-cap value is honoured verbatim -- no honesty warning.
+        self.assertNotIn("warning", payload)
+
+    def test_gmail_settings_endpoint_at_cap_import_limit_has_no_warning(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                status, payload = self.request(
+                    "POST",
+                    "/api/gmail/settings",
+                    {"import_limit": app_settings.MAX_GMAIL_IMPORT_LIMIT_CLAMP},
+                )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["gmail_settings"]["import_limit"], 40)
+        # Exactly at the cap is not a reduction, so no warning.
+        self.assertNotIn("warning", payload)
 
     def test_gmail_settings_endpoint_rejects_non_bool_sync_enabled(self):
         with tempfile.TemporaryDirectory() as data_dir:
