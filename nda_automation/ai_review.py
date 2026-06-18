@@ -39,6 +39,12 @@ AI_REVIEW_ENV_BACKUP_PROVIDER = "NDA_AI_BACKUP_PROVIDER"
 AI_REVIEW_ENV_BACKUP_MODEL = "NDA_AI_BACKUP_MODEL"
 OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 OPENROUTER_CHAT_COMPLETIONS_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+# Auth/validity probe: GET /key returns 200 + key metadata (label, limits) when the
+# key authenticates, 401/403 when it does not. It spends NO model tokens (no
+# inference), so it is the cheap round-trip that proves a key works before we
+# persist it. Short timeout — this is an interactive admin save, not a review.
+OPENROUTER_KEY_ENDPOINT = "https://openrouter.ai/api/v1/key"
+KEY_VALIDATION_TIMEOUT_SECONDS = 10
 # OpenRouter API keys are prefixed "sk-or-"; legacy Google/Gemini-direct keys are
 # prefixed "AIza". OpenRouter is the sole provider now (the default model is served
 # THROUGH OpenRouter), so a stored Gemini-direct key can no longer be used
@@ -821,6 +827,111 @@ def provider_for_api_key(api_key: str) -> str:
 
 def default_model_for_provider(provider: str) -> str:
     return DEFAULT_OPENROUTER_MODEL
+
+
+# Outcome of a pre-persist key validity probe. `status` is one of:
+#   "valid"       -> 200; key authenticates. Safe to persist + enable.
+#   "rejected"    -> 401/403; key is wrong/expired/unauthorized. Do NOT persist.
+#   "unreachable" -> network error / timeout / 5xx / unexpected. NOT proven
+#                    invalid, but NOT proven valid either. Do NOT persist (caller
+#                    must never leave a false "verified / AI on" state).
+# `label` / `limit_remaining` are best-effort metadata pulled from a 200 body and
+# never contain the key itself.
+class ApiKeyValidationResult:
+    __slots__ = ("status", "message", "label", "limit_remaining")
+
+    def __init__(
+        self,
+        status: str,
+        message: str,
+        *,
+        label: str | None = None,
+        limit_remaining: object | None = None,
+    ) -> None:
+        self.status = status
+        self.message = message
+        self.label = label
+        self.limit_remaining = limit_remaining
+
+    @property
+    def is_valid(self) -> bool:
+        return self.status == "valid"
+
+
+def validate_api_key(
+    api_key: str,
+    *,
+    timeout_seconds: int = KEY_VALIDATION_TIMEOUT_SECONDS,
+) -> ApiKeyValidationResult:
+    """Probe OpenRouter to confirm an API key authenticates BEFORE it is persisted.
+
+    Uses GET /key, which returns key metadata on 200 and 401/403 on a bad key and
+    spends no model tokens. Never logs/echoes the key value. Reuses the same
+    HTTP/timeout/User-Agent/TLS patterns as the reviewer call. Returns a structured
+    result; never raises for a transient blip (the blip is reported as
+    "unreachable" so the caller can decline to persist rather than hard-crash).
+    """
+    cleaned = (api_key or "").strip()
+    if not cleaned:
+        return ApiKeyValidationResult("rejected", "No AI API key was provided.")
+
+    request = urllib.request.Request(
+        OPENROUTER_KEY_ENDPOINT,
+        headers={
+            "Authorization": f"Bearer {cleaned}",
+            "User-Agent": "nda-automation/1.0",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=max(1, int(timeout_seconds or KEY_VALIDATION_TIMEOUT_SECONDS)),
+            context=_trusted_https_context(),
+        ) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        if error.code in (401, 403):
+            return ApiKeyValidationResult(
+                "rejected",
+                "This OpenRouter key was rejected — check it's correct and not expired.",
+            )
+        # Any other HTTP status (429/5xx/unexpected) is treated as "couldn't
+        # verify right now", NOT as a confirmed-invalid key.
+        return ApiKeyValidationResult(
+            "unreachable",
+            "Couldn't verify the key right now (OpenRouter returned an unexpected response) — try again.",
+        )
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        return ApiKeyValidationResult(
+            "unreachable",
+            "Couldn't verify the key right now (OpenRouter unreachable) — try again.",
+        )
+
+    label, limit_remaining = _openrouter_key_metadata(body)
+    return ApiKeyValidationResult(
+        "valid",
+        "OpenRouter key verified.",
+        label=label,
+        limit_remaining=limit_remaining,
+    )
+
+
+def _openrouter_key_metadata(body: object) -> tuple[str | None, object | None]:
+    """Best-effort label/limit extraction from a GET /key 200 body.
+
+    The metadata is cosmetic; any shape surprise yields (None, None) rather than
+    failing the validation. Never includes the key value.
+    """
+    data = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(data, dict):
+        return (None, None)
+    label = data.get("label")
+    limit_remaining = data.get("limit_remaining")
+    return (
+        str(label) if isinstance(label, str) and label.strip() else None,
+        limit_remaining if isinstance(limit_remaining, (int, float)) else None,
+    )
 
 
 def _configured_api_key(provider: str) -> str:

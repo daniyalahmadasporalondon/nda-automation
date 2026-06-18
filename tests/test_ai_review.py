@@ -563,5 +563,74 @@ class AIProviderAdapterTests(unittest.TestCase):
             boom({"clause": {"id": "mutuality"}, "paragraphs": []})
 
 
+def _http_error(code):
+    import io
+    import urllib.error
+
+    return urllib.error.HTTPError(
+        ai_review.OPENROUTER_KEY_ENDPOINT, code, "err", {}, io.BytesIO(b"{}")
+    )
+
+
+class ApiKeyValidationTests(unittest.TestCase):
+    """Pre-persist key validity probe. The HTTP transport is always mocked so the
+    suite never touches real OpenRouter and never spends model tokens."""
+
+    def test_valid_key_returns_valid_with_metadata_and_no_key_leak(self):
+        captured = []
+        body = json.dumps({"data": {"label": "demo-key", "limit_remaining": 12.5}}).encode("utf-8")
+        with patch("urllib.request.urlopen", _mock_urlopen(body, captured)):
+            result = ai_review.validate_api_key("sk-or-secret-value")
+
+        self.assertEqual(result.status, "valid")
+        self.assertTrue(result.is_valid)
+        self.assertEqual(result.label, "demo-key")
+        self.assertEqual(result.limit_remaining, 12.5)
+        # Probe is a token-free GET to /key with the bearer header — never POST,
+        # never the chat-completions endpoint.
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].method, "GET")
+        self.assertEqual(captured[0].full_url, ai_review.OPENROUTER_KEY_ENDPOINT)
+        self.assertEqual(captured[0].headers["Authorization"], "Bearer sk-or-secret-value")
+        self.assertIsNone(captured[0].data)
+        # The result/message must never echo the key value.
+        self.assertNotIn("secret-value", result.message)
+
+    def test_401_is_rejected_with_clear_message(self):
+        with patch("urllib.request.urlopen", side_effect=_http_error(401)):
+            result = ai_review.validate_api_key("sk-or-bad")
+        self.assertEqual(result.status, "rejected")
+        self.assertFalse(result.is_valid)
+        self.assertIn("rejected", result.message.lower())
+
+    def test_403_is_rejected(self):
+        with patch("urllib.request.urlopen", side_effect=_http_error(403)):
+            result = ai_review.validate_api_key("sk-or-bad")
+        self.assertEqual(result.status, "rejected")
+
+    def test_5xx_is_unreachable_not_rejected(self):
+        with patch("urllib.request.urlopen", side_effect=_http_error(503)):
+            result = ai_review.validate_api_key("sk-or-maybe")
+        self.assertEqual(result.status, "unreachable")
+        self.assertFalse(result.is_valid)
+
+    def test_network_error_is_unreachable(self):
+        import urllib.error
+
+        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("down")):
+            result = ai_review.validate_api_key("sk-or-maybe")
+        self.assertEqual(result.status, "unreachable")
+
+    def test_timeout_is_unreachable(self):
+        with patch("urllib.request.urlopen", side_effect=TimeoutError()):
+            result = ai_review.validate_api_key("sk-or-maybe")
+        self.assertEqual(result.status, "unreachable")
+
+    def test_empty_key_is_rejected_without_network_call(self):
+        with patch("urllib.request.urlopen", side_effect=AssertionError("should not call network")):
+            result = ai_review.validate_api_key("   ")
+        self.assertEqual(result.status, "rejected")
+
+
 if __name__ == "__main__":
     unittest.main()
