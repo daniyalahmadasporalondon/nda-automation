@@ -342,6 +342,38 @@ def matter_artifacts_view(matter: dict[str, Any]) -> list[dict[str, Any]]:
 # carries role ``"aspora"`` and must never be shown as the counterparty.
 _DOCUSIGN_ASPORA_ROLE = "aspora"
 
+# Defense-in-depth: the Aspora internal-signer domain. A signer at this domain is
+# the Aspora party regardless of its (possibly blank) ``role`` label, so it is
+# never surfaced as the counterparty even if the source-side role stamp was
+# bypassed. Kept as a literal here (no send-module import into the read view) to
+# mirror ``docusign_workflow._ASPORA_SIGNER_DOMAIN``.
+_DOCUSIGN_ASPORA_DOMAIN = "aspora.com"
+
+
+def _is_aspora_signer_email(email: str) -> bool:
+    """True when ``email`` is the Aspora internal signer (configured email or domain).
+
+    Belt-and-suspenders with the ``role`` filter: identifies the Aspora party by
+    the configured default Aspora signer address
+    (``NDA_DOCUSIGN_ASPORA_SIGNER_EMAIL``) OR the ``aspora.com`` domain. Pure +
+    fail-open: a blank/odd value is not Aspora, and a config read that throws is
+    swallowed (the domain check still applies).
+    """
+    normalized = str(email or "").strip().casefold()
+    if not normalized or "@" not in normalized:
+        return False
+    try:
+        from .docusign_connection import aspora_default_signer
+
+        default_signer = aspora_default_signer()
+    except Exception:  # noqa: BLE001 -- a config read must never break the board poll.
+        default_signer = None
+    if isinstance(default_signer, dict):
+        configured = str(default_signer.get("email") or "").strip().casefold()
+        if configured and normalized == configured:
+            return True
+    return normalized.rsplit("@", 1)[-1] == _DOCUSIGN_ASPORA_DOMAIN
+
 
 def _docusign_counterparty_recipient(matter: dict[str, Any]) -> dict[str, str]:
     """The actual DocuSign COUNTERPARTY signer (name+email) for display, or ``{}``.
@@ -379,6 +411,12 @@ def _docusign_counterparty_recipient(matter: dict[str, Any]) -> dict[str, str]:
             continue
         email = recipient_email(signer.get("email"))
         if not email:
+            continue
+        # Defense-in-depth backstop: never surface the Aspora internal signer as
+        # the counterparty even when its role is blank (a stale/unstamped override
+        # could list it first with no role). Identified by the configured Aspora
+        # signer address or the aspora.com domain.
+        if _is_aspora_signer_email(email):
             continue
         return {"name": str(signer.get("name") or "").strip(), "email": email}
     return {}

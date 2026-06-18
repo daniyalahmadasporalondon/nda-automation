@@ -172,6 +172,40 @@ def test_signer_without_explicit_role_is_treated_as_counterparty():
     assert public["counterparty_email"] == "pranav.new@acme.com"
 
 
+# --- defense-in-depth: Aspora signer with a BLANK role is still never counterparty ---
+
+
+def test_blank_role_aspora_domain_signer_first_is_not_counterparty():
+    # A stale/unstamped override could list the Aspora signer FIRST with NO role.
+    # The role filter alone would not skip it (role is blank, not "aspora"); the
+    # aspora.com-domain backstop must skip it and select the external party.
+    matter = _base_matter(
+        docusign=_docusign_block(
+            [
+                {"name": "Daniyal Ahmad", "email": "daniyal.ahmad@aspora.com"},
+                {"name": "Pranav Sharma", "email": "pranav.new@acme.com"},
+            ]
+        )
+    )
+    public = public_matter(matter, detail=False)
+    assert public["counterparty_email"] == "pranav.new@acme.com"
+    assert public["counterparty"] == "Pranav Sharma"
+    assert public["counterparty_email"] != "daniyal.ahmad@aspora.com"
+
+
+def test_only_blank_role_aspora_domain_signer_falls_back():
+    # If the ONLY signer is an aspora.com address with a blank role, fall back to
+    # the reply recipient rather than surfacing the internal signer.
+    matter = _base_matter(
+        docusign=_docusign_block(
+            [{"name": "Daniyal Ahmad", "email": "daniyal.ahmad@aspora.com"}]
+        )
+    )
+    public = public_matter(matter, detail=False)
+    assert public["counterparty_email"] == "pranav@acme.com"
+    assert public["counterparty_email"] != "daniyal.ahmad@aspora.com"
+
+
 def test_signer_without_name_keeps_derived_counterparty_name():
     # A signer carrying only an email must not blank out the display name; the
     # email is surfaced but the name override is skipped.

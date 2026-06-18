@@ -587,7 +587,7 @@ def _resolve_signers(matter: dict[str, Any], override: Any | None) -> list[Signe
     a later phase.
     """
     if isinstance(override, list) and override:
-        return docusign_integration.normalize_signers(override)
+        return docusign_integration.normalize_signers(_stamp_override_roles(override))
 
     generated = _is_generated_nda_matter(matter)
 
@@ -614,6 +614,73 @@ def _resolve_signers(matter: dict[str, Any], override: Any | None) -> list[Signe
                 signer["anchor"] = anchor
 
     return docusign_integration.normalize_signers(signers)
+
+
+# The Aspora internal-signer domain. Any signer at this domain is the Aspora party
+# (never the counterparty), independent of whether a default-signer email is
+# configured — the belt to the configured-email suspenders.
+_ASPORA_SIGNER_DOMAIN = "aspora.com"
+
+
+def _is_aspora_signer_email(email: str) -> bool:
+    """True when ``email`` is the Aspora internal signer (config match or domain).
+
+    Identifies the Aspora party by either the configured default Aspora signer
+    address (``NDA_DOCUSIGN_ASPORA_SIGNER_EMAIL`` via
+    :func:`docusign_connection.aspora_default_signer`) OR the ``aspora.com``
+    domain. Pure + defensive: a blank/odd value is not Aspora.
+    """
+    normalized = str(email or "").strip().casefold()
+    if not normalized or "@" not in normalized:
+        return False
+    default_signer = docusign_connection.aspora_default_signer()
+    if default_signer is not None:
+        configured = str(default_signer.get("email") or "").strip().casefold()
+        if configured and normalized == configured:
+            return True
+    domain = normalized.rsplit("@", 1)[-1]
+    return domain == _ASPORA_SIGNER_DOMAIN
+
+
+def _stamp_override_roles(override: list[Any]) -> list[Any]:
+    """Stamp signer roles on a client-supplied override so the Aspora party is labelled.
+
+    The send route accepts ``signers`` with ``role`` optional, so an override can
+    arrive with blank roles. If the Aspora internal signer is listed first with a
+    blank role, the read-side counterparty helper (matter_view) could otherwise
+    pick it as the counterparty. We fix this at the SOURCE: any signer whose email
+    is the Aspora internal signer (configured email or ``aspora.com`` domain) is
+    stamped ``role="aspora"``; every other signer with a blank role is stamped
+    ``role="counterparty"``.
+
+    Preserves already-correct overrides: an explicit non-blank role is left
+    untouched (we never relabel a deliberately-set role). Only the recorded
+    ``role`` label changes — name/email/anchor/routing and thus WHO receives the
+    envelope are untouched. Non-dict / ``Signer`` entries pass through unchanged
+    (``normalize_signers`` handles them); a ``Signer`` with a blank role gets the
+    same stamp so persisted recipients carry the right label.
+    """
+    stamped: list[Any] = []
+    for raw in override:
+        if isinstance(raw, dict):
+            email = raw.get("email")
+            existing_role = str(raw.get("role") or "").strip()
+            entry = dict(raw)
+            if _is_aspora_signer_email(email):
+                entry["role"] = _ASPORA_SIGNER_ROLE
+            elif not existing_role:
+                entry["role"] = _COUNTERPARTY_SIGNER_ROLE
+            stamped.append(entry)
+        elif isinstance(raw, docusign_integration.Signer):
+            existing_role = str(raw.role or "").strip()
+            if _is_aspora_signer_email(raw.email):
+                raw.role = _ASPORA_SIGNER_ROLE
+            elif not existing_role:
+                raw.role = _COUNTERPARTY_SIGNER_ROLE
+            stamped.append(raw)
+        else:
+            stamped.append(raw)
+    return stamped
 
 
 def _counterparty_signer(matter: dict[str, Any]) -> dict[str, Any] | None:
