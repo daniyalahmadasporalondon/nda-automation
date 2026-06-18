@@ -29,10 +29,14 @@ def handle_telemetry(handler, *, send_body: bool = True) -> None:
     # caller sees (avoids a double snapshot / read race), then surface the
     # derived health block additively alongside the unchanged telemetry block.
     snapshot = telemetry.snapshot()
+    counters = snapshot.get("counters", {})
     handler._send_json(
         {
             "telemetry": snapshot,
-            "health": telemetry.health_summary(snapshot.get("counters", {})),
+            "health": telemetry.health_summary(counters),
+            # USD AI-spend rollup (per-feature), surfaced beside health. Admin-gated
+            # by require_admin above -- spend/usage is never exposed to non-admins.
+            "ai_cost": telemetry.ai_cost_summary(counters),
         },
         send_body=send_body,
     )

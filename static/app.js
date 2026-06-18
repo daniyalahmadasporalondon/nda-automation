@@ -352,6 +352,10 @@ adminHealthController = createAdminHealthController({
   healthCaveat: document.querySelector("#adminHealthCaveat"),
   healthRaw: document.querySelector("#adminHealthRaw"),
   healthRefreshButton: document.querySelector("#adminHealthRefreshButton"),
+  costTotal: document.querySelector("#adminAiCostTotal"),
+  costTokens: document.querySelector("#adminAiCostTokens"),
+  costFeatures: document.querySelector("#adminAiCostFeatures"),
+  costCaveat: document.querySelector("#adminAiCostCaveat"),
   reviewErrorFromPayload,
 });
 adminIntegrationsController = createAdminIntegrationsController({

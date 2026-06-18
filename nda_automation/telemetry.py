@@ -117,6 +117,90 @@ def _count(counters: Mapping[str, int], key: str) -> int:
         return 0
 
 
+# OpenRouter usage counters are recorded by openrouter_usage.record_openrouter_usage
+# as cumulative-since-start integers. Cost is stored in MICRO-USD (USD * 1e6) so it
+# stays an integer counter; tokens are plain counts. Both are grouped by feature via
+# the "<base>__feature__<name>" key suffix (and by model via "__model__<name>").
+_OPENROUTER_COST_TOTAL = "openrouter_cost_micro_units"
+_OPENROUTER_COST_FEATURE_PREFIX = "openrouter_cost_micro_units__feature__"
+_OPENROUTER_TOKENS_TOTAL = "openrouter_total_tokens"
+_OPENROUTER_TOKENS_FEATURE_PREFIX = "openrouter_total_tokens__feature__"
+_COST_MICRO_PER_USD = 1_000_000
+
+_COST_NOTE = (
+    "Spend is cumulative since process start (since last restart). Telemetry is "
+    "in-memory and resets on restart; these figures are NOT windowed, so this is a "
+    'lifetime-since-restart total, not a per-day "today" number.'
+)
+
+
+def _usd_from_micro(micro_units: int) -> float:
+    """Convert a micro-USD integer counter to dollars, rounded to the sub-cent.
+
+    Cost is recorded as round(usd * 1e6) integers, so dividing back is exact at the
+    micro level; we round to 4 dp (hundredth-of-a-cent) for a clean, artifact-free
+    display value without losing the small per-call costs that matter in aggregate.
+    """
+    return round(micro_units / _COST_MICRO_PER_USD, 4)
+
+
+def ai_cost_summary(counters: Mapping[str, int]) -> dict[str, Any]:
+    """Roll up OpenRouter AI spend into a USD, per-feature breakdown.
+
+    Pure function: reads only the supplied counters mapping (no globals), so it is
+    trivially testable. Reads the cumulative ``openrouter_cost_micro_units`` counters
+    that ``record_openrouter_usage`` writes, converts micro-USD to dollars, and groups
+    by feature (reviewer, generation, triage, verifier, structure, semantic-lint,
+    intake -- whatever features actually recorded usage).
+
+    The returned ``total_usd`` is the authoritative grand total (the
+    ``openrouter_cost_micro_units`` counter) so it never drifts from the per-feature
+    rows even if a feature label changes. Each feature row also carries its token
+    count as a secondary figure. Counts are cumulative since process start (see
+    ``note``); a true per-day "today" number requires the separate windowing work.
+    """
+    total_micro = _count(counters, _OPENROUTER_COST_TOTAL)
+    total_tokens = _count(counters, _OPENROUTER_TOKENS_TOTAL)
+
+    cost_micro_by_feature: dict[str, int] = {}
+    for key in counters:
+        if key.startswith(_OPENROUTER_COST_FEATURE_PREFIX):
+            feature = key[len(_OPENROUTER_COST_FEATURE_PREFIX):]
+            if feature:
+                cost_micro_by_feature[feature] = _count(counters, key)
+
+    tokens_by_feature: dict[str, int] = {}
+    for key in counters:
+        if key.startswith(_OPENROUTER_TOKENS_FEATURE_PREFIX):
+            feature = key[len(_OPENROUTER_TOKENS_FEATURE_PREFIX):]
+            if feature:
+                tokens_by_feature[feature] = _count(counters, key)
+
+    # Order features by spend (descending), then name, so the biggest cost driver
+    # leads the panel. Include zero-cost-but-token features so token-only usage still
+    # shows (cost may be absent when the provider omits a cost field).
+    feature_names = set(cost_micro_by_feature) | set(tokens_by_feature)
+    features = [
+        {
+            "feature": name,
+            "cost_usd": _usd_from_micro(cost_micro_by_feature.get(name, 0)),
+            "cost_micro_units": cost_micro_by_feature.get(name, 0),
+            "total_tokens": tokens_by_feature.get(name, 0),
+        }
+        for name in feature_names
+    ]
+    features.sort(key=lambda row: (-row["cost_micro_units"], row["feature"]))
+
+    return {
+        "total_usd": _usd_from_micro(total_micro),
+        "total_cost_micro_units": total_micro,
+        "total_tokens": total_tokens,
+        "currency": "USD",
+        "features": features,
+        "note": _COST_NOTE,
+    }
+
+
 def health_summary(counters: Mapping[str, int]) -> dict[str, Any]:
     """Derive an AI-review / generation health summary from raw counters.
 

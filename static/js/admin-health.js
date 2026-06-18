@@ -11,6 +11,10 @@ const AdminHealthView = (() => {
     healthCaveat,
     healthRaw,
     healthRefreshButton,
+    costTotal,
+    costTokens,
+    costFeatures,
+    costCaveat,
     reviewErrorFromPayload,
   }) {
     healthRefreshButton?.addEventListener("click", load);
@@ -58,8 +62,58 @@ const AdminHealthView = (() => {
 
       setFact("other-failures", otherFailuresLabel(health.other || {}));
 
+      renderCost(payload.ai_cost || {});
+
       setCaveat(caveatLabel(telemetry, health));
       setRaw(telemetry.counters || {});
+    }
+
+    function renderCost(cost = {}) {
+      state.aiCost = cost;
+      if (costTotal) costTotal.textContent = usd(cost.total_usd);
+      if (costTokens) costTokens.textContent = `${num(cost.total_tokens)} tokens`;
+      renderCostFeatures(Array.isArray(cost.features) ? cost.features : []);
+      if (costCaveat) {
+        costCaveat.textContent = cost.note
+          || "Spend is cumulative since process start (since last restart); not windowed.";
+      }
+    }
+
+    function renderCostFeatures(features) {
+      if (!costFeatures) return;
+      costFeatures.replaceChildren();
+      if (!features.length) {
+        const empty = document.createElement("p");
+        empty.className = "health-caveat";
+        empty.textContent = "No AI spend recorded since process start.";
+        costFeatures.appendChild(empty);
+        return;
+      }
+      features.forEach((row) => {
+        const item = document.createElement("div");
+        item.className = "ai-cost-feature";
+        item.dataset.feature = String(row.feature || "unknown");
+
+        const name = document.createElement("span");
+        name.className = "ai-cost-feature-name";
+        name.textContent = featureLabel(row.feature);
+
+        const amount = document.createElement("span");
+        amount.className = "ai-cost-feature-amount";
+        amount.textContent = usd(row.cost_usd);
+
+        const tokens = document.createElement("span");
+        tokens.className = "ai-cost-feature-tokens";
+        tokens.textContent = `${num(row.total_tokens)} tokens`;
+
+        item.append(name, amount, tokens);
+        costFeatures.appendChild(item);
+      });
+    }
+
+    function featureLabel(value) {
+      const raw = String(value || "unknown");
+      return raw.replace(/[_.-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
     }
 
     function renderError(message) {
@@ -71,6 +125,7 @@ const AdminHealthView = (() => {
         "generation-requests", "generation-succeeded", "generation-rejected", "generation-failed",
         "generation-gate-blocked", "generation-failure-rate", "generation-gate-rate", "other-failures",
       ].forEach((key) => setFact(key, "—"));
+      renderCost({ total_usd: 0, total_tokens: 0, features: [], note: message });
       setCaveat(message);
       setRaw({});
     }
@@ -166,7 +221,19 @@ const AdminHealthView = (() => {
       return `${(parsed * 100).toFixed(1)}%`;
     }
 
-    return { load };
+    function usd(value) {
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed < 0) return "$0.00";
+      // Default to plain cents ($0.15, $12.40). Only widen to sub-cent precision when
+      // a real spend would otherwise round AWAY to $0.00 — so small per-call costs
+      // stay visible without making normal figures read as "$0.1500".
+      const digits = parsed > 0 && parsed < 0.005 ? 4 : 2;
+      return `$${parsed.toFixed(digits)}`;
+    }
+
+    // `render` is exposed alongside `load` so the payload renderers (including the
+    // USD cost panel) can be driven directly in tests without a live fetch.
+    return { load, render };
   }
 
   return { createController };
@@ -174,4 +241,10 @@ const AdminHealthView = (() => {
 
 function createAdminHealthController(options) {
   return AdminHealthView.createController(options);
+}
+
+// CommonJS export for the Node test harness (a no-op in the browser, mirroring
+// admin-integrations.js). The page still consumes the IIFE globals above.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { AdminHealthView, createAdminHealthController };
 }

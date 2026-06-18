@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260618drivename">
+    <link rel="stylesheet" href="/static/styles.css?v=20260619aicost">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260618asyncrev1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260618nodl1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
@@ -1376,6 +1376,18 @@
                     <li>Checking AI review health…</li>
                   </ul>
 
+                  <div class="integration-subsection ai-cost-panel">
+                    <h3>AI spend (USD)</h3>
+                    <div class="ai-cost-headline">
+                      <span class="ai-cost-total" id="adminAiCostTotal">$0.00</span>
+                      <span class="ai-cost-total-tokens" id="adminAiCostTokens">0 tokens</span>
+                    </div>
+                    <div class="ai-cost-features" id="adminAiCostFeatures">
+                      <p class="health-caveat">No AI spend recorded since process start.</p>
+                    </div>
+                    <p class="health-caveat" id="adminAiCostCaveat">Spend is cumulative since process start (since last restart); not windowed.</p>
+                  </div>
+
                   <div class="integration-subsection">
                     <h3>AI-first review</h3>
                     <dl class="integration-facts" id="adminHealthReviewFacts">
@@ -2265,7 +2277,7 @@
     <script src="/static/js/draft-intake.js?v=20260617gen1"></script>
     <script src="/static/js/auth-session.js?v=20260618depstatus1"></script>
     <script src="/static/js/admin-ai.js?v=20260618aiconfig"></script>
-    <script src="/static/js/admin-health.js?v=20260617a401"></script>
+    <script src="/static/js/admin-health.js?v=20260619a"></script>
     <script src="/static/js/admin-integrations.js?v=20260618gmailfix"></script>
     <script src="/static/js/admin-drive.js?v=20260618drivename"></script>
     <script src="/static/js/admin-personalisation.js?v=20260611a"></script>
@@ -2292,6 +2304,6 @@
     <script src="/static/js/dashboard-search.js?v=20260614a"></script>
     <script src="/static/js/notifications.js?v=20260617aio1"></script>
     <script src="/static/js/generator-editor.js?v=20260617a"></script>
-    <script src="/static/app.js?v=20260618drivename"></script>
+    <script src="/static/app.js?v=20260619aicost"></script>
   </body>
 </html>
