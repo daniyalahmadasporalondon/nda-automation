@@ -231,6 +231,24 @@ def stub_ai_assessment_response(packet: Mapping[str, Any]) -> dict[str, Any]:
     return {"assessments": assessments}
 
 
+def ai_first_review_enabled() -> bool:
+    """Cheap, OFFLINE predicate: is the AI-first reviewer enabled?
+
+    Reads the same ``_ai_review_settings()["enabled"]`` flag that
+    ``assess_nda_with_ai`` consults before raising "AI-first assessment is
+    disabled." -- so a caller can decide, WITHOUT running the heavy pipeline,
+    whether the AI review can run at all. Used by the async review-refresh route to
+    keep today's synchronous ``ai_review_unavailable`` notification when AI is OFF
+    (instead of enqueuing a job that would only fail). Fail-safe: any error reading
+    settings reports enabled (so the async path still runs and fails closed in the
+    worker if the reviewer is truly unavailable), never raising into the route.
+    """
+    try:
+        return bool(_ai_review_settings().get("enabled"))
+    except Exception:  # pragma: no cover - settings read must never break the route
+        return True
+
+
 def assess_nda_with_ai(
     source_text: str,
     *,

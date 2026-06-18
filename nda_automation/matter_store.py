@@ -113,6 +113,16 @@ MATTER_UPDATE_FIELDS = {
     # burning paid assessor+verifier calls.
     "inbound_review_failures",
     "inbound_review_failed_at",
+    # Async AI-review lifecycle (async review backend). The heavy AI review now
+    # runs OFF the request thread on the storm-hardened inbound worker pool; these
+    # three fields let the board + review polls report progress without the route
+    # blocking on the ~145-245s pipeline. ``review_status`` is one of
+    # idle/in_progress/completed/failed; ``review_started_at`` stamps when the async
+    # job was enqueued (the 300s TTL "interrupted, retry" override is computed off
+    # it on read); ``review_error`` carries a short reason when the last review failed.
+    "review_status",
+    "review_started_at",
+    "review_error",
     "last_outbound_account",
     "last_outbound_at",
     "last_outbound_filename",
