@@ -14,6 +14,7 @@ from copy import deepcopy
 from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
 from io import BytesIO
+import urllib.error
 from urllib.parse import parse_qs, urlparse
 from unittest.mock import MagicMock, call, patch
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -25,6 +26,7 @@ from nda_automation.checker import (
     REVIEW_ENGINE_VERSION,
     load_playbook,
 )
+from nda_automation import ai_review
 from nda_automation import app_settings
 from nda_automation import document_rendering
 from nda_automation import document_limits
@@ -931,7 +933,10 @@ class ServerTests(unittest.TestCase):
     ADMIN_SETTINGS_MUTATORS = (
         ("POST", "/api/ai/api-key", {"api_key": "local-secret-key"}),
         ("DELETE", "/api/ai/api-key", None),
-        ("POST", "/api/ai/settings", {"enabled": True}),
+        # Use enabled=False: this exercises the same admin-gated route without
+        # tripping the enable-requires-key gate (no key is configured in these
+        # auth-focused tests), so the allow case asserts a clean 200 on the gate.
+        ("POST", "/api/ai/settings", {"enabled": False}),
         ("POST", "/api/admin/personalisation-settings", {"sign_off": "Best,"}),
     )
 
@@ -4798,6 +4803,145 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(invalid_payload["error"], "AI enabled setting must be true or false.")
         self.assertEqual(missing_status, 400)
         self.assertEqual(missing_payload["error"], "Provide an AI or runtime review setting to update.")
+
+    def test_ai_settings_enable_without_key_is_rejected_and_not_persisted(self):
+        # Enable-requires-key: turning AI on with no configured key must be rejected
+        # (409) and must NOT persist an "on-but-broken" state.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(
+                    os.environ,
+                    {"OPENROUTER_API_KEY": "", "NDA_AI_REVIEW_ENABLED": ""},
+                    clear=False,
+                ):
+                    status, payload = self.request("POST", "/api/ai/settings", {"enabled": True})
+                    persisted = app_settings.ai_settings()
+
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"], "Add a working OpenRouter API key before turning AI on.")
+        # The rejected toggle must not persist an enabled=True ("on-but-broken") state.
+        self.assertNotEqual(persisted["enabled"], True)
+
+    def test_ai_settings_enable_with_key_is_accepted(self):
+        # With a configured key (env), enabling AI succeeds and persists.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(
+                    os.environ,
+                    {"OPENROUTER_API_KEY": "sk-or-test-key", "NDA_AI_REVIEW_ENABLED": ""},
+                    clear=False,
+                ):
+                    status, payload = self.request("POST", "/api/ai/settings", {"enabled": True})
+                    persisted = app_settings.ai_settings()
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["ai_review"]["enabled"], True)
+        self.assertEqual(persisted["enabled"], True)
+        self.assertNotIn("sk-or-test-key", json.dumps(payload))
+
+    def test_ai_settings_disable_without_key_is_allowed(self):
+        # Turning AI OFF must never be blocked by the enable-requires-key gate.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(
+                    os.environ,
+                    {"OPENROUTER_API_KEY": "", "NDA_AI_REVIEW_ENABLED": ""},
+                    clear=False,
+                ):
+                    status, payload = self.request("POST", "/api/ai/settings", {"enabled": False})
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["ai_review"]["enabled"], False)
+
+    def test_ai_settings_valid_model_slug_is_persisted(self):
+        ai_review._reset_model_catalog_cache_for_tests()
+        self.addCleanup(ai_review._reset_model_catalog_cache_for_tests)
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(
+                    ai_review,
+                    "_fetch_openrouter_model_slugs",
+                    return_value=frozenset({"anthropic/claude-opus-4.8", "deepseek/deepseek-chat"}),
+                ):
+                    status, payload = self.request(
+                        "POST", "/api/ai/settings", {"model": "deepseek/deepseek-chat"}
+                    )
+                    persisted = app_settings.ai_settings()
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["ai_review"]["model"], "deepseek/deepseek-chat")
+        self.assertEqual(persisted["model"], "deepseek/deepseek-chat")
+
+    def test_ai_settings_unknown_model_slug_is_rejected_and_not_persisted(self):
+        ai_review._reset_model_catalog_cache_for_tests()
+        self.addCleanup(ai_review._reset_model_catalog_cache_for_tests)
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                before = app_settings.ai_settings()["model"]
+                with patch.object(
+                    ai_review,
+                    "_fetch_openrouter_model_slugs",
+                    return_value=frozenset({"anthropic/claude-opus-4.8"}),
+                ):
+                    status, payload = self.request(
+                        "POST", "/api/ai/settings", {"model": "totally/made-up-model"}
+                    )
+                    persisted = app_settings.ai_settings()
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "Unknown model 'totally/made-up-model' -- check the model id.")
+        self.assertEqual(persisted["model"], before)
+
+    def test_ai_settings_model_persisted_with_warning_when_catalog_unreachable(self):
+        # Catalog fetch failure must NOT hard-block: persist with an explicit
+        # unverified-model warning rather than a false success or a false rejection.
+        ai_review._reset_model_catalog_cache_for_tests()
+        self.addCleanup(ai_review._reset_model_catalog_cache_for_tests)
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(
+                    ai_review,
+                    "_fetch_openrouter_model_slugs",
+                    side_effect=urllib.error.URLError("no network"),
+                ):
+                    status, payload = self.request(
+                        "POST", "/api/ai/settings", {"model": "anthropic/claude-opus-4.8"}
+                    )
+                    persisted = app_settings.ai_settings()
+
+        self.assertEqual(status, 200)
+        self.assertEqual(persisted["model"], "anthropic/claude-opus-4.8")
+        warning_codes = [w.get("code") for w in payload.get("operational_warnings", [])]
+        self.assertIn("ai_model_unverified", warning_codes)
+
+    def test_validate_model_slug_parses_catalog_and_caches(self):
+        # Exercises the real fetch+parse+cache path (urlopen mocked, no key sent).
+        ai_review._reset_model_catalog_cache_for_tests()
+        self.addCleanup(ai_review._reset_model_catalog_cache_for_tests)
+        catalog_body = json.dumps(
+            {"data": [{"id": "anthropic/claude-opus-4.8"}, {"id": "deepseek/deepseek-chat"}]}
+        ).encode("utf-8")
+        with patch.object(
+            ai_review.urllib.request,
+            "urlopen",
+            return_value=_FakeUrlopen(catalog_body),
+        ) as mocked_urlopen:
+            self.assertEqual(ai_review.validate_model_slug("deepseek/deepseek-chat"), ("valid", ""))
+            not_found_status, not_found_message = ai_review.validate_model_slug("nope/nope")
+        self.assertEqual(not_found_status, "not_found")
+        self.assertEqual(not_found_message, "Unknown model 'nope/nope' -- check the model id.")
+        # Second slug check is served from cache: urlopen called exactly once.
+        self.assertEqual(mocked_urlopen.call_count, 1)
+        # The catalog request carries no Authorization/API-key header.
+        request_arg = mocked_urlopen.call_args.args[0]
+        self.assertNotIn("Authorization", request_arg.headers)
+        self.assertEqual(request_arg.full_url, ai_review.OPENROUTER_MODELS_ENDPOINT)
 
     def test_ai_settings_endpoint_warns_when_enabled_verifier_is_inactive_without_key(self):
         # AI verifier enabled but unkeyed: it is INACTIVE (a no-op that changes no

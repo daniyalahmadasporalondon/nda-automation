@@ -4,6 +4,7 @@ import json
 import os
 import re
 import ssl
+import time
 import urllib.error
 import urllib.request
 from copy import deepcopy
@@ -39,6 +40,12 @@ AI_REVIEW_ENV_BACKUP_PROVIDER = "NDA_AI_BACKUP_PROVIDER"
 AI_REVIEW_ENV_BACKUP_MODEL = "NDA_AI_BACKUP_MODEL"
 OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 OPENROUTER_CHAT_COMPLETIONS_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+# The models catalog is a PUBLIC endpoint (no key required). We use it to validate
+# a reviewer model slug before it is persisted, so a typo cannot silently no-op the
+# AI review at request time.
+OPENROUTER_MODELS_ENDPOINT = "https://openrouter.ai/api/v1/models"
+MODEL_CATALOG_TIMEOUT_SECONDS = 5
+MODEL_CATALOG_CACHE_TTL_SECONDS = 300
 # OpenRouter API keys are prefixed "sk-or-"; legacy Google/Gemini-direct keys are
 # prefixed "AIza". OpenRouter is the sole provider now (the default model is served
 # THROUGH OpenRouter), so a stored Gemini-direct key can no longer be used
@@ -1096,3 +1103,78 @@ def _sanitize_model_name(model: str) -> str:
     cleaned = str(model or DEFAULT_OPENROUTER_MODEL).strip()
     cleaned = re.sub(r"[^A-Za-z0-9._/-]", "", cleaned)
     return cleaned or DEFAULT_OPENROUTER_MODEL
+
+
+# Module-level cache for the public model catalog: (fetched_at, frozenset_of_slugs).
+# A short TTL keeps repeated admin saves from hammering the OpenRouter catalog while
+# still picking up newly published models within minutes.
+_MODEL_CATALOG_CACHE: Tuple[float, frozenset] | None = None
+
+
+def _reset_model_catalog_cache_for_tests() -> None:
+    global _MODEL_CATALOG_CACHE
+    _MODEL_CATALOG_CACHE = None
+
+
+def _fetch_openrouter_model_slugs() -> frozenset:
+    """Fetch the set of model slugs from the PUBLIC OpenRouter catalog.
+
+    No API key is sent. Caches the result for ``MODEL_CATALOG_CACHE_TTL_SECONDS``.
+    Raises on any network/parse failure so callers can choose an "unverified"
+    (don't-hard-block) path rather than treating the error as "model not found".
+    """
+    global _MODEL_CATALOG_CACHE
+    now = time.monotonic()
+    if _MODEL_CATALOG_CACHE is not None:
+        fetched_at, slugs = _MODEL_CATALOG_CACHE
+        if now - fetched_at < MODEL_CATALOG_CACHE_TTL_SECONDS:
+            return slugs
+    request = urllib.request.Request(
+        OPENROUTER_MODELS_ENDPOINT,
+        method="GET",
+        headers={"Accept": "application/json"},
+    )
+    with urllib.request.urlopen(
+        request,
+        timeout=MODEL_CATALOG_TIMEOUT_SECONDS,
+        context=_trusted_https_context(),
+    ) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        raise AIReviewError("OpenRouter model catalog response was not in the expected shape.")
+    slugs = frozenset(
+        str(entry.get("id")).strip()
+        for entry in data
+        if isinstance(entry, dict) and isinstance(entry.get("id"), str) and entry.get("id").strip()
+    )
+    _MODEL_CATALOG_CACHE = (now, slugs)
+    return slugs
+
+
+def validate_model_slug(model: str) -> Tuple[str, str]:
+    """Validate a reviewer model slug against the public OpenRouter catalog.
+
+    Returns a ``(status, message)`` tuple where ``status`` is one of:
+      - ``"valid"``     -- the slug is present in the catalog; safe to persist.
+      - ``"not_found"`` -- the catalog was reached but the slug is absent; REJECT.
+      - ``"unverified"``-- the catalog could not be fetched (network/parse error);
+                           callers should persist with an explicit warning rather
+                           than block, so a transient outage cannot lock out a save.
+
+    The catalog fetch is mocked in tests; this function performs no key-based call.
+    """
+    cleaned = str(model or "").strip()
+    if not cleaned:
+        return ("not_found", "Unknown model '' -- check the model id.")
+    try:
+        slugs = _fetch_openrouter_model_slugs()
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError, AIReviewError):
+        return (
+            "unverified",
+            f"Could not reach the OpenRouter model catalog to verify '{cleaned}'. "
+            "Saved as an unverified model -- confirm the model id is correct.",
+        )
+    if cleaned in slugs:
+        return ("valid", "")
+    return ("not_found", f"Unknown model '{cleaned}' -- check the model id.")

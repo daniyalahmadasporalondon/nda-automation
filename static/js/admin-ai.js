@@ -108,7 +108,12 @@ const AdminAiView = (() => {
         const payload = await window.AuthExpired.parseOkJson(response, "AI setting could not save", reviewErrorFromPayload);
         renderAiFromPayload(payload);
       } catch (error) {
-        setOverall(error.message || "Save failed", "blocked");
+        // Reject path (e.g. 409 "Add a working OpenRouter API key before turning AI
+        // on."): surface the reason inline and revert to the real persisted state so
+        // no success copy lingers on a save that did not happen.
+        const message = error.message || "Save failed";
+        setOverall(message, "blocked");
+        setFact("enabled-copy", message);
         renderToggle(state.aiReviewStatus?.enabled === true);
       } finally {
         setToggleDisabled(false);
