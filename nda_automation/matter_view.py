@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Callable, TypedDict
 
-from . import artifact_registry, governing_law_view, playbook_runtime
+from . import artifact_registry, governing_law_view, law_forum_check, playbook_runtime
 from .concept_classifier import classify_document_concepts
 from .contract_structure import build_contract_structure
 from .gmail_integration import matter_reply_recipient, recipient_email
@@ -227,6 +227,14 @@ def public_matter(
         public["recipient_redirected_from_reply_to"] = True
         public["recipient_warning"] = recipient_warning
     review_state = matter_review_state(matter)
+    # ADDITIVE law<->forum overlay: a deterministic gap-filler that can ELEVATE a
+    # clean PASS to REVIEW when the document's governing law and its forum/venue
+    # name DIFFERENT jurisdictions (the AI review is contractually told to ignore
+    # the venue clause, so such a mismatch otherwise produces no signal). It NEVER
+    # overrides a stronger AI verdict (already review/check is left untouched),
+    # never force-FAILs, and is fail-safe (any error returns the state unchanged),
+    # so it can only add a review signal -- never become a deterministic ghost.
+    review_state = law_forum_check.apply_lawforum_overlay(review_state, matter)
     if review_state:
         public["review_state"] = review_state
     # Async-review lifecycle status (review_status / review_error / review_started_at)
