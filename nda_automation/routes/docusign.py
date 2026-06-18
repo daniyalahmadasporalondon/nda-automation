@@ -373,6 +373,14 @@ def handle_signature_status(handler, path: str, *, send_body: bool = True) -> No
             # mis-using the matter/request id.
             drive_token_owner_user_id=_google_owner_user_id(handler),
         )
+    except docusign_connection.DocuSignReconnectRequiredError as error:
+        # A dead grant (revoked / expired beyond refresh) — distinct from a
+        # never-connected account. Mirror handle_send_for_signature: tell the user to
+        # RECONNECT rather than showing the generic "connect" prompt. The reconnect
+        # payload still carries needs_connect + connect_url, so an on-demand caller
+        # (the "Refresh status" button) routes through the same setConnectNeeded path.
+        handler._send_json(_needs_reconnect_payload(str(error)), status=409, send_body=send_body)
+        return
     except docusign_connection.DocuSignNotConnectedError:
         handler._send_json(_needs_connect_payload(), status=409, send_body=send_body)
         return

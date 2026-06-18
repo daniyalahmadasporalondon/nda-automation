@@ -205,6 +205,22 @@ function updateExportButtonState() {
     const showMark = Boolean(matter?.id) && !matterIsExecuted(matter);
     studioMarkExecutedButton.hidden = !showMark;
   }
+  if (typeof studioRefreshStatusButton !== "undefined" && studioRefreshStatusButton) {
+    // The on-demand "Refresh status" self-heal affordance: shown ONLY while a matter
+    // has an ACTIVE (sent, non-terminal) DocuSign envelope — i.e. it is out for
+    // signature but not yet completed/declined/voided. That is exactly the window in
+    // which a missed completion webhook could leave it stuck, so a manual re-sync is
+    // useful. Once terminal (executed via webhook or otherwise) the button hides.
+    // Gate via the controller's hasActiveEnvelope() so the FE reads the SAME nested-
+    // first envelope view the badge uses. Mirrors the mark-executed placement.
+    const matter = state.selectedMatter;
+    const controller = (typeof docusignSendController !== "undefined") ? docusignSendController : null;
+    const active = Boolean(matter?.id)
+      && controller
+      && typeof controller.hasActiveEnvelope === "function"
+      && controller.hasActiveEnvelope(matter);
+    studioRefreshStatusButton.hidden = !active;
+  }
   updateApproveReviewControl();
   updateRedlineDraftControls();
   // Keep the DocuSign "Send for signature" trigger + signature badge in sync with

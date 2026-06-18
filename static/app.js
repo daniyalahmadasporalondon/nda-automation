@@ -22,6 +22,11 @@ const studioReviewedButton = document.querySelector("#studioReviewedButton");
 // signed OUTSIDE our DocuSign flow (paper / uploaded). DocuSign completion is the
 // normal automatic route to executed; this is the manual exception handle.
 const studioMarkExecutedButton = document.querySelector("#studioMarkExecutedButton");
+// On-demand "Refresh status" — re-syncs the live DocuSign envelope status so a
+// matter whose completion webhook was MISSED self-heals to executed. Shown only
+// while a sent, non-terminal envelope exists; mirrors the mark-executed gate +
+// placement. The normal route is the webhook; this is the manual recovery handle.
+const studioRefreshStatusButton = document.querySelector("#studioRefreshStatusButton");
 // Approve Review + Send for Signature moved out of the header into the Overview
 // footer (static/js/overview/footer.js); the header no longer carries those
 // buttons. The footer reads the gate helpers (approveBlockReasons /

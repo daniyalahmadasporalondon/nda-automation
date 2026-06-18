@@ -221,6 +221,77 @@ async function submit(form) {
     assert.doesNotMatch(statusNode.innerHTML || "", /<a /);
   });
 
+  // --- "Refresh status" self-heal button: the controller seam it relies on -----
+  //
+  // The on-demand button (review workstation) is gated on hasActiveEnvelope() and
+  // calls the controller's refreshStatus(matterId), reacting to its RETURN value
+  // (completed -> board/corpus refresh; needsConnect -> setConnectNeeded). These
+  // tests pin that controller contract against a mocked /signature-status route.
+
+  await test("hasActiveEnvelope gates the Refresh-status button: true when sent + non-terminal", async () => {
+    const matterRef = { current: { id: "m4" } };
+    const { controller } = buildController({ fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }), matterRef });
+    // No envelope yet -> not active (button hidden).
+    assert.equal(controller.hasActiveEnvelope({ id: "m4" }), false);
+    // Sent, non-terminal -> active (button shown).
+    assert.equal(controller.hasActiveEnvelope({ id: "m4", docusign: { envelope_id: "env-9", status: "sent" } }), true);
+    // Terminal states -> NOT active (button hidden again).
+    assert.equal(controller.hasActiveEnvelope({ id: "m4", docusign: { envelope_id: "env-9", status: "completed" } }), false);
+    assert.equal(controller.hasActiveEnvelope({ id: "m4", docusign: { envelope_id: "env-9", status: "declined" } }), false);
+    assert.equal(controller.hasActiveEnvelope({ id: "m4", docusign: { envelope_id: "env-9", status: "voided" } }), false);
+  });
+
+  await test("refreshStatus returns { ok, completed:true } on a mocked completed envelope (drives board/corpus refresh)", async () => {
+    let calls = 0;
+    const matterRef = { current: { id: "m5", docusign: { envelope_id: "env-5", status: "sent" } } };
+    const fetchImpl = async (url) => {
+      calls += 1;
+      assert.match(url, /\/m5\/signature-status$/);
+      return { ok: true, status: 200, json: async () => ({ envelope_id: "env-5", status: "completed", completed: true }) };
+    };
+    const { controller } = buildController({ fetchImpl, matterRef });
+    const result = await controller.refreshStatus("m5");
+    assert.equal(calls, 1, "refreshStatus hits the signature-status route exactly once");
+    assert.equal(result.ok, true);
+    assert.equal(result.completed, true, "a completed envelope reports completed:true so the caller refreshes the board + corpus");
+    // The merged matter carries the live status forward.
+    assert.equal(matterRef.current.docusign.status, "completed");
+  });
+
+  await test("refreshStatus on a still-pending envelope returns ok:true, completed:false (button stays, no board refresh)", async () => {
+    const matterRef = { current: { id: "m6", docusign: { envelope_id: "env-6", status: "sent" } } };
+    const fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({ envelope_id: "env-6", status: "sent", completed: false }) });
+    const { controller } = buildController({ fetchImpl, matterRef });
+    const result = await controller.refreshStatus("m6");
+    assert.equal(result.ok, true);
+    assert.equal(result.completed, false);
+  });
+
+  await test("refreshStatus surfaces a 409 needs_connect/needs_reconnect as { ok:false, needsConnect } without throwing", async () => {
+    const matterRef = { current: { id: "m7", docusign: { envelope_id: "env-7", status: "sent" } } };
+    const fetchImpl = async () => ({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        error: "Your DocuSign authorization is no longer valid. Reconnect DocuSign to continue.",
+        needs_reconnect: true,
+        needs_connect: true,
+        connect_url: "/api/docusign/connect",
+      }),
+    });
+    const { controller, statusNode } = buildController({ fetchImpl, matterRef });
+    let result;
+    await assert.doesNotReject(async () => { result = await controller.refreshStatus("m7"); });
+    assert.equal(result.ok, false);
+    assert.equal(result.needsConnect, true);
+    assert.equal(result.connectUrl, "/api/docusign/connect");
+    // The caller routes that through the controller's setConnectNeeded path: a
+    // guiding (re)connect message with a clickable link, rendered inline.
+    controller.setConnectNeeded(result.connectUrl);
+    assert.match(statusNode.innerHTML, /<a href="\/api\/docusign\/connect"[^>]*>Connect DocuSign<\/a>/);
+    assert.ok(statusNode.classList.contains("error"));
+  });
+
   process.stdout.write(`\n${passed} passed\n`);
 })().catch((error) => {
   process.stderr.write(`\nFAILED: ${error && error.stack ? error.stack : error}\n`);

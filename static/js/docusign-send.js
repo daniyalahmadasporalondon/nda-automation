@@ -249,13 +249,37 @@ function createDocuSignSendController({
     }
   }
 
+  // Re-sync the live envelope status from the server (GET /signature-status), which
+  // re-fetches the REAL DocuSign status (spoof-proof) and, on `completed`, flips the
+  // matter to executed via the same shared lifecycle path the webhook uses. Used by
+  // BOTH the send-modal poll loop and the on-demand "Refresh status" button.
+  //
+  // Returns a small result object so an on-demand caller can react WITHOUT
+  // re-issuing the fetch: { ok, status, completed, terminal, needsConnect,
+  // connectUrl }. The poll loop ignores the return value (it only needs the
+  // side-effects). A 409 needs_connect/needs_reconnect surfaces ok:false +
+  // needsConnect:true so the caller can route to setConnectNeeded.
   async function refreshStatus(matterId) {
     try {
       const response = await fetch(`/api/matters/${encodeURIComponent(matterId)}/signature-status`);
-      const payload = await response.json();
-      if (!response.ok) return;
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        // 409 needs_connect / needs_reconnect — the grant is dead. Surface it so an
+        // on-demand caller routes the user to (re)connect; the poll loop ignores it.
+        const needsConnect = Boolean(payload && payload.needs_connect);
+        return {
+          ok: false,
+          status: "",
+          completed: false,
+          terminal: false,
+          needsConnect,
+          connectUrl: needsConnect ? String(payload.connect_url || "") : "",
+        };
+      }
       const matter = currentMatter();
-      if (!matter?.id || matter.id !== matterId) return;
+      if (!matter?.id || matter.id !== matterId) {
+        return { ok: true, status: payload.status || "", completed: Boolean(payload.completed), terminal: false, needsConnect: false, connectUrl: "" };
+      }
       const nextStatus = payload.status || matterView(matter).status;
       const merged = {
         ...matter,
@@ -268,8 +292,17 @@ function createDocuSignSendController({
       const m = model();
       const view = m ? m.signatureView(payload) : null;
       if (view?.terminal) stopPolling();
+      return {
+        ok: true,
+        status: nextStatus,
+        completed: Boolean(payload.completed) || Boolean(view?.completed),
+        terminal: Boolean(view?.terminal),
+        needsConnect: false,
+        connectUrl: "",
+      };
     } catch (error) {
       // Transient network errors are ignored; the next tick retries.
+      return { ok: false, status: "", completed: false, terminal: false, needsConnect: false, connectUrl: "" };
     }
   }
 
@@ -476,7 +509,19 @@ function createDocuSignSendController({
     else triggerButton.textContent = text;
   }
 
-  return { openComposer, closeComposer, renderSignatureState, syncTriggerButton, refreshStatus };
+  return {
+    openComposer,
+    closeComposer,
+    renderSignatureState,
+    syncTriggerButton,
+    refreshStatus,
+    // Exposed for the on-demand "Refresh status" button (review workstation): the
+    // button is shown only for a matter with an ACTIVE (sent, non-terminal)
+    // envelope, mirroring the in-controller gate, and reuses setConnectNeeded to
+    // surface a 409 needs_connect/needs_reconnect inline.
+    hasActiveEnvelope,
+    setConnectNeeded,
+  };
 }
 
 if (typeof module !== "undefined" && module.exports) {

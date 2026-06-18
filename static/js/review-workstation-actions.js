@@ -76,6 +76,10 @@ function setupReviewWorkstationActions() {
     markSelectedMatterExecuted();
   });
 
+  studioRefreshStatusButton?.addEventListener("click", () => {
+    refreshSelectedMatterSignatureStatus();
+  });
+
   // Approve Review now lives only on the Overview footer, which calls
   // approveSelectedReview() directly (window.approveSelectedReview). There is no
   // header Approve button to wire here anymore.
@@ -431,6 +435,77 @@ async function markSelectedMatterExecuted() {
     renderOperationError(error, "Could not mark this matter executed.");
   } finally {
     if (studioMarkExecutedButton) studioMarkExecutedButton.disabled = false;
+    updateExportButtonState();
+  }
+}
+
+// On-demand "Refresh status" — the SELF-HEAL path for a matter whose DocuSign
+// completion webhook was MISSED. The normal route to executed is the webhook;
+// this re-syncs the LIVE envelope status (GET /signature-status, spoof-proof:
+// the server re-fetches from DocuSign and, on `completed`, flips the matter to
+// executed via the SAME shared lifecycle path the webhook uses, idempotently).
+// Shown only while a sent, non-terminal envelope exists (see the gate in the
+// render module). Delegates the fetch + status merge + badge re-render to the
+// shared DocuSign controller's refreshStatus(); on a returned `completed` it
+// reuses the exact post-mark board/corpus refresh so the now-executed matter
+// drops off the board and joins the executed library. A 409
+// needs_connect/needs_reconnect surfaces inline via setConnectNeeded.
+async function refreshSelectedMatterSignatureStatus() {
+  const matter = state.selectedMatter;
+  const matterId = matter?.id;
+  if (!matterId) return;
+  const controller = typeof docusignSendController !== "undefined" ? docusignSendController : null;
+  if (!controller || typeof controller.refreshStatus !== "function") return;
+
+  const button = studioRefreshStatusButton;
+  const previousLabel = button ? button.textContent : "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Refreshing…";
+  }
+  try {
+    const result = await controller.refreshStatus(matterId);
+    if (result && result.needsConnect) {
+      // The grant is dead (or DocuSign isn't connected). Route the user to
+      // (re)connect inline rather than leaving a generic, unresolving error.
+      if (typeof controller.setConnectNeeded === "function") {
+        controller.setConnectNeeded(result.connectUrl);
+      }
+      setFileMeta("DocuSign needs reconnecting before the status can refresh.");
+      return;
+    }
+    if (result && result.completed) {
+      setFileMeta("Signature complete. Filed into the executed library.");
+      updateExportButtonState();
+      // The matter is now executed (server flipped it via the shared lifecycle
+      // path). Refresh the board + corpus so it moves off the active board and
+      // into the executed library — the exact post-mark-executed refresh block.
+      if (repositoryController && typeof repositoryController.loadMatters === "function") {
+        await repositoryController.loadMatters();
+      }
+      if (typeof renderDashboardInboxTable === "function") renderDashboardInboxTable();
+      if (typeof corpusController !== "undefined"
+        && corpusController
+        && typeof corpusController.refresh === "function") {
+        try {
+          await corpusController.refresh();
+        } catch (_corpusError) {
+          // Swallow: corpus refresh is a convenience, not part of the sync contract.
+        }
+      }
+      return;
+    }
+    // Not terminal: the badge already re-rendered inside refreshStatus. Echo the
+    // live status so the click visibly did something even when nothing changed.
+    const status = result && result.status ? String(result.status) : "";
+    setFileMeta(status ? `Signature status: ${status}.` : "Signature status refreshed.");
+  } catch (error) {
+    renderOperationError(error, "Could not refresh the signature status.");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = previousLabel || "Refresh status";
+    }
     updateExportButtonState();
   }
 }
