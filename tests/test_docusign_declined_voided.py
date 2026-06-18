@@ -175,3 +175,95 @@ def test_completed_path_unchanged(sent_matter, in_memory_matters):
     state = workflow.workflow_state(stored)
     assert state["status"] == workflow.STATUS_FULLY_SIGNED
     assert state["phase"] == workflow.PHASE_EXECUTED
+
+
+# --------------------------------------------------------------------------- #
+# RE-SEND after a terminal envelope clears the stale terminal flag.
+#
+# ``send_for_signature`` allows a re-send after a void/decline (routes/docusign.py
+# explicitly permits it). A FRESH envelope must NOT inherit the previous
+# envelope's terminal pin: ``_derive_phase_and_status`` checks signature_voided /
+# signature_declined BEFORE the sent-status, so a stale flag would out-rank the
+# live outbound and mislabel the matter as Voided/Declined.
+# --------------------------------------------------------------------------- #
+def test_resend_after_void_clears_voided_pin(sent_matter, in_memory_matters):
+    matter_id, fake, envelope_id = sent_matter
+
+    # 1) Void the first envelope -> matter reads "Voided — ready to re-send".
+    fake.void_envelope(envelope_id, reason="Cancelled to reissue.")
+    docusign_workflow.sync_signature_status(
+        None, matter_id, OWNER, repository=in_memory_matters, client=fake
+    )
+    stored = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
+    assert stored["signature_voided"] is True
+    assert workflow.workflow_state(stored)["status"] == workflow.STATUS_SIGNATURE_VOIDED
+
+    # 2) Re-send: a fresh envelope goes out.
+    resend = docusign_workflow.send_for_signature(
+        stored, matter_id, OWNER, repository=in_memory_matters, client=fake
+    )
+    assert resend.envelope_id and resend.envelope_id != envelope_id
+
+    stored = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
+    # The stale terminal pin (flag AND stamp) is gone; fresh outbound is awaiting.
+    assert stored["signature_voided"] is False
+    assert stored.get("signature_voided_at") is None
+    assert stored["awaiting_signature"] is True
+
+    state = workflow.workflow_state(stored)
+    # Reads Sent / awaiting counterparty (NOT voided, NOT the Reviewed column).
+    assert state["status"] == workflow.STATUS_SENT_AWAITING_COUNTERPARTY
+    assert state["phase"] == workflow.PHASE_SENT
+    assert state["board_column"] == workflow.BOARD_SENT
+    assert state["needs_attention"] is False
+
+
+def test_resend_after_decline_clears_declined_pin(sent_matter, in_memory_matters):
+    matter_id, fake, envelope_id = sent_matter
+
+    # 1) Decline the first envelope -> "Declined — needs attention".
+    fake.decline_envelope(envelope_id, email="cp@acme.com")
+    docusign_workflow.sync_signature_status(
+        None, matter_id, OWNER, repository=in_memory_matters, client=fake
+    )
+    stored = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
+    assert stored["signature_declined"] is True
+    declined_state = workflow.workflow_state(stored)
+    assert declined_state["status"] == workflow.STATUS_SIGNATURE_DECLINED
+    assert declined_state["needs_attention"] is True
+
+    # 2) Re-send: a fresh envelope is genuinely awaiting signature again.
+    resend = docusign_workflow.send_for_signature(
+        stored, matter_id, OWNER, repository=in_memory_matters, client=fake
+    )
+    assert resend.envelope_id and resend.envelope_id != envelope_id
+
+    stored = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
+    assert stored["signature_declined"] is False
+    assert stored.get("signature_declined_at") is None
+    assert stored["awaiting_signature"] is True
+
+    state = workflow.workflow_state(stored)
+    # Sent / awaiting, NOT "Declined — needs attention" over a live envelope.
+    assert state["status"] == workflow.STATUS_SENT_AWAITING_COUNTERPARTY
+    assert state["phase"] == workflow.PHASE_SENT
+    assert state["board_column"] == workflow.BOARD_SENT
+    assert state["needs_attention"] is False
+
+
+def test_first_time_send_is_clean_awaiting(sent_matter, in_memory_matters):
+    """A first-time send (no prior terminal) still derives to Sent/awaiting and
+    never carries the terminal flags. Guards against the re-send clear changing
+    the ordinary first-send behaviour."""
+    matter_id, _fake, _envelope_id = sent_matter
+
+    stored = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
+    assert stored["awaiting_signature"] is True
+    # Re-send clear writes explicit False/None; first send must not read truthy.
+    assert stored.get("signature_voided") is not True
+    assert stored.get("signature_declined") is not True
+
+    state = workflow.workflow_state(stored)
+    assert state["status"] == workflow.STATUS_SENT_AWAITING_COUNTERPARTY
+    assert state["phase"] == workflow.PHASE_SENT
+    assert state["needs_attention"] is False
