@@ -57,7 +57,11 @@ REASON_CODE_AFFILIATE_POISON = "definition_poison_overbroad_affiliate"
 # the detector can never drift from how the rest of the app sees the document.
 # ---------------------------------------------------------------------------
 def _matter_text(matter: Mapping[str, Any]) -> str:
-    return str(matter.get("extracted_text") or "")
+    # Only a genuine string is the document. A non-string ``extracted_text`` (dict,
+    # list, number, ...) is NOT str()-coerced -- its repr could otherwise trip a
+    # finding -- it is treated as "no text" so the detector stays silent.
+    value = matter.get("extracted_text")
+    return value if isinstance(value, str) else ""
 
 
 # ---------------------------------------------------------------------------
@@ -106,43 +110,60 @@ _CI_DEFINITION = re.compile(
 
 # An INCLUSION verb -- the polarity that makes a definition over-broad.
 _INCLUSION_VERB = re.compile(
-    r"\b(?:includ(?:e|es|ing)|shall\s+include|encompass(?:es|ing)?|comprises?|"
-    r"covers?|extends?\s+to|also\s+means|means)\b",
+    r"\b(?:includ(?:e|es|ing)|shall\s+include|deemed\s+to\s+include|"
+    r"encompass(?:es|ing)?|comprises?|covers?|extends?\s+to|also\s+means)\b",
     re.IGNORECASE,
 )
 
 # The standard exclusion categories -- the things a healthy CI definition EXCLUDES.
 # If a definition affirmatively INCLUDES one of these, it is poisoned.
+#
+# CRITICAL: every "public" match is WORD-BOUNDARED (\bpublic) so the bare substring
+# "public" inside "non-public" (a standard, narrow CI scope in a huge fraction of
+# real NDAs) does NOT register as the excluded category. "non-public" is handled as
+# a negation by ``_is_safe_polarity`` below.
 _EXCLUDED_CATEGORY = re.compile(
-    r"public(?:ly)?(?:\s+(?:available|known|disclosed))?|"
+    r"\bpublic(?:ly)?\b(?:\s+(?:available|known|disclosed|domain))?|"
+    r"\bpublic\s+domain\b|"
     r"(?:generally|widely|already|publicly)\s+known|"
-    r"in\s+the\s+public\s+domain|"
     r"(?:already|previously|lawfully|rightfully)\s+(?:in\s+(?:its|the\s+receiving\s+party.?s)\s+possession|"
     r"known|possessed)|"
     r"independently\s+(?:developed|created|conceived|derived)|"
-    r"received\s+from\s+a\s+third\s+party",
+    r"received\s+from\s+a\s+third\s+party|rightfully\s+(?:obtained|received)",
     re.IGNORECASE,
 )
 
 # Exclusion FRAMING -- the polarity flip that means the sentence is (correctly)
 # carving these categories OUT, not pulling them in. Its presence makes the
 # sentence safe regardless of the included categories named.
+#
+# NOTE: a bare "cease to be" / "no longer" is NOT exclusion framing -- the
+# OBFUSCATED poison "shall NOT cease to be Confidential Information by reason of
+# entering the public domain" (tp07) uses exactly that phrasing to ACHIEVE the
+# poison. We only treat a POSITIVE "ceases to be / no longer ... confidential"
+# (handled by ``_obfuscated_negation_poison``) -- not the negated form -- and we
+# do NOT list it here, so it can never suppress the real finding.
 _EXCLUSION_FRAMING = re.compile(
     r"shall\s+not\s+include|does\s+not\s+include|do\s+not\s+include|not\s+include|"
-    r"\bexclud(?:e|es|ing|ed)\b|\bexception\b|\bother\s+than\b|\bexcept\b|"
-    r"shall\s+not\s+(?:be|constitute|apply)|not\s+(?:be\s+)?(?:deemed|considered|"
-    r"treated|regarded)|cease(?:s)?\s+to\s+be|no\s+longer",
+    r"\bexclud(?:e|es|ing|ed)\b|\bexception(?:s)?\b|\bother\s+than\b|\bexcept\b|"
+    r"shall\s+not\s+apply|do(?:es)?\s+not\s+apply|obligations?\s+[^.;:]{0,40}?not\s+apply|"
+    r"not\s+(?:be\s+)?(?:deemed|considered|treated|regarded)\s+(?:as\s+)?confidential",
     re.IGNORECASE,
 )
 
-# A negation directly attached to the excluded category ("not generally known",
-# "which is not publicly available") -- the UTSA polarity. Treated as safe.
-_NEGATED_CATEGORY = re.compile(
-    r"\bnot\b[^.;:]{0,40}?(?:"
-    r"public|generally\s+known|widely\s+known|already\s+known|"
-    r"in\s+the\s+public\s+domain|independently\s+(?:developed|created)|"
-    r"in\s+(?:its|the)\s+possession"
-    r")",
+# Negation / narrowing phrasing that makes a CI category SAFE (the UTSA polarity):
+#   * "non-public" / "non public" -- a NARROW scope, the opposite of poison;
+#   * "not generally known" / "not being generally known" -- UTSA secrecy test;
+#   * "not ... publicly available / in the public domain / independently developed";
+#   * "independent economic value" / "independent commercial value" -- the UTSA
+#     trade-secret VALUE phrase (fp01/fp06), which is not an exclusion category.
+_SAFE_POLARITY = re.compile(
+    r"non[-\s]?public|"
+    r"not\s+(?:being\s+|be\s+)?(?:generally|widely|publicly)\s+known|"
+    r"not\s+(?:being\s+|be\s+)?(?:readily\s+)?ascertainable|"
+    r"not\b[^.;:]{0,40}?(?:public|in\s+the\s+public\s+domain|"
+    r"independently\s+(?:developed|created)|in\s+(?:its|the)\s+possession)|"
+    r"independent\s+(?:economic|commercial)\s+value",
     re.IGNORECASE,
 )
 
@@ -152,42 +173,82 @@ def _ci_sentence_is_poison(sentence: str) -> bool:
 
     Precision gates (all must hold):
       * the sentence names the protected term AND reads like a definition;
-      * it names a standard exclusion category (public / already-known / etc.);
       * an INCLUSION verb is present (so the category is pulled IN, not used);
-      * NO exclusion framing is present ("shall not include", "other than", ...);
-      * the category is NOT directly negated ("not generally known" -> UTSA-safe).
+      * it names a standard exclusion category (public / already-known / etc.);
+      * NO exclusion framing is present ("shall not include", "shall not apply"...);
+      * NO safe/UTSA polarity is present ("non-public", "not generally known",
+        "independent economic value").
     """
     if not _CI_TERM.search(sentence):
         return False
     if not _CI_DEFINITION.search(sentence):
         return False
-    if not _EXCLUDED_CATEGORY.search(sentence):
-        return False
     if not _INCLUSION_VERB.search(sentence):
         return False
-    # Polarity guards: an exclusion frame, or a negation glued to the category,
-    # means the sentence is doing the NORMAL thing (carving out / UTSA phrasing).
+    if not _EXCLUDED_CATEGORY.search(sentence):
+        return False
+    # Polarity guards: exclusion framing, or UTSA/narrowing polarity, means the
+    # sentence is doing the NORMAL thing (carving out / secrecy test / narrow scope).
     if _EXCLUSION_FRAMING.search(sentence):
         return False
-    if _NEGATED_CATEGORY.search(sentence):
+    if _SAFE_POLARITY.search(sentence):
         return False
     return True
 
 
+# Obfuscated negation poison (tp07): a "Confidential Information" definition that
+# DEEMS public / generally-known / independently-developed information to STAY
+# confidential -- "information shall NOT CEASE to be Confidential Information by
+# reason of entering the public domain ... and NO EXCLUSIONS shall apply". The
+# effect is identical to "includes public info" but the phrasing is negated, so the
+# plain inclusion path misses it. We require the protected term, a "no exclusions"
+# / "shall not cease to be confidential" frame, AND an excluded category named.
+_NO_EXCLUSIONS_FRAME = re.compile(
+    r"no\s+exclusions?\s+(?:of\s+any\s+kind\s+)?shall\s+apply|"
+    r"shall\s+not\s+cease\s+to\s+be\s+confidential|"
+    r"not\s+cease\s+to\s+be\s+confidential\s+information|"
+    r"remain(?:s)?\s+confidential\s+(?:information\s+)?(?:notwithstanding|even\s+(?:if|though)|"
+    r"regardless|despite)|"
+    r"none\s+of\s+the\s+exclusions\s+(?:set\s+out\s+)?(?:below\s+)?shall\s+apply",
+    re.IGNORECASE,
+)
+
+
+def _obfuscated_negation_poison(text: str) -> bool:
+    """True iff the document DEEMS otherwise-excludable info to stay confidential.
+
+    Catches the negated-form poison (tp07): a frame that overrides the exclusions
+    ("no exclusions shall apply" / "shall not cease to be Confidential Information")
+    co-located with at least one named exclusion category (public / generally known
+    / independently developed). The frame must appear in a sentence that references
+    the protected term, so a generic "no exceptions" elsewhere cannot trip it.
+    """
+    for sentence in _sentences(text):
+        if not _NO_EXCLUSIONS_FRAME.search(sentence):
+            continue
+        if not _CI_TERM.search(sentence):
+            continue
+        if _EXCLUDED_CATEGORY.search(sentence):
+            return True
+    return False
+
+
 def detect_ci_poison(text: str) -> dict | None:
     """Flag a "Confidential Information" definition that swallows the exclusions."""
-    for sentence in _sentences(text):
-        if _ci_sentence_is_poison(sentence):
-            return {
-                "reason_code": REASON_CODE_CI_POISON,
-                "message": (
-                    "The 'Confidential Information' definition affirmatively "
-                    "INCLUDES information that the standard carve-outs normally "
-                    "exclude (public / already-known / independently-developed "
-                    "information), which guts the exclusions through the "
-                    "definition. Recommend human review."
-                ),
-            }
+    poisoned = any(_ci_sentence_is_poison(s) for s in _sentences(text))
+    if not poisoned:
+        poisoned = _obfuscated_negation_poison(text)
+    if poisoned:
+        return {
+            "reason_code": REASON_CODE_CI_POISON,
+            "message": (
+                "The 'Confidential Information' definition affirmatively "
+                "INCLUDES (or refuses to exclude) information that the standard "
+                "carve-outs normally exclude (public / already-known / "
+                "independently-developed information), which guts the exclusions "
+                "through the definition. Recommend human review."
+            ),
+        }
     return None
 
 
@@ -218,16 +279,22 @@ _GROUP_DEFINITION = re.compile(
     re.IGNORECASE,
 )
 
-# Language that reaches BEYOND the corporate-control test into arbitrary scope.
+# Language that reaches BEYOND the corporate-control test into arbitrary scope --
+# i.e. sweeps in NON-parties / competitors / arbitrary designees. These are the
+# phrasings that make a group definition a weapon when a restraint relies on it.
 _OVERBROAD_SCOPE = re.compile(
     r"any\s+(?:person|entity|party|third\s+party)\s+(?:that|whom|which)?\s*"
-    r"(?:a\s+party|the\s+disclosing\s+party|we|it)\s+"
-    r"(?:may\s+)?(?:designate|nominate|specif(?:y|ies)|choose|select|deem)|"
-    r"whether\s+or\s+not\s+(?:affiliated|related|a\s+party)|"
+    r"(?:a\s+party|the\s+disclosing\s+party|we|it|such\s+party)\s+"
+    r"(?:may\s+|has\s+)?(?:designate|nominate|specif(?:y|ies)|choose|select|deem|done\s+business\s+with)|"
+    r"whether\s+or\s+not\s+(?:affiliated|related|a\s+party|under\s+common\s+control|employed)|"
     r"any\s+(?:other\s+)?(?:person|entity|party|third\s+part(?:y|ies))\s+"
-    r"(?:whatsoever|of\s+any\s+kind|the\s+disclosing\s+party\s+(?:may\s+)?designates?)|"
-    r"includ(?:e|es|ing)\s+(?:but\s+not\s+limited\s+to\s+)?(?:any\s+)?competitor|"
-    r"any\s+third\s+part(?:y|ies)\b|"
+    r"(?:whatsoever|of\s+any\s+kind)|"
+    r"any\s+(?:actual\s+or\s+potential\s+)?competitor|"
+    r"any\s+entity\s+in\s+the\s+same\s+industry|"
+    r"(?:affiliated|associated|or\s+otherwise\s+connected)\s*,?\s*"
+    r"(?:associated|or\s+otherwise\s+connected|including)|"
+    r"otherwise\s+connected|"
+    r"any\s+company\s+in\s+which\s+it\s+holds\s+any\s+interest|"
     r"regardless\s+of\s+(?:ownership|control|affiliation)",
     re.IGNORECASE,
 )
@@ -240,13 +307,28 @@ _CONTROL_TEST = re.compile(
     re.IGNORECASE,
 )
 
-# A restraint / obligation that would LEAN ON the broadened defined term.
+# A restraint / obligation verb -- the thing that, when it RELIES on the broadened
+# group term, weaponizes the definition. Note: a restraint counts only when its
+# sentence ALSO names the group term (see ``_restraint_relies_on_group``), so a
+# generic "shall not disclose" or a NEGATED "there are NO non-compete obligations"
+# (fp09) that does not target the group term never trips the detector.
 _RESTRAINT = re.compile(
-    r"shall\s+not|may\s+not|will\s+not|must\s+not|agree(?:s)?\s+not\s+to|"
-    r"refrain|prohibit(?:ed|s)?|restrain(?:ed|s|t)?|restrict(?:ed|s|ion)?|"
-    r"non[-\s]?(?:solicit|compete|circumvent|dealing)|"
-    r"shall\s+(?:be\s+)?(?:bound|liable|responsible)|"
-    r"\bbound\s+by\b|cause\s+(?:its|each|all)\s+",
+    r"shall\s+not\s+(?:solicit|hire|engage|employ|compete|do\s+business|deal|"
+    r"circumvent|approach|poach|interfere)|"
+    r"(?:may|will|must)\s+not\s+(?:solicit|hire|engage|compete|do\s+business)|"
+    r"agree(?:s)?\s+not\s+to\s+(?:solicit|hire|compete|do\s+business)|"
+    r"\bnon[-\s]?(?:solicit|compete|circumvent|dealing)\b|"
+    r"shall\s+(?:not\s+)?(?:procure|ensure|cause)\s+that\s+(?:none|no)\b|"
+    r"competes?\s+with|solicit(?:s|ing)?\s+or\s+(?:hire|do\s+business)",
+    re.IGNORECASE,
+)
+
+# A NEGATED restraint -- a sentence that DISCLAIMS any restraint ("there are NO
+# non-compete or non-solicitation obligations", fp09). Such a sentence must never
+# count as a restraint relying on the group term.
+_NEGATED_RESTRAINT = re.compile(
+    r"(?:there\s+are\s+|are\s+|is\s+)?no\s+non[-\s]?(?:compete|solicit)|"
+    r"no\s+(?:non[-\s]?compete\s+or\s+non[-\s]?solicitation|restraint|restriction)",
     re.IGNORECASE,
 )
 
@@ -255,8 +337,8 @@ def _affiliate_definition_is_overbroad(sentence: str) -> bool:
     """True iff this sentence DEFINES Affiliate/Representative/Group over-broadly.
 
     Over-broad == reaches beyond the corporate-control test (arbitrary designation
-    / unaffiliated third parties). The standard pure-control definition is NOT
-    over-broad even though it is, by design, capacious.
+    / unaffiliated third parties / competitors). The standard pure-control
+    definition is NOT over-broad even though it is, by design, capacious.
     """
     if not _GROUP_TERM.search(sentence):
         return False
@@ -267,18 +349,35 @@ def _affiliate_definition_is_overbroad(sentence: str) -> bool:
     return True
 
 
+def _restraint_relies_on_group(sentence: str) -> bool:
+    """True iff this sentence is a RESTRAINT that targets the group/Affiliate term.
+
+    The restraint must (a) read like a genuine restraint verb, (b) name the
+    group/Affiliate/Representative term, and (c) NOT be a sentence that disclaims
+    restraints. This is what makes the breadth dangerous -- a restraint sweeping in
+    everyone the over-broad definition reaches.
+    """
+    if _NEGATED_RESTRAINT.search(sentence):
+        return False
+    if not _RESTRAINT.search(sentence):
+        return False
+    if not _GROUP_TERM.search(sentence):
+        return False
+    return True
+
+
 def detect_affiliate_poison(text: str) -> dict | None:
     """Flag an over-broad Affiliate/Representative/Group def feeding a restraint.
 
-    Requires BOTH (a) an over-broad group definition AND (b) at least one
-    restraint/obligation somewhere in the document that would inherit that breadth.
-    A definition alone, with no restraint relying on it, stays silent (precision).
+    Requires BOTH (a) an over-broad group definition AND (b) a restraint/obligation
+    that RELIES on the group term (names it). A broad definition used only to scope
+    permitted disclosure, or with no restraint targeting it, stays silent.
     """
     sentences = _sentences(text)
     overbroad = any(_affiliate_definition_is_overbroad(s) for s in sentences)
     if not overbroad:
         return None
-    has_restraint = any(_RESTRAINT.search(s) for s in sentences)
+    has_restraint = any(_restraint_relies_on_group(s) for s in sentences)
     if not has_restraint:
         return None
     return {
