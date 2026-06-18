@@ -89,6 +89,13 @@ services:
         value: openrouter
       - key: NDA_AI_MODEL
         value: anthropic/claude-opus-4.8
+      # Per-request timeout for the single OpenRouter review call. The whole
+      # review is ONE model call over the entire packet, so a large doc (120+
+      # paragraphs) makes Opus take ~2 min. The previous 20s default timed out
+      # and fail-closed the review on big NDAs. Must exceed worst-case large-doc
+      # latency; matches the 180s frontend timeout (static/app.js).
+      - key: NDA_AI_TIMEOUT_SECONDS
+        value: "180"
       # Model for NDA GENERATION clause adaptation (rephrasing the Playbook's
       # authoritative clause text to the deal). Deliberately a FAST model and
       # SEPARATE from the review model above: generation runs synchronously on the
