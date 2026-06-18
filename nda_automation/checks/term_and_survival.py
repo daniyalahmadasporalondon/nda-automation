@@ -56,6 +56,32 @@ NON_CONFIDENTIAL_DURATION_SUBJECT_PATTERN = (
     r"liabilit(?:y|ies)|claim|claims|insurance|employment|records?|books?|tax\s+records?|"
     r"audit\s+records?)\b"
 )
+# The bare "indefinite words" -- perpetual / perpetually / indefinitely / in
+# perpetuity -- are only a survival problem when they govern CONFIDENTIALITY.
+# When the same word governs a non-survival object ("perpetual LICENSE", "remain
+# indefinitely AVAILABLE", "perpetual RIGHT to use"), it is benign and must not
+# trip the indefinite-survival flag. The object vocabulary is playbook-sourced
+# (``indefinite_non_survival_objects``); this fallback only applies when the key
+# is absent so behaviour degrades safely. Object words shorter/ambiguous enough to
+# also be confidentiality nouns are deliberately excluded.
+INDEFINITE_POLARITY_WORDS = ("perpetual", "perpetually", "indefinitely", "perpetuity")
+DEFAULT_INDEFINITE_NON_SURVIVAL_OBJECTS = (
+    "license",
+    "licence",
+    "right",
+    "rights",
+    "access",
+    "available",
+    "availability",
+    "royalty",
+    "royalties",
+    "grant",
+    "easement",
+    "ownership",
+    "title",
+    "warranty",
+    "warranties",
+)
 GENERIC_NON_SURVIVAL_DURATION_TERMS = {
     "after termination",
     "continue",
@@ -108,6 +134,7 @@ def _check_term_and_survival(
         for pattern in indefinite_patterns
         for match in re.finditer(pattern, term_normalized)
         if not _is_allowed_carve_out_fragment(term_normalized, match.start(), match.end(), clause)
+        and not _is_benign_indefinite_match(term_normalized, match, clause)
     ]
 
     if has_term_over_cap:
@@ -458,6 +485,106 @@ def _attach_survival_analysis(result: ClauseResult, reference_analysis: Dict[str
         "confidentiality_reference_count": reference_analysis["confidentiality_reference_count"],
         "references": reference_analysis["references"],
     }
+
+
+def _indefinite_non_survival_objects(clause: Dict[str, object]) -> List[str]:
+    configured = clause.get("indefinite_non_survival_objects")
+    if isinstance(configured, list):
+        objects = [str(term).lower().strip() for term in configured if str(term).strip()]
+    else:
+        objects = list(DEFAULT_INDEFINITE_NON_SURVIVAL_OBJECTS)
+    return objects
+
+
+def _is_benign_indefinite_match(
+    normalized: str, match: "re.Match[str]", clause: Dict[str, object]
+) -> bool:
+    """Demote an indefinite-survival hit that does not actually make CONFIDENTIALITY
+    indefinite.
+
+    Two narrowly-scoped, principled demotions (both precision-preserving against the
+    genuine perpetual riders, which are about confidentiality and uncapped):
+
+    * POLARITY (CO-15 class): an "indefinite word" (perpetual / perpetually /
+      indefinitely / in perpetuity) that governs a NON-survival object -- "a
+      perpetual *license* to use the platform", "remain indefinitely *available*" --
+      is benign. The object vocabulary is playbook-sourced. A genuine
+      "...confidential in perpetuity" / "continue indefinitely" hit is NOT followed
+      by such an object, so it still fires.
+
+    * CAPPED DURATION CONNECTOR (CO-6 class): a bare "for so/as long as" is only a
+      duration *connector*, not inherently perpetual. When its own sentence also
+      states an explicit numeric cap ("...for as long as it is employed ... and for
+      two (2) years following termination"), the survival is capped and the hit is
+      benign. The genuine uncapped rider ("...and for so long as it retains
+      commercial value") has no numeric period in its sentence and still fires.
+
+    Fail-safe: any unexpected input is swallowed and treated as NOT benign (keep the
+    flag) so a malformed clause never silently passes review.
+    """
+    try:
+        token = normalized[match.start():match.end()].strip().lower()
+        fragment, relative_start, relative_end = _term_fragment_bounds(
+            normalized, match.start(), match.end()
+        )
+
+        # --- POLARITY demotion: indefinite word -> non-survival object ---
+        if any(word in token for word in INDEFINITE_POLARITY_WORDS):
+            objects = _indefinite_non_survival_objects(clause)
+            if objects:
+                object_alt = "|".join(re.escape(obj).replace(r"\ ", r"\s+") for obj in objects)
+                # Allow up to two filler words ("a perpetual license", "remain
+                # indefinitely available", "perpetual right to use") between the
+                # indefinite word and the governed object.
+                after = fragment[relative_end:]
+                if re.match(rf"(?:\W+\w+){{0,2}}\W+(?:{object_alt})\b", after):
+                    return True
+
+            # CARVE-OUT-LED SENTENCE: a sentence that OPENS with an explicit scoping
+            # signal naming a longer-survival carve-out term ("With respect to trade
+            # secrets, ... shall survive perpetually") scopes the whole sentence to
+            # that carve-out, so the perpetual trigger is a legitimate longer-survival
+            # carve-out -- even when ordinary-CI subject words follow the signal. A
+            # conjoined ordinary-CI perpetual rider ("the confidential information and
+            # trade secrets ... in perpetuity") has no such LEADING signal and so is
+            # not demoted here.
+            for carve_out_pattern in _carve_out_context_patterns(clause):
+                if re.match(
+                    r"\s*(?:with\s+respect\s+to|as\s+to|in\s+respect\s+of|"
+                    r"in\s+the\s+case\s+of|as\s+regards|regarding|concerning)\s+"
+                    rf"(?:the\s+)?(?:applicable\s+)?{carve_out_pattern}\b",
+                    fragment,
+                ):
+                    return True
+
+        # --- CAPPED-DURATION demotion: "for so/as long as" ---
+        if re.fullmatch(r"for\s+(?:so|as)\s+long\s+as", token):
+            # (a) An explicit numeric period AFTER the connector (within its own
+            #     governed clause -- "for as long as X, and for two (2) years")
+            #     caps the survival, so the bare connector is not perpetual. The
+            #     numeric term must FOLLOW the connector: a number that precedes it
+            #     caps a DIFFERENT (prior) clause and must not launder an uncapped
+            #     "...except trade secrets survive for so long as they remain secret"
+            #     rider, so we look only at the text after the connector.
+            if re.search(YEAR_TERM_PATTERN, fragment[relative_end:]):
+                return True
+            # (b) The connector governs the AGREEMENT TERM, not confidentiality
+            #     survival ("this Agreement shall continue in effect for so long as
+            #     the parties have a business relationship") -- a benign relationship-
+            #     scoped agreement term, with ordinary CI capped in a separate clause.
+            #     A genuine CI rider ("...obligations continue ... for so long as it
+            #     retains commercial value") is governed by confidentiality, not the
+            #     Agreement, so it still fires.
+            before_connector = fragment[:relative_start]
+            if re.search(AGREEMENT_TERM_DURATION_PATTERN, before_connector) and not re.search(
+                ORDINARY_SURVIVAL_SUBJECT_PATTERN, before_connector
+            ):
+                return True
+    except Exception:
+        # Fail-safe: never let a guard crash the board poll; keep the (stricter)
+        # flag if the input is unexpected.
+        return False
+    return False
 
 
 def _is_allowed_carve_out_year(normalized: str, term: Dict[str, int], clause: Dict[str, object]) -> bool:

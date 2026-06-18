@@ -567,6 +567,23 @@
         "data protection",
         "data-protection"
       ],
+      "indefinite_non_survival_objects": [
+        "license",
+        "licence",
+        "right",
+        "rights",
+        "access",
+        "available",
+        "availability",
+        "royalty",
+        "royalties",
+        "grant",
+        "easement",
+        "ownership",
+        "title",
+        "warranty",
+        "warranties"
+      ],
       "acceptable_language": "The confidentiality obligations survive for a fixed period of up to five years, except for trade secrets or legal obligations that require a longer period."
     },
     {

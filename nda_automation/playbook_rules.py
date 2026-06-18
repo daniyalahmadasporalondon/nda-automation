@@ -115,6 +115,7 @@ CLAUSE_POLICY_FIELDS: dict[str, set[str]] = {
     },
     "term_and_survival": {
         "indefinite_terms",
+        "indefinite_non_survival_objects",
         "longer_survival_carve_out_terms",
         "max_term_years",
         "redline_template",
@@ -130,6 +131,7 @@ CLAUSE_TEXT_LIST_FIELDS = {
     "approved_laws",
     "definition_categories",
     "exclusion_context_terms",
+    "indefinite_non_survival_objects",
     "indefinite_terms",
     "independent_development_qualification_terms",
     "independent_development_terms",
@@ -169,7 +171,10 @@ PLAYBOOK_POLICY_SCHEMA: dict[str, object] = {
     "term_and_survival": {
         "max_term_years": {"type": "integer", "minimum": 1, "maximum": 25},
         "required_text_lists": ["indefinite_terms"],
-        "optional_text_lists": ["longer_survival_carve_out_terms"],
+        "optional_text_lists": [
+            "longer_survival_carve_out_terms",
+            "indefinite_non_survival_objects",
+        ],
     },
 }
 
