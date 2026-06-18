@@ -4963,17 +4963,26 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("review_runtime_update_blocked_environment", telemetry_counters)
 
     def test_ai_api_key_endpoint_saves_local_key_and_enables_ai(self):
+        from nda_automation import ai_review
+
+        valid_result = ai_review.ApiKeyValidationResult("valid", "OpenRouter key verified.")
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
                 with patch.dict(os.environ, {"OPENROUTER_API_KEY": "", "NDA_AI_REVIEW_ENABLED": ""}, clear=False):
-                    initial_status, initial_payload = self.request("GET", "/api/ai/settings")
-                    save_status, save_payload = self.request("POST", "/api/ai/api-key", {"api_key": "local-secret-key"})
-                    saved_key = app_settings.stored_ai_api_key()
-                    invalid_status, invalid_payload = self.request("POST", "/api/ai/api-key", {"api_key": ""})
-                    clear_status, clear_payload = self.request("DELETE", "/api/ai/api-key")
-                    cleared_key = app_settings.stored_ai_api_key()
-                    settings = app_settings.ai_settings()
+                    # The save path now round-trips the key against OpenRouter before
+                    # persisting; mock that probe so the test never hits the network.
+                    with patch.object(server_module.admin_routes.ai_review, "validate_api_key", return_value=valid_result) as validate_mock:
+                        initial_status, initial_payload = self.request("GET", "/api/ai/settings")
+                        save_status, save_payload = self.request("POST", "/api/ai/api-key", {"api_key": "local-secret-key"})
+                        saved_key = app_settings.stored_ai_api_key()
+                        invalid_status, invalid_payload = self.request("POST", "/api/ai/api-key", {"api_key": ""})
+                        clear_status, clear_payload = self.request("DELETE", "/api/ai/api-key")
+                        cleared_key = app_settings.stored_ai_api_key()
+                        settings = app_settings.ai_settings()
+                    # The empty-key request short-circuits before validation; the one
+                    # real key save is the only probe.
+                    validate_mock.assert_called_once_with("local-secret-key")
 
         self.assertEqual(initial_status, 200)
         self.assertEqual(initial_payload["ai_review"]["api_key_configured"], False)
@@ -4996,6 +5005,85 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(clear_payload["ai_review"]["api_key_configured"], False)
         self.assertEqual(clear_payload["ai_review"]["api_key_source"], "")
         self.assertEqual(cleared_key, "")
+
+    def test_ai_api_key_rejected_key_is_not_persisted_and_ai_not_enabled(self):
+        from nda_automation import ai_review
+
+        rejected = ai_review.ApiKeyValidationResult(
+            "rejected",
+            "This OpenRouter key was rejected — check it's correct and not expired.",
+        )
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(os.environ, {"OPENROUTER_API_KEY": "", "NDA_AI_REVIEW_ENABLED": ""}, clear=False):
+                    # Seed a known-good prior state so we can prove it stays untouched.
+                    with patch.object(server_module.admin_routes.ai_review, "validate_api_key", return_value=ai_review.ApiKeyValidationResult("valid", "ok")):
+                        self.request("POST", "/api/ai/api-key", {"api_key": "good-key-prior"})
+                    prior_key = app_settings.stored_ai_api_key()
+                    prior_enabled = app_settings.ai_settings()["enabled"]
+
+                    with patch.object(server_module.admin_routes.ai_review, "validate_api_key", return_value=rejected):
+                        status, payload = self.request("POST", "/api/ai/api-key", {"api_key": "bad-key"})
+
+                    key_after = app_settings.stored_ai_api_key()
+                    enabled_after = app_settings.ai_settings()["enabled"]
+
+        self.assertEqual(prior_key, "good-key-prior")
+        self.assertTrue(prior_enabled)
+        # Rejected: HTTP 400, clear message, NOT persisted, AI still on the PRIOR key.
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "This OpenRouter key was rejected — check it's correct and not expired.")
+        self.assertNotIn("bad-key", json.dumps(payload))
+        self.assertEqual(key_after, "good-key-prior")
+        self.assertEqual(enabled_after, prior_enabled)
+
+    def test_ai_api_key_rejected_key_never_enables_ai_from_clean_state(self):
+        from nda_automation import ai_review
+
+        rejected = ai_review.ApiKeyValidationResult(
+            "rejected",
+            "This OpenRouter key was rejected — check it's correct and not expired.",
+        )
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(os.environ, {"OPENROUTER_API_KEY": "", "NDA_AI_REVIEW_ENABLED": ""}, clear=False):
+                    with patch.object(server_module.admin_routes.ai_review, "validate_api_key", return_value=rejected):
+                        status, payload = self.request("POST", "/api/ai/api-key", {"api_key": "bad-key"})
+                    key_after = app_settings.stored_ai_api_key()
+                    enabled_after = app_settings.ai_settings()["enabled"]
+
+        # Closely-related guard: a rejected key from a clean state must never flip
+        # AI to enabled and must not persist.
+        self.assertEqual(status, 400)
+        self.assertEqual(key_after, "")
+        self.assertFalse(enabled_after)
+        self.assertFalse(payload["ai_review"]["enabled"] if "ai_review" in payload else False)
+
+    def test_ai_api_key_unreachable_does_not_persist_or_enable(self):
+        from nda_automation import ai_review
+
+        unreachable = ai_review.ApiKeyValidationResult(
+            "unreachable",
+            "Couldn't verify the key right now (OpenRouter unreachable) — try again.",
+        )
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(os.environ, {"OPENROUTER_API_KEY": "", "NDA_AI_REVIEW_ENABLED": ""}, clear=False):
+                    with patch.object(server_module.admin_routes.ai_review, "validate_api_key", return_value=unreachable):
+                        status, payload = self.request("POST", "/api/ai/api-key", {"api_key": "maybe-good-key"})
+                    key_after = app_settings.stored_ai_api_key()
+                    enabled_after = app_settings.ai_settings()["enabled"]
+
+        # Unreachable (transient): we decline to persist rather than pretend it's
+        # verified — 503 + clear retry message, no key saved, AI not enabled. This
+        # guarantees no false "verified / AI on" state from an unverified key.
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["error"], "Couldn't verify the key right now (OpenRouter unreachable) — try again.")
+        self.assertEqual(key_after, "")
+        self.assertFalse(enabled_after)
 
     def test_gmail_sync_history_records_recent_counts_and_errors(self):
         with tempfile.TemporaryDirectory() as data_dir:

@@ -57,17 +57,28 @@ const AdminAiView = (() => {
       }
       setKeyControlsDisabled(true);
       setOverall("Saving", "pending");
-      setFact("key-message", "Saving key and turning AI on...");
+      // The backend verifies the key against OpenRouter BEFORE saving, so a
+      // rejected/expired/unreachable key never persists and never flips AI on.
+      setFact("key-message", "Verifying key with OpenRouter...");
       try {
         const response = await fetch("/api/ai/api-key", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ api_key: apiKey, enabled: true }),
         });
+        // A rejected key returns 400 and an unreachable OpenRouter returns 503;
+        // parseOkJson surfaces the server's specific {error} message into the
+        // catch below, so the "AI on" success state shows ONLY on a real 200.
         const payload = await window.AuthExpired.parseOkJson(response, "AI key could not save", reviewErrorFromPayload);
         if (aiApiKeyInput) aiApiKeyInput.value = "";
         renderAiFromPayload(payload);
-        setFact("key-message", "AI key saved locally. AI is on.");
+        const enabledNow = payload.ai_review?.enabled === true;
+        setFact(
+          "key-message",
+          enabledNow
+            ? "AI key verified and saved. AI is on."
+            : "AI key verified and saved.",
+        );
       } catch (error) {
         setOverall(error.message || "Save failed", "blocked");
         setFact("key-message", error.message || "AI key could not save");

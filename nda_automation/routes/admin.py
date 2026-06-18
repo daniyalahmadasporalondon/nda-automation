@@ -189,6 +189,24 @@ def handle_ai_api_key_update(handler) -> None:
         return
     provider = ai_review.provider_for_api_key(api_key)
     telemetry.increment("ai_api_key_save_requests")
+
+    # Validate the key against OpenRouter BEFORE persisting. A wrong/expired/
+    # zero-quota key must NEVER save cleanly and flip AI to "on" — that leaves a
+    # false "all good" state where every later review fails at call time. We only
+    # persist (and only enable) on a confirmed 200. A rejected key (401/403) is a
+    # hard 400; a transient blip (network/timeout/5xx) is a 503 and ALSO does not
+    # persist, so an unverified key can never turn AI on. Either way the previous
+    # good key/state is left untouched.
+    validation = ai_review.validate_api_key(api_key)
+    if validation.status == "rejected":
+        telemetry.increment("ai_api_key_save_rejected")
+        handler._send_json({"error": validation.message}, status=400)
+        return
+    if not validation.is_valid:
+        telemetry.increment("ai_api_key_save_unverified")
+        handler._send_json({"error": validation.message}, status=503)
+        return
+
     previous_ai_settings = app_settings.ai_settings()
     previous_runtime_settings = app_settings.review_runtime_settings()
     app_settings.save_ai_api_key(api_key)
