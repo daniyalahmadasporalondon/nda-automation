@@ -5,6 +5,8 @@ from nda_automation.ai_assessment_contract import (
     AI_CLAUSE_ASSESSMENT_SCHEMA,
     AI_REDLINE_NO_CHANGE,
     AIAssessmentContractError,
+    apply_span,
+    clause_proposed_edits,
     validate_ai_clause_assessments,
 )
 from nda_automation.checker import load_playbook
@@ -69,7 +71,15 @@ class AIAssessmentContractTests(unittest.TestCase):
         self.assertIn("recommended_option", AI_CLAUSE_ASSESSMENT_SCHEMA["properties"])
         self.assertNotIn("why_it_might_be_a_problem", AI_CLAUSE_ASSESSMENT_SCHEMA["properties"])
         self.assertNotIn("why_it_may_be_fine", AI_CLAUSE_ASSESSMENT_SCHEMA["properties"])
-        self.assertIn("proposed_redline", AI_CLAUSE_ASSESSMENT_SCHEMA["required"])
+        # v3 advertises BOTH the legacy singular ``proposed_redline`` and the new
+        # ``proposed_edits`` list; "at least one" is enforced dynamically by the
+        # validator (not via the static ``required`` list, which would otherwise
+        # reject a payload that legitimately sends only one of the two).
+        self.assertIn("proposed_redline", AI_CLAUSE_ASSESSMENT_SCHEMA["properties"])
+        self.assertIn("proposed_edits", AI_CLAUSE_ASSESSMENT_SCHEMA["properties"])
+        self.assertNotIn("proposed_redline", AI_CLAUSE_ASSESSMENT_SCHEMA["required"])
+        self.assertNotIn("proposed_edits", AI_CLAUSE_ASSESSMENT_SCHEMA["required"])
+        self.assertEqual(AI_ASSESSMENT_CONTRACT_VERSION, 3)
         self.assertEqual(
             AI_CLAUSE_ASSESSMENT_SCHEMA["properties"]["decision"]["enum"],
             ["pass", "fail", "review"],
@@ -507,6 +517,223 @@ class AIAssessmentContractTests(unittest.TestCase):
         message = str(error.exception)
         self.assertIn("duplicate assessment for clause governing_law", message)
         self.assertIn("unknown clause_id unknown_clause", message)
+
+
+# Category A: a clause may now carry a LIST of proposed edits, with sentence-level
+# strike_span / replace_span sugar lowered to whole-paragraph replaces at parse time.
+SPAN_SOURCE_TEXT = "\n\n".join([
+    "The Receiving Party shall not solicit, hire, or circumvent the Disclosing Party for two years.",
+    "This Agreement shall be governed by the laws of California.",
+])
+
+
+def _span_paragraphs():
+    return split_document_paragraphs(SPAN_SOURCE_TEXT)
+
+
+def _span_assessment(**overrides):
+    # non_circumvention is a prohibited/dynamic clause; use it so the catch-all
+    # restraint is the natural span target.
+    assessment = {
+        "clause_id": "non_circumvention",
+        "decision": "fail",
+        "issue_type": "present_but_wrong",
+        "rationale": (
+            "The clause imposes a prohibited non-solicit/non-circumvent restraint that is "
+            "outside the approved confidentiality scope and must be struck."
+        ),
+        "evidence": [{
+            "paragraph_id": "p1",
+            "quote": "shall not solicit, hire, or circumvent",
+            "relevance": "States the prohibited restraint.",
+        }],
+        "confidence": 0.93,
+        "blocks_send": False,
+    }
+    assessment.update(overrides)
+    return assessment
+
+
+class CategoryASpanAndListContractTests(unittest.TestCase):
+    def _validate(self, assessment, paragraphs=None):
+        return validate_ai_clause_assessments(
+            [assessment],
+            valid_clause_ids=_valid_clause_ids(),
+            paragraphs=paragraphs if paragraphs is not None else _span_paragraphs(),
+            playbook_clauses_by_id=_playbook_clauses_by_id(),
+        )
+
+    def test_v2_singular_proposed_redline_parses_into_one_element_list(self):
+        # Old payloads send proposed_redline; they must parse into proposed_edits=[that].
+        cleaned = self._validate(_valid_assessment(), paragraphs=_paragraphs())
+        gl = cleaned["governing_law"]
+        self.assertIn("proposed_edits", gl)
+        self.assertEqual(len(gl["proposed_edits"]), 1)
+        self.assertEqual(gl["proposed_edits"][0]["action"], "replace_paragraph")
+        # The legacy primary is preserved and equals the first edit.
+        self.assertEqual(gl["proposed_redline"]["action"], "replace_paragraph")
+        self.assertEqual(gl["proposed_redline"], gl["proposed_edits"][0])
+        # The compat accessor returns the same one edit from a v3-shaped clause.
+        self.assertEqual(clause_proposed_edits(gl), gl["proposed_edits"])
+
+    def test_v2_singular_with_explicit_schema_version_two_is_accepted(self):
+        cleaned = self._validate(_valid_assessment(schema_version=2), paragraphs=_paragraphs())
+        gl = cleaned["governing_law"]
+        self.assertEqual(len(gl["proposed_edits"]), 1)
+        # Cleaned output always stamps the CURRENT contract version.
+        self.assertEqual(gl["schema_version"], AI_ASSESSMENT_CONTRACT_VERSION)
+
+    def test_v3_proposed_edits_list_parses_multiple_paragraph_edits(self):
+        assessment = _valid_assessment()
+        assessment.pop("proposed_redline")
+        assessment["schema_version"] = 3
+        assessment["proposed_edits"] = [
+            {
+                "action": "replace_paragraph",
+                "paragraph_id": "p2",
+                "text": "This Agreement shall be governed by the laws of England and Wales.",
+                "jurisdiction": "England and Wales",
+            },
+        ]
+        cleaned = self._validate(assessment, paragraphs=_paragraphs())
+        gl = cleaned["governing_law"]
+        self.assertEqual(len(gl["proposed_edits"]), 1)
+        self.assertEqual(gl["proposed_edits"][0]["paragraph_id"], "p2")
+
+    def test_strike_span_lowers_to_replace_paragraph_minus_the_span(self):
+        assessment = _span_assessment(
+            schema_version=3,
+            proposed_edits=[{
+                "action": "strike_span",
+                "paragraph_id": "p1",
+                "anchor_quote": "solicit, hire, or circumvent",
+            }],
+        )
+        cleaned = self._validate(assessment)
+        clause = cleaned["non_circumvention"]
+        edits = clause["proposed_edits"]
+        self.assertEqual(len(edits), 1)
+        # The span action is GONE downstream: it is an ordinary replace_paragraph.
+        self.assertEqual(edits[0]["action"], "replace_paragraph")
+        self.assertEqual(edits[0]["paragraph_id"], "p1")
+        replacement = edits[0]["text"]
+        self.assertNotIn("solicit, hire, or circumvent", replacement)
+        # The surrounding clean text survives.
+        self.assertIn("The Receiving Party shall not", replacement)
+        self.assertIn("the Disclosing Party for two years", replacement)
+
+    def test_replace_span_lowers_to_replace_paragraph_with_substitution(self):
+        assessment = _span_assessment(
+            schema_version=3,
+            proposed_edits=[{
+                "action": "replace_span",
+                "paragraph_id": "p1",
+                "anchor_quote": "for two years",
+                "replacement": "for one year",
+            }],
+        )
+        cleaned = self._validate(assessment)
+        edits = cleaned["non_circumvention"]["proposed_edits"]
+        self.assertEqual(edits[0]["action"], "replace_paragraph")
+        self.assertIn("for one year", edits[0]["text"])
+        self.assertNotIn("for two years", edits[0]["text"])
+
+    def test_unanchorable_span_degrades_to_noop_and_downgrades_clause_to_review(self):
+        assessment = _span_assessment(
+            schema_version=3,
+            proposed_edits=[{
+                "action": "strike_span",
+                "paragraph_id": "p1",
+                "anchor_quote": "this phrase is not present in the paragraph verbatim",
+            }],
+        )
+        cleaned = self._validate(assessment)
+        clause = cleaned["non_circumvention"]
+        # The fail with no realizable edit degrades to a human-review flag.
+        self.assertEqual(clause["decision"], "review")
+        self.assertTrue(clause["blocks_send"])
+        self.assertEqual(clause["proposed_edits"][0]["action"], AI_REDLINE_NO_CHANGE)
+
+    def test_span_action_rejected_under_schema_version_two(self):
+        assessment = _span_assessment(
+            schema_version=2,
+            proposed_edits=[{
+                "action": "strike_span",
+                "paragraph_id": "p1",
+                "anchor_quote": "solicit, hire, or circumvent",
+            }],
+        )
+        with self.assertRaises(AIAssessmentContractError) as error:
+            self._validate(assessment)
+        self.assertIn("requires schema_version 3", str(error.exception))
+
+    def test_pass_with_a_noop_edit_list_is_accepted(self):
+        assessment = _span_assessment(
+            decision="pass",
+            issue_type="none",
+            rationale="The clause is within scope and compliant.",
+            evidence=[],
+            schema_version=3,
+            proposed_edits=[{"action": "no_change"}],
+        )
+        cleaned = self._validate(assessment)
+        clause = cleaned["non_circumvention"]
+        self.assertEqual(clause["decision"], "pass")
+        self.assertFalse(any(e["action"] != AI_REDLINE_NO_CHANGE for e in clause["proposed_edits"]))
+
+    def test_pass_with_an_actionable_edit_is_rejected(self):
+        assessment = _span_assessment(
+            decision="pass",
+            issue_type="none",
+            rationale="The clause is compliant.",
+            evidence=[],
+            schema_version=3,
+            proposed_edits=[{
+                "action": "strike_span",
+                "paragraph_id": "p1",
+                "anchor_quote": "solicit, hire, or circumvent",
+            }],
+        )
+        with self.assertRaises(AIAssessmentContractError) as error:
+            self._validate(assessment)
+        self.assertIn("pass decisions must use proposed_redline.action no_change", str(error.exception))
+
+    def test_clause_proposed_edits_accessor_falls_back_to_legacy_singular(self):
+        # A stored v2 matter persists only proposed_redline; the accessor wraps it.
+        legacy_clause = {"proposed_redline": {"action": "delete_paragraph", "paragraph_id": "p1"}}
+        edits = clause_proposed_edits(legacy_clause)
+        self.assertEqual(edits, [{"action": "delete_paragraph", "paragraph_id": "p1"}])
+        # A clause with neither field yields an empty list (never raises).
+        self.assertEqual(clause_proposed_edits({}), [])
+        self.assertEqual(clause_proposed_edits(None), [])
+
+
+class ApplySpanTests(unittest.TestCase):
+    def test_strike_span_removes_span_and_one_connector_space(self):
+        text = "The Receiving Party shall not solicit, hire, or circumvent the Disclosing Party."
+        result = apply_span(text, "solicit, hire, or circumvent ", "")
+        # apply_span trims a connector space; the surrounding text reads cleanly.
+        self.assertNotIn("solicit, hire, or circumvent", result)
+        self.assertIn("shall not the Disclosing Party.", result.replace("  ", " "))
+
+    def test_replace_span_substitutes_preserving_surrounding_text(self):
+        text = "The term is five years from the Effective Date."
+        result = apply_span(text, "five years", "three years")
+        self.assertEqual(result, "The term is three years from the Effective Date.")
+
+    def test_span_anchor_matches_through_typographic_glyphs(self):
+        # The paragraph uses a curly apostrophe; the anchor uses a straight one.
+        text = "The Disclosing Party’s rights survive termination."
+        result = apply_span(text, "Disclosing Party's rights", "obligations")
+        self.assertIsNotNone(result)
+        self.assertIn("obligations survive termination", result)
+
+    def test_unfound_anchor_returns_none(self):
+        text = "The Receiving Party shall keep information confidential."
+        self.assertIsNone(apply_span(text, "non-existent phrase", ""))
+
+    def test_empty_anchor_returns_none(self):
+        self.assertIsNone(apply_span("any text", "", "x"))
 
 
 if __name__ == "__main__":

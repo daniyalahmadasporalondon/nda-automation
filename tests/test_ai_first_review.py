@@ -177,6 +177,14 @@ class AIFirstReviewTests(unittest.TestCase):
         self.assertEqual(governing_law["structured_evidence"][0]["match_spans"][0]["text"], "laws of California")
         self.assertEqual(governing_law["ai_first_assessment"]["schema_version"], AI_ASSESSMENT_CONTRACT_VERSION)
         self.assertEqual(governing_law["ai_first_assessment"]["proposed_redline_action"], REDLINE_REPLACE_PARAGRAPH)
+        # Category A: the singular (v2) proposed_redline is carried as a 1-element
+        # proposed_edits list, the legacy primary is preserved, and the edit target
+        # paragraph id is unioned for the redline builder.
+        self.assertEqual(len(governing_law["proposed_edits"]), 1)
+        self.assertEqual(governing_law["proposed_edits"][0]["action"], REDLINE_REPLACE_PARAGRAPH)
+        self.assertEqual(governing_law["proposed_redline"], governing_law["proposed_edits"][0])
+        self.assertEqual(governing_law["ai_first_assessment"]["proposed_edit_count"], 1)
+        self.assertEqual(governing_law["redline_target_paragraph_ids"], ["p3"])
         self.assertNotIn("why_it_may_be_fine", governing_law)
         self.assertNotIn("why_it_might_be_a_problem", governing_law)
         self.assertIn("sections", governing_law["structure_context"])

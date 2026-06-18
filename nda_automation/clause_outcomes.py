@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import re
-from typing import Callable, Dict, List
+from typing import Any, Callable, Dict, List, Mapping
 
+from .ai_assessment_contract import (
+    AI_REDLINE_NO_CHANGE,
+    apply_span,
+    clause_proposed_edits,
+)
 from .checks.common import (
     ISSUE_TYPE_MISSING,
     ISSUE_TYPE_PRESENT_BUT_WRONG,
@@ -69,6 +74,21 @@ def redline_edits_for_clause(
     # Native clauses have a registered builder; dynamic clause types are redlined
     # generically from their own fallback wording so no per-clause Python is needed.
     builder = REDLINE_BUILDERS_BY_ID.get(str(clause["id"]))
+
+    # Category A: honor the AI's per-span edit list. The deterministic (non-AI) path
+    # carries no ``proposed_edits``, so this is inert there and the engine stays
+    # byte-identical. For DYNAMIC clauses the AI honoring happens inside
+    # ``_dynamic_clause_redlines`` (force-delete kept as last resort). For NATIVE
+    # clauses we only let the AI edits PREEMPT the registered builder when they are
+    # SURGICAL SPAN edits — something the native template builder cannot express —
+    # so a plain whole-paragraph replace still flows through the native builder and
+    # keeps its richer enrichment (e.g. governing_law's approved-law template
+    # options). A failure inside is swallowed (fail-safe); we fall through.
+    if builder is not None and _clause_has_span_edits(clause):
+        ai_edits = _ai_first_redline_edits(clause, paragraphs_by_id, start_number)
+        if ai_edits:
+            return ai_edits
+
     if builder is None:
         return _dynamic_clause_redlines(clause, paragraphs_by_id, start_number)
     return builder(clause, paragraphs_by_id, start_number)
@@ -83,7 +103,23 @@ def _dynamic_clause_redlines(
     paragraphs_by_id: Dict[str, Paragraph],
     start_number: int,
 ) -> List[RedlineEdit]:
-    """Build redline edits for a dynamic clause from its fallback wording."""
+    """Build redline edits for a dynamic clause.
+
+    Category A ordering (degrade-safe last resort preserved):
+
+    1. HONOR the AI's per-span edit list first. For the prohibited catch-all
+       (``non_circumvention``) the AI authors a surgical strike of the offending
+       restraint; if that builds we use it INSTEAD of force-deleting the whole
+       paragraph and discarding the model's wording.
+    2. Otherwise fall back to the existing deterministic behaviour: the
+       ``delete_paragraph`` force-delete (or template replace/insert) from the
+       clause's ``fallback``. This stays a degrade-safe LAST RESORT so an
+       empty/malformed AI output never under-redlines a real prohibited clause.
+    """
+    built = _redlines_from_ai_edits(clause, paragraphs_by_id, start_number)
+    if built:
+        return built
+
     fallback = clause.get("fallback")
     fallback = fallback if isinstance(fallback, dict) else {}
     action = str(fallback.get("redline_action") or "").strip()
@@ -112,6 +148,211 @@ def _dynamic_clause_redlines(
         return [edit] if edit else []
 
     return []
+
+
+def _clause_has_span_edits(clause: ClauseResult) -> bool:
+    """True when the clause carries at least one lowered SPAN edit.
+
+    A span edit is a sentence-level strike/replace the contract lowered to a
+    paragraph replace but tagged with ``span_action``. Only these preempt a native
+    clause's registered builder; a plain whole-paragraph replace defers to it.
+    """
+    for edit in clause_proposed_edits(clause):
+        if isinstance(edit, Mapping) and str(edit.get("span_action") or "").strip():
+            return True
+    return False
+
+
+def _ai_first_redline_edits(
+    clause: ClauseResult,
+    paragraphs_by_id: Dict[str, Paragraph],
+    start_number: int,
+) -> List[RedlineEdit]:
+    """Shared AI-honor pre-check consulted by ``redline_edits_for_clause``.
+
+    Returns AI-authored redline edits when the clause carries a usable
+    ``proposed_edits`` list (native or dynamic clause), else ``[]`` so the caller
+    falls through to the deterministic builder. Fail-safe: any error is swallowed
+    and treated as "no AI edits" — never raises into the board poll.
+    """
+    try:
+        return _redlines_from_ai_edits(clause, paragraphs_by_id, start_number)
+    except Exception:  # pragma: no cover - fail-safe guard, board poll must not crash
+        return []
+
+
+def _redlines_from_ai_edits(
+    clause: ClauseResult,
+    paragraphs_by_id: Dict[str, Paragraph],
+    start_number: int,
+) -> List[RedlineEdit]:
+    """Map a clause's AI ``proposed_edits`` to concrete redline edits.
+
+    - Reads the v2/v3 compat edit list via ``clause_proposed_edits``.
+    - SKIPS no_change edits and edits whose paragraph is absent (those degraded
+      upstream in the contract; here we just drop them).
+    - COALESCES multiple edits resolving to the SAME paragraph into ONE
+      ``replace_paragraph`` whose replacement composes every span cut left-to-right,
+      so the export never double-rebuilds one ``<w:p>`` and the coverage gate's 1:1
+      paragraph matching stays valid.
+    - Returns ``[]`` when no edit is usable, so the caller's force-delete/template
+      fallback runs (degrade-safe). NEVER raises: a malformed edit is dropped with a
+      telemetry note rather than aborting the build.
+    """
+    edits = clause_proposed_edits(clause)
+    if not edits:
+        return []
+
+    # Group usable edits by target paragraph, preserving first-seen paragraph order.
+    grouped: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+    insert_after_edits: List[Dict[str, Any]] = []
+    for edit in edits:
+        if not isinstance(edit, Mapping):
+            _note_dropped_edit(clause, "edit is not an object")
+            continue
+        action = str(edit.get("action") or "").strip()
+        if not action or action == AI_REDLINE_NO_CHANGE:
+            continue
+        paragraph_id = str(edit.get("paragraph_id") or "").strip()
+        if not paragraph_id:
+            _note_dropped_edit(clause, f"{action} edit has no paragraph_id")
+            continue
+        paragraph = paragraphs_by_id.get(paragraph_id)
+        if paragraph is None:
+            _note_dropped_edit(clause, f"{action} edit targets missing paragraph {paragraph_id}")
+            continue
+        if action == REDLINE_INSERT_AFTER_PARAGRAPH:
+            # Inserts target a position, not a paragraph rebuild; they never collide
+            # on a single ``<w:p>``, so they are kept as distinct edits.
+            insert_after_edits.append({"paragraph": paragraph, "edit": edit})
+            continue
+        if action not in {REDLINE_REPLACE_PARAGRAPH, REDLINE_DELETE_PARAGRAPH}:
+            _note_dropped_edit(clause, f"unsupported edit action {action}")
+            continue
+        if paragraph_id not in grouped:
+            grouped[paragraph_id] = {"paragraph": paragraph, "edits": []}
+            order.append(paragraph_id)
+        grouped[paragraph_id]["edits"].append({"action": action, "edit": edit})
+
+    built: List[RedlineEdit] = []
+    for paragraph_id in order:
+        bucket = grouped[paragraph_id]
+        coalesced = _coalesce_paragraph_edits(
+            clause,
+            bucket["paragraph"],
+            bucket["edits"],
+            start_number + len(built),
+        )
+        if coalesced is not None:
+            built.append(coalesced)
+    for entry in insert_after_edits:
+        replacement_text = _edit_replacement_text(entry["edit"])
+        if not replacement_text:
+            _note_dropped_edit(clause, "insert_after edit has no replacement text")
+            continue
+        built.append(
+            _redline_edit(
+                start_number + len(built),
+                clause,
+                entry["paragraph"],
+                REDLINE_INSERT_AFTER_PARAGRAPH,
+                insert_text=replacement_text,
+            )
+        )
+    return built
+
+
+def _coalesce_paragraph_edits(
+    clause: ClauseResult,
+    paragraph: Paragraph,
+    paragraph_edits: List[Dict[str, Any]],
+    edit_number: int,
+) -> RedlineEdit | None:
+    """Coalesce all edits on one paragraph into a single redline edit.
+
+    A lone ``delete_paragraph`` stays a delete. Otherwise the edits compose into ONE
+    ``replace_paragraph``. SPAN edits (which the contract lowered to a full-paragraph
+    replacement but tagged with their original anchor) are re-applied cut-by-cut onto
+    the ORIGINAL paragraph text left-to-right, so two spans on the same paragraph
+    BOTH land instead of the second full replacement clobbering the first. A
+    non-span replace_paragraph (whole-paragraph rewrite) takes its replacement
+    verbatim. Returns ``None`` when nothing usable composes.
+    """
+    # A single whole-paragraph delete is expressed as a delete action (the export
+    # and coverage gate treat it as a removed paragraph), matching legacy behaviour.
+    if len(paragraph_edits) == 1 and paragraph_edits[0]["action"] == REDLINE_DELETE_PARAGRAPH:
+        return _redline_edit(edit_number, clause, paragraph, REDLINE_DELETE_PARAGRAPH)
+
+    original_text = str(paragraph["text"])
+    new_text = original_text
+    applied_any = False
+    for entry in paragraph_edits:
+        action = entry["action"]
+        edit = entry["edit"]
+        if action == REDLINE_DELETE_PARAGRAPH:
+            # A delete coalesced with other edits empties the paragraph.
+            new_text = ""
+            applied_any = True
+            continue
+        span_anchor = str(edit.get("span_anchor_quote") or "").strip()
+        if edit.get("span_action") and span_anchor:
+            # Compose this span's cut onto the running text (NOT the original full
+            # replacement, which only reflected this one span). apply_span returns
+            # None if the anchor moved out of range after a prior cut — drop just
+            # this span rather than clobbering the paragraph.
+            replacement = str(edit.get("span_replacement") or "")
+            composed = apply_span(new_text, span_anchor, replacement)
+            if composed is None:
+                _note_dropped_edit(clause, f"span anchor not found during coalesce: {span_anchor[:40]}")
+                continue
+            new_text = composed
+            applied_any = True
+            continue
+        # A non-span whole-paragraph replace takes its replacement verbatim.
+        replacement_text = _edit_replacement_text(edit)
+        if not replacement_text:
+            _note_dropped_edit(clause, "replace edit has no replacement text")
+            continue
+        new_text = replacement_text
+        applied_any = True
+
+    if not applied_any:
+        return None
+    if new_text == original_text:
+        # Composition produced no change; nothing to redline.
+        return None
+    return _redline_edit(
+        edit_number,
+        clause,
+        paragraph,
+        REDLINE_REPLACE_PARAGRAPH,
+        replacement_text=new_text,
+    )
+
+
+def _edit_replacement_text(edit: Mapping[str, Any]) -> str:
+    """Resolve an edit's replacement text from ``replacement`` or legacy ``text``."""
+    value = edit.get("replacement")
+    if value is None:
+        value = edit.get("text")
+    return str(value or "").strip()
+
+
+def _note_dropped_edit(clause: ClauseResult, reason: str) -> None:
+    """Record a dropped-edit telemetry note on the clause, fail-safe.
+
+    Appends to ``clause["catA_dropped_edits"]`` so the audit trail shows which AI
+    edits were unusable, without raising. The board poll never depends on this.
+    """
+    try:
+        if not isinstance(clause, dict):
+            return
+        notes = clause.setdefault("catA_dropped_edits", [])
+        if isinstance(notes, list):
+            notes.append(str(reason))
+    except Exception:  # pragma: no cover - telemetry must never crash the build
+        pass
 
 
 def _is_present_but_wrong_check(clause: ClauseResult) -> bool:
