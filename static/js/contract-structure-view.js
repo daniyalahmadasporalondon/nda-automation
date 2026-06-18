@@ -54,7 +54,7 @@ function createContractStructureController({ state, root }) {
       </div>
 
       <section class="structure-section-list" aria-label="Detected contract sections">
-        ${sections.map(renderSection).join("")}
+        ${sections.map((section) => renderSection(section, sectionsById(sections))).join("")}
       </section>
 
       ${renderReferences(references)}
@@ -112,11 +112,34 @@ function createContractStructureController({ state, root }) {
     return [];
   }
 
-  function renderSection(section) {
+  // Build a section-id -> section lookup so a child row can show its parent's
+  // human heading/label instead of the raw `section-N` id.
+  function sectionsById(sections) {
+    const byId = {};
+    sections.forEach((section) => {
+      const id = section?.id ? String(section.id) : "";
+      if (id) byId[id] = section;
+    });
+    return byId;
+  }
+
+  // Human label for a section, preferring its numbered label ("Clause 4"), then its
+  // heading text, then a generic fallback. Never the raw `section-N` id.
+  function sectionDisplayName(section) {
+    if (!section || typeof section !== "object") return "";
+    return section.label || section.heading || section.heading_text || "";
+  }
+
+  function renderSection(section, byId) {
     const level = Math.max(0, Math.min(5, Number(section.level || 0)));
     const indent = 14 + (level * 16);
     const paragraphs = paragraphRangeLabel(section);
-    const parent = section.parent_id ? `<span>Parent ${escapeHtml(section.parent_id)}</span>` : "";
+    // Show the parent's human heading ("Parent: Clause 4"), looked up by parent_id.
+    // If the parent section isn't in the list (or has no human name), omit the row
+    // rather than print the raw `section-N` id to the reviewer.
+    const parentSection = section.parent_id ? (byId || {})[String(section.parent_id)] : null;
+    const parentName = sectionDisplayName(parentSection);
+    const parent = parentName ? `<span>Parent: ${escapeHtml(parentName)}</span>` : "";
     const source = sourceSummary(section.source);
     // Clicking a row jumps the document viewer to the section's first paragraph.
     // data-para-ref is caught by the global delegated [data-para-ref] click handler
@@ -175,9 +198,8 @@ function createContractStructureController({ state, root }) {
                 <span>${escapeHtml(paragraphRangeLabel({
                   start_index: reference.paragraph_index,
                   end_index: reference.paragraph_index,
-                  start_paragraph_id: reference.paragraph_id,
                 }))}</span>
-                <span>${escapeHtml(reference.status || "unknown")}</span>
+                <span>${escapeHtml(referenceStatusLabel(reference.status))}</span>
               </small>
             </article>
           `;
@@ -214,7 +236,10 @@ function createContractStructureController({ state, root }) {
   function sourceSummary(source) {
     if (!source || typeof source !== "object") return "";
     if (source.numbering?.label) return `Word number ${source.numbering.label}`;
-    if (source.style_name) return `Style ${source.style_name}`;
+    // Deliberately do NOT surface `source.style_name` (e.g. the parser-internal token
+    // "Heading2"). It is a Word style id meaningless to a reviewer; dropping it (rather
+    // than printing "Style Heading2") is the friendly behaviour. A genuinely useful
+    // source signal (Word numbering, table coordinates, source part) still renders below.
     if (source.table) {
       const table = source.table;
       return `Table ${table.table_index || "?"}, row ${table.row_index || "?"}, cell ${table.cell_index || "?"}`;
@@ -224,11 +249,20 @@ function createContractStructureController({ state, root }) {
   }
 
   function paragraphRangeLabel(section) {
-    const start = section.start_index ?? section.start_paragraph_id;
-    const end = section.end_index ?? section.end_paragraph_id;
-    if (start === undefined && end === undefined) return "No paragraph range";
-    if (start === end || end === undefined) return `Paragraph ${start}`;
+    // Only a real numeric paragraph INDEX is a human-meaningful position ("Paragraph 47").
+    // The *_paragraph_id fields are opaque internal ids (e.g. "p-3f2a", "¶<id>") that mean
+    // nothing to a reviewer, so we never fall back to them — if there's no index, we say so.
+    const start = humanParagraphPosition(section.start_index);
+    const end = humanParagraphPosition(section.end_index);
+    if (start === null && end === null) return "No paragraph range";
+    if (start === null) return "No paragraph range";
+    if (end === null || start === end) return `Paragraph ${start}`;
     return `Paragraphs ${start}-${end}`;
+  }
+
+  // A paragraph position is human-meaningful only when it is a real integer index.
+  function humanParagraphPosition(value) {
+    return Number.isInteger(value) ? value : null;
   }
 
   function kindLabel(kind) {
@@ -249,6 +283,18 @@ function createContractStructureController({ state, root }) {
 
   function confidenceLabel(confidence) {
     return `${confidence || "unknown"} confidence`;
+  }
+
+  // Friendly label for a cross-reference's resolution status. The backend
+  // (reference_resolver.py) emits the raw enum resolved | partial | unresolved;
+  // surface the human phrase a reviewer expects instead of the code token.
+  function referenceStatusLabel(status) {
+    const labels = {
+      resolved: "Resolved",
+      partial: "Partially resolved",
+      unresolved: "Unresolved",
+    };
+    return labels[String(status || "").toLowerCase()] || "Unknown";
   }
 
   function buildStructureFromParagraphs(paragraphs) {

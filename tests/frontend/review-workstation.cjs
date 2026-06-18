@@ -1164,9 +1164,12 @@ async function testContractStructureReviewPanel(page) {
   await assertTextContains(reviewPanel, "Article II");
   await assertTextContains(reviewPanel, "Section II.A");
   await assertTextContains(reviewPanel, "Clause IV");
-  await assertTextContains(reviewPanel, "Parent section-2");
-  await assertTextContains(reviewPanel, "Parent section-6");
-  await assertTextContains(reviewPanel, "Parent section-9");
+  // Parent rows show the parent section's human heading/label, not the raw section-N id.
+  // section-3 (Clause 1A) -> parent section-2 (Clause 1); section-7 (10.1A) -> parent
+  // section-6 (10.1); section-10 (Section II.A) -> parent section-9 (Article II).
+  await assertTextContains(reviewPanel, "Parent: Clause 1");
+  await assertTextContains(reviewPanel, "Parent: 10.1");
+  await assertTextContains(reviewPanel, "Parent: Article II");
   // The Resolver-aliases panel was removed from the Structure tab (internal debug
   // noise, not user-relevant); the section map + resolved references stay.
   await assertTextContains(reviewPanel, "RESOLVED REFERENCES");
