@@ -197,6 +197,17 @@ def send_for_signature(
             # in workflow.py without inventing a new status.
             "board_column": "sent",
             "awaiting_signature": True,
+            # Re-send after a terminal envelope: the matter may carry stale
+            # void/decline flags written by sync_signature_status. A FRESH
+            # envelope is now in flight, so clear those terminal flags (and their
+            # stamps) the same way the terminal transitions clear each other.
+            # Without this, _derive_phase_and_status's signature_voided /
+            # signature_declined checks (which run before _sent_status) out-rank
+            # the fresh outbound and mislabel the matter as Voided/Declined.
+            "signature_voided": False,
+            "signature_voided_at": None,
+            "signature_declined": False,
+            "signature_declined_at": None,
         },
         owner_user_id=owner_user_id,
     )
