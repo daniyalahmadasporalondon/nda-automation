@@ -44,6 +44,12 @@ __all__ = [
 VALID_ISSUE_TYPES: frozenset[str] = frozenset(
     {"none", "missing", "present_but_wrong", "unclear"}
 )
+# The redline actions a playbook FALLBACK may name. These are the PARAGRAPH-level
+# actions only (``AI_ASSESSMENT_PARAGRAPH_REDLINE_ACTIONS`` in the contract). The
+# AI-only ``strike_span``/``replace_span`` sugar is deliberately NOT here: a
+# playbook fallback has no span to anchor against, and span actions are lowered to
+# ``replace_paragraph`` at parse time, so they are never a valid playbook action.
+# ``test_local_vocabulary_matches_contract`` pins this exact relationship.
 VALID_REDLINE_ACTIONS: frozenset[str] = frozenset(
     {"no_change", "replace_paragraph", "insert_after_paragraph", "delete_paragraph"}
 )

@@ -696,11 +696,28 @@ def test_option_id_collision_identical_duplicate_rows_not_flagged() -> None:
 def test_local_vocabulary_matches_contract() -> None:
     from nda_automation.ai_assessment_contract import (
         AI_ASSESSMENT_ISSUE_TYPES,
+        AI_ASSESSMENT_PARAGRAPH_REDLINE_ACTIONS,
         AI_ASSESSMENT_REDLINE_ACTIONS,
+        AI_REDLINE_SPAN_ACTIONS,
     )
 
     assert set(VALID_ISSUE_TYPES) == set(AI_ASSESSMENT_ISSUE_TYPES)
-    assert set(VALID_REDLINE_ACTIONS) == set(AI_ASSESSMENT_REDLINE_ACTIONS)
+
+    # The playbook's fallback redline vocabulary is the set of PARAGRAPH-level
+    # actions only. The sentence-level ``strike_span``/``replace_span`` sugar is
+    # AI-only: a fresh model response may emit it on the wire, but it is lowered
+    # to ``replace_paragraph`` at parse time and must NEVER be a valid playbook
+    # fallback action (the playbook has no span to anchor against). So the local
+    # set must match the contract's PARAGRAPH actions, NOT the full wire set.
+    assert set(VALID_REDLINE_ACTIONS) == set(AI_ASSESSMENT_PARAGRAPH_REDLINE_ACTIONS)
+
+    # Pin the AI-only-ness of the span sugar from both directions so a genuine
+    # drift (a span action leaking into the playbook vocabulary, or a paragraph
+    # action being dropped from the contract) still fails this test.
+    assert set(AI_REDLINE_SPAN_ACTIONS).isdisjoint(VALID_REDLINE_ACTIONS)
+    assert set(VALID_REDLINE_ACTIONS) | set(AI_REDLINE_SPAN_ACTIONS) == set(
+        AI_ASSESSMENT_REDLINE_ACTIONS
+    )
 
 
 # ---------------------------------------------------------------------------
