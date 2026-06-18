@@ -16,7 +16,12 @@ from .docx_text import DocxExtractionError, detect_docx_tracked_changes, extract
 from .matter_lifecycle import BackgroundRunner, RepositoryMatterLifecycle, run_in_daemon_thread
 from .matter_repository import DiskMatterRepository, MatterRepository
 from .pdf_text import PdfExtractionError, extract_pdf_document
-from .review_engine import PlaybookRuntimeFn, ReviewEngineFn, review_nda_with_active_engine
+from .review_engine import (
+    PlaybookRuntimeFn,
+    REVIEW_ENGINE_AI_FIRST,
+    ReviewEngineFn,
+    review_nda_with_active_engine,
+)
 from .review_result_contract import (
     attach_document_source,
     extracted_text_from_paragraphs,
@@ -295,6 +300,18 @@ class _InboundReviewWorkerPool:
         with self._lock:
             return len(self._pending)
 
+    def is_pending(self, matter_id: str, owner_user_id: str) -> bool:
+        """Read-only: is a job for ``(matter_id, owner_user_id)`` already queued?
+
+        Additive observability accessor used by the on-demand enqueue path to tell a
+        FRESH schedule from a dedup'd re-enqueue (the pool's ``enqueue`` returns True
+        for both). It only READS the dedup set under the lock -- it never mutates the
+        set, the queue, or any guard.
+        """
+        key = (str(matter_id or ""), str(owner_user_id or ""))
+        with self._lock:
+            return key in self._pending
+
     def queue_depth(self) -> int:
         """Approximate depth of the bounded review queue (items awaiting a worker).
 
@@ -328,6 +345,174 @@ class _InboundReviewWorkerPool:
 _INBOUND_REVIEW_POOL = _InboundReviewWorkerPool()
 
 
+# --------------------------------------------------------------------------- #
+# On-demand (Review-tab "Refresh") async review — REUSES the inbound pool
+# --------------------------------------------------------------------------- #
+# The user-initiated POST /api/matters/<id>/review-refresh used to run the heavy
+# AI pipeline synchronously inside the request (~145-245s, broken pipe). It now
+# ENQUEUES onto the SAME storm-hardened ``_INBOUND_REVIEW_POOL`` (bounded
+# concurrency, dedup, idempotency, 256-cap queue, recovery sweep) and returns 202
+# immediately. The pool guards/worker loop/queue/dedup/recovery sweep are
+# untouched; this is purely additive: a separate on-demand registry + an AI-ONLY
+# engine choice so on-demand stays fail-closed AI-first (force_engine=ai_first),
+# exactly like the Review-tab's synchronous ``_review_tab_ai_only_engine``, while
+# inbound jobs keep their existing active-engine semantics.
+#
+# Why a SEPARATE registry (NOT the pool's ``_pending`` dedup set): the pool's
+# dedup set is part of the hardened guards and MUST NOT be repurposed. This set
+# only records "this matter's queued job should run AI-ONLY"; membership is
+# consulted by the pool handler to pick the engine and cleared after the job
+# drains. Reusing the pool's ``enqueue`` keeps a single concurrency bound and a
+# single dedup key per matter, so an on-demand enqueue that races an inbound
+# enqueue for the same matter still queues only once.
+_ON_DEMAND_REVIEW_LOCK = threading.Lock()
+_ON_DEMAND_REVIEW_MATTERS: set[tuple[str, str]] = set()
+
+# The read-time staleness window for a stored ``review_status == "in_progress"``
+# (the restart/OOM/deploy guard) lives in ``matter_view.REVIEW_IN_PROGRESS_TTL_SECONDS``
+# and is applied ON READ by ``matter_view.review_status_fields`` (board + review
+# polls) and the review-refresh payload -- never mutating storage on a GET.
+
+
+def _on_demand_review_key(matter_id: str, owner_user_id: str) -> tuple[str, str]:
+    return (str(matter_id or ""), str(owner_user_id or ""))
+
+
+def _is_on_demand_review(matter_id: str, owner_user_id: str) -> bool:
+    """True when this matter's queued job was scheduled via the on-demand path."""
+    with _ON_DEMAND_REVIEW_LOCK:
+        return _on_demand_review_key(matter_id, owner_user_id) in _ON_DEMAND_REVIEW_MATTERS
+
+
+def _on_demand_ai_only_engine(text, **kwargs):
+    """On-demand review engine: AI is the ONLY reviewer (fail-closed AI-first).
+
+    Pins ``force_engine=ai_first`` so the on-demand path ignores any
+    ``deterministic`` active-engine config and always runs the AI reviewer -- the
+    same contract the synchronous Review-tab ``_review_tab_ai_only_engine`` used.
+    When the AI reviewer cannot run, ``review_nda_with_active_engine`` raises
+    ``ActiveReviewEngineError`` (no deterministic verdict produced); the worker
+    records it as a failed attempt (``review_status="failed"`` + ``review_error``).
+    """
+    return review_nda_with_active_engine(text, force_engine=REVIEW_ENGINE_AI_FIRST, **kwargs)
+
+
+def _stamp_review_status(
+    matter_id: str,
+    fields: dict[str, Any],
+    *,
+    repository: MatterRepository,
+    owner_user_id: str,
+) -> None:
+    """Best-effort allowlisted write of review-lifecycle status fields.
+
+    Fully fail-soft: a status-stamp failure is logged and swallowed -- it must never
+    crash the worker or wedge the (already-persisted) review. ``update_matter_fields``
+    only merges allowlisted keys (review_status/review_started_at/review_error), so a
+    stale field can never be written.
+    """
+    try:
+        repository.update_matter_fields(matter_id, fields, owner_user_id=owner_user_id)
+    except Exception:  # pragma: no cover - status stamping is best-effort
+        LOGGER.warning(
+            "Failed to stamp review status for matter %s: %s", matter_id, fields, exc_info=True
+        )
+
+
+def enqueue_on_demand_review(
+    matter_id: str,
+    owner_user_id: str = "",
+    *,
+    repository: MatterRepository | None = None,
+) -> tuple[bool, bool, bool]:
+    """Enqueue the user-initiated (Review-tab Refresh) AI review onto the inbound pool.
+
+    Returns ``(scheduled, already_pending, queue_full)``:
+
+      * ``(True, False, False)``  -- a fresh job was enqueued (202 in_progress).
+      * ``(False, True, False)``  -- a job for this matter was already pending; the
+        dedup made the re-enqueue a no-op (202, job_scheduled=false).
+      * ``(False, False, True)``  -- the bounded queue is full (503, idle).
+
+    The matter is stamped ``review_status="in_progress"`` + ``review_started_at``
+    BEFORE the enqueue (best-effort) so the board/review polls immediately reflect
+    progress. The job is registered as on-demand so the pool handler runs the
+    AI-ONLY engine (fail-closed AI-first). REUSES ``_INBOUND_REVIEW_POOL.enqueue``
+    -- no second pool, no change to the pool's concurrency bound, dedup set,
+    idempotency guard, queue cap, recovery sweep, or worker loop.
+
+    ``repository`` is used ONLY for the best-effort in_progress stamp (defaults to
+    the disk repo); the pool worker always re-resolves the default disk repo when it
+    runs the review, exactly as the inbound path does.
+    """
+
+    matter_id = str(matter_id or "")
+    owner_user_id = str(owner_user_id or "")
+    if not matter_id:
+        return (False, False, False)
+
+    key = _on_demand_review_key(matter_id, owner_user_id)
+
+    # Dedup pre-check: was a job for this matter already pending in the pool? The
+    # pool's enqueue returns True for BOTH a fresh schedule AND an already-pending
+    # re-enqueue, so we READ the pool's pending membership first to distinguish them
+    # for the 202 job_scheduled flag. (We only READ the pool's pending set.)
+    already_pending = _INBOUND_REVIEW_POOL.is_pending(matter_id, owner_user_id)
+
+    # Register as on-demand BEFORE enqueue so the handler reads AI-ONLY even if a
+    # worker drains the job between the enqueue and our return.
+    with _ON_DEMAND_REVIEW_LOCK:
+        _ON_DEMAND_REVIEW_MATTERS.add(key)
+
+    # Best-effort progress stamp (allowlisted fields only).
+    _stamp_review_status(
+        matter_id,
+        {
+            "review_status": "in_progress",
+            "review_started_at": datetime.now(timezone.utc).isoformat(),
+            "review_error": "",
+        },
+        repository=repository or DiskMatterRepository(),
+        owner_user_id=owner_user_id,
+    )
+
+    try:
+        scheduled = _INBOUND_REVIEW_POOL.enqueue(matter_id, owner_user_id)
+    except Exception:
+        # Enqueue failed hard: drop the on-demand marker so a later inbound job is
+        # not mis-run AI-only, and surface as queue_full (route -> 503).
+        if not already_pending:
+            with _ON_DEMAND_REVIEW_LOCK:
+                _ON_DEMAND_REVIEW_MATTERS.discard(key)
+        from . import telemetry
+
+        telemetry.increment("on_demand_ai_review_schedule_failed")
+        LOGGER.warning(
+            "Failed to enqueue on-demand AI review for matter %s", matter_id, exc_info=True
+        )
+        return (False, False, True)
+
+    if not scheduled:
+        # Queue full: the pool refused the job. Roll back the on-demand marker only
+        # when nothing else is pending for this matter (an already-pending inbound
+        # job would still legitimately own it).
+        if not already_pending:
+            with _ON_DEMAND_REVIEW_LOCK:
+                _ON_DEMAND_REVIEW_MATTERS.discard(key)
+        from . import telemetry
+
+        telemetry.increment("on_demand_ai_review_queue_full")
+        return (False, False, True)
+
+    from . import telemetry
+
+    if already_pending:
+        telemetry.increment("on_demand_ai_review_dedup")
+        return (False, True, False)
+    telemetry.increment("on_demand_ai_review_scheduled")
+    return (True, False, False)
+
+
 def _matter_already_ai_reviewed(matter: dict[str, Any]) -> bool:
     """True when the matter already carries a full AI (ai_first) review result.
 
@@ -356,11 +541,15 @@ def _matter_review_failure_count(matter: dict[str, Any]) -> int:
         return 0
 
 
+_DEFAULT_REVIEW_FAILED_MESSAGE = "AI review failed. Try again."
+
+
 def _record_inbound_review_failure(
     matter_id: str,
     *,
     repository: MatterRepository,
     owner_user_id: str,
+    error: str = _DEFAULT_REVIEW_FAILED_MESSAGE,
 ) -> None:
     """Persist an incremented per-matter AI-review failure count (poison-pill guard).
 
@@ -369,6 +558,10 @@ def _record_inbound_review_failure(
     here is logged and swallowed -- failing to RECORD a failure must never crash the
     worker (the matter simply gets one more retry than the cap, not an infinite
     loop). When the count reaches the cap the recovery sweep stops re-enqueuing it.
+
+    ALSO stamps the async-review lifecycle status (``review_status="failed"`` +
+    ``review_error``) in the SAME allowlisted write, so the board/review polls report
+    a failed review for free -- correct for the inbound path too, not just on-demand.
     """
 
     try:
@@ -379,6 +572,8 @@ def _record_inbound_review_failure(
             {
                 "inbound_review_failures": previous + 1,
                 "inbound_review_failed_at": datetime.now(timezone.utc).isoformat(),
+                "review_status": "failed",
+                "review_error": str(error or _DEFAULT_REVIEW_FAILED_MESSAGE),
             },
             owner_user_id=owner_user_id,
         )
@@ -618,6 +813,16 @@ def _perform_inbound_ai_review_body(
             str(owner_user_id or ""),
         )
         return
+    # PERSIST SUCCESS: stamp the async-review lifecycle status (completed + cleared
+    # error) in the SAME terminal write so the board/review polls report a finished
+    # review for free -- correct for inbound AND on-demand. Best-effort (fail-soft):
+    # a status-stamp failure never undoes the (already-persisted) review.
+    _stamp_review_status(
+        matter_id,
+        {"review_status": "completed", "review_error": ""},
+        repository=repository,
+        owner_user_id=owner_user_id,
+    )
     telemetry.increment("inbound_ai_review_completed")
 
 
@@ -645,14 +850,28 @@ def _inbound_review_pool_handler(matter_id: str, owner_user_id: str) -> None:
        frontend's 45 s timeout.
     """
 
+    # On-demand jobs (Review-tab Refresh) run the AI-ONLY engine (fail-closed
+    # AI-first); inbound jobs keep the active-engine semantics, byte-identical to
+    # before. The marker is consulted here and cleared once the job reaches a
+    # TERMINAL state (run or kill-switch drop) -- NOT on a generation defer, where
+    # the job is re-queued and must still run AI-only.
+    on_demand = _is_on_demand_review(matter_id, owner_user_id)
+    review_engine = _on_demand_ai_only_engine if on_demand else review_nda_with_active_engine
+
     # Gate 1: kill-switch re-check at DRAIN time (not just enqueue time).
     if not inbound_ai_review_enabled():
         LOGGER.info(
             "Inbound AI review kill-switch off at drain; skipping matter %s", matter_id
         )
+        if on_demand:
+            # Dropped (no re-queue): clear the marker so a later inbound job for this
+            # matter is not mis-run AI-only.
+            with _ON_DEMAND_REVIEW_LOCK:
+                _ON_DEMAND_REVIEW_MATTERS.discard(_on_demand_review_key(matter_id, owner_user_id))
         return
 
-    # Gate 2: give foreground generation the right of way -- defer + re-queue.
+    # Gate 2: give foreground generation the right of way -- defer + re-queue. The
+    # job is re-queued (not dropped), so the on-demand marker is LEFT in place.
     if generation_priority.should_defer_background_ai():
         from . import telemetry  # noqa: PLC0415 - keep the import light/local.
 
@@ -667,19 +886,33 @@ def _inbound_review_pool_handler(matter_id: str, owner_user_id: str) -> None:
         )
         return
 
-    _perform_inbound_ai_review(
-        matter_id,
-        repository=DiskMatterRepository(),
-        owner_user_id=str(owner_user_id or ""),
-        review_engine_func=review_nda_with_active_engine,
-        use_semaphore=False,
-        # Deeper right-of-way: if a generate starts in the window between Gate 2 and
-        # this review actually beginning, the lower entry defers + re-queues via the
-        # same off-thread backoff so the item is never dropped.
-        on_defer=lambda: _INBOUND_REVIEW_POOL.requeue_after_backoff(
+    # Track a DEEPER defer (a generate that starts inside the concurrency bound):
+    # when that happens the job is re-queued, so the on-demand marker must SURVIVE --
+    # only a terminal run clears it.
+    deferred = {"flag": False}
+
+    def _on_defer() -> None:
+        deferred["flag"] = True
+        _INBOUND_REVIEW_POOL.requeue_after_backoff(
             matter_id, owner_user_id, inbound_review_defer_backoff_seconds()
-        ),
-    )
+        )
+
+    try:
+        _perform_inbound_ai_review(
+            matter_id,
+            repository=DiskMatterRepository(),
+            owner_user_id=str(owner_user_id or ""),
+            review_engine_func=review_engine,
+            use_semaphore=False,
+            on_defer=_on_defer,
+        )
+    finally:
+        # Terminal: the review ran (completed or failed) on this drain. Clear the
+        # on-demand marker UNLESS the job was re-queued by a deeper generation defer
+        # (then the re-queued job must still run AI-only).
+        if on_demand and not deferred["flag"]:
+            with _ON_DEMAND_REVIEW_LOCK:
+                _ON_DEMAND_REVIEW_MATTERS.discard(_on_demand_review_key(matter_id, owner_user_id))
 
 
 _INBOUND_REVIEW_POOL.configure(_inbound_review_pool_handler)
@@ -971,6 +1204,7 @@ __all__ = [
     "ParagraphAlignmentError",
     "PdfExtractionError",
     "create_matter_from_document",
+    "enqueue_on_demand_review",
     "extract_document",
     "extract_document_paragraphs",
     "inbound_ai_review_enabled",

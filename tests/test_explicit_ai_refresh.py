@@ -1,4 +1,4 @@
-"""No automatic AI on ordinary UI actions -- explicit Refresh-with-AI.
+"""No automatic AI on ordinary UI actions -- explicit Refresh-with-AI (ASYNC).
 
 Contract under test (backend half):
   * Opening/fetching a matter's review (GET /api/matters/<id>/review, driven by
@@ -6,20 +6,21 @@ Contract under test (backend half):
     OFFLINE ``review_may_be_stale`` boolean. It must NEVER invoke the AI review
     engine / verifier.
   * The explicit POST /api/matters/<id>/review-refresh
-    (``handle_matter_review_refresh``) is the ONLY path that runs the AI review
-    engine, and it runs it whenever the broad offline staleness signal is set
-    (playbook/engine drift OR no AI review exists OR the matter text changed).
+    (``handle_matter_review_refresh``) is the user-initiated AI refresh. It is now
+    ASYNC: it ENQUEUES the AI review onto the storm-hardened inbound worker pool and
+    returns 202 immediately -- it must NEVER run the heavy engine inline. AI-OFF is
+    decided by a cheap offline check and keeps today's synchronous
+    ``ai_review_unavailable`` notification (no doomed job is enqueued).
 
-The "AI engine" is represented here by a sentinel ``review_nda_with_active_engine``
-replacement that records every call -- so a single assertion proves whether the
-expensive path ran.
+The detailed 202 contract / status lifecycle / TTL override live in
+tests/test_async_review_backend.py; this file pins the no-AI-on-open invariant and
+the async never-run-inline invariant.
 """
 from __future__ import annotations
 
 import unittest
 
 from nda_automation.matter_repository import InMemoryMatterRepository
-from nda_automation.review_engine import ActiveReviewEngineError
 from nda_automation.routes import matters as matters_routes
 
 
@@ -168,12 +169,35 @@ class OpenMatterDoesNotRunAI(unittest.TestCase):
         self.assertTrue(handler.json["review_may_be_stale"])
         self.assertIn("matter_text_changed", handler.json["review_refresh"]["stale_reasons"])
 
+class ExplicitRefreshEnqueuesAsync(unittest.TestCase):
+    """The explicit refresh ENQUEUES the AI review async (202) and NEVER runs it
+    inline. The pool is swapped for a fresh, isolated instance per test so we never
+    touch the live module pool, and configured with a NON-running handler so a 202
+    can be asserted without any heavy work."""
 
-class ExplicitRefreshRunsAI(unittest.TestCase):
-    def test_review_refresh_endpoint_runs_the_ai_engine(self):
+    def setUp(self):
+        from nda_automation import ingestion_service
+
+        self._ingestion = ingestion_service
+        self._orig_pool = ingestion_service._INBOUND_REVIEW_POOL
+        self._pool = ingestion_service._InboundReviewWorkerPool()
+        self._pool.configure(lambda mid, owner: None)  # never actually run
+        ingestion_service._INBOUND_REVIEW_POOL = self._pool
+        with ingestion_service._ON_DEMAND_REVIEW_LOCK:
+            ingestion_service._ON_DEMAND_REVIEW_MATTERS.clear()
+        self._orig_ai_enabled = matters_routes._ai_first_review_enabled
+        matters_routes._ai_first_review_enabled = lambda: True
+
+    def tearDown(self):
+        self._ingestion._INBOUND_REVIEW_POOL = self._orig_pool
+        with self._ingestion._ON_DEMAND_REVIEW_LOCK:
+            self._ingestion._ON_DEMAND_REVIEW_MATTERS.clear()
+        matters_routes._ai_first_review_enabled = self._orig_ai_enabled
+
+    def test_review_refresh_endpoint_enqueues_and_never_runs_engine_inline(self):
         repository = InMemoryMatterRepository()
         text = "Confidential information clause that needs an AI review."
-        # No AI review yet -> broad staleness True -> the explicit refresh must run AI.
+        # No AI review yet -> broad staleness True -> the explicit refresh enqueues.
         deterministic_review = _fresh_ai_review_result(text)
         deterministic_review["active_review_engine"] = {"executed_engine": "deterministic"}
         deterministic_review.pop("ai_first_review", None)
@@ -190,14 +214,13 @@ class ExplicitRefreshRunsAI(unittest.TestCase):
         finally:
             matters_routes.review_nda_with_active_engine = original
 
-        self.assertEqual(handler.status, 200)
-        self.assertEqual(spy.calls, 1, "the explicit review-refresh endpoint MUST run the AI engine")
-        # After the AI refresh the stored review is the AI one -> no longer may-be-stale.
-        self.assertFalse(handler.json["review_may_be_stale"])
+        self.assertEqual(handler.status, 202)
+        self.assertEqual(spy.calls, 0, "the route MUST NOT run the AI engine inline")
+        self.assertEqual(handler.json["review_status"], "in_progress")
+        self.assertTrue(handler.json["job_scheduled"])
 
-    def test_review_refresh_runs_ai_even_when_only_text_changed(self):
+    def test_review_refresh_enqueues_when_only_text_changed(self):
         repository = InMemoryMatterRepository()
-        # Stored AI review ran on the OLD text; the matter text has since changed.
         review_result = _fresh_ai_review_result("Original clause text.")
         matter_id = _seed_matter(
             repository,
@@ -216,114 +239,16 @@ class ExplicitRefreshRunsAI(unittest.TestCase):
         finally:
             matters_routes.review_nda_with_active_engine = original
 
-        self.assertEqual(handler.status, 200)
-        self.assertEqual(spy.calls, 1, "explicit refresh must run AI on a text-changed matter")
+        self.assertEqual(handler.status, 202)
+        self.assertEqual(spy.calls, 0, "text-changed refresh enqueues, never runs inline")
+        self.assertEqual(handler.json["review_status"], "in_progress")
 
-
-class _UnavailableAIEngine:
-    """Stands in for the AI reviewer being unavailable (AI off / key missing /
-    provider error). Mirrors review_nda_with_active_engine's AI-first fail-closed
-    contract: it raises ActiveReviewEngineError and NEVER returns a deterministic
-    review."""
-
-    def __init__(self) -> None:
-        self.calls = 0
-        self.forced_engines: list[object] = []
-
-    def __call__(self, text, *, paragraphs=None, **kwargs):
-        self.calls += 1
-        self.forced_engines.append(kwargs.get("force_engine"))
-        raise ActiveReviewEngineError("AI-first review failed: AI-first assessment is disabled.")
-
-
-class ReviewTabIsAIOnly(unittest.TestCase):
-    """The user-facing Review tab uses the AI as the ONLY reviewer.
-
-    When the AI cannot run there is NO deterministic fallback: the matter is left
-    "not reviewed" (ai_review_ran false) and the response carries the notification
-    signal. And the review-tab call site always forces the AI-first engine, so a
-    deterministic active-engine config can never produce a verdict on this path.
-    """
-
-    def test_review_refresh_forces_ai_first_engine(self):
+    def test_fresh_ai_review_returns_200_idle_and_enqueues_nothing(self):
         repository = InMemoryMatterRepository()
-        text = "Confidential information clause that needs an AI review."
-        deterministic_review = _fresh_ai_review_result(text)
-        deterministic_review["active_review_engine"] = {"executed_engine": "deterministic"}
-        deterministic_review.pop("ai_first_review", None)
-        matter_id = _seed_matter(repository, extracted_text=text, review_result=deterministic_review)
+        text = "Confidential clause that already has a fresh AI review."
+        matter_id = _seed_matter(repository, extracted_text=text, review_result=_fresh_ai_review_result(text))
 
         spy = _SpyEngine()
-        captured: list[object] = []
-        original = matters_routes.review_nda_with_active_engine
-
-        def _recording_engine(text, *, paragraphs=None, **kwargs):
-            captured.append(kwargs.get("force_engine"))
-            return spy(text, paragraphs=paragraphs)
-
-        matters_routes.review_nda_with_active_engine = _recording_engine
-        try:
-            handler = _FakeHandler(repository=repository)
-            matters_routes.handle_matter_review_refresh(
-                handler, f"/api/matters/{matter_id}/review-refresh"
-            )
-        finally:
-            matters_routes.review_nda_with_active_engine = original
-
-        self.assertEqual(handler.status, 200)
-        self.assertEqual(spy.calls, 1)
-        # The review-tab wrapper MUST pin the AI-first engine regardless of config.
-        self.assertEqual(captured, ["ai_first"])
-        self.assertNotIn("ai_review_unavailable", handler.json)
-
-    def test_ai_off_leaves_matter_unreviewed_and_notifies(self):
-        repository = InMemoryMatterRepository()
-        text = "Confidential information clause needing review while AI is OFF."
-        # No prior AI review -> broad staleness True -> the refresh attempts AI.
-        deterministic_review = _fresh_ai_review_result(text)
-        deterministic_review["active_review_engine"] = {"executed_engine": "deterministic"}
-        deterministic_review.pop("ai_first_review", None)
-        matter_id = _seed_matter(repository, extracted_text=text, review_result=deterministic_review)
-
-        unavailable = _UnavailableAIEngine()
-        original = matters_routes.review_nda_with_active_engine
-        matters_routes.review_nda_with_active_engine = unavailable
-        try:
-            handler = _FakeHandler(repository=repository)
-            matters_routes.handle_matter_review_refresh(
-                handler, f"/api/matters/{matter_id}/review-refresh"
-            )
-        finally:
-            matters_routes.review_nda_with_active_engine = original
-
-        self.assertEqual(handler.status, 200)
-        # AI was attempted, forced to AI-first, and failed closed.
-        self.assertEqual(unavailable.calls, 1)
-        self.assertEqual(unavailable.forced_engines, ["ai_first"])
-        # No deterministic review was produced -- the matter is still "not reviewed".
-        self.assertFalse(handler.json["matter"]["ai_review_ran"])
-        stored = repository.get_matter(matter_id, owner_user_id="owner@example.com")
-        self.assertEqual(
-            stored["review_result"]["active_review_engine"]["executed_engine"],
-            "deterministic",
-            "the stored review must be untouched (no NEW deterministic review written)",
-        )
-        # The notification signal fires with the required message.
-        self.assertTrue(handler.json["ai_review_unavailable"])
-        self.assertIn(
-            "no AI reviewer available",
-            handler.json["ai_review_unavailable_message"],
-        )
-
-    def test_ai_on_runs_normal_review_without_notification(self):
-        repository = InMemoryMatterRepository()
-        text = "Confidential information clause with the AI reviewer ON."
-        deterministic_review = _fresh_ai_review_result(text)
-        deterministic_review["active_review_engine"] = {"executed_engine": "deterministic"}
-        deterministic_review.pop("ai_first_review", None)
-        matter_id = _seed_matter(repository, extracted_text=text, review_result=deterministic_review)
-
-        spy = _SpyEngine()  # returns a completed AI-first review
         original = matters_routes.review_nda_with_active_engine
         matters_routes.review_nda_with_active_engine = spy
         try:
@@ -335,9 +260,95 @@ class ReviewTabIsAIOnly(unittest.TestCase):
             matters_routes.review_nda_with_active_engine = original
 
         self.assertEqual(handler.status, 200)
-        self.assertEqual(spy.calls, 1)
-        self.assertTrue(handler.json["matter"]["ai_review_ran"])
+        self.assertEqual(spy.calls, 0)
+        self.assertEqual(handler.json["review_status"], "idle")
+        self.assertFalse(handler.json["job_scheduled"])
+
+
+class ReviewTabIsAIOnly(unittest.TestCase):
+    """The user-facing Review tab uses the AI as the ONLY reviewer.
+
+    AI-OFF is decided by the cheap offline ``_ai_first_review_enabled`` predicate
+    (NOT by running the engine): the route keeps today's synchronous
+    ``ai_review_unavailable`` notification and enqueues NO doomed job. AI-ON enqueues
+    the async review (202) and never produces a deterministic verdict.
+    """
+
+    def setUp(self):
+        from nda_automation import ingestion_service
+
+        self._ingestion = ingestion_service
+        self._orig_pool = ingestion_service._INBOUND_REVIEW_POOL
+        self._pool = ingestion_service._InboundReviewWorkerPool()
+        self._pool.configure(lambda mid, owner: None)
+        ingestion_service._INBOUND_REVIEW_POOL = self._pool
+        with ingestion_service._ON_DEMAND_REVIEW_LOCK:
+            ingestion_service._ON_DEMAND_REVIEW_MATTERS.clear()
+        self._orig_ai_enabled = matters_routes._ai_first_review_enabled
+
+    def tearDown(self):
+        self._ingestion._INBOUND_REVIEW_POOL = self._orig_pool
+        with self._ingestion._ON_DEMAND_REVIEW_LOCK:
+            self._ingestion._ON_DEMAND_REVIEW_MATTERS.clear()
+        matters_routes._ai_first_review_enabled = self._orig_ai_enabled
+
+    def test_ai_off_keeps_synchronous_notification_and_enqueues_nothing(self):
+        matters_routes._ai_first_review_enabled = lambda: False
+        repository = InMemoryMatterRepository()
+        text = "Confidential information clause needing review while AI is OFF."
+        deterministic_review = _fresh_ai_review_result(text)
+        deterministic_review["active_review_engine"] = {"executed_engine": "deterministic"}
+        deterministic_review.pop("ai_first_review", None)
+        matter_id = _seed_matter(repository, extracted_text=text, review_result=deterministic_review)
+
+        spy = _SpyEngine()
+        original = matters_routes.review_nda_with_active_engine
+        matters_routes.review_nda_with_active_engine = spy
+        try:
+            handler = _FakeHandler(repository=repository)
+            matters_routes.handle_matter_review_refresh(
+                handler, f"/api/matters/{matter_id}/review-refresh"
+            )
+        finally:
+            matters_routes.review_nda_with_active_engine = original
+
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(spy.calls, 0, "AI-off must NOT run (or enqueue) the engine")
+        self.assertTrue(handler.json["ai_review_unavailable"])
+        self.assertIn("no AI reviewer available", handler.json["ai_review_unavailable_message"])
+        self.assertEqual(self._pool.pending_count(), 0)
+        # The stored review is untouched -- no deterministic verdict produced.
+        stored = repository.get_matter(matter_id, owner_user_id="owner@example.com")
+        self.assertEqual(
+            stored["review_result"]["active_review_engine"]["executed_engine"], "deterministic"
+        )
+
+    def test_ai_on_enqueues_async_without_notification(self):
+        matters_routes._ai_first_review_enabled = lambda: True
+        repository = InMemoryMatterRepository()
+        text = "Confidential information clause with the AI reviewer ON."
+        deterministic_review = _fresh_ai_review_result(text)
+        deterministic_review["active_review_engine"] = {"executed_engine": "deterministic"}
+        deterministic_review.pop("ai_first_review", None)
+        matter_id = _seed_matter(repository, extracted_text=text, review_result=deterministic_review)
+
+        spy = _SpyEngine()
+        original = matters_routes.review_nda_with_active_engine
+        matters_routes.review_nda_with_active_engine = spy
+        try:
+            handler = _FakeHandler(repository=repository)
+            matters_routes.handle_matter_review_refresh(
+                handler, f"/api/matters/{matter_id}/review-refresh"
+            )
+        finally:
+            matters_routes.review_nda_with_active_engine = original
+
+        self.assertEqual(handler.status, 202)
+        self.assertEqual(spy.calls, 0, "the route enqueues; it never runs the engine inline")
+        self.assertEqual(handler.json["review_status"], "in_progress")
         self.assertNotIn("ai_review_unavailable", handler.json)
+
+
 
 
 if __name__ == "__main__":

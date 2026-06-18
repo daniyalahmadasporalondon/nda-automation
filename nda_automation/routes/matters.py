@@ -9,7 +9,12 @@ from .. import gmail_integration, matter_render_job, matter_store, matter_summar
 from ..checker import ParagraphAlignmentError
 from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from ..docx_text import DocxExtractionError, extract_docx_paragraphs
-from ..ingestion_service import create_matter_from_document, is_supported_document_filename
+from ..ai_assessor import ai_first_review_enabled
+from ..ingestion_service import (
+    create_matter_from_document,
+    enqueue_on_demand_review,
+    is_supported_document_filename,
+)
 from ..matter_lifecycle import (
     MatterNotFoundError,
     RedlineDraftError,
@@ -96,63 +101,109 @@ def _review_tab_ai_only_engine(text, **kwargs):
     return review_nda_with_active_engine(text, force_engine=REVIEW_ENGINE_AI_FIRST, **kwargs)
 
 
+def _ai_first_review_enabled() -> bool:
+    """Route-local seam over the AI-availability predicate (patchable in tests).
+
+    Delegates to ``ai_assessor.ai_first_review_enabled`` -- a cheap, OFFLINE check of
+    whether the AI reviewer is enabled. The async review-refresh route consults this
+    BEFORE enqueuing so it can keep the synchronous ``ai_review_unavailable``
+    notification when AI is OFF (rather than enqueue a job that would only fail).
+    """
+    return ai_first_review_enabled()
+
+
 def handle_matter_review_refresh(handler, path: str) -> None:
-    """POST /api/matters/<id>/review-refresh -- the ONLY path that runs the AI review.
+    """POST /api/matters/<id>/review-refresh -- enqueue the AI review ASYNC (202).
 
-    This is the explicit, user-initiated AI refresh. On the Review tab the AI is the
-    ONLY reviewer: it re-runs the AI-first engine (the verifier) over the matter and
-    stores the fresh review. There is NO deterministic fallback here -- if the AI
-    reviewer cannot run (AI disabled / key missing / provider error) the matter is
-    left "not reviewed" (``ai_review_ran`` stays false) and the response carries
-    ``ai_review_unavailable`` so the frontend fires a notification. Opening/fetching a
-    matter never reaches here, so "looking at" a matter never triggers the AI.
+    This is the explicit, user-initiated AI refresh. It used to run the heavy AI
+    pipeline SYNCHRONOUSLY inside the request (~145-245s -> broken pipe). It now
+    ENQUEUES the review onto the storm-hardened inbound worker pool (bounded
+    concurrency / dedup / idempotency / 256-cap queue / recovery sweep) and returns
+    IMMEDIATELY. The route NEVER blocks on the pipeline and never sends the heavy
+    review result; the board + review polls carry the live ``review_status`` and the
+    finished review lands on a later poll.
 
-    The refresh runs whenever the BROAD offline staleness signal is set
-    (``review_may_be_stale``): playbook/engine drift OR no AI review exists yet OR
-    the matter text changed since the last review -- so an explicit click always
-    produces a fresh AI review when one is warranted, not only on playbook drift.
+    The 202 contract:
+      * not stale (a fresh AI review already exists) -> 200
+        ``{review_status:"idle", matter}`` (no job enqueued).
+      * AI reviewer unavailable (cheap offline check) -> 200 with today's
+        ``ai_review_unavailable`` notification (no job enqueued -- it would only
+        fail).
+      * stale + a fresh job scheduled -> 202
+        ``{review_status:"in_progress", job_scheduled:true, matter}``.
+      * stale + already pending (dedup) -> 202
+        ``{review_status:"in_progress", job_scheduled:false, matter}``.
+      * the bounded queue is full -> 503 ``{error, review_status:"idle"}``.
+      * missing/owner-mismatched matter -> 404.
+
+    Staleness uses the BROAD offline signal (``review_may_be_stale``):
+    playbook/engine drift OR no AI review exists yet OR the matter text changed.
+    The async job runs the AI-ONLY engine (fail-closed AI-first) -- exactly the
+    Review-tab contract -- so it never produces a deterministic verdict.
     """
     matter_id = parse_matter_id(path, suffix="/review-refresh")
     matter = _matter_for_review_response(handler, matter_id, send_body=True)
     if matter is None:
         return
 
-    def _broad_staleness(_review_result: object, _matter: dict = matter) -> bool:
-        may_be_stale, _reasons = _review_may_be_stale(
-            _matter,
-            playbook_stale=review_result_is_stale(_matter.get("review_result")),
-        )
-        return may_be_stale
+    owner_user_id = request_owner_user_id(handler)
 
-    refresh = RepositoryMatterLifecycle(_repository(handler)).refresh_review(
+    may_be_stale, _reasons = _review_may_be_stale(
         matter,
-        review_engine_func=_review_tab_ai_only_engine,
-        review_staleness_func=_broad_staleness,
+        playbook_stale=review_result_is_stale(matter.get("review_result")),
     )
-    # AI is the only reviewer on the Review tab. ``refresh_review`` swallows an
-    # ``ActiveReviewEngineError`` (AI unavailable) and returns the matter UNCHANGED,
-    # so a refresh that was warranted (``was_stale``) but did not leave the matter
-    # with an executed AI review means the AI reviewer could not run. No
-    # deterministic verdict is ever produced -- we just tell the frontend to notify.
-    ai_review_unavailable = bool(
-        refresh.was_stale
-        and not review_was_ai_executed(refresh.matter.get("review_result"))
-    )
-    if ai_review_unavailable:
+
+    # Not stale: a fresh AI review already exists. Nothing to enqueue -- report idle
+    # and return the matter as-is (no heavy work, no block).
+    if not may_be_stale:
+        payload = _matter_review_payload(matter, matter_id, was_stale=False, refresh_attempted=True)
+        payload["review_status"] = "idle"
+        payload["job_scheduled"] = False
+        handler._send_json(payload)
+        return
+
+    # AI reviewer OFF (cheap offline check): keep today's synchronous notification
+    # rather than enqueue a job that would only fail closed. No deterministic verdict
+    # is ever produced; the stored review is untouched.
+    if not _ai_first_review_enabled():
         telemetry.increment("review_tab_ai_unavailable")
-    payload = _matter_review_payload(
-        refresh.matter,
-        matter_id,
-        was_stale=refresh.was_stale,
-        had_redline_draft=refresh.had_redline_draft,
-        refresh_attempted=refresh.refresh_attempted,
-    )
-    if ai_review_unavailable:
+        payload = _matter_review_payload(matter, matter_id, was_stale=True, refresh_attempted=True)
+        payload["review_status"] = "idle"
+        payload["job_scheduled"] = False
         payload["ai_review_unavailable"] = True
         payload["ai_review_unavailable_message"] = (
             "Review can't be completed — no AI reviewer available."
         )
-    handler._send_json(payload)
+        handler._send_json(payload)
+        return
+
+    # Stale + AI available: ENQUEUE the async review on the shared pool and return
+    # immediately. The route NEVER runs the engine inline.
+    scheduled, already_pending, queue_full = enqueue_on_demand_review(
+        str(matter_id or ""), owner_user_id, repository=_repository(handler)
+    )
+
+    if queue_full:
+        # The bounded review queue is saturated. Surface a retryable 503; the matter
+        # is reported idle (no job is owning it) so a later click can retry.
+        handler._send_json(
+            {
+                "error": "The review queue is busy. Please try again in a moment.",
+                "review_status": "idle",
+                "job_scheduled": False,
+            },
+            status=503,
+        )
+        return
+
+    # Re-read so the payload reflects the in_progress stamp written by the enqueue.
+    refreshed_matter = _matter_for_review_response(handler, matter_id, send_body=True)
+    if refreshed_matter is None:
+        return
+    payload = _matter_review_payload(refreshed_matter, matter_id, was_stale=True, refresh_attempted=True)
+    payload["review_status"] = "in_progress"
+    payload["job_scheduled"] = bool(scheduled and not already_pending)
+    handler._send_json(payload, status=202)
 
 
 def _matter_for_review_response(handler, matter_id: str | None, *, send_body: bool) -> dict | None:
@@ -341,6 +392,11 @@ def _matter_review_payload(
         payload["review_refresh"]["stale_message"] = staleness["message"]
     if redline_draft_cleared:
         payload["review_refresh"]["message"] = "Saved redline draft was cleared because the review was re-analyzed."
+    # The async-review lifecycle status (review_status / review_error /
+    # review_started_at, TTL-overridden on read) is already merged at the top level
+    # of ``matter_view.review_matter``. The 202/200 review-refresh route may overwrite
+    # ``review_status`` afterwards (idle / in_progress) to reflect the action just
+    # taken; the board + review polls read the stored (overridden) status here.
     return payload
 
 

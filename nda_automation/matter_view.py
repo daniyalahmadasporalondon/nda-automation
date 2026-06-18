@@ -20,6 +20,62 @@ from .source_fidelity import source_fidelity_payload
 from .workflow import workflow_state
 
 
+# After this many seconds a stored ``review_status == "in_progress"`` is treated as
+# interrupted/stale ON READ (a worker restart/OOM/deploy can leave it stamped
+# forever). The override below reports it as failed/retryable WITHOUT mutating
+# storage on a GET. Single source of truth for the read-time staleness window
+# shared by the board view (``public_matter``), the review view (``review_matter``)
+# and the review-refresh route payload.
+REVIEW_IN_PROGRESS_TTL_SECONDS = 300
+
+
+def review_status_fields(matter: dict[str, Any]) -> dict[str, Any]:
+    """Async-review lifecycle status surfaced on the board + review polls.
+
+    Reads the stored ``review_status`` / ``review_started_at`` / ``review_error``
+    and applies the TTL STALENESS OVERRIDE computed ON READ (never mutating storage
+    on a GET): a stored ``in_progress`` whose ``review_started_at`` is older than
+    ``REVIEW_IN_PROGRESS_TTL_SECONDS`` (300s) is reported as ``failed`` with an
+    "interrupted, retry" error -- the restart/OOM/deploy guard so a worker that died
+    mid-review reads as a retryable failure, not an eternal spinner. Only present
+    keys are returned (a matter with no async review carries none of them).
+    """
+    status = str(matter.get("review_status") or "")
+    error = str(matter.get("review_error") or "")
+    started_at = str(matter.get("review_started_at") or "")
+    if status == "in_progress" and _review_in_progress_expired(started_at):
+        status = "failed"
+        error = "The review was interrupted. Please try again."
+    fields: dict[str, Any] = {}
+    if status:
+        fields["review_status"] = status
+    if error:
+        fields["review_error"] = error
+    if started_at:
+        fields["review_started_at"] = started_at
+    return fields
+
+
+def _review_in_progress_expired(started_at: str) -> bool:
+    """True when an ``in_progress`` review's start time is older than the TTL.
+
+    Parsed defensively: a missing/unparseable timestamp is treated as NOT expired
+    (we never fabricate a failure from a bad stamp). Computed on read only.
+    """
+    if not started_at:
+        return False
+    from datetime import datetime, timezone
+
+    try:
+        started = datetime.fromisoformat(started_at)
+    except (TypeError, ValueError):
+        return False
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    age_seconds = (datetime.now(timezone.utc) - started).total_seconds()
+    return age_seconds > REVIEW_IN_PROGRESS_TTL_SECONDS
+
+
 class PublicMatter(TypedDict, total=False):
     ai_review_ran: bool
     approved_at: str
@@ -66,7 +122,10 @@ class PublicMatter(TypedDict, total=False):
     requirements_needs_review: int
     requirements_passed: int
     reply_to: str
+    review_error: str
+    review_started_at: str
     review_state: dict[str, Any]
+    review_status: str
     reviewer_decisions: dict[str, Any]
     sender: str
     send_block_reason: str
@@ -169,6 +228,10 @@ def public_matter(
     review_state = matter_review_state(matter)
     if review_state:
         public["review_state"] = review_state
+    # Async-review lifecycle status (review_status / review_error / review_started_at)
+    # with the 300s in_progress TTL override applied on read, so the board poll
+    # carries live progress for the async AI review without the route blocking.
+    public.update(review_status_fields(matter))
     # The canonical workflow state (phase/status/next_action/human_gate/
     # needs_attention) -- one derived source the UI and automation read instead of
     # guessing from the overlapping status/board/triage fields. Its
@@ -475,6 +538,9 @@ def review_matter(matter: dict[str, Any]) -> dict[str, Any]:
         "matter": public_matter(matter),
         "extracted_text": extracted_text,
     }
+    # Async-review lifecycle status at the TOP level of the review payload too (the
+    # review poll reads it here), TTL-overridden on read like the board view.
+    review_payload.update(review_status_fields(matter))
     review_result = matter.get("review_result")
     if isinstance(review_result, dict):
         structured_review_result = review_result_with_structure(review_result, extracted_text)
