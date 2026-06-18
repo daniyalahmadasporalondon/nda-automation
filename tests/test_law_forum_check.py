@@ -83,6 +83,48 @@ EVAL_CASES = {
         "india",
         True,
     ),
+    # ag2 — E&W law + "courts of the State of Delaware". The Delaware forum bucket
+    # previously matched only "courts in Delaware"/"Delaware courts" and MISSED the
+    # very common "courts of [the State of] Delaware" phrasing, so this mismatch was
+    # silently under-flagged. Now it must FLAG.
+    "ag2_ew_law_courts_of_state_of_delaware": (
+        _BODY.format(
+            cp="Vermillion Holdings LLC",
+            law="This Agreement shall be governed by and construed in accordance with the laws of England and Wales.",
+            forum_heading="Jurisdiction and Venue",
+            forum="The parties irrevocably submit to the exclusive jurisdiction of the courts of the State of Delaware for any dispute arising out of or in connection with this Agreement.",
+        ),
+        "england_and_wales",
+        True,
+    ),
+    # je3 — DIFC law + ONSHORE "Courts of Dubai" (the Emirate's civil-law courts,
+    # NOT the DIFC Courts). The user has ruled DIFC distinct from onshore UAE, so
+    # this is a genuine law<->forum split and must FLAG. Previously silent (no
+    # onshore-Dubai bucket existed).
+    "je3_difc_law_onshore_dubai_courts": (
+        _BODY.format(
+            cp="Falcon Trading FZE",
+            law="This Agreement shall be governed by and construed in accordance with the laws of the DIFC.",
+            forum_heading="Jurisdiction and Venue",
+            forum="The parties irrevocably submit to the exclusive jurisdiction of the Courts of Dubai (the onshore Dubai Courts) for any dispute arising out of or in connection with this Agreement.",
+        ),
+        "difc",
+        True,
+    ),
+    # je4 — REGRESSION GUARD: DIFC law + "DIFC Courts, Dubai International Financial
+    # Centre". This is the DIFC bucket's own canonical forum and must stay SILENT.
+    # The onshore-Dubai bucket must NOT fire on the stray "Dubai" token inside the
+    # DIFC forum name (the substring trap the panel flagged).
+    "je4_difc_law_difc_courts_match": (
+        _BODY.format(
+            cp="Mirage Capital FZE",
+            law="This Agreement shall be governed by and construed in accordance with the laws of the DIFC.",
+            forum_heading="Jurisdiction and Venue",
+            forum="The parties irrevocably submit to the exclusive jurisdiction of the DIFC Courts, Dubai International Financial Centre, for any dispute arising out of or in connection with this Agreement.",
+        ),
+        "difc",
+        False,
+    ),
     "c5_control_ew_law_ew_courts": (
         _BODY.format(
             cp="Brightwater Systems Limited",
@@ -215,6 +257,95 @@ class ExtractionTests(unittest.TestCase):
         # must NOT flag (nothing to compare against -> no false positive).
         text = "Governing Law. This Agreement is governed by the laws of England and Wales.\n"
         self.assertIsNone(lfc.detect_mismatch(text, "england_and_wales", {}))
+
+
+class ConservativeGapTests(unittest.TestCase):
+    """The two under-flag gaps the adversarial panel found, with the precision guard.
+
+    GAP 1 — the Delaware forum bucket must recognize "courts of [the State of]
+    Delaware" (not only "courts in Delaware" / "Delaware courts").
+    GAP 2 — an onshore-Dubai / UAE forum bucket DISTINCT from the difc bucket, with
+    the substring trap closed: "DIFC Courts" (even "DIFC Courts, Dubai") must STILL
+    resolve to difc and must NOT trigger the onshore-Dubai bucket.
+    """
+
+    # ---- GAP 1: Delaware "courts of <X>" --------------------------------------
+    def test_delaware_courts_of_state_extracts(self):
+        for phrase in (
+            "the courts of the State of Delaware",
+            "the courts of Delaware",
+            "courts in Delaware",  # pre-existing phrasing must still match
+            "the Delaware courts",
+        ):
+            sentence = f"Jurisdiction. The parties submit to the exclusive jurisdiction of {phrase}."
+            with self.subTest(phrase=phrase):
+                self.assertEqual(lfc.extract_forum_jurisdictions(sentence), {"delaware"})
+
+    def test_new_york_courts_of_state_extracts(self):
+        # Same "courts of <X>" omission was present on the New York forum bucket.
+        sentence = (
+            "Jurisdiction. The parties submit to the exclusive jurisdiction of "
+            "the courts of the State of New York."
+        )
+        self.assertEqual(lfc.extract_forum_jurisdictions(sentence), {"new_york"})
+
+    def test_ag2_ew_law_courts_of_state_of_delaware_flags(self):
+        text, law, _ = EVAL_CASES["ag2_ew_law_courts_of_state_of_delaware"]
+        finding = lfc.detect_mismatch(text, law, {})
+        self.assertIsNotNone(finding, "E&W law + 'courts of the State of Delaware' must flag")
+        assert finding is not None
+        self.assertEqual(finding["expected_forum"], "england_and_wales")
+        self.assertEqual(finding["document_forum"], "delaware")
+
+    # ---- GAP 2: onshore Dubai distinct from DIFC ------------------------------
+    def test_onshore_dubai_forum_extracts_distinct_from_difc(self):
+        for phrase in (
+            "the Courts of Dubai (the onshore Dubai Courts)",
+            "the courts of the Emirate of Dubai",
+            "the UAE federal courts",
+            "the courts of the United Arab Emirates",
+        ):
+            sentence = f"Jurisdiction. The parties submit to the exclusive jurisdiction of {phrase}."
+            with self.subTest(phrase=phrase):
+                forums = lfc.extract_forum_jurisdictions(sentence)
+                self.assertIn("onshore_dubai", forums)
+                self.assertNotIn("difc", forums)
+
+    def test_je3_difc_law_onshore_dubai_flags(self):
+        text, law, _ = EVAL_CASES["je3_difc_law_onshore_dubai_courts"]
+        finding = lfc.detect_mismatch(text, law, {})
+        self.assertIsNotNone(finding, "DIFC law + onshore 'Courts of Dubai' must flag a mismatch")
+        assert finding is not None
+        self.assertEqual(finding["expected_forum"], "difc")
+        self.assertEqual(finding["document_forum"], "onshore_dubai")
+
+    def test_je4_difc_courts_substring_trap_stays_silent(self):
+        # REGRESSION GUARD: the onshore-Dubai bucket must NOT fire on the "Dubai"
+        # token inside the DIFC forum name. DIFC Courts (with or without the trailing
+        # "Dubai International Financial Centre") resolve to difc, silent under DIFC law.
+        for phrase in (
+            "the DIFC Courts",
+            "the DIFC Courts, Dubai",
+            "the DIFC Courts, Dubai International Financial Centre",
+        ):
+            sentence = f"Jurisdiction. The parties submit to the exclusive jurisdiction of {phrase}."
+            with self.subTest(phrase=phrase):
+                forums = lfc.extract_forum_jurisdictions(sentence)
+                self.assertEqual(forums, {"difc"}, f"{phrase!r} must resolve to difc ONLY")
+                self.assertNotIn("onshore_dubai", forums)
+        # And the full je4 document under DIFC law stays silent (no mismatch).
+        text, law, _ = EVAL_CASES["je4_difc_law_difc_courts_match"]
+        self.assertIsNone(
+            lfc.detect_mismatch(text, law, {}),
+            "DIFC law + 'DIFC Courts, Dubai' must NOT flag (substring trap)",
+        )
+
+    def test_difc_law_difc_forum_aligned_control_silent(self):
+        # A DIFC-forum doc under DIFC law is aligned -> silent (both helper paths).
+        text, law, _ = EVAL_CASES["je4_difc_law_difc_courts_match"]
+        self.assertIsNone(lfc.detect_mismatch(text, law, {}))
+        with stubbed_helper():
+            self.assertIsNone(lfc.detect_mismatch(text, law, {"clauses": []}))
 
 
 class _LFState:

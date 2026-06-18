@@ -68,6 +68,7 @@ JURISDICTIONS: dict[str, dict[str, list[str]]] = {
         "law": [r"laws?\s+of\s+(?:the\s+state\s+of\s+)?delaware", r"delaware\s+law"],
         "forum": [
             r"courts?\s+(?:located\s+)?in\s+(?:the\s+state\s+of\s+)?delaware",
+            r"courts?\s+of\s+(?:the\s+state\s+of\s+)?delaware",
             r"delaware\s+courts?",
         ],
     },
@@ -104,6 +105,7 @@ JURISDICTIONS: dict[str, dict[str, list[str]]] = {
         "law": [r"laws?\s+of\s+(?:the\s+state\s+of\s+)?new\s+york", r"new\s+york\s+law"],
         "forum": [
             r"courts?\s+(?:located\s+)?in\s+(?:the\s+state\s+of\s+)?new\s+york",
+            r"courts?\s+of\s+(?:the\s+state\s+of\s+)?new\s+york",
             r"new\s+york\s+courts?",
         ],
     },
@@ -116,7 +118,33 @@ JURISDICTIONS: dict[str, dict[str, list[str]]] = {
             r"\bsiac\b",
         ],
     },
+    # ---- onshore Dubai / UAE (distinct from the difc bucket) -------------------
+    # The user has ruled DIFC distinct from onshore UAE: a DIFC-law NDA that names
+    # the ONSHORE Dubai/UAE courts (the Emirate's civil-law courts, NOT the DIFC
+    # Courts) is a genuine law<->forum split. This is a FORUM-ONLY bucket (onshore
+    # UAE is not an approved governing law). CRITICAL PRECISION: these patterns must
+    # NOT fire when "DIFC" is present in the forum phrase -- "DIFC Courts, Dubai" is
+    # the DIFC forum name, not onshore Dubai. That exclusion is enforced in
+    # ``_match_buckets`` via ``_DIFC_PRESENT`` (DIFC is matched FIRST and suppresses
+    # this bucket), so the stray "Dubai" token in a DIFC phrase can never leak here.
+    "onshore_dubai": {
+        "law": [],
+        "forum": [
+            r"courts?\s+of\s+(?:the\s+emirate\s+of\s+)?dubai",
+            r"dubai\s+courts?",
+            r"onshore\s+(?:dubai|uae)\s+courts?",
+            r"(?:uae|u\.a\.e\.)\s+federal\s+courts?",
+            r"federal\s+courts?\s+of\s+the\s+(?:uae|united\s+arab\s+emirates)",
+            r"courts?\s+of\s+the\s+united\s+arab\s+emirates",
+        ],
+    },
 }
+
+# When a forum phrase mentions the DIFC at all, the onshore-Dubai bucket must NOT
+# fire: "DIFC Courts, Dubai International Financial Centre" is the DIFC forum name,
+# and the bare "Dubai" token inside it is part of that name -- not the onshore
+# Emirate of Dubai courts. DIFC wins; the onshore bucket is suppressed.
+_DIFC_PRESENT = re.compile(r"difc|dubai\s+international\s+financial\s+cent(?:re|er)", re.IGNORECASE)
 
 # Human-readable jurisdiction labels for the finding text.
 JURISDICTION_LABELS: dict[str, str] = {
@@ -128,6 +156,7 @@ JURISDICTION_LABELS: dict[str, str] = {
     "cayman_islands": "Cayman Islands",
     "new_york": "New York",
     "singapore": "Singapore",
+    "onshore_dubai": "onshore Dubai / UAE (courts outside the DIFC)",
 }
 
 # Sentence-role gates: a sentence is only inspected for a LAW jurisdiction when it
@@ -166,7 +195,13 @@ def _sentences(text: str) -> list[str]:
 
 def _match_buckets(sentence: str, role: str) -> set[str]:
     hits: set[str] = set()
+    # Precision guard: when the DIFC is named in the phrase, suppress the
+    # onshore-Dubai bucket so the "Dubai" token inside "DIFC Courts, Dubai" is read
+    # as part of the DIFC forum name, never as the onshore Emirate of Dubai courts.
+    difc_present = bool(_DIFC_PRESENT.search(sentence))
     for jur, pats in JURISDICTIONS.items():
+        if jur == "onshore_dubai" and difc_present:
+            continue
         for pat in pats.get(role, ()):  # type: ignore[arg-type]
             if re.search(pat, sentence, re.IGNORECASE):
                 hits.add(jur)
