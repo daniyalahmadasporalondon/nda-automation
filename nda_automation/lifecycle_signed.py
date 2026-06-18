@@ -260,18 +260,26 @@ def mark_matter_executed(
     owner_user_id: str,
     *,
     actor: str = "",
+    detail: str = "Marked executed manually (signed outside DocuSign).",
 ) -> dict | None:
-    """Flip the shared executed contract on a matter (the MANUAL "mark executed").
+    """Flip the shared executed contract on a matter -- the ONE executed primitive.
 
     Sets ``executed=True`` / ``status="fully_signed"`` / ``executed_at=<now>`` --
-    the exact three fields :func:`docusign_workflow.sync_signature_status` sets on
-    DocuSign completion -- so a paper / externally-signed NDA qualifies as executed
-    for the board (excluded) and the corpus library (included). The AI review state
-    (``ai_review_ran`` and the review payload) is never touched.
+    the exact three fields the manual mark, the signed-upload, AND the DocuSign
+    ``completed`` sync converge on -- so a paper / externally-signed / DocuSign-signed
+    NDA all qualify as executed for the board (excluded) and the corpus library
+    (included). The AI review state (``ai_review_ran`` and the review payload) is
+    never touched.
 
-    Records a who/when audit trail via an append-only ``executed`` timeline event
-    (actor + detail noting the manual path). Idempotent: a matter that is already
-    executed is returned unchanged -- no re-flip and no duplicate timeline event.
+    Owns the two executed side-effects every path must share: it CLEARS any stale
+    ``workflow_error`` (so an executed matter never carries a contradictory
+    failed-send marker) and appends exactly ONE append-only ``executed`` timeline
+    event (actor + ``detail``). The default ``detail`` names the manual path; the
+    DocuSign sync passes its own so the audit line is accurate per path.
+
+    Idempotent: a matter that is already executed is returned unchanged -- no
+    re-flip, no second triad write, and no duplicate timeline event. This guard is
+    what lets a re-sync of an already-``completed`` envelope route here safely.
 
     Returns the updated matter dict, or ``None`` when the matter is missing / not
     owned by the caller.
@@ -313,7 +321,7 @@ def mark_matter_executed(
         phase=workflow.PHASE_EXECUTED,
         status=workflow.STATUS_FULLY_SIGNED,
         actor=actor,
-        detail="Marked executed manually (signed outside DocuSign).",
+        detail=detail,
         at=now,
     )
     after_event = repository.append_timeline_event(matter_id, event, owner_user_id=owner_user_id)

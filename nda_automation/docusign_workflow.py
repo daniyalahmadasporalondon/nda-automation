@@ -33,7 +33,9 @@ from . import (
     docusign_integration,
     entity_registry,
     gmail_integration,
+    lifecycle_signed,
     nda_generation,
+    workflow,
 )
 from .artifact_registry import (
     ROLE_GENERATED,
@@ -241,10 +243,20 @@ def sync_signature_status(
     Reads the persisted envelope id, fetches the live status, and updates the
     stored status. When DocuSign reports ``completed`` it downloads the executed
     combined PDF, registers it as the matter's ``signed`` artifact (via
-    :mod:`lifecycle_signed`, eager + best-effort), and flips the matter to
-    fully-signed (``executed`` / ``executed_at`` — the markers
-    :func:`workflow._is_executed` reads). Idempotent: re-syncing a completed
-    matter re-points to the same signed artifact without duplicating it.
+    :mod:`lifecycle_signed`, eager + best-effort), and flips the matter to executed
+    by routing the triad write through the SHARED
+    :func:`lifecycle_signed.mark_matter_executed` primitive -- the same primitive
+    the manual-mark and signed-upload paths use. That convergence is what makes the
+    DocuSign-executed state IDENTICAL to those paths: the executed triad
+    (``executed`` / ``executed_at`` / ``status=fully_signed``), a CLEARED stale
+    ``workflow_error``, and exactly ONE ``executed`` timeline event (actor
+    ``DocuSign``).
+
+    Idempotent: re-syncing an ALREADY-executed matter is a status refresh only --
+    it does NOT re-download / re-capture the signed PDF (no artifact v1->v2 churn),
+    does NOT re-flip the triad or append a second ``executed`` event, and does NOT
+    re-archive to Drive. The returned ``signed_artifact_id`` re-points to the
+    artifact captured on first completion.
 
     On the same ``completed`` transition it ALSO archives the executed matter to
     Google Drive (the signed PDF + a fresh ``metadata/matter_summary.json``) via
@@ -278,6 +290,13 @@ def sync_signature_status(
         raise DocuSignWorkflowError(str(error)) from error
 
     completed = status == STATUS_COMPLETED
+    # Idempotency short-circuit: a re-sync of an envelope that ALREADY flipped the
+    # matter to executed must not re-churn anything. Skipping below means we don't
+    # re-download + re-capture the signed PDF (which bumps the artifact v1->v2),
+    # don't re-flip the triad / re-append a second ``executed`` event, and don't
+    # re-archive to Drive on every poll. We still re-confirm the live envelope
+    # status / last_synced / per-recipient signers below (a cheap status refresh).
+    already_executed = completed and workflow._is_executed(matter)
     signed_artifact_id = ""
     fields: dict[str, Any] = {SIGNATURE_FIELD: {**signature, "status": status, "last_synced_at": _now_iso()}}
 
@@ -300,21 +319,32 @@ def sync_signature_status(
     timeline_event: dict[str, Any] | None = None
 
     if completed:
-        signed_artifact_id = _capture_executed_document(
-            docusign_client,
-            envelope_id,
-            matter,
-            matter_id,
-            owner_user_id,
-            repository,
-            signature,
-        )
+        # Clear the awaiting-counterparty limbo on every completed sync. The
+        # executed TRIAD (executed / executed_at / status=fully_signed), the
+        # workflow_error clear, and the single ``executed`` timeline event are NOT
+        # written here -- they are routed through the shared
+        # ``lifecycle_signed.mark_matter_executed`` primitive below so the DocuSign
+        # path produces an IDENTICAL executed state to the manual-mark / signed-
+        # upload paths (same triad + same cleared error + exactly one executed
+        # event). We only capture the signed PDF on the FIRST completion; a re-sync
+        # of an already-executed matter skips the re-download/re-capture churn.
         fields["awaiting_signature"] = False
-        fields["executed"] = True
-        fields["executed_at"] = _now_iso()
-        fields["status"] = "fully_signed"
-        if signed_artifact_id:
-            fields[SIGNATURE_FIELD]["signed_artifact_id"] = signed_artifact_id
+        if not already_executed:
+            signed_artifact_id = _capture_executed_document(
+                docusign_client,
+                envelope_id,
+                matter,
+                matter_id,
+                owner_user_id,
+                repository,
+                signature,
+            )
+            if signed_artifact_id:
+                fields[SIGNATURE_FIELD]["signed_artifact_id"] = signed_artifact_id
+        else:
+            # Already-executed re-sync: report the artifact captured on first
+            # completion (we did NOT re-capture) so the result stays meaningful.
+            signed_artifact_id = str(signature.get("signed_artifact_id") or "")
     elif declined:
         # Counterparty REFUSED. Clear awaiting; flag it for human attention. The
         # matter stays visible (Sent column) and needs_attention so the user can
@@ -356,13 +386,33 @@ def sync_signature_status(
         if after_event is not None:
             updated = after_event
 
-    if completed:
+    if completed and not already_executed:
+        # Converge the executed flip onto the ONE shared primitive: it sets the
+        # triad (executed / executed_at / status=fully_signed), CLEARS any stale
+        # ``workflow_error`` (the board-vs-detail disagreement the manual path
+        # already fixes), and appends EXACTLY ONE ``executed`` timeline event with
+        # an actor + DocuSign-specific detail. Its own ``_is_executed`` guard makes
+        # it a no-op if a race already executed the matter, so it can never double-
+        # write the triad or double-append the event. The signature-specific fields
+        # (status / signers / signed_artifact_id / awaiting_signature) were already
+        # persisted in the field write above.
+        executed = lifecycle_signed.mark_matter_executed(
+            repository,
+            matter_id,
+            owner_user_id,
+            actor="DocuSign",
+            detail="Executed via DocuSign (all parties signed).",
+        )
+        if executed is not None:
+            updated = executed
+
         # Best-effort: archive the fully-executed matter (signed PDF + refreshed
         # matter_summary.json) to its Drive folder. Runs AFTER the matter is
         # persisted so the signed artifact + executed fields are in the registry
         # that sync_matter_folder reads. A Drive outage / not-connected / any
         # error is swallowed inside the archiver and NEVER touches the executed
-        # transition above.
+        # transition above. Gated on the FIRST completion (not already_executed) so
+        # a re-sync of an executed matter does not re-archive on every poll.
         archiver = drive_sync or _archive_to_drive
         archiver(
             matter=updated,
