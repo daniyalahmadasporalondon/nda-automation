@@ -571,19 +571,45 @@ test("renderMatter drops a javascript: open_in_drive_url (no hostile href reache
   assert.ok(html.includes("https://drive.google.com/ok"), "the legitimate https Drive link is preserved");
 });
 
-test("renderArtifacts drops a javascript: download_url", () => {
+test("renderArtifacts never emits a per-file Download button", () => {
+  // The in-app download_url returns a broken/error page, not the file, so the
+  // Corpus must not offer a per-file Download. Even a well-formed download_url
+  // must NOT produce a Download link or surface its href — Corpus files live in
+  // Drive. Rows with their own Drive file link show "View in Drive"; rows
+  // without one show the non-interactive "In Drive" marker.
   const list = stubNode();
   const matter = {
     matter_id: "m3", counterparty: "Co", title: "NDA", status: "reviewed", source: "app", in_app: true,
     artifacts: [
       { role: "generated", download_url: "javascript:alert(1)" },
       { role: "reviewed", download_url: "https://app.example.com/d/2" },
+      { role: "signed", drive_file_url: "https://drive.example.com/file/3" },
     ],
   };
   CorpusRender.renderGroups(list, { groups: [{ counterparty: "x", matters: [matter] }] }, {}, () => true, "counterparty");
   const html = list.innerHTML;
-  assert.ok(!/javascript:/i.test(html), "no javascript: download href survived");
-  assert.ok(html.includes("https://app.example.com/d/2"), "the legitimate download link is preserved");
+  assert.ok(!/javascript:/i.test(html), "no javascript: href survived");
+  assert.ok(!/>Download</i.test(html), "no per-file Download button is rendered");
+  assert.ok(!/corpus-artifact-download/.test(html), "the download-link class is gone");
+  assert.ok(!html.includes("https://app.example.com/d/2"), "the broken in-app download href is not surfaced");
+  // Drive affordances replace it: a per-file Drive link where present, else the
+  // "In Drive" marker directing to the matter card's Open in Drive.
+  assert.ok(html.includes("https://drive.example.com/file/3"), "a per-file Drive link is surfaced as View in Drive");
+  assert.ok(/View in Drive/.test(html), "View in Drive is offered for a Drive-linked file");
+  assert.ok(/corpus-artifact-in-drive/.test(html), "rows without a per-file Drive link show the In Drive marker");
+});
+
+test("matter card keeps Open in Drive", () => {
+  const list = stubNode();
+  const matter = {
+    matter_id: "m4", counterparty: "Co", title: "NDA", status: "reviewed", source: "drive", in_app: true,
+    open_in_drive_url: "https://drive.example.com/folder/m4",
+    artifacts: [{ role: "reviewed", download_url: "https://app.example.com/d/9" }],
+  };
+  CorpusRender.renderGroups(list, { groups: [{ counterparty: "x", matters: [matter] }] }, {}, () => true, "counterparty");
+  const html = list.innerHTML;
+  assert.ok(/Open in Drive/.test(html), "the matter-card Open in Drive affordance remains");
+  assert.ok(html.includes("https://drive.example.com/folder/m4"), "the Drive folder href is preserved");
 });
 
 // --- Option A: executed-only default + toggle -------------------------------

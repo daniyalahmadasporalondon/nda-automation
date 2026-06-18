@@ -906,15 +906,18 @@ const CorpusRender = (() => {
   function renderArtifactRow(matter, artifact) {
     const stage = CorpusModel.artifactStageLabel(artifact);
     const date = CorpusModel.formatDate(artifact.created_at);
-    // Scheme-allowlist both link sources; a non-http(s) value neutralises to ""
-    // and the truthiness guards below render no link for it.
-    const download = CorpusModel.safeHref(artifact.download_url || "");
+    // Per-file Download is intentionally removed from the Corpus: the in-app
+    // download_url returns a broken/error page, not the file. Corpus files live
+    // in Drive — direct the user there. When the artifact carries its own Drive
+    // file link, surface "View in Drive"; otherwise show an inline note pointing
+    // at the matter card's "Open in Drive" affordance.
+    // Scheme-allowlist the Drive link; a non-http(s) value neutralises to "".
     const driveFile = CorpusModel.safeHref(artifact.drive_file_url || "");
     let action = "";
-    if (download) {
-      action = `<a class="corpus-link corpus-artifact-download" href="${html(download)}" download>Download</a>`;
-    } else if (driveFile) {
+    if (driveFile) {
       action = `<a class="corpus-link" href="${html(driveFile)}" target="_blank" rel="noopener noreferrer">View in Drive</a>`;
+    } else {
+      action = `<span class="corpus-artifact-in-drive" title="Corpus files live in Drive — use Open in Drive above">In Drive</span>`;
     }
     const seq = Number(artifact.sequence || 0);
     const stagePill = stage

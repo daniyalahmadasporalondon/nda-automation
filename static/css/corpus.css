@@ -503,6 +503,15 @@
   flex: 0 0 auto;
 }
 
+/* Inline marker shown on a Corpus file row that has no per-file Drive link.
+   Corpus files are not downloadable in-app — they live in Drive (use the
+   matter card's "Open in Drive"). Muted, non-interactive. */
+.corpus-artifact-in-drive {
+  color: var(--ink-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 /* --- search bar --------------------------------------------------------- */
 .corpus-searchbar {
   align-items: center;
