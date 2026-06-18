@@ -131,13 +131,48 @@ def handle_ai_settings_update(handler) -> None:
     ai_updates = {}
     runtime_updates = {}
     runtime_noops = set()
+    extra_response_warnings = []
     runtime_status = active_review_engine_status()
     if "enabled" in payload:
         enabled = payload.get("enabled")
         if not isinstance(enabled, bool):
             handler._send_json({"error": "AI enabled setting must be true or false."}, status=400)
             return
+        # Enable-requires-key: never persist an "on-but-broken" state. Turning AI on
+        # without a configured key produces silent review failures later with no
+        # obvious cause, so reject the toggle until a key is present.
+        if enabled and not ai_review.ai_review_status().get("api_key_configured"):
+            handler._send_json(
+                {"error": "Add a working OpenRouter API key before turning AI on."},
+                status=409,
+            )
+            return
         ai_updates["enabled"] = enabled
+    if "model" in payload:
+        model = payload.get("model")
+        if not isinstance(model, str) or not model.strip():
+            handler._send_json({"error": "AI model must be a non-empty model id."}, status=400)
+            return
+        model = model.strip()
+        if len(model) > 200:
+            handler._send_json({"error": "AI model id is too long."}, status=400)
+            return
+        # Validate the slug against the PUBLIC OpenRouter catalog (no key needed) so a
+        # mistyped model cannot be persisted and silently no-op / 400 at review time.
+        catalog_status, catalog_message = ai_review.validate_model_slug(model)
+        if catalog_status == "not_found":
+            handler._send_json({"error": catalog_message}, status=400)
+            return
+        if catalog_status == "unverified":
+            # Catalog unreachable: don't hard-block on a transient outage. Persist with
+            # an explicit unverified-model warning rather than a false success.
+            extra_response_warnings.append(
+                {"code": "ai_model_unverified", "message": catalog_message}
+            )
+        ai_updates["model"] = model
+        # OpenRouter is the sole provider; pin it so the saved model is the effective
+        # model (the status reader only surfaces a stored model when its provider matches).
+        ai_updates.setdefault("provider", "openrouter")
     if "active_review_engine" in payload:
         active_review_engine = _runtime_setting_value(payload.get("active_review_engine"))
         if active_review_engine != REVIEW_ENGINE_AI_FIRST:
@@ -172,7 +207,7 @@ def handle_ai_settings_update(handler) -> None:
         "ai_review": ai_review.ai_review_status(),
         "ai_verifier": ai_verifier.verifier_status(),
         "active_review_engine": active_review_engine_status(),
-        "operational_warnings": _operational_warnings(),
+        "operational_warnings": _operational_warnings() + extra_response_warnings,
         "settings_audit": app_settings.settings_audit_history(),
     })
 
