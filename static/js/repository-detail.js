@@ -119,6 +119,11 @@ const RepositoryDetail = (() => {
             </section>
 
             <section class="repository-inspector-section">
+              <p class="repository-inspector-section-title">Signatures</p>
+              ${renderInspectorSignatures(matter)}
+            </section>
+
+            <section class="repository-inspector-section">
               <p class="repository-inspector-section-title">Matter Timeline</p>
               ${renderMatterTimeline(matter)}
             </section>
@@ -210,6 +215,86 @@ const RepositoryDetail = (() => {
     `;
   }
 
+  // SIGNATURES section for the inspector pop-up. Display-only: it reads the
+  // matter's per-party e-signature state and prints exactly two binary lines —
+  // "Aspora — Signed/Pending" and "Counterparty — Signed/Pending" (a declined
+  // party reads "Declined"). It NEVER mutates state and computes nothing new: it
+  // reuses the exact per-party model the Overview tab uses. We prefer the bridged
+  // window.signatureParties (overview/signatures.js, the tested helper) when the
+  // page has loaded it, and otherwise fall back to a behaviour-identical local
+  // replica (inspectorSignatureParties) so the inspector and the Overview block
+  // can never disagree. The status set is collapsed to the inspector's binary:
+  // signed -> "Signed", declined -> "Declined", everything else -> "Pending".
+  function renderInspectorSignatures(matter) {
+    const partiesFn = (typeof window !== "undefined" && typeof window.signatureParties === "function")
+      ? window.signatureParties
+      : inspectorSignatureParties;
+    const parties = partiesFn(matter || {});
+    return `
+      <dl class="repository-detail-meta repository-signatures-list">
+        ${parties.map((party) => renderInspectorField(party.label, inspectorSignatureText(party.status))).join("")}
+      </dl>
+    `;
+  }
+
+  // Collapse the Overview party-model status to the inspector's binary surface.
+  function inspectorSignatureText(status) {
+    if (status === "signed") return "Signed";
+    if (status === "declined") return "Declined";
+    return "Pending";
+  }
+
+  // Behaviour-identical replica of overview/signatures.js signatureParties, used
+  // only when the bridged window.signatureParties is not present. Always returns
+  // exactly two parties in a stable order (Aspora, then Counterparty). Mirrors the
+  // Overview logic: no envelope + matter-executed -> both signed (executed
+  // off-platform); otherwise resolve each party from the matching stored signer by
+  // role, with a missing signer / no envelope reading not_sent. Kept in lockstep
+  // with the Overview block; the FE test asserts parity with the real helper.
+  function inspectorSignatureParties(matter) {
+    const docusign = matter && typeof matter.docusign === "object" ? matter.docusign : null;
+    const signers = docusign && Array.isArray(docusign.signers) ? docusign.signers : [];
+    const sent = !!(docusign && String(docusign.envelope_id || "").trim());
+
+    if (!sent && inspectorMatterIsExecuted(matter)) {
+      return [
+        inspectorPartyModel("Aspora", { signature_status: "signed" }, true),
+        inspectorPartyModel("Counterparty", { signature_status: "signed" }, true),
+      ];
+    }
+
+    const aspora = signers.find((s) => s && s.role === "aspora") || null;
+    const counterparty = signers.find((s) => s && s.role && s.role !== "aspora") || null;
+    return [
+      inspectorPartyModel("Aspora", aspora, sent),
+      inspectorPartyModel("Counterparty", counterparty, sent),
+    ];
+  }
+
+  function inspectorMatterIsExecuted(matter) {
+    if (!matter || typeof matter !== "object") return false;
+    if (matter.executed === true) return true;
+    return String(matter.status || "").trim().toLowerCase() === "fully_signed";
+  }
+
+  function inspectorPartyModel(label, signer, sent) {
+    if (!sent || !signer) {
+      return { label, status: "not_sent", signedAt: "" };
+    }
+    return {
+      label,
+      status: inspectorNormalizeStatus(signer.signature_status),
+      signedAt: String(signer.signed_at || "").trim(),
+    };
+  }
+
+  function inspectorNormalizeStatus(value) {
+    const v = String(value || "").trim().toLowerCase();
+    if (v === "signed") return "signed";
+    if (v === "declined") return "declined";
+    return "awaiting";
+  }
+
   function renderInspectorField(label, value) {
     const displayValue = value === undefined || value === null || value === "" ? "-" : String(value);
     return `
@@ -285,6 +370,7 @@ const RepositoryDetail = (() => {
     renderEmptyPanel,
     renderFailedClauses,
     renderInspectorField,
+    renderInspectorSignatures,
     renderMatterTimeline,
     setPanelMessage,
     setPanelMessageHtml,
