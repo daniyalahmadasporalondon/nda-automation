@@ -29,6 +29,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -90,8 +91,54 @@ class DocuSignConnectionError(RuntimeError):
     """A DocuSign OAuth/connection operation could not be completed."""
 
 
+class DocuSignCredentialError(DocuSignConnectionError):
+    """DocuSign rejected the APP credentials (integration key / secret).
+
+    Raised when the OAuth server answers a token exchange/refresh with an
+    authentication/credential error (``invalid_client``, ``unauthorized_client``,
+    ``access_denied`` for the app, or HTTP 401). This is distinct from a
+    transient/network failure: it points the operator at the configured
+    ``NDA_DOCUSIGN_CLIENT_ID`` / ``NDA_DOCUSIGN_CLIENT_SECRET`` (a typo'd key or
+    secret) rather than at "DocuSign is down". The message NEVER echoes the secret.
+    """
+
+
+class DocuSignTransientError(DocuSignConnectionError):
+    """DocuSign could not be reached / answered transiently (network, timeout, 5xx).
+
+    Distinct from :class:`DocuSignCredentialError`: retrying may succeed and the
+    credentials are not implicated. Surfaced as "temporarily unreachable, try again".
+    """
+
+
 class DocuSignNotConnectedError(DocuSignConnectionError):
     """The signed-in user has not connected DocuSign (no usable token)."""
+
+
+class DocuSignReconnectRequiredError(DocuSignNotConnectedError):
+    """The user's DocuSign authorization is DEAD and a fresh reconnect is required.
+
+    Raised when a stored refresh token can no longer mint an access token because
+    the consent was REVOKED or the refresh token expired beyond renewal — DocuSign
+    answers the refresh with ``invalid_grant`` / a 400 on the refresh path. A
+    subclass of :class:`DocuSignNotConnectedError` so every existing ``needs_connect``
+    handler still catches it, but distinct so the status panel + send-for-signature
+    path can prompt "Reconnect DocuSign" instead of a generic outage blip.
+    """
+
+
+# DocuSign OAuth ``error`` codes that indicate the APP credentials are wrong (a
+# typo'd integration key or secret), NOT a transient outage. The HTTP-401 status is
+# the stronger, status-level signal and is handled explicitly alongside these.
+_CREDENTIAL_OAUTH_ERRORS = frozenset(
+    {"invalid_client", "unauthorized_client", "access_denied"}
+)
+
+# DocuSign OAuth ``error`` codes that, ON THE REFRESH PATH, mean the user's stored
+# grant is dead (consent revoked / refresh token expired) → reconnect required. On
+# the code-exchange path these instead mean a stale/used auth code, so the caller
+# passes ``context`` to disambiguate (see :func:`_classify_token_http_error`).
+_REVOKED_GRANT_OAUTH_ERRORS = frozenset({"invalid_grant", "consent_required"})
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +158,94 @@ def configured_redirect_uri() -> str:
 
 def oauth_configured() -> bool:
     return bool(client_id() and client_secret())
+
+
+# A DocuSign integration key (OAuth client id) is a GUID, e.g.
+# ``aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee``. This is a CHEAP, OFFLINE shape check: a
+# well-formed key is a valid GUID. It does NOT prove the key is registered on the
+# DocuSign side (only the live token exchange can) — but a key that fails this is
+# DEFINITELY a typo/paste error, which is the most common misconfiguration. The
+# secret has no published public format, so we only check it is non-blank.
+_GUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def client_id_is_wellformed() -> bool:
+    """Whether the configured integration key LOOKS like a DocuSign GUID.
+
+    Offline shape check only — see :data:`_GUID_RE`. Returns ``False`` for an unset
+    or obviously-malformed (truncated / extra-character / non-GUID) key.
+    """
+    return bool(_GUID_RE.match(client_id()))
+
+
+def config_health() -> dict[str, Any]:
+    """A structured, OFFLINE config-health signal for the DocuSign status panel.
+
+    Reports whether the OAuth app credentials are PRESENT and well-FORMED, with a
+    machine code + human message, so an operator can tell a misconfiguration apart
+    from a DocuSign outage WITHOUT a consent flow or any network call. It never
+    reads or echoes the secret value (only whether it is set).
+
+    Why no live client-id pre-check: DocuSign's Authorization Code Grant has no
+    clean UNAUTHENTICATED endpoint that distinguishes "unknown integration key"
+    from "ok" — the ``/oauth/auth`` authorize endpoint returns an interactive
+    HTML login/consent page (not a machine-parseable ``invalid_client``) and only
+    the token exchange (which needs a user-consented code) yields the definitive
+    ``invalid_client``. So this is deliberately offline; the AUTHORITATIVE credential
+    verdict comes from the connect-callback token exchange, which now surfaces a
+    credential-specific error (see :class:`DocuSignCredentialError`).
+
+    Codes:
+        ``ok``                 — both present and the key is GUID-shaped.
+        ``missing``            — client id and/or secret not set.
+        ``client_id_malformed``— secret set + id set but the id is not a GUID
+                                 (almost certainly a typo/paste error).
+    """
+    has_id = bool(client_id())
+    has_secret = bool(client_secret())
+    wellformed_id = client_id_is_wellformed()
+    if not has_id or not has_secret:
+        missing = []
+        if not has_id:
+            missing.append(CLIENT_ID_ENV)
+        if not has_secret:
+            missing.append(CLIENT_SECRET_ENV)
+        return {
+            "code": "missing",
+            "client_id_present": has_id,
+            "client_secret_present": has_secret,
+            "client_id_wellformed": wellformed_id,
+            "ok": False,
+            "message": (
+                "DocuSign OAuth is not configured. Set "
+                + " and ".join(missing)
+                + ", then restart."
+            ),
+        }
+    if not wellformed_id:
+        return {
+            "code": "client_id_malformed",
+            "client_id_present": True,
+            "client_secret_present": True,
+            "client_id_wellformed": False,
+            "ok": False,
+            "message": (
+                f"{CLIENT_ID_ENV} is set but is not a valid DocuSign integration "
+                "key (expected a GUID like aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee). "
+                "Check it for a typo."
+            ),
+        }
+    return {
+        "code": "ok",
+        "client_id_present": True,
+        "client_secret_present": True,
+        "client_id_wellformed": True,
+        "ok": True,
+        "message": "DocuSign app credentials are present and well-formed.",
+    }
 
 
 def auth_server() -> str:
@@ -237,22 +372,25 @@ def exchange_code_for_token(code: str, *, redirect_uri: str = "") -> dict[str, A
     if not oauth_configured():
         raise DocuSignConnectionError("DocuSign OAuth is not configured.")
     body = urllib.parse.urlencode({"grant_type": "authorization_code", "code": code})
-    return _token_request(body)
+    return _token_request(body, context="exchange")
 
 
 def refresh_access_token(refresh_token: str) -> dict[str, Any]:
     """Mint a fresh access token from a stored refresh token.
 
     ``POST /oauth/token`` with ``grant_type=refresh_token&refresh_token=...`` and
-    the same Basic-auth client credentials.
+    the same Basic-auth client credentials. On a revoked/expired grant (DocuSign
+    answers ``invalid_grant`` / a 400 on this path) raises
+    :class:`DocuSignReconnectRequiredError` so the caller can prompt a reconnect
+    rather than reporting a generic outage.
     """
     if not oauth_configured():
         raise DocuSignConnectionError("DocuSign OAuth is not configured.")
     body = urllib.parse.urlencode({"grant_type": "refresh_token", "refresh_token": refresh_token})
-    return _token_request(body)
+    return _token_request(body, context="refresh")
 
 
-def _token_request(form_body: str) -> dict[str, Any]:
+def _token_request(form_body: str, *, context: str = "exchange") -> dict[str, Any]:
     basic = base64.b64encode(f"{client_id()}:{client_secret()}".encode("utf-8")).decode("ascii")
     request = urllib.request.Request(
         f"https://{auth_server()}/oauth/token",
@@ -266,11 +404,93 @@ def _token_request(form_body: str) -> dict[str, Any]:
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
             payload = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-        raise DocuSignConnectionError("DocuSign OAuth token exchange failed.") from exc
+    except urllib.error.HTTPError as exc:
+        # An HTTP error from the OAuth server carries a structured reason. A 400/401
+        # with an ``invalid_client`` / ``unauthorized_client`` error body (or a bare
+        # 401) means the configured app credentials were rejected — a typo'd
+        # integration key or secret — NOT an outage. A 5xx is a real transient
+        # DocuSign-side failure. Distinguish so the operator isn't sent chasing a
+        # phantom outage. The error body is parsed for the OAuth ``error`` code; the
+        # secret is never read back or logged.
+        raise _classify_token_http_error(exc, context=context) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        # Could not even reach DocuSign (DNS, connection refused, timeout): transient.
+        raise DocuSignTransientError(
+            "DocuSign temporarily unreachable, try again."
+        ) from exc
+    except json.JSONDecodeError as exc:
+        # A 2xx with an unparseable body — treat as a transient DocuSign glitch.
+        raise DocuSignTransientError(
+            "DocuSign returned an unreadable token response, try again."
+        ) from exc
     if not isinstance(payload, dict) or not payload.get("access_token"):
         raise DocuSignConnectionError("DocuSign OAuth token exchange returned no access token.")
     return payload
+
+
+def _classify_token_http_error(
+    exc: urllib.error.HTTPError, *, context: str = "exchange"
+) -> DocuSignConnectionError:
+    """Map a DocuSign OAuth-token ``HTTPError`` to a specific error class.
+
+    Reads the (small) OAuth error body for its ``error`` code and combines it with
+    the HTTP status and the call ``context`` ("exchange" of an auth code vs
+    "refresh" of a stored token):
+
+    * ``invalid_client`` / ``unauthorized_client`` / ``access_denied``, or any 401
+      → :class:`DocuSignCredentialError` (check the integration key / secret). This
+      takes precedence regardless of context.
+    * On the REFRESH path, ``invalid_grant`` / ``consent_required`` (or a 400 with no
+      clearer code) → :class:`DocuSignReconnectRequiredError`: the stored grant is
+      dead (revoked / expired beyond renewal), the user must reconnect.
+    * 5xx → :class:`DocuSignTransientError` (DocuSign-side outage, retry).
+    * anything else (e.g. a 400 ``invalid_grant`` on the EXCHANGE path from a
+      stale/used auth code) → a generic :class:`DocuSignConnectionError`, NOT
+      mis-attributed to the credentials.
+
+    Never raises on a malformed body and never echoes request credentials.
+    """
+    status = getattr(exc, "code", 0) or 0
+    error_code = _read_oauth_error_code(exc)
+    if error_code in _CREDENTIAL_OAUTH_ERRORS or status == 401:
+        return DocuSignCredentialError(
+            "DocuSign rejected the app credentials — check NDA_DOCUSIGN_CLIENT_ID / "
+            "NDA_DOCUSIGN_CLIENT_SECRET."
+        )
+    if context == "refresh" and (error_code in _REVOKED_GRANT_OAUTH_ERRORS or status == 400):
+        return DocuSignReconnectRequiredError(
+            "Your DocuSign authorization is no longer valid (access was revoked or "
+            "expired). Reconnect DocuSign to continue."
+        )
+    if status >= 500:
+        return DocuSignTransientError("DocuSign temporarily unreachable, try again.")
+    return DocuSignConnectionError(
+        "DocuSign rejected the authorization request. Reconnect DocuSign and try again."
+    )
+
+
+def _read_oauth_error_code(exc: urllib.error.HTTPError) -> str:
+    """Best-effort extract of the OAuth ``error`` code from an ``HTTPError`` body.
+
+    DocuSign answers a rejected token request with a small JSON body such as
+    ``{"error": "invalid_client", "error_description": "..."}``. Returns the lowercased
+    ``error`` code, or "" when the body is absent/unparseable. Only the ``error``
+    code is read — never ``error_description`` (which could echo input) and never the
+    request credentials.
+    """
+    try:
+        raw = exc.read()
+    except (OSError, ValueError):
+        return ""
+    if not raw:
+        return ""
+    try:
+        body = json.loads(raw.decode("utf-8", "replace"))
+    except (json.JSONDecodeError, ValueError):
+        return ""
+    if not isinstance(body, dict):
+        return ""
+    return str(body.get("error") or "").strip().lower()
 
 
 def fetch_userinfo(access_token: str) -> dict[str, Any]:
@@ -450,8 +670,16 @@ def access_token_for_user(owner_user_id: str) -> str:
             return access_token
         if not refresh_token:
             # Token is (near) expired and we cannot refresh — force a reconnect.
-            raise DocuSignNotConnectedError("DocuSign session expired; reconnect DocuSign.")
-        refreshed = refresh_access_token(refresh_token)
+            _mark_needs_reconnect_unlocked(token_path, payload)
+            raise DocuSignReconnectRequiredError("DocuSign session expired; reconnect DocuSign.")
+        try:
+            refreshed = refresh_access_token(refresh_token)
+        except DocuSignReconnectRequiredError:
+            # The stored grant is dead (revoked / expired beyond renewal). Persist a
+            # durable ``needs_reconnect`` marker so a CHEAP status read (which does no
+            # network refresh) can report it and prompt a reconnect, then re-raise.
+            _mark_needs_reconnect_unlocked(token_path, payload)
+            raise
         new_access = str(refreshed.get("access_token") or "").strip()
         if not new_access:
             raise DocuSignConnectionError("DocuSign token refresh returned no access token.")
@@ -464,8 +692,39 @@ def access_token_for_user(owner_user_id: str) -> str:
                 "expires_at": int(time.time()) + max(expires_in, 0),
             }
         )
+        # A successful refresh clears any stale reconnect marker.
+        payload.pop("needs_reconnect", None)
         write_token_json_unlocked(token_path, json.dumps(payload, indent=2) + "\n")
         return new_access
+
+
+def _mark_needs_reconnect_unlocked(token_path: Path, payload: dict[str, Any]) -> None:
+    """Persist ``needs_reconnect=true`` on the stored token (best-effort).
+
+    Called while the token file lock is already held. A write failure here must
+    never mask the underlying reconnect-required error, so it is swallowed.
+    """
+    try:
+        payload = dict(payload)
+        payload["needs_reconnect"] = True
+        write_token_json_unlocked(token_path, json.dumps(payload, indent=2) + "\n")
+    except OSError:
+        pass
+
+
+def needs_reconnect(owner_user_id: str) -> bool:
+    """Whether the user's stored DocuSign grant is known to be dead (reconnect needed).
+
+    Reads the durable ``needs_reconnect`` marker persisted when a token refresh last
+    failed with a revoked/expired grant. A pure read — does NO network call — so the
+    status panel can surface a "Reconnect DocuSign" prompt cheaply. Returns ``False``
+    when there is no token or no marker.
+    """
+    try:
+        token_path = _token_path_for(owner_user_id)
+    except DocuSignNotConnectedError:
+        return False
+    return bool(read_token_json(token_path).get("needs_reconnect"))
 
 
 def account_for_user(owner_user_id: str) -> dict[str, str]:

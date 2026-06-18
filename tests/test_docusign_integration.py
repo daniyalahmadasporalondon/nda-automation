@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import json
+import urllib.error
 
 import pytest
 
@@ -596,6 +597,182 @@ def test_connection_status_shape(configured_oauth):
     assert status["configured"] is True
     assert status["account_label"] == "Acme"
     assert status["production"] is False
+
+
+# --------------------------------------------------------------------------
+# Credential-error attribution at the token exchange (the diagnosability fix)
+# --------------------------------------------------------------------------
+class _FakeHTTPError(urllib.error.HTTPError):
+    """An ``HTTPError`` whose ``.read()`` returns a canned OAuth error body."""
+
+    def __init__(self, code, body):
+        super().__init__("https://account-d.docusign.com/oauth/token", code, "err", {}, None)
+        self._body = body if isinstance(body, bytes) else json.dumps(body).encode("utf-8")
+
+    def read(self, *args, **kwargs):
+        return self._body
+
+
+def _patch_token_urlopen(monkeypatch, raiser):
+    def fake_urlopen(request, timeout=15):
+        raise raiser()
+
+    monkeypatch.setattr(docusign_connection.urllib.request, "urlopen", fake_urlopen)
+
+
+def test_exchange_invalid_client_raises_credential_error(configured_oauth, monkeypatch):
+    """A token exchange rejected with invalid_client surfaces a CREDENTIAL error.
+
+    The message must point the operator at the env vars, NOT look like an outage.
+    """
+    _patch_token_urlopen(
+        monkeypatch, lambda: _FakeHTTPError(400, {"error": "invalid_client"})
+    )
+    with pytest.raises(docusign_connection.DocuSignCredentialError) as excinfo:
+        docusign_connection.exchange_code_for_token("the-code")
+    message = str(excinfo.value)
+    assert "NDA_DOCUSIGN_CLIENT_ID" in message
+    assert "NDA_DOCUSIGN_CLIENT_SECRET" in message
+    # The secret value must never leak into the surfaced message.
+    assert "secret" not in message
+
+
+def test_exchange_401_raises_credential_error(configured_oauth, monkeypatch):
+    """A bare 401 (no parseable body) is attributed to the credentials."""
+    _patch_token_urlopen(monkeypatch, lambda: _FakeHTTPError(401, b""))
+    with pytest.raises(docusign_connection.DocuSignCredentialError):
+        docusign_connection.exchange_code_for_token("the-code")
+
+
+def test_exchange_network_error_raises_transient(configured_oauth, monkeypatch):
+    """A network failure (cannot reach DocuSign) surfaces a TRANSIENT error."""
+    _patch_token_urlopen(
+        monkeypatch, lambda: urllib.error.URLError("connection refused")
+    )
+    with pytest.raises(docusign_connection.DocuSignTransientError) as excinfo:
+        docusign_connection.exchange_code_for_token("the-code")
+    assert "unreachable" in str(excinfo.value).lower()
+
+
+def test_exchange_5xx_raises_transient(configured_oauth, monkeypatch):
+    """A DocuSign-side 5xx is transient, not a credential problem."""
+    _patch_token_urlopen(monkeypatch, lambda: _FakeHTTPError(503, b""))
+    with pytest.raises(docusign_connection.DocuSignTransientError):
+        docusign_connection.exchange_code_for_token("the-code")
+
+
+def test_exchange_happy_path_unchanged(configured_oauth, monkeypatch):
+    """The success path is untouched: a 2xx token body still returns the tokens."""
+
+    def fake_urlopen(request, timeout=15):
+        return _FakeHttpResponse(
+            {"access_token": "at", "refresh_token": "rt", "expires_in": 3600}
+        )
+
+    monkeypatch.setattr(docusign_connection.urllib.request, "urlopen", fake_urlopen)
+    token = docusign_connection.exchange_code_for_token("the-code")
+    assert token["access_token"] == "at"
+
+
+def test_exchange_invalid_grant_is_not_credential_error(configured_oauth, monkeypatch):
+    """A stale auth code (invalid_grant on the EXCHANGE path) is NOT mis-blamed on creds."""
+    _patch_token_urlopen(
+        monkeypatch, lambda: _FakeHTTPError(400, {"error": "invalid_grant"})
+    )
+    with pytest.raises(docusign_connection.DocuSignConnectionError) as excinfo:
+        docusign_connection.exchange_code_for_token("the-code")
+    # NOT the credential subclass.
+    assert not isinstance(excinfo.value, docusign_connection.DocuSignCredentialError)
+
+
+# --------------------------------------------------------------------------
+# Config health signal (offline, no consent flow)
+# --------------------------------------------------------------------------
+def test_config_health_ok_for_guid_client_id(monkeypatch):
+    monkeypatch.setenv(
+        docusign_connection.CLIENT_ID_ENV, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    )
+    monkeypatch.setenv(docusign_connection.CLIENT_SECRET_ENV, "shh")
+    health = docusign_connection.config_health()
+    assert health["code"] == "ok"
+    assert health["ok"] is True
+    assert health["client_id_wellformed"] is True
+
+
+def test_config_health_flags_malformed_client_id(monkeypatch):
+    """A non-GUID integration key (a typo) is flagged offline, not as an outage."""
+    monkeypatch.setenv(docusign_connection.CLIENT_ID_ENV, "int-key-typo")
+    monkeypatch.setenv(docusign_connection.CLIENT_SECRET_ENV, "shh")
+    health = docusign_connection.config_health()
+    assert health["code"] == "client_id_malformed"
+    assert health["ok"] is False
+    assert health["client_id_wellformed"] is False
+
+
+def test_config_health_missing_when_unset(monkeypatch):
+    monkeypatch.delenv(docusign_connection.CLIENT_ID_ENV, raising=False)
+    monkeypatch.delenv(docusign_connection.CLIENT_SECRET_ENV, raising=False)
+    health = docusign_connection.config_health()
+    assert health["code"] == "missing"
+    assert health["ok"] is False
+
+
+# --------------------------------------------------------------------------
+# needs_reconnect: a dead grant on refresh prompts a reconnect (sibling fix)
+# --------------------------------------------------------------------------
+def test_refresh_invalid_grant_raises_reconnect_required(configured_oauth, monkeypatch):
+    """A refresh rejected with invalid_grant means the stored grant is dead."""
+    _patch_token_urlopen(
+        monkeypatch, lambda: _FakeHTTPError(400, {"error": "invalid_grant"})
+    )
+    with pytest.raises(docusign_connection.DocuSignReconnectRequiredError) as excinfo:
+        docusign_connection.refresh_access_token("rt")
+    assert "reconnect" in str(excinfo.value).lower()
+
+
+def test_access_token_dead_grant_marks_needs_reconnect_and_status_reports_it(
+    configured_oauth, monkeypatch
+):
+    """A refresh that fails with invalid_grant flips needs_reconnect on the status."""
+    owner = "google:revoked"
+    docusign_connection.save_user_token(
+        owner, {"access_token": "old", "refresh_token": "rt", "expires_in": -10}, _account()
+    )
+    _patch_token_urlopen(
+        monkeypatch, lambda: _FakeHTTPError(400, {"error": "invalid_grant"})
+    )
+    # The send path's token fetch raises reconnect-required (a NotConnected subclass).
+    with pytest.raises(docusign_connection.DocuSignReconnectRequiredError):
+        docusign_connection.access_token_for_user(owner)
+
+    # A subsequent CHEAP status read reports needs_reconnect with a reconnect message.
+    assert docusign_connection.needs_reconnect(owner) is True
+    status = docusign_integration.connection_status(owner_user_id=owner)
+    assert status["needs_reconnect"] is True
+    assert "reconnect" in status["reconnect_message"].lower()
+
+
+def test_successful_refresh_clears_needs_reconnect(configured_oauth, monkeypatch):
+    """A later successful refresh clears a stale needs_reconnect marker."""
+    owner = "google:recovered"
+    docusign_connection.save_user_token(
+        owner, {"access_token": "old", "refresh_token": "rt", "expires_in": -10}, _account()
+    )
+    # First refresh dies -> marker set.
+    _patch_token_urlopen(
+        monkeypatch, lambda: _FakeHTTPError(400, {"error": "invalid_grant"})
+    )
+    with pytest.raises(docusign_connection.DocuSignReconnectRequiredError):
+        docusign_connection.access_token_for_user(owner)
+    assert docusign_connection.needs_reconnect(owner) is True
+
+    # User reconnects (or DocuSign recovers): a good refresh clears the marker.
+    def good_urlopen(request, timeout=15):
+        return _FakeHttpResponse({"access_token": "fresh", "refresh_token": "rt2", "expires_in": 3600})
+
+    monkeypatch.setattr(docusign_connection.urllib.request, "urlopen", good_urlopen)
+    assert docusign_connection.access_token_for_user(owner) == "fresh"
+    assert docusign_connection.needs_reconnect(owner) is False
 
 
 # --------------------------------------------------------------------------
