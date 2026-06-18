@@ -742,6 +742,18 @@ const AdminIntegrationsView = (() => {
         statusLabel: "Ready",
       };
     }
+    // The backend sets a specific readiness block reason when a connected token
+    // fetches its profile fine but still can't actually import (missing scope, or
+    // an expired/un-refreshable token). Surface that exact reason instead of a
+    // generic "needs setup" so a broken token reads RED with a real explanation.
+    const blockReason = String(account?.reason || "").trim();
+    if (blockReason) {
+      const missingScope = /missing permission/i.test(blockReason);
+      return {
+        nextStep: blockReason,
+        statusLabel: missingScope ? "Needs Gmail scope" : "Reconnect Gmail",
+      };
+    }
     if (
       state === "missing_oauth_config"
       || status?.google_oauth_configured === false
