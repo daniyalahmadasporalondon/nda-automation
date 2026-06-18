@@ -855,6 +855,33 @@ class DriveSettingsTests(unittest.TestCase):
             self.assertEqual(updated["folder_id"], "1aZ_b-2CdE")
 
 
+# --- Folder-browser fake (for /api/admin/drive-folders) --------------------
+class _FakeFolderListService:
+    """Minimal Drive service mirroring ``list_child_folders``'s call shape.
+
+    ``files().list(q=..., fields=..., pageSize=..., spaces=...).execute()`` returns
+    ``{"files": [...]}`` for the configured parent. Records the last query string
+    so a test can assert the parent + folder-only scoping.
+    """
+
+    def __init__(self, children_by_parent):
+        self._children = children_by_parent
+        self.last_query = ""
+
+    def files(self):
+        return self
+
+    def list(self, *, q, fields, pageSize=100, spaces="drive", pageToken=None):  # noqa: N803
+        self.last_query = q
+        # Resolve which configured parent this query is scoped to.
+        matched = []
+        for parent_id, children in self._children.items():
+            if f"'{parent_id}' in parents" in q:
+                matched = children
+                break
+        return _FakeExecutable({"files": list(matched), "nextPageToken": ""})
+
+
 # --- HTTP route tests (live server, faked Drive) ---------------------------
 class QuietDriveHandler(NdaAutomationHandler):
     def log_message(self, format, *args):
@@ -1343,6 +1370,79 @@ class DriveRouteTests(unittest.TestCase):
                         "/api/admin/drive-settings",
                         {"enabled": True},
                         headers=session_headers,
+                    )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"], server_module.ADMIN_REQUIRED_MESSAGE)
+
+    # --- /api/admin/drive-folders (the folder-picker browse endpoint) -------
+    def test_drive_folders_lists_account_folders_default_root(self):
+        # The picker's first open browses My Drive root (no parent param).
+        fake = _FakeFolderListService({
+            "root": [
+                {"id": "f_clients", "name": "Clients"},
+                {"id": "f_archive", "name": "Archive"},
+            ],
+        })
+        with patch.object(drive_integration, "drive_connected", return_value=True):
+            with patch.object(drive_integration, "_drive_service", return_value=fake):
+                status, payload, _headers = self.request("GET", "/api/admin/drive-folders")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["parent"], "root")
+        # Folders are returned name-sorted (case-insensitive).
+        self.assertEqual([f["name"] for f in payload["folders"]], ["Archive", "Clients"])
+        self.assertEqual({f["id"] for f in payload["folders"]}, {"f_clients", "f_archive"})
+        # The query was scoped to the requested parent + folders only.
+        self.assertIn("'root' in parents", fake.last_query)
+        self.assertIn(f"mimeType='{drive_integration.FOLDER_MIME}'", fake.last_query)
+        self.assertIn("trashed=false", fake.last_query)
+
+    def test_drive_folders_drills_into_a_parent(self):
+        # Drilling: ?parent=<id> lists that folder's children.
+        fake = _FakeFolderListService({
+            "f_clients": [{"id": "f_acme", "name": "Acme Corp"}],
+        })
+        with patch.object(drive_integration, "drive_connected", return_value=True):
+            with patch.object(drive_integration, "_drive_service", return_value=fake):
+                status, payload, _headers = self.request(
+                    "GET", "/api/admin/drive-folders?parent=f_clients"
+                )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["parent"], "f_clients")
+        self.assertEqual(payload["folders"], [{"id": "f_acme", "name": "Acme Corp"}])
+        self.assertIn("'f_clients' in parents", fake.last_query)
+
+    def test_drive_folders_not_connected_returns_409(self):
+        with patch.object(drive_integration, "drive_connected", return_value=False):
+            status, payload, _headers = self.request("GET", "/api/admin/drive-folders")
+        self.assertEqual(status, 409)
+        self.assertTrue(payload["needs_connect"])
+        self.assertEqual(payload["connect_url"], "/auth/drive/start")
+
+    def test_drive_folders_denies_non_admin_google_user(self):
+        # Admin-gated exactly like /api/admin/drive-settings: a per-user Google
+        # account not in NDA_ADMIN_USERS is refused with 403 before any Drive call.
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "google-client",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
+            "NDA_ADMIN_USERS": "",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                user = user_store.upsert_google_user({
+                    "sub": "folder-user",
+                    "email": "folder@example.com",
+                    "name": "Folder User",
+                    "picture": "",
+                })
+                token = user_store.create_session(user["id"])
+                session_headers = {"Cookie": f"{user_store.SESSION_COOKIE_NAME}={token}"}
+                with patch.dict(os.environ, auth_env):
+                    status, payload, _headers = self.request(
+                        "GET", "/api/admin/drive-folders", headers=session_headers
                     )
         self.assertEqual(status, 403)
         self.assertEqual(payload["error"], server_module.ADMIN_REQUIRED_MESSAGE)

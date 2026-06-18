@@ -219,6 +219,10 @@ _GET_EXACT_ROUTES = {
     "/auth/gmail/start": gmail_routes.handle_gmail_connect_start,
     "/auth/gmail/callback": gmail_routes.handle_gmail_connect_callback,
     "/api/drive/status": drive_routes.handle_drive_status,
+    # Admin-only Drive folder browser (powers the "Browse Drive" picker in the
+    # admin Drive settings panel). Admin-gated inside the handler, like the
+    # /api/admin/drive-settings update route.
+    "/api/admin/drive-folders": drive_routes.handle_drive_folders,
     "/api/docusign/status": docusign_routes.handle_docusign_status,
     # GET /api/docusign/connect 302-redirects the browser to DocuSign consent (the
     # primary connect path the admin button navigates to, mirroring

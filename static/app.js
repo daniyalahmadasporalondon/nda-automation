@@ -383,6 +383,15 @@ adminDriveController = createAdminDriveController({
   driveFolderIdInput: document.querySelector("#adminDriveFolderIdInput"),
   driveFolderNameInput: document.querySelector("#adminDriveFolderNameInput"),
   driveFolderSaveButton: document.querySelector("#adminDriveFolderSaveButton"),
+  driveBrowseButton: document.querySelector("#adminDriveBrowseButton"),
+  drivePickerBackdrop: document.querySelector("#adminDriverPickerBackdrop"),
+  drivePickerClose: document.querySelector("#adminDrivePickerClose"),
+  drivePickerCancel: document.querySelector("#adminDrivePickerCancel"),
+  drivePickerSelect: document.querySelector("#adminDrivePickerSelect"),
+  drivePickerList: document.querySelector("#adminDrivePickerList"),
+  drivePickerBreadcrumb: document.querySelector("#adminDrivePickerBreadcrumb"),
+  drivePickerStatus: document.querySelector("#adminDrivePickerStatus"),
+  drivePickerSelection: document.querySelector("#adminDrivePickerSelection"),
   reviewErrorFromPayload,
 });
 adminDocuSignController = createAdminDocuSignController({
