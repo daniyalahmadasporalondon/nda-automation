@@ -348,6 +348,111 @@ class ConservativeGapTests(unittest.TestCase):
             self.assertIsNone(lfc.detect_mismatch(text, law, {"clauses": []}))
 
 
+class IndiaSmartRuleTests(unittest.TestCase):
+    """Issue 7 -- India forum recognition is RULE-BASED, not a city list.
+
+    The bucket must recognize India by "India"/"Indian", any Indian STATE, "courts
+    of India", or "[City], India", in addition to the metros (now incl. Chennai /
+    Kolkata / Hyderabad / Gandhinagar / Pune / Ahmedabad) -- without an endless list.
+    Precision controls: an aligned India-law NDA stays silent; the other
+    jurisdictions' "courts of" guards do not regress.
+    """
+
+    # ---- recognition: new signals the old list missed --------------------------
+    def test_new_cities_and_states_extract_as_india(self):
+        for phrase in (
+            "the courts at Gandhinagar",
+            "the courts in Chennai",
+            "the courts of Kolkata",
+            "the courts of Hyderabad",
+            "the courts of Pune",
+            "the courts of Ahmedabad",
+            "the courts of Gujarat",
+            "the courts of Karnataka",
+            "the courts of Tamil Nadu",
+            "the courts of West Bengal",
+            "the courts of Telangana",
+            "the courts of India",
+            "the courts at Surat, India",  # "[City], India" -- city not in any list
+        ):
+            sentence = f"Jurisdiction. The parties submit to the exclusive jurisdiction of {phrase}."
+            with self.subTest(phrase=phrase):
+                self.assertEqual(lfc.extract_forum_jurisdictions(sentence), {"india"})
+
+    def test_existing_metros_still_extract(self):
+        for phrase in (
+            "the courts of Mumbai",
+            "the courts of Bengaluru",
+            "the courts of Bangalore",
+            "the courts of New Delhi",
+            "the courts of Delhi",
+            "the Indian courts",
+        ):
+            sentence = f"Jurisdiction. The parties submit to the exclusive jurisdiction of {phrase}."
+            with self.subTest(phrase=phrase):
+                self.assertEqual(lfc.extract_forum_jurisdictions(sentence), {"india"})
+
+    def test_arbitration_seated_in_indian_state_extracts(self):
+        sentence = (
+            "Dispute Resolution. Any dispute shall be finally resolved by arbitration "
+            "seated in Ahmedabad, Gujarat."
+        )
+        self.assertEqual(lfc.extract_forum_jurisdictions(sentence), {"india"})
+
+    # ---- new flags: NON-India law + Indian forum -------------------------------
+    def test_non_india_law_with_indian_state_or_city_flags(self):
+        for forum in (
+            "the courts at Gandhinagar",
+            "the courts in Chennai",
+            "the courts of Gujarat",
+            "the courts of India",
+        ):
+            text = _BODY.format(
+                cp="Vega Systems LLC",
+                law="This Agreement shall be governed by and construed in accordance with the laws of England and Wales.",
+                forum_heading="Jurisdiction and Venue",
+                forum=f"The parties irrevocably submit to the exclusive jurisdiction of {forum} for any dispute.",
+            )
+            with self.subTest(forum=forum):
+                finding = lfc.detect_mismatch(text, "england_and_wales", {})
+                self.assertIsNotNone(finding, f"E&W law + {forum!r} must flag")
+                assert finding is not None
+                self.assertEqual(finding["expected_forum"], "england_and_wales")
+                self.assertEqual(finding["document_forum"], "india")
+
+    # ---- no false flag: aligned India law + Indian forum stays SILENT ----------
+    def test_india_law_with_indian_forum_is_silent(self):
+        for forum in (
+            "the courts at Gandhinagar",
+            "the courts in Chennai",
+            "the courts of Gujarat",
+            "the courts of India",
+            "the courts of Mumbai",
+        ):
+            text = _BODY.format(
+                cp="Sapphire Retail Private Limited",
+                law="This Agreement shall be governed by and construed in accordance with the laws of India.",
+                forum_heading="Jurisdiction and Venue",
+                forum=f"The parties irrevocably submit to the exclusive jurisdiction of {forum} for any dispute.",
+            )
+            with self.subTest(forum=forum):
+                self.assertIsNone(
+                    lfc.detect_mismatch(text, "india", {}),
+                    f"India law + {forum!r} must stay silent (aligned)",
+                )
+
+    # ---- precision: other jurisdictions are NOT broadened by the India rule -----
+    def test_other_jurisdiction_courts_not_misread_as_india(self):
+        for sentence, expected in (
+            ("Jurisdiction. The parties submit to the courts of the State of Delaware.", {"delaware"}),
+            ("Jurisdiction. The parties submit to the DIFC Courts, Dubai International Financial Centre.", {"difc"}),
+            ("Jurisdiction. The parties submit to the courts of England and Wales.", {"england_and_wales"}),
+            ("Jurisdiction. The parties submit to the courts of the Cayman Islands.", {"cayman_islands"}),
+        ):
+            with self.subTest(sentence=sentence):
+                self.assertEqual(lfc.extract_forum_jurisdictions(sentence), expected)
+
+
 class _LFState:
     """Minimal review_state factory matching the real review_state shape we touch."""
 

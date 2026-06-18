@@ -72,13 +72,22 @@ JURISDICTIONS: dict[str, dict[str, list[str]]] = {
             r"delaware\s+courts?",
         ],
     },
+    # India forum recognition is RULE-BASED, not a hand-maintained city list. The
+    # bucket fires when a forum/venue/arbitration sentence names India by any of the
+    # robust signals below, so it does not silently miss whichever Indian city a
+    # given NDA happens to pick (Gandhinagar, Chennai, Kolkata, Hyderabad, ...):
+    #   * "India" / "Indian" / "courts of India" / "Indian courts";
+    #   * any Indian STATE/UT (`_INDIA_STATE`), e.g. "courts of Gujarat";
+    #   * "[City], India" -- any city named together with India;
+    #   * the common metros by name (kept explicit so a bare "courts of Mumbai" with
+    #     no trailing ", India" still resolves), now ALSO covering Chennai / Kolkata
+    #     / Hyderabad / Gandhinagar / Pune / Ahmedabad alongside the originals.
+    # Precision is preserved by the `_FORUM_SENTENCE` gate (only dispute/venue
+    # sentences are inspected) and by the mismatch comparison (an India-law NDA whose
+    # forum is also India produces bucket `india` on both sides -> no foreign -> silent).
     "india": {
         "law": [r"laws?\s+of\s+india", r"indian\s+law"],
-        "forum": [
-            r"courts?\s+(?:of|in|at)\s+(?:mumbai|bengaluru|bangalore|new\s+delhi|delhi|india)",
-            r"indian\s+courts?",
-            r"(?:arbitration|seat(?:ed)?)\s+[^.;\n]*?(?:mumbai|bengaluru|bangalore|new\s+delhi|delhi|india)",
-        ],
+        "forum": [],  # built below from _INDIA_FORUM_PATTERNS (rule-based, not a city list)
     },
     "difc": {
         "law": [
@@ -139,6 +148,41 @@ JURISDICTIONS: dict[str, dict[str, list[str]]] = {
         ],
     },
 }
+
+# ---------------------------------------------------------------------------
+# India forum SMART RULE (replaces the hand-maintained metro list).
+#
+# `_INDIA_STATE` is the closed set of Indian states + union territories. Naming
+# any of them in a forum clause ("courts of Gujarat", "courts at Tamil Nadu") is
+# an unambiguous India-forum signal, so we never have to enumerate every city.
+# `_INDIA_METRO` keeps the common metros explicit so a bare "courts of Mumbai"
+# (no trailing ", India") still resolves -- now expanded past the original three.
+# ---------------------------------------------------------------------------
+_INDIA_STATE = (
+    r"andhra\s+pradesh|arunachal\s+pradesh|assam|bihar|chhattisgarh|goa|gujarat|"
+    r"haryana|himachal\s+pradesh|jharkhand|karnataka|kerala|madhya\s+pradesh|"
+    r"maharashtra|manipur|meghalaya|mizoram|nagaland|odisha|punjab|rajasthan|"
+    r"sikkim|tamil\s+nadu|telangana|tripura|uttar\s+pradesh|uttarakhand|"
+    r"west\s+bengal|delhi|puducherry|chandigarh|ladakh|jammu\s+and\s+kashmir"
+)
+_INDIA_METRO = (
+    r"mumbai|bengaluru|bangalore|new\s+delhi|chennai|kolkata|hyderabad|"
+    r"gandhinagar|pune|ahmedabad"
+)
+# Order: India/Indian first, then states, then metros, then "<City>, India", then
+# arbitration seat. Each is anchored to a court/seat/jurisdiction context by the
+# leading verb so an incidental "India" mention elsewhere never leaks in.
+_INDIA_FORUM_PATTERNS = [
+    r"courts?\s+(?:of|in|at)\s+india",
+    r"indian\s+courts?",
+    rf"courts?\s+(?:of|in|at)\s+(?:the\s+state\s+of\s+)?(?:{_INDIA_STATE})\b",
+    rf"courts?\s+(?:of|in|at)\s+(?:{_INDIA_METRO})\b",
+    # "[City], India" -- any city named together with India in a venue clause.
+    r"courts?\s+(?:of|in|at)\s+[a-z][a-z .'-]*?,\s*india\b",
+    # Arbitration seated anywhere in India (state, metro, or India itself).
+    rf"(?:arbitration|seat(?:ed)?)\s+[^.;\n]*?(?:india|{_INDIA_STATE}|{_INDIA_METRO})\b",
+]
+JURISDICTIONS["india"]["forum"] = _INDIA_FORUM_PATTERNS
 
 # When a forum phrase mentions the DIFC at all, the onshore-Dubai bucket must NOT
 # fire: "DIFC Courts, Dubai International Financial Centre" is the DIFC forum name,
