@@ -189,8 +189,14 @@ function mountController(initialStatus) {
   const gmailCard = new FakeElement("article");
   const enabledCopy = copySpan("enabled-copy");
   const importLimitCopy = copySpan("import-limit-copy");
+  const searchTermsCopy = copySpan("search-terms-copy");
+  const inboundConfigured = copySpan("inbound-configured");
+  const outboundConfigured = copySpan("outbound-configured");
   gmailCard.appendChild(enabledCopy);
   gmailCard.appendChild(importLimitCopy);
+  gmailCard.appendChild(searchTermsCopy);
+  gmailCard.appendChild(inboundConfigured);
+  gmailCard.appendChild(outboundConfigured);
 
   const gmailToggle = new FakeElement("button");
   const gmailImportLimitInput = new FakeElement("input");
@@ -200,6 +206,12 @@ function mountController(initialStatus) {
   // click drives the same submit handler.
   gmailImportLimitSaveButton.addEventListener("click", async () => {
     await gmailImportLimitForm.submit();
+  });
+  const gmailSearchTermsInput = new FakeElement("textarea");
+  const gmailSearchSaveButton = new FakeElement("button");
+  const gmailSearchForm = new FakeElement("form");
+  gmailSearchSaveButton.addEventListener("click", async () => {
+    await gmailSearchForm.submit();
   });
   const gmailOverall = new FakeElement("span");
 
@@ -216,6 +228,9 @@ function mountController(initialStatus) {
     gmailImportLimitForm,
     gmailImportLimitInput,
     gmailImportLimitSaveButton,
+    gmailSearchForm,
+    gmailSearchTermsInput,
+    gmailSearchSaveButton,
     reviewErrorFromPayload,
   });
 
@@ -229,8 +244,14 @@ function mountController(initialStatus) {
     gmailImportLimitInput,
     gmailImportLimitSaveButton,
     gmailImportLimitForm,
+    gmailSearchTermsInput,
+    gmailSearchSaveButton,
+    gmailSearchForm,
     enabledCopy,
     importLimitCopy,
+    searchTermsCopy,
+    inboundConfigured,
+    outboundConfigured,
   };
 }
 
@@ -432,6 +453,136 @@ const ENV_CONNECTED = {
     // generic JSON parse failure.
     assert.match(ui.importLimitCopy.textContent, /HTTP 500/, "shows the real HTTP status");
     assert.doesNotMatch(ui.importLimitCopy.textContent, /JSON|token/i, "no raw parse error leaks");
+  });
+
+  await test("a capped import limit surfaces the server warning inline", async () => {
+    // Honesty (Bug 1): the FE clamps before posting, but if the server still
+    // returns a warning (e.g. a future cap change), it must be shown inline so
+    // the admin understands the effective value, not left thinking it took raw.
+    const ui = mountController(ENV_CONNECTED);
+    ui.gmailImportLimitInput.value = "40";
+    const refreshed = {
+      ...ENV_CONNECTED,
+      settings: { sync_enabled: true, import_limit: 40 },
+    };
+    installFetch((url) => {
+      if (url === "/api/gmail/status") return { payload: { gmail: refreshed } };
+      if (url === "/api/matters") return { payload: { matters: [] } };
+      if (url === "/api/gmail/settings") {
+        return {
+          payload: {
+            gmail: refreshed,
+            warning: "Import limit capped at 40 (max safe per-poll value).",
+          },
+        };
+      }
+      return {};
+    });
+
+    await ui.gmailImportLimitSaveButton.click();
+    await flush();
+
+    assert.equal(
+      ui.importLimitCopy.textContent,
+      "Import limit capped at 40 (max safe per-poll value).",
+      "the cap warning is shown inline next to the input"
+    );
+  });
+
+  await test("empty search terms are rejected client-side (no silent default)", async () => {
+    // Honesty (Bug 2): clearing the field must NOT post (which would let the
+    // server default it back); the admin sees a clear inline message instead.
+    const ui = mountController(ENV_CONNECTED);
+    ui.gmailSearchTermsInput.value = "   \n  ";
+    const calls = installFetch(() => ({}));
+
+    await ui.gmailSearchSaveButton.click();
+    await flush();
+
+    assert.ok(
+      !calls.some((c) => c.url === "/api/gmail/settings"),
+      "an empty terms list must not be posted"
+    );
+    assert.match(
+      ui.searchTermsCopy.textContent,
+      /can't be empty/,
+      "shows the honest empty-field message inline"
+    );
+  });
+
+  await test("a 400 from the server on search terms surfaces inline", async () => {
+    // If the field is non-empty client-side but the server still rejects it, the
+    // 400 message must land inline so the admin knows the save did not take.
+    const ui = mountController(ENV_CONNECTED);
+    ui.gmailSearchTermsInput.value = "alpha";
+    installFetch((url) => {
+      if (url === "/api/gmail/settings") {
+        return {
+          ok: false,
+          status: 400,
+          payload: { error: "Add at least one Gmail search term — it can't be empty." },
+        };
+      }
+      if (url === "/api/gmail/status") return { payload: { gmail: { ...ENV_CONNECTED } } };
+      if (url === "/api/matters") return { payload: { matters: [] } };
+      return {};
+    });
+
+    await ui.gmailSearchSaveButton.click();
+    await flush();
+
+    assert.match(
+      ui.searchTermsCopy.textContent,
+      /can't be empty/,
+      "the server 400 is surfaced inline next to the field"
+    );
+  });
+
+  await test("master sync OFF greys the sub-roles and labels them inactive", async () => {
+    // Honesty (Fix 3): when the master gate is off the scheduler skips Gmail, so
+    // the inbound/outbound rows are inert -- the screen must say so (non-blocking
+    // grey + label), not show them as plain "Yes".
+    const ui = mountController({
+      user_scoped: false,
+      inbound: { ready: true, enabled: true, configured: true },
+      outbound: { ready: true, enabled: true, configured: true },
+      settings: { sync_enabled: false, import_limit: 25 },
+    });
+
+    assert.ok(
+      ui.gmailCard.classList.contains("gmail-sync-off"),
+      "the card carries the master-off class so CSS can grey the rows"
+    );
+    assert.match(
+      ui.inboundConfigured.textContent,
+      /Gmail sync is off, inactive/,
+      "inbound row is labelled inactive"
+    );
+    assert.match(
+      ui.outboundConfigured.textContent,
+      /Gmail sync is off, inactive/,
+      "outbound row is labelled inactive"
+    );
+  });
+
+  await test("master sync ON does not mark the sub-roles inactive", async () => {
+    const ui = mountController({
+      user_scoped: false,
+      inbound: { ready: true, enabled: true, configured: true },
+      outbound: { ready: true, enabled: true, configured: true },
+      settings: { sync_enabled: true, import_limit: 25 },
+    });
+
+    assert.ok(
+      !ui.gmailCard.classList.contains("gmail-sync-off"),
+      "no master-off class while polling is on"
+    );
+    assert.doesNotMatch(
+      ui.inboundConfigured.textContent,
+      /inactive/,
+      "inbound row reads its normal configured status"
+    );
+    assert.equal(ui.inboundConfigured.textContent, "Yes");
   });
 
   // --- Pure helper assertions (clamp + parse correctness) -------------------

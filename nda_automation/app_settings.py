@@ -421,6 +421,13 @@ def gmail_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     sync_frequency = str(raw_frequency or DEFAULT_GMAIL_SETTINGS["sync_frequency"])
     if sync_frequency not in GMAIL_SYNC_FREQUENCIES:
         sync_frequency = DEFAULT_GMAIL_SETTINGS["sync_frequency"]
+    # This normalizer runs on BOTH read (read_section) and merged-write
+    # (update_section). The default substitution below is a READ-TIME defence for
+    # a corrupt/empty stored blob ONLY -- it must never be the outcome of an
+    # admin clearing the field. The write boundary rejects empty terms honestly
+    # in TWO places (the route returns a 400, and ``_valid_gmail_setting`` drops
+    # an empty list from the merge), so an empty admin submission never reaches
+    # here to be silently turned back into the defaults.
     inbound_search_terms = gmail_search_terms_from_payload(payload.get("inbound_search_terms"))
     if _is_legacy_default_gmail_search_terms(inbound_search_terms):
         inbound_search_terms = list(DEFAULT_GMAIL_INBOUND_SEARCH_TERMS)
@@ -662,6 +669,13 @@ def _clean_drive_folder_name(value: object) -> str:
 
 
 def gmail_search_terms_from_payload(value: object, *, fallback: list[str] | None = None) -> list[str]:
+    # ``fallback`` is the honesty seam. Pass ``fallback=[]`` at any HONEST write
+    # gate (the route + ``_valid_gmail_setting``) so an empty/whitespace-only
+    # list returns ``[]`` -- the caller then rejects it with a clear 400 instead
+    # of silently reviving the defaults. The default (``fallback=None`` ->
+    # ``DEFAULT_GMAIL_INBOUND_SEARCH_TERMS``) is reserved for READ-TIME
+    # normalization of a possibly-corrupt stored blob, where reviving defaults is
+    # the safe behaviour.
     fallback_terms = DEFAULT_GMAIL_INBOUND_SEARCH_TERMS if fallback is None else fallback
     raw_terms: list[object]
     if value is None:

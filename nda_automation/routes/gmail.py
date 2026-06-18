@@ -223,6 +223,10 @@ def handle_gmail_settings_update(handler) -> None:
         return
 
     updates: dict[str, object] = {}
+    # Honesty signals returned alongside the saved settings: when a requested
+    # value is silently reduced by a safety cap, surface a warning so the admin
+    # is not left believing the typed value took.
+    warnings: list[str] = []
     # sync_enabled is the master pause/resume gate; inbound/outbound stay the
     # role-specific gates. All three are strictly boolean -- reject "off"/1 so a
     # malformed payload can't silently flip the wrong switch.
@@ -245,7 +249,20 @@ def handle_gmail_settings_update(handler) -> None:
                 status=400,
             )
             return
-        updates["import_limit"] = app_settings.gmail_import_limit_from_payload(import_limit_value)
+        clamped_import_limit = app_settings.gmail_import_limit_from_payload(import_limit_value)
+        updates["import_limit"] = clamped_import_limit
+        # Keep the safety cap, but be honest: if the requested value was reduced
+        # to the ceiling, tell the admin so the UI does not silently show 40 for
+        # a typed 100. (A reset-to-default 0/blank is not a clamp-down.)
+        requested_import_limit = int(import_limit_value)
+        if (
+            clamped_import_limit == app_settings.MAX_GMAIL_IMPORT_LIMIT_CLAMP
+            and requested_import_limit > app_settings.MAX_GMAIL_IMPORT_LIMIT_CLAMP
+        ):
+            warnings.append(
+                f"Import limit capped at {app_settings.MAX_GMAIL_IMPORT_LIMIT_CLAMP} "
+                "(max safe per-poll value)."
+            )
     if "sync_cadence" in payload:
         handler._send_json({"error": "Use sync_frequency for Gmail sync frequency."}, status=400)
         return
@@ -261,7 +278,10 @@ def handle_gmail_settings_update(handler) -> None:
             fallback=[],
         )
         if not inbound_search_terms:
-            handler._send_json({"error": "Provide at least one Gmail inbound search term."}, status=400)
+            handler._send_json(
+                {"error": "Add at least one Gmail search term — it can't be empty."},
+                status=400,
+            )
             return
         updates["inbound_search_terms"] = inbound_search_terms
     if "intake_playbook" in payload:
@@ -278,7 +298,15 @@ def handle_gmail_settings_update(handler) -> None:
         return
 
     settings = app_settings.update_gmail_settings(updates)
-    handler._send_json({"gmail_settings": settings, "gmail": gmail_integration.gmail_status()})
+    response: dict[str, object] = {
+        "gmail_settings": settings,
+        "gmail": gmail_integration.gmail_status(),
+    }
+    if warnings:
+        # A single-knob save raises at most one cap warning; join defensively in
+        # case a future multi-field save accumulates more.
+        response["warning"] = " ".join(warnings)
+    handler._send_json(response)
 
 
 def handle_gmail_send_redline(handler) -> None:

@@ -9995,6 +9995,14 @@ body.modal-open {
   border-color: var(--orange-border);
 }
 
+/* Master gate off: the scheduler skips the whole Gmail step, so the per-role
+   inbound/outbound rows are inert. Grey them (non-blocking) so the screen
+   matches reality; the stored config is untouched. */
+#adminGmailCard.gmail-sync-off .integration-connection-row {
+  border-color: var(--border);
+  opacity: 0.55;
+}
+
 .integration-connection-top {
   align-items: center;
   display: flex;
