@@ -131,6 +131,32 @@ class ApplyReviewOverlaysContract(unittest.TestCase):
         self.assertIn("stub_finding", out["reason_codes"])
         self.assertIn("stub_two", out["reason_codes"])
 
+    def test_two_findings_on_clean_pass_keep_both_messages(self):
+        # Message-additivity: the FIRST detector elevates pass->review, the SECOND
+        # then takes the already-non-pass branch -- both its code AND its message
+        # must survive, so a reviewer never sees a code with no human-readable
+        # reason. (Pins the message-additivity gap the panel flagged.)
+        def _second(matter):
+            return {"reason_code": "stub_two", "message": "second gap"}
+
+        with self._with_detectors([_finding_detector, _second]):
+            out = review_overlays.apply_review_overlays(_state("pass"), {})
+        self.assertEqual(out["state"], "review")
+        self.assertIn("stub_finding", out["reason_codes"])
+        self.assertIn("stub_two", out["reason_codes"])
+        # BOTH messages present (the bug: only the first survived).
+        self.assertIn("stub coverage gap", out["overlay_review_reasons"])
+        self.assertIn("second gap", out["overlay_review_reasons"])
+
+    def test_message_additive_onto_existing_check(self):
+        # A detector firing on an already-CHECK state contributes BOTH its code and
+        # message without ever changing the state.
+        with self._with_detectors([_finding_detector]):
+            out = review_overlays.apply_review_overlays(_state("check"), {})
+        self.assertEqual(out["state"], "check")
+        self.assertIn("stub_finding", out["reason_codes"])
+        self.assertIn("stub coverage gap", out.get("overlay_review_reasons", []))
+
     def test_real_coverage_detectors_are_failsafe(self):
         # The real (lazily-imported) detector list must never raise, regardless of
         # which detector modules are present, when fed a garbage matter.

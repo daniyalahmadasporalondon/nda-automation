@@ -123,18 +123,29 @@ def _apply_additive_detector(
 
         current = str(review_state.get("state") or "").strip().lower()
         if current != REVIEW_STATE_PASS:
-            # Already needs attention -> never change the state. Still record the
-            # reason_code additively (a deduped append) so the finding is visible,
-            # but leave every state/blocking field as the stronger verdict set it.
-            if not reason_code:
+            # Already needs attention -> never change the state. Still record BOTH
+            # the reason_code AND the human-readable message additively (each deduped)
+            # so every firing detector contributes its full finding -- a reviewer
+            # never sees a code with no reason. Leave every state/blocking field as
+            # the stronger verdict set it.
+            if not reason_code and not message:
                 return review_state
             existing_codes = review_state.get("reason_codes")
             codes = list(existing_codes) if isinstance(existing_codes, list) else []
-            if reason_code in codes:
+            existing_msgs = review_state.get("overlay_review_reasons")
+            msgs = list(existing_msgs) if isinstance(existing_msgs, list) else []
+            code_new = bool(reason_code) and reason_code not in codes
+            msg_new = bool(message) and message not in msgs
+            if not code_new and not msg_new:
                 return review_state
             updated = dict(review_state)
-            codes.append(reason_code)
-            updated["reason_codes"] = codes
+            if code_new:
+                codes.append(reason_code)
+                updated["reason_codes"] = codes
+            if msg_new:
+                msgs.append(message)
+                updated["overlay_review_reasons"] = msgs
+                updated.setdefault("overlay_review_reason", message)
             return updated
 
         # Clean pass + a finding -> elevate to review.
