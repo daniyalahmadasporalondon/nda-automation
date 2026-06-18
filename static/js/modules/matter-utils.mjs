@@ -17,6 +17,12 @@ export function recipientEmail(matter) {
 }
 
 export function counterpartyEmail(matter, gmailStatus = {}) {
+  // Prefer the backend-derived counterparty email when present: for a matter with
+  // a DocuSign envelope this is the real COUNTERPARTY signer's address, which can
+  // diverge from the inbound reply recipient the derivation chain below reflects.
+  // Defensive: only honour a non-empty string; otherwise fall back to derivation.
+  const derived = emailAddress(matter?.counterparty_email);
+  if (derived) return derived;
   const ownEmails = [
     matter?.gmail_account,
     gmailStatus?.inbound?.email,

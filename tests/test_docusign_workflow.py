@@ -733,3 +733,71 @@ def test_drive_down_is_swallowed_and_executed_transition_completes(
     assert refreshed["awaiting_signature"] is False
     # No partial/garbage drive pointer was written (the sync raised before write-back).
     assert "drive" not in refreshed or not refreshed.get("drive", {}).get("matter_folder_id")
+
+
+# ---------------------------------------------------------------------------
+# Override role-stamping: an override never lets the Aspora party persist as a
+# blank-role (or, worse, leading) signer that the matter view could read as the
+# counterparty. We stamp roles at the SOURCE in _resolve_signers.
+# ---------------------------------------------------------------------------
+def test_override_stamps_aspora_role_by_domain_when_listed_first():
+    """An override that lists the aspora.com signer FIRST with NO role gets the
+    Aspora party stamped role="aspora" and the external party "counterparty",
+    so the recorded signer set is never read as Aspora-is-the-counterparty."""
+    signers = docusign_workflow._resolve_signers(
+        {},
+        [
+            {"name": "Daniyal Ahmad", "email": "daniyal.ahmad@aspora.com"},
+            {"name": "Pranav Sharma", "email": "pranav@acme.com"},
+        ],
+    )
+    by_email = {s.email: s.role for s in signers}
+    assert by_email["daniyal.ahmad@aspora.com"] == "aspora"
+    assert by_email["pranav@acme.com"] == "counterparty"
+    # Order / who-receives is preserved; only the role label is stamped.
+    assert [s.email for s in signers] == [
+        "daniyal.ahmad@aspora.com",
+        "pranav@acme.com",
+    ]
+
+
+def test_override_stamps_aspora_role_by_configured_email(monkeypatch):
+    """When a default Aspora signer email is configured, an override signer at
+    that exact address is stamped role="aspora" even off-domain."""
+    _set_aspora_default(monkeypatch, email="ops@example.org")
+    signers = docusign_workflow._resolve_signers(
+        {},
+        [
+            {"name": "Ops Person", "email": "ops@example.org"},
+            {"name": "Pranav", "email": "pranav@acme.com"},
+        ],
+    )
+    by_email = {s.email: s.role for s in signers}
+    assert by_email["ops@example.org"] == "aspora"
+    assert by_email["pranav@acme.com"] == "counterparty"
+
+
+def test_override_preserves_explicit_non_blank_roles():
+    """An override that already carries deliberate roles is left untouched (we
+    never relabel a non-blank role); blank roles on non-aspora signers default
+    to counterparty."""
+    signers = docusign_workflow._resolve_signers(
+        {},
+        [
+            {"name": "Pranav", "email": "pranav@acme.com", "role": "signer1"},
+            {"name": "Daniyal", "email": "daniyal.ahmad@aspora.com", "role": "aspora"},
+        ],
+    )
+    by_email = {s.email: s.role for s in signers}
+    assert by_email["pranav@acme.com"] == "signer1"
+    assert by_email["daniyal.ahmad@aspora.com"] == "aspora"
+
+
+def test_override_blank_role_non_aspora_defaults_to_counterparty():
+    """A single non-aspora override signer with no role becomes counterparty."""
+    signers = docusign_workflow._resolve_signers(
+        {},
+        [{"name": "Pranav", "email": "pranav@acme.com"}],
+    )
+    assert signers[0].role == "counterparty"
+    assert signers[0].email == "pranav@acme.com"

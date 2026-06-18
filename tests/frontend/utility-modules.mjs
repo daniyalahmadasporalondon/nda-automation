@@ -513,6 +513,30 @@ assert.equal(counterpartyEmail({
   sender: "Me <me@example.com>",
   reply_to: "Counterparty <counterparty@example.com>",
 }), "counterparty@example.com");
+// counterpartyEmail PREFERS the backend-derived counterparty_email (the real
+// DocuSign signer) over the reply-to derivation chain when present + non-empty.
+assert.equal(counterpartyEmail({
+  counterparty_email: "signer@acme.com",
+  reply_to: "Old Reply <old-reply@example.com>",
+  sender: "old-reply@example.com",
+}), "signer@acme.com");
+// It accepts a display-name-wrapped counterparty_email too (defensive parse).
+assert.equal(counterpartyEmail({
+  counterparty_email: "Pranav Sharma <signer@acme.com>",
+  reply_to: "old-reply@example.com",
+}), "signer@acme.com");
+// An empty/blank/absent counterparty_email falls back to the derivation chain.
+assert.equal(counterpartyEmail({
+  counterparty_email: "",
+  gmail_account: "me@example.com",
+  sender: "Me <me@example.com>",
+  reply_to: "Counterparty <counterparty@example.com>",
+}), "counterparty@example.com");
+assert.equal(counterpartyEmail({
+  counterparty_email: "   ",
+  reply_to: "Counterparty <counterparty@example.com>",
+}), "counterparty@example.com");
+assert.equal(MatterUtils.counterpartyEmail({ counterparty_email: "signer@acme.com" }), "signer@acme.com");
 
 // reviewStale: reads the list-level flag and the opened-review review_refresh.
 assert.equal(reviewStale({}), false);
