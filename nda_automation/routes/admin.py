@@ -38,6 +38,32 @@ def handle_telemetry(handler, *, send_body: bool = True) -> None:
     )
 
 
+def handle_ai_availability(handler, *, send_body: bool = True) -> None:
+    """GET /api/ai/availability -- a NON-admin, non-sensitive AI on/off read.
+
+    Any authenticated user may USE the AI review (the review-refresh route is not
+    admin-gated), but the full ``/api/ai/settings`` read is admin-only because it
+    exposes provider/model/key-source config. The frontend still needs to know,
+    for every user, whether AI is globally ready so it can render the correct
+    "is AI usable?" signal instead of treating the admin 403 as "AI off".
+
+    This endpoint returns ONLY the three derived booleans/strings the dashboard
+    health badge needs and NOTHING sensitive: no API key (value OR source), no
+    provider, no model, no settings/audit detail. ``active_engine`` is the
+    selected engine name ("ai_first"/"deterministic"), which is not a secret.
+    """
+    status = ai_review.ai_review_status()
+    engine = active_review_engine_status()
+    handler._send_json(
+        {
+            "ai_enabled": bool(status.get("enabled")),
+            "ai_configured": bool(status.get("api_key_configured")),
+            "active_engine": str(engine.get("active_engine") or REVIEW_ENGINE_AI_FIRST),
+        },
+        send_body=send_body,
+    )
+
+
 def handle_ai_settings(handler, *, send_body: bool = True) -> None:
     if not require_admin(handler, send_body=send_body):
         return

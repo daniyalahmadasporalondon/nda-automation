@@ -25,11 +25,26 @@ const AdminAiView = (() => {
       setOverall("Checking", "pending");
       try {
         const response = await fetch("/api/ai/settings");
+        // The full AI config read is admin-only. A non-admin still loads the app
+        // shell (and can USE the AI review), so a 403 here is expected, not a
+        // failure -- render a calm "admin only" state instead of surfacing the raw
+        // "Administrator access is required." error text as if AI were broken.
+        if (response.status === 403) {
+          renderAdminOnly();
+          return;
+        }
         const payload = await window.AuthExpired.parseOkJson(response, "AI settings could not load", reviewErrorFromPayload);
         renderAiFromPayload(payload);
       } catch (error) {
         renderError(error.message || "AI settings could not load");
       }
+    }
+
+    function renderAdminOnly() {
+      const message = "AI configuration is managed by an administrator. AI review is available on your matters when an admin has turned it on.";
+      setOverall("Admin only", "pending");
+      setFact("enabled-copy", message);
+      setFact("key-message", message);
     }
 
     async function saveAiKey(event) {

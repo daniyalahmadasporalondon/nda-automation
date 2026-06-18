@@ -232,6 +232,7 @@ _GET_EXACT_ROUTES = {
     "/auth/drive/callback": drive_routes.handle_drive_connect_callback,
     "/auth/docusign/callback": docusign_routes.handle_docusign_callback,
     "/api/admin/personalisation-settings": admin_routes.handle_personalisation_settings,
+    "/api/ai/availability": admin_routes.handle_ai_availability,
     "/api/ai/settings": admin_routes.handle_ai_settings,
     "/api/matters": matter_routes.handle_matter_list,
     "/api/matters/export": admin_routes.handle_matter_backup,

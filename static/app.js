@@ -1374,9 +1374,14 @@ async function loadDashboardAiHealth() {
     tone: "checking",
   });
   try {
-    const response = await fetch("/api/ai/settings");
+    // Read the NON-admin AI-availability endpoint so the "is AI usable?" badge is
+    // correct for every authenticated user. The full /api/ai/settings read is
+    // admin-only (it carries provider/model/key-source config); pointing this badge
+    // at it made non-admins get a 403 and see AI as permanently "blocked" even
+    // though USING the AI review is open to them.
+    const response = await fetch("/api/ai/availability");
     const payload = await response.json();
-    if (!response.ok) throw reviewErrorFromPayload(payload, "AI settings could not load");
+    if (!response.ok) throw reviewErrorFromPayload(payload, "AI availability could not load");
     renderDashboardAiHealth(payload);
   } catch (error) {
     renderDashboardHealth("ai", {
@@ -1675,11 +1680,11 @@ function setDraftInputValue(input, value, { onlyIfEmpty = false } = {}) {
 }
 
 function renderDashboardAiHealth(payload = {}) {
-  const aiStatus = payload.ai_review || {};
-  const runtimeStatus = payload.active_review_engine || {};
-  const activeEngine = String(runtimeStatus.active_engine || "ai_first");
-  const enabled = aiStatus.enabled === true;
-  const keyConfigured = aiStatus.api_key_configured === true;
+  // Flat shape from the non-admin /api/ai/availability endpoint: { ai_enabled,
+  // ai_configured, active_engine }. No provider/model/key detail is exposed.
+  const activeEngine = String(payload.active_engine || "ai_first");
+  const enabled = payload.ai_enabled === true;
+  const keyConfigured = payload.ai_configured === true;
 
   if (activeEngine === "deterministic") {
     renderDashboardHealth("ai", {

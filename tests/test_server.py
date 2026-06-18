@@ -1036,6 +1036,79 @@ class ServerTests(unittest.TestCase):
                             )
                 self.assertEqual(status, 200, f"GET {path} should allow a listed admin")
 
+    # --- Non-admin AI-availability read --------------------------------------
+    # USING the AI review is open to every authenticated user (the review-refresh
+    # route is not admin-gated). The frontend's "is AI usable?" signal must read a
+    # NON-admin endpoint so a non-admin no longer gets the admin-only 403 (and the
+    # "Administrator access is required." text) and AI mis-rendered as "off". The
+    # endpoint must expose ONLY booleans/engine-name, never the key or config detail.
+    AI_AVAILABILITY_NON_SENSITIVE_KEYS = {"ai_enabled", "ai_configured", "active_engine"}
+    AI_AVAILABILITY_FORBIDDEN_KEYS = {
+        "api_key",
+        "api_key_configured",
+        "api_key_source",
+        "provider",
+        "model",
+        "settings_audit",
+        "stored_key_migration",
+        "confidence_threshold",
+    }
+
+    def test_ai_availability_allows_non_admin_google_user(self):
+        # NDA_ADMIN_USERS empty + Google OAuth caller => authenticated, NOT admin.
+        auth_env = self._google_oauth_auth_env(NDA_ADMIN_USERS="")
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                session_headers, _user = self.google_session_headers()
+                with patch.dict(os.environ, auth_env):
+                    status, payload = self.request(
+                        "GET", "/api/ai/availability", headers=session_headers
+                    )
+        # A non-admin must NOT get the admin 403 (that was the demo-blocking bug).
+        self.assertEqual(status, 200)
+        self.assertNotEqual(payload.get("error"), server_module.ADMIN_REQUIRED_MESSAGE)
+        self.assertIn("ai_enabled", payload)
+        self.assertIn("ai_configured", payload)
+        self.assertIsInstance(payload["ai_enabled"], bool)
+        self.assertIsInstance(payload["ai_configured"], bool)
+
+    def test_ai_availability_does_not_leak_sensitive_config(self):
+        auth_env = self._google_oauth_auth_env(NDA_ADMIN_USERS="")
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                session_headers, _user = self.google_session_headers()
+                with patch.dict(os.environ, auth_env):
+                    status, payload = self.request(
+                        "GET", "/api/ai/availability", headers=session_headers
+                    )
+        self.assertEqual(status, 200)
+        # Only the three non-sensitive fields are present; no key/provider/model leak.
+        self.assertEqual(set(payload.keys()), self.AI_AVAILABILITY_NON_SENSITIVE_KEYS)
+        for forbidden in self.AI_AVAILABILITY_FORBIDDEN_KEYS:
+            self.assertNotIn(forbidden, payload)
+
+    def test_ai_availability_reflects_global_enabled_for_non_admin(self):
+        # An admin globally enabling AI (key configured) must read through to the
+        # non-admin availability endpoint as ai_enabled/ai_configured true.
+        auth_env = self._google_oauth_auth_env(
+            NDA_ADMIN_USERS="",
+            NDA_AI_REVIEW_ENABLED="true",
+            OPENROUTER_API_KEY="sk-or-testkey0000000000000000",
+        )
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                session_headers, _user = self.google_session_headers()
+                with patch.dict(os.environ, auth_env):
+                    status, payload = self.request(
+                        "GET", "/api/ai/availability", headers=session_headers
+                    )
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ai_enabled"])
+        self.assertTrue(payload["ai_configured"])
+
     def test_ai_settings_mutators_deny_basic_auth_when_admin_list_empty(self):
         # FAIL-CLOSED: an empty NDA_ADMIN_USERS must NOT make every Basic-auth
         # caller an admin. On a deployment that shares one Basic credential
