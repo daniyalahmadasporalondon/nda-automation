@@ -17,6 +17,7 @@ const AuthSessionView = (() => {
     avatarInitial,
     menuGreeting,
     menuStatus,
+    identityNode,
     menuAvatarImage,
     menuAvatarInitial,
     greetingNode,
@@ -201,6 +202,7 @@ const AuthSessionView = (() => {
         if (menuStatus) menuStatus.textContent = gmailLabel;
       }
       renderAvatar(user, gmailStatus);
+      renderIdentity(authenticated);
 
       toggleHidden(loginLink, authenticated || !authStatus?.login_url);
       toggleHidden(logoutButton, authStatus === null);
@@ -226,6 +228,21 @@ const AuthSessionView = (() => {
     function renderMenuVisibility() {
       toggleHidden(accountMenu, !menuOpen);
       accountToggle?.setAttribute("aria-expanded", menuOpen ? "true" : "false");
+    }
+
+    // Diagnostic line: shows the caller their OWN exact identity string used for
+    // admin matching (compare to NDA_ADMIN_USERS) plus the live is_admin verdict.
+    function renderIdentity(authenticated) {
+      if (!identityNode) return;
+      const userId = String(authStatus?.user_id || authStatus?.user?.id || "").trim();
+      if (!authenticated || !userId) {
+        identityNode.textContent = "";
+        toggleHidden(identityNode, true);
+        return;
+      }
+      const isAdmin = authStatus?.is_admin === true;
+      identityNode.textContent = `Signed in as ${userId} · Admin: ${isAdmin ? "Yes" : "No"}`;
+      toggleHidden(identityNode, false);
     }
 
     function renderAvatar(user, status) {

@@ -423,6 +423,7 @@ authSessionController = createAuthSessionController({
   avatarInitial: document.querySelector("[data-session-avatar-initial]"),
   menuGreeting: document.querySelector("[data-session-menu-greeting]"),
   menuStatus: document.querySelector("[data-session-menu-status]"),
+  identityNode: document.querySelector("[data-session-identity]"),
   menuAvatarImage: document.querySelector("[data-session-menu-avatar-image]"),
   menuAvatarInitial: document.querySelector("[data-session-menu-avatar-initial]"),
   greetingNode: document.querySelector("#dashboardHeroTitle"),

@@ -921,6 +921,56 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertEqual(payload["error"], server_module.ADMIN_REQUIRED_MESSAGE)
 
+    def test_auth_status_reports_user_id_and_is_admin_for_listed_admin(self):
+        # The self-service identity diagnostic: /api/auth/status echoes the EXACT
+        # google:<sub> id used for admin matching plus the live is_admin verdict,
+        # so an owner can compare it to NDA_ADMIN_USERS. Listed admin -> True.
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "google-client",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                session_headers, user = self.google_session_headers()
+                admin_env = {**auth_env, "NDA_ADMIN_USERS": f"{user['id']}, other@example.com"}
+                with patch.dict(os.environ, admin_env):
+                    status, payload = self.request(
+                        "GET", "/api/auth/status", headers=session_headers
+                    )
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["authenticated"])
+        self.assertEqual(payload["user_id"], "google:google-user-123")
+        self.assertEqual(payload["user_id"], user["id"])
+        self.assertTrue(payload["is_admin"])
+
+    def test_auth_status_reports_is_admin_false_for_non_listed_user(self):
+        # Same diagnostic, non-admin path: the id is still echoed (so the user can
+        # see what to add to NDA_ADMIN_USERS) but is_admin is False.
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "google-client",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
+            "NDA_ADMIN_USERS": "someone-else@example.com",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                session_headers, user = self.google_session_headers()
+                with patch.dict(os.environ, auth_env):
+                    status, payload = self.request(
+                        "GET", "/api/auth/status", headers=session_headers
+                    )
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["authenticated"])
+        self.assertEqual(payload["user_id"], user["id"])
+        self.assertFalse(payload["is_admin"])
+
     # --- Admin-only AI/personalisation settings mutators ---------------------
     # These endpoints overwrite the SHARED OpenRouter API key, flip the global
     # AI provider/engine, or change global personalisation, so a per-user

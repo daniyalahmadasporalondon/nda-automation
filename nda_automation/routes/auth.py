@@ -6,15 +6,28 @@ import secrets
 from urllib.parse import parse_qs, urlparse
 
 from .. import app_settings, google_connection, google_identity, user_store
-from ..http_auth import _basic_auth_credentials, _basic_auth_matches
+from ..http_auth import _basic_auth_credentials, _basic_auth_matches, request_is_admin
 
 
 def handle_auth_status(handler, *, send_body: bool = True) -> None:
     user = current_session_user(handler) or _current_basic_user(handler)
+    # Surface the EXACT identity used for admin matching so the signed-in user can
+    # self-debug NDA_ADMIN_USERS (compare ``user_id`` against the configured list)
+    # and see the live ``is_admin`` verdict. Additive + scoped to the caller's OWN
+    # identity only — never enumerates other users.
+    user_id = str((user or {}).get("id") or "").strip()
+    provider = str((user or {}).get("provider") or "").strip()
+    is_admin = bool(user) and request_is_admin(
+        user_id=user_id,
+        provider=provider,
+        host=str(handler.server.server_address[0]),
+    )
     handler._send_json(
         {
             "authenticated": user is not None,
             "user": user_store.public_user(user),
+            "user_id": user_id,
+            "is_admin": is_admin,
             "login_url": "/auth/google/start" if google_identity.google_oauth_configured() else "",
             "logout_url": "/api/auth/logout",
             "google_oauth_configured": google_identity.google_oauth_configured(),
