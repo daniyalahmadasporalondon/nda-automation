@@ -38,6 +38,7 @@ from nda_automation import (
     docusign_workflow,
     drive_integration,
     lifecycle_signed,
+    matter_view,
 )
 from nda_automation.artifact_registry import (
     ACTOR_HUMAN,
@@ -453,6 +454,101 @@ def test_manual_mark_with_no_signed_document_archives_nothing(drive_env, in_memo
     # The matter is still executed despite no Drive mirror.
     refreshed = in_memory_matters.get_matter(matter_id, owner_user_id=GOOGLE_OWNER)
     assert refreshed["executed"] is True
+
+
+# --------------------------------------------------------------------------
+# drive_archive outcome recording — the previously-silent failure is now visible
+# --------------------------------------------------------------------------
+def test_archive_failure_records_drive_archive_failed_and_surfaces(
+    in_memory_matters, monkeypatch, caplog
+):
+    """A Drive archive failure during the executed transition is RECORDED onto the
+    matter as drive_archive.status == "failed" (with a short reason) AND surfaced in
+    public_matter — while the matter still flips executed. Previously the miss was a
+    silent telemetry-only increment with NO user-visible signal."""
+    matter, matter_id = _make_matter(in_memory_matters, MATTER_OWNER)
+    fake = FakeDocuSignClient(auto_complete=True)
+    docusign_workflow.send_for_signature(
+        matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake
+    )
+
+    monkeypatch.setattr(drive_integration, "drive_connected", lambda owner_user_id="": True)
+    monkeypatch.setattr(app_settings, "drive_auto_intake_enabled", lambda: True)
+    monkeypatch.setattr(app_settings, "drive_settings", lambda: {"folder_id": "root123"})
+
+    def _boom(**kwargs):
+        raise drive_integration.DriveIntegrationError("Root folder is not writable")
+
+    monkeypatch.setattr(drive_integration, "sync_matter_folder", _boom)
+
+    with caplog.at_level(logging.WARNING, logger="nda_automation.drive_integration"):
+        result = docusign_workflow.sync_signature_status(
+            None, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake,
+            drive_token_owner_user_id=GOOGLE_OWNER,
+        )
+
+    assert result.completed is True
+    refreshed = in_memory_matters.get_matter(matter_id, owner_user_id=MATTER_OWNER)
+    # The executed transition is unaffected by the Drive failure.
+    assert refreshed["executed"] is True
+    assert refreshed["status"] == "fully_signed"
+    # The failure is RECORDED onto the matter with a short, user-safe reason.
+    archive = refreshed["drive_archive"]
+    assert archive["status"] == "failed"
+    assert "Root folder is not writable" in archive["error"]
+    assert archive["attempted_at"]
+    # ...and SURFACED through the public serialization the frontend reads.
+    public = matter_view.public_matter(refreshed)
+    assert public["drive_archive"]["status"] == "failed"
+    assert "Root folder is not writable" in public["drive_archive"]["error"]
+
+
+def test_archive_success_records_drive_archive_ok_no_warning(drive_env, in_memory_matters):
+    """A SUCCESSFUL executed archive records drive_archive.status == "ok" (no error),
+    so the UI shows no warning. The drive folder pointer is also stamped as before."""
+    matter, matter_id = _make_matter(in_memory_matters, MATTER_OWNER)
+    fake = FakeDocuSignClient(auto_complete=True)
+    docusign_workflow.send_for_signature(
+        matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake
+    )
+
+    docusign_workflow.sync_signature_status(
+        None, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake,
+        drive_token_owner_user_id=GOOGLE_OWNER,
+    )
+
+    refreshed = in_memory_matters.get_matter(matter_id, owner_user_id=MATTER_OWNER)
+    assert refreshed["drive_archive"]["status"] == "ok"
+    assert refreshed["drive_archive"]["error"] == ""
+    assert refreshed.get("drive", {}).get("matter_folder_id")
+    public = matter_view.public_matter(refreshed)
+    assert public["drive_archive"]["status"] == "ok"
+
+
+def test_archive_skip_when_not_connected_records_no_drive_archive_block(
+    drive_env, in_memory_matters
+):
+    """When Drive is not connected (no archive ATTEMPTED), NO drive_archive block is
+    written — a matter with no Drive connection must never show a false failed-archive
+    warning."""
+    drive_env.connected = set()  # nobody has a token -> skip, no attempt
+    matter, matter_id = _make_matter(in_memory_matters, MATTER_OWNER)
+    fake = FakeDocuSignClient(auto_complete=True)
+    docusign_workflow.send_for_signature(
+        matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake
+    )
+
+    result = docusign_workflow.sync_signature_status(
+        None, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake,
+        drive_token_owner_user_id=GOOGLE_OWNER,
+    )
+
+    assert result.completed is True
+    refreshed = in_memory_matters.get_matter(matter_id, owner_user_id=MATTER_OWNER)
+    # No archive attempted -> no block at all -> no warning.
+    assert "drive_archive" not in refreshed or refreshed.get("drive_archive") in (None, {})
+    public = matter_view.public_matter(refreshed)
+    assert not public.get("drive_archive")
 
 
 # --- tiny handler/json plumbing for the route-body tests -------------------

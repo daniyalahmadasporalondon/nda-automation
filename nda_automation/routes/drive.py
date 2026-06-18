@@ -261,7 +261,18 @@ def handle_drive_upload_matter(handler) -> None:
     }
     updated_matter = repository.update_matter_fields(
         matter_id,
-        {"drive": drive_block},
+        {
+            "drive": drive_block,
+            # Stamp the SUCCESSFUL outcome so this deliberate sync doubles as the
+            # Retry for a prior failed executed-archive: a re-sync that succeeds
+            # clears the stale ``drive_archive.status == "failed"`` warning on the
+            # matter card. Mirrors archive_executed_matter's success write.
+            "drive_archive": {
+                "status": "ok",
+                "error": "",
+                "attempted_at": synced_at,
+            },
+        },
         owner_user_id=owner_user_id,
     )
     if updated_matter is None:
