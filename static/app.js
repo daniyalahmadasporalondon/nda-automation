@@ -394,6 +394,7 @@ adminDriveController = createAdminDriveController({
   drivePickerSelect: document.querySelector("#adminDrivePickerSelect"),
   drivePickerList: document.querySelector("#adminDrivePickerList"),
   drivePickerBreadcrumb: document.querySelector("#adminDrivePickerBreadcrumb"),
+  drivePickerBack: document.querySelector("#adminDrivePickerBack"),
   drivePickerStatus: document.querySelector("#adminDrivePickerStatus"),
   drivePickerSelection: document.querySelector("#adminDrivePickerSelection"),
   // "+ New folder" controls inside the picker (all optional).

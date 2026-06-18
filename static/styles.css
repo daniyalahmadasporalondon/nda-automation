@@ -11046,6 +11046,17 @@ body.modal-open {
   min-width: 0;
 }
 
+.drive-picker-back {
+  flex: 0 0 auto;
+  margin-left: 18px;
+  white-space: nowrap;
+}
+
+.drive-picker-back[disabled] {
+  cursor: default;
+  opacity: 0.5;
+}
+
 .drive-picker-new-toggle {
   flex: 0 0 auto;
   margin-right: 18px;

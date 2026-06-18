@@ -19,6 +19,8 @@ const AdminDriveView = (() => {
     drivePickerSelect,
     drivePickerList,
     drivePickerBreadcrumb,
+    // "← Back" goes up one level (pops the breadcrumb trail). Optional.
+    drivePickerBack,
     drivePickerStatus,
     drivePickerSelection,
     // "+ New folder" controls inside the picker. All optional.
@@ -50,6 +52,7 @@ const AdminDriveView = (() => {
     drivePickerClose?.addEventListener("click", closePicker);
     drivePickerCancel?.addEventListener("click", closePicker);
     drivePickerSelect?.addEventListener("click", confirmPickerSelection);
+    drivePickerBack?.addEventListener("click", goUpOneLevel);
     drivePickerBackdrop?.addEventListener("click", (event) => {
       // Click on the dimmed backdrop (not the dialog itself) closes the picker.
       if (event.target === drivePickerBackdrop) closePicker();
@@ -241,7 +244,23 @@ const AdminDriveView = (() => {
       loadFolders(currentParentId());
     }
 
+    // "← Back": go up one level by dropping the current (tail) crumb and
+    // re-listing the parent. Identical navigation path to clicking the parent
+    // breadcrumb crumb. A no-op at My Drive root (the Back button is disabled
+    // there), so this is also a defensive guard.
+    function goUpOneLevel() {
+      if (pickerTrail.length <= 1) return;
+      jumpToCrumb(pickerTrail.length - 2);
+    }
+
+    // The Back button is meaningful only once we've drilled past My Drive root.
+    function renderBackButton() {
+      if (!drivePickerBack) return;
+      drivePickerBack.disabled = pickerTrail.length <= 1;
+    }
+
     function renderBreadcrumb() {
+      renderBackButton();
       if (!drivePickerBreadcrumb) return;
       drivePickerBreadcrumb.innerHTML = "";
       pickerTrail.forEach((crumb, index) => {

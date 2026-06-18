@@ -252,6 +252,9 @@ function mountController() {
   const drivePickerSelect = new FakeElement("button");
   const drivePickerList = new FakeElement("ul");
   const drivePickerBreadcrumb = new FakeElement("nav");
+  const drivePickerBack = new FakeElement("button");
+  // Mirrors the shipped markup: Back starts disabled (My Drive root).
+  drivePickerBack.disabled = true;
   const drivePickerStatus = new FakeElement("p");
   const drivePickerSelection = new FakeElement("span");
 
@@ -287,6 +290,7 @@ function mountController() {
     drivePickerSelect,
     drivePickerList,
     drivePickerBreadcrumb,
+    drivePickerBack,
     drivePickerStatus,
     drivePickerSelection,
     drivePickerNewToggle,
@@ -313,6 +317,7 @@ function mountController() {
     drivePickerSelect,
     drivePickerList,
     drivePickerBreadcrumb,
+    drivePickerBack,
     drivePickerStatus,
     drivePickerSelection,
     drivePickerNewToggle,
@@ -387,6 +392,65 @@ function openSpanOf(folderBtn) {
     // The drilled-into folder is now listed.
     const names = ui.drivePickerList.collectDescendants().filter((n) => n.classList.contains("drive-picker-folder-name")).map((n) => n.textContent);
     assert.deepEqual(names, ["Acme Corp"]);
+  });
+
+  await test('"← Back" is disabled at My Drive root, enabled after drilling, and navigates up one level', async () => {
+    const ui = mountController();
+    const calls = installFetch((url) => {
+      if (url === "/api/admin/drive-folders?parent=root") {
+        return { payload: { parent: "root", folders: [{ id: "f_clients", name: "Clients" }] } };
+      }
+      if (url === "/api/admin/drive-folders?parent=f_clients") {
+        return { payload: { parent: "f_clients", folders: [{ id: "f_acme", name: "Acme Corp" }] } };
+      }
+      return {};
+    });
+
+    await ui.driveBrowseButton.click();
+    await flush();
+    // At My Drive root there is nowhere up to go: Back is disabled.
+    assert.equal(ui.drivePickerBack.disabled, true, "Back disabled at root");
+
+    // Drill into a subfolder; Back becomes available.
+    const clientsBtn = folderButton(ui, "Clients");
+    await openSpanOf(clientsBtn).dispatchEvent({ type: "click", target: openSpanOf(clientsBtn), stopPropagation() {} });
+    await flush();
+    assert.equal(ui.drivePickerBack.disabled, false, "Back enabled after drilling in");
+
+    // Clicking Back re-lists the parent (root) and pops the breadcrumb tail.
+    const callsBefore = calls.length;
+    await ui.drivePickerBack.click();
+    await flush();
+    assert.equal(
+      calls[calls.length - 1].url,
+      "/api/admin/drive-folders?parent=root",
+      "Back re-lists the parent folder via the same drive-folders call"
+    );
+    assert.ok(calls.length > callsBefore, "Back triggered a folder list fetch");
+    const crumbButtons = ui.drivePickerBreadcrumb.collectDescendants().filter((n) => n.tagName === "BUTTON");
+    assert.deepEqual(crumbButtons.map((b) => b.textContent), ["My Drive"], "breadcrumb popped back to root");
+    // Root content is shown again and Back is disabled once more.
+    const names = ui.drivePickerList.collectDescendants().filter((n) => n.classList.contains("drive-picker-folder-name")).map((n) => n.textContent);
+    assert.deepEqual(names, ["Clients"], "parent (root) folders re-rendered");
+    assert.equal(ui.drivePickerBack.disabled, true, "Back disabled again at root");
+  });
+
+  await test('"← Back" at root is a no-op (defensive guard, no fetch)', async () => {
+    const ui = mountController();
+    const calls = installFetch((url) => {
+      if (url === "/api/admin/drive-folders?parent=root") {
+        return { payload: { parent: "root", folders: [] } };
+      }
+      return {};
+    });
+
+    await ui.driveBrowseButton.click();
+    await flush();
+    const before = calls.length;
+    // Even if invoked while disabled, the handler must not navigate above root.
+    await ui.drivePickerBack.click();
+    await flush();
+    assert.equal(calls.length, before, "Back at root issues no additional fetch");
   });
 
   await test('selecting + "Use this folder" fills the id, captures the name (no name input), and saving posts folder_name', async () => {
