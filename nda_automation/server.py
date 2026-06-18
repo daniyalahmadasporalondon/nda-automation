@@ -19,6 +19,7 @@ from . import (
     export_service,
     gmail_integration,
     matter_store,
+    notification_store,
     pdf_export_service,
     redline_export_service as redline_export_service,
     telemetry,
@@ -91,6 +92,7 @@ from .routes import entities as entity_routes
 from .routes import generation as generation_routes
 from .routes import gmail as gmail_routes
 from .routes import matters as matter_routes
+from .routes import notifications as notification_routes
 from .routes import pdf_markup as pdf_markup_routes
 from .routes import playbook as playbook_routes
 from .routes import review as review_routes
@@ -240,6 +242,9 @@ _GET_EXACT_ROUTES = {
     "/api/ai/settings": admin_routes.handle_ai_settings,
     "/api/matters": matter_routes.handle_matter_list,
     "/api/matters/export": admin_routes.handle_matter_backup,
+    # Failure-notification feed surfaced as toasts. Authenticated-but-not-admin
+    # to match /api/matters (the inbound-email toasts every operator sees).
+    "/api/notifications": notification_routes.handle_notifications_list,
     "/api/corpus": corpus_routes.handle_corpus,
     "/api/signing-entities": entity_routes.handle_signing_entities,
     "/api/telemetry": admin_routes.handle_telemetry,
@@ -465,12 +470,17 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             if path.startswith("/api/matters/") and path.endswith("/pdf-annotations"):
                 pdf_markup_routes.handle_pdf_annotation_create(self, path)
                 return
+            if path.startswith("/api/notifications/") and path.endswith("/dismiss"):
+                notification_routes.handle_notification_dismiss(self, path)
+                return
             self._send_json({"error": "Not found"}, status=404)
         except PlaybookTemplateError:
             self._send_playbook_template_error()
         except EvidenceProvenanceError:
             self._send_json({"error": "Clause evidence provenance drift detected."}, status=500)
         except matter_store.MatterStoreError as error:
+            self._send_json({"error": str(error)}, status=500)
+        except notification_store.NotificationStoreError as error:
             self._send_json({"error": str(error)}, status=500)
         except app_settings.AppSettingsError as error:
             self._send_json({"error": str(error)}, status=500)

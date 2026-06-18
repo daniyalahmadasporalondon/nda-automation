@@ -243,6 +243,10 @@ const notificationsController = createNotificationsController({
 // instead of a cryptic JSON parse error. Kept to a single line so this file stays
 // merge-friendly with other in-flight branches.
 globalThis.AuthExpired?.register?.({ notify: notificationsController.notify });
+// Begin the gentle (60s, visibility-paused, single-in-flight) poll of
+// /api/notifications so integration FAILURES surface as toasts through the same
+// system as inbound-email toasts. The first poll seeds the seen-set silently.
+notificationsController.startFailurePolling?.();
 const manualUploadController = createManualUploadController({
   modalNode: manualUploadModal,
   closeButton: manualUploadModalClose,

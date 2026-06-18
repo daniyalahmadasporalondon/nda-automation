@@ -71,9 +71,29 @@ const NotificationsView = (() => {
     return `${days}d ago`;
   }
 
-  function createController({ container, openMatter, openRepository, fetchMatters }) {
+  // Gentle cadence for the failure-notification feed poll. The matter list is
+  // already polled frequently elsewhere; integration FAILURES change rarely, so a
+  // slow, visibility-paused, single-in-flight poll keeps the request volume tiny.
+  const FAILURE_POLL_MS = 60_000;
+
+  function createController({
+    container,
+    openMatter,
+    openRepository,
+    fetchMatters,
+    fetchNotifications,
+  }) {
     let seeded = false;
     const seen = new Set();
+
+    // SEEN active failure-event ids (client-side de-dup, exactly like `seen` for
+    // matter toasts). A new ACTIVE event id toasts once; the same id on the next
+    // poll is skipped; a resolved/dismissed event drops out of the feed so it
+    // stops showing entirely.
+    let failureSeeded = false;
+    const failureSeen = new Set();
+    let failurePollTimer = null;
+    let failurePollInFlight = false;
 
     function inboundMatters(matters) {
       return (Array.isArray(matters) ? matters : []).filter(
@@ -108,6 +128,89 @@ const NotificationsView = (() => {
       } catch (error) {
         // A transient network blip just means we try again on the next tick.
       }
+    }
+
+    // Only ACTIVE failure events are toast-worthy; resolved/dismissed ones have
+    // stopped being actionable and must never (re-)toast.
+    function activeFailureEvents(events) {
+      return (Array.isArray(events) ? events : []).filter(
+        (event) => event && event.id && event.status === "active",
+      );
+    }
+
+    // Detect newly-active failure events and toast each once. Mirrors `observe`'s
+    // GOLDEN RULE: the first observation after load SEEDS the seen-set silently so
+    // pre-existing active failures (from before the page opened) don't flood the
+    // screen -- only failures that become active DURING the session toast.
+    function observeFailures(events) {
+      const active = activeFailureEvents(events);
+      if (!failureSeeded) {
+        active.forEach((event) => failureSeen.add(String(event.id)));
+        failureSeeded = true;
+        return;
+      }
+      const fresh = active.filter((event) => !failureSeen.has(String(event.id)));
+      if (!fresh.length) return;
+      fresh.forEach((event) => failureSeen.add(String(event.id)));
+      fresh.sort((a, b) =>
+        String(b.created_at || "").localeCompare(String(a.created_at || "")),
+      );
+      fresh.forEach((event) => showFailureToast(event));
+    }
+
+    // The failure-feed fetcher: prefer an injected `fetchNotifications` (tests),
+    // else hit /api/notifications directly. A 401 routes through the SAME
+    // AuthExpired path the rest of the app uses (session-expiry toast), and any
+    // other non-ok / network error is swallowed -- we retry next tick.
+    async function defaultFetchNotifications() {
+      const response = await fetch("/api/notifications");
+      if (response.status === 401) {
+        // Route session expiry through the SAME global handler the rest of the
+        // app uses (surfaces the "session expired -- sign in again" toast).
+        globalThis.AuthExpired?.handleAuthExpired?.();
+        return [];
+      }
+      if (!response.ok) return [];
+      const payload = await response.json();
+      return Array.isArray(payload.events) ? payload.events : [];
+    }
+
+    async function pollFailures() {
+      // Single in-flight guard: a slow request must not stack with the timer.
+      if (failurePollInFlight) return;
+      const fetcher =
+        typeof fetchNotifications === "function"
+          ? fetchNotifications
+          : defaultFetchNotifications;
+      failurePollInFlight = true;
+      try {
+        observeFailures(await fetcher());
+      } catch (error) {
+        // Transient: try again next tick.
+      } finally {
+        failurePollInFlight = false;
+      }
+    }
+
+    // Start the gentle, visibility-paused failure poll. Paused while the tab is
+    // hidden (no point polling a backgrounded tab); a fresh poll fires the moment
+    // it becomes visible again so a failure that landed while hidden surfaces
+    // promptly. Safe to call once at wire-up.
+    function startFailurePolling() {
+      const tick = () => {
+        if (typeof document !== "undefined" && document.hidden) return;
+        pollFailures();
+      };
+      if (typeof document !== "undefined" && document.addEventListener) {
+        document.addEventListener("visibilitychange", () => {
+          if (!document.hidden) pollFailures();
+        });
+      }
+      if (failurePollTimer == null && typeof setInterval === "function") {
+        failurePollTimer = setInterval(tick, FAILURE_POLL_MS);
+      }
+      // Kick an immediate first poll to seed the seen-set silently.
+      pollFailures();
     }
 
     function enforceStackCap() {
@@ -200,6 +303,17 @@ const NotificationsView = (() => {
     // inbound-arrival toasts, so callers get a notification through the one existing
     // notification mechanism rather than a bespoke banner. Used by the Review tab to
     // report "Review can't be completed — no AI reviewer available."
+    // Toast a single ACTIVE failure event through the existing `notify` machinery.
+    // The detail becomes the subtitle, optionally prefixed by a severity word so
+    // an operator can tell an error from a warning at a glance.
+    function showFailureToast(event) {
+      const severity = String(event.severity || "").toLowerCase();
+      const prefix =
+        severity === "warning" ? "Warning: " : severity === "info" ? "" : "Failure: ";
+      const title = `${prefix}${String(event.title || "Integration failure")}`;
+      notify(title, String(event.detail || ""));
+    }
+
     function notify(title, subtitle) {
       const node = document.createElement("div");
       node.className = "toast";
@@ -218,7 +332,14 @@ const NotificationsView = (() => {
       mountToast(node, () => {});
     }
 
-    return { observe, poll, notify };
+    return {
+      observe,
+      poll,
+      notify,
+      observeFailures,
+      pollFailures,
+      startFailurePolling,
+    };
   }
 
   return { createController };
