@@ -709,3 +709,75 @@ def test_rate_limit_midscan_keeps_imported_and_does_not_abort_poll(monkeypatch):
     assert result["rate_limited"] is True
     assert len(transport.already_imported) == 5
     assert transport.fetched_message_ids == [f"msg_{i:03d}" for i in range(5)]
+
+
+# --------------------------------------------------------------------------- #
+# DocuSign envelope-notification skip: the deterministic domain-only matcher.
+# --------------------------------------------------------------------------- #
+def _message_with_from(raw_from: str) -> dict[str, Any]:
+    return {"payload": {"headers": [{"name": "From", "value": raw_from}]}}
+
+
+def test_is_docusign_notification_matches_docusign_sender_domains():
+    # The full DocuSign sender family the recon enumerated -- all DOMAIN matches.
+    for raw_from in (
+        "DocuSign <dse@docusign.net>",
+        "dse@docusign.net",
+        "DocuSign EU <dse_demo@docusign.net>",
+        "dse_na3@docusign.net",
+        "dse_na1@docusign.net",
+        "dse_eu1@docusign.net",
+        "DocuSign <dse@eumail.docusign.net>",
+        "no-reply@mail.docusign.net",
+        # Case-insensitive on the domain.
+        "DSE@DocuSign.NET",
+    ):
+        assert gmail_integration._is_docusign_notification(_message_with_from(raw_from)) is True, raw_from
+
+
+def test_is_docusign_notification_domain_only_real_nda_mentioning_docusign_passes():
+    # A genuine counterparty NDA from a real sender whose subject/body/filename all
+    # mention DocuSign must NOT be skipped -- the match is DOMAIN-ONLY.
+    message = {
+        "payload": {
+            "headers": [
+                {"name": "From", "value": "Jane Counsel <jane@acme.com>"},
+                {"name": "Subject", "value": "NDA -- sent via DocuSign"},
+            ],
+            "parts": [{"filename": "docusign_nda.pdf"}],
+        },
+        "snippet": "Please countersign the attached NDA in DocuSign.",
+    }
+    assert gmail_integration._is_docusign_notification(message) is False
+
+
+def test_is_docusign_notification_rejects_lookalike_and_substring_domains():
+    # Defend against domains that merely CONTAIN the brand string but are not the
+    # docusign.net family -- these are real (potentially hostile) third parties.
+    for raw_from in (
+        "evil <attacker@docusign.net.evil.com>",  # docusign.net is a label, not the suffix
+        "phish <dse@notdocusign.net>",  # ends with "docusign.net" textually but wrong domain
+        "<dse@docusign.com>",  # .com, not .net
+        "<dse@mydocusign.net>",  # mydocusign.net != *.docusign.net
+    ):
+        assert gmail_integration._is_docusign_notification(_message_with_from(raw_from)) is False, raw_from
+
+
+def test_is_docusign_notification_fails_open_on_malformed_from():
+    # No From header, unparseable address, or MULTIPLE addresses -> fail open
+    # (return False) so a real NDA is never wrongly skipped.
+    assert gmail_integration._is_docusign_notification({"payload": {"headers": []}}) is False
+    assert gmail_integration._is_docusign_notification(_message_with_from("")) is False
+    assert gmail_integration._is_docusign_notification(_message_with_from("not an email")) is False
+    assert (
+        gmail_integration._is_docusign_notification(
+            _message_with_from("dse@docusign.net, jane@acme.com")
+        )
+        is False
+    )
+
+
+def test_transport_is_docusign_notification_delegates_to_legacy():
+    transport = gmail_transport.default_transport()
+    assert transport.is_docusign_notification(_message_with_from("dse@docusign.net")) is True
+    assert transport.is_docusign_notification(_message_with_from("jane@acme.com")) is False

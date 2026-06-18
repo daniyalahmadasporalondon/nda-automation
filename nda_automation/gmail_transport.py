@@ -95,6 +95,9 @@ class GmailTransport:
     def is_self_or_outbound_message(self, message: dict[str, Any], account_email: str) -> bool:
         return bool(_legacy()._is_self_or_outbound_message(message, account_email))
 
+    def is_docusign_notification(self, message: dict[str, Any]) -> bool:
+        return bool(_legacy()._is_docusign_notification(message))
+
     def reviewable_attachments(self, payload: dict[str, Any]) -> list[dict[str, str]]:
         return list(_legacy()._reviewable_attachments(payload))
 
