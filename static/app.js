@@ -1550,24 +1550,49 @@ async function confirmDashboardAssistantAction(action = {}) {
   if (actionName === "refresh_review" || actionName === "run_review") {
     const matterId = assistantActionMatterId(params, matter);
     if (!matterId) throw new Error("Matter not found.");
+    // The AI review now runs ASYNCHRONOUSLY: POST /review-refresh returns 202 in
+    // milliseconds and a worker does the heavy review. So there is NO long
+    // synchronous wait to bound anymore — drop the 180s timeout. We open the matter
+    // into the Review tab and hand off to the in-flight poll controller, which
+    // tracks review_status to completion (or surfaces failure + Retry).
     const payload = await postAssistantActionJson(
       `/api/matters/${encodeURIComponent(matterId)}/review-refresh`,
       null,
       "Review could not refresh",
-      // The synchronous AI review can take ~2 minutes on a long NDA; bound the
-      // wait generously (180s) so a dead socket recovers without aborting a
-      // legitimately long review.
-      { timeoutMs: 180000 },
     );
+
+    // AI off: nothing was scheduled; report honestly without claiming a refresh.
+    if (payload?.ai_review_unavailable) {
+      return {
+        statusText:
+          payload.ai_review_unavailable_message
+          || "Review can't be completed — no AI reviewer available.",
+      };
+    }
+
+    // Load the matter into the Review tab so the in-flight spinner/result render
+    // there. The server's 202 payload carries review_status (+ the matter) but not
+    // the heavy review_result, so reflect the scheduled state.
     const refreshedMatter = matterReviewPayloadToMatter(payload);
     loadMatterIntoReview(refreshedMatter);
     await repositoryController.loadMatters();
     renderDashboardInboxTable();
     activateTab("review");
-    const refresh = payload?.review_refresh || {};
+
+    const status = String(payload?.review_status || "");
     const title = refreshedMatter?.matter?.document_title || refreshedMatter?.document_title || matter.title || "matter";
+    if (status === "in_progress") {
+      // Background review scheduled (or already pending): start polling so the tab
+      // updates when it finishes.
+      if (typeof startReviewPoll === "function") {
+        enterReviewInFlightUi?.();
+        startReviewPoll(matterId);
+      }
+      return { statusText: `Review started for ${title}. It will update when it finishes.` };
+    }
+    const refresh = payload?.review_refresh || {};
     if (refresh.stale) return { statusText: "Review refreshed, but it is still marked stale." };
-    return { statusText: `Review refreshed for ${title}.` };
+    return { statusText: `Review is current for ${title}.` };
   }
   if (actionName === "approve_matter") {
     const matterId = assistantActionMatterId(params, matter);

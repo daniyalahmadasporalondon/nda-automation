@@ -150,11 +150,17 @@ const RepositoryBoard = (() => {
     const issueLabel = aiReviewRan
       ? `${issueCount} ${issueCount === 1 ? "issue" : "issues"}`
       : "";
-    // Universal review-status badge across every column. Quiet/green when the AI
-    // has reviewed, amber when it has not -- text label (not colour-only) for a11y.
-    const reviewBadge = aiReviewRan
-      ? `<span class="repository-review-badge reviewed" title="An AI review has been run on this NDA.">AI reviewed</span>`
-      : `<span class="repository-review-badge pending" title="No AI review has run on this NDA yet. Open the matter to review it.">Not reviewed</span>`;
+    // Universal review-status badge across every column. While a background AI
+    // review is running (review_status === "in_progress") the card shows a live
+    // "Reviewing…" badge that supersedes the reviewed/not-reviewed state; otherwise
+    // it is quiet/green when the AI has reviewed and amber when it has not -- text
+    // label (not colour-only) for a11y.
+    const reviewInProgress = MatterUtils.reviewInProgress(matter);
+    const reviewBadge = reviewInProgress
+      ? `<span class="repository-review-badge reviewing" aria-busy="true" title="An AI review is running on this NDA in the background.">Reviewing…</span>`
+      : aiReviewRan
+        ? `<span class="repository-review-badge reviewed" title="An AI review has been run on this NDA.">AI reviewed</span>`
+        : `<span class="repository-review-badge pending" title="No AI review has run on this NDA yet. Open the matter to review it.">Not reviewed</span>`;
     const date = RepositoryModel.formatMatterDate(matter.received_at || matter.created_at);
     const confirmingDelete = Boolean(options.confirmingDelete);
     return `
@@ -163,7 +169,7 @@ const RepositoryBoard = (() => {
           <span class="repository-card-badges">
             <span class="repository-source-badge ${html(RepositoryModel.sourceBadgeClass(matter.source_type))}">${html(RepositoryModel.sourceTypeLabel(matter.source_type))}</span>
             ${reviewBadge}
-            ${MatterUtils.reviewStale(matter) ? `<span class="repository-stale-badge" title="${html(MatterUtils.reviewStaleLabel(matter))}">Stale</span>` : ""}
+            ${!reviewInProgress && MatterUtils.reviewStale(matter) ? `<span class="repository-stale-badge" title="${html(MatterUtils.reviewStaleLabel(matter))}">Stale</span>` : ""}
           </span>
           <span class="repository-card-top-actions">
             <span>${html(date)}</span>
