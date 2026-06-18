@@ -103,15 +103,18 @@ class TestTemplateIngestion:
         ):
             assert slot in text, f"Template lost the {slot} slot."
 
-    def test_template_governing_law_has_no_courts_or_forum_sentence(self):
-        # The forum/courts sentence was dropped from the template (a governing law
-        # may be heard in multiple courts; the review side redlines law-only). The
-        # [GOVERNING LAW] sentence must survive, but the [FORUM / JURISDICTION] slot
-        # and any "resolved by courts in ..." sentence must be gone.
+    def test_template_governing_law_renders_law_and_forum_slots(self):
+        # ENTITY-FORUM: the "Governing law and jurisdiction" clause now carries BOTH
+        # the [GOVERNING LAW] slot AND a [FORUM] slot (the entity-specific court).
+        # The clause submits disputes to that forum's exclusive jurisdiction.
         text = "\n".join(p.text for p in Document(str(gen.TEMPLATE_PATH)).paragraphs)
         assert "[GOVERNING LAW]" in text
+        assert "[FORUM]" in text
+        # The forum clause uses the exclusive-jurisdiction wording.
+        assert "shall have exclusive jurisdiction" in text
+        # The legacy "[FORUM / JURISDICTION]" slot name is gone (it was a different,
+        # never-used token; the slot is now exactly "[FORUM]").
         assert "[FORUM / JURISDICTION]" not in text
-        assert "courts in" not in text.lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -492,7 +495,7 @@ class TestGoverningLawOverride:
         # Forum tracks the OVERRIDDEN option's proper courts (resolved from the
         # registry entity that defaults to england_and_wales), not the entity's
         # default Indian courts and not a bare law value.
-        assert entity.forum == "Courts of England and Wales"
+        assert entity.forum == "courts in England and Wales"
 
     def test_unapproved_override_is_rejected(self, playbook):
         with pytest.raises(gen.NdaGenerationError):
@@ -508,16 +511,26 @@ class TestGoverningLawOverride:
         assert m.governing_law_option_id == "england_and_wales"
         assert m.governing_law_overridden is True
         assert m.entity_default_governing_law_value == "India"
-        # Forum tracks the chosen option's proper courts (registry-derived). It is
-        # provenance-only -- the document no longer carries a forum/courts sentence,
-        # so this lives on the manifest, not in the rendered prose.
-        assert m.forum == "Courts of England and Wales"
-        # The effective law is in the clause; the entity default is not. The forum is
-        # NOT in the prose (the courts sentence was dropped from the template).
+        # Forum tracks the chosen option's proper courts (registry-derived: the
+        # entity that defaults to england_and_wales).
+        assert m.forum == "courts in England and Wales"
+        # ENTITY-FORUM: the effective law AND its forum are BOTH rendered into the
+        # "Governing law and jurisdiction" clause now (the forum is no longer
+        # provenance-only). The entity's India default law is NOT in the clause.
         text = extract_docx_text(result.docx_bytes)
         assert "the laws of England and Wales" in text
-        assert "Courts of England and Wales" not in text
-        assert "courts in" not in text.lower()
+        assert "courts in England and Wales shall have exclusive jurisdiction" in text
+        # The governing-law CLAUSE names the overridden law, not the entity's India
+        # default (note: "the laws of India" still appears in the counterparty's
+        # incorporation recital, which is unrelated to the governing law).
+        from io import BytesIO
+
+        gl_clause = next(
+            p.text for p in Document(BytesIO(result.docx_bytes)).paragraphs
+            if "GOVERNING LAW AND JURISDICTION" in p.text
+        )
+        assert "the laws of England and Wales" in gl_clause
+        assert "India" not in gl_clause
         # And the override draft still passes its own Playbook.
         assert gen.self_check_generated_nda(result.docx_bytes, playbook=playbook).passed
         # Full provenance round-trips through to_dict for gen-verify to read.
@@ -547,13 +560,14 @@ class TestGoverningLawOverride:
             assert check.passed, (option["id"], check.native_failures, check.native_reviews)
 
     def test_override_to_each_sampled_forum_option_derives_its_forum(self, playbook):
-        # This existing forum provenance sample is separate from the approved-law
-        # wording matrix above.
+        # ENTITY-FORUM: the override forum is the ENTITY-specific court of whichever
+        # registry entity defaults to the overridden option (e.g. delaware ->
+        # vance_money's "courts in Delaware, USA"), NOT a per-jurisdiction default.
         expected = {
-            "india": "Courts of India",
-            "delaware": "Courts of the State of Delaware",
-            "england_and_wales": "Courts of England and Wales",
-            "difc": "DIFC Courts, Dubai",
+            "india": "courts in Bengaluru, Karnataka",
+            "delaware": "courts in Delaware, USA",
+            "england_and_wales": "courts in England and Wales",
+            "difc": "the DIFC Courts",
         }
         for option_id, forum in expected.items():
             result = gen.generate_nda_for_entity(
@@ -583,12 +597,14 @@ class TestGoverningLawOverride:
 # --------------------------------------------------------------------------- #
 
 
-class TestForumFromPlaybook:
-    """The override forum falls back to the Playbook option's ``court_name`` when no
-    registry entity defaults to the option -- the single-source-of-truth pairing
-    that replaced the hardcoded ``_COURT_FOR_OPTION_ID`` map. These tests force the
-    Playbook-fallback path by emptying the registry, then prove the emitted court
-    FOLLOWS the Playbook (mutating the option's court changes the output)."""
+class TestForumFromEntity:
+    """ENTITY-FORUM: the city-level court/venue is the SOURCE OF TRUTH on the
+    signing entity, NOT a per-jurisdiction Playbook ``court_name`` (that field was
+    removed -- a per-jurisdiction value cannot express that two India entities sit
+    in different cities, Bengaluru vs Gandhinagar). The override forum is the
+    registry court of whichever entity defaults to the overridden option. With NO
+    registry entity AND no Playbook court, the gate refuses rather than write the
+    bare law name."""
 
     @staticmethod
     def _empty_registry(monkeypatch):
@@ -596,45 +612,38 @@ class TestForumFromPlaybook:
 
         monkeypatch.setattr(entity_registry, "list_entities", lambda: [])
 
-    def test_court_falls_back_to_playbook_when_registry_empty(self, playbook, monkeypatch):
-        # No registry entity -> the only court source is the Playbook option.
-        self._empty_registry(monkeypatch)
-        for option in _governing_law_options(playbook):
-            forum = gen._forum_for_option_id(option["id"], playbook)
-            assert forum == option["court_name"], option["id"]
-
-    def test_override_court_follows_a_mutated_playbook(self, playbook, monkeypatch):
-        # Empty the registry so the Playbook is the authoritative court source, then
-        # mutate the option's court -- the generated draft's forum must track it. This
-        # is the proof the pairing is NOT hardcoded.
-        self._empty_registry(monkeypatch)
-        mutated = deepcopy(playbook)
-        difc_option = next(o for o in _governing_law_options(mutated) if o["id"] == "difc")
-        difc_option["court_name"] = "the courts of Atlantis"
-
+    def test_override_forum_comes_from_the_registry_entity(self, playbook):
+        # Override aspora_technology (default India) to DIFC -> the forum is the DIFC
+        # entity's registry court ("the DIFC Courts"), not the Indian default and not
+        # the bare law name. The pairing follows the ENTITY registry.
         india_bundle = _bundle(option_id="india")
         entity = gen.entity_party_from_bundle(
-            india_bundle, mutated, governing_law_option_id="difc"
+            india_bundle, playbook, governing_law_option_id="difc"
         )
         assert entity.governing_law_value == "DIFC"
-        assert entity.forum == "the courts of Atlantis"
-        # The unmutated Playbook still yields the canonical DIFC court.
-        unmutated_entity = gen.entity_party_from_bundle(
-            _bundle(option_id="india"), playbook, governing_law_option_id="difc"
-        )
-        assert unmutated_entity.forum == "the DIFC Courts, Dubai"
+        assert entity.forum == "the DIFC Courts"
+
+    def test_two_india_entities_carry_different_city_forums(self):
+        # The load-bearing reason the forum must be entity-sourced: two entities
+        # share the `india` governing law but submit to DIFFERENT cities.
+        from nda_automation import entity_registry
+
+        tech = entity_registry.get_entity("aspora_technology")
+        fin = entity_registry.get_entity("aspora_financial_services")
+        assert tech["governing_law"]["playbook_option_id"] == "india"
+        assert fin["governing_law"]["playbook_option_id"] == "india"
+        assert tech["jurisdiction"] == "courts in Bengaluru, Karnataka"
+        assert fin["jurisdiction"] == "courts in Gandhinagar, Gujarat"
+        assert tech["jurisdiction"] != fin["jurisdiction"]
 
     def test_no_court_resolving_refuses_to_emit_a_venue(self, playbook, monkeypatch):
-        # Registry empty AND the Playbook option carries no court -> the gate must
-        # refuse generation rather than write the bare law name as the forum.
+        # Registry empty AND the Playbook option carries no court (court_name was
+        # removed) -> the gate must refuse generation rather than write the bare law
+        # name as the forum.
         self._empty_registry(monkeypatch)
-        mutated = deepcopy(playbook)
-        difc_option = next(o for o in _governing_law_options(mutated) if o["id"] == "difc")
-        difc_option.pop("court_name", None)
-
         with pytest.raises(gen.NdaGenerationError):
             gen.entity_party_from_bundle(
-                _bundle(option_id="india"), mutated, governing_law_option_id="difc"
+                _bundle(option_id="india"), playbook, governing_law_option_id="difc"
             )
 
 
@@ -1378,16 +1387,39 @@ class TestForumIsAlwaysACourt:
                 f"{option_id} forum is the bare law name {law_value!r}, not a court"
             )
 
-    def test_playbook_carries_a_court_for_every_approved_option(self, playbook):
-        # The canonical court fallback now lives IN the Playbook (each approved
-        # option's ``court_name``), not a hardcoded module map. Every approved
-        # option must carry one so an override can always resolve a court.
-        from nda_automation import governing_law_forum as glf
+    def test_every_approved_option_has_a_registry_entity_with_a_court(self, playbook):
+        # ENTITY-FORUM: the court source is the signing entity (registry
+        # ``jurisdiction``), NOT a per-option Playbook ``court_name`` (that field was
+        # removed). Every approved governing-law option must have at least one
+        # registry entity defaulting to it that carries a non-empty court, so an
+        # override can always resolve a real court from the entity registry.
+        from nda_automation import entity_registry
 
         approved = gen._approved_governing_law_options(playbook)
+        courts_by_option: dict[str, str] = {}
+        for bundle in entity_registry.list_entities():
+            opt = str((bundle.get("governing_law") or {}).get("playbook_option_id") or "").strip()
+            court = str(bundle.get("jurisdiction") or "").strip()
+            if opt and court:
+                courts_by_option.setdefault(opt, court)
         for option_id in approved:
-            court = glf.court_name_for_law(playbook, option_id)
-            assert court, f"{option_id} has no court_name in the Playbook"
+            assert courts_by_option.get(option_id), (
+                f"{option_id} has no registry entity carrying a court/forum"
+            )
+
+    def test_playbook_no_longer_carries_a_per_option_court_name(self, playbook):
+        # The Mumbai-lineage per-jurisdiction ``court_name`` was REMOVED from the
+        # Playbook. ``forum_jurisdiction`` (the detector descriptor) is preserved.
+        from nda_automation import governing_law_forum as glf
+
+        for option_id in gen._approved_governing_law_options(playbook):
+            assert glf.court_name_for_law(playbook, option_id) == "", (
+                f"{option_id} still carries a per-jurisdiction court_name"
+            )
+            pairing = glf.canonical_forum_for_law(playbook, option_id)
+            assert pairing["forum_jurisdiction"], (
+                f"{option_id} lost its forum_jurisdiction (detector depends on it)"
+            )
 
     def test_generation_refuses_when_no_court_resolves(self, monkeypatch, playbook):
         # Simulate the #34 gap: the override option has NO registry entity and NO
@@ -1413,18 +1445,20 @@ class TestForumIsAlwaysACourt:
                 governing_law_option_id="delaware",
             )
 
-    def test_playbook_court_used_when_registry_silent(self, monkeypatch, playbook):
-        # Registry yields nothing for the option, but the Playbook option carries a
-        # court -> a real court is written, generation proceeds. The court is read
-        # FROM the Playbook (single source of truth), not a hardcoded map.
-        import nda_automation.entity_registry as registry
-        from nda_automation import governing_law_forum as glf
+    def test_override_forum_is_the_registry_entitys_court(self, playbook):
+        # ENTITY-FORUM: an override resolves the court from whichever registry entity
+        # defaults to the overridden option (the entity is the source of truth), and
+        # it is a real court, never the bare law name.
+        from nda_automation import entity_registry
 
-        monkeypatch.setattr(registry, "list_entities", lambda: [])
         entity = gen.entity_party_from_bundle(
             _bundle(option_id="india"),
             playbook,
             governing_law_option_id="difc",
         )
-        assert entity.forum == glf.court_name_for_law(playbook, "difc")
+        difc_entity = next(
+            b for b in entity_registry.list_entities()
+            if (b.get("governing_law") or {}).get("playbook_option_id") == "difc"
+        )
+        assert entity.forum == difc_entity["jurisdiction"] == "the DIFC Courts"
         assert entity.forum != gen._approved_governing_law_options(playbook)["difc"]

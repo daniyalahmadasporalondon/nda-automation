@@ -290,7 +290,9 @@ class GenerateNdaRouteTests(unittest.TestCase):
         self.assertEqual(m["governing_law_option_id"], "england_and_wales")
         self.assertTrue(m["governing_law_overridden"])
         self.assertEqual(m["entity_default_governing_law_value"], "India")
-        self.assertEqual(m["forum"], "Courts of England and Wales")
+        # ENTITY-FORUM: the override forum is the registry court of the entity that
+        # defaults to england_and_wales (real_transfer -> "courts in England and Wales").
+        self.assertEqual(m["forum"], "courts in England and Wales")
         self.assertTrue(payload["self_check"]["passed"], payload["self_check"])
         self.assertEqual(payload["download_url"], f"/api/matters/{payload['matter_id']}/source")
         self.assertEqual(payload["pdf_download_url"], f"/api/matters/{payload['matter_id']}/source-pdf")

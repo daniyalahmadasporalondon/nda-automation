@@ -52,7 +52,11 @@ SIGNING_ENTITIES: list[dict[str, Any]] = [
             },
         ],
         "governing_law": {"playbook_option_id": "india", "label": "India"},
-        "jurisdiction": "Courts of India",
+        # Entity-specific forum (the SOURCE OF TRUTH for the court written into the
+        # generated "Governing law and jurisdiction" clause). India law, but a
+        # Bengaluru/Karnataka venue -- a per-jurisdiction court map could NOT express
+        # this, because Aspora Financial Services (also India) sits in Gandhinagar.
+        "jurisdiction": "courts in Bengaluru, Karnataka",
         "incorporation_jurisdiction": "India",
         "signatory": {"name": "[Authorised Signatory]", "title": "[Title]"},
     },
@@ -74,7 +78,8 @@ SIGNING_ENTITIES: list[dict[str, Any]] = [
             },
         ],
         "governing_law": {"playbook_option_id": "delaware", "label": "Delaware"},
-        "jurisdiction": "Courts of the State of Delaware",
+        # Entity-specific forum (source of truth for the rendered court).
+        "jurisdiction": "courts in Delaware, USA",
         "incorporation_jurisdiction": "Delaware",
         "signatory": {"name": "[Authorised Signatory]", "title": "[Title]"},
     },
@@ -116,7 +121,8 @@ SIGNING_ENTITIES: list[dict[str, Any]] = [
             "playbook_option_id": "england_and_wales",
             "label": "England and Wales",
         },
-        "jurisdiction": "Courts of England and Wales",
+        # Entity-specific forum (source of truth for the rendered court).
+        "jurisdiction": "courts in England and Wales",
         # Legal confirmed England and Wales as the place of incorporation (not
         # Northern Ireland, despite the Belfast registered office) so it aligns
         # with the chosen governing law via the London corporate office.
@@ -146,7 +152,10 @@ SIGNING_ENTITIES: list[dict[str, Any]] = [
         # this entity were intended to run under UAE federal law, which the
         # playbook does not offer (see ENTITY_LAW_MAPPING_NOTES["vance_techlabs"]).
         "governing_law": {"playbook_option_id": "difc", "label": "DIFC"},
-        "jurisdiction": "DIFC Courts, Dubai",
+        # Entity-specific forum (source of truth for the rendered court). Phrased so
+        # it reads grammatically in the clause: "the DIFC Courts shall have exclusive
+        # jurisdiction ...".
+        "jurisdiction": "the DIFC Courts",
         "incorporation_jurisdiction": "DIFC",
         "signatory": {"name": "[Authorised Signatory]", "title": "[Title]"},
     },
@@ -168,7 +177,8 @@ SIGNING_ENTITIES: list[dict[str, Any]] = [
             },
         ],
         "governing_law": {"playbook_option_id": "ontario_canada", "label": "Ontario, Canada"},
-        "jurisdiction": "Courts of Ontario, Canada",
+        # Entity-specific forum (source of truth for the rendered court).
+        "jurisdiction": "the courts of Ontario, Canada",
         "incorporation_jurisdiction": "Ontario, Canada",
         "signatory": {"name": "[Authorised Signatory]", "title": "[Title]"},
     },
@@ -191,7 +201,8 @@ SIGNING_ENTITIES: list[dict[str, Any]] = [
             },
         ],
         "governing_law": {"playbook_option_id": "england_and_wales", "label": "England and Wales"},
-        "jurisdiction": "Courts of England and Wales",
+        # Entity-specific forum (source of truth for the rendered court).
+        "jurisdiction": "courts in England and Wales",
         "incorporation_jurisdiction": "England and Wales",
         "signatory": {"name": "[Authorised Signatory]", "title": "[Title]"},
     },
@@ -214,7 +225,11 @@ SIGNING_ENTITIES: list[dict[str, Any]] = [
             },
         ],
         "governing_law": {"playbook_option_id": "india", "label": "India"},
-        "jurisdiction": "Courts of India",
+        # Entity-specific forum (source of truth for the rendered court). India law,
+        # but a Gandhinagar/Gujarat venue -- DIFFERENT city from Aspora Technology
+        # (Bengaluru) even though both share the playbook's `india` governing law.
+        # This is exactly why the forum is entity-sourced, not per-jurisdiction.
+        "jurisdiction": "courts in Gandhinagar, Gujarat",
         "incorporation_jurisdiction": "India",
         "signatory": {"name": "[Authorised Signatory]", "title": "[Title]"},
     },

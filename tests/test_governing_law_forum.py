@@ -39,32 +39,37 @@ def _option(playbook, option_id):
 class TestCanonicalForumForLaw:
     def test_returns_the_exact_contract_shape(self, playbook):
         pairing = glf.canonical_forum_for_law(playbook, "england_and_wales")
+        # ENTITY-FORUM: the per-option ``court_name`` was REMOVED from the Playbook
+        # (the city-level court is now entity-sourced), so it resolves to "". The
+        # jurisdiction-level ``forum_jurisdiction`` (the detector descriptor) stays.
         assert pairing == {
             "option_id": "england_and_wales",
             "law_label": "England and Wales",
             "forum_jurisdiction": "England and Wales",
-            "court_name": "the courts of England and Wales",
+            "court_name": "",
         }
-        # The contract is exactly these four keys.
+        # The contract is still exactly these four keys (court_name kept defensively).
         assert set(pairing) == {"option_id", "law_label", "forum_jurisdiction", "court_name"}
 
     @pytest.mark.parametrize(
-        "option_id, court",
+        "option_id, forum_jurisdiction",
         [
-            ("india", "the courts of Mumbai, India"),
-            ("delaware", "the state and federal courts located in the State of Delaware"),
-            ("england_and_wales", "the courts of England and Wales"),
-            ("difc", "the DIFC Courts, Dubai"),
-            ("ontario_canada", "the courts of the Province of Ontario, Canada"),
+            ("india", "Mumbai, India"),
+            ("delaware", "State of Delaware"),
+            ("england_and_wales", "England and Wales"),
+            ("difc", "Dubai International Financial Centre"),
+            ("ontario_canada", "Province of Ontario, Canada"),
         ],
     )
-    def test_court_for_every_approved_option_matches_the_legacy_court_map(
-        self, playbook, option_id, court
+    def test_forum_jurisdiction_preserved_for_every_approved_option(
+        self, playbook, option_id, forum_jurisdiction
     ):
-        # Behaviour preserved: each option's court equals the value the old
-        # hardcoded _COURT_FOR_OPTION_ID map carried.
-        assert glf.canonical_forum_for_law(playbook, option_id)["court_name"] == court
-        assert glf.court_name_for_law(playbook, option_id) == court
+        # The detector depends on ``forum_jurisdiction`` (jurisdiction-level); it is
+        # preserved. ``court_name`` was removed, so it resolves empty.
+        pairing = glf.canonical_forum_for_law(playbook, option_id)
+        assert pairing["forum_jurisdiction"] == forum_jurisdiction
+        assert pairing["court_name"] == ""
+        assert glf.court_name_for_law(playbook, option_id) == ""
 
     def test_unknown_option_id_returns_none(self, playbook):
         assert glf.canonical_forum_for_law(playbook, "singapore") is None
@@ -85,8 +90,11 @@ class TestPairingFollowsThePlaybook:
     option and the helper output tracks the mutation."""
 
     def test_mutating_court_name_changes_the_helper_output(self, playbook):
+        # ENTITY-FORUM: the live Playbook carries no ``court_name`` (removed), so it
+        # resolves empty. The helper still READS the field defensively: inject one in
+        # a copy and the output tracks it -- proving court_name is data, not a hardcode.
         before = glf.canonical_forum_for_law(playbook, "difc")["court_name"]
-        assert before == "the DIFC Courts, Dubai"
+        assert before == ""
 
         mutated = deepcopy(playbook)
         _option(mutated, "difc")["court_name"] = "the courts of Atlantis"
@@ -101,10 +109,11 @@ class TestPairingFollowsThePlaybook:
         _option(mutated, "india")["forum_jurisdiction"] = "Goa, India"
         assert glf.canonical_forum_for_law(mutated, "india")["forum_jurisdiction"] == "Goa, India"
 
-    def test_removing_court_name_makes_court_resolve_empty(self, playbook):
+    def test_missing_court_name_resolves_empty(self, playbook):
         mutated = deepcopy(playbook)
-        del _option(mutated, "delaware")["court_name"]
-        # An approved option with no court resolves to "" -- which the generation
+        # The live Playbook already omits ``court_name`` (removed). Removing it again
+        # is a no-op; an option with no court resolves to "" -- which the generation
         # forum gate turns into a hard refusal rather than a non-court venue.
+        _option(mutated, "delaware").pop("court_name", None)
         assert glf.court_name_for_law(mutated, "delaware") == ""
         assert glf.canonical_forum_for_law(mutated, "delaware")["court_name"] == ""
