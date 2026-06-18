@@ -1,12 +1,14 @@
 """Tests for the adversarial AI verifier pass.
 
 Two layers:
-- Unit: apply_ai_verifier / default_verifier / build_verifier_packet in isolation,
-  driving each justify-or-refute branch with an injected verifier across the seam.
+- Unit: apply_ai_verifier / build_verifier_packet in isolation, driving each
+  justify-or-refute branch with an injected verifier across the seam, plus the
+  batched OpenRouter transport (one round-trip for all qualifying clauses).
 - Integration: review_nda with the verifier wired in, including the regression case
   that pins the eval gate (the non_circumvention freedom-to-deal carve-out the
   keyword checker false-flags as a restriction).
 """
+import json
 import os
 import unittest
 from unittest.mock import patch
@@ -22,7 +24,6 @@ from nda_automation.ai_verifier import (
     OpenRouterVerifier,
     apply_ai_verifier,
     build_verifier_packet,
-    default_verifier,
     noop_verifier,
     resolve_verifier,
     verifier_status,
@@ -202,12 +203,11 @@ class ApplyVerifierTests(unittest.TestCase):
         self.assertEqual(updated[0]["decision"], "pass")
         self.assertEqual(updated[0]["ai_verifier"]["outcome"], "downgraded")
 
-    def test_resolver_path_does_not_auto_run_the_offline_engine(self):
+    def test_resolver_path_does_not_auto_run_any_regex_engine(self):
         # With NDA_AI_VERIFIER off and no injected verifier, the resolver path is a
-        # NO-OP: the offline regex polarity engine never runs, so a finding the engine
-        # would have rewritten (freedom-to-deal carve-out) stays exactly as the AI
-        # reviewer produced it. The offline engine's own verdict logic is covered
-        # directly by DefaultVerifierTests; it is simply no longer on the apply path.
+        # NO-OP: no deterministic/regex engine runs, so a finding stays exactly as the
+        # AI reviewer produced it (the offline polarity engine has been removed; only
+        # the AI reviewer and the AI network verifier may adjudicate a verdict).
         with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: ""}, clear=False):
             clauses = [
                 _clause(
@@ -512,166 +512,6 @@ class ClauseBoundaryMarkerTests(unittest.TestCase):
         self.assertIn("clause_scope_is_single", lowered)
 
 
-class DefaultVerifierTests(unittest.TestCase):
-    """The offline polarity-aware adversary."""
-
-    def _packet(self, decision, text, *, clause_type="prohibited", finding=None, clause_id="non_circumvention", clause_name="Non-circumvention", requirement=""):
-        if finding is None:
-            finding = "prohibited non-circumvention restriction found"
-        return {
-            "engine_decision": decision,
-            "clause_type": clause_type,
-            "matched_text": text,
-            "evidence": [text],
-            "engine_finding": finding,
-            "requirement": requirement,
-            "clause_name": clause_name,
-            "clause_id": clause_id,
-            "source_text": text,
-        }
-
-    def test_refutes_freedom_to_deal_carveout(self):
-        verdict = default_verifier(
-            self._packet("fail", "Each party shall not be restricted from dealing with introduced contacts.")
-        )
-        self.assertEqual(verdict["verdict"], VERIFIER_VERDICT_REFUTE)
-
-    def test_refutes_nothing_restricts_carveout(self):
-        verdict = default_verifier(
-            self._packet("fail", "Nothing in this Agreement restricts either party from contacting introduced parties.")
-        )
-        self.assertEqual(verdict["verdict"], VERIFIER_VERDICT_REFUTE)
-
-    def test_affirms_genuine_prohibition(self):
-        verdict = default_verifier(
-            self._packet("fail", "The Recipient must not circumvent the Company or deal directly with introduced parties.")
-        )
-        self.assertEqual(verdict["verdict"], VERIFIER_VERDICT_AFFIRM)
-
-    def test_affirms_mixed_freedom_and_passive_prohibition(self):
-        # Freedom language co-located with a real passive prohibition must NOT refute.
-        verdict = default_verifier(
-            self._packet(
-                "fail",
-                "Each party is not restricted from public dealings; however the Recipient "
-                "is prohibited from dealing directly with introduced parties.",
-            )
-        )
-        self.assertEqual(verdict["verdict"], VERIFIER_VERDICT_AFFIRM)
-
-    def test_affirms_negated_permission_restriction(self):
-        # BUGFIX: "shall not be permitted/entitled/allowed/free to <action>" is a
-        # restriction, the literal opposite of "permitted/free to deal" -- the
-        # offline verifier must NOT read it as freedom and clear a real fail to pass.
-        for text in (
-            "During the Term, the Recipient shall not be permitted to deal directly with, "
-            "contact, or solicit any party introduced by the Disclosing Party.",
-            "The Recipient is not permitted to contact any introduced party.",
-            "The Recipient shall not be entitled to solicit introduced parties.",
-            "The Recipient will not be allowed to deal with introduced parties.",
-            "The Recipient is not free to deal with any party introduced by the Disclosing Party.",
-        ):
-            with self.subTest(text=text):
-                verdict = default_verifier(self._packet("fail", text))
-                self.assertEqual(verdict["verdict"], VERIFIER_VERDICT_AFFIRM)
-
-    def test_affirms_interposed_phrase_restriction_with_colocated_freedom(self):
-        # BUGFIX: a genuine active prohibition with an interposed temporal/manner
-        # phrase, sitting next to freedom language, must NOT be refuted.
-        text = (
-            "Nothing in this Agreement shall restrict either party from dealing with parties "
-            "it independently identifies. Notwithstanding the foregoing, the Recipient agrees "
-            "not to, during the Term and for two years thereafter, solicit or contact any party "
-            "introduced by the Disclosing Party."
-        )
-        self.assertEqual(default_verifier(self._packet("fail", text))["verdict"], VERIFIER_VERDICT_AFFIRM)
-
-        text2 = "The Recipient shall not, in any manner whatsoever, solicit any introduced party."
-        self.assertEqual(default_verifier(self._packet("fail", text2))["verdict"], VERIFIER_VERDICT_AFFIRM)
-
-    def test_affirms_colocated_freedom_with_new_restriction_action_vocabulary(self):
-        cases = {
-            "hire": "the Recipient may not hire the Company's employees.",
-            "recruit": "the Recipient shall not recruit the Company's employees.",
-            "employ": "the Recipient must not employ the Company's employees.",
-            "retain": "the Recipient shall not retain the Company's consultants.",
-            "induce": "the Recipient may not induce the Company's employees to leave.",
-            "entice": "the Recipient shall not entice the Company's employees away.",
-            "lure": "the Recipient shall not lure the Company's employees away.",
-            "headhunt": "the Recipient must not headhunt the Company's staff.",
-            "compete": "the Recipient shall not compete with the Company.",
-            "trade": "the Recipient shall not trade with introduced customers.",
-            "negotiate": "the Recipient may not negotiate with introduced customers.",
-            "interfere": "the Recipient shall not interfere with customer relationships.",
-            "disrupt": "the Recipient must not disrupt the Company's customer relationships.",
-            "undermine": "the Recipient shall not undermine the Company's supplier relationships.",
-            "disturb": "the Recipient may not disturb the Company's customer relationships.",
-            "encourage": "the Recipient shall not encourage customers to stop dealing with the Company.",
-            "persuade": "the Recipient must not persuade employees to leave the Company.",
-            "partner_with": "the Recipient shall not partner with introduced customers.",
-            "collaborate": "the Recipient must not collaborate with introduced customers.",
-            "associate": "the Recipient shall not associate with introduced customers.",
-            "introduce": "the Recipient shall not introduce introduced customers to competitors.",
-        }
-        prefix = (
-            "Nothing in this Agreement restricts either party from ordinary market dealings; however, "
-        )
-        for label, restriction in cases.items():
-            with self.subTest(label=label):
-                verdict = default_verifier(self._packet("fail", prefix + restriction))
-                self.assertEqual(verdict["verdict"], VERIFIER_VERDICT_AFFIRM)
-
-    def test_new_action_vocabulary_does_not_break_clean_freedom_controls(self):
-        controls = (
-            "Nothing in this Agreement restricts either party from contacting introduced parties.",
-            "Each party shall not be restricted from dealing with any contact introduced by the other party.",
-            "Each party is free to do business with independently identified customers.",
-        )
-        for text in controls:
-            with self.subTest(text=text):
-                verdict = default_verifier(self._packet("fail", text))
-                self.assertEqual(verdict["verdict"], VERIFIER_VERDICT_REFUTE)
-
-    def test_does_not_refute_a_required_clause(self):
-        # Freedom-to-deal text is off-topic for a required clause -> never refute it.
-        # (A required clause's finding is about a missing/weak obligation, not a
-        # restriction, so neither clause_type nor the keyword fallback flags it.)
-        verdict = default_verifier(
-            self._packet(
-                "review",
-                "Each party shall not be restricted from dealing with introduced contacts.",
-                clause_type="required",
-                clause_id="mutuality",
-                clause_name="Mutuality",
-                requirement="Confidentiality obligations must be mutual.",
-                finding="Mutuality of confidentiality obligations is unclear.",
-            )
-        )
-        self.assertEqual(verdict["verdict"], VERIFIER_VERDICT_AFFIRM)
-
-    def test_empty_text_affirms(self):
-        verdict = default_verifier(self._packet("fail", ""))
-        self.assertEqual(verdict["verdict"], VERIFIER_VERDICT_AFFIRM)
-
-    def test_refutes_cleared_prohibited_clause_whose_cited_text_holds_a_restriction(self):
-        # BUGFIX: a prohibited clause CLEARED to pass whose own cited text carries a
-        # genuine restriction is a suspect (hallucinated) clear -> refute so it
-        # escalates to review rather than letting a present restriction pass.
-        verdict = default_verifier(
-            self._packet(
-                "pass",
-                "The Recipient shall not solicit any party introduced by the Disclosing Party.",
-            )
-        )
-        self.assertEqual(verdict["verdict"], VERIFIER_VERDICT_REFUTE)
-
-    def test_genuine_absence_pass_is_affirmed(self):
-        # A prohibited clause that genuinely does not appear has no cited text -> the
-        # offline adversary cannot (and must not) refute the absence.
-        verdict = default_verifier(self._packet("pass", ""))
-        self.assertEqual(verdict["verdict"], VERIFIER_VERDICT_AFFIRM)
-
-
 class ShouldVerifyTests(unittest.TestCase):
     """BUGFIX: a prohibited-clause pass asserts the restriction is ABSENT -- a claim
     no quote can ground -- so it must always be second-looked, even at high
@@ -747,7 +587,7 @@ class ResolveVerifierTests(unittest.TestCase):
             self.assertFalse(verifier_enabled())
             resolved = resolve_verifier()
             self.assertIs(resolved, noop_verifier)
-            self.assertIsNot(resolved, default_verifier)
+            self.assertNotIsInstance(resolved, OpenRouterVerifier)
 
     def test_enabled_without_key_falls_back_to_noop(self):
         with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: "1", "OPENROUTER_API_KEY": ""}, clear=False):
@@ -755,7 +595,7 @@ class ResolveVerifierTests(unittest.TestCase):
                 self.assertTrue(verifier_enabled())
                 resolved = resolve_verifier()
                 self.assertIs(resolved, noop_verifier)
-                self.assertIsNot(resolved, default_verifier)
+                self.assertNotIsInstance(resolved, OpenRouterVerifier)
 
     def test_enabled_with_key_resolves_deepseek_backed_verifier(self):
         with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: "true"}, clear=False):
@@ -940,6 +780,217 @@ class AIFirstPathIntegrationTests(unittest.TestCase):
         nc = next(c for c in result["clauses"] if c["id"] == "non_circumvention")
         self.assertEqual(nc["decision"], "fail")
         self.assertEqual(nc["decision_source"], "ai")
+
+
+class _RecordingBatchVerifier:
+    """A batched verifier driven by a ``{clause_id: verdict}`` map.
+
+    Exposes ``verify_batch`` (so apply_ai_verifier routes the whole qualifying set
+    through ONE call) and records the packets it was handed, so a test can assert the
+    batched call carried every qualifying clause exactly once.
+    """
+
+    def __init__(self, verdicts_by_id, *, drop_ids=(), inject_unknown=False, raise_error=False):
+        self._verdicts = verdicts_by_id
+        self._drop = set(drop_ids)
+        self._inject_unknown = inject_unknown
+        self._raise = raise_error
+        self.calls = []  # one entry (list of clause_ids) per verify_batch invocation
+
+    def verify_batch(self, packets):
+        self.calls.append([str(p.get("clause_id") or "") for p in packets])
+        if self._raise:
+            raise RuntimeError("batched model exploded")
+        out = {}
+        for packet in packets:
+            clause_id = str(packet.get("clause_id") or "")
+            if clause_id in self._drop:
+                continue
+            if clause_id in self._verdicts:
+                out[clause_id] = dict(self._verdicts[clause_id], clause_id=clause_id)
+        if self._inject_unknown:
+            out["totally_unknown_clause"] = {
+                "clause_id": "totally_unknown_clause",
+                "verdict": VERIFIER_VERDICT_REFUTE,
+                "confidence": 0.99,
+            }
+        return out
+
+
+def _per_clause_from_map(verdicts_by_id, *, drop_ids=()):
+    drop = set(drop_ids)
+
+    def verifier(packet):
+        clause_id = str(packet.get("clause_id") or "")
+        if clause_id in drop or clause_id not in verdicts_by_id:
+            return None  # safe default: AFFIRM / leave untouched
+        return dict(verdicts_by_id[clause_id])
+
+    return verifier
+
+
+class BatchedVerifierTests(unittest.TestCase):
+    """The ONLY behavioural change is the round-trip count (N -> 1). These pin that
+    the batched path produces byte-equivalent decisions + audit to the per-clause
+    path, with the same coverage, and degrades safe on malformed/partial responses."""
+
+    def _mixed_clauses(self):
+        # Mixed coverage: a fail, a review, a prohibited-pass (always verified), a
+        # low-confidence pass (verified), plus a high-confidence required pass (skipped).
+        return [
+            _clause(
+                "non_circumvention",
+                "fail",
+                clause_type="prohibited",
+                confidence=0.70,
+                matched_text="Each party shall not be restricted from dealing with introduced contacts.",
+                evidence=["Each party shall not be restricted from dealing with introduced contacts."],
+            ),
+            _clause("term_and_survival", "review", confidence=0.55),
+            _clause("ip_assignment", "pass", clause_type="prohibited", confidence=0.95),
+            _clause("governing_law", "pass", confidence=0.30),
+            _clause("confidential_information", "pass", confidence=0.97),  # skipped (high-conf required pass)
+        ]
+
+    def _verdict_map(self):
+        return {
+            "non_circumvention": {"verdict": VERIFIER_VERDICT_REFUTE, "confidence": 0.95, "rationale": "carve-out"},
+            "term_and_survival": {"verdict": VERIFIER_VERDICT_UNCERTAIN, "confidence": 0.4, "rationale": "unclear"},
+            "ip_assignment": {"verdict": VERIFIER_VERDICT_REFUTE, "confidence": 0.92, "rationale": "suspect clear"},
+            "governing_law": {"verdict": VERIFIER_VERDICT_AFFIRM, "confidence": 0.8, "rationale": "ok"},
+        }
+
+    def test_golden_equivalence_batched_matches_per_clause(self):
+        verdicts = self._verdict_map()
+
+        batched_verifier = _RecordingBatchVerifier(verdicts)
+        batched_updated, batched_summary = apply_ai_verifier(
+            self._mixed_clauses(), source_text="full doc", verifier=batched_verifier
+        )
+
+        per_clause_updated, per_clause_summary = apply_ai_verifier(
+            self._mixed_clauses(), source_text="full doc", verifier=_per_clause_from_map(verdicts)
+        )
+
+        # Exactly ONE batched call carrying every qualifying clause (and only those).
+        self.assertEqual(len(batched_verifier.calls), 1)
+        self.assertEqual(
+            sorted(batched_verifier.calls[0]),
+            ["governing_law", "ip_assignment", "non_circumvention", "term_and_survival"],
+        )
+
+        # Per-clause final decisions + audit blocks are byte-equivalent.
+        for batched, per in zip(batched_updated, per_clause_updated):
+            self.assertEqual(batched["id"], per["id"])
+            self.assertEqual(batched["decision"], per["decision"])
+            self.assertEqual(batched.get("decision_source"), per.get("decision_source"))
+            self.assertEqual(batched.get("ai_verifier"), per.get("ai_verifier"))
+            self.assertEqual(batched.get("reason"), per.get("reason"))
+            self.assertEqual(batched.get("review_state"), per.get("review_state"))
+        self.assertEqual(batched_summary["changed_count"], per_clause_summary["changed_count"])
+        self.assertEqual(batched_summary["verified_count"], per_clause_summary["verified_count"])
+        self.assertEqual(batched_summary["verified_count"], 4)
+        # The skipped high-confidence required pass was never adjudicated.
+        self.assertNotIn("ai_verifier", batched_updated[4])
+
+    def test_zero_qualifying_clauses_makes_no_call(self):
+        clauses = [_clause("confidential_information", "pass", confidence=0.97)]
+        verifier = _RecordingBatchVerifier(self._verdict_map())
+        _updated, summary = apply_ai_verifier(clauses, source_text="x", verifier=verifier)
+        self.assertEqual(verifier.calls, [])  # no clauses qualify -> no round-trip
+        self.assertEqual(summary["status"], "no_op")
+        self.assertEqual(summary["verified_count"], 0)
+
+    def test_single_clause_batches_in_one_call(self):
+        clauses = [_clause("non_circumvention", "fail", clause_type="prohibited", confidence=0.7)]
+        verifier = _RecordingBatchVerifier(
+            {"non_circumvention": {"verdict": VERIFIER_VERDICT_AFFIRM, "confidence": 0.9}}
+        )
+        _updated, summary = apply_ai_verifier(clauses, source_text="x", verifier=verifier)
+        self.assertEqual(verifier.calls, [["non_circumvention"]])
+        self.assertEqual(summary["verified_count"], 1)
+
+    def test_missing_verdict_for_a_clause_falls_back_to_safe_affirm(self):
+        # The batched response omits term_and_survival -> it must AFFIRM (leave the
+        # review untouched), never invent a fail or clear on a missing verdict.
+        verdicts = self._verdict_map()
+        verifier = _RecordingBatchVerifier(verdicts, drop_ids=["term_and_survival"])
+        updated, _ = apply_ai_verifier(self._mixed_clauses(), source_text="full doc", verifier=verifier)
+        term = next(c for c in updated if c["id"] == "term_and_survival")
+        self.assertEqual(term["decision"], "review")  # untouched
+        self.assertEqual(term["ai_verifier"]["verdict"], VERIFIER_VERDICT_AFFIRM)
+        self.assertFalse(term["ai_verifier"]["changed"])
+
+    def test_unknown_id_in_response_is_ignored(self):
+        verifier = _RecordingBatchVerifier(self._verdict_map(), inject_unknown=True)
+        updated, summary = apply_ai_verifier(self._mixed_clauses(), source_text="full doc", verifier=verifier)
+        ids = {c["id"] for c in updated}
+        self.assertNotIn("totally_unknown_clause", ids)
+        # Verified count still reflects only the real qualifying clauses.
+        self.assertEqual(summary["verified_count"], 4)
+
+    def test_total_batch_failure_degrades_all_to_affirm(self):
+        telemetry.reset()
+        verifier = _RecordingBatchVerifier(self._verdict_map(), raise_error=True)
+        updated, summary = apply_ai_verifier(self._mixed_clauses(), source_text="full doc", verifier=verifier)
+        # Every verified clause keeps its original decision (AFFIRM degrade-safe).
+        nc = next(c for c in updated if c["id"] == "non_circumvention")
+        self.assertEqual(nc["decision"], "fail")
+        self.assertEqual(nc["ai_verifier"]["verdict"], VERIFIER_VERDICT_AFFIRM)
+        self.assertFalse(nc["ai_verifier"]["changed"])
+        self.assertEqual(summary["changed_count"], 0)
+        # The batch error is recorded once (mirrors the per-clause error path).
+        self.assertEqual(telemetry.snapshot()["counters"].get("ai_verifier_errors"), 1)
+
+
+class OpenRouterBatchTransportTests(unittest.TestCase):
+    """The batched OpenRouter transport: one POST, parsed into {clause_id: verdict}."""
+
+    def _payload(self, content):
+        return {"choices": [{"message": {"content": content}}]}
+
+    def test_verify_batch_sends_one_request_and_keys_by_clause_id(self):
+        verifier = OpenRouterVerifier(api_key="sk-test")
+        packets = [
+            {"clause_id": "non_circumvention", "engine_decision": "fail"},
+            {"clause_id": "governing_law", "engine_decision": "review"},
+        ]
+        content = json.dumps(
+            {
+                "verdicts": [
+                    {"clause_id": "non_circumvention", "verdict": "refute", "confidence": 0.9, "rationale": "a"},
+                    {"clause_id": "governing_law", "verdict": "affirm", "confidence": 0.5, "rationale": "b"},
+                ]
+            }
+        )
+        with patch.object(verifier, "_request", return_value=self._payload(content)) as req:
+            result = verifier.verify_batch(packets)
+        self.assertEqual(req.call_count, 1)  # ONE round-trip for all clauses
+        self.assertEqual(set(result), {"non_circumvention", "governing_law"})
+        self.assertEqual(result["non_circumvention"]["verdict"], "refute")
+
+    def test_malformed_json_raises_verifier_error(self):
+        verifier = OpenRouterVerifier(api_key="sk-test")
+        with patch.object(verifier, "_request", return_value=self._payload("not json {{{")):
+            with self.assertRaises(ai_verifier.VerifierError):
+                verifier.verify_batch([{"clause_id": "x"}])
+
+    def test_call_routes_single_packet_through_batch(self):
+        verifier = OpenRouterVerifier(api_key="sk-test")
+        content = json.dumps(
+            {"verdicts": [{"clause_id": "non_circumvention", "verdict": "affirm", "confidence": 0.5}]}
+        )
+        with patch.object(verifier, "_request", return_value=self._payload(content)):
+            verdict = verifier({"clause_id": "non_circumvention"})
+        self.assertEqual(verdict["verdict"], "affirm")
+
+    def test_prompt_instructs_one_verdict_per_clause(self):
+        from nda_automation.ai_verifier import _VERIFIER_SYSTEM_PROMPT
+
+        lowered = _VERIFIER_SYSTEM_PROMPT.lower()
+        self.assertIn("batch", lowered)
+        self.assertIn("verdicts", lowered)
+        self.assertIn("one entry per clause_id", lowered)
 
 
 if __name__ == "__main__":

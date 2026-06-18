@@ -14,8 +14,9 @@ Design constraints (see task #15):
 - Provider-agnostic seam. ``VerifierFn`` mirrors ``ai_review.AIReviewFn``: a
   callable mapping a verifier packet to a verdict dict (or ``None``). Tests inject
   a deterministic verifier across the real seam; prod resolves an independent
-  DeepSeek verifier model. A built-in polarity heuristic is the offline fallback
-  so the pass adds value even with no API key.
+  DeepSeek verifier model. When the AI verifier is not enabled (or not keyed) the
+  second pass is a true NO-OP -- it returns the reviewer's findings untouched
+  rather than re-judging them with any deterministic/regex code.
 - Cost-aware. High-confidence ``pass`` findings are skipped by default -- the
   verifier exists to catch *misclassifications*, and an adversarial second look
   is most valuable on escalations (fail/review) and low-confidence clears.
@@ -35,7 +36,7 @@ import re
 import urllib.error
 import urllib.request
 from copy import deepcopy
-from typing import Dict, Iterable, List, Mapping, Protocol, Sequence, Tuple
+from typing import Dict, List, Mapping, Protocol, Sequence, Tuple
 
 from . import telemetry
 from .checks.common import ISSUE_TYPE_LABELS, ISSUE_TYPE_NONE
@@ -53,8 +54,8 @@ AI_VERIFIER_VERSION = 2
 # The adversarial judgement is the accuracy lever, so the prod path defaults to
 # an independent DeepSeek model (routed via OpenRouter, the existing transport).
 # Overridable with NDA_AI_VERIFIER_MODEL. Verification is opt-in via
-# NDA_AI_VERIFIER so it never spends tokens unless explicitly enabled; the
-# offline polarity adversary still runs as the always-on fallback.
+# NDA_AI_VERIFIER so it never spends tokens unless explicitly enabled; when it is
+# disabled (or unkeyed) the second pass is a no-op and changes no verdict.
 DEFAULT_VERIFIER_MODEL = "deepseek/deepseek-v4-pro"
 VERIFIER_ENV_ENABLED = "NDA_AI_VERIFIER"
 VERIFIER_ENV_MODEL = "NDA_AI_VERIFIER_MODEL"
@@ -97,6 +98,21 @@ class VerifierFn(Protocol):
     """
 
     def __call__(self, packet: Dict[str, object]) -> Dict[str, object] | None:
+        ...
+
+
+class BatchVerifierFn(Protocol):
+    """Batched seam for a network-backed verifier.
+
+    Maps a list of verifier packets to a ``{clause_id: verdict_dict}`` mapping in a
+    single round-trip. A verifier that implements ``verify_batch`` opts the whole
+    qualifying set into ONE call; the transport is the only difference from the
+    per-clause :class:`VerifierFn` seam. Missing/extra ids and malformed verdicts are
+    handled by the apply step (safe AFFIRM default per clause), so an implementation
+    only has to return whatever clause verdicts it could parse.
+    """
+
+    def __call__(self, packets: Sequence[Dict[str, object]]) -> Mapping[str, object] | None:
         ...
 
 
@@ -152,11 +168,55 @@ def apply_ai_verifier(
         active_verifier = resolve_verifier()
         verifier_kind = "ai" if isinstance(active_verifier, OpenRouterVerifier) else "noop"
     section_index = _section_index(contract_structure)
-    records: List[Dict[str, object]] = []
+
+    # Collect every clause that passes the (UNCHANGED) _should_verify gate, paired
+    # with its packet. Coverage is identical to the per-clause path: same clauses
+    # qualify, same packet contents. 0 qualifying clauses -> no call (return early).
+    pending: List[Tuple[dict, Dict[str, object]]] = []
     for clause in updated:
         if not _should_verify(clause):
             continue
         packet = build_verifier_packet(clause, source_text=source_text, section_index=section_index)
+        pending.append((clause, packet))
+
+    if not pending:
+        return updated, _summary(status="no_op", records=[], verifier_kind=verifier_kind, changed=0)
+
+    # Transport is the ONLY thing that differs from the old per-clause path. A
+    # verifier that advertises a ``verify_batch`` (the OpenRouter network pass)
+    # gets ONE round-trip carrying every qualifying packet; the per-clause verdict
+    # that comes back is applied with the exact same _apply_verdict logic as before.
+    # Anything else (injected test stubs, the no-op) is still called once per packet
+    # across the original VerifierFn seam, so its behaviour is byte-identical.
+    batch = getattr(active_verifier, "verify_batch", None)
+    if callable(batch):
+        verdicts_by_id = _run_batched_verifier(batch, pending, verifier_kind=verifier_kind)
+        records = _apply_batched_verdicts(pending, verdicts_by_id, verifier_kind=verifier_kind)
+    else:
+        records = _apply_per_clause_verdicts(active_verifier, pending, verifier_kind=verifier_kind)
+
+    changed = sum(1 for record in records if record.get("changed"))
+    return updated, _summary(
+        status="completed" if records else "no_op",
+        records=records,
+        verifier_kind=verifier_kind,
+        changed=changed,
+    )
+
+
+def _apply_per_clause_verdicts(
+    active_verifier: "VerifierFn",
+    pending: Sequence[Tuple[dict, Dict[str, object]]],
+    *,
+    verifier_kind: str,
+) -> List[Dict[str, object]]:
+    """The original per-clause apply path: one verifier call per packet.
+
+    Preserved verbatim for the injected/no-op seam so non-batched verifiers behave
+    exactly as before -- same per-clause call, same error handling, same verdicts.
+    """
+    records: List[Dict[str, object]] = []
+    for clause, packet in pending:
         try:
             raw_verdict = active_verifier(packet)
         except Exception as error:  # noqa: BLE001 - a flaky verifier must not break review
@@ -166,14 +226,56 @@ def apply_ai_verifier(
         verdict = _normalize_verdict(raw_verdict)
         record = _apply_verdict(clause, verdict, verifier_kind=verifier_kind)
         records.append(record)
+    return records
 
-    changed = sum(1 for record in records if record.get("changed"))
-    return updated, _summary(
-        status="completed" if records else "no_op",
-        records=records,
-        verifier_kind=verifier_kind,
-        changed=changed,
-    )
+
+def _run_batched_verifier(
+    batch: "BatchVerifierFn",
+    pending: Sequence[Tuple[dict, Dict[str, object]]],
+    *,
+    verifier_kind: str,
+) -> Dict[str, object] | None:
+    """Make the single batched call and return a ``{clause_id: raw_verdict}`` map.
+
+    A total failure of the batched call (network/parse error, or a non-mapping
+    return) degrades SAFE: returns ``None``, which the apply step reads as "no
+    verdict for any clause" -> every clause falls back to the same safe default a
+    per-clause failure produces today (AFFIRM / leave-untouched). The exception is
+    recorded once, mirroring the per-clause error path.
+    """
+    packets = [packet for _clause, packet in pending]
+    try:
+        raw = batch(packets)
+    except Exception:  # noqa: BLE001 - a flaky verifier must not break review
+        _record_verifier_error(verifier_kind)
+        return None
+    return raw if isinstance(raw, Mapping) else None
+
+
+def _apply_batched_verdicts(
+    pending: Sequence[Tuple[dict, Dict[str, object]]],
+    verdicts_by_id: Mapping[str, object] | None,
+    *,
+    verifier_kind: str,
+) -> List[Dict[str, object]]:
+    """Apply one batched verdict per clause via the unchanged _apply_verdict logic.
+
+    Robust degradation, per clause:
+      * missing clause id / fewer verdicts than clauses / a non-mapping verdict
+        -> _normalize_verdict(None) == a zero-confidence AFFIRM, i.e. the SAME safe
+        default the per-clause path uses on a bad/missing verdict (leave untouched).
+      * a total batch failure (``verdicts_by_id is None``) -> every clause AFFIRMs.
+      * extra/unknown ids in the response are simply never looked up (ignored).
+    """
+    lookup: Mapping[str, object] = verdicts_by_id if isinstance(verdicts_by_id, Mapping) else {}
+    records: List[Dict[str, object]] = []
+    for clause, packet in pending:
+        clause_id = str(packet.get("clause_id") or clause.get("id") or "")
+        raw_verdict = lookup.get(clause_id)
+        verdict = _normalize_verdict(raw_verdict)
+        record = _apply_verdict(clause, verdict, verifier_kind=verifier_kind)
+        records.append(record)
+    return records
 
 
 def _should_defer_for_generation() -> bool:
@@ -656,189 +758,6 @@ def _skip_record(clause: Mapping[str, object], *, reason: str) -> Dict[str, obje
     }
 
 
-# --- Built-in offline verifier ---------------------------------------------
-# A focused, deterministic adversary for the no-API-key path and as the reference
-# the prod model is prompted to emulate. It does ONE thing well: catch polarity
-# inversions, where the engine read a freedom-preserving carve-out as a restriction.
-# This is the dominant false-flag class for prohibited clauses and the one the eval
-# gate pins.
-#
-# NOTE: this deliberately does NOT reuse the checker's is_circumvention_freedom_
-# preserving(). That helper has a known blind spot -- it mis-reads
-# "shall not be restricted from dealing" as a prohibition (the very inversion that
-# produces the eval's false flag). An adversarial verifier must be *more* correct
-# than the engine it audits, so it carries its own polarity guard: a freedom marker
-# fires the refutation only when no genuine prohibition (active OR passive) co-exists.
-_FREEDOM_PRESERVING_PATTERN = re.compile(
-    r"\b(?:(?:shall|will|may|must|does|do|did)\s+not\s+be|(?:is|are|was|were|be|been|being)\s+not)\s+"
-    r"(?:restricted|prevented|prohibited|barred|precluded|restrained|limited|obligated|required)\s+from\b"
-    r"|\bnothing\b[^.;\n]{0,100}\b(?:restrict\w*|prevent\w*|prohibit\w*|bar\w*|preclud\w*|restrain\w*|limit\w*)\b"
-    r"[^.;\n]{0,60}\bfrom\b"
-    r"|\b(?:free|entitled|permitted|allowed|at\s+liberty)\s+to\s+(?:\w+\s+){0,4}"
-    r"(?:deal|contact|solicit|approach|pursu\w+|engage|transact|communicat\w+|work\s+with|do\s+business|enter\s+into)\b"
-    r"|\bmay\s+freely\s+(?:\w+\s+){0,2}"
-    r"(?:deal|contact|solicit|approach|pursu\w+|engage|transact|communicat\w+)\b",
-    re.IGNORECASE,
-)
-
-# Circumvention-shaped actions a genuine prohibition would bar.
-_CIRCUMVENTION_ACTION = (
-    r"(?:solicit|contact|deal|approach|poach|hir|recruit|employ|retain|induc|entic|lur|"
-    r"headhunt|compet|trad|negotiat|interfer|disrupt|undermin|disturb|encourag|persuad|"
-    r"partner\s+with|collaborat|associat|introduc|circumvent|bypass|pursu|engage|transact|divert|"
-    r"communicat|enter\s+into|work\s+with|do\s+business|steer\s+clear|stay\s+away)\w*"
-)
-# Interposition allowed between "not" and the barred action in a genuine ACTIVE
-# prohibition: temporal/manner qualifiers like "not, during the Term, solicit" or
-# "not, in any manner whatsoever, contact". Bounded and sentence-local (no '.'/';'/
-# newline), and explicitly NOT the freedom inversion "be <restricted/...> from" --
-# the inner lookahead drops that so "shall not, during the term, be restricted from
-# dealing" stays freedom-preserving and refutable.
-_PROHIBITION_INTERPOSITION = (
-    r"(?:(?!\bbe\s+(?:restricted|prevented|prohibited|barred|precluded|restrained|limited|obligated|required)\b)[^.;\n]){0,60}?"
-)
-
-# A genuine restriction sitting alongside freedom language ("each party is not
-# restricted from public dealings; however the Recipient is prohibited from dealing
-# directly with introduced parties"). Three shapes, each guarded so the freedom
-# inversion "[modal] not be restricted from dealing" is NOT mistaken for one:
-#   active            : "[party] shall/agrees not [to][, during the term,] <action>"
-#   negated-permission: "[party] shall not be permitted/entitled/allowed/free to <action>"
-#   passive           : "[party] is/are/be <barred> from <action>" (lookbehind drops "not <barred>")
-_GENUINE_PROHIBITION_PATTERN = re.compile(
-    # active: lookahead drops "not be ..."; the interposition (above) tolerates an
-    # interposed temporal/manner phrase yet still drops a later "be restricted from".
-    r"\b(?:shall|will|must|may|agrees?|undertakes?|covenants?)\s+not\s+(?!be\b)(?:to\s+)?"
-    rf"{_PROHIBITION_INTERPOSITION}{_CIRCUMVENTION_ACTION}"
-    r"|"
-    # negated permission: "shall not be permitted to deal", "is not free to contact".
-    # A negated permission to take a circumvention-shaped action IS a restriction --
-    # the literal opposite of the positive freedom marker "permitted/free to deal".
-    r"\b(?:shall|will|may|must|is|are|was|were|be|been|being|does|do|did|agrees?|undertakes?|covenants?)\s+not\s+(?:be\s+)?"
-    r"(?:free|entitled|permitted|allowed|at\s+liberty)\s+to\s+(?:\w+\s+){0,4}"
-    rf"{_CIRCUMVENTION_ACTION}"
-    r"|"
-    # passive: "is/are/be barred from <action>" (lookbehind drops "not barred from").
-    r"(?<!not\s)\b(?:is|are|was|were|be|been|being|remains?|remained)\s+"
-    r"(?:directly\s+|indirectly\s+|knowingly\s+|otherwise\s+){0,2}"
-    r"(?:prohibited|restricted|barred|prevented|precluded|restrained)\s+from\s+"
-    r"(?:directly\s+|indirectly\s+|knowingly\s+|otherwise\s+){0,2}"
-    rf"{_CIRCUMVENTION_ACTION}",
-    re.IGNORECASE,
-)
-
-
-def _is_freedom_preserving(text: str) -> bool:
-    """True if ``text`` guarantees freedom to deal/contact and carries no genuine
-    co-located prohibition. The verifier's own polarity judgement -- intentionally
-    stricter than the engine's, so it can refute the engine's inversion."""
-    if not _FREEDOM_PRESERVING_PATTERN.search(text):
-        return False
-    return not _GENUINE_PROHIBITION_PATTERN.search(text)
-
-
-def default_verifier(packet: Mapping[str, object]) -> Dict[str, object] | None:
-    """Offline polarity-aware adversary.
-
-    Substantiates or refutes a finding by reading the cited clause text. Its one
-    sharp judgement: a finding of ``fail``/``review`` on text that *guarantees
-    freedom to deal* (and carries no co-located genuine prohibition) is refuted --
-    the engine inverted the polarity. Everything else it leaves to the engine
-    (affirm), because an offline heuristic must not invent legal conclusions it
-    cannot anchor in the text.
-    """
-    decision = str(packet.get("engine_decision") or "")
-    text = _verifier_text(packet)
-    if not text:
-        return {"verdict": VERIFIER_VERDICT_AFFIRM, "confidence": 0.0, "rationale": "No clause text to verify."}
-
-    # Polarity inversion is only a coherent refutation for a *prohibited* clause:
-    # such a clause escalates because a restriction is present, so freedom-preserving
-    # text means the restriction is absent and the finding is inverted. For a required
-    # clause (e.g. mutuality), freedom-to-deal language is simply off-topic and must
-    # not refute the finding -- a single-paragraph doc can otherwise feed one clause's
-    # carve-out into another clause's evidence.
-    is_prohibited = _is_restriction_finding(packet)
-    freedom_preserving = _is_freedom_preserving(text)
-
-    if decision in _VERIFIABLE_DECISIONS and is_prohibited and freedom_preserving:
-        return {
-            "verdict": VERIFIER_VERDICT_REFUTE,
-            "confidence": 0.92,
-            "rationale": (
-                "Clause guarantees freedom to deal/contact (a carve-out), the literal opposite of a "
-                "restriction; the engine inverted the polarity. No co-located prohibition is present."
-            ),
-        }
-
-    if decision == CLAUSE_DECISION_PASS and is_prohibited and _GENUINE_PROHIBITION_PATTERN.search(text):
-        # The clause was CLEARED, yet its own cited text carries a genuine
-        # (non-freedom-preserving) restriction. A passed prohibited clause must not
-        # assert an active prohibition, so the clear is suspect -- refute it. A
-        # refuted pass escalates to review (see _apply_verdict), not to fail: the
-        # offline adversary never invents a fail it cannot anchor, but it must not
-        # let a hallucinated clear of a present restriction stand.
-        return {
-            "verdict": VERIFIER_VERDICT_REFUTE,
-            "confidence": 0.9,
-            "rationale": (
-                "Clause was cleared but its cited text contains a genuine restriction; a passed "
-                "prohibited clause must not assert an active prohibition."
-            ),
-        }
-
-    if decision == CLAUSE_DECISION_FAIL:
-        # The offline adversary cannot independently confirm a fail beyond polarity,
-        # so it affirms (engine keeps precedence) rather than rubber-stamping.
-        return {
-            "verdict": VERIFIER_VERDICT_AFFIRM,
-            "confidence": 0.5,
-            "rationale": "No polarity inversion detected; deferring to the engine's restriction finding.",
-        }
-
-    return {
-        "verdict": VERIFIER_VERDICT_AFFIRM,
-        "confidence": 0.5,
-        "rationale": "Offline verifier found no reason to overturn the engine finding.",
-    }
-
-
-# Restriction-shaped findings (the only ones a freedom-to-deal carve-out can refute):
-# prohibited clauses, plus required-clause findings whose language is about a barred
-# restriction. The keyword fallback keeps this working before clause_type is wired
-# onto every dynamic clause.
-_RESTRICTION_FINDING_PATTERN = re.compile(
-    r"\b(?:non[-\s]?circumvention|non[-\s]?solicit\w*|restrict\w*|prohibit\w*|exclusiv\w*|"
-    r"barred|preclud\w*|substitute\s+purpose|circumvent\w*|direct\s+dealing)\b",
-    re.IGNORECASE,
-)
-
-
-def _is_restriction_finding(packet: Mapping[str, object]) -> bool:
-    if str(packet.get("clause_type") or "").strip().lower() == "prohibited":
-        return True
-    finding = " ".join(
-        str(packet.get(key) or "")
-        for key in ("engine_finding", "requirement", "clause_name", "clause_id")
-    )
-    return bool(_RESTRICTION_FINDING_PATTERN.search(finding))
-
-
-def _verifier_text(packet: Mapping[str, object]) -> str:
-    """The clause-specific text the offline adversary may reason over.
-
-    Deliberately scoped to the clause's *own* matched text and cited evidence --
-    never the whole document. A polarity judgement is only sound against the span
-    the finding actually rests on; reading the full source would let one clause's
-    carve-out language refute an unrelated clause's finding.
-    """
-    parts = [str(packet.get("matched_text") or "")]
-    evidence = packet.get("evidence")
-    if isinstance(evidence, Iterable) and not isinstance(evidence, (str, bytes)):
-        parts.extend(str(item) for item in evidence)
-    return "\n".join(part for part in parts if part.strip())
-
-
 def refinalize_clause_grounding(clause: dict) -> dict:
     """Re-derive a verifier-changed clause's grounding/citation via the evidence pass.
 
@@ -907,8 +826,13 @@ _VERIFIER_SYSTEM_PROMPT = (
     "permission to REFUTE if it sits in the SAME section as the finding (clause_scope_is_single "
     "true means a single section) -- never borrow a carve-out from a different section to "
     "refute a restriction in this one. "
-    'Return ONLY JSON: {"verdict": "affirm|refute|uncertain", "confidence": 0..1, '
-    '"rationale": "<one sentence tied to the cited text>"}.'
+    "You are given a BATCH of findings under the key 'clauses', each with its own "
+    "'clause_id'. Judge EVERY clause independently against ONLY its own cited text, "
+    "evidence, and playbook_guidance -- never let one clause's carve-out influence "
+    "another's verdict. "
+    'Return ONLY JSON of the form {"verdicts": [{"clause_id": "<id>", "verdict": '
+    '"affirm|refute|uncertain", "confidence": 0..1, "rationale": "<one sentence tied '
+    'to the cited text>"}, ...]} with exactly one entry per clause_id you were given.'
 )
 
 
@@ -931,12 +855,48 @@ class OpenRouterVerifier:
         self.model = str(model or DEFAULT_VERIFIER_MODEL).strip() or DEFAULT_VERIFIER_MODEL
         self.timeout_seconds = max(1, int(timeout_seconds or DEFAULT_VERIFIER_TIMEOUT_SECONDS))
 
+    def verify_batch(self, packets: Sequence[Dict[str, object]]) -> Dict[str, object] | None:
+        """Adjudicate EVERY qualifying clause in ONE round-trip.
+
+        Sends a single chat completion whose user message carries all packets under
+        ``clauses`` and asks the model to return one verdict per ``clause_id``. The
+        response is parsed into a ``{clause_id: {verdict, confidence, rationale}}``
+        map; the caller applies each verdict with the same logic as the per-clause
+        path and fills any clause the model omitted with a safe AFFIRM default.
+
+        Raises ``VerifierError`` on any transport/parse failure so the caller can
+        degrade the WHOLE batch safe (all clauses AFFIRM), mirroring how a single
+        per-clause failure degraded one clause before.
+        """
+        if not packets:
+            return {}
+        user_payload = {"clauses": [dict(packet) for packet in packets]}
+        payload = self._request(json.dumps(user_payload, ensure_ascii=False, indent=2))
+        return _parse_batch_response(payload, self.model)
+
     def __call__(self, packet: Dict[str, object]) -> Dict[str, object] | None:
+        """Single-packet seam, kept for compatibility, routed through the batch path.
+
+        Returns the verdict dict for this packet's ``clause_id`` (or ``None`` when the
+        model omitted it -- read as a safe AFFIRM by ``_normalize_verdict``).
+        """
+        verdicts = self.verify_batch([packet])
+        if not isinstance(verdicts, Mapping):
+            return None
+        clause_id = str(packet.get("clause_id") or "")
+        result = verdicts.get(clause_id)
+        return result if isinstance(result, dict) else None
+
+    def _request(self, user_content: str) -> Dict[str, object]:
+        """The shared OpenRouter transport: POST the verifier prompt, return payload.
+
+        Reuses ai_review's HTTPS transport (trusted SSL context, response parsing) so
+        the verifier shares the project's single network seam rather than forking it.
+        """
         # Import here to keep the network transport a single source of truth and to
         # avoid a hard import cycle at module load.
         from .ai_review import (
             OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
-            _openrouter_response_text,
             _trusted_https_context,
         )
 
@@ -944,7 +904,7 @@ class OpenRouterVerifier:
             "model": self.model,
             "messages": [
                 {"role": "system", "content": _VERIFIER_SYSTEM_PROMPT},
-                {"role": "user", "content": json.dumps(packet, ensure_ascii=False, indent=2)},
+                {"role": "user", "content": user_content},
             ],
             "temperature": 0,
             "response_format": {"type": "json_object"},
@@ -961,22 +921,62 @@ class OpenRouterVerifier:
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds, context=_trusted_https_context()) as response:
-                payload = json.loads(response.read().decode("utf-8"))
+                return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
             message = error.read().decode("utf-8", errors="replace")[:300]
             raise VerifierError(f"Verifier API returned HTTP {error.code}: {message}") from error
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
             raise VerifierError(f"Verifier API request failed: {error}") from error
 
-        record_openrouter_usage(payload, feature="verifier", model=self.model)
-        response_text = _openrouter_response_text(payload)
-        if not response_text:
-            raise VerifierError("Verifier API returned no message content.")
-        try:
-            parsed = json.loads(response_text)
-        except json.JSONDecodeError as error:
-            raise VerifierError("Verifier API returned non-JSON text.") from error
-        return parsed if isinstance(parsed, dict) else None
+
+def _parse_batch_response(payload: Dict[str, object], model: str) -> Dict[str, object]:
+    """Parse a batched verifier response into a ``{clause_id: verdict_dict}`` map.
+
+    Accepts the documented ``{"verdicts": [...]}`` shape and tolerates a bare JSON
+    array or an already-keyed object, so a slightly off-format model response still
+    yields usable per-clause verdicts. Each entry must carry a ``clause_id``; entries
+    without one are dropped (the clause then falls back to the safe AFFIRM default).
+    Raises ``VerifierError`` only when the transport returned nothing usable at all --
+    that propagates as a total-batch failure (every clause AFFIRMs), exactly as a
+    network failure on the old per-clause path degraded that clause.
+    """
+    from .ai_review import _openrouter_response_text
+
+    record_openrouter_usage(payload, feature="verifier", model=model)
+    response_text = _openrouter_response_text(payload)
+    if not response_text:
+        raise VerifierError("Verifier API returned no message content.")
+    try:
+        parsed = json.loads(response_text)
+    except json.JSONDecodeError as error:
+        raise VerifierError("Verifier API returned non-JSON text.") from error
+
+    if isinstance(parsed, Mapping) and isinstance(parsed.get("verdicts"), list):
+        entries: Sequence[object] = parsed["verdicts"]
+    elif isinstance(parsed, list):
+        entries = parsed
+    elif isinstance(parsed, Mapping):
+        # Already keyed by clause_id, or a single-verdict object.
+        if "clause_id" in parsed:
+            entries = [parsed]
+        else:
+            return {
+                str(clause_id): verdict
+                for clause_id, verdict in parsed.items()
+                if isinstance(verdict, Mapping)
+            }
+    else:
+        return {}
+
+    verdicts_by_id: Dict[str, object] = {}
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        clause_id = str(entry.get("clause_id") or "").strip()
+        if not clause_id:
+            continue
+        verdicts_by_id[clause_id] = entry
+    return verdicts_by_id
 
 
 def verifier_enabled() -> bool:
@@ -1027,8 +1027,8 @@ def noop_verifier(_packet: Mapping[str, object]) -> Dict[str, object] | None:
     or not keyed. The product rule is that ONLY the AI reviewer and the AI verifier
     may adjudicate a clause verdict; no deterministic/regex code may rewrite an AI
     verdict. So when the AI verifier is unavailable the second pass must be a no-op,
-    NOT the offline regex polarity engine (``default_verifier``), which could
-    silently flip an AI PASS/FAIL to REVIEW.
+    NOT any deterministic/regex polarity engine, which could silently flip an AI
+    PASS/FAIL to REVIEW.
     """
     return None
 
@@ -1040,10 +1040,10 @@ def resolve_verifier() -> VerifierFn:
     Never raises: a misconfigured AI verifier degrades to the no-op rather than
     breaking review. The accuracy lever should fail safe, not fail closed.
 
-    It NEVER falls back to the offline regex polarity engine (``default_verifier``):
-    only the AI reviewer and the AI verifier may adjudicate a clause verdict, so
-    when the network verifier is unavailable the AI reviewer's decision must stand
-    untouched rather than be re-judged by deterministic keyword code.
+    It NEVER falls back to a deterministic/regex polarity engine: only the AI
+    reviewer and the AI verifier may adjudicate a clause verdict, so when the network
+    verifier is unavailable the AI reviewer's decision must stand untouched rather
+    than be re-judged by deterministic keyword code.
     """
     if not verifier_enabled():
         return noop_verifier
