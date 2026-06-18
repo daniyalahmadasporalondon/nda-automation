@@ -4567,6 +4567,118 @@ class DocxExportTests(unittest.TestCase):
         self.assertEqual(verify_pdf_reconstruction_redline_coverage(empty_docx, []), [])
         self.assertEqual(verify_pdf_reconstruction_redline_coverage(empty_docx, None), [])
 
+    def test_category_a_cross_track_multi_span_coalesce_export_coverage_end_to_end(self):
+        # CROSS-TRACK INTEGRATION GUARD (engine <-> export discriminator alignment).
+        #
+        # The load-bearing Category-A contract: a clause emits SEVERAL span edits on
+        # ONE paragraph; the ENGINE (clause_outcomes) must COALESCE them into a SINGLE
+        # replace_paragraph keyed on the SAME discriminator (clause_id, paragraph_id)
+        # that the EXPORT's residual-collision guard keys on (clause_id per <w:p>). If
+        # the engine coalesces correctly, exactly ONE edit per (clause, paragraph)
+        # reaches the export, the collision guard is NOT tripped, both struck spans
+        # land as tracked changes, and the coverage gate reconciles 1:1 and PASSES.
+        #
+        # This drives the REAL engine entry point (build_redline_edits) starting from
+        # span edits shaped EXACTLY as ai_assessment_contract lowers strike_span ->
+        # replace_paragraph (carrying span_action / span_anchor_quote), so it exercises
+        # the engine->export seam, not a hand-built redline_edits list.
+        from nda_automation.clause_outcomes import build_redline_edits
+
+        original = (
+            "The Receiving Party shall not solicit any employee of the Disclosing "
+            "Party and shall not compete with the Disclosing Party for two years."
+        )
+        # Two prohibited restraints in ONE paragraph -> two lowered strike spans.
+        anchor_one = "shall not solicit any employee of the Disclosing Party and "
+        anchor_two = "shall not compete with the Disclosing Party "
+        paragraph = {"id": "p1", "index": 1, "source_index": 1, "text": original}
+        paragraphs = [paragraph]
+        # Each lowered strike edit as the contract emits it: action already lowered to
+        # replace_paragraph, ``text`` reflecting ONLY this single span's cut, plus the
+        # span provenance the coalescer re-composes from.
+        from nda_automation.ai_assessment_contract import apply_span
+
+        lowered_one = apply_span(original, anchor_one, "")
+        lowered_two = apply_span(original, anchor_two, "")
+        self.assertIsNotNone(lowered_one)
+        self.assertIsNotNone(lowered_two)
+        clause = {
+            "id": "non_circumvention",
+            "name": "Non-circumvention",
+            "status": "check",
+            "issue_type": "present_but_wrong",
+            "matched_paragraph_ids": ["p1"],
+            "fallback": {"redline_action": "delete_paragraph"},
+            "what_to_fix": "Strike the prohibited restraints.",
+            "reason": "Prohibited restraints present.",
+            "proposed_edits": [
+                {
+                    "action": "replace_paragraph",
+                    "paragraph_id": "p1",
+                    "text": lowered_one,
+                    "span_action": "strike_span",
+                    "span_anchor_quote": anchor_one,
+                },
+                {
+                    "action": "replace_paragraph",
+                    "paragraph_id": "p1",
+                    "text": lowered_two,
+                    "span_action": "strike_span",
+                    "span_anchor_quote": anchor_two,
+                },
+            ],
+        }
+
+        # ENGINE: the two same-paragraph spans MUST coalesce to ONE replace_paragraph.
+        edits = build_redline_edits([clause], paragraphs)
+        self.assertEqual(len(edits), 1, "engine must coalesce same-paragraph spans to one edit")
+        coalesced = edits[0]
+        self.assertEqual(coalesced["action"], REDLINE_REPLACE_PARAGRAPH)
+        self.assertEqual(coalesced["clause_id"], "non_circumvention")
+        self.assertEqual(coalesced["paragraph_id"], "p1")
+        self.assertEqual(coalesced.get("source_index"), 1)
+        self.assertEqual(coalesced.get("paragraph_index"), 1)
+        # The coalesced replacement reflects BOTH cuts (neither span clobbered).
+        self.assertNotIn("solicit", coalesced["replacement_text"])
+        self.assertNotIn("compete", coalesced["replacement_text"])
+
+        # EXPORT: the single coalesced edit applies; the residual-collision guard
+        # (keyed on clause_id per <w:p>) is NOT tripped because only one edit reaches
+        # the export for this (clause, paragraph).
+        source_text = original
+        source_docx = make_source_docx([original])
+        review_result = {
+            "overall_status": "does_not_meet_requirements",
+            "checked_at": "2026-06-01T00:00:00+00:00",
+            "extracted_text": source_text,
+            "paragraphs": paragraphs,
+            "clauses": [],
+            "redline_edits": edits,
+        }
+        redlined_docx = build_source_redline_docx(source_docx, review_result)
+        assert_docx_package_healthy(self, redlined_docx)
+        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        target = document_root.findall(".//w:body/w:p", W_NS)[0]
+        # BOTH prohibited spans struck (word-level del), surviving context untracked.
+        deleted_text = "".join(
+            revision_text_for_state(d, accepted=False) for d in target.findall("w:del", W_NS)
+        )
+        self.assertIn("solicit", deleted_text)
+        self.assertIn("compete", deleted_text)
+        # Rejected view == original; accepted view == both cuts applied.
+        self.assertEqual(revision_text_for_state(target, accepted=False), original)
+        self.assertEqual(revision_text_for_state(target, accepted=True), coalesced["replacement_text"])
+
+        # COVERAGE GATE: the single coalesced replace reconciles 1:1 and PASSES.
+        self.assertEqual(
+            verify_export_content_coverage(
+                redlined_docx,
+                source_text,
+                expected_redline_edits=edits,
+            ),
+            [],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
