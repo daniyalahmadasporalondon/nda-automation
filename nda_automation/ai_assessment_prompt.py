@@ -11,7 +11,7 @@ from .playbook_rules import PLAYBOOK_RULES_VERSION, playbook_rules_for_ai
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
 from .untrusted_text import neutralize_untrusted_text
 
-AI_ASSESSMENT_PROMPT_VERSION = 12
+AI_ASSESSMENT_PROMPT_VERSION = 13
 AI_ASSESSMENT_TASK = "ai_first_clause_assessment"
 MAX_AI_ASSESSMENT_PARAGRAPHS = 120
 MAX_AI_ASSESSMENT_CHARS = 60000
@@ -133,6 +133,18 @@ AI_ASSESSMENT_INSTRUCTIONS = [
         "Honour carve-outs, exceptions, and conditions ('except', 'other than', 'provided that', 'unless', 'to the "
         "extent'): they narrow or invert the obligation, so judge the obligation as it reads AFTER applying them. A "
         "genuine prohibition and freedom-preserving language can co-exist in one paragraph; assess each on its own terms."
+    ),
+    (
+        "For term and survival, a survival period defined by a CONDITION rather than a fixed length of time is "
+        "effectively perpetual and must fail or review (never pass) when it governs ordinary confidentiality. Treat "
+        "value-conditioned wording ('until it ceases to have commercial value', 'for as long as it retains value', "
+        "'while it is still useful') and relationship-conditioned wording ('until the disclosing party releases it in "
+        "writing', 'so long as it remains confidential', 'so long as it remains secret') as indefinite survival, not a "
+        "fixed term. A separate clean fixed period (e.g. five years) does NOT cure a condition-based rider that still "
+        "keeps ordinary confidential information protected indefinitely -- assess the longest-surviving obligation. The "
+        "only exception is when the condition is expressly scoped to trade secrets, legal or regulatory obligations, "
+        "personal data, or data-protection duties; the same condition applied to ordinary confidentiality fails or, "
+        "when the scope is unclear, reviews."
     ),
     (
         "When the language is ambiguous, borderline, internally conflicting, or you cannot tell with confidence whether "
