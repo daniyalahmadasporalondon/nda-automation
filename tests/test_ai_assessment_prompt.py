@@ -535,6 +535,69 @@ class AIAssessmentPromptTests(unittest.TestCase):
         parsed_packet = json.loads(prompt["user"].split("\n\n", 1)[1])
         self.assertEqual(parsed_packet["task"], AI_ASSESSMENT_TASK)
 
+    # ---- Category A (U6): binding policy + scope rule + multi-edit + version bump ----
+
+    def test_prompt_version_is_bumped_to_13(self):
+        # The packet/prompt version marks the Category A change to consumers
+        # (ai_assessor packet_version). It must be the bumped value, not the old 12.
+        self.assertEqual(AI_ASSESSMENT_PROMPT_VERSION, 13)
+        packet = build_ai_assessment_packet(SOURCE_TEXT, playbook=load_playbook())
+        self.assertEqual(packet["version"], 13)
+        self.assertEqual(build_ai_assessment_prompt(packet)["version"], 13)
+
+    def test_packet_carries_the_derived_binding_policy_block(self):
+        # U6 injects the U5-derived policy block under playbook.binding_policy. It is
+        # DERIVED from the playbook, so it carries the load-bearing facts (5-year cap,
+        # approved laws, the strike/align remedies) and the mandatory scope rule.
+        playbook = load_playbook()
+        packet = build_ai_assessment_packet(SOURCE_TEXT, playbook=playbook)
+        binding_policy = packet["playbook"]["binding_policy"]
+
+        self.assertIsInstance(binding_policy, str)
+        self.assertIn("BINDING PLAYBOOK RULES", binding_policy)
+        self.assertIn("FIVE (5) YEARS", binding_policy)
+        for law in next(c for c in playbook["clauses"] if c["id"] == "governing_law")["approved_laws"]:
+            self.assertIn(law, binding_policy)
+        self.assertIn("DELETED in full", binding_policy)
+        self.assertIn("ALIGN THE FORUM", binding_policy)
+        self.assertIn("SCOPE INSTRUCTION (MANDATORY).", binding_policy)
+
+    def test_instructions_carry_the_scope_rule_and_multi_edit_directive(self):
+        packet = build_ai_assessment_packet(SOURCE_TEXT, playbook=load_playbook())
+        instructions = " ".join(packet["instructions"])
+
+        # SCOPE rule: edit only defective language, leave clean clauses untouched.
+        self.assertIn("SCOPE:", instructions)
+        self.assertIn("edit ONLY the defective language", instructions)
+        self.assertIn("already-compliant clauses untouched", instructions)
+        self.assertIn("playbook.binding_policy", instructions)
+        # MULTI-EDIT directive: emit proposed_edits as a list with span actions.
+        self.assertIn("MULTI-EDIT REDLINES", instructions)
+        self.assertIn("proposed_edits", instructions)
+        self.assertIn("strike_span", instructions)
+        self.assertIn("replace_span", instructions)
+        self.assertIn("one edit per defective span", instructions)
+
+    def test_output_contract_advertises_proposed_edits_field_names(self):
+        # The advertised proposed_edits field names are the contract the engine track
+        # consumes -- they must match the per-edit schema in the design (section A).
+        packet = build_ai_assessment_packet(SOURCE_TEXT, playbook=load_playbook())
+        contract = packet["output_contract"]["proposed_edits"]
+
+        self.assertEqual(contract["field"], "proposed_edits")
+        for field in (
+            "action",
+            "paragraph_id",
+            "anchor_quote",
+            "original_text",
+            "replacement",
+            "jurisdiction",
+            "rationale",
+        ):
+            self.assertIn(field, contract["edit_fields"])
+        for action in ("strike_span", "replace_span", "replace_paragraph", "delete_paragraph"):
+            self.assertIn(action, contract["edit_fields"]["action"])
+
 
 if __name__ == "__main__":
     unittest.main()

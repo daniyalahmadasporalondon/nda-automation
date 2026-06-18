@@ -7,11 +7,12 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .ai_assessment_contract import AI_ASSESSMENT_CONTRACT_VERSION, AI_CLAUSE_ASSESSMENT_SCHEMA
+from .playbook_policy import build_playbook_policy_block
 from .playbook_rules import PLAYBOOK_RULES_VERSION, playbook_rules_for_ai
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
 from .untrusted_text import neutralize_untrusted_text
 
-AI_ASSESSMENT_PROMPT_VERSION = 12
+AI_ASSESSMENT_PROMPT_VERSION = 13
 AI_ASSESSMENT_TASK = "ai_first_clause_assessment"
 MAX_AI_ASSESSMENT_PARAGRAPHS = 120
 MAX_AI_ASSESSMENT_CHARS = 60000
@@ -26,6 +27,41 @@ AI_ASSESSMENT_RESPONSE_SCHEMA: dict[str, object] = {
     },
     "required": ["assessments"],
     "additionalProperties": False,
+}
+
+# Advertised shape of the NEW multi-edit list (Category A). Each assessment may carry a
+# `proposed_edits` list of per-span edits INSTEAD of a single whole-paragraph
+# `proposed_redline`. The field names here are the contract the engine track consumes;
+# they MUST stay aligned with the per-edit schema in the design (section A) and the
+# contract validator (ai_assessment_contract). The legacy singular `proposed_redline`
+# stays accepted (a v2 payload), so this is purely additive guidance for the model.
+AI_ASSESSMENT_PROPOSED_EDITS_CONTRACT: dict[str, object] = {
+    "field": "proposed_edits",
+    "description": (
+        "A list of surgical, per-span edits. Prefer this over the single legacy "
+        "proposed_redline so you can fix several defects in one clause and edit only the "
+        "defective span of a paragraph. Each edit names the paragraph_id it targets and, "
+        "for a span action, the exact anchor_quote to cut or replace. Emit one edit per "
+        "defective span; emit an empty list (or all no_change edits) for a clean clause."
+    ),
+    "edit_fields": {
+        "action": (
+            "one of no_change, replace_paragraph, insert_after_paragraph, "
+            "delete_paragraph, strike_span, replace_span"
+        ),
+        "paragraph_id": "id of the target paragraph (required except for a pure no_change)",
+        "anchor_quote": (
+            "REQUIRED for strike_span / replace_span: the EXACT verbatim substring of the "
+            "target paragraph to strike or replace; must appear verbatim in the paragraph"
+        ),
+        "original_text": "optional; defaults to the paragraph text",
+        "replacement": (
+            "required for replace_paragraph / replace_span; null or absent for "
+            "strike_span / delete_paragraph"
+        ),
+        "jurisdiction": "Governing Law only; choose from the approved options",
+        "rationale": "optional per-edit note for reviewer display",
+    },
 }
 
 AI_ASSESSMENT_SYSTEM_PROMPT = (
@@ -157,6 +193,24 @@ AI_ASSESSMENT_INSTRUCTIONS = [
         "time. Keep issue_type aligned with the decision (pass -> none; fail -> missing or present_but_wrong; "
         "review -> unclear) and let the cited quote, not outside knowledge, drive the verdict."
     ),
+    (
+        "SCOPE: edit ONLY the defective language a playbook rule actually touches. Leave sound boilerplate "
+        "and already-compliant clauses untouched -- do not rewrite, 'improve', restyle, or expand an edit "
+        "beyond the span the rule reaches. Breaking or needlessly rewriting legitimate, compliant language is "
+        "a defect on your part, exactly as much as missing a real defect is. The playbook.binding_policy block "
+        "is the authoritative, binding statement of these rules and their prescribed remedies; follow it exactly."
+    ),
+    (
+        "MULTI-EDIT REDLINES: emit proposed_edits as a LIST of surgical edits -- one edit per defective span, "
+        "not one redline per clause. Use strike_span to DELETE a prohibited restraint in place (give the exact "
+        "anchor_quote substring to remove and leave replacement null), and replace_span to fix wrong wording "
+        "(give the anchor_quote plus the corrected replacement), preserving the surrounding clean text. Use "
+        "replace_paragraph / insert_after_paragraph / delete_paragraph for whole-paragraph fixes. Each edit "
+        "carries action, paragraph_id, anchor_quote (for span actions), original_text, replacement, and an "
+        "optional rationale. A pass clause emits an empty list or only no_change edits; a fail clause emits at "
+        "least one non-no_change edit. The legacy single proposed_redline is still accepted, but prefer "
+        "proposed_edits so a clause with several defects gets several precise edits."
+    ),
 ]
 
 AI_ASSESSMENT_DECISION_POLICY: dict[str, object] = {
@@ -211,6 +265,16 @@ def build_ai_assessment_packet(
     truncated = bool(omitted_paragraph_count) or bool(clipped_paragraph_count)
     rules_packet = playbook_rules_for_ai(playbook)
     clauses = deepcopy(rules_packet["clauses"])
+    # Category A: the binding-policy block, DERIVED from the playbook (north star: not
+    # hardcoded). It states the firm rules + prescribed remedies (strike vs cap-and-
+    # replace vs align) and the MANDATORY scope rule, so the model honours the AI text
+    # rather than blindly force-deleting. Built fail-safe: if derivation throws, the
+    # packet still ships without the block (the rest of the playbook clauses remain), so
+    # a malformed playbook never aborts a review/board poll.
+    try:
+        binding_policy = build_playbook_policy_block(playbook)
+    except Exception:
+        binding_policy = ""
     # #5: deterministic clause-localization hints steer the model's "Locate" step
     # toward the section(s) whose heading already matches the clause, without
     # constraining it. Marginal once #4 labels every paragraph, so kept light and
@@ -238,11 +302,13 @@ def build_ai_assessment_packet(
         ],
         "playbook": {
             "rules_version": PLAYBOOK_RULES_VERSION,
+            "binding_policy": binding_policy,
             "clauses": clauses,
         },
         "output_contract": {
             "assessment_contract_version": AI_ASSESSMENT_CONTRACT_VERSION,
             "response_schema": deepcopy(AI_ASSESSMENT_RESPONSE_SCHEMA),
+            "proposed_edits": deepcopy(AI_ASSESSMENT_PROPOSED_EDITS_CONTRACT),
             "required_assessment_count": len(rules_packet["clauses"]),
         },
         "decision_policy": deepcopy(AI_ASSESSMENT_DECISION_POLICY),
