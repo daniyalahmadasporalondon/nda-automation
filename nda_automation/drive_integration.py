@@ -736,13 +736,22 @@ def archive_executed_matter(
                     "matter_folder_url": synced["matter_folder_url"],
                     "synced_at": synced_at,
                     "artifacts": synced["artifacts"],
-                }
+                },
+                # Record the SUCCESSFUL archive outcome so the UI can clear any prior
+                # failed-archive warning (and never shows a stale one). Written from
+                # the same point that stamps the ``drive`` pointer, so the two never
+                # disagree. Best-effort: a write-back failure here is swallowed below.
+                "drive_archive": {
+                    "status": "ok",
+                    "error": "",
+                    "attempted_at": synced_at,
+                },
             },
             owner_user_id=owner_user_id,
         )
         telemetry.increment("drive_oncomplete_synced")
         telemetry.increment("drive_files_synced", amount=int(synced.get("synced_count") or 0))
-    except Exception:
+    except Exception as error:
         telemetry.increment("drive_oncomplete_failed")
         logger.warning(
             "Drive archive failed for matter %s (signed_via=%s, token_owner=%r); "
@@ -752,6 +761,42 @@ def archive_executed_matter(
             token_owner,
             exc_info=True,
         )
+        # Record the FAILED archive outcome onto the matter so the previously-silent
+        # miss becomes user-visible (a non-blocking "Signed, but Drive archive
+        # failed" warning + Retry). STRICTLY best-effort + isolated: the executed
+        # transition already persisted, and this recorder must never raise out of the
+        # archiver (a failed write-back just leaves no block — fail-open to no
+        # warning, never a crash).
+        try:
+            repository.update_matter_fields(
+                matter_id,
+                {
+                    "drive_archive": {
+                        "status": "failed",
+                        "error": _short_archive_error(error),
+                        "attempted_at": _now_iso(),
+                    }
+                },
+                owner_user_id=owner_user_id,
+            )
+        except Exception:  # pragma: no cover - defensive; recorder must never raise
+            logger.warning(
+                "Failed to record drive_archive failure onto matter %s.",
+                matter_id,
+                exc_info=True,
+            )
+
+
+def _short_archive_error(error: BaseException) -> str:
+    """A short, user-safe reason string for a failed Drive archive.
+
+    Keeps the matter-stored ``drive_archive.error`` compact (the UI shows it inline)
+    and never leaks a multi-line stack — that detail stays in the logged warning.
+    """
+    text = " ".join(str(error or "").split()).strip()
+    if not text:
+        text = type(error).__name__
+    return text[:200]
 
 
 def _now_iso() -> str:

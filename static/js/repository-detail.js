@@ -128,6 +128,7 @@ const RepositoryDetail = (() => {
               ${renderMatterTimeline(matter)}
             </section>
 
+            ${renderDriveArchiveWarning(matter)}
             ${renderDriveFolder(matter)}
           </aside>
         </div>
@@ -157,6 +158,10 @@ const RepositoryDetail = (() => {
     repositoryMatterPanel.querySelector(".repository-refresh-review")?.addEventListener("click", () => handlers.refreshMatterReview?.(matter));
     repositoryMatterPanel.querySelector(".repository-download-document")?.addEventListener("click", (event) => handlers.openDownloadMenu(matter, event.currentTarget));
     repositoryMatterPanel.querySelector(".repository-save-to-drive")?.addEventListener("click", () => handlers.saveMatterToDrive(matter));
+    // Retry a failed executed-archive: reuse the deliberate Save-to-Drive / sync
+    // path, which re-syncs the matter and (on success) clears the drive_archive
+    // failure flag so this warning disappears on the refreshed render.
+    repositoryMatterPanel.querySelector(".repository-drive-archive-retry")?.addEventListener("click", () => handlers.saveMatterToDrive(matter));
     repositoryMatterPanel.querySelector(".repository-send-redline")?.addEventListener("click", () => handlers.sendRedline(matter));
   }
 
@@ -211,6 +216,26 @@ const RepositoryDetail = (() => {
       <section class="repository-inspector-section repository-drive-section">
         <p class="repository-inspector-section-title">Google Drive</p>
         <a class="repository-detail-link repository-drive-folder-link" href="${escapeHtml(folderUrl)}" target="_blank" rel="noopener">Open matter folder</a>
+      </section>
+    `;
+  }
+
+  // Non-blocking warning when an executed matter's Drive auto-archive FAILED. The
+  // matter is still fully signed — the executed transition never blocks on Drive —
+  // but the signed copy never reached Drive, which was previously silent. Renders
+  // nothing unless the matter carries drive_archive.status === "failed" (a matter
+  // with no Drive connection has no drive_archive block at all -> no false warning).
+  // The Retry button re-attempts the archive via the Save-to-Drive / sync path.
+  function renderDriveArchiveWarning(matter) {
+    const archive = matter && matter.drive_archive;
+    if (!archive || String(archive.status || "") !== "failed") return "";
+    const reason = String(archive.error || "").trim();
+    const detail = reason ? ` — ${escapeHtml(reason)}` : "";
+    return `
+      <section class="repository-inspector-section repository-drive-archive-warning" role="alert">
+        <p class="repository-inspector-section-title">Drive archive failed</p>
+        <p class="repository-drive-archive-warning-text">Signed, but the Drive archive failed${detail}. The signed copy did not reach Google Drive.</p>
+        <button type="button" class="secondary repository-drive-archive-retry">Retry Drive archive</button>
       </section>
     `;
   }
@@ -366,6 +391,7 @@ const RepositoryDetail = (() => {
 
   return {
     renderDetailPanel,
+    renderDriveArchiveWarning,
     renderDriveFolder,
     renderEmptyPanel,
     renderFailedClauses,

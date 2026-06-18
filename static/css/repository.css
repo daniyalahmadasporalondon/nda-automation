@@ -762,6 +762,26 @@
   margin-top: 4px;
 }
 
+.repository-drive-archive-warning {
+  background: var(--amber-bg, #fef3c7);
+  border: 1px solid var(--amber-border, #fde68a);
+  border-radius: 8px;
+  color: var(--amber-ink, #92400e);
+  padding: 10px 12px;
+}
+
+.repository-drive-archive-warning .repository-inspector-section-title {
+  color: inherit;
+}
+
+.repository-drive-archive-warning-text {
+  margin: 4px 0 8px;
+}
+
+.repository-drive-archive-retry {
+  margin-top: 2px;
+}
+
 .repository-drive-file-list {
   display: grid;
   gap: 3px;

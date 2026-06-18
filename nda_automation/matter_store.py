@@ -97,6 +97,12 @@ MATTER_UPDATE_FIELDS = {
     "content_fingerprint",
     "docusign",
     "drive",
+    # Outcome of the best-effort executed Drive auto-archive: {status: "ok"|"failed",
+    # error, attempted_at}. Recorded so a FAILED archive (the signed copy never
+    # reached Drive) is no longer silent — the matter card surfaces a non-blocking
+    # "Drive archive failed" warning + Retry. Only written when an archive was
+    # actually attempted (Drive connected); an unconnected matter carries no block.
+    "drive_archive",
     "executed",
     "executed_at",
     "human_reviewed",
