@@ -368,17 +368,23 @@ class TestKillSwitchAtDrain:
 # 3. LOOP-CLOSER (None-return persist counts as a failure; cap stops the sweep)
 # =========================================================================== #
 class _NonePersistRepository(InMemoryMatterRepository):
-    """An in-memory repo whose update_matter_review ALWAYS returns None (falsy).
+    """An in-memory repo whose review persist ALWAYS returns None (falsy).
 
     Emulates the persist step silently failing (the matter vanished, an owner
     mismatch, a concurrent prune) -- the exact path the loop-closer must treat as
     a failure. update_matter_fields still works so the poison-pill counter can be
-    recorded and read back.
+    recorded and read back. The async worker persists via the guarded
+    refresh_matter_review, so that is the method stubbed null here (the unguarded
+    update_matter_review is stubbed too for completeness).
     """
 
     def __init__(self) -> None:
         super().__init__()
         self.review_calls = 0
+
+    def refresh_matter_review(self, matter_id, review_result, triage, *, expected_updated_at="", owner_user_id=""):
+        self.review_calls += 1
+        return None
 
     def update_matter_review(self, matter_id, review_result, triage, owner_user_id=""):
         self.review_calls += 1

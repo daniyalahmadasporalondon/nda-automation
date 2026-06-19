@@ -737,6 +737,12 @@ def _perform_inbound_ai_review_body(
         matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
         if not isinstance(matter, dict):
             return
+        # Snapshot the matter's updated_at BEFORE the (multi-minute) AI assessor +
+        # verifier run. The guarded persist below compares against it: if a human
+        # edit (a mark-reviewed human_reviewed=True or a saved redline_draft) lands
+        # during that window, updated_at will have moved and those edits are PRESERVED
+        # rather than silently reset/popped by the unconditional update_matter_review.
+        expected_updated_at = str(matter.get("updated_at") or "")
         if _matter_already_ai_reviewed(matter):
             LOGGER.info(
                 "Skipping inbound AI review for matter %s owner=%s: already ai_first reviewed",
@@ -780,10 +786,11 @@ def _perform_inbound_ai_review_body(
     # this write; it just lands a beat later. NEVER drops or fails the persist.
     generation_priority.yield_store_to_generation()
     try:
-        updated = repository.update_matter_review(
+        updated = repository.refresh_matter_review(
             matter_id,
             review_result,
             triage_review_result(review_result),
+            expected_updated_at=expected_updated_at,
             owner_user_id=owner_user_id,
         )
     except Exception:
@@ -806,7 +813,7 @@ def _perform_inbound_ai_review_body(
         _record_inbound_review_failure(matter_id, repository=repository, owner_user_id=owner_user_id)
         LOGGER.warning(
             "Inbound AI review persisted nothing for matter %s owner=%s "
-            "(update_matter_review returned None); counted as a failed attempt so the "
+            "(refresh_matter_review returned None); counted as a failed attempt so the "
             "poison-pill cap can stop it being re-swept. This matter may be orphaned "
             "(missing/owner-mismatch) and needs re-homing.",
             matter_id,
