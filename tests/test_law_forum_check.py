@@ -605,5 +605,115 @@ class AdditiveOverlayTests(unittest.TestCase):
             sys.modules.pop("nda_automation.governing_law_forum", None)
 
 
+class PlaybookDerivedBucketsTests(unittest.TestCase):
+    """The approved-law buckets are DERIVED from the Playbook, not hardcoded.
+
+    Guards the playbook-drift fix: the law<->forum detector seeds its approved-law
+    recognition buckets from ``governing_law.rules.approved_options`` (value +
+    aliases + forum_jurisdiction), so a 6th approved law added to the Playbook is
+    recognized with NO code change. The DRIFT-GUARD asserts every approved option
+    is covered by a derived bucket (so future drift fails CI); the SYNTHETIC-LAW
+    test proves a brand-new option is recognized end-to-end.
+    """
+
+    @contextmanager
+    def _approved_options(self, options: list[dict]) -> Iterator[None]:
+        """Override the detector's approved-option source + rebuild its buckets.
+
+        Restores the real Playbook-derived buckets on exit so the override cannot
+        leak into other tests.
+        """
+        original = lfc._approved_options
+        lfc._approved_options = lambda: list(options)  # type: ignore[assignment]
+        lfc.reset_buckets()
+        try:
+            yield
+        finally:
+            lfc._approved_options = original  # type: ignore[assignment]
+            lfc.reset_buckets()
+
+    def test_drift_guard_every_approved_option_has_a_bucket(self):
+        # DRIFT GUARD: every approved governing-law option in the LIVE Playbook must
+        # be covered by a derived approved-law bucket. If a future option is added to
+        # the Playbook but the detector goes blind to it, this fails.
+        options = lfc._approved_options()
+        self.assertTrue(options, "the live Playbook must expose approved governing-law options")
+        buckets = lfc.approved_law_buckets()
+        for option in options:
+            option_id = str(option.get("id") or "").strip().lower()
+            with self.subTest(option_id=option_id):
+                self.assertIn(option_id, buckets, f"approved option {option_id!r} has no derived bucket")
+                # A real bucket carries at least one law AND one forum matcher.
+                self.assertTrue(buckets[option_id]["law"], f"{option_id}: no law matchers")
+                self.assertTrue(buckets[option_id]["forum"], f"{option_id}: no forum matchers")
+
+    def test_established_five_still_derive(self):
+        # The five established approved laws must STILL be derived as approved-law
+        # buckets (not silently dropped or demoted to foreign-forum-only).
+        buckets = lfc.approved_law_buckets()
+        for option_id in ("india", "delaware", "england_and_wales", "difc", "ontario_canada"):
+            with self.subTest(option_id=option_id):
+                self.assertIn(option_id, buckets)
+
+    def test_synthetic_sixth_approved_law_is_recognized(self):
+        # A 6th approved law added to the Playbook (here: Scotland) must be recognized
+        # by the detector with NO code change -- law from value/alias, forum from
+        # forum_jurisdiction -- and a real law/forum split against it must FLAG.
+        sixth = {
+            "id": "scotland",
+            "label": "Scotland",
+            "value": "Scotland",
+            "aliases": ["scots", "scottish"],
+            "forum_jurisdiction": "Scotland",
+        }
+        live = list(lfc._approved_options())
+        with self._approved_options(live + [sixth]):
+            self.assertIn("scotland", lfc.approved_law_buckets())
+            # Law recognition from value AND alias.
+            self.assertEqual(
+                lfc.extract_law_jurisdictions(
+                    "Governing Law. This Agreement is governed by the laws of Scotland."
+                ),
+                {"scotland"},
+            )
+            self.assertEqual(
+                lfc.extract_law_jurisdictions(
+                    "Governing Law. This Agreement is governed by Scots law."
+                ),
+                {"scotland"},
+            )
+            # Forum recognition from forum_jurisdiction.
+            self.assertEqual(
+                lfc.extract_forum_jurisdictions(
+                    "Jurisdiction. The parties submit to the exclusive jurisdiction of the courts of Scotland."
+                ),
+                {"scotland"},
+            )
+            # End-to-end: E&W law + Scotland courts is a genuine split -> must FLAG.
+            text = (
+                "Governing Law. This Agreement is governed by the laws of England and Wales.\n"
+                "Jurisdiction. The parties submit to the exclusive jurisdiction of the courts of Scotland.\n"
+            )
+            finding = lfc.detect_mismatch(text, "england_and_wales", {})
+            self.assertIsNotNone(finding, "E&W law + Scotland courts must flag")
+            assert finding is not None
+            self.assertEqual(finding["expected_forum"], "england_and_wales")
+            self.assertEqual(finding["document_forum"], "scotland")
+            # An aligned Scotland-law + Scotland-courts NDA stays SILENT.
+            aligned = (
+                "Governing Law. This Agreement is governed by the laws of Scotland.\n"
+                "Jurisdiction. The parties submit to the exclusive jurisdiction of the courts of Scotland.\n"
+            )
+            self.assertIsNone(lfc.detect_mismatch(aligned, "scotland", {}))
+
+    def test_foreign_forum_buckets_survive_derivation(self):
+        # The foreign forum-only buckets (NOT approved laws) remain present after
+        # derivation so a foreign venue can still be NAMED in a finding.
+        for name in ("cayman_islands", "new_york", "singapore", "onshore_dubai"):
+            with self.subTest(bucket=name):
+                self.assertIn(name, lfc.JURISDICTIONS)
+                self.assertNotIn(name, lfc.approved_law_buckets())
+
+
 if __name__ == "__main__":
     unittest.main()

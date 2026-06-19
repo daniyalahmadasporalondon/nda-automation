@@ -166,9 +166,39 @@ TERM_BAND_MID = "3-5y"
 TERM_BAND_LONG = ">5y"
 
 # restraint_types: tag the non_circumvention finding's flagged text by restraint
-# family, reusing the EXISTING prohibited_positions regexes (no new clause). Only
-# these three families are surfaced as restraint types.
-_RESTRAINT_FAMILIES: tuple[str, ...] = ("non_compete", "non_solicit", "non_circumvention")
+# family, reusing the EXISTING prohibited_positions regexes (no new clause). The
+# family set is DERIVED from the Playbook-sourced prohibited-position labels
+# (``prohibited_positions.PROHIBITED_POSITION_PATTERN_SOURCES``) -- the SAME single
+# source the generation guard reads -- so ALL the Playbook's prohibited-position
+# families surface here, and a family added to ``non_circumvention``'s
+# ``prohibited_position_patterns`` in playbook.json auto-appears with no code change
+# (it used to be hardcoded to 3 of the 8). Order follows the Playbook's label order.
+def _derive_restraint_families() -> tuple[str, ...]:
+    """The restraint-family labels, sourced from the Playbook prohibited positions.
+
+    Reads the label order from ``prohibited_positions.PROHIBITED_POSITION_PATTERN_SOURCES``
+    (Playbook-sourced, with its own literal fallback). Degrades to the historical
+    three families only if that import/read fails, so the restraint facet never
+    silently empties.
+    """
+    try:
+        from . import prohibited_positions
+
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for label, _pattern in prohibited_positions.PROHIBITED_POSITION_PATTERN_SOURCES:
+            token = str(label or "").strip()
+            if token and token not in seen:
+                seen.add(token)
+                ordered.append(token)
+        if ordered:
+            return tuple(ordered)
+    except Exception:  # noqa: BLE001 -- a missing/broken Playbook just falls back.
+        pass
+    return ("non_compete", "non_solicit", "non_circumvention")
+
+
+_RESTRAINT_FAMILIES: tuple[str, ...] = _derive_restraint_families()
 _NON_CIRCUMVENTION_CLAUSE_ID = "non_circumvention"
 
 # review_outcome: collapse the per-clause review verdicts (via review_state) to one
