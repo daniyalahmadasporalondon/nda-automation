@@ -89,10 +89,6 @@ const RepositoryActions = (() => {
     async function openMatter(matterId) {
       try {
         setPendingDeleteMatterId(null);
-        // Opening a matter is "viewing" it: clear any reviewer-attention unread for
-        // it so the bell badge reflects what the reviewer has now looked at. Guarded
-        // global hook so this module stays decoupled from the notifications module.
-        globalThis.ReviewerNotifications?.markSeen?.(String(matterId));
         const matter = await api.getMatter(matterId);
         setSelectedMatter(matter);
         renderBoard();
