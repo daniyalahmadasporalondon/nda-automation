@@ -1053,6 +1053,49 @@ class ServerTests(unittest.TestCase):
                             )
                 self.assertEqual(status, 200, f"GET {path} should allow a listed admin")
 
+    def test_telemetry_exposes_ai_cost_usd_rollup_to_admin(self):
+        # Seed cumulative cost counters as record_openrouter_usage would, then assert
+        # the admin telemetry payload surfaces the USD per-feature rollup.
+        telemetry.increment("openrouter_cost_micro_units", amount=150000)
+        telemetry.increment("openrouter_cost_micro_units__feature__review", amount=120000)
+        telemetry.increment("openrouter_cost_micro_units__feature__generation", amount=30000)
+        telemetry.increment("openrouter_total_tokens", amount=200)
+        telemetry.increment("openrouter_total_tokens__feature__review", amount=150)
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                session_headers, user = self.google_session_headers()
+                admin_env = self._google_oauth_auth_env(NDA_ADMIN_USERS=user["id"])
+                with patch.dict(os.environ, admin_env):
+                    status, payload = self.request(
+                        "GET", "/api/telemetry", headers=session_headers
+                    )
+        self.assertEqual(status, 200)
+        cost = payload["ai_cost"]
+        self.assertEqual(cost["currency"], "USD")
+        self.assertEqual(cost["total_usd"], 0.15)
+        by_feature = {row["feature"]: row for row in cost["features"]}
+        self.assertEqual(by_feature["review"]["cost_usd"], 0.12)
+        self.assertEqual(by_feature["generation"]["cost_usd"], 0.03)
+        self.assertEqual(by_feature["review"]["total_tokens"], 150)
+
+    def test_telemetry_ai_cost_denied_to_non_admin(self):
+        # A non-admin must NOT receive the spend rollup -- the 403 gate fires before
+        # any cost data is serialised.
+        telemetry.increment("openrouter_cost_micro_units", amount=150000)
+        auth_env = self._google_oauth_auth_env(NDA_ADMIN_USERS="someone-else@example.com")
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                session_headers, _user = self.google_session_headers()
+                with patch.dict(os.environ, auth_env):
+                    status, payload = self.request(
+                        "GET", "/api/telemetry", headers=session_headers
+                    )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"], server_module.ADMIN_REQUIRED_MESSAGE)
+        self.assertNotIn("ai_cost", payload)
+
     # --- Non-admin AI-availability read --------------------------------------
     # USING the AI review is open to every authenticated user (the review-refresh
     # route is not admin-gated). The frontend's "is AI usable?" signal must read a
