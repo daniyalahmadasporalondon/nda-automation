@@ -173,6 +173,35 @@ def test_add_rejects_missing_invalid_and_oversized_email():
     assert handler.status == 400
 
 
+def test_add_rejects_markup_and_quote_bearing_email():
+    # Defense-in-depth: an injection-style payload must be rejected with 400 at the
+    # add endpoint AND never stored, even though the FE also escapes on render.
+    for payload in ['"><img onerror=x>@evil.com', "a<b@x.com", "a>b@x.com", "a'b@x.com", 'a"b@x.com']:
+        handler = _admin_handler({"email": payload})
+        admin_routes.handle_admin_add(handler)
+        assert handler.status == 400, payload
+    # And nothing leaked into the stored list (only the seeded admin remains).
+    assert {e["email"] for e in app_settings.admin_settings()["admins"]} == {"admin@example.com"}
+
+
+def test_normalizer_filters_markup_bearing_email_on_write():
+    # The write-path normalizer drops a markup/quote-bearing entry even if it
+    # somehow reaches update_admin_settings directly (not via the route). The
+    # payload is space-free so it PASSES the old local@domain regex -- only the
+    # new forbidden-character block stops it (a genuine guard, not one the regex
+    # incidentally catches via its whitespace exclusion).
+    evil = '"><svg/onload=x>@evil.com'  # no spaces; passes the regex
+    app_settings.update_admin_settings(
+        {"admins": [
+            {"email": evil, "added_at": "t", "added_by": "x"},
+            {"email": "clean@example.com", "added_at": "t", "added_by": "x"},
+        ]}
+    )
+    stored = {e["email"] for e in app_settings.admin_settings()["admins"]}
+    assert stored == {"clean@example.com"}, stored
+    assert app_settings.normalize_admin_email(evil) == ""
+
+
 def test_add_refuses_env_root_email(monkeypatch):
     monkeypatch.setenv("NDA_ADMIN_USERS", "root@example.com")
     handler = _admin_handler({"email": "root@example.com"})

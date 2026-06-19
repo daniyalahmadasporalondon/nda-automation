@@ -151,6 +151,11 @@ MAX_ADMIN_EMAIL_LENGTH = 254
 # (it is an allow-gate for a privileged grant, not an RFC-5322 parser) -- it must
 # never let through whitespace, multiple "@", or a domain with no dot.
 _ADMIN_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+# Defense-in-depth: even though every consumer HTML-escapes the email at render,
+# the STORED value must be clean -- reject any markup/quote characters outright so
+# a "><img ...>@evil.com style payload is dropped on the write path (never lands
+# in app_settings.json) rather than relying on downstream escaping.
+_ADMIN_EMAIL_FORBIDDEN_CHARS = frozenset('<>"\'')
 DEFAULT_REVIEW_RUNTIME_SETTINGS = {
     "active_review_engine": None,
 }
@@ -270,9 +275,17 @@ def persisted_admin_emails() -> set[str]:
 
 
 def normalize_admin_email(value: object) -> str:
-    """Lowercase + strip an admin email; "" when it is not a valid local@domain."""
+    """Lowercase + strip an admin email; "" when it is not a valid local@domain.
+
+    Returns "" (drop) for an empty/oversized value, anything that fails the
+    ``local@domain`` shape, OR anything containing markup/quote characters
+    (``< > " '``) -- the latter is defense-in-depth so a stored email can never
+    carry an injection payload even though every renderer also escapes it.
+    """
     email = str(value or "").strip().lower()
     if not email or len(email) > MAX_ADMIN_EMAIL_LENGTH:
+        return ""
+    if any(character in _ADMIN_EMAIL_FORBIDDEN_CHARS for character in email):
         return ""
     if not _ADMIN_EMAIL_PATTERN.fullmatch(email):
         return ""
