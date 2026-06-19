@@ -1052,6 +1052,29 @@ const CorpusView = (() => {
     });
   }
 
+  // The fresh-user onboarding empty-state markup. A genuinely empty corpus (no
+  // matters, no active filters) is a new-user state, so instead of a bare "No
+  // NDAs" line we offer a welcoming "get started" panel: generate the first NDA,
+  // connect Gmail to import inbound ones, and (when Drive is not yet connected) a
+  // gentle Drive nudge. Pure + string-only so it is unit-testable; no user-
+  // controlled values are interpolated, so there is nothing to escape here.
+  function onboardingEmptyHtml(driveConnected = false) {
+    const driveHint = driveConnected
+      ? ""
+      : `<p class="corpus-empty-drive-hint">Connect your Google Drive in Admin to archive signed NDAs and reconcile your full corpus.</p>`;
+    return `
+        <div class="corpus-empty-card" role="note" aria-label="Get started with your corpus">
+          <h2 class="corpus-empty-title">No NDAs on file yet</h2>
+          <p class="corpus-empty-lead">Your corpus fills up as you generate and sign NDAs. Here's how to get started.</p>
+          <div class="corpus-empty-actions">
+            <button class="corpus-empty-action" type="button" data-onboarding-goto="generator">Generate your first NDA</button>
+            <button class="corpus-empty-action secondary" type="button" data-onboarding-goto="admin">Connect Gmail to import inbound NDAs</button>
+          </div>
+          ${driveHint}
+        </div>
+      `;
+  }
+
   // The executed-only gate: a single predicate, defaulting ON, that admits only
   // fully-signed matters (the library). The Corpus toggle flips it off to widen
   // to ALL matters. Kept as its own one-liner so the default is a clean
@@ -1154,7 +1177,22 @@ const CorpusView = (() => {
     function renderEmptyState(message) {
       if (!emptyNode) return;
       emptyNode.hidden = false;
+      emptyNode.classList.remove("corpus-empty-onboarding");
       emptyNode.textContent = message;
+      if (listNode) listNode.innerHTML = "";
+      if (noResultsNode) noResultsNode.hidden = true;
+    }
+
+    // A fresh user with nothing on file sees a bare "No NDAs" line, which reads as
+    // broken. Render a welcoming "get started" empty-state instead: generate the
+    // first NDA, connect Gmail to import inbound ones, and (when Drive is not yet
+    // connected) a gentle Drive nudge. Presentation only — all values escaped.
+    function renderOnboardingEmptyState() {
+      if (!emptyNode) return;
+      emptyNode.hidden = false;
+      emptyNode.classList.add("corpus-empty-onboarding");
+      const driveConnected = Boolean(lastPayload && lastPayload.drive && lastPayload.drive.connected);
+      emptyNode.innerHTML = onboardingEmptyHtml(driveConnected);
       if (listNode) listNode.innerHTML = "";
       if (noResultsNode) noResultsNode.hidden = true;
     }
@@ -1244,7 +1282,14 @@ const CorpusView = (() => {
 
       const groups = Array.isArray(lastPayload.groups) ? lastPayload.groups : [];
       if (!groups.length) {
-        renderEmptyState("No NDAs on file yet.");
+        // A genuinely empty corpus with no active filters is a fresh-user state:
+        // show the welcoming onboarding panel. With active filters it's a
+        // filtered-to-nothing state, so keep the plain honest message.
+        if (hasActiveFilters()) {
+          renderEmptyState("No NDAs match your filters.");
+        } else {
+          renderOnboardingEmptyState();
+        }
         return;
       }
       clearEmptyState();
@@ -1375,7 +1420,7 @@ const CorpusView = (() => {
     };
   }
 
-  return { buildFilter, createController, executedGate, fetchCorpus };
+  return { buildFilter, createController, executedGate, fetchCorpus, onboardingEmptyHtml };
 })();
 
 function createCorpusController(options) {

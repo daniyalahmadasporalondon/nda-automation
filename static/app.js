@@ -815,6 +815,18 @@ adminSectionButtons.forEach((button) => {
   });
 });
 
+// Onboarding empty-states (e.g. the fresh-user repository panel) route the user
+// to the right tab via a [data-onboarding-goto] attribute. One delegated handler
+// covers any such CTA, no matter which panel renders it.
+document.addEventListener("click", (event) => {
+  const trigger = event.target.closest("[data-onboarding-goto]");
+  if (!trigger) return;
+  const tab = trigger.dataset.onboardingGoto;
+  if (!tab) return;
+  event.preventDefault();
+  activateTab(tab);
+});
+
 reviewInspectorButtons.forEach((button) => {
   button.addEventListener("click", () => setReviewInspectorView(button.dataset.reviewInspector));
 });
