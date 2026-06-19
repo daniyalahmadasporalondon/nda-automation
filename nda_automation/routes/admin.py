@@ -11,7 +11,13 @@ from ..review_engine import (
     active_review_engine_status,
 )
 from ..http_auth import _admin_user_ids
-from .common import request_actor, request_owner_user_id, request_user_email, require_admin
+from .common import (
+    request_actor,
+    request_owner_user_id,
+    request_user_email,
+    request_user_provider,
+    require_admin,
+)
 
 
 def handle_deployment_status(handler, *, send_body: bool = True) -> None:
@@ -421,7 +427,7 @@ def handle_admin_list(handler, *, send_body: bool = True) -> None:
     """GET /api/admin/admins -- the immutable env roots + the persisted grant list."""
     if not require_admin(handler, send_body=send_body):
         return
-    handler._send_json(_admin_list_payload(), send_body=send_body)
+    handler._send_json(_admin_list_payload(handler), send_body=send_body)
 
 
 def handle_admin_add(handler) -> None:
@@ -453,7 +459,7 @@ def handle_admin_add(handler) -> None:
     if any(entry.get("email") == email for entry in current):
         # Idempotent: the address is already a persisted admin, so return the
         # current list unchanged (no duplicate, no audit churn).
-        handler._send_json(_admin_list_payload(), status=200)
+        handler._send_json(_admin_list_payload(handler), status=200)
         return
 
     actor = request_user_email(handler) or request_actor(handler)
@@ -467,7 +473,7 @@ def handle_admin_add(handler) -> None:
     ]
     app_settings.update_admin_settings({"admins": updated})
     _record_admin_audit("admin_added", actor=actor, email=email)
-    handler._send_json(_admin_list_payload(), status=200)
+    handler._send_json(_admin_list_payload(handler), status=200)
 
 
 def handle_admin_remove(handler) -> None:
@@ -515,7 +521,7 @@ def handle_admin_remove(handler) -> None:
     actor = request_user_email(handler) or request_actor(handler)
     app_settings.update_admin_settings({"admins": remaining})
     _record_admin_audit("admin_removed", actor=actor, email=email)
-    handler._send_json(_admin_list_payload(), status=200)
+    handler._send_json(_admin_list_payload(handler), status=200)
 
 
 def _env_root_admin_ids() -> set[str]:
@@ -523,11 +529,104 @@ def _env_root_admin_ids() -> set[str]:
     return _admin_user_ids()
 
 
-def _admin_list_payload() -> dict[str, object]:
+def _admin_list_payload(handler=None) -> dict[str, object]:
     return {
-        "env_root_admins": sorted(_env_root_admin_ids()),
+        "env_root_admins": _env_root_admin_view(handler),
         "persisted_admins": app_settings.admin_settings()["admins"],
     }
+
+
+def _env_root_admin_view(handler=None) -> list[dict[str, object]]:
+    """Enrich each immutable NDA_ADMIN_USERS entry for human-readable display.
+
+    DISPLAY-ONLY: the authorization model is untouched -- admin matching still
+    happens verbatim by ``google:<sub>`` / email in ``request_is_admin``. This
+    only annotates the SAME entries so the Admin Access surface can show a name
+    or email instead of an opaque ``google:101508195488490085718``.
+
+    For each entry we emit ``{id, kind, email, display, is_self}``:
+      * ``id``   -- the raw verbatim env entry (still the secondary/tooltip text).
+      * ``kind`` -- "email" when the entry itself is an email; "google" for a
+        ``google:<sub>`` opaque id; "opaque" otherwise (e.g. a basic-auth name).
+      * ``email`` -- a known address: the entry itself when email-shaped, OR the
+        current session's OAuth-verified email when THIS root is the caller.
+      * ``display`` -- the friendly primary label the frontend prefers.
+      * ``is_self`` -- True when this root matches the current session identity
+        (the frontend tags it "(you)").
+
+    The frontend stays backward compatible: it also accepts a plain string entry
+    (an older cached payload), so this enrichment is additive.
+    """
+    self_user_id = ""
+    self_email = ""
+    self_email_normalized = ""
+    self_provider = ""
+    self_name = ""
+    if handler is not None:
+        self_user_id = request_owner_user_id(handler)
+        self_email = request_user_email(handler)
+        self_provider = (request_user_provider(handler) or "").strip().lower()
+        self_email_normalized = app_settings.normalize_admin_email(self_email)
+        current_user = getattr(handler, "current_user", None)
+        if isinstance(current_user, dict):
+            self_name = str(current_user.get("name") or "").strip()
+
+    view: list[dict[str, object]] = []
+    for entry in sorted(_env_root_admin_ids()):
+        entry_email = app_settings.normalize_admin_email(entry)
+        is_google = entry.startswith("google:")
+        # Does this env root resolve to the current session? Either a verbatim id
+        # match (covers google:<sub> and basic-auth names) OR, for a Google
+        # session only, a normalized-email match -- the SAME two paths the auth
+        # predicate uses. The email path is provider-gated so a basic-auth name
+        # that merely equals an admin email is never tagged "(you)".
+        is_self = bool(
+            (self_user_id and entry == self_user_id)
+            or (
+                self_provider == "google"
+                and entry_email
+                and self_email_normalized
+                and entry_email == self_email_normalized
+            )
+        )
+        # When THIS root is the caller, the friendliest known email is the
+        # session's verified address (normalized to match how admin emails are
+        # stored/compared); fall back to the raw verified email if it somehow
+        # fails normalization.
+        self_known_email = (self_email_normalized or self_email) if is_self else ""
+        if entry_email:
+            kind = "email"
+            email = entry_email
+        elif is_google:
+            kind = "google"
+            email = self_known_email
+        else:
+            kind = "opaque"
+            email = self_known_email
+
+        # Choose the friendliest primary label we can justify.
+        if email:
+            display = email
+        elif is_google:
+            # A bare google:<sub> with no known email: a stable, friendlier form
+            # than the raw 21-digit subject -- the full id stays in `id`.
+            sub = entry[len("google:") :]
+            tail = sub[-6:] if len(sub) >= 6 else sub
+            display = f"Google account ···{tail}" if tail else "Google account"
+        else:
+            display = entry
+
+        view.append(
+            {
+                "id": entry,
+                "kind": kind,
+                "email": email,
+                "display": display,
+                "name": self_name if is_self else "",
+                "is_self": is_self,
+            }
+        )
+    return view
 
 
 def _record_admin_audit(action: str, *, actor: str, email: str) -> None:

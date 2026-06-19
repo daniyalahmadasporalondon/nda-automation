@@ -329,8 +329,52 @@ def test_list_returns_env_roots_and_persisted(monkeypatch):
     handler = _FakeHandler(user=_google("admin@example.com"))
     admin_routes.handle_admin_list(handler)
     assert handler.status == 200
-    assert set(handler.response["env_root_admins"]) == {"google:root", "two@example.com"}
+    # env_root_admins is now an enriched view ({id, kind, email, display,
+    # is_self, ...}); the SET of immutable ids must still be exactly the env
+    # entries (the authorization surface is unchanged -- display only).
+    env = handler.response["env_root_admins"]
+    assert {row["id"] for row in env} == {"google:root", "two@example.com"}
+    by_id = {row["id"]: row for row in env}
+    # An email-shaped env root is shown by its email; a bare google:<sub> with no
+    # known name gets the friendly "Google account ···<sub>" label, never a blank.
+    assert by_id["two@example.com"]["display"] == "two@example.com"
+    assert by_id["two@example.com"]["kind"] == "email"
+    assert by_id["google:root"]["kind"] == "google"
+    assert by_id["google:root"]["display"].startswith("Google account")
     assert {e["email"] for e in handler.response["persisted_admins"]} == {
         "admin@example.com",
         "extra@example.com",
     }
+
+
+def test_list_labels_the_callers_own_env_root_with_email_and_is_self(monkeypatch):
+    # The current session is a Google user whose bare google:<sub> id is an env
+    # root. The list must surface THEIR verified email + is_self so the UI can
+    # render "<email> (you)" instead of the opaque subject id.
+    monkeypatch.setenv("NDA_ADMIN_USERS", "google:12345, other@example.com")
+    handler = _FakeHandler(
+        user={"id": "google:12345", "provider": "google", "email": "Me@Example.com", "name": "Mia"}
+    )
+    admin_routes.handle_admin_list(handler)
+    assert handler.status == 200
+    by_id = {row["id"]: row for row in handler.response["env_root_admins"]}
+    mine = by_id["google:12345"]
+    assert mine["is_self"] is True
+    assert mine["email"] == "me@example.com"  # normalized verified email
+    assert mine["display"] == "me@example.com"
+    assert mine["name"] == "Mia"
+    # The OTHER (email) env root is not the caller and stays not-self.
+    assert by_id["other@example.com"]["is_self"] is False
+    # A non-matching google root must NOT borrow the caller's email. The caller
+    # stays an env root (google:12345) so the list still authorizes (200); the
+    # OTHER google root (google:99999) is the one under test.
+    monkeypatch.setenv("NDA_ADMIN_USERS", "google:12345, google:99999")
+    handler2 = _FakeHandler(
+        user={"id": "google:12345", "provider": "google", "email": "me@example.com"}
+    )
+    admin_routes.handle_admin_list(handler2)
+    assert handler2.status == 200
+    other = {row["id"]: row for row in handler2.response["env_root_admins"]}["google:99999"]
+    assert other["is_self"] is False
+    assert other["email"] == ""
+    assert other["display"].startswith("Google account")

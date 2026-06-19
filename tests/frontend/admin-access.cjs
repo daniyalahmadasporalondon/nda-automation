@@ -223,6 +223,69 @@ const LIST = {
     assert.equal(ui.emailInput.disabled, false);
   });
 
+  await test("enriched env roots render a friendly label + raw id subtitle + (you)", async () => {
+    const ui = mount();
+    installFetch((url) => {
+      if (url === "/api/admin/admins") {
+        return {
+          payload: {
+            // The backend now sends enriched objects. A bare google:<sub> with no
+            // known email shows the friendly "Google account ···<last6>" label;
+            // an email-shaped root shows its email; the caller's own root is
+            // tagged (you).
+            env_root_admins: [
+              { id: "google:101508195488490085718", kind: "google", email: "", display: "Google account ···490085718", is_self: false },
+              { id: "boot@example.com", kind: "email", email: "boot@example.com", display: "boot@example.com", is_self: false },
+              { id: "google:777", kind: "google", email: "me@example.com", display: "me@example.com", name: "Mia", is_self: true },
+            ],
+            persisted_admins: [],
+          },
+        };
+      }
+      return {};
+    });
+    await ui.controller.load();
+    await flush();
+
+    const html = ui.envRootsList.innerHTML;
+    // 1) The opaque google:<sub> root shows the FRIENDLY label as the primary
+    //    text, with the full raw id demoted to the subtitle (still present so a
+    //    human can read it on hover / in the mono line).
+    assert.match(html, /Google account ···490085718/, "friendly label is the primary text");
+    assert.match(html, /admin-access-id[^>]*>google:101508195488490085718/, "raw id demoted to a subtitle");
+    assert.match(html, /title="google:101508195488490085718"/, "full id available on hover");
+    // 2) An email root shows its email (no redundant id subtitle since id===email).
+    assert.match(html, /boot@example\.com/);
+    // 3) The caller's own root is tagged (you) and shows the email.
+    assert.match(html, /me@example\.com/);
+    assert.match(html, /admin-access-you[^>]*>\(you\)/, "the caller's own root is tagged (you)");
+    // Still immutable: env roots never carry a Remove button, and the Bootstrap
+    // badge stays.
+    assert.doesNotMatch(html, /data-admin-remove/, "env roots have no Remove button");
+    assert.match(html, /Bootstrap/);
+    // 3 env roots + 0 persisted.
+    assert.equal(ui.overall.textContent, "3 admins");
+  });
+
+  await test("a legacy STRING env root still renders a friendly label (back-compat)", async () => {
+    const ui = mount();
+    installFetch((url) => {
+      if (url === "/api/admin/admins") {
+        // An older cached payload may still send plain strings.
+        return { payload: { env_root_admins: ["google:101508195488490085718"], persisted_admins: [] } };
+      }
+      return {};
+    });
+    await ui.controller.load();
+    await flush();
+    const html = ui.envRootsList.innerHTML;
+    // The string path derives the same friendly form (last 6 of the subject);
+    // the raw id is still shown.
+    assert.match(html, /Google account ···085718/, "string id is humanized too");
+    assert.match(html, /google:101508195488490085718/, "raw id still present");
+    assert.doesNotMatch(html, /data-admin-remove/);
+  });
+
   await test("a missing/blank added_at renders 'Added by ...' with NO date (no Invalid Date)", async () => {
     const ui = mount();
     installFetch((url) => {
