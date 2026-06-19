@@ -662,3 +662,148 @@ def test_ledger_coexists_with_cursor_drain_forward_progress(import_limit_20):
     assert len(r3["imported"]) == 10
     # The whole 50-message backlog is now in the ledger.
     assert transport.ledger_ids() == {f"msg_{i:03d}" for i in range(50)}
+
+
+# --------------------------------------------------------------------------- #
+# Regression: a TRANSIENT failure mid-drain must NOT lower the drain cursor past
+# the failed message (fix/drain-cursor-skip). The drain floor/cursor may only
+# advance for a message that reached a TERMINAL/STABLE outcome -- never for one
+# left unmarked to retry. Otherwise `before:<lowered cursor>` (and the head pass)
+# never re-examine it again and the inbound NDA is silently lost forever.
+# --------------------------------------------------------------------------- #
+class _CursorAwareTransientFailureTransport(_CursorAwareLedgerTransport):
+    """Cursor-aware drain harness where ONE designated mid-backlog message's
+    attachment download raises a transient failure the FIRST time it is examined,
+    then succeeds on a later poll. Models a flaky attachment fetch hitting a message
+    that the drain pass reaches BELOW the cursor.
+    """
+
+    def __init__(self, inbox_size: int, *, import_limit: int, transient_id: str) -> None:
+        super().__init__(inbox_size, import_limit=import_limit)
+        self._transient_id = transient_id
+        self._failed_once = False
+
+    def attachment_bytes(self, service, message_id: str, attachment):
+        if message_id == self._transient_id and not self._failed_once:
+            self._failed_once = True
+            raise self.GmailIntegrationError("transient attachment download failure")
+        return super().attachment_bytes(service, message_id, attachment)
+
+
+def _build_scan_context(transport):
+    """Assemble a real ``_ScanContext`` over a fake transport for a direct
+    ``_scan_pass`` drive (the unit locus of the drain-floor fix)."""
+    from nda_automation.gmail_intake_classifier import MAX_INTAKE_CALLS_PER_SYNC
+
+    imported: list = []
+    skipped: list = []
+    context = gmail_matter_inbox._ScanContext(
+        transport=transport,
+        service=transport.service,
+        account_email="me@example.com",
+        owner_user_id="owner_1",
+        intake_playbook="",
+        intake_budget=gmail_matter_inbox._IntakeCallBudget(MAX_INTAKE_CALLS_PER_SYNC),
+        imported=imported,
+        skipped=skipped,
+        sync_tallies=gmail_matter_inbox._IntakeTallies(),
+        processed_ledger=transport.processed_ledger_session("owner_1"),
+    )
+    return context, imported, skipped
+
+
+def test_drain_floor_does_not_descend_past_a_transiently_failed_message(import_limit_20):
+    # THE CORE FIX, asserted at its exact locus -- the drain pass's floor accounting.
+    #
+    # A floor-tracking (drain) pass examines a region of three messages newest->oldest:
+    #   msg_000 (imports cleanly), msg_001 (imports cleanly), msg_002 (TRANSIENT
+    #   attachment failure -> stable_outcome False -> left UNMARKED to retry).
+    # msg_002 is the OLDEST message EXAMINED. We cap the scan (max_scan=3) so the pass
+    # stops on the scan cap with a page token still outstanding -- i.e. cut short
+    # mid-backlog, NOT exhausted -- exactly the case where the cursor is LOWERED (not
+    # reset) to the floor afterwards.
+    #
+    # PRE-FIX: note_floor(msg_002) ran unconditionally right after fetch, so the floor
+    # descended to msg_002's date -- the persisted cursor would drop BELOW the
+    # still-to-retry message and `before:<cursor>` would exclude it forever (silent
+    # NDA loss). POST-FIX: the floor only advances for terminal/stable messages, so it
+    # stops at msg_001 (the oldest CLEANLY-IMPORTED message), staying ABOVE msg_002.
+    transport = _CursorAwareTransientFailureTransport(
+        inbox_size=3, import_limit=import_limit_20, transient_id="msg_002",
+    )
+    internal_ms = transport._internal_ms
+    context, imported, skipped = _build_scan_context(transport)
+    state = gmail_matter_inbox._ScanState(import_limit=import_limit_20)
+
+    gmail_matter_inbox._scan_pass(
+        transport.default_inbound_query(),
+        max_scan=3,
+        state=state,
+        context=context,
+        track_floor=True,
+    )
+
+    # Sanity: the two clean messages imported and the transient one failed + was NOT
+    # marked (otherwise the test would not be exercising the to-retry path).
+    assert {m["gmail_message_id"] for m in imported} == {"msg_000", "msg_001"}
+    assert transport._failed_once, "the transient attachment failure never fired"
+    assert any(s.get("reason") == "attachment_unavailable" for s in skipped)
+
+    # THE ASSERTION: the floor stops at the oldest TERMINAL message (msg_001), never
+    # descending to the transiently-failed msg_002. Pre-fix this equalled
+    # internal_ms['msg_002'] and the cursor would skip the message forever.
+    assert state.drain_floor_ms == internal_ms["msg_001"]
+    assert state.drain_floor_ms > internal_ms["msg_002"], (
+        "drain floor descended to/past a transiently-failed message -> cursor would "
+        "skip it and the inbound NDA would be lost"
+    )
+
+
+def test_drain_floor_advances_normally_for_cleanly_imported_messages(import_limit_20):
+    # CONTROL: with NO transient failure, the floor still advances to the OLDEST
+    # cleanly-imported message exactly as before -- the fix must not stall forward
+    # progress. Three messages all import; the floor lands on the oldest (msg_002).
+    transport = _CursorAwareLedgerTransport(inbox_size=3, import_limit=import_limit_20)
+    internal_ms = transport._internal_ms
+    context, imported, skipped = _build_scan_context(transport)
+    state = gmail_matter_inbox._ScanState(import_limit=import_limit_20)
+
+    gmail_matter_inbox._scan_pass(
+        transport.default_inbound_query(),
+        max_scan=3,
+        state=state,
+        context=context,
+        track_floor=True,
+    )
+
+    assert {m["gmail_message_id"] for m in imported} == {"msg_000", "msg_001", "msg_002"}
+    # The floor descends to the oldest examined (all terminal) message -- normal
+    # forward progress is preserved.
+    assert state.drain_floor_ms == internal_ms["msg_002"]
+
+
+def test_transient_drain_failure_message_is_eventually_imported_not_lost(import_limit_20):
+    # END-TO-END: across real polls, a message that transiently fails mid-drain is NOT
+    # silently lost -- it is re-examined and imported on a later poll. (The exhaust/
+    # reset + head-pass paging recover it once the backlog shrinks; the unit test above
+    # pins the precise floor mechanism that the data-loss bug corrupted.)
+    transport = _CursorAwareTransientFailureTransport(
+        inbox_size=30, import_limit=import_limit_20, transient_id="msg_020",
+    )
+
+    def imported_ids():
+        return {
+            m["gmail_message_id"]
+            for m in transport.repository.list_matters(owner_user_id="owner_1")
+        }
+
+    for _ in range(10):
+        gmail_matter_inbox.import_inbound_matters(
+            transport=transport, limit=999, owner_user_id="owner_1",
+        )
+        if imported_ids() == {f"msg_{i:03d}" for i in range(30)}:
+            break
+
+    assert transport._failed_once, "the transient attachment failure never fired"
+    assert "msg_020" in imported_ids(), "transiently-failed message was lost"
+    assert imported_ids() == {f"msg_{i:03d}" for i in range(30)}

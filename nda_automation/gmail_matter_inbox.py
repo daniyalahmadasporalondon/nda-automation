@@ -327,8 +327,26 @@ def _scan_pass(
                 context.skipped.append({"message_id": message_id, "reason": "message_unavailable"})
                 continue
 
-            if track_floor:
-                state.note_floor(_message_internal_date_ms(transport, message))
+            # CURSOR-FLOOR (drain) -- DO NOT advance the floor here yet. The floor is
+            # the resume point the persistent per-owner drain cursor is lowered to; a
+            # message must only lower it once we KNOW it reached a terminal/stable
+            # outcome (imported or a stable skip). Recording the floor unconditionally
+            # right after fetch -- before the import outcome is known -- lets the cursor
+            # descend BELOW a message that hit a TRANSIENT failure (stable_outcome is
+            # False: review_failed / attachment_unavailable / extraction crash). Such a
+            # message is intentionally left unmarked to retry next poll, but a cursor
+            # already lowered past it means the next drain (before:<cursor>) and the
+            # head pass never re-examine it -> the inbound NDA is silently lost forever.
+            # So capture the date now and commit it to the floor only at each
+            # terminal/stable outcome below (note_terminal_floor()).
+            # Advance the drain floor for a message only at a terminal/stable outcome.
+            # ``note_terminal_floor()`` excludes transient-failure (stable_outcome
+            # False) messages so the cursor never descends past one still owed a retry.
+            message_floor_ms = _message_internal_date_ms(transport, message) if track_floor else 0
+
+            def note_terminal_floor(_floor_ms: int = message_floor_ms) -> None:
+                if track_floor:
+                    state.note_floor(_floor_ms)
 
             if transport.is_self_or_outbound_message(message, context.account_email):
                 context.skipped.append({"message_id": message_id, "reason": "self_sent_or_outbound"})
@@ -337,6 +355,7 @@ def _scan_pass(
                 # before the fetch + AI calls. (Marked in-memory; written once at the
                 # end of the poll.)
                 _mark_processed(context, message_id)
+                note_terminal_floor()
                 continue
 
             # DocuSign envelope-notification emails (from the docusign.net family)
@@ -354,6 +373,7 @@ def _scan_pass(
                 # notification is structurally never reviewable -- mark it so the
                 # next poll skips it before the fetch + AI calls.
                 _mark_processed(context, message_id)
+                note_terminal_floor()
                 continue
 
             attachments = list(transport.reviewable_attachments(message.get("payload") or {}))
@@ -362,6 +382,7 @@ def _scan_pass(
                 # TERMINAL outcome (REFINEMENT D): the message carries no reviewable
                 # attachment and never will -- mark it processed.
                 _mark_processed(context, message_id)
+                note_terminal_floor()
                 continue
 
             # Dedup short-circuit AHEAD of any download/extract: a previously-
@@ -385,6 +406,7 @@ def _scan_pass(
                 # re-fetch). Idempotent with the dedup gate; complementary, not a
                 # replacement.
                 _mark_processed(context, message_id)
+                note_terminal_floor()
                 continue
 
             # This message will hit the heavy import path: count it against the
@@ -443,6 +465,10 @@ def _scan_pass(
             # leaves the message unmarked so it retries next poll (the safe bias).
             if attachment_result.get("stable_outcome"):
                 _mark_processed(context, message_id)
+                # Terminal/stable: safe to lower the drain cursor past this message.
+                note_terminal_floor()
+            # else: a TRANSIENT failure -- leave the floor where it is so the cursor
+            # never descends past this still-to-retry message (the data-loss fix).
         # Stop on an empty next-page token OR a zero-progress page (a page that
         # advanced the token but returned no messages), mirroring the original
         # paged-fetch termination guards.
