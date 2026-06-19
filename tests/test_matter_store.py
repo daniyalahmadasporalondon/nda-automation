@@ -199,8 +199,19 @@ class MatterStorePersistenceTests(unittest.TestCase):
                     first_live_path = matter_store.UPLOADS_DIR / first["stored_filename"]
                     repo.update_matter_stage(first["id"], "signed_closed")
 
+                    # Fail ONLY the prune source-archive write (under pruned-matters/),
+                    # not the new matter's own live source-doc write into UPLOADS_DIR --
+                    # both now flow through _write_bytes_atomic, so the simulated failure
+                    # has to be scoped to the archive path to model "source archive fails".
+                    real_write_bytes_atomic = matter_store._write_bytes_atomic
+
+                    def fail_only_archive_write(path, payload):
+                        if Path(path).parent != matter_store.UPLOADS_DIR:
+                            raise OSError("boom")
+                        return real_write_bytes_atomic(path, payload)
+
                     with (
-                        patch.object(matter_store, "_write_bytes_atomic", side_effect=OSError("boom")),
+                        patch.object(matter_store, "_write_bytes_atomic", side_effect=fail_only_archive_write),
                         patch("builtins.print"),
                     ):
                         second = repo.create_matter(**_create_kwargs(
@@ -213,6 +224,77 @@ class MatterStorePersistenceTests(unittest.TestCase):
 
         self.assertEqual({matter["id"] for matter in matters}, {first["id"], second["id"]})
         self.assertTrue(first_live_exists)
+
+    def test_create_matter_stages_source_document_atomically(self):
+        # The stored source doc must go through the same tmp+fsync+replace helper as
+        # every other byte payload, so a crash/OOM mid-write can never leave a
+        # TRUNCATED file at the live source path that the matter record points at.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                captured: dict[str, Path] = {}
+                real_write_bytes_atomic = matter_store._write_bytes_atomic
+
+                def recording_write(path, payload):
+                    if Path(path).parent == matter_store.UPLOADS_DIR:
+                        captured["source_path"] = Path(path)
+                    return real_write_bytes_atomic(path, payload)
+
+                with patch.object(matter_store, "_write_bytes_atomic", side_effect=recording_write):
+                    matter = repo.create_matter(**_create_kwargs(
+                        source_filename="Atomic NDA.docx",
+                        document_bytes=b"atomic source bytes",
+                    ))
+
+                stored_path = matter_store.UPLOADS_DIR / matter["stored_filename"]
+                captured_source_path = captured.get("source_path")
+                stored_bytes = stored_path.read_bytes()
+
+        # The source doc was staged through the atomic helper (not a bare write_bytes).
+        self.assertEqual(captured_source_path, stored_path)
+        self.assertEqual(stored_bytes, b"atomic source bytes")
+
+    def test_create_matter_leaves_no_truncated_source_on_mid_write_crash(self):
+        # Simulate a hard kill *during* the source-doc write. With a bare
+        # write_bytes the partially-written bytes would persist at the live source
+        # path; with the atomic helper the failure hits a .tmp file that is unlinked,
+        # so the live path stays absent (no truncated/orphaned source doc).
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+
+                # The real helper opens a temp file in UPLOADS_DIR and writes into it.
+                # Make the write blow up so we model a crash mid-write of the source doc.
+                original_open = Path.open
+
+                def exploding_open(self, *args, **kwargs):
+                    handle = original_open(self, *args, **kwargs)
+                    if self.parent == matter_store.UPLOADS_DIR and "w" in (args[0] if args else kwargs.get("mode", "")):
+                        original_write = handle.write
+
+                        def boom(_data):
+                            # Write a truncated prefix first, then crash — this is the
+                            # exact failure the atomic helper must contain.
+                            original_write(b"trunc")
+                            raise OSError("simulated OOM kill mid-write")
+
+                        handle.write = boom  # type: ignore[method-assign]
+                    return handle
+
+                stored_filename = None
+                with patch.object(Path, "open", exploding_open):
+                    with self.assertRaises(OSError):
+                        repo.create_matter(**_create_kwargs(
+                            source_filename="Crash NDA.docx",
+                            document_bytes=b"full intended source bytes",
+                        ))
+
+                upload_files = sorted(p.name for p in matter_store.UPLOADS_DIR.glob("*"))
+
+        # No live source doc and no leftover .tmp staging file survived the crash.
+        self.assertEqual(upload_files, [])
 
 
 class MatterStoreConcurrencyTests(unittest.TestCase):

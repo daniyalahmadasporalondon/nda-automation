@@ -1019,9 +1019,13 @@ def create_matter(
     # twice. We instead always stage the bytes and let the locked check below reject
     # a duplicate (unlinking the staged bytes), keeping dedupe/write a lost-update-free
     # atomic step.
-    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     stored_path = UPLOADS_DIR / stored_filename
-    stored_path.write_bytes(document_bytes)
+    # Stage the source bytes with the same tmp+fsync+replace+dir-fsync durability as
+    # every other byte payload in this module (artifacts, pruning archive). A bare
+    # write_bytes here could leave a TRUNCATED source doc on a crash/OOM mid-write
+    # that the later-written matter record would point at as valid/present.
+    # _write_bytes_atomic mkdir's the parent dir, so no separate mkdir is needed.
+    _write_bytes_atomic(stored_path, document_bytes)
 
     matter: dict[str, Any] = {
         "id": matter_id,
