@@ -273,16 +273,27 @@ def _extract_year_terms_with_context(normalized: str) -> List[Dict[str, int]]:
     terms: List[Dict[str, int]] = []
     for match in re.finditer(YEAR_TERM_PATTERN, normalized):
         word_value, digit_value, parenthetical_digit, parenthetical_word, unit = match.groups()
+        # The lead value is whichever of the two lead alternatives matched (a digit
+        # like "5" or a spelled word like "ten"); the parenthetical value is the
+        # optional "(...)" confirmation that drafting convention restates, e.g.
+        # "five (5)". When BOTH a lead and a parenthetical are present and they
+        # DISAGREE ("ten (5)"), trusting the parenthetical digit alone laundered a
+        # 10-year term down to a compliant 5. Take the MAX of every value the match
+        # surfaced so a disagreement resolves to the longer (and therefore more
+        # conservative, cap-flagging) period; the AGREEMENT case ("five (5)", "5 (5)")
+        # is unchanged because max(5, 5) == 5.
+        candidate_values: List[int] = []
         if digit_value:
-            value = int(digit_value)
-        elif parenthetical_digit:
-            value = int(parenthetical_digit)
-        elif word_value:
-            value = _year_word_value(word_value)
-        elif parenthetical_word:
-            value = _year_word_value(parenthetical_word)
-        else:
+            candidate_values.append(int(digit_value))
+        if word_value:
+            candidate_values.append(_year_word_value(word_value))
+        if parenthetical_digit:
+            candidate_values.append(int(parenthetical_digit))
+        if parenthetical_word:
+            candidate_values.append(_year_word_value(parenthetical_word))
+        if not candidate_values:
             continue
+        value = max(candidate_values)
         years = value / 12 if unit.startswith("month") else value
         terms.append({"years": years, "start": match.start(), "end": match.end()})
     return terms
@@ -619,14 +630,22 @@ def _is_benign_indefinite_match(
 
         # --- CAPPED-DURATION demotion: "for so/as long as" ---
         if re.fullmatch(r"for\s+(?:so|as)\s+long\s+as", token):
-            # (a) An explicit numeric period AFTER the connector (within its own
-            #     governed clause -- "for as long as X, and for two (2) years")
-            #     caps the survival, so the bare connector is not perpetual. The
-            #     numeric term must FOLLOW the connector: a number that precedes it
-            #     caps a DIFFERENT (prior) clause and must not launder an uncapped
-            #     "...except trade secrets survive for so long as they remain secret"
-            #     rider, so we look only at the text after the connector.
-            if re.search(YEAR_TERM_PATTERN, fragment[relative_end:]):
+            # (a) An explicit numeric period AFTER the connector caps the survival,
+            #     so the bare connector is not perpetual ("for as long as X, and for
+            #     two (2) years"). But the numeric period must actually GOVERN the
+            #     confidentiality survival, not merely sit somewhere later in the
+            #     sentence: a throwaway period in a DIFFERENT comma-segment -- a cure /
+            #     notice / payment period, e.g. "...for so long as it is secret, with a
+            #     6 months cure period." -- caps the cure, NOT the survival, and must
+            #     not launder the uncapped rider. So we bound the numeric search to the
+            #     survival sub-clause: from just after the connector up to the next
+            #     clause-boundary comma/semicolon, UNLESS that next segment is itself a
+            #     survival continuation ("...and for two (2) years following
+            #     termination") joined by "and"/"or"/"&", in which case the period
+            #     genuinely extends the survival and still caps it. A number that
+            #     precedes the connector caps a DIFFERENT (prior) clause and is ignored
+            #     for the same reason -- we look only after the connector.
+            if re.search(YEAR_TERM_PATTERN, _survival_subclause_after_connector(fragment, relative_end)):
                 return True
             # (b) The connector governs the AGREEMENT TERM, not confidentiality
             #     survival ("this Agreement shall continue in effect for so long as
@@ -645,6 +664,39 @@ def _is_benign_indefinite_match(
         # flag if the input is unexpected.
         return False
     return False
+
+
+# A comma-segment that continues the SAME survival statement (rather than starting an
+# unrelated cure/notice/payment period) is joined to the prior segment by a bare
+# conjunction. Only then does a numeric period in that later segment genuinely extend
+# (and therefore cap) the confidentiality survival, e.g. "...for as long as the
+# recipient is engaged, and for two (2) years following termination". A segment that
+# opens with anything else ("..., with a 6 months cure period", "..., upon 30 days
+# notice", "..., subject to a 12 month payment term") is a different obligation and its
+# period must NOT be read as capping the survival.
+_SURVIVAL_CONTINUATION_LEAD_PATTERN = re.compile(
+    r"^\s*(?:and|or|&|plus)\b",
+)
+
+
+def _survival_subclause_after_connector(fragment: str, relative_end: int) -> str:
+    """The survival sub-clause text following a "for so/as long as" connector.
+
+    Bounds the numeric-cap search to the comma-segment the connector actually
+    governs, extended across any further segments that are bare survival
+    continuations (joined by and/or/&/plus). Stops at the first comma-segment that
+    introduces a different obligation (cure/notice/payment), so a decoy duration
+    there cannot launder an uncapped confidentiality rider.
+    """
+    after = fragment[relative_end:]
+    segments = after.split(",")
+    collected = [segments[0]]
+    for segment in segments[1:]:
+        if _SURVIVAL_CONTINUATION_LEAD_PATTERN.match(segment):
+            collected.append(segment)
+            continue
+        break
+    return ",".join(collected)
 
 
 def _is_allowed_carve_out_year(normalized: str, term: Dict[str, int], clause: Dict[str, object]) -> bool:
