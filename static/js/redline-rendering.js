@@ -738,21 +738,23 @@ function renderInlineRedline(paragraph, edit) {
   }
   const replacement = String(edit.replacement_text || "");
   // Backend/AI redlines keep their token-level ops; clause / whole-paragraph edits
-  // replace the whole paragraph. A free-form manual edit diffs at the CHARACTER
-  // level so only the changed letters are struck/inserted -- rendered verbatim,
-  // because char tokens carry their own whitespace (renderDiffOperations would
-  // re-insert inter-token spaces and corrupt them).
+  // replace the whole paragraph. A free-form manual edit diffs at the WORD level so
+  // only the changed words are struck/inserted -- the SAME granularity the side
+  // panels use (redlineOperationPreviewMode -> "word_diff"). A character-level diff
+  // degenerates into single-letter strike/insert "confetti" whenever the new text
+  // differs substantially from the old (e.g. a retyped document title), so the
+  // inline preview stays word-grouped and consistent with the card/side-by-side.
   const previewMode = redlineEditContract()?.redlineInlinePreviewMode(edit)
     || (Array.isArray(edit?.inline_diff_operations) && edit.inline_diff_operations.length
       ? "operations"
       : isFreeformManualReplacement(edit)
-        ? "character_diff"
+        ? "word_diff"
         : "whole_paragraph");
   if (previewMode === "operations") {
     return renderDiffOperations(edit.inline_diff_operations);
   }
-  if (previewMode === "character_diff") {
-    return renderVerbatimDiffOperations(charDiffOperations(original, replacement));
+  if (previewMode === "word_diff") {
+    return renderDiffOperations(wordDiffOperations(original, replacement));
   }
   return renderDiffOperations(fullReplacementOperations(original, replacement));
 }
@@ -824,12 +826,12 @@ function wordDiffOperations(original, replacement) {
   return operations;
 }
 
-// Character-level diff (LCS) for free-form manual edits: a small change (e.g.
-// deleting one word inside a quoted phrase) redlines only the changed letters,
-// not the whole word/phrase. Consecutive same-type characters are merged into
-// runs whose tokens carry their own whitespace, so they MUST be rendered with
-// renderVerbatimDiffOperations (renderDiffOperations re-inserts inter-token
-// spaces, which is correct for word tokens but corrupts character runs).
+// Character-level diff (LCS): emits equal/delete/insert ops at single-character
+// granularity, merging consecutive same-type characters into runs whose tokens
+// carry their own whitespace. Used by the generator editor's run-retiling (to map
+// each NEW character back to its OLD character's formatting); NOT used for redline
+// DISPLAY, which now diffs at the WORD level (see renderInlineRedline) so a large
+// rewrite never degenerates into single-letter strike/insert "confetti".
 function charDiffOperations(original, replacement) {
   const a = [...String(original || "")];
   const b = [...String(replacement || "")];
@@ -861,22 +863,6 @@ function charDiffOperations(original, replacement) {
   while (i < n) { pushChar("delete", a[i]); i += 1; }
   while (j < m) { pushChar("insert", b[j]); j += 1; }
   return operations;
-}
-
-// Renders diff ops verbatim, wrapping deletes/inserts in the redline spans. The
-// tokens already carry their own whitespace (as charDiffOperations produces), so
-// unlike renderDiffOperations it never inserts inter-token spaces.
-function renderVerbatimDiffOperations(operations) {
-  return operations
-    .map((operation) => {
-      const className = operation.type === "delete"
-        ? "inline-del"
-        : operation.type === "insert"
-          ? "inline-ins"
-          : "";
-      return renderInlineToken(operation.token, className);
-    })
-    .join("");
 }
 
 // Word font NAME -> CSS family stack, for on-screen rendering only. The redline

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 
 import { clausePasses, clauseStatus } from "../../static/js/modules/clause-status.mjs";
@@ -9,6 +10,7 @@ import {
   fullReplacementOperations,
   needsInlineSpace,
   renderDiffOperations,
+  renderInlineToken,
 } from "../../static/js/modules/inline-diff.mjs";
 import {
   MatterUtils,
@@ -281,12 +283,16 @@ const normalizedClauseEdit = RedlineEditContract.normalizeRedlineEdit({
   replacement_text: "English law applies.",
 });
 assert.equal(RedlineEditContract.redlineInlinePreviewMode(normalizedClauseEdit), "whole_paragraph");
+// A free-form manual replace diffs at the WORD level inline -- the same granularity
+// as the side panels (redlineOperationPreviewMode). A character-level inline diff
+// degenerated into single-letter "confetti" on a wholesale rewrite (e.g. a retyped
+// title), so both inline and operation previews are now word-grouped.
 assert.equal(RedlineEditContract.redlineInlinePreviewMode({
   action: "replace_paragraph",
   clause_id: "manual_viewer_edit",
   paragraph_id: "p3",
   replacement_text: "Manual",
-}), "character_diff");
+}), "word_diff");
 assert.equal(RedlineEditContract.redlineOperationPreviewMode({
   action: "replace_paragraph",
   clause_id: "manual_viewer_edit",
@@ -344,6 +350,96 @@ assert.deepEqual(RedlineEditContract.normalizeRedlineEdits([
   { action: "insert_after_paragraph", clause_id: "manual_viewer_edit", paragraph_id: "p1", replacement_text: "Unsafe" },
   { action: "format_paragraph", is_manual: true, paragraph_id: "p1", replacement_text: "Formatted", format_ops: [{ op: "align", value: "center" }] },
 ]).map((edit) => edit.action), ["replace_paragraph", "format_paragraph"]);
+
+// Drive the REAL renderInlineRedline (the classic static/js/redline-rendering.js
+// the browser runs) on a free-form manual replace_paragraph. A wholesale clause
+// rewrite must render as clean WHOLE-WORD strike/insert -- never the single-letter
+// strike/insert "confetti" the old character_diff path produced when the new text
+// shared only scattered coincidental letters with the old (e.g. a retyped title).
+const STATIC_JS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../static/js");
+function loadRenderInlineRedline() {
+  // Seed the sandbox with the SAME bridge globals global-bridge.mjs exposes to the
+  // browser, plus a minimal window carrying the live RedlineEditContract, so the
+  // classic script runs against the real word-diff helpers and the real contract.
+  const sandbox = {
+    window: { RedlineEditContract },
+    escapeHtml,
+    renderDiffOperations,
+    renderInlineToken,
+    fullReplacementOperations,
+    needsInlineSpace,
+    console,
+  };
+  vm.createContext(sandbox);
+  for (const file of ["config.js", "redline-rendering.js"]) {
+    vm.runInContext(fs.readFileSync(path.join(STATIC_JS_DIR, file), "utf8"), sandbox, { filename: file });
+  }
+  // Surface the classic top-level function declaration as a callable handle.
+  return vm.runInContext("renderInlineRedline", sandbox);
+}
+const renderInlineRedline = loadRenderInlineRedline();
+function inlineSpanTexts(html, className) {
+  const spans = [];
+  const pattern = new RegExp(`<span class="${className}">([\\s\\S]*?)</span>`, "g");
+  let match;
+  while ((match = pattern.exec(html)) !== null) spans.push(match[1]);
+  return spans;
+}
+// A retyped document TITLE: the new text shares only scattered letters with the
+// old, the exact case that made the character-level LCS degenerate into confetti.
+const wholesaleRewrite = {
+  action: "replace_paragraph",
+  clause_id: "manual_viewer_edit",
+  id: "manual-title",
+  is_manual: true,
+  original_text: "Mutual Non-Disclosure Agreement",
+  paragraph_id: "title",
+  replacement_text: "Confidentiality and Proprietary Information Pact",
+  whole_paragraph: false,
+};
+const rewriteHtml = renderInlineRedline({ id: "title", text: wholesaleRewrite.original_text }, wholesaleRewrite);
+const rewriteDeleted = inlineSpanTexts(rewriteHtml, "inline-del");
+const rewriteInserted = inlineSpanTexts(rewriteHtml, "inline-ins");
+// Round-tripping the spans must reproduce the whole original / whole replacement.
+assert.equal(
+  rewriteDeleted.map((token) => token.trim()).filter(Boolean).join(" "),
+  wholesaleRewrite.original_text,
+);
+assert.equal(
+  rewriteInserted.map((token) => token.trim()).filter(Boolean).join(" "),
+  wholesaleRewrite.replacement_text,
+);
+// NON-VACUITY: the proof against confetti. Each redline span is a WHOLE word, not a
+// single letter. The old character_diff path emitted many single-character spans
+// (e.g. shared "o"/"a"/"i" struck/inserted in isolation); this assertion FAILS on
+// that behavior and passes only with word-granular ops.
+const rewriteSpans = [...rewriteDeleted, ...rewriteInserted].map((token) => token.trim()).filter(Boolean);
+const singleCharSpans = rewriteSpans.filter((token) => token.length === 1 && /[A-Za-z]/.test(token));
+assert.equal(
+  singleCharSpans.length,
+  0,
+  `wholesale rewrite must render whole-word redlines, found single-character spans: ${JSON.stringify(singleCharSpans)}`,
+);
+// Each redline span is one or more whole words; none collapses inter-word spacing.
+rewriteSpans.forEach((token) => assert.ok(!/\s{2,}/.test(token), `unexpected fragmented span: ${JSON.stringify(token)}`));
+
+// A SMALL edit (change one word) must still read cleanly: strike only the changed
+// word, not the whole line. This guards against over-correcting to whole-paragraph.
+const smallEdit = {
+  action: "replace_paragraph",
+  clause_id: "manual_viewer_edit",
+  id: "manual-small",
+  is_manual: true,
+  original_text: "The term of this Agreement is five years.",
+  paragraph_id: "term",
+  replacement_text: "The term of this Agreement is three years.",
+  whole_paragraph: false,
+};
+const smallHtml = renderInlineRedline({ id: "term", text: smallEdit.original_text }, smallEdit);
+assert.deepEqual(inlineSpanTexts(smallHtml, "inline-del").map((token) => token.trim()), ["five"]);
+assert.deepEqual(inlineSpanTexts(smallHtml, "inline-ins").map((token) => token.trim()), ["three"]);
+// The unchanged tail stays outside redline spans (only the swapped word redlines).
+assert.ok(smallHtml.includes("years."), "unchanged tail should render outside redline spans");
 
 const workstation = {
   exportClauseDecisions: { governing_law: true },

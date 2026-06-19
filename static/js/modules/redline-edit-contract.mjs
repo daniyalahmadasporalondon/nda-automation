@@ -59,7 +59,12 @@ export function hasInlineDiffOperations(edit) {
 export function redlineInlinePreviewMode(edit) {
   if (hasInlineDiffOperations(edit)) return "operations";
   if (edit?.whole_paragraph) return "whole_paragraph";
-  if (edit?.action === REDLINE_ACTION_REPLACE_PARAGRAPH && isManualRedlineEdit(edit)) return "character_diff";
+  // A free-form manual replace diffs at the WORD level -- the same granularity the
+  // side panels use (redlineOperationPreviewMode -> "word_diff"). A character-level
+  // diff degenerates into single-letter strike/insert "confetti" whenever the new
+  // text differs substantially from the old (e.g. a retyped document title), so the
+  // inline preview must stay word-grouped to match the already-clean card/side-by-side.
+  if (edit?.action === REDLINE_ACTION_REPLACE_PARAGRAPH && isManualRedlineEdit(edit)) return "word_diff";
   return "whole_paragraph";
 }
 
