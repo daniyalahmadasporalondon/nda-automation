@@ -58,3 +58,21 @@ def test_admin_access_panel_controls() -> None:
         check=True,
         cwd=ROOT,
     )
+
+
+def test_personalisation_self_serve_form() -> None:
+    """Drive the self-serve "My signature" form (admin-personalisation.js).
+
+    The Node harness mounts the REAL controller against a minimal fake DOM and a
+    stubbed fetch, asserting that a NON-admin's form loads and saves through
+    GET/POST /api/me/personalisation-settings (never the admin endpoint, no 403
+    dead-end), and that the admin-only global-default panel self-hides on 403
+    rather than nagging "Administrator access is required".
+    """
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed; skipping personalisation frontend checks")
+    subprocess.run(
+        ["node", str(ROOT / "tests" / "frontend" / "personalisation-self-serve.cjs")],
+        check=True,
+        cwd=ROOT,
+    )

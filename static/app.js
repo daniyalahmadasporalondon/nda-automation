@@ -111,6 +111,7 @@ let adminDriveController;
 let adminDocuSignController;
 let adminAccessController;
 let adminPersonalisationController;
+let adminGlobalPersonalisationController;
 let docusignSendController;
 
 const repositoryController = createRepositoryController({
@@ -440,6 +441,10 @@ adminAccessController = createAdminAccessController({
   persistedList: document.querySelector("#adminAccessPersisted"),
   reviewErrorFromPayload,
 });
+// SELF-SERVE: every authenticated user (admin or not) edits their OWN
+// signature here, through /api/me/personalisation-settings (no `endpoint` =
+// the controller's per-user default). This replaces the old admin-only wiring
+// that 403'd for non-admins with a dead "Administrator access is required".
 adminPersonalisationController = createAdminPersonalisationController({
   card: document.querySelector("#adminPersonalisationCard"),
   form: document.querySelector("#adminPersonalisationForm"),
@@ -453,7 +458,30 @@ adminPersonalisationController = createAdminPersonalisationController({
   persistenceFact: document.querySelector('[data-admin-personalisation="persistence"]'),
   reviewErrorFromPayload,
   onSettingsLoaded: (settings) => {
+    // The caller's resolved signature is what the outbound-email defaults use.
     state.personalisationSettings = normalizePersonalisationSettings(settings);
+  },
+});
+// ADMIN-ONLY: the deployment/global default that users inherit when they have
+// no personal override. Wired to /api/admin/personalisation-settings and
+// self-hides (onUnavailable) for non-admins — never a dead-end.
+adminGlobalPersonalisationController = createAdminPersonalisationController({
+  endpoint: "/api/admin/personalisation-settings",
+  adminOnly: true,
+  card: document.querySelector("#adminGlobalPersonalisationCard"),
+  form: document.querySelector("#adminGlobalPersonalisationForm"),
+  signOffInput: document.querySelector("#adminGlobalSignOffInput"),
+  signatureInput: document.querySelector("#adminGlobalSignatureInput"),
+  signatureBlockInput: document.querySelector("#adminGlobalSignatureBlockInput"),
+  saveButton: document.querySelector("#adminGlobalPersonalisationSaveButton"),
+  resetButton: document.querySelector("#adminGlobalPersonalisationResetButton"),
+  overall: document.querySelector("#adminGlobalPersonalisationOverall"),
+  message: document.querySelector("#adminGlobalPersonalisationMessage"),
+  persistenceFact: document.querySelector('[data-admin-global-personalisation="persistence"]'),
+  reviewErrorFromPayload,
+  onUnavailable: () => {
+    const section = document.querySelector("#adminGlobalPersonalisationSection");
+    if (section) section.hidden = true;
   },
 });
 authSessionController = createAuthSessionController({
@@ -1448,8 +1476,12 @@ async function loadDashboardAiHealth() {
 }
 
 async function loadPersonalisationSettings() {
+  // The caller's OWN resolved signature — works for every authenticated user
+  // (admin or not), unlike the admin-only endpoint which 403'd for non-admins
+  // and left state.personalisationSettings null. The /api/me/ GET returns the
+  // user's override or the inherited default as `personalisation`.
   try {
-    const response = await fetch("/api/admin/personalisation-settings");
+    const response = await fetch("/api/me/personalisation-settings");
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) return;
     state.personalisationSettings = normalizePersonalisationSettings(
@@ -2047,6 +2079,8 @@ function activateAdminSection(sectionName) {
   }
   if (sectionName === "personalisation") {
     adminPersonalisationController.load();
+    // The admin global-default panel loads too; it self-hides for non-admins.
+    adminGlobalPersonalisationController.load();
   }
 }
 

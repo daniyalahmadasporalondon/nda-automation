@@ -1,8 +1,12 @@
 const AdminPersonalisationView = (() => {
-  const ENDPOINT = "/api/admin/personalisation-settings";
+  // Self-serve default: every authenticated user (admin or not) reads/writes
+  // their OWN signature through /api/me/personalisation-settings. The admin
+  // global-default panel passes endpoint="/api/admin/personalisation-settings".
+  const SELF_ENDPOINT = "/api/me/personalisation-settings";
   const EMPTY_SETTINGS = { sign_off: "", signature: "", signature_block: "" };
 
   function createController({
+    endpoint,
     card,
     form,
     signOffInput,
@@ -15,7 +19,13 @@ const AdminPersonalisationView = (() => {
     persistenceFact,
     reviewErrorFromPayload,
     onSettingsLoaded,
+    // When true (the admin global-default panel), a 403/404 means "not an admin"
+    // and the surface hides itself rather than nagging — it is an optional,
+    // admin-only section, not the self-serve form every user gets.
+    adminOnly = false,
+    onUnavailable,
   }) {
+    const ENDPOINT = endpoint || SELF_ENDPOINT;
     let loadedSettings = { ...EMPTY_SETTINGS };
     let endpointAvailable = false;
     let loading = false;
@@ -43,17 +53,25 @@ const AdminPersonalisationView = (() => {
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw responseError(response, payload, "Personalisation settings could not load");
         endpointAvailable = true;
-        loadedSettings = normaliseSettings(payload.personalisation || payload.personalization || payload.settings || {});
-        onSettingsLoaded?.(loadedSettings);
-        renderFields(loadedSettings, payload.defaults || {});
+        loadedSettings = normaliseSettings(
+          payload.personalisation || payload.personalization || payload.settings || {},
+        );
+        onSettingsLoaded?.(loadedSettings, payload);
+        renderFields(loadedSettings, defaultsFromPayload(payload));
         setControlsDisabled(false);
         setOverall("Ready", "ready");
-        setMessage("Personalisation settings loaded.");
-        setPersistence("Saved through /api/admin/personalisation-settings");
+        setMessage(loadedMessage(payload));
+        setPersistence(`Saved through ${ENDPOINT}`);
         updateDirtyState();
       } catch (error) {
         endpointAvailable = false;
         loadedSettings = { ...EMPTY_SETTINGS };
+        // An admin-only panel that the caller cannot reach (403/404) is not a
+        // dead-end: hand off to onUnavailable so the page can hide it entirely.
+        if (adminOnly && error?.adminForbidden) {
+          onUnavailable?.(error);
+          return;
+        }
         renderFields(loadedSettings);
         setControlsDisabled(true);
         setOverall("Unavailable", "blocked");
@@ -82,17 +100,41 @@ const AdminPersonalisationView = (() => {
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw responseError(response, payload, "Personalisation settings could not save");
-        loadedSettings = normaliseSettings(payload.personalisation || payload.personalization || payload.settings || nextSettings);
-        onSettingsLoaded?.(loadedSettings);
-        renderFields(loadedSettings, payload.defaults || {});
+        loadedSettings = normaliseSettings(
+          payload.personalisation || payload.personalization || payload.settings || nextSettings,
+        );
+        onSettingsLoaded?.(loadedSettings, payload);
+        renderFields(loadedSettings, defaultsFromPayload(payload));
         setOverall("Saved", "ready");
-        setMessage("Personalisation settings saved.");
+        setMessage(savedMessage(payload));
       } catch (error) {
         setOverall("Save failed", "blocked");
         setMessage(error.message || "Personalisation settings could not save");
       } finally {
         updateDirtyState();
       }
+    }
+
+    function loadedMessage(payload) {
+      if (ENDPOINT === SELF_ENDPOINT) {
+        return payload && payload.is_custom
+          ? "Your signature is loaded. This is what goes out on your emails."
+          : "Showing the current default signature. Save to make it your own.";
+      }
+      return "Personalisation settings loaded.";
+    }
+
+    function savedMessage(payload) {
+      if (ENDPOINT === SELF_ENDPOINT) {
+        return "Your signature is saved. New emails will use it.";
+      }
+      return "Personalisation settings saved.";
+    }
+
+    function defaultsFromPayload(payload = {}) {
+      // The /api/me/ payload exposes the inherited org default as global_default;
+      // the admin endpoint exposes built-in fallbacks as defaults.
+      return payload.global_default || payload.defaults || {};
     }
 
     function renderFields(settings, defaults = {}) {
@@ -157,6 +199,9 @@ const AdminPersonalisationView = (() => {
     function responseError(response, payload, fallback) {
       const error = new Error(reviewErrorFromPayload?.(payload, fallback)?.message || payload?.error || fallback);
       error.missingEndpoint = response.status === 404;
+      // 403 (or a 404 on an admin-only endpoint) means the caller is not an
+      // admin — the admin global-default panel uses this to hide itself.
+      error.adminForbidden = response.status === 403 || response.status === 404;
       return error;
     }
 
@@ -172,12 +217,16 @@ const AdminPersonalisationView = (() => {
   }
 
   function backendContractMessage() {
-    return "Backend support needed: GET/POST /api/admin/personalisation-settings with sign_off, signature, and signature_block.";
+    return "Backend support needed: GET/POST /api/me/personalisation-settings with sign_off, signature, and signature_block.";
   }
 
-  return { createController };
+  return { createController, SELF_ENDPOINT };
 })();
 
 function createAdminPersonalisationController(options) {
   return AdminPersonalisationView.createController(options);
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { AdminPersonalisationView, createAdminPersonalisationController };
 }
