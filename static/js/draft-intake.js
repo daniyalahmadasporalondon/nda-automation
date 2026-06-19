@@ -38,6 +38,10 @@ function createDraftIntakeController({
   lawResetButton,
   statusNode,
   clearButton,
+  // "Start a new NDA": resets the intake form AND clears the document editor so the
+  // user can draft the next NDA from a clean slate (the plain Clear button only
+  // resets the form). Optional; absent = the button just isn't wired.
+  newNdaButton,
   generateButton,
   sideEntityNode,
   sideLawNode,
@@ -64,6 +68,12 @@ function createDraftIntakeController({
   // Optional seam: a stubbed generation handler. When the Generic NDA template
   // ships, app.js can pass a real one; until then the default reports pending.
   onGenerate,
+  // Optional seam: fire a transient SUCCESS toast on a finished generation. When
+  // present, a successful generate routes its confirmation to this toast and the
+  // green inline #draftIntakeStatus success text is suppressed; the inline status
+  // is kept only for in-progress ("Generating…") and ERROR messages. Absent = the
+  // success confirmation falls back to the inline status (graceful degradation).
+  notifyGenerated,
   // Optional registry override. When absent the controller first tries the live
   // GET /api/signing-entities feed and falls back to the embedded mirror.
   registryEntities,
@@ -150,6 +160,8 @@ function createDraftIntakeController({
   }
 
   clearButton?.addEventListener("click", () => resetForm());
+  // "Start a new NDA" wipes the form AND the document editor for the next one.
+  newNdaButton?.addEventListener("click", () => startNewNda());
 
   form?.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -742,11 +754,24 @@ function createDraftIntakeController({
     try {
       if (typeof onGenerate === "function") {
         // onGenerate performs the POST + download/save side effects. It may
-        // return a {message, tone} to render (e.g. a "pending" notice when the
-        // endpoint is not deployed yet); otherwise the default success copy is
+        // return a {message, toast, tone} to render (e.g. a "pending" notice when
+        // the endpoint is not deployed yet); otherwise the default success copy is
         // shown. A thrown error is surfaced in the error tone below.
         const outcome = await onGenerate(payload);
-        setStatus(outcome?.message || "NDA generated.", outcome?.tone || "success");
+        const tone = outcome?.tone || "success";
+        // SUCCESS confirmation moves to a transient green TOAST (notifyGenerated)
+        // instead of a persistent green inline status line. We clear the inline
+        // status (it last read "Generating…") so no stale text lingers. The inline
+        // #draftIntakeStatus is reserved for in-progress + ERROR messages now. If
+        // the toast seam is absent (e.g. a test harness), or the outcome carries no
+        // toast text (the generation-unavailable pending notice), fall back to the
+        // inline status so the message is never silently dropped.
+        if (tone === "success" && typeof notifyGenerated === "function" && outcome?.toast) {
+          notifyGenerated(outcome.toast);
+          setStatus("");
+        } else {
+          setStatus(outcome?.message || "NDA generated.", tone);
+        }
         // A real generation returns the saved-artifact handle; stage Download/Send.
         if (outcome?.generated) setStagedActions(outcome.generated);
         // Load the generated NDA into the always-visible editor automatically (no
@@ -788,6 +813,17 @@ function createDraftIntakeController({
     updateSendState();
   }
 
+  // "Start a new NDA": reset the intake form (resetForm) AND clear the always-visible
+  // document editor so the just-generated NDA is wiped and the next one starts from a
+  // clean, empty slate. The plain Clear button only resets the form; this also empties
+  // the editor pane (showing its empty state) so nothing from the previous NDA lingers.
+  function startNewNda() {
+    resetForm({ status: "Started a new NDA." });
+    if (window.generatorEditor && typeof window.generatorEditor.clear === "function") {
+      window.generatorEditor.clear();
+    }
+  }
+
   // Called when the Generator tab is shown. Loads the live registry on first
   // activation (the empty-state copy shows during the brief async gap, never a
   // blank panel), populates the option lists, and renders the current state. The
@@ -809,5 +845,5 @@ function createDraftIntakeController({
     statusNode.classList.toggle("success", tone === "success");
   }
 
-  return { activate, resetForm, generate };
+  return { activate, resetForm, startNewNda, generate };
 }

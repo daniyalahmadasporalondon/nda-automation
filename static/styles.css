@@ -1137,7 +1137,18 @@ h3 {
 }
 
 /* Generator action row: Clear · Generate · (staged) Download · Send. */
+/* Post-generate actions stack as TWO deliberate rows (3 + 3) — create/reset on
+   top (Clear · Start a new NDA · Generate NDA), output below (Download · Send ·
+   Send for Signature) — rather than cramming all six onto one line. Each .draft-
+   actions-subrow is its own right-aligned flex row; the two rows align on their
+   right edge and share comfortable spacing. */
 .draft-actions-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.draft-actions-subrow {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
@@ -10966,6 +10977,14 @@ body.modal-open {
   color: #fff;
   box-shadow: 0 18px 45px -18px rgba(43, 12, 110, 0.55);
   animation: toast-in 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Success variant: green gradient instead of the default brand violet. Used for
+   the post-generate "NDA generated" confirmation toast (role="status"), so the
+   transient success notice reads as success rather than a neutral/inbound alert. */
+.toast--success {
+  background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%);
+  box-shadow: 0 18px 45px -18px rgba(6, 78, 59, 0.55);
 }
 
 .toast--leaving {
