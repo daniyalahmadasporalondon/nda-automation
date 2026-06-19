@@ -82,6 +82,27 @@ DEFAULT_INDEFINITE_NON_SURVIVAL_OBJECTS = (
     "warranty",
     "warranties",
 )
+# Single source of truth: the playbook's term_and_survival
+# ``longer_survival_carve_out_terms``. This in-code copy is ONLY a defensive
+# fallback for a degraded/legacy clause config that arrives without the field;
+# the normal review path carries the playbook list on the clause and never
+# touches this tuple. It MUST stay byte-identical to the shipped
+# playbook.json list (including the data-protection terms) -- a missing term
+# here would WRONGLY FAIL a legitimate longer-survival carve-out (e.g. personal
+# data retained as long as data-protection law requires). The drift is pinned by
+# tests/test_term_carveout_drift_guard.py, which asserts this tuple equals the
+# playbook field exactly; do not edit one without the other.
+DEFAULT_LONGER_SURVIVAL_CARVE_OUT_TERMS = (
+    "trade secret",
+    "trade secrets",
+    "legal obligation",
+    "legal obligations",
+    "required by law",
+    "applicable law",
+    "personal data",
+    "data protection",
+    "data-protection",
+)
 GENERIC_NON_SURVIVAL_DURATION_TERMS = {
     "after termination",
     "continue",
@@ -779,14 +800,11 @@ def _carve_out_context_patterns(clause: Dict[str, object]) -> List[str]:
     if isinstance(configured_terms, list):
         terms = configured_terms
     else:
-        terms = [
-            "trade secret",
-            "trade secrets",
-            "legal obligation",
-            "legal obligations",
-            "required by law",
-            "applicable law",
-        ]
+        # Degraded/legacy clause without the playbook field: fall back to the
+        # byte-identical in-code copy of the playbook list (drift-guarded by
+        # tests/test_term_carveout_drift_guard.py) so a legitimate
+        # data-protection / trade-secret carve-out is still honored.
+        terms = list(DEFAULT_LONGER_SURVIVAL_CARVE_OUT_TERMS)
     return [
         re.escape(str(term).lower().strip()).replace(r"\ ", r"\s+")
         for term in terms
