@@ -119,7 +119,7 @@ def test_ai_orchestrator_uses_tool_results_to_answer_playbook_question():
     assert response["answer"]["count"] == 3
     assert "Test Playbook has 3 clauses" in response["answer"]["text"]
     assert model.requests[0]["messages"][0]["role"] == "system"
-    assert model.requests[0]["model"] == "anthropic/claude-opus-4.8"
+    assert model.requests[0]["model"] == "anthropic/claude-opus-4.8-fast"
     assert model.requests[0]["response_format"] == {"type": "json_object"}
     assert "previous_response_id" not in model.requests[1]
     assert model.requests[1]["messages"][-1]["role"] == "tool"

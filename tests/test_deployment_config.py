@@ -86,7 +86,7 @@ class DeploymentConfigTests(unittest.TestCase):
         self.assertRegex(blueprint, r"key:\s+NDA_RATE_LIMIT_PER_MINUTE\s+value:\s+\"120\"")
         self.assertRegex(blueprint, r"key:\s+NDA_AI_REVIEW_ENABLED\s+value:\s+\"true\"")
         self.assertRegex(blueprint, r"key:\s+NDA_AI_PROVIDER\s+value:\s+openrouter")
-        self.assertRegex(blueprint, r"key:\s+NDA_AI_MODEL\s+value:\s+anthropic/claude-opus-4.8")
+        self.assertRegex(blueprint, r"key:\s+NDA_AI_MODEL\s+value:\s+anthropic/claude-opus-4.8-fast")
         # Generation uses a FAST model (DeepSeek V4 Flash), separate from the Opus
         # reviewer, so a synchronous generate stays well under the frontend's 45s
         # timeout. Flash is the faster of the two DeepSeek models we run.

@@ -5461,7 +5461,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(save_payload["ai_review"]["enabled"], True)
         self.assertEqual(save_payload["ai_review"]["stored_enabled"], True)
         self.assertEqual(save_payload["ai_review"]["provider"], "openrouter")
-        self.assertEqual(save_payload["ai_review"]["model"], "anthropic/claude-opus-4.8")
+        self.assertEqual(save_payload["ai_review"]["model"], "anthropic/claude-opus-4.8-fast")
         self.assertEqual(save_payload["ai_review"]["api_key_configured"], True)
         self.assertEqual(save_payload["ai_review"]["api_key_source"], "local_settings")
         self.assertEqual(save_payload["settings_audit"][0]["action"], "ai_api_key_saved")
