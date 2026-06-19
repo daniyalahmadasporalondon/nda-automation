@@ -46,15 +46,18 @@ export const DEFAULT_NDA_TYPE = "mutual";
 // term_and_survival.max_term_years.
 export const DEFAULT_MAX_TERM_YEARS = 5;
 
-// NOTE: the generated NDA's "GOVERNING LAW AND JURISDICTION" clause is LAW-ONLY —
-// it states the governing law and names no forum/courts (a single governing law
-// may be litigated in more than one court, and generation deliberately omits the
-// courts sentence to match how review reads the clause; see
-// nda_generation._fill_variable_slots / the law-only template). The preview must
-// therefore NOT show a forum/courts sentence either, so there is no
-// FORUM_BY_OPTION_ID mirror or forum-resolution helper here. The backend still
-// records a provenance-only `forum` on the manifest, but it is never written into
-// the document, so it is not previewed.
+// FORUM (the court/venue) is part of the generated NDA's "GOVERNING LAW AND
+// JURISDICTION" clause: "...governed by ... the laws of [LAW], and [FORUM] shall
+// have exclusive jurisdiction ..." (nda_generation._fill_variable_slots). The
+// forum is the SIGNING ENTITY's registry `jurisdiction` field — there is NO
+// FORUM_BY_OPTION_ID map here and there must never be one: the preview reads the
+// forum from the SAME entity bundles the backend uses (the embedded mirror below
+// carries each entity's `jurisdiction` field-for-field with entity_registry.py,
+// and the live /api/signing-entities feed surfaces the same field via
+// list_entities()). On an OVERRIDE, the forum tracks the OVERRIDDEN law: it is
+// taken from whichever registry entity DEFAULTS to the chosen option (mirroring
+// nda_generation._forum_for_option_id — first matching entity by registry order),
+// so the preview never pairs one jurisdiction's law with another's courts.
 
 // Our seven signing entities, mirroring nda_automation/entity_registry.py. Each
 // bundle travels together: legal_name + governing_law + addresses are a unit
@@ -68,6 +71,9 @@ export const SIGNING_ENTITIES = [
     short_name: "Aspora",
     legal_name: "Aspora Technology Services Private Limited",
     governing_law: { playbook_option_id: "india", label: "India" },
+    // Entity-specific forum (source of truth for the rendered court). Phrased so it
+    // reads grammatically: "[jurisdiction] shall have exclusive jurisdiction ...".
+    jurisdiction: "courts in Bengaluru, Karnataka",
     addresses: [
       {
         id: "registered",
@@ -83,6 +89,7 @@ export const SIGNING_ENTITIES = [
     short_name: "Vance Money",
     legal_name: "Vance Money Services LLC",
     governing_law: { playbook_option_id: "delaware", label: "Delaware" },
+    jurisdiction: "courts in Delaware, USA",
     addresses: [
       {
         id: "registered",
@@ -101,6 +108,7 @@ export const SIGNING_ENTITIES = [
     short_name: "Real Transfer",
     legal_name: "Real Transfer Limited",
     governing_law: { playbook_option_id: "england_and_wales", label: "England and Wales" },
+    jurisdiction: "courts in England and Wales",
     addresses: [
       {
         id: "corporate",
@@ -123,6 +131,7 @@ export const SIGNING_ENTITIES = [
     short_name: "Vance Techlabs",
     legal_name: "Vance Techlabs Limited",
     governing_law: { playbook_option_id: "difc", label: "DIFC" },
+    jurisdiction: "the DIFC Courts",
     addresses: [
       {
         id: "registered",
@@ -138,6 +147,7 @@ export const SIGNING_ENTITIES = [
     short_name: "Nesse Technologies",
     legal_name: "Nesse Technologies Inc",
     governing_law: { playbook_option_id: "ontario_canada", label: "Ontario, Canada" },
+    jurisdiction: "the courts of Ontario, Canada",
     addresses: [
       {
         id: "registered",
@@ -153,6 +163,7 @@ export const SIGNING_ENTITIES = [
     short_name: "Vance Technologies",
     legal_name: "Vance Technologies Limited",
     governing_law: { playbook_option_id: "england_and_wales", label: "England and Wales" },
+    jurisdiction: "courts in England and Wales",
     addresses: [
       {
         id: "registered",
@@ -168,6 +179,7 @@ export const SIGNING_ENTITIES = [
     short_name: "Aspora Financial Services",
     legal_name: "Aspora Financial Services (IFSC) Private Limited",
     governing_law: { playbook_option_id: "india", label: "India" },
+    jurisdiction: "courts in Gandhinagar, Gujarat",
     addresses: [
       {
         id: "registered",
@@ -330,6 +342,41 @@ export function effectiveGoverningLaw(intake, entities = SIGNING_ENTITIES, lawOp
   return { id: lawId, label: lawId };
 }
 
+// The court/venue (forum) for a governing-law OPTION, derived from the entity
+// registry — the SAME resolution the backend uses
+// (nda_generation._forum_for_option_id): the first entity (by registry order)
+// that DEFAULTS to this option, and that entity's `jurisdiction` field. This is
+// how an OVERRIDE's forum tracks the overridden law rather than the picked
+// entity's own court. Returns null when no registry entity defaults to the option
+// (so no court can be resolved) — the preview then shows a placeholder rather than
+// inventing a venue, matching the backend's _require_court_forum refusal.
+export function forumForOptionId(optionId, entities = SIGNING_ENTITIES) {
+  if (!optionId) return null;
+  for (const entity of entities || []) {
+    if (lawOptionId(entity?.governing_law) === optionId) {
+      const forum = String(entity?.jurisdiction || "").trim();
+      if (forum) return forum;
+    }
+  }
+  return null;
+}
+
+// The forum that goes into the live preview for the current intake. With NO
+// override it is the picked entity's own registry court; with an override it is
+// the overridden option's court (the registry entity that defaults to it), so the
+// preview never pairs one jurisdiction's law with another's forum — exactly as the
+// generated document does (nda_generation.entity_party_from_bundle).
+export function effectiveForum(intake, entities = SIGNING_ENTITIES) {
+  const entity = findEntity(intake.entityId, entities);
+  if (!entity) return null;
+  if (!intake.governingLawOverridden) {
+    const own = String(entity?.jurisdiction || "").trim();
+    if (own) return own;
+    return forumForOptionId(lawOptionId(entity.governing_law), entities);
+  }
+  return forumForOptionId(intake.governingLawId, entities);
+}
+
 export function selectedEntity(intake, entities = SIGNING_ENTITIES) {
   return findEntity(intake.entityId, entities);
 }
@@ -443,6 +490,10 @@ export function createDraftIntake({ entities = SIGNING_ENTITIES, lawOptions = nu
     clearGoverningLawOverride: (intake) => clearGoverningLawOverride(intake, entities),
     selectAddress: (intake, id) => selectAddress(intake, id, entities),
     effectiveGoverningLaw: (intake) => effectiveGoverningLaw(intake, entities, lawOptions),
+    // The court/venue rendered into the preview's governing-law clause, sourced
+    // from the bound registry (never a duplicated FE list).
+    effectiveForum: (intake) => effectiveForum(intake, entities),
+    forumForOptionId: (optionId) => forumForOptionId(optionId, entities),
     validateDraftIntake: (intake) => validateDraftIntake(intake, entities, lawOptions),
     buildDraftPayload: (intake) => buildDraftPayload(intake, entities, lawOptions),
   };

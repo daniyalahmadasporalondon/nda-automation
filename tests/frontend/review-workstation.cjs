@@ -81,7 +81,7 @@ const tests = [
   ["sends the currently loaded review matter after switching documents", testReviewSendUsesCurrentMatterAfterSwitch],
   ["sends review email with a typed recipient when none was detected", testReviewSendAcceptsManualRecipient],
   ["opens the Generator tab, generates an NDA, and downloads the saved document", testDraftIntakeGenerateNda],
-  ["clamps an over-cap term and shows law-only governing law in the Generator preview", testDraftIntakePreviewClampAndGoverningLaw],
+  ["clamps an over-cap term and shows the governing law + forum in the Generator preview", testDraftIntakePreviewClampAndGoverningLaw],
   ["surfaces generation self-check warnings while staging the artifact", testDraftIntakeGenerateSelfCheckWarning],
   ["degrades the Generate button gracefully when generation is not deployed", testDraftIntakeGenerateDegradesOn404],
   ["guards Save-As picker fallbacks", testSavePickerGuardsAndFallbacks],
@@ -3060,10 +3060,10 @@ async function testDraftIntakePreviewClampAndGoverningLaw(page) {
   await page.waitForFunction(
     () => document.querySelector("#draftIntakeEntitySelect")?.options.length > 1,
   );
-  // aspora_technology defaults to India law. The governing-law clause is LAW-ONLY:
-  // it names the law ("India") and NO forum/courts (generation drops the courts
-  // sentence to match how review reads the clause), so the preview must not show
-  // any "Courts of ..." phrase.
+  // aspora_technology defaults to India law. The governing-law clause names BOTH
+  // the law ("India") AND the entity's court ("courts in Bengaluru, Karnataka")
+  // with the exclusive-jurisdiction wording, exactly as generation renders it
+  // (the forum is sourced from the entity registry, not a hardcoded FE list).
   await page.locator("#draftIntakeEntitySelect").selectOption("aspora_technology");
   await page.locator("#draftIntakeCounterpartyName").fill("Acme Corporation");
   await page.locator("#draftIntakeBusinessDescription").fill("cross-border payments");
@@ -3110,7 +3110,12 @@ async function testDraftIntakePreviewClampAndGoverningLaw(page) {
     sourceText.includes("governed by and construed in accordance with the laws of India"),
     "preview states the governing law",
   );
-  assert.ok(!/Courts of/.test(sourceText), "preview names no forum/courts (the clause is law-only)");
+  // The forum is rendered with the exclusive-jurisdiction wording, sourced from the
+  // entity's registry court (Bengaluru for aspora_technology).
+  assert.ok(
+    sourceText.includes("courts in Bengaluru, Karnataka shall have exclusive jurisdiction"),
+    "preview names the entity's court with exclusive jurisdiction",
+  );
 
   // The clamped term and the law survive into the visible editor (the raw
   // #draftIntakePreview is hidden; #generatorEditor is what shows).
@@ -3121,7 +3126,10 @@ async function testDraftIntakePreviewClampAndGoverningLaw(page) {
     editorText.includes("construed in accordance with the laws of India"),
     "editor shows the governing law",
   );
-  assert.ok(!/Courts of/.test(editorText), "editor names no forum/courts (the clause is law-only)");
+  assert.ok(
+    editorText.includes("courts in Bengaluru, Karnataka shall have exclusive jurisdiction"),
+    "editor shows the entity's court with exclusive jurisdiction",
+  );
 
   // Item 2: the recital business description rides `.nda-fill-entity`, so its
   // highlight survives flattening into the editor as a `fill` run (a plain
@@ -3132,9 +3140,10 @@ async function testDraftIntakePreviewClampAndGoverningLaw(page) {
   });
   assert.ok(recitalIsEntityFill, "recital business description uses the surviving entity-fill highlight");
 
-  // An override switches the governing law: pick Delaware -> the law-only clause
-  // now reads "laws of Delaware", mirroring generation. No forum/courts is ever
-  // shown, so an override moves only the law (there is no forum to move with it).
+  // An override switches the governing law AND its forum together: pick Delaware ->
+  // the clause now reads "laws of Delaware" and the forum tracks the OVERRIDDEN law
+  // ("courts in Delaware, USA", the court of the entity that defaults to delaware),
+  // never the picked entity's own Indian court — mirroring generation exactly.
   await page.locator("#draftIntakeGoverningLaw").selectOption("delaware");
   await page.waitForFunction(
     () =>
@@ -3150,7 +3159,15 @@ async function testDraftIntakePreviewClampAndGoverningLaw(page) {
     !overriddenText.includes("construed in accordance with the laws of India"),
     "the override moves the governing-law clause off India",
   );
-  assert.ok(!/Courts of/.test(overriddenText), "the overridden clause still names no forum/courts");
+  // The forum moves WITH the law: Delaware's court, and the India court is gone.
+  assert.ok(
+    overriddenText.includes("courts in Delaware, USA shall have exclusive jurisdiction"),
+    "the overridden clause names the overridden law's court",
+  );
+  assert.ok(
+    !overriddenText.includes("courts in Bengaluru, Karnataka shall have exclusive jurisdiction"),
+    "the entity's own court does not linger after an override",
+  );
 
   // Item 1 end-to-end: the new top-level keys reach the POST under their exact
   // backend-contract names (business_description + the counterparty identity).

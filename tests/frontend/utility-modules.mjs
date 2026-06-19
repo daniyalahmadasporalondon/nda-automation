@@ -1269,16 +1269,46 @@ const overriddenPayload = buildDraftPayload(setGoverningLawOverride(validIntake,
 assert.equal(overriddenPayload.signing_entity.governing_law.playbook_option_id, "delaware");
 assert.equal(overriddenPayload.signing_entity.governing_law_overridden, true);
 
-// --- Governing-law clause is LAW-ONLY (preview clause 13). Generation writes the
-// governing law and names no forum/courts (it omits the courts sentence to match
-// how review reads the clause), so the intake module's bound API exposes no
-// forum-resolution helper — there is nothing to keep in sync with the registry,
-// and the preview cannot drift into showing a court the executed NDA would not
-// contain. (A removed *named* export can't be import-tested under ESM without a
-// parse error, so we assert against the bound factory surface instead.) ---
-const forumlessApi = createDraftIntake();
-assert.equal(typeof forumlessApi.forumForOptionId, "undefined", "the bound intake API exposes no forum helper");
-assert.equal(typeof forumlessApi.effectiveForum, "undefined", "the bound intake API exposes no forum helper");
+// --- Governing-law clause carries the FORUM (preview clause 13). The generated
+// NDA names BOTH the governing law AND the court ("...the laws of [LAW], and
+// [FORUM] shall have exclusive jurisdiction ..."), so the intake module resolves
+// the forum from the SAME entity registry the backend uses — never a duplicated
+// FORUM_BY_OPTION_ID list. The forum is the entity's `jurisdiction` field, and on
+// an OVERRIDE it tracks the OVERRIDDEN law (mirroring
+// nda_generation._forum_for_option_id: the registry entity that defaults to the
+// chosen option). ---
+const forumApi = createDraftIntake();
+assert.equal(typeof forumApi.effectiveForum, "function", "the bound intake API exposes the forum resolver");
+assert.equal(typeof forumApi.forumForOptionId, "function", "the bound intake API exposes the per-option forum resolver");
+
+// No-override: the forum is the picked entity's own registry court.
+const difcPick = applyEntitySelection(createInitialIntake(), "vance_techlabs");
+assert.equal(forumApi.effectiveForum(difcPick), "the DIFC Courts", "DIFC entity forum is its registry court");
+const aspPick = applyEntitySelection(createInitialIntake(), "aspora_technology");
+assert.equal(forumApi.effectiveForum(aspPick), "courts in Bengaluru, Karnataka", "India entity forum is the entity-specific city court");
+// Two India entities sit in DIFFERENT cities — the forum is entity-sourced, never
+// a per-law default (this is exactly why no FORUM_BY_OPTION_ID map can exist).
+const aspFinPick = applyEntitySelection(createInitialIntake(), "aspora_financial_services");
+assert.equal(forumApi.effectiveForum(aspFinPick), "courts in Gandhinagar, Gujarat", "the other India entity has a different city court");
+
+// OVERRIDE: the forum tracks the OVERRIDDEN law — taken from whichever entity
+// defaults to the chosen option, NOT the picked entity's own court.
+const aspOverrideToDifc = setGoverningLawOverride(aspPick, "difc");
+assert.equal(forumApi.effectiveForum(aspOverrideToDifc), "the DIFC Courts", "override forum follows the overridden law, not the entity");
+assert.equal(forumApi.forumForOptionId("delaware"), "courts in Delaware, USA", "per-option forum resolves from the defaulting entity");
+assert.equal(forumApi.forumForOptionId("england_and_wales"), "courts in England and Wales", "first-by-registry-order entity wins for a shared option");
+// An option no registry entity defaults to has no resolvable court -> null (the
+// preview shows a placeholder, mirroring the backend's _require_court_forum
+// refusal rather than inventing a venue).
+assert.equal(forumApi.forumForOptionId("mars"), null, "an unknown option resolves no forum");
+// Every embedded-mirror entity carries a non-empty `jurisdiction` (the forum the
+// preview renders); a missing one would silently blank the courts sentence.
+for (const entity of SIGNING_ENTITIES) {
+  assert.ok(
+    typeof entity.jurisdiction === "string" && entity.jurisdiction.trim().length > 0,
+    `entity ${entity.id} must carry a registry forum (jurisdiction)`,
+  );
+}
 
 // The playbook term cap the preview clamps to has a sane fallback default.
 assert.equal(DEFAULT_MAX_TERM_YEARS, 5);
