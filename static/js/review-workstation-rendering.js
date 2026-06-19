@@ -2583,11 +2583,19 @@ function proposedChangeConfidence(value) {
 function renderClauseActionsBlock(clause, status = clauseDisplayStatus(clause)) {
   const redlines = state.reviewRedlines.filter((edit) => edit.clause_id === clause.id);
   const comment = clauseReviewComment(clause.id);
+  // The verdict and the auto-redline are SEPARATE concerns: a clause can FAIL (and
+  // still block send) even when the auto-fixer produced no replacement wording. When
+  // the backend flags that (manual_redline_needed), tell the reviewer to redline it
+  // by hand instead of leaving the bare "no redline available" line that reads like
+  // nothing is wrong.
+  const manualRedlineNeeded = Boolean(clause?.manual_redline_needed) && !status.passes;
   return `
     <div class="studio-detail-block clause-actions-block" data-card-section="actions">
       <small>Actions</small>
       ${redlines.length ? `
         <p class="action-muted">Use the Include/Ignore controls on the proposed edit above to choose what is exported.</p>
+      ` : manualRedlineNeeded ? `
+        <p class="action-warning" data-manual-redline-needed>Auto-fix unavailable — no standard replacement wording was found for this clause. Redline it manually before approving or sending.</p>
       ` : `
         <p class="action-muted">${escapeHtml(status.passes ? "No redline action required." : "No redline action is available for this clause.")}</p>
       `}

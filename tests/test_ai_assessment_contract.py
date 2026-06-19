@@ -262,11 +262,17 @@ class AIAssessmentContractTests(unittest.TestCase):
             "This Agreement shall be governed by the laws of India.",
         )
 
-    def test_blank_redline_with_no_template_degrades_one_clause_to_review(self):
+    def test_blank_redline_with_no_template_keeps_fail_and_flags_manual_redline(self):
         # non_circumvention is a prohibited clause: its fix is a deletion, so the
         # Playbook carries no replacement wording. A model that mislabels the fix
-        # as a blank replace must not discard every other (correct) assessment;
-        # the single clause degrades to a human-review flag (never a silent pass).
+        # as a blank replace must not discard every other (correct) assessment.
+        # The verdict and the auto-redline are SEPARATE concerns: the clause is bad,
+        # so the FAIL STAYS a FAIL (never silently softened to a weaker review just
+        # because the auto-fixer produced no text); we record manual_redline_needed
+        # so a human writes the fix by hand. The FAIL still blocks send downstream
+        # via the CHECK aggregate (requires_redline / blocks_auto_send), so the
+        # clause-level blocks_send stays the model's value (False for a fail) and the
+        # decision<->blocks_send coupling is not violated.
         source = "\n\n".join([
             "The parties shall not circumvent each other or deal directly with introduced parties.",
             "This Agreement shall be governed by the laws of England and Wales.",
@@ -294,11 +300,18 @@ class AIAssessmentContractTests(unittest.TestCase):
         )
 
         clause = assessments["non_circumvention"]
-        # A blank, untemplatable fail is escalated to review (still blocks send) —
-        # never softened to a silent pass.
-        self.assertEqual(clause["decision"], "review")
-        self.assertTrue(clause["blocks_send"])
+        # (a) the FAIL is PRESERVED — NOT demoted to review.
+        self.assertEqual(clause["decision"], "fail")
+        # (b) the auto-fix-unavailable metadata flag is set so a human is told to
+        #     redline this manually.
+        self.assertTrue(clause["manual_redline_needed"])
+        # (c) clause-level blocks_send stays False (a fail is not a review); the send
+        #     gate still fires via the CHECK aggregate path, not this field.
+        self.assertFalse(clause["blocks_send"])
+        # The redline itself genuinely collapsed to a no-op (nothing to auto-apply),
+        # and the human-readable degrade note is appended to the rationale.
         self.assertEqual(clause["proposed_redline"], {"action": AI_REDLINE_NO_CHANGE})
+        self.assertIn("human review", clause["rationale"].lower())
 
     def test_quote_spanning_two_paragraphs_grounds_and_reanchors(self):
         # The DOCX extractor splits a single sentence across paragraph boundaries.
@@ -638,7 +651,7 @@ class CategoryASpanAndListContractTests(unittest.TestCase):
         self.assertIn("for one year", edits[0]["text"])
         self.assertNotIn("for two years", edits[0]["text"])
 
-    def test_unanchorable_span_degrades_to_noop_and_downgrades_clause_to_review(self):
+    def test_unanchorable_span_degrades_to_noop_but_keeps_fail_and_flags_manual(self):
         assessment = _span_assessment(
             schema_version=3,
             proposed_edits=[{
@@ -649,9 +662,11 @@ class CategoryASpanAndListContractTests(unittest.TestCase):
         )
         cleaned = self._validate(assessment)
         clause = cleaned["non_circumvention"]
-        # The fail with no realizable edit degrades to a human-review flag.
-        self.assertEqual(clause["decision"], "review")
-        self.assertTrue(clause["blocks_send"])
+        # The fail with no realizable edit KEEPS the fail (the redline being
+        # unwritable does not soften the verdict) and flags manual_redline_needed.
+        self.assertEqual(clause["decision"], "fail")
+        self.assertTrue(clause["manual_redline_needed"])
+        self.assertFalse(clause["blocks_send"])
         self.assertEqual(clause["proposed_edits"][0]["action"], AI_REDLINE_NO_CHANGE)
 
     def test_span_action_rejected_under_schema_version_two(self):

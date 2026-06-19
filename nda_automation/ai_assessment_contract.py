@@ -154,6 +154,11 @@ AI_CLAUSE_ASSESSMENT_SCHEMA: dict[str, object] = {
         },
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "blocks_send": {"type": "boolean"},
+        # METADATA, not a verdict. Set by the validator (never required from the wire)
+        # when a FAIL/REVIEW clause had NO usable auto-redline wording, so a human must
+        # write the fix manually. Listed here so a re-validated stored/cleaned
+        # assessment carrying it is not rejected by the allowed_keys check.
+        "manual_redline_needed": {"type": "boolean"},
     },
     "required": [
         "clause_id",
@@ -289,16 +294,19 @@ def validate_ai_clause_assessment(
     # One clause whose redline could neither be authored by the AI nor defaulted
     # from the Playbook (or whose only span(s) failed to anchor) must not discard
     # every other (correct) assessment. The validator collapsed each unusable edit
-    # to a no-text no_change flag; keep the verdict actionable without violating the
-    # decision<->action coupling below: a blank fail becomes a human-review flag
-    # (never a silent pass), a blank review stays a review. The decision/rationale
-    # survive so a human still sees the finding. Mirrors the historical singular
-    # ``_degraded_no_text`` behaviour, generalized to "ALL edits degraded".
+    # to a no-text no_change flag.
+    #
+    # The verdict and the redline are SEPARATE concerns: a clause being BAD must not
+    # depend on whether we could auto-write its fix. A FAIL therefore STAYS a FAIL
+    # even when the auto-fixer produced no text -- we record ``manual_redline_needed``
+    # so the reviewer is told to redline it by hand, but we never silently soften a
+    # correct FAIL into a (weaker) human-review verdict. A degraded REVIEW stays a
+    # review. The decision/rationale survive so a human always sees the finding.
+    manual_redline_needed = False
     if all_edits_degraded:
         rationale = _with_degrade_note(rationale)
-        if decision == CLAUSE_DECISION_FAIL:
-            decision = CLAUSE_DECISION_REVIEW
-            blocks_send = True
+        if decision in {CLAUSE_DECISION_FAIL, CLAUSE_DECISION_REVIEW}:
+            manual_redline_needed = True
 
     has_actionable_edit = any(
         edit.get("action") != AI_REDLINE_NO_CHANGE for edit in proposed_edits
@@ -310,7 +318,13 @@ def validate_ai_clause_assessment(
         errors.append(f"{location}: fail/review decisions must not use issue_type none")
     if decision == CLAUSE_DECISION_PASS and has_actionable_edit:
         errors.append(f"{location}: pass decisions must use proposed_redline.action no_change")
-    if decision == CLAUSE_DECISION_FAIL and not has_actionable_edit:
+    # A FAIL normally REQUIRES an actionable redline. The sole exception is the
+    # degraded case above: the auto-fixer genuinely had no wording to offer, which
+    # is exactly what ``manual_redline_needed`` records. Without this carve-out,
+    # keeping the FAIL (instead of demoting it) would trip "fail requires a redline
+    # action" and reject the whole batch -- re-introducing the coupling we are
+    # decoupling here.
+    if decision == CLAUSE_DECISION_FAIL and not has_actionable_edit and not manual_redline_needed:
         errors.append(f"{location}: fail decisions require a proposed redline action")
     if decision == CLAUSE_DECISION_REVIEW and any(
         edit.get("action") not in AI_ASSESSMENT_PARAGRAPH_REDLINE_ACTIONS for edit in proposed_edits
@@ -342,6 +356,12 @@ def validate_ai_clause_assessment(
         cleaned["recommended_option"] = recommended_option
     if reasoning_steps:
         cleaned["reasoning_steps"] = reasoning_steps
+    # METADATA flag (not a verdict): the clause is genuinely bad (FAIL/REVIEW kept
+    # above) but no automatic redline wording could be produced, so a human must
+    # write the fix. Only emitted when set, so untouched clauses keep a lean payload
+    # and downstream readers treat its absence as "auto-fix available".
+    if manual_redline_needed:
+        cleaned["manual_redline_needed"] = True
     return cleaned, errors
 
 
