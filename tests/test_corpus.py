@@ -1001,6 +1001,112 @@ class CorpusMasterFilterFacetTests(unittest.TestCase):
         )
         self.assertEqual(facets2["restraint_types"], [])
 
+    # --- restraint_types: Playbook-derived family set (drift fix) -----------
+    def test_restraint_families_cover_all_playbook_prohibited_positions(self):
+        # DRIFT GUARD: the restraint-family set is DERIVED from the Playbook's
+        # prohibited-position labels (the same single source the generation guard
+        # reads), so ALL families surface -- not a hardcoded 3. The live Playbook
+        # defines 8 (non_compete / non_solicit / non_circumvention / exclusivity /
+        # ip_assignment / perpetual_confidentiality / penalty / auto_renew_lock).
+        from nda_automation import prohibited_positions
+
+        playbook_labels = [
+            label for label, _ in prohibited_positions.PROHIBITED_POSITION_PATTERN_SOURCES
+        ]
+        self.assertEqual(
+            set(corpus_index._RESTRAINT_FAMILIES),
+            set(playbook_labels),
+            "restraint families must mirror every Playbook prohibited-position label",
+        )
+        # The established families are present (was previously 3-of-8).
+        for family in (
+            "non_compete",
+            "non_solicit",
+            "non_circumvention",
+            "exclusivity",
+            "ip_assignment",
+            "perpetual_confidentiality",
+            "penalty",
+            "auto_renew_lock",
+        ):
+            self.assertIn(family, corpus_index._RESTRAINT_FAMILIES)
+
+    def test_restraint_types_surfaces_previously_hidden_families(self):
+        # A finding whose flagged text trips families BEYOND the old hardcoded 3
+        # (here: exclusivity, ip_assignment, penalty) must now surface them. On the
+        # old 3-family hardcode these were silently dropped.
+        facets = self._facets_for_review(
+            {
+                "active_review_engine": {"executed_engine": "ai_first"},
+                "clauses": [
+                    {
+                        "id": "non_circumvention",
+                        "decision": "fail",
+                        "matched_text": (
+                            "the Recipient grants the sole and exclusive right to deal, "
+                            "hereby assigns all intellectual property, and shall pay "
+                            "liquidated damages as a penalty"
+                        ),
+                        "evidence": [],
+                    }
+                ],
+            }
+        )
+        for family in ("exclusivity", "ip_assignment", "penalty"):
+            self.assertIn(
+                family,
+                facets["restraint_types"],
+                f"{family} must surface (was dropped by the old 3-family hardcode)",
+            )
+        # Order follows the Playbook label order (exclusivity before ip_assignment
+        # before penalty).
+        self.assertEqual(
+            facets["restraint_types"],
+            [f for f in corpus_index._RESTRAINT_FAMILIES if f in facets["restraint_types"]],
+        )
+
+    def test_synthetic_new_playbook_restraint_family_appears(self):
+        # A family added to the Playbook's prohibited_position_patterns must auto-appear
+        # in the restraint facet with NO code change. We simulate the Playbook gaining a
+        # "data_residency" family and rebuild the derived set + the matched_text scan.
+        import re as _re
+
+        from nda_automation import corpus_index as ci
+        from nda_automation import prohibited_positions
+
+        new_label = "data_residency"
+        new_pattern = r"data\s+residency"
+        orig_sources = prohibited_positions.PROHIBITED_POSITION_PATTERN_SOURCES
+        orig_patterns = prohibited_positions.PROHIBITED_POSITION_PATTERNS
+        orig_families = ci._RESTRAINT_FAMILIES
+        try:
+            prohibited_positions.PROHIBITED_POSITION_PATTERN_SOURCES = orig_sources + (
+                (new_label, new_pattern),
+            )
+            prohibited_positions.PROHIBITED_POSITION_PATTERNS = orig_patterns + (
+                (new_label, _re.compile(new_pattern, _re.IGNORECASE)),
+            )
+            ci._RESTRAINT_FAMILIES = ci._derive_restraint_families()
+            self.assertIn(new_label, ci._RESTRAINT_FAMILIES)
+            facets = self._facets_for_review(
+                {
+                    "active_review_engine": {"executed_engine": "ai_first"},
+                    "clauses": [
+                        {
+                            "id": "non_circumvention",
+                            "decision": "fail",
+                            "matched_text": "the Recipient must observe strict data residency requirements",
+                            "evidence": [],
+                        }
+                    ],
+                }
+            )
+            self.assertIn(new_label, facets["restraint_types"])
+        finally:
+            prohibited_positions.PROHIBITED_POSITION_PATTERN_SOURCES = orig_sources
+            prohibited_positions.PROHIBITED_POSITION_PATTERNS = orig_patterns
+            ci._RESTRAINT_FAMILIES = orig_families
+
     # --- review_outcome ----------------------------------------------------
     def test_review_outcome_has_fail_needs_review_clean(self):
         has_fail = self._facets_for_review(

@@ -98,10 +98,21 @@ const CorpusModel = (() => {
     term_band: { "<=2y": "2 years or less", "3-5y": "3–5 years", ">5y": "Over 5 years" },
     review_outcome: { clean: "Clean", needs_review: "Needs review", has_fail: "Has fail" },
     origin: { generated: "Generated", received: "Received" },
+    // Restraint families mirror the Playbook's non_circumvention
+    // prohibited_position_patterns labels (8 today). The backend derives the full
+    // set from the Playbook, so this map only supplies NICER labels than the
+    // humanised default for the established families -- any family NOT listed here
+    // (e.g. a newly-added Playbook family) falls through to humaniseFacetValue in
+    // richFacetValueLabel and auto-appears, so the FE never goes blind to a new one.
     restraint_types: {
       non_compete: "Non-compete",
       non_solicit: "Non-solicit",
       non_circumvention: "Non-circumvention",
+      exclusivity: "Exclusivity",
+      ip_assignment: "IP assignment",
+      perpetual_confidentiality: "Perpetual confidentiality",
+      penalty: "Penalty",
+      auto_renew_lock: "Auto-renew lock",
     },
   };
 

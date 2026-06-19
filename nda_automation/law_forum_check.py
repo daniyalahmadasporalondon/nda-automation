@@ -43,23 +43,81 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 
-# ---------------------------------------------------------------------------
-# Canonical jurisdiction "buckets".
+# ===========================================================================
+# Canonical jurisdiction "buckets" -- DERIVED FROM THE PLAYBOOK (north star).
 #
 # Each bucket carries:
 #   law   -> phrases that, in a GOVERNING-LAW sentence, name this jurisdiction.
 #   forum -> phrases that, in a FORUM/VENUE/ARBITRATION sentence, name this
 #            jurisdiction's courts/seat.
 #
-# This mirrors the generation-side approved options + ``_COURT_FOR_OPTION_ID``
-# pairing. The approved-law buckets are keyed by the SAME option ids the Playbook
-# uses (england_and_wales / delaware / india / difc / ontario_canada), so the
-# governing-law option id resolved by ``governing_law_view.derive_governing_law``
-# is itself a bucket key. The extra buckets (cayman_islands / new_york /
-# singapore) are forum-only jurisdictions that are NOT approved laws -- present so
-# a foreign forum can still be NAMED in the finding.
+# THE APPROVED-LAW BUCKETS ARE NO LONGER HARDCODED. They are built at module
+# load (and re-buildable) from the Playbook's
+# ``governing_law.rules.approved_options`` -- the SAME single source
+# ``governing_law_view`` reads -- so adding a 6th approved law to playbook.json
+# makes this law<->forum mismatch detector recognize it automatically (no code
+# change), instead of going blind to it. For each approved option we:
+#   * seed the LAW recognition phrases from its ``value`` + ``aliases``;
+#   * seed the FORUM recognition from its ``forum_jurisdiction``;
+#   * MERGE IN the hand-tuned matcher fragments below (`_APPROVED_LAW_MATCHER_AUGMENTS`)
+#     keyed by option id -- the rich, precision-tuned regexes (India's smart rule,
+#     Delaware's "courts of the State of", DIFC's multi-form recognition, ...) that
+#     free-text aliases alone cannot express. The augments are pure RECOGNITION
+#     HEURISTICS, never rule DATA: the set of approved laws, their names, and their
+#     paired forum jurisdiction all come from the Playbook. An option with no augment
+#     still gets robust default matchers built from its free-text name.
+#
+# The forum-only jurisdictions (cayman_islands / new_york / singapore /
+# onshore_dubai) are NOT approved laws -- they are foreign venues the detector
+# watches for so a foreign forum can still be NAMED in the finding. They remain
+# code constants (`_FOREIGN_FORUM_BUCKETS`).
+# ===========================================================================
+
 # ---------------------------------------------------------------------------
-JURISDICTIONS: dict[str, dict[str, list[str]]] = {
+# India forum SMART RULE (replaces a hand-maintained metro list).
+#
+# `_INDIA_STATE` is the closed set of Indian states + union territories. Naming
+# any of them in a forum clause ("courts of Gujarat", "courts at Tamil Nadu") is
+# an unambiguous India-forum signal, so we never have to enumerate every city.
+# `_INDIA_METRO` keeps the common metros explicit so a bare "courts of Mumbai"
+# (no trailing ", India") still resolves.
+# ---------------------------------------------------------------------------
+_INDIA_STATE = (
+    r"andhra\s+pradesh|arunachal\s+pradesh|assam|bihar|chhattisgarh|goa|gujarat|"
+    r"haryana|himachal\s+pradesh|jharkhand|karnataka|kerala|madhya\s+pradesh|"
+    r"maharashtra|manipur|meghalaya|mizoram|nagaland|odisha|punjab|rajasthan|"
+    r"sikkim|tamil\s+nadu|telangana|tripura|uttar\s+pradesh|uttarakhand|"
+    r"west\s+bengal|delhi|puducherry|chandigarh|ladakh|jammu\s+and\s+kashmir"
+)
+_INDIA_METRO = (
+    r"mumbai|bengaluru|bangalore|new\s+delhi|chennai|kolkata|hyderabad|"
+    r"gandhinagar|pune|ahmedabad"
+)
+# Order: India/Indian first, then states, then metros, then "<City>, India", then
+# arbitration seat. Each is anchored to a court/seat/jurisdiction context by the
+# leading verb so an incidental "India" mention elsewhere never leaks in.
+_INDIA_FORUM_PATTERNS = [
+    r"courts?\s+(?:of|in|at)\s+india",
+    r"indian\s+courts?",
+    rf"courts?\s+(?:of|in|at)\s+(?:the\s+state\s+of\s+)?(?:{_INDIA_STATE})\b",
+    rf"courts?\s+(?:of|in|at)\s+(?:{_INDIA_METRO})\b",
+    # "[City], India" -- any city named together with India in a venue clause.
+    r"courts?\s+(?:of|in|at)\s+[a-z][a-z .'-]*?,\s*india\b",
+    # Arbitration seated anywhere in India (state, metro, or India itself).
+    rf"(?:arbitration|seat(?:ed)?)\s+[^.;\n]*?(?:india|{_INDIA_STATE}|{_INDIA_METRO})\b",
+]
+
+# ---------------------------------------------------------------------------
+# Per-approved-option recognition AUGMENTS (heuristics, NOT rule data).
+#
+# These are the precision-tuned matcher fragments the bare free-text name +
+# aliases cannot express. They are MERGED on top of the playbook-derived seeds
+# (deduped) when an approved option has a matching id. An approved option WITHOUT
+# an augment still gets robust default matchers (see `_default_law_matchers` /
+# `_default_forum_matchers`) built from its name, so a brand-new 6th approved law
+# is recognized out of the box -- the augment only sharpens the established five.
+# ---------------------------------------------------------------------------
+_APPROVED_LAW_MATCHER_AUGMENTS: dict[str, dict[str, list[str]]] = {
     "england_and_wales": {
         "law": [r"laws?\s+of\s+england(?:\s+and\s+wales)?", r"english\s+law"],
         "forum": [r"courts?\s+of\s+england(?:\s+and\s+wales)?", r"english\s+courts?"],
@@ -72,22 +130,10 @@ JURISDICTIONS: dict[str, dict[str, list[str]]] = {
             r"delaware\s+courts?",
         ],
     },
-    # India forum recognition is RULE-BASED, not a hand-maintained city list. The
-    # bucket fires when a forum/venue/arbitration sentence names India by any of the
-    # robust signals below, so it does not silently miss whichever Indian city a
-    # given NDA happens to pick (Gandhinagar, Chennai, Kolkata, Hyderabad, ...):
-    #   * "India" / "Indian" / "courts of India" / "Indian courts";
-    #   * any Indian STATE/UT (`_INDIA_STATE`), e.g. "courts of Gujarat";
-    #   * "[City], India" -- any city named together with India;
-    #   * the common metros by name (kept explicit so a bare "courts of Mumbai" with
-    #     no trailing ", India" still resolves), now ALSO covering Chennai / Kolkata
-    #     / Hyderabad / Gandhinagar / Pune / Ahmedabad alongside the originals.
-    # Precision is preserved by the `_FORUM_SENTENCE` gate (only dispute/venue
-    # sentences are inspected) and by the mismatch comparison (an India-law NDA whose
-    # forum is also India produces bucket `india` on both sides -> no foreign -> silent).
     "india": {
         "law": [r"laws?\s+of\s+india", r"indian\s+law"],
-        "forum": [],  # built below from _INDIA_FORUM_PATTERNS (rule-based, not a city list)
+        # Rule-based, not a city list (see _INDIA_FORUM_PATTERNS above).
+        "forum": list(_INDIA_FORUM_PATTERNS),
     },
     "difc": {
         "law": [
@@ -105,7 +151,15 @@ JURISDICTIONS: dict[str, dict[str, list[str]]] = {
         "law": [r"laws?\s+of\s+(?:the\s+province\s+of\s+)?ontario", r"ontario\s+law"],
         "forum": [r"courts?\s+of\s+(?:the\s+province\s+of\s+)?ontario", r"ontario\s+courts?"],
     },
-    # ---- forum-only jurisdictions (NOT approved laws) -------------------------
+}
+
+# ---------------------------------------------------------------------------
+# Foreign forum-only buckets (NOT approved laws) -- kept as code constants.
+# These are jurisdictions the detector watches for as a FOREIGN forum so a
+# law<->forum split can still NAME the venue. They are not in the Playbook's
+# approved-law options, so they cannot be derived -- the detector owns them.
+# ---------------------------------------------------------------------------
+_FOREIGN_FORUM_BUCKETS: dict[str, dict[str, list[str]]] = {
     "cayman_islands": {
         "law": [r"laws?\s+of\s+the\s+cayman\s+islands"],
         "forum": [r"courts?\s+of\s+the\s+cayman\s+islands", r"cayman\s+islands?\s+courts?"],
@@ -149,40 +203,167 @@ JURISDICTIONS: dict[str, dict[str, list[str]]] = {
     },
 }
 
+
 # ---------------------------------------------------------------------------
-# India forum SMART RULE (replaces the hand-maintained metro list).
-#
-# `_INDIA_STATE` is the closed set of Indian states + union territories. Naming
-# any of them in a forum clause ("courts of Gujarat", "courts at Tamil Nadu") is
-# an unambiguous India-forum signal, so we never have to enumerate every city.
-# `_INDIA_METRO` keeps the common metros explicit so a bare "courts of Mumbai"
-# (no trailing ", India") still resolves -- now expanded past the original three.
+# Playbook-sourced approved-law bucket derivation.
 # ---------------------------------------------------------------------------
-_INDIA_STATE = (
-    r"andhra\s+pradesh|arunachal\s+pradesh|assam|bihar|chhattisgarh|goa|gujarat|"
-    r"haryana|himachal\s+pradesh|jharkhand|karnataka|kerala|madhya\s+pradesh|"
-    r"maharashtra|manipur|meghalaya|mizoram|nagaland|odisha|punjab|rajasthan|"
-    r"sikkim|tamil\s+nadu|telangana|tripura|uttar\s+pradesh|uttarakhand|"
-    r"west\s+bengal|delhi|puducherry|chandigarh|ladakh|jammu\s+and\s+kashmir"
-)
-_INDIA_METRO = (
-    r"mumbai|bengaluru|bangalore|new\s+delhi|chennai|kolkata|hyderabad|"
-    r"gandhinagar|pune|ahmedabad"
-)
-# Order: India/Indian first, then states, then metros, then "<City>, India", then
-# arbitration seat. Each is anchored to a court/seat/jurisdiction context by the
-# leading verb so an incidental "India" mention elsewhere never leaks in.
-_INDIA_FORUM_PATTERNS = [
-    r"courts?\s+(?:of|in|at)\s+india",
-    r"indian\s+courts?",
-    rf"courts?\s+(?:of|in|at)\s+(?:the\s+state\s+of\s+)?(?:{_INDIA_STATE})\b",
-    rf"courts?\s+(?:of|in|at)\s+(?:{_INDIA_METRO})\b",
-    # "[City], India" -- any city named together with India in a venue clause.
-    r"courts?\s+(?:of|in|at)\s+[a-z][a-z .'-]*?,\s*india\b",
-    # Arbitration seated anywhere in India (state, metro, or India itself).
-    rf"(?:arbitration|seat(?:ed)?)\s+[^.;\n]*?(?:india|{_INDIA_STATE}|{_INDIA_METRO})\b",
-]
-JURISDICTIONS["india"]["forum"] = _INDIA_FORUM_PATTERNS
+def _phrase_to_regex(phrase: str) -> str:
+    r"""Turn a free-text jurisdiction name into a whitespace-tolerant regex fragment.
+
+    "England and Wales" -> r"england\s+and\s+wales"; collapses internal runs of
+    whitespace to ``\s+`` so a name spanning a line break or double space still
+    matches, and escapes any regex metacharacters in the raw token.
+    """
+    token = " ".join(str(phrase or "").strip().split())
+    if not token:
+        return ""
+    return re.escape(token).replace(r"\ ", r"\s+")
+
+
+def _default_law_matchers(names: list[str]) -> list[str]:
+    """Default GOVERNING-LAW recognition phrases built from an option's free text.
+
+    For each name (value/label/alias) we recognize "laws of <name>" and
+    "<name> law" -- the two operative governing-law phrasings -- so a brand-new
+    approved law is recognized from its Playbook name with no hand-tuning.
+    """
+    out: list[str] = []
+    for name in names:
+        frag = _phrase_to_regex(name)
+        if not frag:
+            continue
+        out.append(rf"laws?\s+of\s+(?:the\s+)?{frag}")
+        out.append(rf"{frag}\s+law")
+    return out
+
+
+def _default_forum_matchers(names: list[str]) -> list[str]:
+    """Default FORUM recognition phrases built from an option's free text.
+
+    Recognizes "courts of/in/at <name>" and "<name> courts" for each name -- the
+    common venue phrasings -- so a new approved law's own-jurisdiction forum (and a
+    document that names it as a foreign forum) is recognized from the Playbook name.
+    """
+    out: list[str] = []
+    for name in names:
+        frag = _phrase_to_regex(name)
+        if not frag:
+            continue
+        out.append(rf"courts?\s+(?:of|in|at)\s+(?:the\s+)?{frag}")
+        out.append(rf"{frag}\s+courts?")
+    return out
+
+
+def _option_law_names(option: Mapping[str, Any]) -> list[str]:
+    """Distinct free-text names for an approved option: value, label, aliases."""
+    names: list[str] = []
+    for key in ("value", "label"):
+        token = str(option.get(key) or "").strip()
+        if token:
+            names.append(token)
+    aliases = option.get("aliases")
+    if isinstance(aliases, (list, tuple)):
+        for alias in aliases:
+            token = str(alias or "").strip()
+            if token:
+                names.append(token)
+    # De-dup case-insensitively, preserving order.
+    seen: set[str] = set()
+    distinct: list[str] = []
+    for name in names:
+        key = name.lower()
+        if key not in seen:
+            seen.add(key)
+            distinct.append(name)
+    return distinct
+
+
+def _dedup(patterns: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for pat in patterns:
+        if pat and pat not in seen:
+            seen.add(pat)
+            out.append(pat)
+    return out
+
+
+def _approved_options() -> list[Mapping[str, Any]]:
+    """The active Playbook's ``governing_law`` approved options (best-effort).
+
+    Reuses ``governing_law_view``'s playbook resolution so this detector reads the
+    SAME single source the dashboard/corpus governing-law dimension reads. Any
+    failure yields an empty list (the approved-law buckets just won't derive, and
+    the foreign-forum buckets still work) -- the detector never crashes on a missing
+    Playbook.
+    """
+    try:
+        from . import governing_law_view  # noqa: PLC0415 -- avoid load-time cycle.
+
+        return governing_law_view._approved_governing_law_options()
+    except Exception:  # noqa: BLE001 -- a missing/broken Playbook just disables derivation.
+        return []
+
+
+def _build_approved_law_buckets() -> dict[str, dict[str, list[str]]]:
+    """Derive the approved-law jurisdiction buckets from the Playbook options.
+
+    For each approved option (keyed by its id) build law + forum recognition from
+    its free-text name(s) and forum_jurisdiction, then MERGE the hand-tuned augment
+    (when present). The label cache is seeded alongside so the finding text shows
+    the Playbook label for a derived law.
+    """
+    buckets: dict[str, dict[str, list[str]]] = {}
+    for option in _approved_options():
+        option_id = str(option.get("id") or "").strip().lower()
+        if not option_id:
+            continue
+        law_names = _option_law_names(option)
+        forum_jurisdiction = str(option.get("forum_jurisdiction") or "").strip()
+        # Law recognition: from value/label/aliases.
+        law_patterns = _default_law_matchers(law_names)
+        # Forum recognition: from forum_jurisdiction, AND from the law names (the
+        # law's own jurisdiction is also its proper forum, so "courts of <law>"
+        # resolves to this bucket and an aligned NDA stays silent).
+        forum_seed_names = list(law_names)
+        if forum_jurisdiction:
+            forum_seed_names.append(forum_jurisdiction)
+        forum_patterns = _default_forum_matchers(forum_seed_names)
+        # Merge the precision augment (heuristics) for this option, if any.
+        augment = _APPROVED_LAW_MATCHER_AUGMENTS.get(option_id, {})
+        law_patterns = _dedup(list(augment.get("law", [])) + law_patterns)
+        forum_patterns = _dedup(list(augment.get("forum", [])) + forum_patterns)
+        buckets[option_id] = {"law": law_patterns, "forum": forum_patterns}
+    return buckets
+
+
+# JURISDICTIONS is the merged bucket map: derived approved-law buckets +
+# foreign-forum buckets. Built at import; re-derivable via ``reset_buckets`` after
+# a Playbook republish (mirrors ``governing_law_view.reset_caches``).
+JURISDICTIONS: dict[str, dict[str, list[str]]] = {}
+
+
+def approved_law_buckets() -> dict[str, dict[str, list[str]]]:
+    """The Playbook-derived approved-law buckets only (not the foreign-forum ones)."""
+    return {k: v for k, v in JURISDICTIONS.items() if k not in _FOREIGN_FORUM_BUCKETS}
+
+
+def reset_buckets() -> None:
+    """Rebuild JURISDICTIONS from the current Playbook (tests / a Playbook republish).
+
+    Approved-law buckets are re-derived from the Playbook options; the foreign-forum
+    buckets are constant. Mutates JURISDICTIONS in place so existing references stay
+    valid.
+    """
+    JURISDICTIONS.clear()
+    JURISDICTIONS.update(_build_approved_law_buckets())
+    for name, bucket in _FOREIGN_FORUM_BUCKETS.items():
+        # A foreign-forum name must never shadow a derived approved-law bucket of the
+        # same id (defensive -- the two id spaces are disjoint today).
+        JURISDICTIONS.setdefault(name, {"law": list(bucket["law"]), "forum": list(bucket["forum"])})
+
+
+reset_buckets()
 
 # When a forum phrase mentions the DIFC at all, the onshore-Dubai bucket must NOT
 # fire: "DIFC Courts, Dubai International Financial Centre" is the DIFC forum name,
@@ -191,17 +372,28 @@ JURISDICTIONS["india"]["forum"] = _INDIA_FORUM_PATTERNS
 _DIFC_PRESENT = re.compile(r"difc|dubai\s+international\s+financial\s+cent(?:re|er)", re.IGNORECASE)
 
 # Human-readable jurisdiction labels for the finding text.
-JURISDICTION_LABELS: dict[str, str] = {
-    "england_and_wales": "England and Wales",
-    "delaware": "Delaware",
-    "india": "India",
-    "difc": "DIFC (Dubai International Financial Centre)",
-    "ontario_canada": "Ontario, Canada",
+#
+# Foreign-forum buckets are constant (they are not Playbook options). The
+# approved-law buckets prefer their Playbook label (via ``_label`` -> the
+# ``governing_law_view`` label cache) so a 6th approved law shows its real label;
+# the few entries kept here for approved laws are nicer OVERRIDES (e.g. DIFC's
+# parenthetical) that read better than the bare Playbook value in a finding.
+_FOREIGN_FORUM_LABELS: dict[str, str] = {
     "cayman_islands": "Cayman Islands",
     "new_york": "New York",
     "singapore": "Singapore",
     "onshore_dubai": "onshore Dubai / UAE (courts outside the DIFC)",
 }
+# Optional display overrides for approved-law buckets (nicer than the bare
+# Playbook value). Any approved law WITHOUT an override falls back to its Playbook
+# label, so a new approved law is labelled from the Playbook automatically.
+_APPROVED_LAW_LABEL_OVERRIDES: dict[str, str] = {
+    "difc": "DIFC (Dubai International Financial Centre)",
+}
+# Back-compat: the original flat label map other modules/tests may import. Kept as
+# the union (foreign-forum labels + approved-law overrides); the live label
+# resolution in ``_label`` additionally falls back to the Playbook label.
+JURISDICTION_LABELS: dict[str, str] = {**_FOREIGN_FORUM_LABELS, **_APPROVED_LAW_LABEL_OVERRIDES}
 
 # Sentence-role gates: a sentence is only inspected for a LAW jurisdiction when it
 # reads like a governing-law sentence, and only for a FORUM jurisdiction when it
@@ -305,15 +497,40 @@ def _normalize_to_bucket(value: object) -> str:
             for pat in pats.get(role, ()):  # type: ignore[arg-type]
                 if re.search(pat, token, re.IGNORECASE):
                     return jur
-    # Last resort: a bare label match against the human labels.
-    for jur, label in JURISDICTION_LABELS.items():
-        if label.lower() in token or token in label.lower():
+    # Last resort: a bare label match against the human labels of every bucket
+    # (foreign-forum constants + each approved-law bucket's Playbook label), so a
+    # free expected-forum string like "England and Wales" still resolves to its
+    # bucket even when no law/forum regex above happened to match it.
+    for jur in JURISDICTIONS:
+        label = _label(jur).strip().lower()
+        if label and (label in token or token in label):
             return jur
     return ""
 
 
 def _label(bucket: str) -> str:
-    return JURISDICTION_LABELS.get(bucket, bucket.replace("_", " ").title() if bucket else "")
+    """Human-readable label for a jurisdiction bucket.
+
+    Foreign-forum buckets + the approved-law display overrides use the constant
+    label map; every other approved-law bucket falls back to its PLAYBOOK label
+    (via ``governing_law_view.governing_law_label``) so a newly-added approved law
+    is labelled from the Playbook automatically, never a bare title-cased id.
+    """
+    if not bucket:
+        return ""
+    override = JURISDICTION_LABELS.get(bucket)
+    if override:
+        return override
+    if bucket not in _FOREIGN_FORUM_BUCKETS:
+        try:
+            from . import governing_law_view  # noqa: PLC0415 -- avoid load-time cycle.
+
+            label = governing_law_view.governing_law_label(bucket)
+            if label:
+                return label
+        except Exception:  # noqa: BLE001 -- label is cosmetic; fall back below.
+            pass
+    return bucket.replace("_", " ").title()
 
 
 # ---------------------------------------------------------------------------
