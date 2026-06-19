@@ -7407,6 +7407,68 @@ button.active-clause-status:hover {
   color: var(--red-ink);
 }
 
+/* ---------- Additive review-overlay surfacing ---------- */
+/* Matter-level banner: lists every active review-overlay flag (law/forum mismatch +
+   the cross-clause coverage detectors) so the reviewer can see WHY an overlay flipped
+   the matter to Needs Review and blocked send. Amber = review (not a hard fail). */
+.studio-overlay-banner {
+  background: var(--amber-bg);
+  border: 1px solid var(--amber-border);
+  border-left: 3px solid var(--amber);
+  border-radius: var(--r-md, 8px);
+  padding: 12px 14px;
+  margin: 0 0 12px;
+  color: var(--amber-ink);
+}
+
+.studio-overlay-banner[hidden] {
+  display: none;
+}
+
+.studio-overlay-banner-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.studio-overlay-banner-head strong {
+  font-weight: 800;
+  color: var(--amber-ink);
+}
+
+.studio-overlay-banner-head span {
+  font-size: 0.85em;
+  opacity: 0.85;
+}
+
+.studio-overlay-banner-list {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+.studio-overlay-banner-list li {
+  margin: 2px 0;
+  color: var(--amber-ink);
+}
+
+/* Per-clause overlay finding: attaches the overlay reason to its target clause so a
+   clause an overlay flagged no longer renders a bare green/pass with no reason. */
+.studio-detail-block.clause-overlay-finding {
+  background: var(--amber-bg);
+  border-color: var(--amber-border);
+  border-left: 3px solid var(--amber);
+}
+
+.studio-detail-block.clause-overlay-finding small {
+  color: var(--amber-ink);
+  font-weight: 800;
+}
+
+.studio-detail-block.clause-overlay-finding p {
+  color: var(--amber-ink);
+}
+
 /* ---------- Toolbar export status and actions ---------- */
 
 .export-success {
