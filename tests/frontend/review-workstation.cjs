@@ -93,6 +93,7 @@ const tests = [
   ["shows a Retry button when the background review fails and re-posts on Retry", testAsyncReviewFailedShowsRetry],
   ["shows a live Reviewing badge on the board while review_status is in_progress", testBoardReviewingBadge],
   ["flags stale matters on the board and refreshes from the inspector", testRepositoryStaleBadgeAndRefresh],
+  ["polls the async background review to completion from the repository inspector", testRepositoryRefreshReviewAsyncPoll],
   ["clears repository board after load errors", testRepositoryLoadErrorClearsBoard],
   ["uploads local NDAs through the dashboard upload modal", testManualUploadModal],
   ["sends repository redline email with composer details", testRepositoryOutboundSendComposer],
@@ -4039,6 +4040,202 @@ async function testRepositoryStaleBadgeAndRefresh(page) {
   await page.waitForSelector(".repository-stale-notice", { state: "detached" });
   assert.equal(await page.locator(".repository-card .repository-stale-badge").count(), 0);
   assert.equal(await page.locator(".repository-refresh-review").count(), 0);
+
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters**");
+}
+
+// Repository inspector "Refresh Review" must honor the ASYNC review contract: POST
+// /review-refresh returns 202 in_progress (the heavy review runs in a background
+// worker), and the panel must (a) enter the in-flight "Reviewing…" state WITHOUT
+// injecting a blank finished-but-empty review, then (b) POLL the matter and reflect
+// the REAL result on the board when it completes. This regression-guards the bug
+// where getMatterReview read review_result on the 202 (blank) and refreshMatterReview
+// never started polling — so the panel showed "Review refreshed" over an empty review
+// and never updated. Mirrors the Review-tab refreshSelectedMatterReview flow.
+async function testRepositoryRefreshReviewAsyncPoll(page) {
+  const reviewText = "This Agreement shall be governed by the laws of India.";
+  const realReviewResult = {
+    checked_at: "2026-06-01T09:05:00+00:00",
+    overall_status: "meets_requirements",
+    clauses: [{
+      decision: "pass",
+      id: "governing_law",
+      issue_label: "Pass",
+      name: "Governing Law",
+      passes: true,
+    }],
+  };
+  // The matter starts reviewed-but-STALE (so the inspector offers "Refresh Review").
+  const baseMatter = {
+    id: "matter_repo_async_poll",
+    attachment_filename: "Repo Async NDA.docx",
+    board_column: "in_review",
+    document_title: "Repo Async NDA",
+    extracted_text: reviewText,
+    issue_count: 0,
+    message_snippet: reviewText,
+    received_at: "2026-06-01T09:00:00+00:00",
+    recipient_email: "legal@example.com",
+    review_result: realReviewResult,
+    sender: "Legal Team <legal@example.com>",
+    source_filename: "Repo Async NDA.docx",
+    source_type: "manual_upload",
+    subject: "Repo Async NDA",
+    triage_status: "approved",
+    updated_at: "2026-06-01T09:01:00+00:00",
+    ai_review_ran: true,
+  };
+  // State machine driving the async lifecycle:
+  //   refresh-refresh POST -> 202 in_progress (refreshScheduled = true)
+  //   bare GET /api/matters/<id> (poll) -> first tick in_progress, 2nd+ completed
+  //   GET /api/matters (list) -> in_progress matter until the poll completes
+  let refreshCount = 0;
+  let refreshScheduled = false;
+  let pollCount = 0;
+  const stale = (m) => ({ ...m, review_stale: true, review_stale_reasons: ["playbook_changed"] });
+  const inProgressMatter = { ...baseMatter, review_status: "in_progress" };
+  const completedMatter = {
+    ...baseMatter,
+    review_status: "completed",
+    review_stale: false,
+    review_stale_reasons: [],
+    review_refresh: { refreshed: true, stale: false, stale_reasons: [] },
+  };
+
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ gmail: { inbound: { ready: true }, outbound: { ready: true, email: "legal@example.com" } } }),
+    });
+  });
+  await page.route("**/api/matters**", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    const pollDone = pollCount >= 2;
+    if (requestUrl.pathname === "/api/matters" && route.request().method() === "GET") {
+      // Board list: stale until refresh; in_progress once scheduled; completed once
+      // the poll resolves (the badge then clears on the card).
+      const listMatter = !refreshScheduled
+        ? stale(baseMatter)
+        : (pollDone ? completedMatter : inProgressMatter);
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matters: [listMatter] }) });
+      return;
+    }
+    if (requestUrl.pathname.endsWith("/stage")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter: stale(baseMatter) }) });
+      return;
+    }
+    if (requestUrl.pathname.endsWith("/review-refresh")) {
+      // The Repository "Refresh Review" button is the only caller. ASYNC: 202
+      // in_progress, NO review_result in the body (the worker has not run yet).
+      refreshCount += 1;
+      refreshScheduled = true;
+      await route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        body: JSON.stringify({
+          review_status: "in_progress",
+          job_scheduled: true,
+          matter: { ...inProgressMatter, review_started_at: "2026-06-01T09:02:00+00:00" },
+        }),
+      });
+      return;
+    }
+    if (requestUrl.pathname.endsWith("/review")) {
+      // Read path: once the poll reports completed the client re-reads /review for
+      // the REAL result. Before that it carries the stored (stale) review.
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          extracted_text: reviewText,
+          matter: pollDone ? completedMatter : stale(baseMatter),
+          review_may_be_stale: !pollDone,
+          review_refresh: pollDone ? { refreshed: true, stale: false, stale_reasons: [] } : null,
+          review_result: realReviewResult,
+        }),
+      });
+      return;
+    }
+    // Bare GET /api/matters/<id> — the poll read. First tick still in_progress, then
+    // completed, so both the spinner state and its resolution are exercised.
+    if (/\/api\/matters\/[^/]+$/.test(requestUrl.pathname) && route.request().method() === "GET") {
+      if (refreshScheduled) pollCount += 1;
+      const resolved = pollCount >= 2;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ matter: resolved ? completedMatter : (refreshScheduled ? inProgressMatter : stale(baseMatter)) }),
+      });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter: stale(baseMatter) }) });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector(".repository-card");
+  // Board card shows the Stale badge (stored review predates the active Playbook).
+  await page.waitForSelector(".repository-card .repository-stale-badge");
+
+  // Open the inspector and click "Refresh Review".
+  await page.locator(".repository-card").click();
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+  await page.waitForSelector(".repository-refresh-review");
+  await page.getByRole("button", { name: "Refresh Review" }).click();
+
+  // (a) 202 in-flight: the panel reports the review STARTED (it did not claim a
+  // finished refresh), and the board card now shows the live "Reviewing…" badge
+  // (driven by review_status:in_progress) rather than a blank/empty review. The
+  // pre-fix code injected a blank review_result and printed "Review refreshed
+  // against the active Playbook." here — which this asserts AGAINST.
+  await waitForText(page, ".repository-detail-message", "Review started. It will update on the board when it finishes.");
+  await page.waitForSelector(".repository-card .repository-review-badge.reviewing");
+  await assertTextContains(page.locator(".repository-card .repository-review-badge.reviewing"), "Reviewing");
+  assert.equal(refreshCount, 1);
+  // The blank-review symptom: the stale "refreshed" completion message must NOT have
+  // been shown on the 202.
+  assert.notEqual(
+    await page.locator(".repository-detail-message").innerText(),
+    "Review refreshed against the active Playbook.",
+  );
+
+  // Direct contract assertion on BUG 1 (the blank-review injection): drive the real
+  // repository-api module against a synthetic 202 and confirm getMatterReview returns
+  // the in-progress SENTINEL (inProgress:true, NO fabricated review_result) — not a
+  // {...matter, review_result:{}} object. Pre-fix this returned a blank review_result.
+  const apiSentinel = await page.evaluate(async () => {
+    const mod = await import("/static/js/modules/repository-api.mjs?v=test-202-sentinel");
+    const api = mod.createRepositoryApi({
+      fetchImpl: async () => ({
+        ok: true,
+        status: 202,
+        json: async () => ({ review_status: "in_progress", matter: { id: "m202", review_status: "in_progress" } }),
+      }),
+      reviewErrorFromPayload: (payload, fallback) => new Error((payload && payload.error) || fallback),
+    });
+    const result = await api.getMatterReview("m202", { refresh: true });
+    return {
+      inProgress: result.inProgress === true,
+      // The bug was injecting review_result:{} (an empty finished review). The
+      // sentinel must NOT carry that key at all.
+      hasReviewResultKey: Object.prototype.hasOwnProperty.call(result, "review_result"),
+      matterStatus: result.matter && result.matter.review_status,
+    };
+  });
+  assert.equal(apiSentinel.inProgress, true, "202 must yield the in-progress sentinel");
+  assert.equal(apiSentinel.hasReviewResultKey, false, "202 sentinel must NOT inject a blank review_result");
+  assert.equal(apiSentinel.matterStatus, "in_progress");
+
+  // (b) The poll flips review_status to completed -> the board re-renders the REAL
+  // result: the "Reviewing…" badge clears and the stale badge is gone (the matter is
+  // now a current, completed review). Proves the poll ran to completion and surfaced
+  // the real review rather than leaving the panel frozen on the blank 202.
+  await page.waitForSelector(".repository-card .repository-review-badge.reviewing", { state: "detached" });
+  await page.waitForSelector(".repository-card .repository-stale-badge", { state: "detached" });
+  assert.equal(refreshCount, 1);
+  assert.ok(pollCount >= 2, "the background review poll must have run to completion");
 
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/matters**");
