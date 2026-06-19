@@ -8,7 +8,8 @@
     "test:frontend:counterparty": "node tests/frontend/counterparty-confirmation.cjs",
     "test:frontend:docusign": "node tests/frontend/docusign-model.mjs",
     "test:frontend:docusign-send": "node tests/frontend/docusign-send.cjs",
-    "test:frontend:admin": "node tests/frontend/admin-integrations.cjs"
+    "test:frontend:admin": "node tests/frontend/admin-integrations.cjs",
+    "test:frontend:admin-access": "node tests/frontend/admin-access.cjs"
   },
   "devDependencies": {
     "playwright": "^1.52.0",

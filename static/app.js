@@ -109,6 +109,7 @@ let adminHealthController;
 let adminIntegrationsController;
 let adminDriveController;
 let adminDocuSignController;
+let adminAccessController;
 let adminPersonalisationController;
 let docusignSendController;
 
@@ -425,6 +426,18 @@ adminDocuSignController = createAdminDocuSignController({
   docusignRefreshButton: document.querySelector("#adminDocuSignRefreshButton"),
   docusignConnectPanel: document.querySelector("#adminDocuSignConnectPanel"),
   docusignConnectToggle: document.querySelector("#adminDocuSignConnectToggle"),
+  reviewErrorFromPayload,
+});
+adminAccessController = createAdminAccessController({
+  card: document.querySelector("#adminAccessCard"),
+  overall: document.querySelector("#adminAccessOverall"),
+  refreshButton: document.querySelector("#adminAccessRefreshButton"),
+  addForm: document.querySelector("#adminAccessAddForm"),
+  emailInput: document.querySelector("#adminAccessEmailInput"),
+  addButton: document.querySelector("#adminAccessAddButton"),
+  message: document.querySelector("#adminAccessMessage"),
+  envRootsList: document.querySelector("#adminAccessEnvRoots"),
+  persistedList: document.querySelector("#adminAccessPersisted"),
   reviewErrorFromPayload,
 });
 adminPersonalisationController = createAdminPersonalisationController({
@@ -2016,6 +2029,9 @@ function activateAdminSection(sectionName) {
   }
   if (sectionName === "docusign") {
     adminDocuSignController.load();
+  }
+  if (sectionName === "access") {
+    adminAccessController.load();
   }
   if (sectionName === "personalisation") {
     adminPersonalisationController.load();
