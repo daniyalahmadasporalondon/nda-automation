@@ -120,9 +120,12 @@ class IndefiniteTermsFallbackPathTests(unittest.TestCase):
     """Drive the indefinite_terms FALLBACK path (clause missing the field) and prove
     the new perpetual phrasings are recognized there too."""
 
-    def test_fallback_patterns_equal_full_playbook_indefinite_list(self):
+    def test_fallback_patterns_cover_full_playbook_indefinite_list(self):
+        # The fallback compiles one pattern per vocab term PLUS the single structural
+        # open-ended-survival backstop pattern (the negated-expiry / never-cease idiom
+        # that no closed vocabulary enumerates). So the count is len(vocab) + 1.
         patterns = _indefinite_term_patterns({"id": "term_and_survival"})
-        self.assertEqual(len(patterns), len(DEFAULT_INDEFINITE_TERMS))
+        self.assertEqual(len(patterns), len(DEFAULT_INDEFINITE_TERMS) + 1)
 
     def test_fallback_matches_everlasting(self):
         patterns = _indefinite_term_patterns({"id": "term_and_survival"})

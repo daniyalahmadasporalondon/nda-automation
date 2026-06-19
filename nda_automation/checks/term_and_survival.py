@@ -82,6 +82,60 @@ DEFAULT_INDEFINITE_NON_SURVIVAL_OBJECTS = (
     "warranty",
     "warranties",
 )
+# A CONFIDENTIALITY-SURVIVAL predicate: language that says ordinary Confidential
+# Information stays confidential / secret / undisclosed / in force, or that the
+# confidentiality obligations survive or continue. This is the GOVERNANCE signal --
+# an open-ended duration only makes a clause perpetual when it times one of THESE
+# predicates. The closed-vocabulary "perpetual"/"indefinitely" substring match alone
+# over-flags when the same word governs a party name ("Perpetual Holdings"), a product
+# line ("Perpetual Motion"), a manner noun ("with perpetual diligence"), an inventory
+# ("a perpetual inventory"), or agreement renewal ("indefinitely renew this agreement").
+# Requiring the marker to locally govern a confidentiality-survival predicate is the
+# structural fix that simultaneously catches novel "forever" wording (it governs
+# survival) and stops flagging incidental "perpetual" (it governs something else).
+CONFIDENTIALITY_SURVIVAL_PREDICATE_PATTERN = (
+    # "(remain/stay/be/kept) confidential / secret / undisclosed". NOTE: "in force" /
+    # "in effect" is DELIBERATELY excluded from this verb-led branch (it has no subject
+    # requirement) because "this Agreement shall remain in force" is an AGREEMENT term,
+    # not a confidentiality survival -- crediting it would wrongly scope in the agreement
+    # duration. The CI-subject-led branch below still credits "...the Confidential
+    # Information shall remain in force..." where CI is explicitly the subject.
+    r"\b(?:remain(?:s|ed|ing)?|stay(?:s|ed|ing)?|kept|keep(?:s|ing)?|held|hold(?:s|ing)?|"
+    r"be|been|being|continu(?:e|es|ed|ing)|treated|maintain(?:s|ed|ing)?|protected|preserv(?:e|es|ed|ing))\b"
+    r"(?:\W+\w+){0,4}?\W+"
+    r"(?:confidential|confidentiality|secret|secrecy|undisclosed|non[\s-]*disclosure)\b"
+    # "confidential / confidentiality ... (remain/survive/continue/in force)"
+    r"|\b(?:confidential\s+information|confidentiality(?:\s+(?:obligations?|undertakings?|provisions?|duties?))?)\b"
+    r"(?:\W+\w+){0,5}?\W+"
+    r"(?:surviv(?:e|es|ed|ing|al)|remain(?:s|ed|ing)?|continu(?:e|es|ed|ing)|in\s+force|in\s+effect|"
+    r"confidential|secret|undisclosed)\b"
+    # bare survival verb governing the confidentiality obligations
+    r"|\bsurviv(?:e|es|ed|ing|al)\b"
+    # "(never) expire / cease to be confidential" -- the negated-expiry idiom
+    r"|\b(?:never\s+)?expire(?:s|d)?\b"
+    r"|\bcease(?:s|d)?\s+to\s+be\s+(?:confidential|secret)\b"
+    # "access to / disclosure of ... confidential information" -- CI is the thing
+    # held/disclosed forever (gate-1 leak B: "indefinitely grant access to the
+    # confidential information").
+    r"|\b(?:access\s+to|disclosure\s+of|use\s+of|hold|retain(?:s|ed|ing)?)\b"
+    r"(?:\W+\w+){0,4}?\W+confidential\s+information\b"
+)
+# STRUCTURAL backstop trigger: a negated-expiry / never-cease idiom over
+# confidentiality is open-ended survival that no closed vocabulary enumerates --
+# "shall not cease to be confidential at any time", "shall never cease to be
+# confidential", "shall not (ever) expire", "does not expire". Treated as an
+# indefinite hit (subject to the same carve-out / benign / governance filters as the
+# vocabulary). The "not ... at any time" / "never" / "no longer ... never" negation is
+# required so a POSITIVE bounded statement ("shall cease to be confidential after five
+# years", "expires after the term") is NOT swept in.
+STRUCTURAL_OPEN_ENDED_SURVIVAL_PATTERN = (
+    r"\b(?:shall\s+|will\s+|does\s+|do\s+)?"
+    r"(?:not\s+(?:ever\s+)?|never\s+)"
+    r"(?:cease\s+to\s+be\s+(?:confidential|secret)|expire(?:s)?)"
+    r"(?:\W+\w+){0,3}?(?:\bat\s+any\s+time\b)?"
+    r"|\b(?:cease\s+to\s+be\s+(?:confidential|secret)|expire(?:s)?)\b"
+    r"(?:\W+\w+){0,3}?\bat\s+no\s+time\b"
+)
 # Single source of truth: the playbook's term_and_survival
 # ``longer_survival_carve_out_terms``. This in-code copy is ONLY a defensive
 # fallback for a degraded/legacy clause config that arrives without the field;
@@ -137,6 +191,21 @@ DEFAULT_INDEFINITE_TERMS = (
     "without limitation of time",
     "without limitation in time",
     "until the end of time",
+    "never expire",
+    "permanently",
+    "for all time",
+    "no end date",
+    "without any time limit",
+    "indefinite duration",
+    "without limit of time",
+    "no time limitation",
+    "on an enduring basis",
+    "infinite period",
+    "unlimited time",
+    "everlastingly",
+    "ad infinitum",
+    "in perpetuum",
+    "until the end of days",
 )
 GENERIC_NON_SURVIVAL_DURATION_TERMS = {
     "after termination",
@@ -152,6 +221,27 @@ GENERIC_NON_SURVIVAL_DURATION_TERMS = {
 }
 
 
+def _select_term_paragraphs(
+    paragraphs: List[Paragraph], term_context_patterns: List[str]
+) -> List[Paragraph]:
+    """Term/survival paragraphs = the search-term anchors PLUS any paragraph that states
+    a confidentiality-survival predicate.
+
+    ``_term_context_patterns`` deliberately drops the bare "year"/"years" anchor (to
+    avoid sweeping in every incidental year), so a BARE confidentiality-duration clause
+    that uses no "term/survive/period" keyword -- "The Confidential Information shall
+    remain confidential for twenty (20) years." -- matched NO anchor and was reported
+    as "missing" rather than scoped in and flagged over-cap (S7). Adding the
+    confidentiality-survival predicate as an anchor scopes such a clause in. The
+    predicate requires CI/confidentiality + a stays-confidential verb, so it does not
+    broaden selection to unrelated year mentions.
+    """
+    return _paragraph_matches(
+        paragraphs,
+        list(term_context_patterns) + [CONFIDENTIALITY_SURVIVAL_PREDICATE_PATTERN],
+    )
+
+
 def _check_term_and_survival(
     _text: str,
     normalized: str,
@@ -164,7 +254,7 @@ def _check_term_and_survival(
     cap_label = _year_count_label(max_years)
     term_context_patterns = _term_context_patterns(clause)
     indefinite_patterns = _indefinite_term_patterns(clause)
-    term_paragraphs = _paragraph_matches(paragraphs, term_context_patterns)
+    term_paragraphs = _select_term_paragraphs(paragraphs, term_context_patterns)
     term_normalized = _normalize(" ".join(str(paragraph["text"]) for paragraph in term_paragraphs))
     reference_analysis = _survival_reference_analysis(term_paragraphs, paragraphs, review_context or {})
     year_terms = _extract_year_terms_with_context(term_normalized)
@@ -191,6 +281,7 @@ def _check_term_and_survival(
         for match in re.finditer(pattern, term_normalized)
         if not _is_allowed_carve_out_fragment(term_normalized, match.start(), match.end(), clause)
         and not _is_benign_indefinite_match(term_normalized, match, clause)
+        and _indefinite_match_governs_ci_survival(term_normalized, match, clause)
     ]
 
     if has_term_over_cap:
@@ -389,6 +480,17 @@ def _year_term_has_required_scope(normalized: str, term: Dict[str, int], clause:
             re.search(ORDINARY_SURVIVAL_SUBJECT_PATTERN, fragment)
             or _is_survival_scope_reference(fragment)
         )
+    # A bare confidentiality-survival predicate ("The Confidential Information shall
+    # remain confidential for twenty (20) years.", "...kept confidential for five (5)
+    # years...") is an ordinary-CI survival duration even without the "survive after
+    # termination" idiom. Scoping it in lets an over-cap bare period be FLAGGED rather
+    # than reported as "missing", and lets a within-cap bare period be recognized as a
+    # genuine match instead of falling through. Precision: the non-confidential-subject
+    # guard above already excluded audit/tax/payment durations, and the confidentiality
+    # predicate itself requires CI/confidentiality + a stays-confidential verb, so an
+    # agreement-term or unrelated period is not swept in here.
+    if re.search(CONFIDENTIALITY_SURVIVAL_PREDICATE_PATTERN, fragment):
+        return True
     return bool(
         re.search(AGREEMENT_TERM_DURATION_PATTERN, fragment)
         or _has_configured_non_survival_duration_scope(fragment, clause)
@@ -563,6 +665,218 @@ def _indefinite_non_survival_objects(clause: Dict[str, object]) -> List[str]:
     return objects
 
 
+# Tokens that, when they IMMEDIATELY follow an attributive ``perpetual``/``perpetually``
+# (i.e. ``perpetual <token>``), mean the marker times the confidentiality survival
+# rather than modifying a benign noun: "perpetual confidentiality", "perpetually
+# confidential". Anything else after attributive ``perpetual`` ("perpetual diligence /
+# inventory / holdings / motion / license") is the marker modifying that noun.
+_CONFIDENTIALITY_DURATION_HEAD_PATTERN = re.compile(
+    r"^(?:\W+(?:the|its|such|all|any|of|to|in)\b)*"
+    r"\W*(?:confidential(?:ity)?|secret|secrecy|undisclosed|non[\s-]*disclosure)\b"
+)
+
+
+def _indefinite_match_governs_ci_survival(
+    normalized: str, match: "re.Match[str]", clause: Dict[str, object]
+) -> bool:
+    """Governance gate: keep an indefinite-vocab hit only when an open-ended duration
+    GOVERNS THE CONFIDENTIALITY SURVIVAL.
+
+    The POLARITY words (perpetual / perpetually / indefinitely / in perpetuity) are
+    ambiguous -- the same substring appears incidentally in a party name ("Perpetual
+    Holdings"), a product line, a manner noun ("perpetual diligence"), an inventory, or
+    agreement renewal -- so they fire ONLY when they locally time a confidentiality
+    survival (``_indefinite_polarity_governs_ci_survival``). The rest of the vocabulary
+    (forever, everlasting, never expire, no end date, for an indefinite duration, ...)
+    is unambiguous open-ended-survival wording with no benign reading, so it always
+    fires. Fail-safe: any unexpected input keeps the flag (treat as governing).
+    """
+    try:
+        token = normalized[match.start():match.end()].strip().lower()
+        if not any(word in token for word in INDEFINITE_POLARITY_WORDS):
+            return True
+        fragment, relative_start, relative_end = _term_fragment_bounds(
+            normalized, match.start(), match.end()
+        )
+        return _indefinite_polarity_governs_ci_survival(
+            fragment, relative_start, relative_end, clause
+        )
+    except Exception:
+        return True
+
+
+def _indefinite_polarity_governs_ci_survival(
+    fragment: str, relative_start: int, relative_end: int, clause: Dict[str, object]
+) -> bool:
+    """STRUCTURAL governance gate for the POLARITY markers (perpetual / perpetually /
+    indefinitely / in perpetuity).
+
+    Returns True only when the marker actually TIMES an ordinary-CI confidentiality
+    survival -- i.e. an open-ended duration GOVERNS THE CONFIDENTIALITY SURVIVAL. This
+    is what turns the closed-vocabulary substring match into a governance check:
+
+    * FIRE -- the marker is the duration of a confidentiality-survival predicate:
+        "shall remain confidential in perpetuity", "shall never expire",
+        "indefinitely grant access to the confidential information" (CI held forever),
+        "remain perpetually available" (ordinary CI made perpetually available).
+    * DEMOTE -- the marker governs a NON-confidentiality noun, with no
+      confidentiality-survival predicate it locally times:
+        "between Aspora and Perpetual Holdings Ltd" (party name),
+        "for the Perpetual Motion product line", "with perpetual diligence",
+        "maintain a perpetual inventory", "indefinitely renew this agreement".
+
+    The discriminator is LOCAL: "...kept confidential for five (5) years with perpetual
+    diligence" has a confidentiality-survival predicate, but it is already CAPPED and
+    the marker attaches to "diligence", so the marker does not govern an OPEN-ENDED CI
+    survival -- demote. A capped predicate is detected by a numeric YEAR_TERM between
+    the predicate and the marker / in the marker's local window.
+
+    Only the POLARITY words are gated here. The unambiguous open-ended vocabulary
+    (forever, everlasting, never expire, no end date, for an indefinite duration, ...)
+    is not a polarity word and always fires -- it has no benign reading.
+    """
+    token = fragment[relative_start:relative_end].strip().lower()
+
+    # ``perpetual <confidentiality head>`` ("perpetual confidentiality", "perpetually
+    # confidential") is unambiguously a perpetual confidentiality duration -> fire.
+    if token in {"perpetual", "perpetually"} and _CONFIDENTIALITY_DURATION_HEAD_PATTERN.match(
+        fragment[relative_end:]
+    ):
+        return True
+
+    # Otherwise -- every polarity marker (attributive ``perpetual <benign noun>``,
+    # adverbial ``perpetually`` / ``indefinitely`` / ``in perpetuity``) -- fires only
+    # when ordinary CONFIDENTIALITY sits UNCAPPED in the marker's local window (before
+    # or after).
+    #
+    # FAIL-SAFE direction (the forever-rework lesson: a spared false-positive is cheap, a
+    # LEAKED ordinary-CI perpetual rider is not): the marker fires whenever a
+    # confidentiality term it could govern sits in its window uncapped --
+    # "...remain confidential in perpetuity", "...the duty continues indefinitely with
+    # respect to all Confidential Information", "...the Confidential Information shall be
+    # held in perpetuity", "...survive perpetually as to the Confidential Information",
+    # "...the confidential information shall remain perpetually available". The benign
+    # cases carry NO confidentiality term in the marker's window ("Perpetual Holdings
+    # Ltd", "Perpetual Motion product line", "a perpetual inventory", "indefinitely renew
+    # this agreement") or carry one that is already CAPPED in a different/local segment
+    # ("kept confidential for five (5) years with perpetual diligence"), so they demote.
+    return _confidentiality_in_marker_window(
+        fragment, relative_start, relative_end, before_only=False
+    )
+
+
+# A GOVERNED-SURVIVAL signal whose presence in an adverbial marker's window means the
+# marker could be timing the confidentiality survival:
+#   * a confidentiality term ("confidential", "confidentiality", "secret", ...), or
+#   * a survival verb ("survive(s/d)", "surviving", "survival") -- "the rights and
+#     obligations ... will SURVIVE ... for perpetuity", whose survival subject carries
+#     ordinary confidentiality.
+# (A carve-out term carried alongside -- "trade secrets" -- does NOT neutralise this: an
+# ordinary-CI subject conjoined behind a carve-out signal is still an ordinary-CI
+# perpetual rider, which the upstream carve-out scoping handles separately.)
+GOVERNED_SURVIVAL_SIGNAL_PATTERN = (
+    r"\b(?:confidential(?:ity)?|secret|secrecy|undisclosed|non[\s-]*disclosure"
+    r"|surviv(?:e|es|ed|ing|al))\b"
+)
+
+
+def _confidentiality_in_marker_window(
+    fragment: str, relative_start: int, relative_end: int, *, before_only: bool
+) -> bool:
+    """Whether an ordinary-survival signal sits UNCAPPED in the adverbial marker's window.
+
+    The window is the marker's own clause-segment (bounded by commas/semicolons), so a
+    confidentiality term capped in a DIFFERENT segment cannot credit the marker. A
+    numeric YEAR_TERM caps it: if a year-term sits between the confidentiality term and
+    the marker the survival is already fixed-length and the marker is timing something
+    else ("kept confidential for five (5) years with perpetual diligence") -> demote.
+
+    Fires for a confidentiality term either side of the marker (the marker may follow
+    the subject -- "the Confidential Information shall be held in perpetuity" -- or lead
+    it -- "indefinitely grant access to the confidential information", "survive
+    perpetually, including the Confidential Information").
+
+    The window is the whole SENTENCE-bounded fragment (``_term_fragment_bounds`` already
+    walled it off at ``.``/``;`` from unrelated sentences). Crossing commas is
+    deliberate and fail-safe: a confidentiality term enumerated after a comma --
+    "...survive perpetually, including the Confidential Information" -- is still governed
+    by the marker. The CAP guard (a numeric YEAR_TERM between the term and the marker)
+    is what prevents an already-capped confidentiality term in the same sentence from
+    crediting the marker ("kept confidential for five (5) years with perpetual
+    diligence" / "the confidentiality obligations survive for five (5) years ...
+    perpetual holdings ltd").
+    """
+    before = fragment[:relative_start]
+    after = "" if before_only else fragment[relative_end:]
+
+    before_matches = list(re.finditer(GOVERNED_SURVIVAL_SIGNAL_PATTERN, before))
+    if before_matches:
+        last = before_matches[-1]
+        if not re.search(YEAR_TERM_PATTERN, before[last.end():]):
+            return True
+
+    if after:
+        first = re.search(GOVERNED_SURVIVAL_SIGNAL_PATTERN, after)
+        if first and not re.search(YEAR_TERM_PATTERN, after[:first.start()]):
+            return True
+    return False
+
+
+def _confidentiality_survival_predicate_in_window(
+    fragment: str, relative_start: int, relative_end: int, *, before_only: bool
+) -> bool:
+    """Whether an UNCAPPED confidentiality-survival predicate locally governs the marker.
+
+    Used for (a) the attributive ``perpetual``/``perpetually`` fall-through (a forward
+    benign noun has already been ruled out, so only a PRECEDING survival predicate can
+    credit it -- "the confidential information shall remain perpetually available") and
+    (b) the benign-object demotion guard in ``_is_benign_indefinite_match``. The window
+    is the marker's own clause-segment; a numeric YEAR_TERM between the predicate and
+    the marker caps the survival and withholds credit.
+    """
+    before = _marker_clause_segment_before(fragment, relative_start)
+    after = "" if before_only else _marker_clause_segment_after(fragment, relative_end)
+
+    # A confidentiality-survival predicate immediately BEFORE the marker, with no
+    # numeric cap between it and the marker.
+    before_matches = list(re.finditer(CONFIDENTIALITY_SURVIVAL_PREDICATE_PATTERN, before))
+    if before_matches:
+        last = before_matches[-1]
+        tail = before[last.end():]
+        if not re.search(YEAR_TERM_PATTERN, tail):
+            return True
+
+    # A confidentiality-survival predicate AFTER the marker (the marker leads, e.g.
+    # "indefinitely grant access to the confidential information"), with no numeric cap
+    # between the marker and the predicate.
+    if after:
+        first = re.search(CONFIDENTIALITY_SURVIVAL_PREDICATE_PATTERN, after)
+        if first:
+            head = after[:first.start()]
+            if not re.search(YEAR_TERM_PATTERN, head):
+                return True
+    return False
+
+
+def _marker_clause_segment_before(fragment: str, relative_start: int) -> str:
+    """Text from the nearest preceding comma/semicolon up to the marker."""
+    left = max(
+        fragment.rfind(separator, 0, relative_start) for separator in (",", ";")
+    )
+    return fragment[left + 1:relative_start]
+
+
+def _marker_clause_segment_after(fragment: str, relative_end: int) -> str:
+    """Text from the marker up to the next comma/semicolon."""
+    candidates = [
+        position
+        for position in (fragment.find(separator, relative_end) for separator in (",", ";"))
+        if position != -1
+    ]
+    right = min(candidates) if candidates else len(fragment)
+    return fragment[relative_end:right]
+
+
 def _is_benign_indefinite_match(
     normalized: str, match: "re.Match[str]", clause: Dict[str, object]
 ) -> bool:
@@ -619,7 +933,19 @@ def _is_benign_indefinite_match(
             # confidentiality and must still FAIL, not be laundered by the
             # trailing object "available". A non-CI subject ("a perpetual license",
             # "personal data shall remain perpetually available") still demotes.
-            if objects and not _ordinary_ci_subject_present(fragment[:relative_start]):
+            # A trailing non-survival object also fails to launder the trigger when the
+            # marker GOVERNS a confidentiality-survival predicate -- "indefinitely grant
+            # ACCESS to the confidential information" makes CI itself perpetually
+            # accessible (CI is the governed object, gate-1 leak B), so the object word
+            # "access" must not demote it. The governance window check captures that
+            # ("access to ... confidential information" is a survival predicate),
+            # mirroring the subject-side guard for the object side.
+            governs_ci = _confidentiality_survival_predicate_in_window(
+                fragment, relative_start, relative_end, before_only=False
+            )
+            if objects and not governs_ci and not _ordinary_ci_subject_present(
+                fragment[:relative_start]
+            ):
                 object_alt = "|".join(re.escape(obj).replace(r"\ ", r"\s+") for obj in objects)
                 # Allow up to two filler words ("a perpetual license", "remain
                 # indefinitely available", "perpetual right to use") between the
@@ -728,7 +1054,20 @@ def _carve_out_scoped_before_term(fragment: str, term_start: int, carve_out_patt
     scoped_text = before_term[last_carve_out.start():]
     if not re.search(CARVE_OUT_SURVIVAL_PATTERN, scoped_text):
         return False
-    if re.search(ORDINARY_SURVIVAL_SUBJECT_PATTERN, before_term[last_carve_out.end():]):
+    # An ordinary-CI subject sitting BETWEEN the carve-out term and the trigger means
+    # ordinary confidentiality co-governs the survival, so the carve-out does not get
+    # credit. This uses ``_strong_ordinary_ci_subject_present`` -- broader than the
+    # narrow subject+verb ``ORDINARY_SURVIVAL_SUBJECT_PATTERN`` (it must catch a LEADING
+    # carve-out idiom: "As required by applicable law, all Confidential Information shall
+    # remain confidential in perpetuity." puts "all confidential information ... remain
+    # confidential" in this between-window -- an ordinary-CI perpetual rider wearing a
+    # carve-out rationale that must still FAIL, gate-1 leak A) -- but NOT the bare-
+    # "information" alternative, which a legitimate carve-out scopes as its OWN subject
+    # ("trade secrets and information subject to legal or regulatory obligations remain
+    # protected for as long as ... law requires"). The strong pattern requires the
+    # "confidential"/"confidentiality" qualifier, so it separates the real rider from
+    # the carve-out's own scoped information.
+    if _strong_ordinary_ci_subject_present(before_term[last_carve_out.end():]):
         return False
     # Ordinary CI must not CO-GOVERN the survival as a conjoined subject in the
     # SAME sub-clause as the carve-out, e.g. "the confidential information and trade
@@ -816,7 +1155,12 @@ def _carve_out_governs_term_sentence(
                 rf"required\s+by|require[ds]?\s+by|as\s+required\s+by|"
                 rf"mandated\s+by|necessary\s+(?:to\s+comply\s+with|for|under)|"
                 rf"to\s+comply\s+with|to\s+satisfy)\s+"
-                rf"(?:the\s+)?(?:applicable\s+)?{carve_out_pattern}\b",
+                # Allow a determiner ("a"/"an"/"any"/"the") between the requirement idiom
+                # and the carve-out term: "required by a legal obligation" / "required by
+                # any legal obligation" are the same longer-survival carve-out as
+                # "required by the applicable law" -- the article must not break the
+                # requirement-idiom guard (gate-3 Family 2).
+                rf"(?:(?:the|a|an|any)\s+)?(?:applicable\s+)?{carve_out_pattern}\b",
                 after_term,
             )
             # "...for as long as <carve-out term> requires/mandates/permits": the
@@ -880,6 +1224,31 @@ def _ordinary_ci_subject_present(text: str) -> bool:
     )
 
 
+# A STRONG ordinary-CI subject -- "confidential information" / "confidentiality
+# obligations" and friends -- but NOT a bare "information". Bare "information" is too
+# loose for a co-governance window because a legitimate carve-out routinely scopes its
+# OWN subject as "information subject to legal or regulatory obligations" / "information
+# the law requires to be retained": that information is the carve-out's subject, not
+# ordinary CI, so the bare-"information" alternative wrongly rejected the carve-out.
+# This requires the "confidential"/"confidentiality" qualifier (or a survival
+# subject+verb collocation), which "all confidential information shall remain
+# confidential" (a real ordinary-CI perpetual rider) satisfies and "information subject
+# to legal obligations" does not.
+STRONG_ORDINARY_CI_SUBJECT_PATTERN = (
+    r"\b(?:confidential\s+information"
+    r"|confidentiality\s+(?:obligations?|undertakings?|provisions?|duties?)"
+    r"|obligations?\s+of\s+confidentiality"
+    r"|(?:ordinary\s+)?confidential(?:ity)?\s+(?:obligations?|undertakings?|provisions?|duties?))\b"
+)
+
+
+def _strong_ordinary_ci_subject_present(text: str) -> bool:
+    return bool(
+        re.search(STRONG_ORDINARY_CI_SUBJECT_PATTERN, text)
+        or re.search(ORDINARY_SURVIVAL_SUBJECT_PATTERN, text)
+    )
+
+
 # Connectors that introduce a carve-out sub-clause; an ordinary capped term sitting
 # in front of one of these is a SEPARATE clause and must not be read as co-governing
 # the carve-out's (longer) survival.
@@ -924,8 +1293,22 @@ def _indefinite_term_patterns(clause: Dict[str, object]) -> List[str]:
     """
     configured = clause.get("indefinite_terms")
     if isinstance(configured, list):
-        return _clause_term_patterns(clause, "indefinite_terms")
-    return [_literal_word_pattern(term) for term in DEFAULT_INDEFINITE_TERMS if str(term).strip()]
+        patterns = _clause_term_patterns(clause, "indefinite_terms")
+    else:
+        patterns = [
+            _literal_word_pattern(term)
+            for term in DEFAULT_INDEFINITE_TERMS
+            if str(term).strip()
+        ]
+    # STRUCTURAL BACKSTOP -- a negated-expiry / never-cease idiom over confidentiality
+    # is open-ended survival that no closed vocabulary enumerates: "shall not cease to
+    # be confidential at any time", "shall never cease to be confidential", "shall not
+    # expire". These say CI stays confidential with no end, so they are indefinite by
+    # governance, not by keyword. Appended to the vocab patterns so they flow through
+    # the SAME carve-out / benign / governance filters (a trade-secret-only or
+    # personal-data carve-out wearing this idiom is still demoted upstream).
+    patterns.append(STRUCTURAL_OPEN_ENDED_SURVIVAL_PATTERN)
+    return patterns
 
 
 def _carve_out_context_patterns(clause: Dict[str, object]) -> List[str]:
