@@ -3826,8 +3826,11 @@ async function testStaleReviewRefreshWiring(page) {
       return;
     }
     if (requestUrl.pathname.endsWith("/review")) {
-      // Read path. Before refresh: stored review + review_may_be_stale, no AI run.
-      // After the poll reports completed, the client re-reads /review for results.
+      // Read path. Before refresh: a GENUINELY stale stored review — the server's
+      // narrow review_refresh.stale gate is true (playbook drift), which is the ONLY
+      // trigger for the amber "Review is Stale" state. (The broad review_may_be_stale
+      // flag alone is NOT treated as drift any more.) After the poll reports
+      // completed, the client re-reads /review and the server clears the stale gate.
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -3837,7 +3840,7 @@ async function testStaleReviewRefreshWiring(page) {
           review_may_be_stale: !refreshScheduled,
           review_refresh: refreshScheduled
             ? { refreshed: true, stale: false, stale_reasons: [] }
-            : null,
+            : { stale: true, stale_reasons: ["playbook_changed"] },
           review_result: reviewResult,
         }),
       });
@@ -3873,17 +3876,21 @@ async function testStaleReviewRefreshWiring(page) {
   await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
   await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#reviewView:not([hidden])");
-  // Opening the matter shows the freshness indicator + the always-present "Review"
-  // button. This matter HAS a stored review (verdicts present) and opened with the
-  // broad review_may_be_stale flag set, so it is an already-reviewed-but-out-of-date
-  // matter: the indicator reads "Reviewed (may be out of date)" — a freshness HINT,
-  // NEVER "Not reviewed" (a stored review DID run). No-jump header: the button label
-  // is ALWAYS "Review" (no "Review"/"Refresh Review" relabel); because this reviewed
-  // matter is out of date it is ENABLED (there is something to re-run). Opening does
-  // NOT run the AI (no /review-refresh POST yet).
+  // Opening the matter shows the amber freshness indicator + the always-present
+  // "Review" button. This matter HAS a stored review (verdicts present) and opened
+  // GENUINELY stale (review_refresh.stale=true / playbook drift), so the traffic-
+  // light reads amber "Review is Stale" — NEVER "Not Reviewed" (a stored review DID
+  // run). No-jump header: the button label is ALWAYS "Review"; because this reviewed
+  // matter is stale it is ENABLED (there is something to re-run). Opening does NOT
+  // run the AI (no /review-refresh POST yet).
   await page.waitForSelector("#studioReviewStaleIndicator:not([hidden])");
   await page.waitForSelector("#studioRefreshReviewButton:not([hidden])");
-  await assertTextContains(page.locator("#studioReviewStaleIndicator"), "Reviewed (may be out of date)");
+  await assertTextContains(page.locator("#studioReviewStaleIndicator"), "Review is Stale");
+  assert.equal(
+    await page.locator("#studioReviewStaleIndicator").evaluate((el) => el.classList.contains("is-stale")),
+    true,
+    "a genuinely stale stored review must carry the amber is-stale tone",
+  );
   await assertTextContains(page.locator("#studioRefreshReviewButton"), "Review");
   assert.equal(await page.locator("#studioRefreshReviewButton").isEnabled(), true);
   assert.equal(refreshCount, 0);
@@ -3896,13 +3903,17 @@ async function testStaleReviewRefreshWiring(page) {
   assert.equal(await page.locator("#studioRefreshReviewButton").getAttribute("aria-busy"), "true");
   assert.equal(refreshCount, 1);
 
-  // The poll flips review_status to completed -> results render, spinner clears,
-  // stale indicator clears, and downstream actions re-enable.
+  // The poll flips review_status to completed -> results render, spinner clears, the
+  // freshness indicator flips from amber stale to the confident GREEN "Reviewed"
+  // (state (b) — the refresh cleared the drift), and downstream actions re-enable.
   await waitForText(page, "#studioFileMeta", "Review refreshed against the active Playbook.");
   await page.waitForSelector("#studioRefreshReviewButton:not(.is-refreshing)", { state: "attached" });
   await page.waitForSelector("#studioRefreshReviewButton:not([hidden])");
   await assertTextContains(page.locator("#studioRefreshReviewButton"), "Review");
-  await page.waitForSelector("#studioReviewStaleIndicator[hidden]", { state: "attached" });
+  await page.waitForFunction(() => {
+    const el = document.querySelector("#studioReviewStaleIndicator");
+    return el && !el.hidden && (el.textContent || "").trim() === "Reviewed" && el.classList.contains("is-reviewed");
+  });
   assert.equal(await page.locator("#studioExportButton").isEnabled(), true);
   assert.equal(await page.locator("#studioSendButton").isEnabled(), true);
   assert.equal(refreshCount, 1);
@@ -4198,14 +4209,21 @@ async function testStoredReviewLooksReviewedOnOpen(page) {
   // It surfaces the real needs-review outcome from the stored verdicts.
   assert.equal(overallTitle, "Needs review", `expected the stored verdict 'Needs review', got '${overallTitle}'`);
 
-  // The stale indicator must NOT claim "Not reviewed" on a matter that HAS a
-  // stored review. (It is either hidden or, at most, a freshness hint.)
-  const staleIndicatorText = await page.evaluate(() => {
+  // TRAFFIC-LIGHT (b): a stored review opened with NO genuine drift must show the
+  // CONFIDENT green "Reviewed" — NOT "Not Reviewed" and NOT "Review is Stale". The
+  // fixture opens with the broad review_may_be_stale flag set (the open path never
+  // re-runs AI) and review_refresh.stale=false; that broad flag must NOT trigger the
+  // stale state. This assertion would FAIL if the broad flag leaked back into (c).
+  const freshness = await page.evaluate(() => {
     const el = document.querySelector("#studioReviewStaleIndicator");
-    if (!el || el.hidden) return "";
-    return el.textContent || "";
+    if (!el || el.hidden) return { text: "", green: false };
+    return {
+      text: (el.textContent || "").trim(),
+      green: el.classList.contains("is-reviewed") && !el.classList.contains("is-stale") && !el.classList.contains("is-not-reviewed"),
+    };
   });
-  assert.notEqual(staleIndicatorText.trim(), "Not reviewed", "the stale indicator must not read 'Not reviewed' on a stored-reviewed matter");
+  assert.equal(freshness.text, "Reviewed", `a plain reopen of an unedited stored review must read the confident "Reviewed", got '${freshness.text}'`);
+  assert.equal(freshness.green, true, "the confident Reviewed indicator must carry the green is-reviewed tone, not amber/red");
 
   // Terminal actions operate on the valid stored review. Approve lives on the
   // Overview footer; it must be ENABLED (not locked behind a never-ran AI run).
@@ -4218,9 +4236,10 @@ async function testStoredReviewLooksReviewedOnOpen(page) {
   assert.equal(await page.locator("#studioReviewedButton").isHidden(), false, "the Reviewed sign-off must be offered on a needs-review stored matter");
   assert.equal(await page.locator("#studioReviewedButton").isDisabled(), false, "the Reviewed sign-off must be clickable on a valid stored review");
 
-  // --- State (c): the reviewer edits the document text since the review ----
-  // A genuine edit marks the review out-of-date. The indicator surfaces a
-  // freshness warning (NOT "Not reviewed"), and the verdict still reads reviewed.
+  // --- TRAFFIC-LIGHT (c): the reviewer edits the document text since the review --
+  // A genuine in-session edit marks the review stale: the indicator flips to AMBER
+  // "Review is Stale" (NOT "Not Reviewed" — a review DID run), and the verdict still
+  // reads reviewed.
   await page.evaluate(() => {
     // Simulate a viewer text edit on a paragraph.
     if (Array.isArray(state.reviewParagraphs) && state.reviewParagraphs.length) {
@@ -4228,10 +4247,16 @@ async function testStoredReviewLooksReviewedOnOpen(page) {
     }
     if (typeof markReviewMayBeStaleFromEdit === "function") markReviewMayBeStaleFromEdit();
   });
-  await page.waitForSelector("#studioReviewStaleIndicator:not([hidden])");
-  const editedIndicator = (await page.locator("#studioReviewStaleIndicator").innerText()).trim();
-  assert.notEqual(editedIndicator, "Not reviewed", "after a doc edit the indicator must not read 'Not reviewed' (a review DID run)");
-  assert.ok(/out of date|stale/i.test(editedIndicator), `expected an out-of-date/stale freshness hint after an edit, got '${editedIndicator}'`);
+  await page.waitForFunction(() => {
+    const el = document.querySelector("#studioReviewStaleIndicator");
+    return el && !el.hidden && (el.textContent || "").trim() === "Review is Stale";
+  });
+  const editedFreshness = await page.evaluate(() => {
+    const el = document.querySelector("#studioReviewStaleIndicator");
+    return { text: (el.textContent || "").trim(), amber: el.classList.contains("is-stale") };
+  });
+  assert.equal(editedFreshness.text, "Review is Stale", `after a doc edit the indicator must read amber "Review is Stale", got '${editedFreshness.text}'`);
+  assert.equal(editedFreshness.amber, true, "the stale indicator must carry the amber is-stale tone after an edit");
 
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/matters**");

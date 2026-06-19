@@ -3484,6 +3484,29 @@ h3 {
   width: 6px;
 }
 
+/* Traffic-light freshness indicator. The base rule above is AMBER, which serves
+   state (c) "Review is Stale" (genuine drift). The two modifiers below recolor it
+   for the other states, dot included, using the app's semantic tokens. */
+
+/* (a) RED "Not Reviewed": no stored review at all. */
+.studio-review-stale-indicator.is-not-reviewed {
+  color: var(--red-ink);
+}
+
+.studio-review-stale-indicator.is-not-reviewed::before {
+  background: var(--red);
+}
+
+/* (b) GREEN "Reviewed": a reviewed matter with no genuine drift — the calm,
+   reassuring default for any opened, unedited reviewed matter. */
+.studio-review-stale-indicator.is-reviewed {
+  color: var(--green-ink);
+}
+
+.studio-review-stale-indicator.is-reviewed::before {
+  background: var(--green);
+}
+
 .studio-refresh-review {
   background: #fff;
   border: 1px solid var(--amber-border);

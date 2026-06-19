@@ -337,13 +337,25 @@ function syncViewerParagraphEdit(editable) {
 }
 
 // A viewer edit can invalidate the stored AI review, but we no longer auto-run
-// the model. Flag the loaded matter as possibly stale so the "Review may be
-// stale" indicator + "Refresh with AI" button appear; the operator triggers the
-// (expensive) AI reassess explicitly. Only meaningful for a saved matter.
+// the model. Flag the loaded matter as GENUINELY drifted so the "Reviewed (may be
+// out of date)" indicator + "Refresh with AI" button appear; the operator triggers
+// the (expensive) AI reassess explicitly. Only meaningful for a saved matter.
+//
+// The dedicated `review_edited_since_load` marker is what drives the freshness
+// indicator's state (c). It is set ONLY here (an actual in-session document edit)
+// and is naturally absent after every (re)open, because loadMatterIntoReview
+// replaces state.selectedMatter with a fresh server matter object that never
+// carries this FE-only marker. This is the discriminator that keeps a plain reopen
+// of an unedited reviewed matter in the confident state (b) "Reviewed": the broad
+// review_may_be_stale open flag (set on EVERY open merely because the open path
+// does not re-run AI) must NOT, on its own, read as drift.
 function markReviewMayBeStaleFromEdit() {
   if (!state.selectedMatter?.id) return;
-  if (state.selectedMatter.review_may_be_stale) return;
+  if (state.selectedMatter.review_edited_since_load) return;
+  // Keep the legacy broad flag set for any other consumer, but the freshness
+  // indicator keys off the dedicated edit marker, not this broad flag.
   state.selectedMatter.review_may_be_stale = true;
+  state.selectedMatter.review_edited_since_load = true;
   if (typeof renderReviewRefreshNotice === "function") {
     renderReviewRefreshNotice(state.selectedMatter.review_refresh);
   }
@@ -894,23 +906,18 @@ function loadMatterIntoReview(matter) {
   applyMatterRedlineDraft(matter.redline_draft);
   renderReviewRefreshNotice(matter.review_refresh);
   // The freshness file-meta line follows the SAME (a)/(b)/(c) contract as the
-  // header indicator (renderReviewRefreshNotice): a stored review opened WITHOUT
-  // re-running AI is NOT "stale" just because review_may_be_stale is set on open —
-  // that broad flag only means "AI did not run on open". Only surface a freshness
-  // warning on a GENUINE drift signal: the narrow server gate (review_refresh.stale)
-  // or an in-session edit of an ALREADY-reviewed matter (review_may_be_stale on a
-  // matter that has stored verdicts). A genuinely unreviewed matter has no stored
-  // verdicts, so this stays quiet and the empty-state copy speaks instead.
-  const hasStoredReview = Boolean(
-    Array.isArray(reviewResult.clauses) && reviewResult.clauses.length,
-  );
+  // header indicator (renderReviewRefreshNotice). On a plain OPEN there is no
+  // genuine-drift signal: review_edited_since_load is unset (an in-session edit sets
+  // it AFTER load) and the broad review_may_be_stale flag (set on EVERY open merely
+  // because the open path does not re-run AI) is DELIBERATELY not treated as drift.
+  // So the only load-time freshness warning is the narrow server gate
+  // (review_refresh.stale) — otherwise the line stays quiet and the normal
+  // "matter loaded" copy speaks, keeping a plain reopen in the confident (b) state.
   const refreshMessage = matter.review_refresh?.redline_draft_cleared
     ? matter.review_refresh.message || "Saved redline draft cleared after review refresh"
     : matter.review_refresh?.stale
       ? staleReviewMessage(matter.review_refresh)
-      : hasStoredReview && matter.review_may_be_stale
-        ? "This review may be out of date — the document changed since it last ran. Refresh with AI to re-check."
-        : "";
+      : "";
   setFileMeta(
     refreshMessage
       || (matter.redline_draft

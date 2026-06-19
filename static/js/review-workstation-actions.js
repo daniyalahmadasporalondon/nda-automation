@@ -1381,17 +1381,19 @@ async function refreshSelectedMatterReview() {
     // 200 idle: nothing to do (the stored review is already current). No poll.
     stopReviewPoll();
     exitReviewInFlightUi();
-    // The refresh resolved this session, so the broad open-path "AI did not run on
-    // open" flag (review_may_be_stale) must RESET — leaving it set would re-show the
-    // freshness hint on a review we just confirmed current. The narrow server gate
+    // The refresh resolved this session, so the freshness flags must RESET — the
+    // review just (re-)ran against the current document, so any prior in-session edit
+    // marker (review_edited_since_load) and the broad open-path flag
+    // (review_may_be_stale) are no longer drift. The narrow server gate
     // (review_refresh.stale) remains authoritative for genuine drift. Mirror this in
-    // the SELECTED matter (the open-path flag lives there) AND adopt the server's
-    // review_refresh so renderReviewRefreshNotice reads the post-refresh truth.
+    // the SELECTED matter AND adopt the server's review_refresh so
+    // renderReviewRefreshNotice reads the post-refresh truth.
     if (state.selectedMatter?.id) {
       const serverStale = Boolean(payload.review_refresh?.stale);
       state.selectedMatter = {
         ...state.selectedMatter,
         review_may_be_stale: serverStale ? state.selectedMatter.review_may_be_stale : false,
+        review_edited_since_load: false,
         review_refresh: payload.review_refresh ?? state.selectedMatter.review_refresh ?? null,
       };
     }
@@ -1525,46 +1527,56 @@ function matterIsExecuted(matter = state.selectedMatter) {
 
 function renderReviewRefreshNotice(refresh = state.selectedMatter?.review_refresh || null) {
   // Three open-matter states (the freshness indicator must distinguish them):
-  //   (a) NO review ever            -> "Not reviewed"
-  //   (b) stored review, unchanged  -> indicator HIDDEN (the verdict stands)
-  //   (c) stored review, out of date-> "Reviewed (may be out of date)"
+  //   (a) NO review ever                   -> "Not reviewed"
+  //   (b) stored review, NOT drifted       -> a confident "Reviewed"
+  //   (c) stored review, GENUINELY drifted -> "Reviewed (may be out of date)"
+  //
+  // (b) is the COMMON case: a plain reopen of a reviewed matter whose document has
+  // not changed since the review ran lands here, NOT in (c).
   //
   // The "reviewed?" decision is "does a stored review with verdicts exist"
   // (aiReviewRan() -> hasReviewResults()), NEVER the broad review_may_be_stale flag.
-  // Opening a matter sets review_may_be_stale=true purely because the open path does
-  // not re-run AI — that flag alone must NOT make a genuinely-reviewed matter look
-  // un-reviewed/stale. Genuine out-of-date-ness is the NARROW server gate
-  // (review_refresh.stale: playbook/engine/text drift) OR an in-session document
-  // edit (markReviewMayBeStaleFromEdit sets review_may_be_stale on a matter that is
-  // ALREADY reviewed). So: state (c) fires only when reviewed AND a real drift
-  // signal is present.
+  //
+  // GENUINE DRIFT (the ONLY trigger for (c)) is the narrow real-staleness signal:
+  //   - review_refresh.stale: the server's document-edited-since-review / playbook-
+  //     drift gate, OR
+  //   - review_edited_since_load: a dedicated FE marker set ONLY by an in-session
+  //     viewer edit (markReviewMayBeStaleFromEdit), absent after every (re)open.
+  // The broad review_may_be_stale flag (set on EVERY open merely because the open
+  // path does not re-run AI) is DELIBERATELY NOT a drift signal here — routing it
+  // into (c) made every reopened reviewed matter falsely read "may be out of date"
+  // and made the confident "Reviewed" state (b) unreachable.
   const reviewed = aiReviewRan();
   const serverStale = Boolean(refresh?.stale || state.selectedMatter?.review_refresh?.stale);
-  // The broad flag is a genuine "out of date" signal ONLY on an already-reviewed
-  // matter (e.g. a post-load edit). On an unreviewed matter it just means "AI never
-  // ran on open", which is state (a), not staleness.
-  const editedSinceReview = reviewed && Boolean(state.selectedMatter?.review_may_be_stale);
-  const outOfDate = reviewed && (serverStale || editedSinceReview);
+  const editedSinceLoad = Boolean(state.selectedMatter?.review_edited_since_load);
+  const outOfDate = reviewed && (serverStale || editedSinceLoad);
   const message = serverStale
     ? staleReviewMessage(refresh || state.selectedMatter?.review_refresh)
     : "This review may be out of date — the document changed since it last ran. Refresh with AI to re-check.";
   if (studioReviewStaleIndicator) {
+    // Traffic-light freshness indicator. Exactly one tone class is applied per
+    // render (red / green / amber); clear all three first so re-renders never stack.
+    studioReviewStaleIndicator.classList.remove("is-not-reviewed", "is-reviewed", "is-stale");
     if (!reviewed) {
-      // (a) Unreviewed: surface the honest "Not reviewed" state, not a stale warning.
+      // (a) NO stored review -> RED "Not Reviewed".
       studioReviewStaleIndicator.hidden = false;
-      studioReviewStaleIndicator.textContent = "Not reviewed";
+      studioReviewStaleIndicator.textContent = "Not Reviewed";
       studioReviewStaleIndicator.title = "No AI review has run on this NDA yet. Use Review to run it.";
+      studioReviewStaleIndicator.classList.add("is-not-reviewed");
     } else if (outOfDate) {
-      // (c) Reviewed but drifted: a freshness HINT, never "Not reviewed". The stored
+      // (c) Stored review + GENUINELY drifted -> AMBER "Review is Stale". The stored
       // verdict still stands; the operator MAY refresh, but is not forced to.
       studioReviewStaleIndicator.hidden = false;
-      studioReviewStaleIndicator.textContent = "Reviewed (may be out of date)";
+      studioReviewStaleIndicator.textContent = "Review is Stale";
       studioReviewStaleIndicator.title = message;
+      studioReviewStaleIndicator.classList.add("is-stale");
     } else {
-      // (b) Reviewed and current: nothing to warn about.
-      studioReviewStaleIndicator.hidden = true;
-      studioReviewStaleIndicator.textContent = "";
-      studioReviewStaleIndicator.title = "";
+      // (b) Stored review + current (the default for a plain reopen) -> GREEN
+      // "Reviewed". No false "may be out of date" alarm.
+      studioReviewStaleIndicator.hidden = false;
+      studioReviewStaleIndicator.textContent = "Reviewed";
+      studioReviewStaleIndicator.title = "An AI review has run on this NDA and the document has not changed since.";
+      studioReviewStaleIndicator.classList.add("is-reviewed");
     }
   }
   // `outOfDate` drives the refresh-button enablement below: a click should be
