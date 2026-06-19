@@ -343,7 +343,11 @@ def test_disk_create_does_not_hold_store_lock_while_writing_upload(tmp_path, mon
     monkeypatch.setattr(matter_store, "MATTERS_PATH", tmp_path / "matters.json")
     monkeypatch.setattr(matter_store, "UPLOADS_DIR", tmp_path / "uploads")
 
-    original_write_bytes = Path.write_bytes
+    # The source-doc bytes are staged through matter_store._write_bytes_atomic
+    # (tmp+fsync+replace+dir-fsync durability), before the store lock is taken.
+    # Hook that helper to prove two concurrent creates can both be mid-upload-write
+    # at the same time (i.e. the write is NOT serialized under the store lock).
+    original_write_bytes_atomic = matter_store._write_bytes_atomic
     first_upload_started = threading.Event()
     second_upload_started = threading.Event()
     release_first_upload = threading.Event()
@@ -351,8 +355,9 @@ def test_disk_create_does_not_hold_store_lock_while_writing_upload(tmp_path, mon
     upload_write_count = 0
     errors: list[BaseException] = []
 
-    def delayed_write_bytes(path: Path, data: bytes) -> int:
+    def delayed_write_bytes_atomic(path: Path, data: bytes) -> None:
         nonlocal upload_write_count
+        path = Path(path)
         if path.parent == matter_store.UPLOADS_DIR and path.name.startswith("matter_"):
             with write_count_lock:
                 upload_write_count += 1
@@ -363,9 +368,9 @@ def test_disk_create_does_not_hold_store_lock_while_writing_upload(tmp_path, mon
                     raise AssertionError("timed out waiting to release first upload write")
             elif write_number == 2:
                 second_upload_started.set()
-        return original_write_bytes(path, data)
+        original_write_bytes_atomic(path, data)
 
-    monkeypatch.setattr(Path, "write_bytes", delayed_write_bytes)
+    monkeypatch.setattr(matter_store, "_write_bytes_atomic", delayed_write_bytes_atomic)
 
     def create_matter(document_bytes: bytes) -> None:
         try:
