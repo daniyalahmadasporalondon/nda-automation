@@ -5399,6 +5399,157 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(non_text_status, 400)
         self.assertEqual(non_text_payload["error"], "Personalisation settings must be text values.")
 
+    # --- Per-user (non-admin) personalisation self-serve --------------------
+    # A non-admin must be able to set THEIR OWN signature, read it back, and have
+    # the outbound email body use it -- with strict per-owner isolation and a
+    # never-hard-block default when they have saved nothing.
+
+    def test_non_admin_can_save_and_read_back_own_personalisation(self):
+        # NDA_REQUIRE_AUTH + empty NDA_ADMIN_USERS + Google session => the caller is
+        # authenticated but NOT an admin. They must still reach /api/me/... .
+        auth_env = self._google_oauth_auth_env(NDA_ADMIN_USERS="")
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                session_headers, user = self.google_session_headers(
+                    subject="user-a-sub", email="usera@example.com"
+                )
+                with patch.dict(os.environ, auth_env):
+                    get_before_status, get_before_payload = self.request(
+                        "GET", "/api/me/personalisation-settings", headers=session_headers
+                    )
+                    post_status, post_payload = self.request(
+                        "POST",
+                        "/api/me/personalisation-settings",
+                        {
+                            "sign_off": "  Kind regards,  ",
+                            "signature": "User A",
+                            "signature_block": "Kind regards,\r\nUser A\nLegal",
+                        },
+                        headers=session_headers,
+                    )
+                    get_after_status, get_after_payload = self.request(
+                        "GET", "/api/me/personalisation-settings", headers=session_headers
+                    )
+                stored = app_settings.user_personalisation_settings(user["id"])
+
+        # Before saving: inherits the global/built-in default, flagged not-custom.
+        self.assertEqual(get_before_status, 200)
+        self.assertFalse(get_before_payload["is_custom"])
+        self.assertEqual(
+            get_before_payload["personalisation"], app_settings.DEFAULT_PERSONALISATION_SETTINGS
+        )
+        # Save: 200, cleaned/normalised, flagged custom.
+        self.assertEqual(post_status, 200)
+        self.assertTrue(post_payload["is_custom"])
+        self.assertEqual(
+            post_payload["personalisation"],
+            {
+                "sign_off": "Kind regards,",
+                "signature": "User A",
+                "signature_block": "Kind regards,\nUser A\nLegal",
+            },
+        )
+        # Read back: their own saved override, persisted to disk under their id.
+        self.assertEqual(get_after_status, 200)
+        self.assertTrue(get_after_payload["is_custom"])
+        self.assertEqual(get_after_payload["personalisation"], post_payload["personalisation"])
+        self.assertEqual(stored, post_payload["personalisation"])
+
+    def test_non_admin_personalisation_is_per_owner_isolated(self):
+        # User A saves a signature; User B must NOT see it, and B's own save must
+        # NOT overwrite A's slot (strict per-owner isolation / no cross-tenant leak).
+        auth_env = self._google_oauth_auth_env(NDA_ADMIN_USERS="")
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                headers_a, user_a = self.google_session_headers(
+                    subject="iso-user-a", email="isoa@example.com"
+                )
+                headers_b, user_b = self.google_session_headers(
+                    subject="iso-user-b", email="isob@example.com"
+                )
+                self.assertNotEqual(user_a["id"], user_b["id"])
+                with patch.dict(os.environ, auth_env):
+                    self.request(
+                        "POST",
+                        "/api/me/personalisation-settings",
+                        {"signature": "Alice Only", "signature_block": "Best,\nAlice Only"},
+                        headers=headers_a,
+                    )
+                    # B reads BEFORE saving: must see the default, never A's value.
+                    b_get_status, b_get_payload = self.request(
+                        "GET", "/api/me/personalisation-settings", headers=headers_b
+                    )
+                    # B saves their own.
+                    self.request(
+                        "POST",
+                        "/api/me/personalisation-settings",
+                        {"signature": "Bob Only", "signature_block": "Regards,\nBob Only"},
+                        headers=headers_b,
+                    )
+                    # A re-reads: must still be A's value, untouched by B's write.
+                    a_get_status, a_get_payload = self.request(
+                        "GET", "/api/me/personalisation-settings", headers=headers_a
+                    )
+                stored_a = app_settings.user_personalisation_settings(user_a["id"])
+                stored_b = app_settings.user_personalisation_settings(user_b["id"])
+
+        self.assertEqual(b_get_status, 200)
+        self.assertFalse(b_get_payload["is_custom"])
+        self.assertNotIn("Alice Only", b_get_payload["personalisation"]["signature_block"])
+        self.assertEqual(a_get_status, 200)
+        self.assertEqual(a_get_payload["personalisation"]["signature"], "Alice Only")
+        self.assertEqual(stored_a["signature"], "Alice Only")
+        self.assertEqual(stored_b["signature"], "Bob Only")
+        self.assertEqual(stored_a["signature_block"], "Best,\nAlice Only")
+        self.assertEqual(stored_b["signature_block"], "Regards,\nBob Only")
+
+    def test_non_admin_personalisation_write_requires_signed_in_user(self):
+        # An unauthenticated caller (no owner id) must be refused the per-user write
+        # so there is no anonymous/shared slot to clobber.
+        auth_env = self._google_oauth_auth_env(NDA_ADMIN_USERS="")
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.dict(os.environ, auth_env):
+                    status, payload = self.request(
+                        "POST",
+                        "/api/me/personalisation-settings",
+                        {"signature": "Nobody"},
+                    )
+        self.assertIn(status, (401, 403))
+
+    def test_outbound_body_uses_per_user_signature_then_falls_back(self):
+        # The OUTBOUND email body (default_outbound_body) is where personalisation
+        # actually reaches the generated/sent document. Prove resolution order:
+        #   1. a user's OWN override wins;
+        #   2. a user with NO override still gets a working body via the global/
+        #      built-in default (never a hard block).
+        matter = {"subject": "Acme MNDA"}
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                app_settings.update_user_personalisation_settings(
+                    "owner-with-sig",
+                    {"signature_block": "Cheers,\nThe Owner"},
+                )
+                own_body = gmail_matter_outbox.default_outbound_body(
+                    matter, owner_user_id="owner-with-sig"
+                )
+                # A different, never-configured user falls through to the default.
+                default_body = gmail_matter_outbox.default_outbound_body(
+                    matter, owner_user_id="owner-without-sig"
+                )
+                # Strict isolation: the no-override user must NOT see the other's sig.
+                isolated = "The Owner" not in default_body
+
+        self.assertIn("Cheers,\nThe Owner", own_body)
+        self.assertIn("Acme MNDA", own_body)
+        # Default body still produces a valid signature (built-in fallback).
+        self.assertIn("Aspora Legal", default_body)
+        self.assertTrue(isolated)
+
     def test_ai_settings_endpoint_updates_runtime_review_engine(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
