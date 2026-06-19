@@ -118,5 +118,129 @@ class CrossBoundaryCarveOutTests(unittest.TestCase):
         self.assertIn("exceeds the cap", clause["finding"])
 
 
+class InlineCarveOutLaunderingNBW1bTests(unittest.TestCase):
+    """NB-W1b: the inline carve-out clearance must not launder an ordinary-CI
+    perpetual rider that merely carries a carve-out SIGNAL while ordinary
+    CONFIDENTIAL INFORMATION is the governed perpetual subject.
+
+    The discriminator: an unconditional indefinite word (perpetual / perpetually /
+    indefinitely / in perpetuity) governing ordinary CI in the trigger's own
+    sub-clause FAILS, even with a carve-out lead or trailing carve-out scope; a
+    legitimate carve-out whose perpetual subject is the carve-out itself (trade
+    secret / required-by-law retention) still PASSES.
+    """
+
+    # ---- LAUNDERING vectors that must FAIL (ordinary-CI perpetual riders) ----
+
+    def test_nbw1b_canonical_indefinitely_wrt_all_ci_fails(self):
+        clause = _term_clause(
+            "The confidentiality obligations shall continue indefinitely with "
+            "respect to all Confidential Information disclosed."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertIn("indefinite or perpetual", clause["finding"])
+
+    def test_nbw1b_word_order_survive_perpetuity_for_all_ci_fails(self):
+        clause = _term_clause(
+            "The obligations of confidentiality shall survive in perpetuity for all "
+            "Confidential Information."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertIn("indefinite or perpetual", clause["finding"])
+
+    def test_nbw1b_word_order_perpetually_as_to_the_ci_fails(self):
+        clause = _term_clause(
+            "Confidentiality shall continue perpetually as to the Confidential "
+            "Information."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertIn("indefinite or perpetual", clause["finding"])
+
+    def test_carveout_lead_then_ordinary_ci_perpetual_subject_fails(self):
+        # "with respect to trade secrets" leads, but ORDINARY CI is the perpetual
+        # subject in the same sub-clause -- the carve-out signal must not launder it.
+        clause = _term_clause(
+            "With respect to trade secrets, all Confidential Information shall remain "
+            "confidential in perpetuity."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertIn("indefinite or perpetual", clause["finding"])
+
+    def test_ordinary_ci_perpetual_with_trailing_law_garnish_fails(self):
+        # Unconditional "in perpetuity" on ordinary CI, with "as required by
+        # applicable law" appended as a trailing garnish (NOT a genuine condition).
+        clause = _term_clause(
+            "The Confidential Information shall survive in perpetuity, as required by "
+            "applicable law."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertIn("indefinite or perpetual", clause["finding"])
+
+    def test_ordinary_ci_indefinitely_with_trailing_law_garnish_fails(self):
+        clause = _term_clause(
+            "All Confidential Information shall remain confidential indefinitely, as "
+            "required by applicable law."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertIn("indefinite or perpetual", clause["finding"])
+
+    def test_ordinary_ci_perpetual_with_trailing_trade_secret_scope_fails(self):
+        clause = _term_clause(
+            "All Confidential Information shall remain confidential in perpetuity, "
+            "with respect to trade secrets."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertIn("indefinite or perpetual", clause["finding"])
+
+    def test_ordinary_ci_indefinitely_for_trade_secrets_fails(self):
+        clause = _term_clause(
+            "Confidential Information shall survive indefinitely for trade secrets."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertIn("indefinite or perpetual", clause["finding"])
+
+    # ---- LEGITIMATE carve-outs that must STILL PASS (discriminator holds) ----
+
+    def test_legit_inline_trade_secret_perpetuity_still_passes(self):
+        # No ordinary-CI DATA noun in the trigger sub-clause -- the carve-out term
+        # itself is the perpetual subject.
+        clause = _term_clause(
+            "The confidentiality obligations survive for five (5) years; with respect "
+            "to trade secrets, confidentiality shall continue in perpetuity."
+        )
+        self.assertEqual(clause["status"], "match")
+        self.assertTrue(clause["passes"])
+
+    def test_legit_required_by_law_retention_of_information_still_passes(self):
+        # Ordinary "information" is the subject, but the trigger is the CONDITIONAL
+        # "for as long as ... required by applicable law" connector (not an
+        # unconditional perpetual word) -- a genuine required-by-law retention.
+        clause = _term_clause(
+            "The confidentiality obligations survive for five (5) years, except that "
+            "information shall be retained for as long as required by applicable law."
+        )
+        self.assertEqual(clause["status"], "match")
+        self.assertTrue(clause["passes"])
+
+    def test_legit_capped_ci_then_except_trade_secret_perpetuity_still_passes(self):
+        # Ordinary CI is CAPPED at five years in the PRIOR sub-clause; only the
+        # trade-secret carve-out (after the exception connector) is perpetual.
+        clause = _term_clause(
+            "The confidentiality obligations of the Receiving Party shall survive for "
+            "five (5) years following termination, except that trade secrets shall "
+            "survive in perpetuity."
+        )
+        self.assertEqual(clause["status"], "match")
+        self.assertTrue(clause["passes"])
+
+
 if __name__ == "__main__":
     unittest.main()
