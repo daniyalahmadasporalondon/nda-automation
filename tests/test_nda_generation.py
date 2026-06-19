@@ -646,6 +646,50 @@ class TestForumFromEntity:
                 _bundle(option_id="india"), playbook, governing_law_option_id="difc"
             )
 
+    def test_difc_entity_renders_its_court_into_the_generated_document(self, playbook):
+        # End-to-end: a DIFC signing entity's governing-law clause names BOTH the
+        # DIFC law AND the DIFC Courts with the exclusive-jurisdiction wording. The
+        # forum is the entity's registry court, written into the document (not just
+        # provenance on the manifest).
+        result = gen.generate_nda_for_entity(
+            "vance_techlabs", _intake(), playbook=playbook, use_ai=False
+        )
+        assert result.manifest.forum == "the DIFC Courts"
+        from io import BytesIO
+
+        gl_clause = next(
+            p.text
+            for p in Document(BytesIO(result.docx_bytes)).paragraphs
+            if "GOVERNING LAW AND JURISDICTION" in p.text
+        )
+        assert "the laws of DIFC" in gl_clause
+        assert "the DIFC Courts shall have exclusive jurisdiction" in gl_clause
+        # And the generated DIFC draft still passes its own Playbook.
+        assert gen.self_check_generated_nda(result.docx_bytes, playbook=playbook).passed
+
+    def test_override_renders_overridden_law_court_into_the_document(self, playbook):
+        # Override the India-default aspora_technology to DIFC: the DOCUMENT's clause
+        # must carry the OVERRIDDEN law's court ("the DIFC Courts"), never the
+        # entity's own Indian city court.
+        result = gen.generate_nda_for_entity(
+            "aspora_technology",
+            _intake(),
+            playbook=playbook,
+            governing_law_override="difc",
+            use_ai=False,
+        )
+        assert result.manifest.forum == "the DIFC Courts"
+        from io import BytesIO
+
+        gl_clause = next(
+            p.text
+            for p in Document(BytesIO(result.docx_bytes)).paragraphs
+            if "GOVERNING LAW AND JURISDICTION" in p.text
+        )
+        assert "the DIFC Courts shall have exclusive jurisdiction" in gl_clause
+        # The entity's default Bengaluru court must NOT leak into the clause.
+        assert "Bengaluru" not in gl_clause
+
 
 # --------------------------------------------------------------------------- #
 # Entity address selection (user picks a non-default registered office)

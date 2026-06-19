@@ -41,6 +41,24 @@ function runSourceGuards() {
     "no field uses the legacy plain .nda-fill wrapper (the editor flattens it)",
   );
 
+  // The live-preview governing-law clause renders the FORUM (the court) alongside
+  // the law, with the exclusive-jurisdiction wording the generated document uses,
+  // and sources the forum from the registry-backed resolver (effectiveForum) — not
+  // a hardcoded FE forum map. This locks what-you-see = what-you-get against a
+  // silent regression back to the old law-only clause.
+  assert.ok(
+    /shall have exclusive jurisdiction/.test(DRAFT_INTAKE_SRC),
+    "live preview renders the forum's exclusive-jurisdiction sentence",
+  );
+  assert.ok(
+    /intakeApi\.effectiveForum\(/.test(DRAFT_INTAKE_SRC),
+    "live preview sources the forum from the registry-backed effectiveForum resolver",
+  );
+  assert.ok(
+    !/FORUM_BY_OPTION_ID/.test(DRAFT_INTAKE_SRC),
+    "the controller never hardcodes a FORUM_BY_OPTION_ID map (no-drift)",
+  );
+
   // generator-editor.js: the clean-export run copy whitelists real DOCX run
   // formatting only — the fill/blank markers must NOT be copied onto export runs.
   const replacementRunsFor = EDITOR_SRC.match(/function replacementRunsFor[\s\S]*?\n  }\n/);

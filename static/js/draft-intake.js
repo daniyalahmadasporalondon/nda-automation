@@ -550,11 +550,13 @@ function createDraftIntakeController({
     const asporaAddr = entity ? intakeApi.formatAddressLines(address) : null;
     const sig = (entity && entity.signatory) || {};
     const governingLaw = law ? law.label : null;
-    // The generated NDA's governing-law clause is LAW-ONLY: it names the governing
-    // law and no forum/courts (generation deliberately omits the courts sentence —
-    // a single law may be heard in more than one court — to match how review reads
-    // the clause). The preview mirrors that exactly, so it does not resolve or show
-    // a forum/courts phrase.
+    // The generated NDA's governing-law clause names BOTH the governing law AND the
+    // forum/court: "...the laws of [LAW], and [FORUM] shall have exclusive
+    // jurisdiction ..." (nda_generation._fill_variable_slots). The forum is sourced
+    // from the SAME registry the backend uses (the entity's `jurisdiction` field via
+    // intakeApi.effectiveForum) — never a duplicated FE list — and tracks the
+    // OVERRIDDEN law on an override, so the preview is what-you-see = what-you-get.
+    const forum = intakeApi.effectiveForum(intake);
 
     // Term clamp preview. Generation parses the typed term to a year count exactly
     // like nda_generation_workflow.term_years (first whitespace token -> int, else
@@ -666,7 +668,7 @@ function createDraftIntakeController({
 
           <li><b>Entire agreement; waiver and modification.</b> This Agreement supersedes all prior discussions and writings and is the entire agreement on its subject matter. No waiver or modification binds either Party unless made in writing and signed by a duly authorised representative of each Party; no failure or delay in exercising any right operates as a waiver.</li>
 
-          <li><b>Governing law and jurisdiction.</b> This Agreement is governed by and construed in accordance with the laws of ${entityField(governingLaw, "governing law", "governing_law")}.</li>
+          <li><b>Governing law and jurisdiction.</b> This Agreement is governed by and construed in accordance with the laws of ${entityField(governingLaw, "governing law", "governing_law")}, and ${entityField(forum, "the competent courts", "governing_law")} shall have exclusive jurisdiction over any dispute arising out of or in connection with this Agreement.</li>
 
           <li><b>Severability.</b> If any provision is held unenforceable by a court or tribunal of competent jurisdiction, the remaining provisions remain in full force and effect.</li>
 
