@@ -51,27 +51,75 @@ export function reviewState(matter) {
   return null;
 }
 
+// PURE RENDERER: read the backend's ONE authoritative answer instead of
+// re-deriving (and drifting from) the Python roll-up. The backend computes
+// `needs_human_review` on every matter payload (matter_view.public_matter ->
+// matter_needs_human_review -> review_state.result_requires_human_review), which
+// consumes BOTH the needs-review AND the unresolved-FAIL (check) axes. The old JS
+// here dropped the hard-FAIL axis (only counts.review / overall_status ===
+// "needs_review"), so a pure-FAIL matter false-cleared and lit up Send.
+//
+// FAIL-CLOSED: when the explicit flag is absent (an older payload, a matter that
+// never went through public_matter), fall back to the authoritative review_state
+// signals -- and if even those are absent, treat the matter as needing review.
+// Missing/unknown must NEVER read as clear/sendable.
 export function needsHumanReview(matter) {
+  const explicit = matter?.needs_human_review;
+  if (explicit === true) return true;
+  if (explicit === false) return false;
+  // No explicit authoritative flag -> fail-closed derivation from review_state,
+  // mirroring matter_needs_human_review's stored-state branch (review OR check).
   const state = reviewState(matter);
-  if (state) {
-    if (state.requires_human_review === true || state.blocks_send === true) return true;
-    if (String(state.state || "").toLowerCase() === "review") return true;
+  if (state && typeof state === "object") {
+    if (state.requires_human_review === true) return true;
+    if (state.blocks_send === true) return true;
+    if (state.blocks_auto_send === true) return true;
+    if (state.requires_redline === true) return true;
+    const stateName = String(state.state || "").toLowerCase();
+    if (stateName === "review" || stateName === "check") return true;
     const counts = state.counts && typeof state.counts === "object" ? state.counts : null;
-    if (counts && Number(counts.review || 0) > 0) return true;
+    if (counts && (Number(counts.review || 0) > 0 || Number(counts.check || 0) > 0)) return true;
+    // A present-but-clean review_state (pass/pending, all gates false) is a real
+    // backend verdict that says "no human needed".
+    if (stateName) return false;
   }
+  // Neither an explicit flag nor a review_state object: fall back to the raw
+  // result/requirements summary, now covering the FAIL axis too. If even that is
+  // absent we have no verdict -> fail-closed to needs-review.
   const reviewResult = matter?.review_result || {};
   const overallStatus = String(reviewResult.overall_status || matter?.overall_status || "");
+  if (overallStatus === "needs_review" || overallStatus === "does_not_meet_requirements") return true;
+  if (overallStatus === "meets_requirements") return false;
   const reviewCount = Number(matter?.requirements_needs_review ?? reviewResult.requirements_needs_review ?? 0);
-  return overallStatus === "needs_review" || reviewCount > 0;
+  const failCount = Number(matter?.requirements_failed ?? reviewResult.requirements_failed ?? 0);
+  const passCount = Number(matter?.requirements_passed ?? reviewResult.requirements_passed ?? 0);
+  if (reviewCount > 0 || failCount > 0) return true;
+  // A clean requirements summary (some passes, zero review/fail) is a real clear.
+  if (passCount > 0) return false;
+  // No verdict signal of any kind -> fail-closed: a matter with no review must not
+  // read as sendable.
+  return true;
+}
+
+// The authoritative document-level send gate. The backend computes `blocks_send`
+// (matter_view.public_matter: needs_human_review AND not review-block-resolved) and
+// stamps it on every matter payload. CONSUME it. FAIL-CLOSED when it is absent:
+// derive from needsHumanReview (itself fail-closed) gated by the human-reviewed
+// override, so a missing flag blocks rather than clears.
+export function sendIsBlockedByReview(matter) {
+  const explicit = matter?.blocks_send;
+  if (explicit === true) return true;
+  if (explicit === false) return false;
+  return needsHumanReview(matter) && !matter?.human_reviewed;
 }
 
 export function canSendRedline(matter) {
-  return Boolean(matter?.can_send_redline && recipientEmail(matter) && (!needsHumanReview(matter) || matter?.human_reviewed));
+  return Boolean(matter?.can_send_redline && recipientEmail(matter) && !sendIsBlockedByReview(matter));
 }
 
 export function gmailSendBlock(matter, gmailStatus = {}) {
   if (matter?.send_block_reason) return String(matter.send_block_reason);
-  if (needsHumanReview(matter) && !matter?.human_reviewed) return "Matter needs human review before a redline can be sent.";
+  if (sendIsBlockedByReview(matter)) return "Matter needs human review before a redline can be sent.";
   if (!canSendRedline(matter)) return "Matter does not have a valid reply recipient email address.";
   const outbound = gmailStatus?.outbound || {};
   if (outbound.enabled === false) return "Gmail outbound is disabled in Admin.";
@@ -187,4 +235,5 @@ export const MatterUtils = {
   reviewStaleLabel,
   reviewStaleReasons,
   reviewState,
+  sendIsBlockedByReview,
 };

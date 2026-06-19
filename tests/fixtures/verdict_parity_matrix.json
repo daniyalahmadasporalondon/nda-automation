@@ -1,0 +1,180 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "all_clear",
+      "matter": {
+        "id": "matter",
+        "sender": "counterparty@example.com",
+        "reply_to": "counterparty@example.com",
+        "review_result": {
+          "clauses": [
+            {
+              "id": "confidential_information",
+              "decision": "pass"
+            },
+            {
+              "id": "governing_law",
+              "decision": "pass"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "needs_human_review": false,
+        "blocks_send": false,
+        "result_requires_human_review": false,
+        "clause_states": {
+          "confidential_information": "pass",
+          "governing_law": "pass"
+        }
+      }
+    },
+    {
+      "name": "has_review_only",
+      "matter": {
+        "id": "matter",
+        "sender": "counterparty@example.com",
+        "reply_to": "counterparty@example.com",
+        "review_result": {
+          "clauses": [
+            {
+              "id": "confidential_information",
+              "decision": "pass"
+            },
+            {
+              "id": "non_solicitation",
+              "decision": "review"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "needs_human_review": true,
+        "blocks_send": true,
+        "result_requires_human_review": true,
+        "clause_states": {
+          "confidential_information": "pass",
+          "non_solicitation": "review"
+        }
+      }
+    },
+    {
+      "name": "pure_check_hard_fail",
+      "matter": {
+        "id": "matter",
+        "sender": "counterparty@example.com",
+        "reply_to": "counterparty@example.com",
+        "review_result": {
+          "clauses": [
+            {
+              "id": "confidential_information",
+              "decision": "pass"
+            },
+            {
+              "id": "governing_law",
+              "decision": "fail"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "needs_human_review": true,
+        "blocks_send": true,
+        "result_requires_human_review": true,
+        "clause_states": {
+          "confidential_information": "pass",
+          "governing_law": "check"
+        }
+      }
+    },
+    {
+      "name": "mixed_review_and_check",
+      "matter": {
+        "id": "matter",
+        "sender": "counterparty@example.com",
+        "reply_to": "counterparty@example.com",
+        "review_result": {
+          "clauses": [
+            {
+              "id": "confidential_information",
+              "decision": "pass"
+            },
+            {
+              "id": "non_solicitation",
+              "decision": "review"
+            },
+            {
+              "id": "governing_law",
+              "decision": "fail"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "needs_human_review": true,
+        "blocks_send": true,
+        "result_requires_human_review": true,
+        "clause_states": {
+          "confidential_information": "pass",
+          "non_solicitation": "review",
+          "governing_law": "check"
+        }
+      }
+    },
+    {
+      "name": "unknown_error_clause",
+      "matter": {
+        "id": "matter",
+        "sender": "counterparty@example.com",
+        "reply_to": "counterparty@example.com",
+        "review_result": {
+          "clauses": [
+            {
+              "id": "confidential_information",
+              "decision": "pass"
+            },
+            {
+              "id": "mystery",
+              "decision": "totally-unknown"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "needs_human_review": true,
+        "blocks_send": true,
+        "result_requires_human_review": true,
+        "clause_states": {
+          "confidential_information": "pass",
+          "mystery": "review"
+        }
+      }
+    },
+    {
+      "name": "fail_resolved_by_human",
+      "matter": {
+        "id": "matter",
+        "sender": "counterparty@example.com",
+        "reply_to": "counterparty@example.com",
+        "review_result": {
+          "clauses": [
+            {
+              "id": "governing_law",
+              "decision": "fail"
+            }
+          ]
+        },
+        "human_reviewed": true
+      },
+      "expected": {
+        "needs_human_review": true,
+        "blocks_send": false,
+        "result_requires_human_review": true,
+        "clause_states": {
+          "governing_law": "check"
+        }
+      }
+    }
+  ]
+}
