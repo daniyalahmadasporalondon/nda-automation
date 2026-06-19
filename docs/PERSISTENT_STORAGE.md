@@ -1,5 +1,13 @@
 # Persistent Storage on Render
 
+> **SUPERSEDED** — this describes an earlier setup; current config is /var/data on Render Starter (see render.yaml).
+>
+> The migration described below has already been applied. The live `render.yaml`
+> now sets `plan: standard` with a mounted `disk:` at `/var/data`,
+> `NDA_DATA_DIR=/var/data`, and the `NDA_ALLOW_EPHEMERAL_DATA` escape hatch
+> removed (the startup storage guard is active). This file is retained for the
+> historical rationale only; do not follow its `/tmp` / free-plan steps.
+
 ## Problem
 
 The production service currently stores all application state in ephemeral `/tmp`:

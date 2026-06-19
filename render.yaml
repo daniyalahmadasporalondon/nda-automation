@@ -71,6 +71,11 @@ services:
         value: /var/data/users.json
       - key: NDA_EXPORTS_DIR
         value: /var/data/exports
+      # Max number of matters retained in the store before the oldest are
+      # evicted. Declared at the code default (matter_store.py
+      # DEFAULT_MAX_STORED_MATTERS = 250) so it's flippable from the dashboard.
+      - key: NDA_MATTER_RETENTION_LIMIT
+        value: "250"
       # Render terminates TLS at one proxy in front of the app, so trust a
       # single X-Forwarded-For hop to rate-limit by real client IP instead of
       # the shared proxy peer. Enforce same-site Origin/Referer on state-changing
@@ -83,6 +88,11 @@ services:
         value: "120"
       - key: NDA_AI_REVIEW_ENABLED
         value: "true"
+      # Confidence threshold below which an AI clause verdict is demoted to
+      # human review. Declared at the code default (ai_review.py
+      # DEFAULT_AI_REVIEW_THRESHOLD = 0.75) so it's flippable from the dashboard.
+      - key: NDA_AI_REVIEW_THRESHOLD
+        value: "0.75"
       - key: NDA_ACTIVE_REVIEW_ENGINE
         value: ai_first
       - key: NDA_AI_PROVIDER
@@ -160,6 +170,11 @@ services:
         value: "true"
       - key: NDA_AI_VERIFIER_MODEL
         value: deepseek/deepseek-v4-pro
+      # Per-request timeout (seconds) for the adversarial verifier model call.
+      # Declared at the code default (ai_verifier.py
+      # DEFAULT_VERIFIER_TIMEOUT_SECONDS = 30) so it's flippable from the dashboard.
+      - key: NDA_AI_VERIFIER_TIMEOUT_SECONDS
+        value: "30"
       # AI structure-validation overlay (DeepSeek V4 Flash): demotes regime-3
       # style-misuse false-positive sections (signature fields, address lines, bare
       # connectives) the deterministic source-guard cannot catch. Additive + fail-safe
