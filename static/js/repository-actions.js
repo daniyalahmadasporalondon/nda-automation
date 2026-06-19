@@ -207,6 +207,45 @@ const RepositoryActions = (() => {
       setPanelMessage("Refreshing review against the active Playbook.");
       try {
         const reviewMatter = await api.getMatterReview(matter.id, { refresh: true });
+
+        // ASYNC IN-PROGRESS (POST /review-refresh -> 202): the AI review now runs in
+        // a background worker. getMatterReview returns an in-progress SENTINEL
+        // ({ inProgress: true, matter }) that carries NO review_result yet — so we
+        // must NOT write it as the selected matter (that injected a misleading BLANK
+        // finished-but-empty review, the bug). Instead, mirror the Review tab's
+        // refreshSelectedMatterReview: enter the in-flight UI and START POLLING. The
+        // poll (review-workstation-actions.js) re-reads the matter every few seconds
+        // and, on completion/idle/failure, calls repositoryController.loadMatters()
+        // which re-renders the board card — clearing the "Reviewing…" badge and
+        // surfacing the finished result without the operator reopening the matter.
+        if (reviewMatter?.inProgress || MatterUtils.reviewInProgress(reviewMatter?.matter || reviewMatter)) {
+          const inProgressMatter = reviewMatter?.matter || reviewMatter;
+          // Refresh the board so the card shows the live "Reviewing…" badge now
+          // (the sentinel's matter carries review_status:"in_progress").
+          await loadMatters();
+          renderBoard();
+          // The shared background-review poll keys on state.selectedMatter.id (it is
+          // the Review tab's poll, and it stops/no-ops once the active matter changes
+          // away from the one it is tracking). Point it at this matter so the poll's
+          // ticks run from the Repository inspector too; on completion the poll's own
+          // loadMatters() clears the board badge and surfaces the finished result.
+          state.selectedMatter = { ...(state.selectedMatter || {}), ...inProgressMatter };
+          // startReviewPoll / enterReviewInFlightUi are globals from
+          // review-workstation-actions.js (same window scope; loaded by click time).
+          // typeof-guard so an isolated load order / test harness without them is a
+          // no-op rather than a ReferenceError.
+          if (typeof startReviewPoll === "function") {
+            if (typeof enterReviewInFlightUi === "function") enterReviewInFlightUi();
+            startReviewPoll(matter.id);
+          }
+          setPanelMessage("Review started. It will update on the board when it finishes.");
+          if (refreshButton?.isConnected) {
+            refreshButton.disabled = false;
+            refreshButton.textContent = previousLabel;
+          }
+          return;
+        }
+
         await loadMatters();
         // loadMatters resets state.matters from the list; keep the richer review
         // payload (with review_refresh) as the selected matter for the panel.
@@ -216,18 +255,9 @@ const RepositoryActions = (() => {
         }
         renderBoard();
         const refresh = reviewMatter?.review_refresh || {};
-        // The AI review now runs ASYNCHRONOUSLY: POST /review-refresh returns
-        // in_progress and a worker does the heavy work. The board card already shows
-        // a live "Reviewing…" badge (driven by review_status); the inspector reports
-        // that the review STARTED rather than claiming a finished refresh. Opening
-        // the matter into the Review tab tracks it to completion.
-        if (MatterUtils.reviewInProgress(reviewMatter)) {
-          setPanelMessage("Review started. It will update on the board when it finishes.");
-          if (refreshButton?.isConnected) {
-            refreshButton.disabled = false;
-            refreshButton.textContent = previousLabel;
-          }
-        } else if (refresh.stale) {
+        // Non-async terminal outcomes (200): an idle no-op, a still-stale review, or
+        // a cleared redline draft. Each surfaces its own inspector message below.
+        if (refresh.stale) {
           setPanelMessage(MatterUtils.reviewStaleLabel(reviewMatter) || "Review is still stale.");
         } else if (refresh.redline_draft_cleared) {
           setPanelMessage(refresh.message || "Review refreshed. Saved redline draft was cleared.");
