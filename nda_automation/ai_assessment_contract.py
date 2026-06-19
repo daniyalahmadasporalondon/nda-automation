@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import Any
 
+from . import telemetry
 from .checks.common import (
     ISSUE_TYPE_MISSING,
     ISSUE_TYPE_NONE,
@@ -41,6 +42,16 @@ AI_REDLINE_SPAN_ACTIONS = (AI_REDLINE_STRIKE_SPAN, AI_REDLINE_REPLACE_SPAN)
 # decide); the cap leaves headroom for sub-steps while bounding a runaway list.
 AI_ASSESSMENT_MAX_REASONING_STEPS = 8
 AI_ASSESSMENT_DECISIONS = (CLAUSE_DECISION_PASS, CLAUSE_DECISION_FAIL, CLAUSE_DECISION_REVIEW)
+# Telemetry counter bumped once per clause whose ONLY contract problem was a
+# ``blocks_send`` polarity mismatch (the field disagreed with the decision-derived
+# rule). We auto-correct that one field in place instead of rejecting the whole
+# batch, so this counter tracks how often real models tick "stop sending" on a
+# FAIL (or fail to tick it on a REVIEW). See ``validate_ai_clause_assessment``.
+AI_ASSESSMENT_BLOCKS_SEND_AUTOCORRECTED_COUNTER = "ai_assessment_blocks_send_autocorrected"
+# ``validation_status`` value stamped on a clause whose ``blocks_send`` field was
+# reconciled to the decision-derived rule. Visible in the audit trail; a clause
+# with no auto-correction keeps the default ``"contract_valid"``.
+AI_VALIDATION_STATUS_BLOCKS_SEND_AUTOCORRECTED = "blocks_send_autocorrected"
 AI_ASSESSMENT_ISSUE_TYPES = (
     ISSUE_TYPE_NONE,
     ISSUE_TYPE_MISSING,
@@ -332,8 +343,33 @@ def validate_ai_clause_assessment(
         errors.append(f"{location}: review decisions have an unsupported proposed redline action")
     if decision == CLAUSE_DECISION_FAIL and issue_type != ISSUE_TYPE_MISSING and not evidence:
         errors.append(f"{location}: fail decisions require at least one valid evidence item unless issue_type is missing")
-    if blocks_send is not None and blocks_send != (decision == CLAUSE_DECISION_REVIEW):
-        errors.append(f"{location}: blocks_send must be true only for review decisions")
+
+    # ``blocks_send`` is a DERIVED field, not an independent verdict: the rule is
+    # ``blocks_send == (decision == review)``. A real model routinely fails a clause
+    # AND ticks "stop sending" (the natural reflex), or flags a clause for review
+    # without ticking it. Treating that polarity mismatch as a FATAL contract error
+    # used to reject the ENTIRE batch -- one such clause discarded the review of all
+    # 30 -- even though the field is RE-DERIVED downstream from the verdict
+    # (``review_state.clause_review_state`` sets ``blocks_send = state == review``)
+    # and a FAIL already blocks send via the deterministic floor regardless of this
+    # field. So when this is the ONLY problem with the clause, AUTO-CORRECT the field
+    # to the rule (un-ticking it on the common FAIL case) and keep processing the
+    # rest. The clause KEEPS its verdict (a FAIL stays a FAIL); we only reconcile the
+    # bookkeeping field and stamp the clause so the correction is visible in the
+    # audit trail. A missing/non-boolean ``blocks_send`` is NOT auto-corrected here
+    # (``_required_bool`` already recorded that genuine error and returned None).
+    blocks_send_autocorrected = False
+    blocks_send_expected = decision == CLAUSE_DECISION_REVIEW
+    if blocks_send is not None and blocks_send != blocks_send_expected:
+        blocks_send = blocks_send_expected
+        # Only count + stamp the auto-correction when the polarity mismatch is the
+        # ONLY problem with this clause (``errors`` is local to this single
+        # assessment). A clause that also has a genuine malformation is rejected
+        # anyway, so we neither inflate the counter nor stamp a misleading
+        # "kept and corrected" status on a clause that will be discarded.
+        if not errors:
+            blocks_send_autocorrected = True
+            telemetry.increment(AI_ASSESSMENT_BLOCKS_SEND_AUTOCORRECTED_COUNTER)
 
     cleaned: dict[str, Any] = {
         "schema_version": AI_ASSESSMENT_CONTRACT_VERSION,
@@ -346,7 +382,11 @@ def validate_ai_clause_assessment(
         "proposed_edits": proposed_edits,
         "confidence": confidence,
         "blocks_send": bool(blocks_send),
-        "validation_status": "contract_valid",
+        "validation_status": (
+            AI_VALIDATION_STATUS_BLOCKS_SEND_AUTOCORRECTED
+            if blocks_send_autocorrected
+            else "contract_valid"
+        ),
     }
     if resolution_question:
         cleaned["resolution_question"] = resolution_question
