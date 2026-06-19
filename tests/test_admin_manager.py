@@ -110,6 +110,61 @@ def test_env_root_wins_first(monkeypatch):
     )
 
 
+# --- env-root bootstrap BY EMAIL (NDA_ADMIN_USERS may hold emails) ----------
+def test_env_root_email_grants_google_verified_caller(monkeypatch):
+    monkeypatch.setenv("NDA_ADMIN_USERS", "alice@example.com")
+    # No persisted list -- the env-root email alone bootstraps admin. Case of the
+    # caller's verified email is irrelevant (normalized the same as persisted).
+    assert http_auth.request_is_admin(
+        user_id="google:42", provider="google", host="1.2.3.4", email="Alice@Example.com"
+    )
+
+
+def test_env_root_email_does_not_grant_basic_username_via_normalized_match(monkeypatch):
+    # Only a Google-VERIFIED email may match the env list via NORMALIZATION
+    # (mirrors the persisted-admin polarity). Here the env entry is mixed-case so
+    # it does NOT verbatim-equal the basic username; the only way a basic caller
+    # could be granted is the normalized-email path, which the provider gate must
+    # block. (The legacy verbatim user_id==entry path is a separate, intentional
+    # backward-compat match and is covered elsewhere.)
+    monkeypatch.setenv("NDA_ADMIN_USERS", "Alice@Example.com")
+    assert not http_auth.request_is_admin(
+        user_id="alice@example.com", provider="basic", host="1.2.3.4", email="alice@example.com"
+    )
+    # ...but the SAME mixed-case env email DOES grant the Google-verified caller.
+    assert http_auth.request_is_admin(
+        user_id="google:42", provider="google", host="1.2.3.4", email="alice@example.com"
+    )
+
+
+def test_env_root_sub_still_grants_backward_compat(monkeypatch):
+    # A bare google:<sub> entry must keep granting that user (user_id match path).
+    monkeypatch.setenv("NDA_ADMIN_USERS", "google:12345")
+    assert http_auth.request_is_admin(
+        user_id="google:12345", provider="google", host="1.2.3.4", email=""
+    )
+
+
+def test_env_root_mixed_sub_and_email_both_grant(monkeypatch):
+    monkeypatch.setenv("NDA_ADMIN_USERS", "google:12345, bob@example.com")
+    # The sub-user matches by user_id...
+    assert http_auth.request_is_admin(
+        user_id="google:12345", provider="google", host="1.2.3.4", email=""
+    )
+    # ...and bob matches by verified email (different sub).
+    assert http_auth.request_is_admin(
+        user_id="google:99", provider="google", host="1.2.3.4", email="bob@example.com"
+    )
+
+
+def test_env_root_empty_and_no_persisted_is_fail_closed():
+    # Autouse fixture deletes NDA_ADMIN_USERS; with no persisted admins either,
+    # nobody is admin (fail closed) -- unchanged.
+    assert not http_auth.request_is_admin(
+        user_id="google:42", provider="google", host="1.2.3.4", email="alice@example.com"
+    )
+
+
 def test_predicate_fails_closed_when_settings_unreadable(monkeypatch):
     _set_persisted("alice@example.com")
 

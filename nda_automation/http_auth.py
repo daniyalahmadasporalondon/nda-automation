@@ -22,13 +22,26 @@ def request_is_admin(*, user_id: str, provider: str, host: str, email: str = "")
 
     Admin authority comes from TWO sources, env roots first:
 
-    1. The immutable NDA_ADMIN_USERS env set (matched against ``user_id``). These
-       are the bootstrap admins and can never be removed from the in-app manager.
+    1. The immutable NDA_ADMIN_USERS env set. An entry is matched against EITHER:
+         * the caller's ``user_id`` (verbatim) -- this preserves ``google:<sub>``
+           ids and basic-auth usernames, fully backward compatible; OR
+         * for a Google caller ONLY, the OAuth-VERIFIED ``email`` (normalized the
+           SAME way persisted admin emails are). This is what lets the env set be
+           configured BY EMAIL: ``NDA_ADMIN_USERS`` may now hold any mix of emails
+           and ``google:<sub>`` ids. The email path is gated on
+           ``provider == "google"`` so a basic-auth username that merely equals an
+           admin email never inherits admin via the *normalized email* match.
+       These are the bootstrap admins and can never be removed from the in-app
+       manager.
     2. The persisted admin-email list (managed in-app), but ONLY for a Google
        caller whose email is OAuth-VERIFIED. ``email`` must be the session's
        Google-verified address; a basic-auth username that merely equals an admin
        email must never inherit admin (provider gate below), and a request body
        field must never be passed here.
+
+    The env-root email match and the persisted-email match use the SAME
+    normalization (``app_settings.normalize_admin_email``) so the two sources
+    behave identically.
 
     When neither source matches we FAIL CLOSED. On a loopback host where
     authentication is not required, the local developer is still trusted. The
@@ -38,16 +51,47 @@ def request_is_admin(*, user_id: str, provider: str, host: str, email: str = "")
     if not _auth_required_for_host(host):
         return True
     admin_ids = _admin_user_ids()
+    # Legacy/backward-compatible match: any verbatim env entry == the user_id
+    # (``google:<sub>`` ids and basic-auth usernames, including email-shaped ones).
     if admin_ids and str(user_id or "").strip() in admin_ids:
         return True
-    # Persisted admin grants apply ONLY to a Google-verified email. The provider
-    # gate is what stops a basic-auth username colliding with an admin email from
-    # inheriting admin.
+    # Email grants apply ONLY to a Google-verified email. The provider gate is
+    # what stops a basic-auth username colliding with an admin email from
+    # inheriting admin via the NORMALIZED-email match. Both the env-root email
+    # subset and the persisted-email list are consulted, with one normalization.
     if str(provider or "").strip().lower() == "google":
-        normalized_email = str(email or "").strip().lower()
-        if normalized_email and normalized_email in _persisted_admin_emails_safe():
+        normalized_email = _normalize_admin_email_safe(email)
+        if normalized_email and (
+            normalized_email in _env_admin_emails_safe(admin_ids)
+            or normalized_email in _persisted_admin_emails_safe()
+        ):
             return True
     return False
+
+
+def _normalize_admin_email_safe(value: object) -> str:
+    """Normalize an email the SAME way persisted admins are, failing to "".
+
+    Reuses ``app_settings.normalize_admin_email`` so env-root and persisted email
+    matching share one normalization. Imports lazily (circular-import safety) and
+    returns "" on any error so an unparseable email never matches.
+    """
+    try:
+        from . import app_settings
+
+        return app_settings.normalize_admin_email(value)
+    except Exception:
+        return ""
+
+
+def _env_admin_emails_safe(admin_ids: set[str]) -> set[str]:
+    """The normalized email subset of the NDA_ADMIN_USERS entries.
+
+    Non-email entries (``google:<sub>`` ids, non-email basic-auth usernames)
+    normalize to "" and are dropped here -- those are matched against ``user_id``
+    by the verbatim/legacy path instead.
+    """
+    return {normalized for entry in admin_ids if (normalized := _normalize_admin_email_safe(entry))}
 
 
 def _persisted_admin_emails_safe() -> set[str]:
