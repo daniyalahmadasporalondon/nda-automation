@@ -50,6 +50,22 @@ def _synchronous_runner(work):
     work()
 
 
+def _force_stored_fields(repository, matter_id, **fields):
+    """Overwrite stored fields directly on the in-memory matter.
+
+    ``update_matter_fields`` only merges the MATTER_UPDATE_FIELDS allowlist, which
+    excludes ``extracted_text`` -- but a scanned / image-only / encrypted PDF is
+    created+enqueued WITH empty extracted text, exactly the storm trigger we test.
+    Reach past the writer allowlist to reproduce that durable on-matter state.
+    """
+    with repository._lock:  # type: ignore[attr-defined]
+        for index, matter in enumerate(repository._matters):  # type: ignore[attr-defined]
+            if matter.get("id") == matter_id:
+                repository._matters[index] = {**matter, **fields}  # type: ignore[attr-defined]
+                return
+    raise AssertionError(f"matter {matter_id} not found")
+
+
 def _stub_ai_first_engine(executed_engine: str = "ai_first"):
     """A review-engine stub standing in for the full ai_first (assessor+verifier).
 
@@ -386,6 +402,97 @@ def test_review_failure_increments_per_matter_failure_count():
     assert "inbound_review_failed_at" in after
     # Still un-reviewed (the review never succeeded, no first-pass to fall back on).
     assert after["review_result"] is None
+
+
+def test_empty_extracted_text_is_recorded_terminal_failure_not_silent_return():
+    """REGRESSION (P0 review storm): an inbound matter whose extracted_text is empty/
+    whitespace (scanned / image-only / encrypted PDF) must be stamped a TERMINAL,
+    RECORDED failure -- review_status="failed" with a human-readable reason AND the
+    poison-pill counter incremented -- NOT a silent return.
+
+    Before the fix this branch returned silently: the matter kept its enqueue-time
+    review_status="in_progress" forever ("in review" indefinitely) and never advanced
+    the failure counter, so the 3-strike brake never engaged. This test FAILS on the
+    silent-return code (review_status stays "in_progress", inbound_review_failures
+    absent) and passes after.
+    """
+    from nda_automation import ingestion_service, telemetry
+
+    telemetry.reset()
+    repository = InMemoryMatterRepository()
+    matter = create_matter_from_document(
+        filename="scanned-as-image.docx",
+        document_bytes=_docx(NDA_PARAGRAPHS),
+        source_type="gmail_inbound",
+        repository=repository,
+        defer_ai_review=True,
+    )
+    matter_id = matter["id"]
+    # Simulate the scanned/image-only/encrypted PDF that extracts to whitespace, and
+    # the enqueue-time status the scheduler stamps before the async review drains.
+    _force_stored_fields(
+        repository, matter_id, extracted_text="   \n\t  ", review_status="in_progress"
+    )
+
+    # The engine must NEVER run for an empty-text matter -- prove it by recording calls.
+    engine = _stub_ai_first_engine()
+    ingestion_service._perform_inbound_ai_review(
+        matter_id, repository=repository, owner_user_id="", review_engine_func=engine,
+    )
+    assert engine.calls == []  # no paid assessor/verifier call for unreadable text
+
+    after = repository.get_matter(matter_id)
+    # TERMINAL stamp: a clear, human-readable failed status (not stuck "in_progress").
+    assert after["review_status"] == "failed"
+    assert "scanned or image-only" in after["review_error"]
+    # Poison-pill counter advanced so the 3-strike brake can engage.
+    assert after["inbound_review_failures"] == 1
+    assert "inbound_review_failed_at" in after
+    # Never falsely stamped as a successful ai_first review.
+    assert not ingestion_service._matter_already_ai_reviewed(after)
+    # Telemetry records it as a failure (and the specific empty-text reason).
+    counters = telemetry.snapshot()["counters"]
+    assert counters.get("inbound_ai_review_failed", 0) == 1
+    assert counters.get("inbound_ai_review_empty_extracted_text", 0) == 1
+    assert counters.get("inbound_ai_review_completed", 0) == 0
+
+
+def test_empty_extracted_text_stops_resweeping_after_cap(monkeypatch):
+    """The empty-text failure feeds the SAME poison-pill cap, so a permanently
+    unreadable inbound NDA stops being re-enqueued once it hits the cap -- closing the
+    never-ending review storm. (The recovery sweep already skips empty-text matters,
+    but a matter could non-empty->empty drift or be re-driven; the recorded failure is
+    the durable brake.)"""
+    from nda_automation import ingestion_service
+
+    monkeypatch.delenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, raising=False)
+    monkeypatch.setenv(ingestion_service.INBOUND_REVIEW_MAX_FAILURES_ENV, "3")
+
+    repository = InMemoryMatterRepository()
+    matter = create_matter_from_document(
+        filename="scanned-as-image.docx",
+        document_bytes=_docx(NDA_PARAGRAPHS),
+        source_type="gmail_inbound",
+        repository=repository,
+        defer_ai_review=True,
+    )
+    matter_id = matter["id"]
+    _force_stored_fields(repository, matter_id, extracted_text="")
+
+    engine = _stub_ai_first_engine()
+    # Each drive is a recorded terminal failure; the counter climbs deterministically.
+    for expected in (1, 2, 3):
+        ingestion_service._perform_inbound_ai_review(
+            matter_id, repository=repository, owner_user_id="", review_engine_func=engine,
+        )
+        assert repository.get_matter(matter_id)["inbound_review_failures"] == expected
+    assert engine.calls == []  # engine never ran on any of the drives
+
+    # At the cap, the poison-pill guard would give up even if the sweep re-found it.
+    assert (
+        ingestion_service._matter_review_failure_count(repository.get_matter(matter_id))
+        >= ingestion_service.inbound_review_max_failures()
+    )
 
 
 def test_recovery_sweep_gives_up_on_poison_pill_after_cap(monkeypatch):
