@@ -176,9 +176,23 @@ async function test(name, fn) {
   process.stdout.write(`  ok ${name}\n`);
 }
 
+// A known, parseable ISO-8601 UTC added_at for the date-render assertion. The
+// panel formats in LOCAL time, so we derive the expected "D Mon YYYY, HH:MM"
+// string from the same Date here -> the assertion holds in any timezone.
+const KNOWN_ADDED_AT = "2026-06-19T10:21:33+00:00";
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function expectedAddedAt(iso) {
+  const d = new Date(iso);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}, ${hh}:${mm}`;
+}
+
 const LIST = {
   env_root_admins: ["google:root", "boot@example.com"],
-  persisted_admins: [{ email: "alice@example.com", added_at: "t", added_by: "admin@example.com" }],
+  persisted_admins: [
+    { email: "alice@example.com", added_at: KNOWN_ADDED_AT, added_by: "admin@example.com" },
+  ],
 };
 
 (async () => {
@@ -196,8 +210,45 @@ const LIST = {
     assert.doesNotMatch(ui.envRootsList.innerHTML, /data-admin-remove/, "env roots have no Remove button");
     assert.match(ui.persistedList.innerHTML, /alice@example\.com/);
     assert.match(ui.persistedList.innerHTML, /data-admin-remove="alice@example\.com"/);
+    // The row carries the actor AND a human-readable added-at derived from the
+    // ISO added_at (rendered in local time; see expectedAddedAt).
+    assert.match(ui.persistedList.innerHTML, /Added by admin@example\.com/);
+    const expectedDate = expectedAddedAt(KNOWN_ADDED_AT);
+    assert.ok(
+      ui.persistedList.innerHTML.includes(expectedDate),
+      `expected the row to include the formatted added-at "${expectedDate}"`,
+    );
+    assert.doesNotMatch(ui.persistedList.innerHTML, /Invalid Date/, "no Invalid Date ever rendered");
     assert.equal(ui.overall.textContent, "3 admins", "2 env roots + 1 persisted");
     assert.equal(ui.emailInput.disabled, false);
+  });
+
+  await test("a missing/blank added_at renders 'Added by ...' with NO date (no Invalid Date)", async () => {
+    const ui = mount();
+    installFetch((url) => {
+      if (url === "/api/admin/admins") {
+        return {
+          payload: {
+            env_root_admins: [],
+            persisted_admins: [
+              { email: "blank@example.com", added_at: "", added_by: "admin@example.com" },
+              { email: "missing@example.com", added_by: "admin@example.com" },
+              { email: "bad@example.com", added_at: "not-a-date", added_by: "admin@example.com" },
+            ],
+          },
+        };
+      }
+      return {};
+    });
+    await ui.controller.load();
+    await flush();
+
+    const html = ui.persistedList.innerHTML;
+    assert.match(html, /Added by admin@example\.com/, "actor still shown without a date");
+    assert.doesNotMatch(html, /Invalid Date/, "never render Invalid Date for blank/missing/unparseable added_at");
+    // No "·" separator (raw or escaped) is emitted when there is no date.
+    assert.doesNotMatch(html, /&middot;/, "no separator without a date");
+    assert.doesNotMatch(html, /·/, "no raw middot without a date");
   });
 
   await test("a 403 probe renders the calm admin-only state (disabled, no error)", async () => {
