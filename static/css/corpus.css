@@ -100,6 +100,45 @@
   text-align: center;
 }
 
+/* First-run onboarding for an empty corpus: a welcoming "get started" panel
+   rendered inside .corpus-empty (which the controller un-hides). Left-aligned
+   step list overrides the bare empty-state's centered single line. */
+.corpus-onboarding {
+  text-align: left;
+}
+
+.corpus-onboarding-title {
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 800;
+  margin: 0 0 6px;
+}
+
+.corpus-onboarding-lead {
+  color: var(--ink-muted);
+  font-size: 13px;
+  margin: 0 0 14px;
+}
+
+.corpus-onboarding-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.corpus-onboarding-step {
+  align-items: center;
+  color: var(--ink);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 13px;
+  gap: 8px 14px;
+  justify-content: space-between;
+}
+
 .corpus-groups {
   display: flex;
   flex-direction: column;

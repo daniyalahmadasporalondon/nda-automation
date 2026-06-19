@@ -1029,6 +1029,7 @@ const CorpusRender = (() => {
   }
 
   return {
+    escape: html,
     flagMatches,
     renderDriveStatus,
     renderFacetRail,
@@ -1159,6 +1160,49 @@ const CorpusView = (() => {
       if (noResultsNode) noResultsNode.hidden = true;
     }
 
+    // Friendly first-run onboarding for an empty corpus: a fresh user with no
+    // NDAs on file sees a "get started" panel (generate / import / connect
+    // Drive) instead of a bare "No NDAs on file yet." line that reads as broken.
+    // All interpolated copy is escaped; the actions click the existing top-nav
+    // tab buttons so no new routing surface is introduced.
+    function renderOnboardingEmpty(drive) {
+      if (!emptyNode) return;
+      emptyNode.hidden = false;
+      if (listNode) listNode.innerHTML = "";
+      if (noResultsNode) noResultsNode.hidden = true;
+      const driveConnected = Boolean(drive && drive.connected);
+      const driveRow = driveConnected
+        ? ""
+        : `
+          <li class="corpus-onboarding-step">
+            <span>${CorpusRender.escape("Connect your Google Drive to archive signed NDAs.")}</span>
+            <button class="corpus-link" type="button" data-corpus-onboarding-tab="admin">${CorpusRender.escape("Open Admin → Integrations")}</button>
+          </li>`;
+      emptyNode.innerHTML = `
+        <div class="corpus-onboarding" role="status">
+          <h2 class="corpus-onboarding-title">${CorpusRender.escape("Your corpus is empty")}</h2>
+          <p class="corpus-onboarding-lead">${CorpusRender.escape("Signed NDAs land here once you have some on file. To get your first one:")}</p>
+          <ul class="corpus-onboarding-steps">
+            <li class="corpus-onboarding-step">
+              <span>${CorpusRender.escape("Generate your first NDA from a template.")}</span>
+              <button class="corpus-link" type="button" data-corpus-onboarding-tab="generator">${CorpusRender.escape("Generate an NDA")}</button>
+            </li>
+            <li class="corpus-onboarding-step">
+              <span>${CorpusRender.escape("Connect Gmail to import inbound NDAs.")}</span>
+              <button class="corpus-link" type="button" data-corpus-onboarding-tab="admin">${CorpusRender.escape("Open Admin → Integrations")}</button>
+            </li>
+            ${driveRow}
+          </ul>
+        </div>
+      `;
+      emptyNode.querySelectorAll("[data-corpus-onboarding-tab]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const tab = document.querySelector(`.tab-button[data-tab="${button.dataset.corpusOnboardingTab}"]`);
+          if (tab) tab.click();
+        });
+      });
+    }
+
     function clearEmptyState() {
       if (emptyNode) emptyNode.hidden = true;
     }
@@ -1244,7 +1288,7 @@ const CorpusView = (() => {
 
       const groups = Array.isArray(lastPayload.groups) ? lastPayload.groups : [];
       if (!groups.length) {
-        renderEmptyState("No NDAs on file yet.");
+        renderOnboardingEmpty(lastPayload.drive);
         return;
       }
       clearEmptyState();

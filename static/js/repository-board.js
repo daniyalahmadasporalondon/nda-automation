@@ -26,13 +26,19 @@ const RepositoryBoard = (() => {
     // The board is WIP only: an EXECUTED (fully-signed) matter is done and drops
     // off the board, so it is never bucketed into a column. The backend already
     // excludes it from the payload; this is the frontend backstop.
-    state.matters
-      .filter((matter) => !RepositoryModel.isMatterExecuted(matter))
+    const boardMatters = state.matters.filter((matter) => !RepositoryModel.isMatterExecuted(matter));
+    boardMatters
       .filter((matter) => matterMatchesSearch(matter, query))
       .forEach((matter) => {
         mattersByColumn.get(RepositoryModel.matterColumn(matter)).push(matter);
       });
     mattersByColumn.forEach((matters) => matters.sort(RepositoryModel.compareMatterRecency));
+    // A fresh user with nothing on the board sees a welcoming "get started"
+    // onboarding panel instead of six identical "No documents" columns that
+    // read as broken. It only shows when the board is genuinely empty (no WIP
+    // matters at all) AND the user is not mid-search (an empty search result is
+    // a different, already-handled state per column).
+    renderOnboarding({ hasMatters: boardMatters.length > 0, isSearching: Boolean(query), state });
     document.querySelectorAll("[data-repository-count]").forEach((count) => {
       count.textContent = String(mattersByColumn.get(count.dataset.repositoryCount)?.length || 0);
     });
@@ -137,6 +143,79 @@ const RepositoryBoard = (() => {
     node.textContent = `${ownerLabel} ${RepositoryModel.formatMatterDateTime(sync.last_sync_at) || sync.last_sync_at} - ${imported} imported / ${skipped} skipped`;
   }
 
+  // Friendly first-run onboarding for the repository board. Surfaced by
+  // renderBoard when the board is empty. Derives an inline Gmail "connect /
+  // finish setup" prompt from the status the board already fetched, so a fresh
+  // user with nothing connected gets a clear next step instead of a blank board.
+  function gmailOnboardingPrompt(state) {
+    const status = state?.gmailStatus || {};
+    const inbound = status.inbound || {};
+    // Not connected at all (or status unavailable): invite the connection. We
+    // treat an explicit ready:false WITHOUT a connected signal as "needs setup".
+    const connected = inbound.connected === true || status.connected === true;
+    if (!connected) {
+      return {
+        text: "Connect Gmail to import inbound NDAs automatically.",
+        actionLabel: "Open Admin → Integrations",
+        tab: "admin",
+      };
+    }
+    if (inbound.enabled === false) {
+      return {
+        text: "Gmail inbound is paused — resume it to import new NDAs.",
+        actionLabel: "Open Admin → Integrations",
+        tab: "admin",
+      };
+    }
+    if (inbound.ready === false) {
+      return {
+        text: `Finish Gmail setup to import inbound NDAs${inbound.error ? ` (${inbound.error})` : ""}.`,
+        actionLabel: "Open Admin → Integrations",
+        tab: "admin",
+      };
+    }
+    // Connected and ready: nothing to prompt — inbound NDAs will arrive on sync.
+    return null;
+  }
+
+  function renderOnboarding({ hasMatters, isSearching, state }) {
+    const node = document.querySelector("[data-repository-onboarding]");
+    if (!node) return;
+    const show = !hasMatters && !isSearching;
+    node.hidden = !show;
+    if (!show) {
+      node.innerHTML = "";
+      return;
+    }
+    const gmail = gmailOnboardingPrompt(state);
+    const gmailRow = gmail
+      ? `
+        <li class="repository-onboarding-step">
+          <span class="repository-onboarding-step-text">${html(gmail.text)}</span>
+          <button class="repository-onboarding-action" type="button" data-onboarding-tab="${html(gmail.tab)}">${html(gmail.actionLabel)}</button>
+        </li>`
+      : "";
+    node.innerHTML = `
+      <div class="repository-onboarding-card" role="status">
+        <h2 class="repository-onboarding-title">Get started</h2>
+        <p class="repository-onboarding-lead">No documents yet. Here is how to bring your first NDA into the repository:</p>
+        <ul class="repository-onboarding-steps">
+          <li class="repository-onboarding-step">
+            <span class="repository-onboarding-step-text">Generate your first NDA from a template.</span>
+            <button class="repository-onboarding-action primary" type="button" data-onboarding-tab="generator">Generate an NDA</button>
+          </li>
+          ${gmailRow}
+        </ul>
+      </div>
+    `;
+    node.querySelectorAll("[data-onboarding-tab]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const tab = document.querySelector(`.tab-button[data-tab="${button.dataset.onboardingTab}"]`);
+        if (tab) tab.click();
+      });
+    });
+  }
+
   function renderMatterCard(matter, options = {}) {
     const issueCount = Number(matter.issue_count || 0);
     // The issue count is a DISPLAY of a verdict, so it only shows once an AI review
@@ -202,7 +281,7 @@ const RepositoryBoard = (() => {
     `;
   }
 
-  return { renderBoard, renderMatterCard, renderSyncStatus };
+  return { renderBoard, renderMatterCard, renderOnboarding, renderSyncStatus };
 })();
 
 if (typeof module !== "undefined" && module.exports) {
