@@ -937,14 +937,16 @@ def test_pool_handler_returns_early_when_kill_switch_off_at_drain(monkeypatch):
 
 
 class _PersistReturnsNoneRepository(InMemoryMatterRepository):
-    """A repo whose update_matter_review always returns None (un-persistable save).
+    """A repo whose review persist always returns None (un-persistable save).
 
     Stands in for the real-world orphan: the review runs but the write saves
     nothing (matter vanished, owner mismatch, writer no-op). update_matter_fields
     (used by the failure-recorder) still works, so the failure counter can climb.
+    The async worker persists via refresh_matter_review (the guarded writer), so
+    that is the method stubbed null here.
     """
 
-    def update_matter_review(self, *args, **kwargs):  # noqa: ARG002
+    def refresh_matter_review(self, *args, **kwargs):  # noqa: ARG002
         return None
 
 
@@ -986,3 +988,101 @@ def test_persist_returns_none_counts_as_failure_and_stops_resweeping(monkeypatch
     swept = ingestion_service.recover_unreviewed_inbound_matters(repository=repository)
     assert swept == 0
     assert enqueued == []  # the never-ending storm is closed.
+
+
+# --------------------------------------------------------------------------- #
+# (d) Concurrency: a human edit (saved redline draft + mark-reviewed) landing
+#     DURING the multi-minute AI window must SURVIVE the async persist. The worker
+#     routes through the guarded refresh_matter_review (capturing updated_at at job
+#     start), so a raced human edit is preserved -- not silently reverted by the
+#     unconditional human_reviewed=False / redline_draft pop in update_matter_review.
+# --------------------------------------------------------------------------- #
+
+
+def _engine_that_lands_human_edit(repository, matter_id, redline_draft):
+    """A review engine whose call simulates a human edit landing MID-REVIEW.
+
+    Real ordering: the worker reads the matter (snapshotting updated_at), then runs
+    this slow engine. While the engine 'runs', a user saves a redline draft and
+    marks the matter human_reviewed -- both bump updated_at. The worker then persists
+    the (now-completed) review. We model that by performing the human writes from
+    inside the engine, BEFORE it returns its review_result.
+    """
+
+    calls: list[str] = []
+
+    def _engine(text, *, paragraphs=None, **_kwargs):
+        calls.append(text)
+        # The concurrent human edit lands now, during the AI window.
+        repository.update_redline_draft(matter_id, redline_draft, owner_user_id="")
+        repository.update_matter_fields(matter_id, {"human_reviewed": True}, owner_user_id="")
+        return {
+            "review_mode": "ai_first",
+            "active_review_engine": {"executed_engine": "ai_first"},
+            "clauses": [],
+            "requirements_passed": 1,
+            "requirements_needs_review": 0,
+            "requirements_failed": 0,
+        }
+
+    _engine.calls = calls  # type: ignore[attr-defined]
+    return _engine
+
+
+def test_async_review_preserves_concurrent_human_edit():
+    """A human edit racing the AID window is PRESERVED by the async persist."""
+    from nda_automation import ingestion_service
+
+    repository = InMemoryMatterRepository()
+    matter = create_matter_from_document(
+        filename="inbound.docx",
+        document_bytes=_docx(NDA_PARAGRAPHS),
+        source_type="gmail_inbound",
+        repository=repository,
+        defer_ai_review=True,
+    )
+    matter_id = matter["id"]
+    human_redline = {"clauses": [{"id": "c1", "text": "human-authored redline"}]}
+    engine = _engine_that_lands_human_edit(repository, matter_id, human_redline)
+
+    ingestion_service._perform_inbound_ai_review(
+        matter_id, repository=repository, owner_user_id="", review_engine_func=engine,
+    )
+
+    after = repository.get_matter(matter_id)
+    # The fresh AI review STILL persisted (the refresh must not be lost)...
+    assert after["review_result"]["active_review_engine"]["executed_engine"] == "ai_first"
+    # ...but the concurrent human edit SURVIVED rather than being reverted.
+    assert after["human_reviewed"] is True
+    assert after.get("redline_draft") == human_redline
+
+
+def test_async_review_normal_update_when_no_concurrent_edit():
+    """With NO concurrent edit, the persist applies normal refresh semantics:
+    the fresh review supersedes any prior sign-off (human_reviewed reset) and the
+    stale redline draft is dropped. Behaviour identical to the old unguarded path."""
+    from nda_automation import ingestion_service
+
+    repository = InMemoryMatterRepository()
+    matter = create_matter_from_document(
+        filename="inbound.docx",
+        document_bytes=_docx(NDA_PARAGRAPHS),
+        source_type="gmail_inbound",
+        repository=repository,
+        defer_ai_review=True,
+    )
+    matter_id = matter["id"]
+    # Pre-existing (now-stale) sign-off + redline draft, set BEFORE the review starts.
+    repository.update_redline_draft(matter_id, {"clauses": [{"id": "old", "text": "stale"}]}, owner_user_id="")
+    repository.update_matter_fields(matter_id, {"human_reviewed": True}, owner_user_id="")
+    engine = _stub_ai_first_engine()  # does NOT touch the matter mid-flight.
+
+    ingestion_service._perform_inbound_ai_review(
+        matter_id, repository=repository, owner_user_id="", review_engine_func=engine,
+    )
+
+    after = repository.get_matter(matter_id)
+    assert after["review_result"]["active_review_engine"]["executed_engine"] == "ai_first"
+    # No race -> fresh review supersedes the prior sign-off and stale draft.
+    assert after["human_reviewed"] is False
+    assert "redline_draft" not in after
