@@ -25,7 +25,25 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .playbook_rules import normalize_playbook_policy, playbook_rules_for_ai
+from .playbook_rules import (
+    is_dynamic_clause,
+    normalize_playbook_policy,
+    playbook_rules_for_ai,
+)
+
+# Dynamic clause ids ALREADY rendered as one of the five built-in rules above, so
+# they are not re-emitted in the "ADDITIONAL AUTHORED CLAUSE RULES" section. Only
+# non_circumvention is a built-in dynamic clause today (it drives RULE 1 + RULE 2).
+_BUILTIN_RENDERED_CLAUSE_IDS = frozenset({"non_circumvention"})
+
+# Remedy verb phrasing per fail-condition redline action, so the authored rule
+# tells the model the prescribed fix exactly as the playbook condition encodes it.
+_REDLINE_ACTION_REMEDY: dict[str, str] = {
+    "delete_paragraph": "STRIKE/DELETE the offending clause in full",
+    "replace_paragraph": "REPLACE the offending clause with compliant language",
+    "insert_after_paragraph": "INSERT the required compliant language",
+    "no_change": "flag for human review (no automatic edit)",
+}
 
 # Human-readable description for each prohibited_position_patterns label. The labels are
 # the playbook's stable machine identifiers; this map renders them as the restraint
@@ -123,6 +141,77 @@ def _rule1_restraint_lines(labels: Sequence[str]) -> list[str]:
 
 def _has_label(labels: Sequence[str], label: str) -> bool:
     return label in set(labels)
+
+
+def _fail_remedy_phrase(rules: Mapping[str, Any]) -> str:
+    """The prescribed remedy for an authored clause, read from its fail conditions.
+
+    Prefers the first fail condition's redline_action; falls back to the
+    rules.redline_guidance.default_action. Returns "" when neither is present."""
+
+    actions: list[str] = []
+    fail_conditions = rules.get("fail_conditions")
+    if isinstance(fail_conditions, Sequence):
+        for condition in fail_conditions:
+            if isinstance(condition, Mapping):
+                action = _text(condition.get("redline_action"))
+                if action:
+                    actions.append(action)
+    if not actions:
+        guidance = rules.get("redline_guidance")
+        if isinstance(guidance, Mapping):
+            action = _text(guidance.get("default_action"))
+            if action:
+                actions.append(action)
+    for action in actions:
+        phrase = _REDLINE_ACTION_REMEDY.get(action)
+        if phrase:
+            return phrase
+    return ""
+
+
+def _dynamic_clause_rule_lines(
+    normalized_clauses: Sequence[Mapping[str, Any]],
+    packet_clauses: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    """First-class binding-rule lines for every AUTHORED (dynamic) clause.
+
+    A clause a user adds in the Playbook editor is a dynamic clause. The five rules
+    above only cover the built-in ids, so without this an authored clause would be a
+    "second-class citizen" — present in the packet's clause list but absent from the
+    authoritative binding-policy block. This renders each dynamic clause (other than
+    the built-in non_circumvention, already RULE 1/2) as its own binding rule,
+    DERIVED entirely from its data: stance, requirement, acceptable position, and the
+    prescribed remedy from its fail conditions. Nothing is hardcoded — add a dynamic
+    clause and a new rule appears here automatically."""
+
+    lines: list[str] = []
+    for clause in normalized_clauses:
+        if not isinstance(clause, Mapping) or not is_dynamic_clause(clause):
+            continue
+        clause_id = _text(clause.get("id"))
+        if not clause_id or clause_id in _BUILTIN_RENDERED_CLAUSE_IDS:
+            continue
+        packet = _packet_clause_by_id(packet_clauses, clause_id)
+        name = _text(packet.get("name")) or _text(clause.get("name")) or clause_id
+        stance = _text(packet.get("type")) or _text(clause.get("type"))
+        stance_label = "PROHIBITED" if stance == "prohibited" else "REQUIRED"
+        requirement = _text(packet.get("requirement")) or _text(clause.get("requirement"))
+        rules = clause.get("rules") if isinstance(clause.get("rules"), Mapping) else {}
+        acceptable = _text(rules.get("acceptable_position")) or _text(
+            packet.get("acceptable_language")
+        )
+        remedy = _fail_remedy_phrase(rules)
+
+        header = f"  - {name} [{stance_label}] (playbook clause `{clause_id}`):"
+        lines.append(header)
+        if requirement:
+            lines.append(f"      Requirement: {requirement}")
+        if acceptable:
+            lines.append(f"      Acceptable position: {acceptable}")
+        if remedy:
+            lines.append(f"      If violated: {remedy}.")
+    return lines
 
 
 def build_playbook_policy_block(playbook: Mapping[str, Any]) -> str:
@@ -363,6 +452,21 @@ def build_playbook_policy_block(playbook: Mapping[str, Any]) -> str:
         "keep only the standard carve-outs and that they remain operative.)"
     )
     lines.append("")
+
+    # ---- ADDITIONAL AUTHORED CLAUSE RULES (any dynamic clause beyond the built-ins) --
+    # The five rules above are rendered from the built-in clause ids. A clause a user
+    # AUTHORS in the Playbook editor is a DYNAMIC clause (engine="dynamic"); it must
+    # NOT be a second-class citizen. Render each such clause as its own first-class
+    # binding rule, derived entirely from its data, so the model treats an authored
+    # clause's position as firmly as the built-in ones.
+    extra_rule_lines = _dynamic_clause_rule_lines(normalized_clauses, packet_clauses)
+    if extra_rule_lines:
+        lines.append(
+            "ADDITIONAL AUTHORED CLAUSE RULES (authored in the Playbook; treat each as "
+            "binding):"
+        )
+        lines.extend(extra_rule_lines)
+        lines.append("")
 
     # SCOPE
     lines.append("SCOPE INSTRUCTION (MANDATORY).")
