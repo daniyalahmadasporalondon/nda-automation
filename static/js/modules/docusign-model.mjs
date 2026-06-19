@@ -213,10 +213,27 @@ export function validateSigners(signers) {
 }
 
 // Build the POST /api/matters/<id>/send-for-signature body from the chooser.
+//
+// The backend treats an explicit per-signer `routing_order` as AUTHORITATIVE
+// (it never overwrites it from the mode), so the FE emits it to express WHO SIGNS
+// FIRST when the user reorders the rows. The mode governs what an unspecified order
+// would mean, so we keep the two consistent:
+//   - sequential -> carry each signer's row position as routing_order (1,2,3...),
+//     so the "who signs first" reorder control actually changes DocuSign routing;
+//   - parallel   -> every signer shares routing_order 1 (notify all at once), so
+//     the authoritative-explicit rule still yields the parallel envelope.
+// `signing_order` stays as the mode the backend also receives.
 export function buildSendForSignaturePayload(signers, signingOrder = "sequential") {
   const order = signingOrder === "parallel" ? "parallel" : "sequential";
   return {
-    signers: signers.map((signer) => ({ name: signer.name, email: signer.email, role: signer.role })),
+    signers: signers.map((signer, index) => ({
+      name: signer.name,
+      email: signer.email,
+      role: signer.role,
+      // Sequential: rank by chosen position (explicit order wins, else row index).
+      // Parallel: collapse to a shared order 1 so the mode is honoured end-to-end.
+      routing_order: order === "parallel" ? 1 : Number(signer.order) || index + 1,
+    })),
     signing_order: order,
   };
 }

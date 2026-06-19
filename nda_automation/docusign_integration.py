@@ -66,13 +66,17 @@ RECIPIENT_DECLINED = "declined"
 
 DEFAULT_EMAIL_SUBJECT = "Please sign: NDA"
 
-# Signing-order modes. PARALLEL is the default: both recipients share the same
-# routingOrder so either side can sign in any order (the user's decision —
-# signing order does not matter). SEQUENTIAL routes recipients in turn.
+# Signing-order modes. SEQUENTIAL is the default: recipients are routed in turn
+# (signer 1 must complete before signer 2 is notified) — matching how a finalised
+# NDA is countersigned and the UI's default "Sequential" radio. PARALLEL shares one
+# routingOrder so either side can sign in any order. This default is kept in lockstep
+# with the frontend chooser (static/index.html "Signing order" radio defaults to
+# sequential; docusign-model.mjs defaultSigners/buildSendForSignaturePayload default
+# to sequential) so an unspecified order means the same thing on both ends.
 SIGNING_ORDER_PARALLEL = "parallel"
 SIGNING_ORDER_SEQUENTIAL = "sequential"
 SIGNING_ORDERS = (SIGNING_ORDER_PARALLEL, SIGNING_ORDER_SEQUENTIAL)
-DEFAULT_SIGNING_ORDER = SIGNING_ORDER_PARALLEL
+DEFAULT_SIGNING_ORDER = SIGNING_ORDER_SEQUENTIAL
 
 # eSignature REST API version segment.
 REST_API_VERSION = "v2.1"
@@ -94,9 +98,9 @@ class DocuSignEnvelopeNotFoundError(DocuSignError):
 class Signer:
     """One recipient on an envelope.
 
-    ``routing_order`` drives signing order. Under ``parallel`` (default) every
-    signer shares order 1 so either side can sign in any order; under
-    ``sequential`` orders increase so DocuSign routes them in turn. ``anchor`` is
+    ``routing_order`` drives signing order. Under ``sequential`` (default) orders
+    increase so DocuSign routes recipients in turn; under ``parallel`` every signer
+    shares order 1 so either side can sign in any order. ``anchor`` is
     the anchor string the signature/date tabs attach to in the document — for a
     generated NDA this is the distinct per-party token planted on that party's
     signature line (``nda_generation.SIGNATURE_ANCHOR_*``), so the field lands on
@@ -123,9 +127,21 @@ class Signer:
 def normalize_signers(signers: Any, *, signing_order: str = DEFAULT_SIGNING_ORDER) -> list[Signer]:
     """Coerce a list of signer dicts/``Signer``s into ``Signer`` objects.
 
-    Assigns routing orders from the signing-order mode when a signer carries no
-    explicit one: ``parallel`` -> all 1 (any order); ``sequential`` -> 1,2,3...
-    Rejects an empty list or any signer missing a name/email.
+    Routing-order rule — an EXPLICIT per-signer ``routing_order`` is AUTHORITATIVE
+    and is never overwritten by the mode (it is how a caller pins a chosen order,
+    e.g. the UI's "who signs first" reorder). Only when a signer carries NO explicit
+    order do we synthesize one from the ``signing_order`` mode: ``parallel`` -> all 1
+    (any order); ``sequential`` -> 1,2,3... by position.
+
+    This makes the function IDEMPOTENT on its own output: re-normalizing already-
+    ranked signers preserves their orders rather than collapsing them — so the live
+    send path (which validates the signers a second time inside ``create_envelope``)
+    can never silently flatten a sequential envelope back to parallel.
+
+    Rejects an empty list or any signer missing a name/email. A ``Signer`` dataclass
+    defaults ``routing_order=1``; for parallel that is already correct, and for
+    sequential a caller that wants positional ranking passes RAW dicts (no order) so
+    each is synthesized from its position.
     """
     order = signing_order if signing_order in SIGNING_ORDERS else DEFAULT_SIGNING_ORDER
     result: list[Signer] = []
@@ -144,12 +160,11 @@ def normalize_signers(signers: Any, *, signing_order: str = DEFAULT_SIGNING_ORDE
             raise DocuSignError("Each signer must be a name/email object.")
         if not signer.name or not signer.email:
             raise DocuSignError("Each signer needs a name and an email address.")
+        # Only SYNTHESIZE an order from the mode when none was supplied. An explicit
+        # per-signer order (truthy after coercion) is left untouched — the caller's
+        # chosen order wins over the mode (no parallel-clobber, no re-rank).
         if not _coerce_routing_order(signer.routing_order):
             signer.routing_order = 1 if order == SIGNING_ORDER_PARALLEL else index
-        elif order == SIGNING_ORDER_PARALLEL:
-            # Parallel: collapse any per-signer order to 1 so neither side gates
-            # the other (the request can still pass sequential to override).
-            signer.routing_order = 1
         result.append(signer)
     if not result:
         raise DocuSignError("At least one signer is required to send for signature.")
@@ -250,7 +265,8 @@ def build_envelope_definition(
 
     Each recipient gets a ``signHere`` + ``dateSigned`` tab anchored to its
     ``anchor`` string so the signature lands at the right spot regardless of page
-    layout. ``routingOrder`` carries the (parallel-by-default) signing order.
+    layout. ``routingOrder`` carries each recipient's per-signer signing order
+    (synthesized from the mode when unspecified — sequential by default).
     ``status="sent"`` makes DocuSign dispatch the envelope immediately.
 
     Pure + dependency-free so it is unit-testable without any network.

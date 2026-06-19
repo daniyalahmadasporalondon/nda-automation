@@ -90,7 +90,10 @@ function createDocuSignSendController({
     return (typeof getAsporaSignatory === "function" ? getAsporaSignatory() : null) || {};
   }
 
-  // Render the prefilled signer rows from the matter + Aspora signatory.
+  // Render the prefilled signer rows from the matter + Aspora signatory. Each row
+  // carries an up/down reorder control ("who signs first"): the order is taken from
+  // the row's POSITION, so moving a row up/down changes the signing order that
+  // collectSigners derives and the payload carries as per-signer routing_order.
   function renderSignerRows() {
     if (!signerRows) return;
     const matter = currentMatter();
@@ -98,9 +101,25 @@ function createDocuSignSendController({
     const signers = m
       ? m.defaultSigners(matter || {}, { asporaSignatory: asporaSignatory() })
       : [];
+    drawSignerRows(signers);
+  }
+
+  // Paint the given signer list into the rows DOM, numbering by position and
+  // disabling the up control on the first row / down control on the last.
+  function drawSignerRows(signers) {
+    if (!signerRows) return;
+    const total = signers.length;
     signerRows.innerHTML = signers.map((signer, index) => `
-      <div class="docusign-signer-row" data-docusign-signer="${index}">
-        <span class="docusign-signer-order">${signer.order}</span>
+      <div class="docusign-signer-row" data-docusign-signer="${index}" draggable="false">
+        <span class="docusign-signer-order" data-docusign-signer-order>${index + 1}</span>
+        <div class="docusign-signer-reorder" role="group" aria-label="Signing order for ${html(signer.name)}">
+          <button type="button" class="docusign-signer-move docusign-signer-move-up" data-docusign-move="up" aria-label="Move ${html(signer.name)} earlier in signing order" title="Sign earlier"${index === 0 ? " disabled" : ""}>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12l7-7 7 7"/></svg>
+          </button>
+          <button type="button" class="docusign-signer-move docusign-signer-move-down" data-docusign-move="down" aria-label="Move ${html(signer.name)} later in signing order" title="Sign later"${index === total - 1 ? " disabled" : ""}>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+          </button>
+        </div>
         <label class="docusign-signer-field">
           <span>${signer.role === "aspora" ? "Aspora signatory" : "Counterparty"} name</span>
           <input type="text" data-docusign-signer-name autocomplete="off" value="${html(signer.name)}" data-docusign-role="${html(signer.role)}">
@@ -113,7 +132,38 @@ function createDocuSignSendController({
     `).join("");
   }
 
-  // Collect the (possibly edited) signer rows from the form.
+  // Move the signer at `fromIndex` one step in `direction` ("up"/"down"),
+  // preserving any edits the user made to the rows (we read the live values back
+  // out, reorder, and repaint). Clamped at the ends.
+  function moveSigner(fromIndex, direction) {
+    const rows = collectSigners();
+    const toIndex = direction === "up" ? fromIndex - 1 : fromIndex + 1;
+    if (toIndex < 0 || toIndex >= rows.length) return;
+    const [moved] = rows.splice(fromIndex, 1);
+    rows.splice(toIndex, 0, moved);
+    drawSignerRows(rows);
+    // Keep focus on the same control after the repaint so keyboard reordering is
+    // continuous (the row moved, so the control now lives at toIndex).
+    const focusButton = signerRows?.querySelector(
+      `[data-docusign-signer="${toIndex}"] [data-docusign-move="${direction}"]:not([disabled])`,
+    ) || signerRows?.querySelector(`[data-docusign-signer="${toIndex}"] [data-docusign-move]`);
+    focusButton?.focus?.();
+  }
+
+  // Delegate reorder clicks from the rows container (rows are re-rendered, so a
+  // delegated listener survives repaints where per-button listeners would not).
+  signerRows?.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("[data-docusign-move]") : null;
+    if (!target || target.disabled) return;
+    event.preventDefault();
+    const row = target.closest("[data-docusign-signer]");
+    const index = row ? Number(row.getAttribute("data-docusign-signer")) : -1;
+    if (index >= 0) moveSigner(index, target.getAttribute("data-docusign-move"));
+  });
+
+  // Collect the (possibly edited + reordered) signer rows from the form. The order
+  // is the row's POSITION (1-based), so a reorder changes the per-signer routing
+  // order the payload carries.
   function collectSigners() {
     if (!signerRows) return [];
     return Array.from(signerRows.querySelectorAll("[data-docusign-signer]")).map((row, index) => ({

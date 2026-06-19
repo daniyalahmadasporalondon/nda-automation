@@ -50,7 +50,6 @@ from .docusign_integration import (
     STATUS_COMPLETED,
     STATUS_DECLINED,
     STATUS_VOIDED,
-    Signer,
     DocuSignError,
     DocuSignNotConnectedError,
 )
@@ -157,7 +156,17 @@ def send_for_signature(
     document_bytes, document_filename = _resolve_signable_document(
         matter, matter_id, owner_user_id, repository
     )
-    resolved_signers = _resolve_signers(matter, signers)
+    # The single, mode-aware normalization point: rank the raw resolved signers
+    # ONCE with the REAL signing order. ``_resolve_signers`` deliberately returns
+    # un-normalized entries so this is the only place the routing order is assigned
+    # (create_envelope re-validates idempotently). This is what makes "sequential"
+    # actually route 1,2 instead of silently collapsing to parallel.
+    effective_order = (
+        signing_order if signing_order in docusign_integration.SIGNING_ORDERS else DEFAULT_SIGNING_ORDER
+    )
+    resolved_signers = docusign_integration.normalize_signers(
+        _resolve_signers(matter, signers), signing_order=effective_order
+    )
     subject = str(email_subject or "").strip() or _default_subject(matter)
 
     docusign_client = _client(client, client_factory, owner_user_id)
@@ -166,7 +175,7 @@ def send_for_signature(
             document_bytes,
             document_filename,
             resolved_signers,
-            signing_order=signing_order if signing_order in docusign_integration.SIGNING_ORDERS else DEFAULT_SIGNING_ORDER,
+            signing_order=effective_order,
             email_subject=subject,
         )
     except DocuSignNotConnectedError:
@@ -182,7 +191,9 @@ def send_for_signature(
     signature_block = {
         "envelope_id": envelope_id,
         "status": status,
-        "signing_order": signing_order,
+        # Persist the EFFECTIVE order actually sent (an unknown/blank request value
+        # falls back to the default) so the stored record matches the envelope.
+        "signing_order": effective_order,
         "email_subject": subject,
         "document_filename": document_filename,
         "signers": [signer.to_dict() for signer in resolved_signers],
@@ -568,14 +579,23 @@ def _signers_with_recipient_status(
 # ---------------------------------------------------------------------------
 # Signer resolution
 # ---------------------------------------------------------------------------
-def _resolve_signers(matter: dict[str, Any], override: Any | None) -> list[Signer]:
-    """Derive the envelope's recipients.
+def _resolve_signers(matter: dict[str, Any], override: Any | None) -> list[Any]:
+    """Derive the envelope's recipients as RAW (un-normalized) signer entries.
+
+    Returns the signer LIST without assigning routing orders — normalization (and
+    thus the routing-order ranking) happens EXACTLY ONCE downstream in
+    ``create_envelope`` with the REAL ``signing_order`` threaded from the request.
+    Normalizing here too (the old behaviour) defaulted to parallel and stamped
+    ``routing_order=1`` on every signer, which then SILENTLY COLLAPSED a later
+    "sequential" send back to parallel (the second normalize saw an order already
+    set and left it). Keeping these raw lets the single downstream normalize rank
+    them from the chosen mode.
 
     When ``override`` is supplied (a non-empty list of {name,email[,anchor,role]})
-    it is used verbatim. Otherwise we build the two-party signer set: the
-    counterparty contact (from the matter's reply/sender + derived counterparty
-    name) and the Aspora signatory (from the entity registry bundle, when one is
-    selected on the matter). Each side is parallel (any order) by default.
+    it is used verbatim (after role-stamping). Otherwise we build the two-party
+    signer set: the counterparty contact (from the matter's reply/sender + derived
+    counterparty name) and the Aspora signatory (from the entity registry bundle,
+    when one is selected on the matter).
 
     Signature-field anchoring: a GENERATED NDA carries a distinct, per-party
     anchor token on each signature line (planted by ``nda_generation``), so each
@@ -587,7 +607,7 @@ def _resolve_signers(matter: dict[str, Any], override: Any | None) -> list[Signe
     a later phase.
     """
     if isinstance(override, list) and override:
-        return docusign_integration.normalize_signers(_stamp_override_roles(override))
+        return _stamp_override_roles(override)
 
     generated = _is_generated_nda_matter(matter)
 
@@ -613,7 +633,7 @@ def _resolve_signers(matter: dict[str, Any], override: Any | None) -> list[Signe
             if anchor:
                 signer["anchor"] = anchor
 
-    return docusign_integration.normalize_signers(signers)
+    return signers
 
 
 # The Aspora internal-signer domain. Any signer at this domain is the Aspora party
