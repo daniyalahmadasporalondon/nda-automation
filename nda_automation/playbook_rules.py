@@ -357,9 +357,13 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
         )
     # Per-option alias / governmental-entity-prefix sets are authored on the
     # input rules.approved_options and are the playbook's single source for the
-    # governing-law checker's recognition terms. Normalization rebuilds the option
-    # list from approved_laws, so carry these fields over (matched by id) instead
-    # of dropping them — otherwise the checker would fall back to no aliases.
+    # governing-law checker's recognition terms. The forum_jurisdiction string
+    # pairs each governing law with its expected court/forum and is what lets the
+    # AI reviewer verify that the named forum matches the chosen law. Normalization
+    # rebuilds the option list from approved_laws, so carry these fields over
+    # (matched by id) instead of dropping them — otherwise the packet's options
+    # would diverge from the playbook's single source of truth and the reviewer
+    # would lose both the recognition aliases and the law↔forum pairing.
     existing_options = rules.get("approved_options")
     extras_by_id: dict[str, dict[str, Any]] = {}
     if isinstance(existing_options, list):
@@ -367,11 +371,16 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
             if not isinstance(option, dict):
                 continue
             option_id = _text(option.get("id")) or _option_id(_text(option.get("value")) or _text(option.get("label")))
-            carried = {
+            carried: dict[str, Any] = {
                 key: option[key]
                 for key in ("aliases", "entity_prefixes")
                 if isinstance(option.get(key), list) and option[key]
             }
+            # forum_jurisdiction is a scalar string (the expected court/forum),
+            # not a list — carry it whenever the playbook authored it.
+            forum = option.get("forum_jurisdiction")
+            if isinstance(forum, str) and forum.strip():
+                carried["forum_jurisdiction"] = forum
             if option_id and carried:
                 extras_by_id[option_id] = carried
     rebuilt_options: list[dict[str, Any]] = []
