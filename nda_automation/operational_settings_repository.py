@@ -95,6 +95,18 @@ class DiskOperationalSettingsRepository:
             settings = self.load_settings_unlocked()
             payload = settings.get(section)
             if not isinstance(payload, dict):
+                # A structurally-odd section (present but not a JSON object) is an
+                # integrity condition. We deliberately do NOT silently coerce the
+                # ORIGINAL value to ``{}`` and persist it -- a merge-style updater
+                # (``{**current, **updates}``) would then drop the odd original on
+                # disk forever. Raise so the corrupt section is surfaced and never
+                # overwritten silently. Absent sections (None) are a normal first
+                # write and start from an empty base.
+                if payload is not None:
+                    raise OperationalSettingsError(
+                        f"App settings '{section}' must be a JSON object before it can be "
+                        f"updated; found {type(payload).__name__}."
+                    )
                 payload = {}
             settings[section] = updater(normalizer(payload))
             self.save_settings_unlocked(settings)

@@ -167,5 +167,81 @@ class UserStoreTests(unittest.TestCase):
                         self.assertIsNotNone(user_store.user_for_session_token(token))
 
 
+    def test_odd_shaped_subtree_is_not_silently_emptied_on_disk(self):
+        """REGRESSION: a structurally-odd sub-tree (e.g. ``login_states`` saved as
+        a JSON list rather than an object) must NOT be silently coerced to ``{}``
+        and persisted back, destroying the original blob. A read that prunes an
+        expired session previously rewrote the coerced-empty store to disk.
+        """
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.user_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patches[3]:
+                users_path = Path(data_dir) / "users.json"
+                # An odd-but-parseable store: login_states is a LIST (the shape
+                # surprise) while sessions is a normal dict holding ONE expired
+                # session so a read/prune is provoked into wanting to persist.
+                odd_store = {
+                    "version": user_store.USER_STORE_VERSION,
+                    "users": {},
+                    "sessions": {
+                        "deadhash": {
+                            "user_id": "ghost",
+                            "expires_at": "2000-01-01T00:00:00+00:00",
+                            "created_at": "2000-01-01T00:00:00+00:00",
+                        }
+                    },
+                    # Structural surprise that must survive on disk.
+                    "login_states": ["unexpected", "list", "payload"],
+                }
+                users_path.write_text(json.dumps(odd_store), encoding="utf-8")
+
+                # The integrity condition is surfaced, NOT silently coerced.
+                with self.assertRaises(user_store.UserStoreError):
+                    user_store.user_for_session_token("any-token")
+
+                # Crucially, the original odd blob is intact on disk -- nothing
+                # was overwritten with an empty object.
+                on_disk = json.loads(users_path.read_text(encoding="utf-8"))
+                self.assertEqual(on_disk["login_states"], ["unexpected", "list", "payload"])
+                self.assertEqual(on_disk, odd_store)
+
+    def test_normal_expired_session_prune_still_persists(self):
+        """A well-shaped store with an expired session is pruned and the pruned
+        result IS persisted (proves the integrity guard did not over-rotate into
+        disabling legitimate prune-and-save)."""
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.user_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patches[3]:
+                users_path = Path(data_dir) / "users.json"
+                store = {
+                    "version": user_store.USER_STORE_VERSION,
+                    "users": {},
+                    "sessions": {
+                        "expiredhash": {
+                            "user_id": "ghost",
+                            "expires_at": "2000-01-01T00:00:00+00:00",
+                            "created_at": "2000-01-01T00:00:00+00:00",
+                        },
+                        "livehash": {
+                            "user_id": "ghost",
+                            "expires_at": "2999-01-01T00:00:00+00:00",
+                            "created_at": "2999-01-01T00:00:00+00:00",
+                            "last_seen_at": "2999-01-01T00:00:00+00:00",
+                        },
+                    },
+                    "login_states": {},
+                }
+                users_path.write_text(json.dumps(store), encoding="utf-8")
+
+                # Reading triggers the prune of the expired session.
+                self.assertIsNone(user_store.user_for_session_token("any-token"))
+
+                on_disk = json.loads(users_path.read_text(encoding="utf-8"))
+                # Expired entry actually removed and persisted...
+                self.assertNotIn("expiredhash", on_disk["sessions"])
+                # ...while the still-live session survives.
+                self.assertIn("livehash", on_disk["sessions"])
+
+
 if __name__ == "__main__":
     unittest.main()

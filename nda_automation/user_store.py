@@ -469,12 +469,25 @@ def _load_store_unlocked() -> dict[str, Any]:
         raise UserStoreError("User store is not valid JSON.") from exc
     if not isinstance(payload, dict):
         raise UserStoreError("User store must contain a JSON object.")
-    return {
-        "version": USER_STORE_VERSION,
-        "users": payload.get("users") if isinstance(payload.get("users"), dict) else {},
-        "sessions": payload.get("sessions") if isinstance(payload.get("sessions"), dict) else {},
-        "login_states": payload.get("login_states") if isinstance(payload.get("login_states"), dict) else {},
-    }
+    # A structurally-odd sub-tree (e.g. ``sessions`` persisted as a list rather
+    # than a dict) is an integrity condition, NOT something to silently coerce.
+    # Coercing here to ``{}`` would feed an emptied store to read paths like
+    # ``user_for_session_token`` whose prune sets ``changed=True`` and then
+    # persists the coerced-empty version back over disk -- permanently dropping
+    # the original sub-tree. Raise instead so the caller never writes a
+    # data-destroying coercion back to disk.
+    store: dict[str, Any] = {"version": USER_STORE_VERSION}
+    for key in ("users", "sessions", "login_states"):
+        section = payload.get(key)
+        if key not in payload or section is None:
+            store[key] = {}
+            continue
+        if not isinstance(section, dict):
+            raise UserStoreError(
+                f"User store '{key}' must be a JSON object, not {type(section).__name__}."
+            )
+        store[key] = section
+    return store
 
 
 def _save_store_unlocked(store: dict[str, Any]) -> None:
@@ -516,8 +529,12 @@ def _prune_expired_unlocked(store: dict[str, Any], *, now: float) -> bool:
     for key in ("sessions", "login_states"):
         records = store.setdefault(key, {})
         if not isinstance(records, dict):
+            # Coerce ONLY in-memory for the duration of this read; do NOT mark
+            # the store changed. A structural coercion must never be persisted
+            # back to disk -- that would overwrite the original (non-dict but
+            # still data-bearing) sub-tree with an empty object. Only an actual
+            # prune of expired entries below is allowed to set changed=True.
             store[key] = {}
-            changed = True
             continue
         expired = [
             record_key
