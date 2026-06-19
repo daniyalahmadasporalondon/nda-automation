@@ -217,7 +217,12 @@ class AIAssessmentContractTests(unittest.TestCase):
         # surviving evidence, which the decision/evidence coupling rejects.
         self.assertIn("fail decisions require at least one valid evidence item", message)
         self.assertIn("fail decisions require a proposed redline action", message)
-        self.assertIn("blocks_send must be true only for review decisions", message)
+        # The blocks_send polarity mismatch (fail + blocks_send=True) is NO LONGER a
+        # fatal contract error -- it is auto-corrected (see the dedicated
+        # blocks_send auto-correction tests). The genuine malformations above still
+        # reject this clause; the polarity mismatch is silently reconciled and never
+        # contributes to the error message.
+        self.assertNotIn("blocks_send must be true only for review decisions", message)
 
     def test_blank_redline_text_is_defaulted_from_governing_law_playbook(self):
         # The AI supplies the judgment (fail) but leaves the replacement wording
@@ -847,6 +852,266 @@ class NonStringReplacementContractTests(unittest.TestCase):
         )
         self.assertTrue(degraded)
         self.assertEqual(cleaned["action"], "no_change")
+
+
+# ---------------------------------------------------------------------------
+# blocks_send polarity auto-correction
+#
+# ``blocks_send`` is a DERIVED bookkeeping field (the rule is
+# ``blocks_send == (decision == review)``), not an independent verdict. A real
+# model routinely FAILS a clause and also ticks "stop sending", which used to be a
+# FATAL contract error that rejected the WHOLE batch -- one such clause discarded
+# the review of every other clause. These tests prove the mismatch is now
+# auto-corrected in place (the clause keeps its verdict, the field is reconciled to
+# the rule and the clause is stamped) while the rest of the batch is preserved, and
+# that genuine malformations still reject exactly as before.
+# ---------------------------------------------------------------------------
+
+# A 30-paragraph synthetic document. Paragraph p1 holds an overreaching restraint
+# the one FAIL clause targets; the rest are innocuous so the PASS clauses ground
+# trivially (PASS clauses carry no evidence).
+_BATCH_PARAGRAPH_TEXTS = [
+    "The Receiving Party shall not solicit or hire any employee of the Disclosing Party for five years."
+] + [f"Section {n}. Standard mutual confidentiality boilerplate paragraph number {n}." for n in range(2, 31)]
+_BATCH_SOURCE_TEXT = "\n\n".join(_BATCH_PARAGRAPH_TEXTS)
+
+
+def _batch_paragraphs():
+    return split_document_paragraphs(_BATCH_SOURCE_TEXT)
+
+
+def _batch_clause_ids(count):
+    return [f"clause_{index:02d}" for index in range(count)]
+
+
+def _pass_clause(clause_id):
+    return {
+        "clause_id": clause_id,
+        "decision": "pass",
+        "issue_type": "none",
+        "rationale": (
+            "This clause meets the playbook requirements and is acceptable as drafted "
+            "for a standard mutual confidentiality agreement."
+        ),
+        "evidence": [],
+        "proposed_redline": {"action": AI_REDLINE_NO_CHANGE},
+        "confidence": 0.91,
+        "blocks_send": False,
+    }
+
+
+def _failing_clause_blocks_send_true(clause_id):
+    # The natural real-model shape: a clause is FAILED and "stop sending" is ALSO
+    # ticked. issue_type=missing exempts it from the evidence requirement; a
+    # delete_paragraph is the actionable redline a prohibited restraint needs.
+    return {
+        "clause_id": clause_id,
+        "decision": "fail",
+        "issue_type": "missing",
+        "rationale": (
+            "The clause imposes a prohibited five-year non-solicit restraint that is outside "
+            "the approved confidentiality scope and must be struck before this can be sent."
+        ),
+        "evidence": [],
+        "proposed_redline": {"action": "delete_paragraph", "paragraph_id": "p1"},
+        "confidence": 0.97,
+        # The polarity mismatch under test: a FAIL with blocks_send ticked True.
+        "blocks_send": True,
+    }
+
+
+class BlocksSendPolarityAutoCorrectTests(unittest.TestCase):
+    def test_one_fail_with_blocks_send_true_does_not_reject_the_whole_batch(self):
+        # ~30 clauses; exactly one is FAIL + blocks_send=True (the rest PASS). On
+        # PRISTINE main this RAISES and returns ZERO clauses; after the fix the whole
+        # batch survives, the offending clause stays FAIL, and it is flagged
+        # auto-corrected.
+        clause_ids = _batch_clause_ids(30)
+        offending_id = clause_ids[7]
+        assessments = []
+        for clause_id in clause_ids:
+            if clause_id == offending_id:
+                assessments.append(_failing_clause_blocks_send_true(clause_id))
+            else:
+                assessments.append(_pass_clause(clause_id))
+
+        cleaned = validate_ai_clause_assessments(
+            assessments,
+            valid_clause_ids=clause_ids,
+            paragraphs=_batch_paragraphs(),
+        )
+
+        # The entire batch is preserved -- nothing was discarded.
+        self.assertEqual(len(cleaned), 30)
+        self.assertEqual(set(cleaned), set(clause_ids))
+
+        offending = cleaned[offending_id]
+        # The verdict is UNCHANGED: a FAIL stays a FAIL.
+        self.assertEqual(offending["decision"], "fail")
+        # The bookkeeping field is reconciled to the rule (a FAIL is not a review).
+        self.assertFalse(offending["blocks_send"])
+        # The correction is visible in the audit trail.
+        self.assertEqual(offending["validation_status"], "blocks_send_autocorrected")
+
+        # Every other (PASS) clause is untouched and keeps the default status.
+        for clause_id in clause_ids:
+            if clause_id == offending_id:
+                continue
+            self.assertEqual(cleaned[clause_id]["decision"], "pass")
+            self.assertEqual(cleaned[clause_id]["validation_status"], "contract_valid")
+
+    def test_document_stays_send_blocked_after_autocorrect(self):
+        # Downstream neutrality: un-ticking the per-clause blocks_send must NOT make
+        # a failing document sendable. The deterministic floor (a FAIL -> CHECK
+        # state) blocks auto-send regardless of the AI's blocks_send field.
+        from nda_automation.review_state import aggregate_review_state, clause_review_state
+
+        clause_ids = _batch_clause_ids(30)
+        offending_id = clause_ids[7]
+        assessments = [
+            _failing_clause_blocks_send_true(clause_id) if clause_id == offending_id else _pass_clause(clause_id)
+            for clause_id in clause_ids
+        ]
+        cleaned = validate_ai_clause_assessments(
+            assessments, valid_clause_ids=clause_ids, paragraphs=_batch_paragraphs()
+        )
+
+        # review_state RE-DERIVES blocks_send / blocks_auto_send from the verdict, not
+        # from the (now-corrected) AI field: a FAIL still blocks send.
+        offending_state = clause_review_state({"decision": cleaned[offending_id]["decision"]})
+        self.assertTrue(offending_state["blocks_auto_send"])
+
+        # And the aggregate document state is CHECK (a failing document), which the
+        # workflow treats as not auto-sendable.
+        clause_states = [{"decision": cleaned[clause_id]["decision"]} for clause_id in clause_ids]
+        aggregate = aggregate_review_state(clause_states)
+        self.assertEqual(aggregate["state"], "check")
+
+    def test_review_with_blocks_send_false_is_auto_corrected_to_true(self):
+        # The OTHER polarity: a REVIEW that forgot to tick blocks_send. The rule is
+        # reconciled the same way (now True), and the clause is flagged.
+        clause_ids = _batch_clause_ids(3)
+        review_clause = {
+            "clause_id": clause_ids[1],
+            "decision": "review",
+            "issue_type": "unclear",
+            "rationale": (
+                "The clause is ambiguous about which party bears the confidentiality "
+                "obligation and a human reviewer should resolve it before sending."
+            ),
+            "evidence": [],
+            "proposed_redline": {"action": AI_REDLINE_NO_CHANGE},
+            "confidence": 0.55,
+            # Polarity mismatch in the other direction: a REVIEW with blocks_send False.
+            "blocks_send": False,
+        }
+        assessments = [
+            _pass_clause(clause_ids[0]),
+            review_clause,
+            _pass_clause(clause_ids[2]),
+        ]
+
+        cleaned = validate_ai_clause_assessments(
+            assessments, valid_clause_ids=clause_ids, paragraphs=_batch_paragraphs()
+        )
+
+        self.assertEqual(len(cleaned), 3)
+        corrected = cleaned[clause_ids[1]]
+        self.assertEqual(corrected["decision"], "review")
+        # Reconciled to the rule: a review DOES block send.
+        self.assertTrue(corrected["blocks_send"])
+        self.assertEqual(corrected["validation_status"], "blocks_send_autocorrected")
+
+    def test_autocorrect_bumps_telemetry_counter(self):
+        # Each auto-corrected clause bumps the dedicated telemetry counter exactly
+        # once, so operators can see how often real models trip the polarity rule.
+        from nda_automation import telemetry
+        from nda_automation.ai_assessment_contract import (
+            AI_ASSESSMENT_BLOCKS_SEND_AUTOCORRECTED_COUNTER,
+        )
+
+        telemetry.reset()
+        clause_ids = _batch_clause_ids(5)
+        offending_id = clause_ids[2]
+        assessments = [
+            _failing_clause_blocks_send_true(clause_id) if clause_id == offending_id else _pass_clause(clause_id)
+            for clause_id in clause_ids
+        ]
+        validate_ai_clause_assessments(
+            assessments, valid_clause_ids=clause_ids, paragraphs=_batch_paragraphs()
+        )
+        counters = telemetry.snapshot()["counters"]
+        self.assertEqual(counters.get(AI_ASSESSMENT_BLOCKS_SEND_AUTOCORRECTED_COUNTER), 1)
+
+    def test_correctly_aligned_blocks_send_is_not_flagged_or_counted(self):
+        # A clause whose blocks_send already matches the rule is NOT touched: no
+        # auto-correct status, no counter bump.
+        from nda_automation import telemetry
+        from nda_automation.ai_assessment_contract import (
+            AI_ASSESSMENT_BLOCKS_SEND_AUTOCORRECTED_COUNTER,
+        )
+
+        telemetry.reset()
+        clause_ids = _batch_clause_ids(2)
+        assessments = [_pass_clause(clause_id) for clause_id in clause_ids]  # pass + blocks_send False == rule
+        cleaned = validate_ai_clause_assessments(
+            assessments, valid_clause_ids=clause_ids, paragraphs=_batch_paragraphs()
+        )
+        for clause_id in clause_ids:
+            self.assertEqual(cleaned[clause_id]["validation_status"], "contract_valid")
+        counters = telemetry.snapshot()["counters"]
+        self.assertNotIn(AI_ASSESSMENT_BLOCKS_SEND_AUTOCORRECTED_COUNTER, counters)
+
+    def test_genuine_malformation_still_rejects_after_fix(self):
+        # The validator did NOT become permissive: a clause with an INVALID decision
+        # enum still rejects the batch (a structural malformation, not a polarity
+        # bookkeeping mismatch). This is the "didn't loosen the validator" proof.
+        clause_ids = _batch_clause_ids(3)
+        bad_decision = {
+            "clause_id": clause_ids[1],
+            "decision": "definitely_not_a_real_decision",
+            "issue_type": "present_but_wrong",
+            "rationale": "This clause has an invalid decision enum value and must be rejected.",
+            "evidence": [],
+            "proposed_redline": {"action": AI_REDLINE_NO_CHANGE},
+            "confidence": 0.8,
+            "blocks_send": False,
+        }
+        assessments = [_pass_clause(clause_ids[0]), bad_decision, _pass_clause(clause_ids[2])]
+
+        with self.assertRaises(AIAssessmentContractError) as error:
+            validate_ai_clause_assessments(
+                assessments, valid_clause_ids=clause_ids, paragraphs=_batch_paragraphs()
+            )
+        self.assertIn("decision must be one of", str(error.exception))
+
+    def test_missing_required_field_still_rejects_after_fix(self):
+        # A second malformation flavour: a missing REQUIRED field (rationale) still
+        # rejects even when that same clause ALSO has a blocks_send polarity mismatch
+        # -- the genuine error is never masked by the auto-correction.
+        clause_ids = _batch_clause_ids(3)
+        missing_rationale = {
+            "clause_id": clause_ids[1],
+            "decision": "fail",
+            "issue_type": "missing",
+            # rationale deliberately omitted (required field).
+            "evidence": [],
+            "proposed_redline": {"action": "delete_paragraph", "paragraph_id": "p1"},
+            "confidence": 0.8,
+            "blocks_send": True,  # also a polarity mismatch; must NOT rescue the clause
+        }
+        assessments = [_pass_clause(clause_ids[0]), missing_rationale, _pass_clause(clause_ids[2])]
+
+        with self.assertRaises(AIAssessmentContractError) as error:
+            validate_ai_clause_assessments(
+                assessments, valid_clause_ids=clause_ids, paragraphs=_batch_paragraphs()
+            )
+        message = str(error.exception)
+        self.assertIn("rationale is required", message)
+        # The polarity mismatch on that same clause is NOT auto-corrected (the clause
+        # is rejected for the genuine error), so it must not appear as a reconciled
+        # success anywhere -- and it certainly must not be the thing that rejects it.
+        self.assertNotIn("blocks_send must be true only for review decisions", message)
 
 
 if __name__ == "__main__":
