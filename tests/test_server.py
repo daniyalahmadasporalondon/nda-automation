@@ -810,6 +810,93 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(after_status, 200)
         self.assertFalse(after_payload["authenticated"])
 
+    def test_corrupt_user_store_fails_authenticated_request_closed_not_dropped(self):
+        """REGRESSION: a structurally-corrupt users.json must NOT take auth down.
+
+        The data-preservation fix makes _load_store_unlocked RAISE on a corrupt
+        sub-tree (so the original blob survives instead of being coerced-and-
+        emptied). But that read is on the auth hot path: do_GET -> _authorize_request
+        -> current_session_user -> user_for_session_token -> _load_store_unlocked.
+        BaseHTTPRequestHandler only catches TimeoutError, so an unhandled raise
+        there would drop the connection (no 401, no body) on EVERY authenticated
+        request until the file is hand-fixed -- a sitewide auth outage.
+
+        This proves the raise is caught at the auth boundary and the request fails
+        CLOSED (clean 401, like an expired session), AND the corrupt blob is left
+        intact on disk (the data-preservation guarantee is not regressed).
+        """
+        # Configure Google OAuth so the unauthenticated outcome for an /api/ path
+        # is the realistic 401 (login_url) rather than the 503 "no auth method
+        # configured" branch -- the point under test is graceful HANDLING, but we
+        # assert the production-realistic 401 to be unambiguous.
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "google-client",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
+            "NDA_GOOGLE_OAUTH_REDIRECT_URI": "http://127.0.0.1/auth/google/callback",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            users_path = server_module.Path(data_dir) / "users.json"
+            patches = self.matter_store_patches(data_dir)
+            # Pin the user store to THIS test's data dir so we control the exact
+            # file we corrupt and then re-read (conftest pins NDA_USERS_PATH to a
+            # shared tmp file; override it here).
+            with patches[0], patches[1], patches[2], patch.dict(
+                os.environ, {**auth_env, "NDA_USERS_PATH": str(users_path)}
+            ):
+                # Establish a normal, valid session so we have a real cookie.
+                headers, _user = self.google_session_headers()
+
+                # Now corrupt the store: persist login_states as a LIST (a shape
+                # surprise) while keeping the real session dict, exactly the odd
+                # shape that the load-time integrity guard raises on. The original
+                # blob must survive this request untouched.
+                corrupt_store = json.loads(users_path.read_text(encoding="utf-8"))
+                corrupt_store["login_states"] = ["unexpected", "list", "payload"]
+                corrupt_blob = json.dumps(corrupt_store, indent=2) + "\n"
+                users_path.write_text(corrupt_blob, encoding="utf-8")
+
+                # An authenticated request now hits the corrupt store on the hot
+                # path. If the raise escaped, the connection would be dropped and
+                # request_with_headers would raise (BadStatusLine/RemoteDisconnected)
+                # instead of returning a status -- so simply getting a status code
+                # back is itself part of the proof.
+                status, payload = self.request("GET", "/api/matters", headers=headers)
+
+                # Graceful fail-closed: treated as unauthenticated, clean 401.
+                self.assertEqual(status, 401)
+                self.assertEqual(payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
+
+                # Data-preservation: the corrupt blob is byte-for-byte intact --
+                # nothing was coerced to {} and persisted back over it.
+                self.assertEqual(users_path.read_text(encoding="utf-8"), corrupt_blob)
+
+    def test_logout_against_corrupt_user_store_still_clears_cookie(self):
+        """A logout request against a corrupt store must degrade gracefully:
+        clear the cookie (200) rather than drop the connection on the store raise,
+        and leave the corrupt blob intact (no coerce-and-empty)."""
+        auth_env = {"NDA_REQUIRE_AUTH": "true", "NDA_AUTH_USERNAME": "", "NDA_AUTH_PASSWORD": ""}
+        with tempfile.TemporaryDirectory() as data_dir:
+            users_path = server_module.Path(data_dir) / "users.json"
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patch.dict(
+                os.environ, {**auth_env, "NDA_USERS_PATH": str(users_path)}
+            ):
+                headers, _user = self.google_session_headers()
+                corrupt_store = json.loads(users_path.read_text(encoding="utf-8"))
+                corrupt_store["sessions"] = ["not", "a", "dict"]
+                corrupt_blob = json.dumps(corrupt_store, indent=2) + "\n"
+                users_path.write_text(corrupt_blob, encoding="utf-8")
+
+                status, payload = self.request("POST", "/api/auth/logout", headers=headers)
+
+                self.assertEqual(status, 200)
+                self.assertFalse(payload["authenticated"])
+                # Corrupt blob untouched: logout did not coerce-and-empty the store.
+                self.assertEqual(users_path.read_text(encoding="utf-8"), corrupt_blob)
+
     def test_matter_backup_export_requires_auth_when_auth_is_enabled(self):
         auth_env = {
             "NDA_REQUIRE_AUTH": "true",

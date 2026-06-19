@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from http.cookies import SimpleCookie
+import logging
 import os
 import secrets
 from urllib.parse import parse_qs, urlparse
 
 from .. import app_settings, google_connection, google_identity, user_store
 from ..http_auth import _basic_auth_credentials, _basic_auth_matches
+
+LOGGER = logging.getLogger(__name__)
 
 
 def handle_auth_status(handler, *, send_body: bool = True) -> None:
@@ -212,7 +215,16 @@ def handle_google_callback(handler, *, send_body: bool = True) -> None:
 
 
 def handle_logout(handler) -> None:
-    user_store.delete_session(_cookie_value(handler, user_store.SESSION_COOKIE_NAME))
+    try:
+        user_store.delete_session(_cookie_value(handler, user_store.SESSION_COOKIE_NAME))
+    except user_store.UserStoreError:
+        # A corrupt store can't be mutated safely; the expired cookie below still
+        # logs this device out, so logout degrades gracefully instead of dropping
+        # the connection on an unhandled raise.
+        LOGGER.warning(
+            "User store is corrupt; skipping session deletion on logout.",
+            exc_info=True,
+        )
     handler._send_json(
         {"authenticated": False, "user": None},
         headers={"Set-Cookie": _expired_cookie(handler, user_store.SESSION_COOKIE_NAME)},
@@ -227,20 +239,57 @@ def handle_logout_all(handler) -> None:
     current cookie if the session cannot be resolved (e.g. already expired).
     """
     token = _cookie_value(handler, user_store.SESSION_COOKIE_NAME)
-    user = user_store.user_for_session_token(token)
+    # Fail closed on a corrupt store: resolve the user safely so a logout request
+    # against a corrupt store still clears the cookie gracefully instead of
+    # dropping the connection on an unhandled UserStoreError.
+    user = _resolve_session_user(token)
     user_id = str(user.get("id") or "") if isinstance(user, dict) else ""
     if user_id:
         user_store.delete_all_sessions_for_user(user_id)
     else:
-        user_store.delete_session(token)
+        try:
+            user_store.delete_session(token)
+        except user_store.UserStoreError:
+            # The store is corrupt; we cannot mutate it safely. The cookie is
+            # still expired below, which logs this device out.
+            LOGGER.warning(
+                "User store is corrupt; skipping session deletion on logout-all.",
+                exc_info=True,
+            )
     handler._send_json(
         {"authenticated": False, "user": None},
         headers={"Set-Cookie": _expired_cookie(handler, user_store.SESSION_COOKIE_NAME)},
     )
 
 
+def _resolve_session_user(token: str) -> dict | None:
+    """Resolve a session token to a user, failing CLOSED on store corruption.
+
+    ``user_store.user_for_session_token`` raises ``UserStoreError`` when the
+    persisted store is structurally corrupt (e.g. a ``sessions``/``login_states``
+    sub-tree saved as a list rather than an object). That raise deliberately
+    preserves the on-disk data instead of silently coercing-and-emptying it --
+    but it must NOT be allowed to escape onto the request hot path.
+    ``BaseHTTPRequestHandler`` only catches ``TimeoutError``, so an unhandled
+    raise here would drop the connection before any response is sent and repeat
+    on EVERY authenticated request until the file is hand-fixed -- a sitewide
+    auth outage. Catch it at this boundary and treat the request as
+    unauthenticated, so a corrupt store logs users out gracefully (recoverable,
+    like an expired session) rather than taking the whole site down.
+    """
+    try:
+        return user_store.user_for_session_token(token)
+    except user_store.UserStoreError:
+        LOGGER.warning(
+            "User store is corrupt; failing session resolution closed "
+            "(treating request as unauthenticated).",
+            exc_info=True,
+        )
+        return None
+
+
 def current_session_user(handler) -> dict | None:
-    return user_store.user_for_session_token(_cookie_value(handler, user_store.SESSION_COOKIE_NAME))
+    return _resolve_session_user(_cookie_value(handler, user_store.SESSION_COOKIE_NAME))
 
 
 def _current_basic_user(handler) -> dict | None:
