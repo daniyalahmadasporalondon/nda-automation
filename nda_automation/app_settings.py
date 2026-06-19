@@ -137,6 +137,20 @@ DEFAULT_AI_SETTINGS = {
     "provider": "",
     "model": "",
 }
+DEFAULT_ADMIN_SETTINGS: dict[str, Any] = {
+    "admins": [],
+}
+# Persisted admin grants live alongside (never replace) the immutable
+# NDA_ADMIN_USERS env roots. An entry is {email, added_at, added_by}. The list is
+# capped so a runaway/abusive add loop can never balloon the settings blob, and
+# every email is normalized + format-validated before it lands.
+MAX_PERSISTED_ADMINS = 100
+MAX_ADMIN_EMAIL_LENGTH = 254
+# A pragmatic single-@ local@domain shape: a non-empty local part with no spaces,
+# an "@", then a domain with at least one dot. This is deliberately conservative
+# (it is an allow-gate for a privileged grant, not an RFC-5322 parser) -- it must
+# never let through whitespace, multiple "@", or a domain with no dot.
+_ADMIN_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 DEFAULT_REVIEW_RUNTIME_SETTINGS = {
     "active_review_engine": None,
 }
@@ -187,6 +201,10 @@ def personalisation_settings() -> dict[str, Any]:
     return _repository().read_section("personalisation", personalisation_settings_from_payload)
 
 
+def admin_settings() -> dict[str, Any]:
+    return _repository().read_section("admins", admin_settings_from_payload)
+
+
 def settings_audit_history() -> list[dict[str, Any]]:
     settings = _repository().read_settings()
     return settings_audit_history_from_payload(settings.get("settings_audit"))
@@ -226,6 +244,39 @@ def update_personalisation_settings(updates: dict[str, Any]) -> dict[str, Any]:
         return personalisation_settings()
 
     return _repository().update_section("personalisation", personalisation_settings_from_payload, cleaned)
+
+
+def update_admin_settings(updates: dict[str, Any]) -> dict[str, Any]:
+    """Persist the admin grant list.
+
+    Only the ``admins`` key is honoured. The list is fully replaced by the caller
+    (add/remove handlers read the current list, mutate it, and write the whole
+    list back), then re-normalized through ``admin_settings_from_payload`` so the
+    stored shape, dedupe, format-validation and cap are enforced on write exactly
+    as on read.
+    """
+    if "admins" not in updates:
+        return admin_settings()
+    return _repository().update_section(
+        "admins",
+        admin_settings_from_payload,
+        {"admins": updates.get("admins")},
+    )
+
+
+def persisted_admin_emails() -> set[str]:
+    """The set of lowercased persisted admin emails (env roots NOT included)."""
+    return {entry["email"] for entry in admin_settings()["admins"] if entry.get("email")}
+
+
+def normalize_admin_email(value: object) -> str:
+    """Lowercase + strip an admin email; "" when it is not a valid local@domain."""
+    email = str(value or "").strip().lower()
+    if not email or len(email) > MAX_ADMIN_EMAIL_LENGTH:
+        return ""
+    if not _ADMIN_EMAIL_PATTERN.fullmatch(email):
+        return ""
+    return email
 
 
 def record_settings_audit_event(event: dict[str, Any]) -> list[dict[str, Any]]:
@@ -502,6 +553,38 @@ def personalisation_settings_from_payload(payload: dict[str, Any]) -> dict[str, 
             multiline=True,
         ),
     }
+
+
+def admin_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the persisted admin grant list.
+
+    Runs on BOTH read and merged-write. Each raw entry is coerced to
+    ``{email, added_at, added_by}``: the email is lowercased/stripped and
+    format-validated (invalid entries are dropped, never stored), duplicates are
+    collapsed (first wins), and the list is capped at ``MAX_PERSISTED_ADMINS``.
+    """
+    raw = payload.get("admins") if isinstance(payload, dict) else None
+    if not isinstance(raw, list):
+        return {"admins": []}
+    admins: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw:
+        email = ""
+        added_at = ""
+        added_by = ""
+        if isinstance(item, dict):
+            email = normalize_admin_email(item.get("email"))
+            added_at = str(item.get("added_at") or "")[:64]
+            added_by = str(item.get("added_by") or "")[:254]
+        elif isinstance(item, str):
+            email = normalize_admin_email(item)
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        admins.append({"email": email, "added_at": added_at, "added_by": added_by})
+        if len(admins) >= MAX_PERSISTED_ADMINS:
+            break
+    return {"admins": admins}
 
 
 def settings_audit_event_from_payload(payload: object) -> dict[str, Any]:

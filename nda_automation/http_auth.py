@@ -17,25 +17,47 @@ def _admin_user_ids() -> set[str]:
     return {value.strip() for value in raw.split(",") if value.strip()}
 
 
-def request_is_admin(*, user_id: str, provider: str, host: str) -> bool:
+def request_is_admin(*, user_id: str, provider: str, host: str, email: str = "") -> bool:
     """Return whether the authenticated caller may use admin-only endpoints.
 
-    Admin identities are explicitly listed in NDA_ADMIN_USERS. When no list is
-    configured we FAIL CLOSED: no authenticated caller is admin. An empty
-    admin list used to fall back to "any HTTP Basic caller is admin", which on a
-    deployment that shares one Basic credential across all users silently made
-    every authenticated user an administrator. On a loopback host where
-    authentication is not required, the local developer is still trusted,
-    matching how the rest of the app treats loopback.
+    Admin authority comes from TWO sources, env roots first:
+
+    1. The immutable NDA_ADMIN_USERS env set (matched against ``user_id``). These
+       are the bootstrap admins and can never be removed from the in-app manager.
+    2. The persisted admin-email list (managed in-app), but ONLY for a Google
+       caller whose email is OAuth-VERIFIED. ``email`` must be the session's
+       Google-verified address; a basic-auth username that merely equals an admin
+       email must never inherit admin (provider gate below), and a request body
+       field must never be passed here.
+
+    When neither source matches we FAIL CLOSED. On a loopback host where
+    authentication is not required, the local developer is still trusted. The
+    persisted-list lookup imports ``app_settings`` lazily (circular-import safety)
+    and any error there fails closed.
     """
     if not _auth_required_for_host(host):
         return True
     admin_ids = _admin_user_ids()
-    if not admin_ids:
-        # Fail closed: with no configured admin identities, real authenticated
-        # callers get no admin access. (Loopback dev is handled above.)
-        return False
-    return str(user_id or "").strip() in admin_ids
+    if admin_ids and str(user_id or "").strip() in admin_ids:
+        return True
+    # Persisted admin grants apply ONLY to a Google-verified email. The provider
+    # gate is what stops a basic-auth username colliding with an admin email from
+    # inheriting admin.
+    if str(provider or "").strip().lower() == "google":
+        normalized_email = str(email or "").strip().lower()
+        if normalized_email and normalized_email in _persisted_admin_emails_safe():
+            return True
+    return False
+
+
+def _persisted_admin_emails_safe() -> set[str]:
+    """The persisted admin-email set, failing CLOSED (empty) on any error."""
+    try:
+        from . import app_settings
+
+        return app_settings.persisted_admin_emails()
+    except Exception:
+        return set()
 
 
 def _basic_auth_matches(header: str, username: str, password: str) -> bool:

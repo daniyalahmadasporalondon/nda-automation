@@ -10,7 +10,8 @@ from ..review_engine import (
     REVIEW_ENGINE_AI_FIRST,
     active_review_engine_status,
 )
-from .common import request_owner_user_id, require_admin
+from ..http_auth import _admin_user_ids
+from .common import request_actor, request_owner_user_id, request_user_email, require_admin
 
 
 def handle_deployment_status(handler, *, send_body: bool = True) -> None:
@@ -343,6 +344,129 @@ def _record_personalisation_audit_if_changed(previous: dict, current: dict) -> N
         "actor": "admin",
         "action": "personalisation_settings_update",
         "changes": changes,
+    })
+
+
+def handle_admin_list(handler, *, send_body: bool = True) -> None:
+    """GET /api/admin/admins -- the immutable env roots + the persisted grant list."""
+    if not require_admin(handler, send_body=send_body):
+        return
+    handler._send_json(_admin_list_payload(), send_body=send_body)
+
+
+def handle_admin_add(handler) -> None:
+    """POST /api/admin/admins/add {email} -- idempotently grant an admin email."""
+    if not require_admin(handler):
+        return
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+    raw_email = payload.get("email")
+    if not isinstance(raw_email, str) or not raw_email.strip():
+        handler._send_json({"error": "An email address is required."}, status=400)
+        return
+    if len(raw_email.strip()) > app_settings.MAX_ADMIN_EMAIL_LENGTH:
+        handler._send_json({"error": "Email address is too long."}, status=400)
+        return
+    email = app_settings.normalize_admin_email(raw_email)
+    if not email:
+        handler._send_json({"error": "Enter a valid email address (local@domain)."}, status=400)
+        return
+    if email in _env_root_admin_ids():
+        handler._send_json(
+            {"error": "That address is a bootstrap admin set in the environment and is managed there."},
+            status=409,
+        )
+        return
+
+    current = app_settings.admin_settings()["admins"]
+    if any(entry.get("email") == email for entry in current):
+        # Idempotent: the address is already a persisted admin, so return the
+        # current list unchanged (no duplicate, no audit churn).
+        handler._send_json(_admin_list_payload(), status=200)
+        return
+
+    actor = request_user_email(handler) or request_actor(handler)
+    updated = [
+        *current,
+        {
+            "email": email,
+            "added_at": datetime.now(timezone.utc).isoformat(),
+            "added_by": actor,
+        },
+    ]
+    app_settings.update_admin_settings({"admins": updated})
+    _record_admin_audit("admin_added", actor=actor, email=email)
+    handler._send_json(_admin_list_payload(), status=200)
+
+
+def handle_admin_remove(handler) -> None:
+    """DELETE /api/admin/admins {email} -- revoke a persisted admin grant.
+
+    Env roots are immutable (409). Removing the LAST admin (no env roots and no
+    other persisted admin would remain) is refused (409) so the app can never be
+    locked out. An unknown email is a 404.
+    """
+    if not require_admin(handler):
+        return
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+    raw_email = payload.get("email")
+    if not isinstance(raw_email, str) or not raw_email.strip():
+        handler._send_json({"error": "An email address is required."}, status=400)
+        return
+    email = app_settings.normalize_admin_email(raw_email)
+    if not email:
+        handler._send_json({"error": "Enter a valid email address (local@domain)."}, status=400)
+        return
+    if email in _env_root_admin_ids():
+        handler._send_json(
+            {"error": "Bootstrap admins set in the environment cannot be removed here."},
+            status=409,
+        )
+        return
+
+    current = app_settings.admin_settings()["admins"]
+    if not any(entry.get("email") == email for entry in current):
+        handler._send_json({"error": "That admin is not in the persisted list."}, status=404)
+        return
+
+    remaining = [entry for entry in current if entry.get("email") != email]
+    # Lockout guard: refuse if removing this entry would leave ZERO admins total
+    # (no env roots AND no persisted admins left).
+    if not remaining and not _env_root_admin_ids():
+        handler._send_json(
+            {"error": "Cannot remove the last administrator. Add another admin first."},
+            status=409,
+        )
+        return
+
+    actor = request_user_email(handler) or request_actor(handler)
+    app_settings.update_admin_settings({"admins": remaining})
+    _record_admin_audit("admin_removed", actor=actor, email=email)
+    handler._send_json(_admin_list_payload(), status=200)
+
+
+def _env_root_admin_ids() -> set[str]:
+    """The immutable NDA_ADMIN_USERS env set (verbatim entries, case-sensitive)."""
+    return _admin_user_ids()
+
+
+def _admin_list_payload() -> dict[str, object]:
+    return {
+        "env_root_admins": sorted(_env_root_admin_ids()),
+        "persisted_admins": app_settings.admin_settings()["admins"],
+    }
+
+
+def _record_admin_audit(action: str, *, actor: str, email: str) -> None:
+    telemetry.increment("settings_audit_events")
+    app_settings.record_settings_audit_event({
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "actor": actor or "admin",
+        "action": action,
+        "changes": [{"setting": "admins.email", "before": "", "after": email}],
     })
 
 

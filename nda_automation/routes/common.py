@@ -47,6 +47,18 @@ def request_user_provider(handler) -> str:
     return ""
 
 
+def request_user_email(handler) -> str:
+    """The session user's OAuth-verified email (Google), or "" when absent.
+
+    Only the session identity is consulted -- never a request body -- so the admin
+    predicate's persisted-email match trusts only the Google-verified address.
+    """
+    current_user = getattr(handler, "current_user", None)
+    if isinstance(current_user, dict):
+        return str(current_user.get("email") or "").strip()
+    return ""
+
+
 def require_admin(handler, *, send_body: bool = True) -> bool:
     """Gate an admin-only handler, sending a 403 when the caller is not admin.
 
@@ -58,6 +70,7 @@ def require_admin(handler, *, send_body: bool = True) -> bool:
         user_id=request_owner_user_id(handler),
         provider=request_user_provider(handler),
         host=str(handler.server.server_address[0]),
+        email=request_user_email(handler),
     ):
         return True
     handler._send_json({"error": ADMIN_REQUIRED_MESSAGE}, status=403, send_body=send_body)

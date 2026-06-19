@@ -236,6 +236,7 @@ _GET_EXACT_ROUTES = {
     "/auth/drive/callback": drive_routes.handle_drive_connect_callback,
     "/auth/docusign/callback": docusign_routes.handle_docusign_callback,
     "/api/admin/personalisation-settings": admin_routes.handle_personalisation_settings,
+    "/api/admin/admins": admin_routes.handle_admin_list,
     "/api/ai/availability": admin_routes.handle_ai_availability,
     "/api/ai/settings": admin_routes.handle_ai_settings,
     "/api/matters": matter_routes.handle_matter_list,
@@ -276,6 +277,7 @@ _POST_EXACT_ROUTES = {
     # handler, like the other drive-admin routes.
     "/api/admin/drive-folders": drive_routes.handle_drive_create_folder,
     "/api/admin/personalisation-settings": admin_routes.handle_personalisation_settings_update,
+    "/api/admin/admins/add": admin_routes.handle_admin_add,
     "/api/ai/api-key": admin_routes.handle_ai_api_key_update,
     "/api/ai/settings": admin_routes.handle_ai_settings_update,
     "/api/demo/reset": matter_routes.handle_demo_reset,
@@ -295,6 +297,9 @@ _PUBLIC_POST_EXACT_ROUTES = {
 
 _DELETE_EXACT_ROUTES = {
     "/api/ai/api-key": admin_routes.handle_ai_api_key_clear,
+    # Mutating + CSRF-protected (do_DELETE enforces CSRF, same as POST). The body
+    # carries {email}; the handler is admin-gated like the other admin routes.
+    "/api/admin/admins": admin_routes.handle_admin_remove,
 }
 
 
