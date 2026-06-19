@@ -198,6 +198,25 @@ const RepositoryActions = (() => {
     // Re-run a stale matter's review against the active published Playbook from the
     // inspector, then refresh the panel + board so the stale badge clears on success.
     async function refreshMatterReview(matter) {
+      // DATA-LOSS GUARD (mirrors the Review tab's refreshSelectedMatterReview): the
+      // in-progress branch below overwrites the SHARED global state.selectedMatter so
+      // the background-review poll (which keys on selectedMatter.id) tracks this
+      // matter. If a DIFFERENT matter currently has unsaved redline edits loaded in
+      // the Review tab (state.redlineDraftDirty), that overwrite would silently
+      // abandon them. Confirm first — and BAIL before firing the POST or touching any
+      // UI if the user cancels — so an unsaved draft on matter A is never lost by
+      // refreshing matter B from the Repository inspector. Same-matter refreshes (the
+      // dirty draft IS this matter) don't clobber anything, so they skip the prompt.
+      const dirtyOtherMatter = Boolean(
+        state?.redlineDraftDirty && state.selectedMatter?.id && state.selectedMatter.id !== matter.id,
+      );
+      if (
+        dirtyOtherMatter
+        && typeof confirmDiscardUnsavedReviewEdits === "function"
+        && !confirmDiscardUnsavedReviewEdits("Refreshing this review will discard the unsaved redline edits on the matter open in Review.")
+      ) {
+        return;
+      }
       const refreshButton = repositoryMatterPanel?.querySelector(".repository-refresh-review");
       const previousLabel = refreshButton?.textContent || "Refresh Review";
       if (refreshButton) {

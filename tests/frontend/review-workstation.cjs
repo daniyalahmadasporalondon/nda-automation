@@ -94,6 +94,7 @@ const tests = [
   ["shows a live Reviewing badge on the board while review_status is in_progress", testBoardReviewingBadge],
   ["flags stale matters on the board and refreshes from the inspector", testRepositoryStaleBadgeAndRefresh],
   ["polls the async background review to completion from the repository inspector", testRepositoryRefreshReviewAsyncPoll],
+  ["guards unsaved edits on another matter before refreshing from the repository inspector", testRepositoryRefreshGuardsUnsavedEditsOnOtherMatter],
   ["clears repository board after load errors", testRepositoryLoadErrorClearsBoard],
   ["uploads local NDAs through the dashboard upload modal", testManualUploadModal],
   ["sends repository redline email with composer details", testRepositoryOutboundSendComposer],
@@ -4236,6 +4237,120 @@ async function testRepositoryRefreshReviewAsyncPoll(page) {
   await page.waitForSelector(".repository-card .repository-stale-badge", { state: "detached" });
   assert.equal(refreshCount, 1);
   assert.ok(pollCount >= 2, "the background review poll must have run to completion");
+
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters**");
+}
+
+// DATA-LOSS guard for the Repository inspector "Refresh Review": because the
+// in-progress branch overwrites the SHARED global state.selectedMatter (so the
+// background-review poll tracks the refreshed matter), refreshing matter B from the
+// inspector while a DIFFERENT matter A has unsaved redline edits open in the Review
+// tab must confirm first — and a CANCEL must abort WITHOUT firing the POST or
+// clobbering A's context/dirty flag. Mirrors testRefreshUnsavedEditsGuard for the
+// Review-tab path.
+async function testRepositoryRefreshGuardsUnsavedEditsOnOtherMatter(page) {
+  const matterB = {
+    id: "matter_repo_guard_b",
+    attachment_filename: "Repo Guard B NDA.docx",
+    board_column: "in_review",
+    document_title: "Repo Guard B NDA",
+    issue_count: 0,
+    message_snippet: "Guard test.",
+    received_at: "2026-06-01T09:00:00+00:00",
+    recipient_email: "legal@example.com",
+    sender: "Legal Team <legal@example.com>",
+    source_filename: "Repo Guard B NDA.docx",
+    source_type: "manual_upload",
+    subject: "Repo Guard B NDA",
+    triage_status: "approved",
+    updated_at: "2026-06-01T09:01:00+00:00",
+    ai_review_ran: true,
+    review_stale: true,
+    review_stale_reasons: ["playbook_changed"],
+  };
+  let refreshCount = 0;
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ gmail: { inbound: { ready: true }, outbound: { ready: true, email: "legal@example.com" } } }),
+    });
+  });
+  await page.route("**/api/matters**", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.pathname === "/api/matters" && route.request().method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matters: [matterB] }) });
+      return;
+    }
+    if (requestUrl.pathname.endsWith("/review-refresh")) {
+      // Counts the POST. The guard must prevent this from firing on a cancel.
+      refreshCount += 1;
+      await route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        body: JSON.stringify({
+          review_status: "in_progress",
+          matter: { ...matterB, review_status: "in_progress" },
+        }),
+      });
+      return;
+    }
+    if (/\/api\/matters\/[^/]+$/.test(requestUrl.pathname) && route.request().method() === "GET") {
+      // Bare GET /api/matters/<id>. Before any refresh this is the inspector OPEN
+      // read — it must carry the stale flags so the "Refresh Review" button renders.
+      // After an accepted refresh fired (refreshCount>0) this is a poll read — return
+      // a terminal completed matter so the poll resolves and the test does not hang.
+      const opened = refreshCount > 0
+        ? { ...matterB, review_status: "completed", review_stale: false, review_stale_reasons: [] }
+        : matterB;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter: opened }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter: matterB }) });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+
+  // Simulate matter A loaded in the Review tab with UNSAVED redline edits. This is
+  // the SHARED state.selectedMatter the inspector refresh would overwrite.
+  await page.evaluate(() => {
+    state.selectedMatter = { id: "matter_review_panel_A", source_filename: "Matter A.docx", status: "in_review" };
+    state.reviewClauses = [{ id: "confidential_information", name: "Confidential Information", decision: "review", status: "review", review_state: { state: "review" } }];
+    markRedlineDraftDirty();
+  });
+  assert.equal(await page.evaluate(() => state.redlineDraftDirty), true);
+  assert.equal(await page.evaluate(() => state.selectedMatter.id), "matter_review_panel_A");
+
+  // Open matter B's inspector in the Repository tab (renders the Refresh Review button).
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector(".repository-card");
+  await page.locator(".repository-card").click();
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+  await page.waitForSelector(".repository-refresh-review");
+
+  // CANCEL the confirm: the refresh must abort. state.selectedMatter must STILL be
+  // matter A, A's dirty flag preserved, and NO /review-refresh POST fired.
+  let cancelMessage = "";
+  const cancelHandler = (dialog) => { cancelMessage = dialog.message(); dialog.dismiss(); };
+  page.on("dialog", cancelHandler);
+  await page.getByRole("button", { name: "Refresh Review" }).click();
+  // Give the (aborted) handler a tick to run.
+  await page.waitForTimeout(200);
+  assert.match(cancelMessage, /unsaved/i, "the confirm should mention unsaved edits");
+  assert.equal(refreshCount, 0, "cancelling must abort before the /review-refresh POST");
+  assert.equal(await page.evaluate(() => state.selectedMatter.id), "matter_review_panel_A", "cancel must NOT overwrite the other matter's context");
+  assert.equal(await page.evaluate(() => state.redlineDraftDirty), true, "cancel must preserve the unsaved-draft flag");
+  page.off("dialog", cancelHandler);
+
+  // ACCEPT the confirm: the refresh proceeds (POST fires, selectedMatter adopts B).
+  const acceptHandler = (dialog) => dialog.accept();
+  page.on("dialog", acceptHandler);
+  await page.getByRole("button", { name: "Refresh Review" }).click();
+  await waitForText(page, ".repository-detail-message", "Review started. It will update on the board when it finishes.");
+  assert.equal(refreshCount, 1, "accepting the confirm should let the refresh run");
+  assert.equal(await page.evaluate(() => state.selectedMatter.id), "matter_repo_guard_b", "accepting adopts the refreshed matter for the poll");
+  page.off("dialog", acceptHandler);
 
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/matters**");
