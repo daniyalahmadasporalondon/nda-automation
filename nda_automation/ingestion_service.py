@@ -747,6 +747,36 @@ def _perform_inbound_ai_review_body(
             return
         extracted_text = str(matter.get("extracted_text") or "")
         if not extracted_text.strip():
+            # LOOP CLOSER: no readable text was extracted (scanned / image-only /
+            # encrypted PDF). Previously this returned SILENTLY -- the ONE early-return
+            # that recorded NOTHING: the matter was never stamped a terminal status
+            # (it sat at review_status="in_progress" forever, showing "in review") and
+            # the poison-pill counter never advanced, so the matter was never marked
+            # ai_first reviewed AND never counted as failed -- the recovery sweep kept
+            # finding an un-reviewed, un-failed matter to re-enqueue every cycle, the
+            # never-ending review storm that slipped past the 3-strike brake. Treat
+            # empty extracted text as a TERMINAL, RECORDED failure, exactly like the
+            # other failure early-returns: bump the poison-pill counter (so the cap
+            # engages) AND stamp review_status="failed" with a human-readable reason.
+            # This is non-retryable (the text will never appear), so the cap stops it.
+            telemetry.increment("inbound_ai_review_failed")
+            telemetry.increment("inbound_ai_review_empty_extracted_text")
+            _record_inbound_review_failure(
+                matter_id,
+                repository=repository,
+                owner_user_id=owner_user_id,
+                error=(
+                    "No readable text could be extracted from the document "
+                    "-- it may be a scanned or image-only PDF."
+                ),
+            )
+            LOGGER.warning(
+                "Inbound AI review skipped for matter %s owner=%s: no readable extracted "
+                "text (scanned/image-only/encrypted PDF). Recorded as a terminal failure "
+                "so the poison-pill cap stops the recovery sweep re-enqueuing it.",
+                matter_id,
+                str(owner_user_id or ""),
+            )
             return
         LOGGER.info(
             "Running inbound AI review for matter %s owner=%s",
