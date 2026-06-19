@@ -17,6 +17,25 @@ const AdminAccessView = (() => {
       .replaceAll("'", "&#039;");
   }
 
+  // Parse an ISO-8601 added_at string into a concise local date+time, e.g.
+  // "19 Jun 2026, 10:21". Older entries may carry a missing/blank/unparseable
+  // value; in that case return "" so the caller can omit the date entirely
+  // (no "Invalid Date" ever reaches the DOM). The generated string is composed
+  // from numeric/whitespace pieces only and is safe to interpolate as-is.
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function formatAddedAt(value) {
+    const raw = typeof value === "string" ? value.trim() : value;
+    if (!raw) return "";
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return "";
+    const day = date.getDate();
+    const month = MONTHS[date.getMonth()];
+    const year = date.getFullYear();
+    const hours = String(date.getHours()).padStart(2, "0");
+    const minutes = String(date.getMinutes()).padStart(2, "0");
+    return `${day} ${month} ${year}, ${hours}:${minutes}`;
+  }
+
   function createController({
     card,
     overall,
@@ -173,7 +192,12 @@ const AdminAccessView = (() => {
         .map((entry) => {
           const email = String(entry?.email || "");
           const addedBy = String(entry?.added_by || "");
-          const meta = addedBy ? `Added by ${esc(addedBy)}` : "Added in-app";
+          const addedAt = formatAddedAt(entry?.added_at);
+          let meta = addedBy ? `Added by ${esc(addedBy)}` : "Added in-app";
+          // addedAt is generated from numeric date pieces (safe); email/actor
+          // stay escaped above. Omit the separator+date for older entries with
+          // no parseable added_at (no "Invalid Date").
+          if (addedAt) meta += ` &middot; ${addedAt}`;
           return `
             <li class="admin-access-row">
               <span class="admin-access-email">${esc(email)}</span>
