@@ -205,3 +205,33 @@ services:
       # Set empty to fall back to OpenRouter's default balancing.
       - key: NDA_GENERATION_PROVIDER_SORT
         value: latency
+      # Incident levers (flippable from the Render dashboard during an incident).
+      # Each value below is declared at its CURRENT code default, so adding them
+      # here is behavior-neutral — they simply surface the knobs in the dashboard
+      # so they can be flipped without a code change/redeploy.
+      #
+      # Master Gmail-poller stop. Emergency kill switch checked BEFORE settings are
+      # read (server.py _gmail_sync_enabled). Any falsey value (false/0/no/off)
+      # hard-stops polling; default-enabled.
+      - key: NDA_GMAIL_SYNC_ENABLED
+        value: "true"
+      # Inbound auto-review worker-pool size = the concurrency bound (the anti-storm
+      # serialization guarantee). Code default 1 (ingestion_service.py
+      # inbound_review_concurrency).
+      - key: NDA_INBOUND_REVIEW_CONCURRENCY
+        value: "1"
+      # Per-matter AI-review failure cap before the recovery sweep gives up
+      # re-enqueuing it (poison-pill guard). Code default 3
+      # (ingestion_service.py inbound_review_max_failures).
+      - key: NDA_INBOUND_REVIEW_MAX_FAILURES
+        value: "3"
+      # Right-of-way backoff (seconds) before a generation-deferred review job is
+      # re-enqueued. Code default 0.25 (ingestion_service.py
+      # inbound_review_defer_backoff_seconds).
+      - key: NDA_INBOUND_REVIEW_DEFER_BACKOFF_SECONDS
+        value: "0.25"
+      # Gmail intake classifier model (twin of NDA_GMAIL_TRIAGE_MODEL above).
+      # DeepSeek V4 Flash is the tournament winner; code default
+      # "deepseek/deepseek-v4-flash" (gmail_intake_classifier.py).
+      - key: NDA_GMAIL_INTAKE_MODEL
+        value: deepseek/deepseek-v4-flash
