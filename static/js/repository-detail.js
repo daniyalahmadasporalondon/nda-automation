@@ -8,6 +8,15 @@ const RepositoryDetail = (() => {
     state,
   }) {
     if (!repositoryMatterPanel) return;
+    // A fresh user opening a matter whose fetch came back empty -- {}/{error}/no
+    // body -- would pass `matter` as undefined here. Dereferencing it (review_result
+    // below, then matter.id/source_filename/etc.) throws and aborts the render,
+    // leaving the inspector panel blank/stale rather than showing anything. Fail
+    // safe: keep the panel hidden and return, exactly as for a missing panel node.
+    if (!matter || typeof matter !== "object") {
+      repositoryMatterPanel.hidden = true;
+      return;
+    }
     const reviewResult = matter.review_result || {};
     // Only an AI review (ai_review_ran) may surface verdicts/checks/issues. A
     // deterministic-only matter shows a "Review not run -- Refresh with AI" Pending
