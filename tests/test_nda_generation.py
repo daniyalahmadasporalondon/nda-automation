@@ -637,14 +637,40 @@ class TestForumFromEntity:
         assert tech["jurisdiction"] != fin["jurisdiction"]
 
     def test_no_court_resolving_refuses_to_emit_a_venue(self, playbook, monkeypatch):
-        # Registry empty AND the Playbook option carries no court (court_name was
-        # removed) -> the gate must refuse generation rather than write the bare law
-        # name as the forum.
+        # Registry empty AND the Playbook option carries NO court at all (no
+        # court_name AND no authored forum_jurisdiction) -> the gate must refuse
+        # generation rather than write the bare law name as the forum.
+        #
+        # FEATURE 1 changed the fallback: an authored forum_jurisdiction is now a
+        # legitimate Playbook-sourced court (so a user-authored law renders its
+        # authored court). To still exercise the "no court anywhere" refusal, strip
+        # the option's forum_jurisdiction as well as emptying the registry. The
+        # publish lint guarantees a live option always carries a forum, so this is a
+        # purely defensive-gate test.
+        import copy
+
+        no_forum = copy.deepcopy(playbook)
+        for option in next(
+            c for c in no_forum["clauses"] if c["id"] == "governing_law"
+        )["rules"]["approved_options"]:
+            option.pop("forum_jurisdiction", None)
         self._empty_registry(monkeypatch)
         with pytest.raises(gen.NdaGenerationError):
             gen.entity_party_from_bundle(
-                _bundle(option_id="india"), playbook, governing_law_option_id="difc"
+                _bundle(option_id="india"), no_forum, governing_law_option_id="difc"
             )
+
+    def test_authored_forum_resolves_when_registry_is_empty(self, playbook, monkeypatch):
+        # FEATURE 1: with the registry empty, an option's authored forum_jurisdiction
+        # is the court written into the NDA (rather than a refusal), so a Playbook-
+        # authored law works even before any signing entity defaults to it.
+        self._empty_registry(monkeypatch)
+        entity = gen.entity_party_from_bundle(
+            _bundle(option_id="india"), playbook, governing_law_option_id="difc"
+        )
+        # DIFC's authored forum_jurisdiction in the live Playbook.
+        assert entity.forum == "Dubai International Financial Centre"
+        assert entity.governing_law_value == "DIFC"
 
     def test_difc_entity_renders_its_court_into_the_generated_document(self, playbook):
         # End-to-end: a DIFC signing entity's governing-law clause names BOTH the
@@ -1506,3 +1532,42 @@ class TestForumIsAlwaysACourt:
         )
         assert entity.forum == difc_entity["jurisdiction"] == "the DIFC Courts"
         assert entity.forum != gen._approved_governing_law_options(playbook)["difc"]
+
+    def test_authored_playbook_forum_resolves_when_no_registry_entity_defaults(
+        self, playbook
+    ):
+        # FEATURE 1: a governing law a user AUTHORS in the Playbook editor has no
+        # signing entity defaulting to it yet, so the registry path resolves no
+        # court. _forum_for_option_id must fall back to the court/forum the user
+        # authored ON THE PLAYBOOK OPTION (forum_jurisdiction), so a generated NDA
+        # under that new law uses the AUTHORED court rather than hard-refusing.
+        import copy
+
+        authored = copy.deepcopy(playbook)
+        gov = next(c for c in authored["clauses"] if c["id"] == "governing_law")
+        gov["approved_laws"].append("Singapore")
+        gov["law_phrases"]["Singapore"] = "the laws of Singapore"
+        gov["rules"]["approved_options"].append(
+            {
+                "id": "singapore",
+                "label": "Singapore",
+                "value": "Singapore",
+                "default": False,
+                "forum_jurisdiction": "the courts of Singapore",
+            }
+        )
+
+        # No registry entity defaults to "singapore", so the resolved forum is the
+        # authored playbook forum_jurisdiction.
+        forum = gen._forum_for_option_id("singapore", authored)
+        assert forum == "the courts of Singapore"
+
+        # And it survives the court gate (distinct from the bare law name) and is
+        # written into a generated party.
+        entity = gen.entity_party_from_bundle(
+            _bundle(option_id="india"),
+            authored,
+            governing_law_option_id="singapore",
+        )
+        assert entity.forum == "the courts of Singapore"
+        assert entity.governing_law_value == "Singapore"

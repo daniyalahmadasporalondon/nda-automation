@@ -689,6 +689,89 @@ def test_option_id_collision_identical_duplicate_rows_not_flagged() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Check 7: governing_law_forum_present
+# ---------------------------------------------------------------------------
+
+
+def test_governing_law_forum_present_clean() -> None:
+    clause = _governing_clause_with_options(
+        [
+            {
+                "id": "india",
+                "label": "India",
+                "value": "India",
+                "forum_jurisdiction": "Mumbai, India",
+            },
+            {
+                "id": "england_and_wales",
+                "label": "England and Wales",
+                "value": "England and Wales",
+                "forum_jurisdiction": "England and Wales",
+                "default": True,
+            },
+        ]
+    )
+    assert _run_check("governing_law_forum_present", clause) == []
+
+
+def test_governing_law_forum_present_missing_forum_is_flagged() -> None:
+    clause = _governing_clause_with_options(
+        [
+            {
+                "id": "india",
+                "label": "India",
+                "value": "India",
+                "forum_jurisdiction": "Mumbai, India",
+            },
+            # Newly-authored law with NO court/forum -- cannot be published.
+            {"id": "singapore", "label": "Singapore", "value": "Singapore"},
+        ]
+    )
+    violations = _run_check("governing_law_forum_present", clause)
+    assert len(violations) == 1
+    v = violations[0]
+    assert v.check_id == "governing_law_forum_present"
+    assert v.clause_id == "governing_law"
+    assert "Singapore" in v.message
+    assert "forum_jurisdiction" in v.message
+
+
+def test_governing_law_forum_present_blank_forum_is_flagged() -> None:
+    clause = _governing_clause_with_options(
+        [
+            {
+                "id": "delaware",
+                "label": "Delaware",
+                "value": "Delaware",
+                "forum_jurisdiction": "   ",
+            },
+        ]
+    )
+    violations = _run_check("governing_law_forum_present", clause)
+    assert len(violations) == 1
+    assert "Delaware" in violations[0].message
+
+
+def test_governing_law_forum_present_only_applies_to_governing_law() -> None:
+    # A non-governing-law clause carrying forumless options is a no-op.
+    clause = _clean_required_clause()
+    clause["rules"]["approved_options"] = [
+        {"id": "opt", "label": "Opt", "value": "Opt"},
+    ]
+    assert _run_check("governing_law_forum_present", clause) == []
+
+
+def test_governing_law_forum_present_flows_through_lint_playbook() -> None:
+    clause = _governing_clause_with_options(
+        [{"id": "singapore", "label": "Singapore", "value": "Singapore"}]
+    )
+    playbook = {"version": "1.0", "name": "Test", "clauses": [clause]}
+    violations = lint_playbook(playbook)
+    forum = [v for v in violations if v.check_id == "governing_law_forum_present"]
+    assert len(forum) == 1
+
+
+# ---------------------------------------------------------------------------
 # Vocabulary drift pin: the local valid sets must match the canonical contract.
 # ---------------------------------------------------------------------------
 

@@ -32,6 +32,7 @@ __all__ = [
     "VALID_REDLINE_ACTIONS",
     "REDLINE_ACTIONS_NEEDING_TEMPLATE",
     "check_option_id_collision",
+    "check_governing_law_forum_present",
 ]
 
 # ---------------------------------------------------------------------------
@@ -667,6 +668,62 @@ def check_option_id_collision(clause: Mapping[str, Any]) -> list[LintViolation]:
 
 
 # ---------------------------------------------------------------------------
+# Check 7: governing_law_forum_present
+# ---------------------------------------------------------------------------
+
+_GOVERNING_LAW_CLAUSE_ID = "governing_law"
+
+
+def check_governing_law_forum_present(clause: Mapping[str, Any]) -> list[LintViolation]:
+    """Every governing-law approved option must name a non-empty court/forum.
+
+    The ``forum_jurisdiction`` string pairs each approved governing law with the
+    venue whose courts have authority. It is the single source the AI law<->forum
+    recognition check (``law_forum_check``) reads to flag a law/forum mismatch, and
+    the value generation falls back to when no signing-entity registers a court for
+    the option. An approved law with NO authored forum means: the review engine
+    cannot recognise/verify that law's forum, and a generated NDA under that law
+    has no court to write -- so publishing a governing law with an empty forum is a
+    self-contradiction the gate must reject (you can't publish a law with no court).
+
+    Only applies to the ``governing_law`` clause; every other clause is a no-op.
+    """
+
+    if _clause_id(clause) != _GOVERNING_LAW_CLAUSE_ID:
+        return []
+
+    rules = _rules(clause)
+    raw_options = rules.get("approved_options")
+    if not isinstance(raw_options, Sequence) or isinstance(raw_options, (str, bytes)):
+        # The approved_options shape itself is enforced by the rules validator /
+        # approved_options_present; nothing to forum-check here.
+        return []
+
+    violations: list[LintViolation] = []
+    for index, option in enumerate(raw_options):
+        if not isinstance(option, Mapping):
+            continue
+        label = (
+            _text(option.get("label"))
+            or _text(option.get("value"))
+            or _text(option.get("id"))
+            or f"<approved_options[{index}]>"
+        )
+        if not _text(option.get("forum_jurisdiction")):
+            violations.append(
+                LintViolation(
+                    _GOVERNING_LAW_CLAUSE_ID,
+                    "governing_law_forum_present",
+                    f"approved governing law '{label}' has no forum_jurisdiction "
+                    "(court/forum); a governing law cannot be published without a "
+                    "court -- the review forum check and generation have nothing to "
+                    "pair the law with",
+                )
+            )
+    return violations
+
+
+# ---------------------------------------------------------------------------
 # Registry + entry point
 # ---------------------------------------------------------------------------
 
@@ -677,6 +734,7 @@ CHECKS: dict[str, CheckFn] = {
     "approved_options_present": check_approved_options_present,
     "referential_integrity": check_referential_integrity,
     "option_id_collision": check_option_id_collision,
+    "governing_law_forum_present": check_governing_law_forum_present,
 }
 
 # Stable, ordered registry of the check ids the engine runs.

@@ -259,6 +259,70 @@ class ExtractionTests(unittest.TestCase):
         self.assertIsNone(lfc.detect_mismatch(text, "england_and_wales", {}))
 
 
+class AuthoredForumDerivationTests(unittest.TestCase):
+    """FEATURE 1: a governing law authored in the Playbook editor (with its own
+    forum_jurisdiction) becomes a recognized law+forum bucket once the buckets are
+    re-derived, so the mismatch detector flags a wrong venue for that NEW law and
+    stays silent on an aligned one. Proves the authored court propagates into the
+    deterministic law<->forum check (not just generation)."""
+
+    def setUp(self) -> None:
+        # An authored approved-option set including a brand-new "Singapore" law with
+        # an explicit forum_jurisdiction the user typed into the row's Court field.
+        self._authored_options = [
+            {
+                "id": "england_and_wales",
+                "label": "England and Wales",
+                "value": "England and Wales",
+                "forum_jurisdiction": "England and Wales",
+            },
+            {
+                "id": "singapore",
+                "label": "Singapore",
+                "value": "Singapore",
+                "forum_jurisdiction": "Singapore",
+            },
+        ]
+        self._orig = lfc._approved_options
+        lfc._approved_options = lambda: list(self._authored_options)  # type: ignore[assignment]
+        lfc.reset_buckets()
+
+    def tearDown(self) -> None:
+        lfc._approved_options = self._orig  # type: ignore[assignment]
+        lfc.reset_buckets()
+
+    def test_authored_law_is_a_recognized_law_bucket(self) -> None:
+        text = (
+            "Governing Law. This Agreement shall be governed by and construed in "
+            "accordance with the laws of Singapore.\n"
+        )
+        self.assertEqual(lfc.extract_law_jurisdictions(text), {"singapore"})
+
+    def test_authored_forum_is_recognized_and_mismatch_flags(self) -> None:
+        # Singapore law, but the venue is the courts of England and Wales -> a
+        # law<->forum mismatch the detector must flag, using the AUTHORED bucket.
+        text = (
+            "Governing Law. This Agreement shall be governed by the laws of "
+            "Singapore.\n"
+            "Jurisdiction. The parties submit to the exclusive jurisdiction of the "
+            "courts of England and Wales.\n"
+        )
+        finding = lfc.detect_mismatch(text, "singapore", {})
+        self.assertIsNotNone(finding)
+        assert finding is not None
+        self.assertEqual(finding["expected_forum"], "singapore")
+        self.assertEqual(finding["document_forum"], "england_and_wales")
+
+    def test_authored_law_aligned_forum_stays_silent(self) -> None:
+        text = (
+            "Governing Law. This Agreement shall be governed by the laws of "
+            "Singapore.\n"
+            "Jurisdiction. The parties submit to the exclusive jurisdiction of the "
+            "courts of Singapore.\n"
+        )
+        self.assertIsNone(lfc.detect_mismatch(text, "singapore", {}))
+
+
 class ConservativeGapTests(unittest.TestCase):
     """The two under-flag gaps the adversarial panel found, with the precision guard.
 

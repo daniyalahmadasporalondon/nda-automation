@@ -528,15 +528,26 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     if (clause.id === "governing_law") {
       const addButton = clauseDetail.querySelector("#addGoverningLaw");
       const input = clauseDetail.querySelector("#governingLawInput");
+      const forumInput = clauseDetail.querySelector("#governingLawForumInput");
       if (addButton && input) {
         addButton.addEventListener("click", () => {
           const value = input.value.trim();
           if (!value) return;
+          const forum = forumInput ? forumInput.value.trim() : "";
           clause.approved_laws = dedupeList([...(clause.approved_laws || []), value]);
           clause.law_phrases = { ...(clause.law_phrases || {}), [value]: value };
           if (!clause.preferred_law) clause.preferred_law = value;
+          // Seed the new option's authored court/forum so syncStructuredRules'
+          // merge writes it onto the freshly-built option object. The publish
+          // lint requires a non-empty forum_jurisdiction, so authoring the court
+          // here at add-time is the happy path.
+          clause._forumByOptionId = {
+            ...(clause._forumByOptionId || {}),
+            [optionIdForLaw(value)]: forum,
+          };
           syncStructuredRules(clause);
           input.value = "";
+          if (forumInput) forumInput.value = "";
           renderClauseDetail();
         });
         input.addEventListener("keydown", (event) => {
@@ -940,6 +951,15 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     `;
   }
 
+  function governingLawForumForLaw(clause, law) {
+    const options = clause.rules && Array.isArray(clause.rules.approved_options)
+      ? clause.rules.approved_options
+      : [];
+    const id = optionIdForLaw(law);
+    const match = options.find((option) => option && String(option.id || "") === id);
+    return match && typeof match.forum_jurisdiction === "string" ? match.forum_jurisdiction : "";
+  }
+
   function governingLawPolicyControls(clause) {
     const approved = clause.approved_laws || [];
     const preferredLaw = clause.preferred_law || approved[0] || "";
@@ -959,6 +979,10 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
             <span>Draft phrase</span>
             <input name="governing_law_phrase_${index}" data-governing-law-phrase="${index}" type="text" value="${escapeHtml(lawPhrases[law] || law)}">
           </label>
+          <label class="admin-field">
+            <span>Court / forum</span>
+            <input name="governing_law_forum_${index}" data-governing-law-forum="${index}" type="text" value="${escapeHtml(governingLawForumForLaw(clause, law))}" placeholder="e.g. courts of England and Wales">
+          </label>
           <button class="secondary admin-remove-button" type="button" data-remove-governing-law="${index}" ${approved.length <= 1 ? "disabled" : ""}>Remove</button>
         </article>
       `)
@@ -966,10 +990,11 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     return `
       <section class="admin-special">
         <h3>Approved Governing Laws</h3>
-        <p class="admin-muted">These jurisdictions drive the AI assessment options, deterministic approved-law check, and insertable Governing Law redline choices.</p>
+        <p class="admin-muted">These jurisdictions drive the AI assessment options, deterministic approved-law check, the law&lt;-&gt;forum recognition the review engine uses, and insertable Governing Law redline choices. The court / forum names the venue that must pair with each law and is required to publish.</p>
         <div class="admin-policy-options">${rows}</div>
         <div class="admin-inline-add">
           <input id="governingLawInput" type="text" placeholder="Add approved jurisdiction">
+          <input id="governingLawForumInput" type="text" placeholder="Court / forum (e.g. courts of Singapore)">
           <button class="secondary" id="addGoverningLaw" type="button">Add</button>
         </div>
       </section>
@@ -1060,7 +1085,15 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
   }
 
   function sanitizePlaybookTemplatesForSave() {
-    state.playbookClauses.forEach(removeUnsupportedTemplateFields);
+    state.playbookClauses.forEach((clause) => {
+      removeUnsupportedTemplateFields(clause);
+      // _forumByOptionId is a transient FE-only scratch field used to thread the
+      // authored court/forum into syncGoverningLawRules; it must never reach the
+      // backend (it is not a valid clause field and would fail the publish gate).
+      if (clause && Object.prototype.hasOwnProperty.call(clause, "_forumByOptionId")) {
+        delete clause._forumByOptionId;
+      }
+    });
   }
 
   function validateTemplateValue(value, config) {
@@ -1894,16 +1927,22 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     const rows = [...form.querySelectorAll("[data-governing-law-row]")];
     const approvedLaws = [];
     const lawPhrases = {};
+    // Authored court/forum per option, keyed by the option's derived id, so
+    // syncGoverningLawRules can write it onto the matching merged option object.
+    const forumByOptionId = {};
     rows.forEach((row) => {
       const law = String(row.querySelector("[data-governing-law-value]")?.value || "").trim();
       if (!law) return;
       if (approvedLaws.some((item) => item.toLowerCase() === law.toLowerCase())) return;
       const phrase = String(row.querySelector("[data-governing-law-phrase]")?.value || "").trim() || law;
+      const forum = String(row.querySelector("[data-governing-law-forum]")?.value || "").trim();
       approvedLaws.push(law);
       lawPhrases[law] = phrase;
+      forumByOptionId[optionIdForLaw(law)] = forum;
     });
     clause.approved_laws = approvedLaws;
     clause.law_phrases = lawPhrases;
+    clause._forumByOptionId = forumByOptionId;
     const preferredIndex = Number.parseInt(data.get("preferred_law_index"), 10);
     clause.preferred_law = approvedLaws[preferredIndex] || approvedLaws[0] || "";
   }
@@ -1932,12 +1971,40 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     });
     clause.law_phrases = lawPhrases;
     const rules = clause.rules || {};
-    rules.approved_options = approved.map((law) => ({
-      id: optionIdForLaw(law),
-      label: law,
-      value: law,
-      default: law === clause.preferred_law,
-    }));
+    // Rebuild the option list by MERGING the {id,label,value,default} the editor
+    // controls onto the EXISTING loaded option objects (matched by derived id),
+    // never replacing them outright. The backend authors per-option fields the
+    // FE has no control for -- forum_jurisdiction (the law<->court pairing the AI
+    // forum check + generation read), aliases, entity_prefixes (the governing-law
+    // checker's recognition terms). Replacing the array would strip those before
+    // the POST, and the backend carry-over could not recover what never arrived.
+    const existingOptions = Array.isArray(rules.approved_options) ? rules.approved_options : [];
+    const existingById = {};
+    existingOptions.forEach((option) => {
+      if (!option || typeof option !== "object") return;
+      const id = String(option.id || optionIdForLaw(option.value || option.label || "")).trim();
+      if (id) existingById[id] = option;
+    });
+    const forumByOptionId = (clause._forumByOptionId && typeof clause._forumByOptionId === "object")
+      ? clause._forumByOptionId
+      : {};
+    rules.approved_options = approved.map((law) => {
+      const id = optionIdForLaw(law);
+      const prior = existingById[id];
+      const merged = (prior && typeof prior === "object") ? { ...prior } : {};
+      merged.id = id;
+      merged.label = law;
+      merged.value = law;
+      merged.default = law === clause.preferred_law;
+      // The authored court/forum: take the edited value when this sync ran from a
+      // forum edit, otherwise preserve whatever the merged option already carried.
+      if (Object.prototype.hasOwnProperty.call(forumByOptionId, id)) {
+        const forum = String(forumByOptionId[id] || "").trim();
+        if (forum) merged.forum_jurisdiction = forum;
+        else delete merged.forum_jurisdiction;
+      }
+      return merged;
+    });
     if (rules.redline_guidance && typeof rules.redline_guidance === "object") {
       const preferred = clause.preferred_law || approved[0] || "the preferred approved jurisdiction";
       rules.redline_guidance.drafting_note = `Use one of the approved jurisdiction options. Default to ${preferred} unless another approved option is selected.`;
