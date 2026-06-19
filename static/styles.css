@@ -10972,6 +10972,21 @@ body.modal-open {
   animation: toast-out 240ms ease forwards;
 }
 
+/* Review-failure toast: a red gradient so a failed AI review reads as an alert,
+   not another (purple) inbound-arrival notification. */
+.toast--error {
+  background: linear-gradient(135deg, #b42318 0%, #e0473a 100%);
+  box-shadow: 0 18px 45px -18px rgba(132, 18, 12, 0.6);
+}
+
+/* The failure reason can run longer than a filename, so let the error toast's
+   subtitle wrap instead of truncating the message to one ellipsised line. */
+.toast-subtitle--wrap {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
 @keyframes toast-in {
   from {
     opacity: 0;

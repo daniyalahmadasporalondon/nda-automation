@@ -74,11 +74,59 @@ const NotificationsView = (() => {
   function createController({ container, openMatter, openRepository, fetchMatters }) {
     let seeded = false;
     const seen = new Set();
+    // Matter ids whose review we've ALREADY toasted as failed, so a repeated poll
+    // that keeps reporting review_status="failed" fires the toast only once.
+    const failedReviewSeen = new Set();
 
     function inboundMatters(matters) {
       return (Array.isArray(matters) ? matters : []).filter(
         (matter) => matter && matter.source_type === "gmail_inbound" && matter.id,
       );
+    }
+
+    // True when the matter's async AI review has transitioned to a hard failure.
+    // The backend stamps review_status="failed" (with a human-readable review_error
+    // reason) -- e.g. a scanned-PDF that can't be parsed, an AI-reviewer outage, or
+    // the in_progress->failed TTL staleness override. Applies to ANY matter the
+    // owner can see, not just gmail_inbound ones (a generated/manual NDA can fail
+    // review too).
+    function isFailedReview(matter) {
+      return Boolean(
+        matter && matter.id && String(matter.review_status || "") === "failed",
+      );
+    }
+
+    // A best-available human label for the failed matter: the derived counterparty,
+    // else the sender, else a neutral fallback. Mirrors matterTitle's name logic so
+    // the failure toast names the matter the same way the arrival toast did.
+    function matterLabel(matter) {
+      if (isMeaningfulCounterparty(matter.counterparty)) return String(matter.counterparty).trim();
+      const sender = senderName(matter.sender);
+      if (sender) return sender;
+      return (
+        matter.subject ||
+        matter.attachment_filename ||
+        matter.source_filename ||
+        "your NDA"
+      );
+    }
+
+    // Detect newly-FAILED reviews and toast them. The first observe SEEDS the
+    // failed-set silently (alongside the inbound seed) so an inbox that ALREADY
+    // holds failed reviews never floods the screen on page load -- only a review
+    // that transitions to failed DURING the session toasts, exactly once.
+    function observeFailures(matters, seedOnly) {
+      const failed = (Array.isArray(matters) ? matters : []).filter(isFailedReview);
+      if (seedOnly) {
+        failed.forEach((matter) => failedReviewSeen.add(String(matter.id)));
+        return;
+      }
+      failed.forEach((matter) => {
+        const id = String(matter.id);
+        if (failedReviewSeen.has(id)) return;
+        failedReviewSeen.add(id);
+        showReviewFailedToast(matter);
+      });
     }
 
     // Detect newly-arrived inbound matters and toast them. The first call seeds the
@@ -87,9 +135,11 @@ const NotificationsView = (() => {
       const inbound = inboundMatters(matters);
       if (!seeded) {
         inbound.forEach((matter) => seen.add(String(matter.id)));
+        observeFailures(matters, /* seedOnly */ true);
         seeded = true;
         return;
       }
+      observeFailures(matters, /* seedOnly */ false);
       const fresh = inbound.filter((matter) => !seen.has(String(matter.id)));
       if (!fresh.length) return;
       fresh.forEach((matter) => seen.add(String(matter.id)));
@@ -164,6 +214,36 @@ const NotificationsView = (() => {
             <span class="toast-title">${esc(matterTitle(matter))}</span>
             <span class="toast-subtitle">${esc(matterSubtitle(matter))}</span>
             <span class="toast-meta">${esc(timeAgo(matter.created_at))} · Click to review →</span>
+          </span>
+        </button>
+      `;
+      mountToast(node, () => {
+        if (typeof openMatter === "function") openMatter(String(matter.id));
+      });
+    }
+
+    // A top-right ERROR toast for a matter whose AI review FAILED. Reuses the same
+    // toast machinery (mountToast / esc / stack cap / auto-dismiss) as the arrival
+    // toasts, styled red via the `toast--error` modifier. Names the matter and
+    // surfaces the backend's human-readable failure reason (review_error), and is
+    // clickable to open the matter so the user can retry the review.
+    function showReviewFailedToast(matter) {
+      const label = matterLabel(matter);
+      const reason = String(matter.review_error || "").trim();
+      const node = document.createElement("div");
+      node.className = "toast toast--error";
+      // role="alert" (vs the arrival toast's "status") so assistive tech announces
+      // the failure assertively rather than politely.
+      node.setAttribute("role", "alert");
+      node.dataset.toastReviewFailedId = String(matter.id);
+      node.innerHTML = `
+        <button class="toast-close" type="button" data-toast-close aria-label="Dismiss notification">&times;</button>
+        <button class="toast-open" type="button" data-toast-open>
+          <span class="toast-icon" aria-hidden="true">\u{26A0}\u{FE0F}</span>
+          <span class="toast-body">
+            <span class="toast-title">Review failed — ${esc(label)}</span>
+            <span class="toast-subtitle toast-subtitle--wrap">${esc(reason || "The AI review could not be completed.")}</span>
+            <span class="toast-meta">Click to open →</span>
           </span>
         </button>
       `;

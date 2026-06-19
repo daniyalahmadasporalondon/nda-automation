@@ -109,3 +109,6 @@ jobs:
 
       - name: Run frontend behavior tests
         run: npm run test:frontend
+
+      - name: Run review-failure notification test
+        run: npm run test:frontend:notifications
