@@ -114,6 +114,8 @@ class PublicMatter(TypedDict, total=False):
     last_outbound_to: str
     matter_timeline: list[dict[str, Any]]
     message_snippet: str
+    needs_human_review: bool
+    blocks_send: bool
     next_action: str
     recipient_email: str
     received_at: str
@@ -201,13 +203,24 @@ def public_matter(
     current_runtime_func: Callable[[], dict[str, Any]] | None = None,
 ) -> PublicMatter:
     recipient = matter_reply_recipient(matter)
+    # The two AUTHORITATIVE document-level verdicts, computed once here so the FE
+    # reads ONE answer instead of re-deriving (and drifting from) the Python roll-up:
+    #   needs_human_review -- does a human have to look? (matter_needs_human_review,
+    #     which consumes result_requires_human_review: review OR unresolved-fail/check).
+    #   blocks_send -- is the redline send gated right now? (needs review AND that
+    #     block has not been resolved by a human / approval).
+    # These are SURFACED, not recomputed: the computation lives in review_state.py /
+    # matter_needs_human_review and is unchanged.
+    needs_human_review = matter_needs_human_review(matter)
+    review_block_resolved = _matter_review_block_resolved(matter)
+    blocks_send = bool(needs_human_review and not review_block_resolved)
     send_block_reason = ""
     if recipient and _same_email_address(recipient, str(matter.get("gmail_account") or "")):
         send_block_reason = (
             "Matter appears to be an outbound or self-sent Gmail message; refusing to send a redline "
             f"back to {recipient}."
         )
-    elif matter_needs_human_review(matter) and not _matter_review_block_resolved(matter):
+    elif blocks_send:
         send_block_reason = "Matter needs human review before a redline can be sent."
     elif not recipient:
         send_block_reason = "Matter does not have a valid reply recipient email address."
@@ -218,6 +231,8 @@ def public_matter(
     }
     public.update({
         "recipient_email": recipient,
+        "needs_human_review": bool(needs_human_review),
+        "blocks_send": blocks_send,
         "can_send_redline": bool(recipient and not send_block_reason),
         "has_redline_draft": isinstance(matter.get("redline_draft"), dict),
         "human_reviewed": bool(matter.get("human_reviewed")),

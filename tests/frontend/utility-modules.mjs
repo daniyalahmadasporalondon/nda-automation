@@ -163,6 +163,86 @@ assert.equal(signalLess.tone, "pending");
 assert.equal(signalLess.needsReview, false);
 assert.equal(signalLess.fails, false);
 
+// An unknown/error clause status in the legacy fallback must FAIL-CLOSED to
+// review (mirroring review_state._normalize_clause_decision's unknown -> review),
+// never silently clear to pass.
+const errorClause = clauseStatus({ status: "error", passes: true });
+assert.equal(errorClause.needsReview, true);
+assert.equal(errorClause.tone, "review");
+assert.equal(errorClause.passes, false);
+const unknownStatus = clauseStatus({ status: "weird_new_status", passes: true });
+assert.equal(unknownStatus.needsReview, true);
+assert.equal(unknownStatus.passes, false);
+
+// ---------------------------------------------------------------------------
+// VERDICT PARITY GUARD: the FE is a pure renderer of the backend roll-up. Run
+// the SHARED scenario matrix (generated from the live Python authority in
+// tests/fixtures/verdict_parity_matrix.py) through the FE twins and assert they
+// AGREE with the recorded Python verdicts on needs-human, blocks-send, and
+// per-clause status. A FE re-derivation that drops an axis (the original
+// pure-FAIL bug) makes this RED. The Python half (tests/test_verdict_parity.py)
+// keeps the fixture honest against the live Python functions.
+// ---------------------------------------------------------------------------
+const verdictParityMatrix = JSON.parse(
+  fs.readFileSync(path.join(FIXTURE_DIR, "verdict_parity_matrix.json"), "utf8"),
+);
+const FE_TONE_TO_PY_STATE = { pass: "pass", review: "review", check: "check", pending: "pending" };
+for (const parityCase of verdictParityMatrix.cases) {
+  const { name, matter, expected } = parityCase;
+  // The FE receives the matter AFTER public_matter surfaces the authoritative
+  // booleans; replicate that projection so the twins read what they will in prod.
+  const projected = {
+    ...matter,
+    needs_human_review: expected.needs_human_review,
+    blocks_send: expected.blocks_send,
+  };
+  assert.equal(
+    needsHumanReview(projected),
+    expected.needs_human_review,
+    `parity[${name}]: needsHumanReview must match Python needs_human_review`,
+  );
+  assert.equal(
+    MatterUtils.sendIsBlockedByReview(projected),
+    expected.blocks_send,
+    `parity[${name}]: sendIsBlockedByReview must match Python blocks_send`,
+  );
+  // canSendRedline must never be true while the backend blocks the send.
+  if (expected.blocks_send) {
+    assert.equal(
+      MatterUtils.canSendRedline({ ...projected, can_send_redline: true, recipient_email: "x@y.com" }),
+      false,
+      `parity[${name}]: canSendRedline must be false when blocks_send`,
+    );
+  }
+  // Per-clause status parity: the FE clauseStatus.tone must match the Python
+  // clause_review_state.state for every clause in the scenario.
+  const clauses = matter?.review_result?.clauses || [];
+  for (const clause of clauses) {
+    const feTone = clauseStatus(clause).tone;
+    assert.equal(
+      FE_TONE_TO_PY_STATE[feTone],
+      expected.clause_states[String(clause.id)],
+      `parity[${name}]: clause ${clause.id} FE tone "${feTone}" must match Python state`,
+    );
+  }
+}
+
+// FAIL-CLOSED on a MISSING authoritative flag: a matter carrying a pure-FAIL
+// review_result but NO explicit needs_human_review/blocks_send (an older payload)
+// must still read needs-human + blocked, never sendable.
+const pureFailNoFlags = {
+  review_result: { clauses: [{ id: "governing_law", decision: "fail" }] },
+  recipient_email: "x@y.com",
+  can_send_redline: true,
+};
+assert.equal(needsHumanReview(pureFailNoFlags), true);
+assert.equal(MatterUtils.sendIsBlockedByReview(pureFailNoFlags), true);
+assert.equal(MatterUtils.canSendRedline(pureFailNoFlags), false);
+
+// A matter with NO verdict signal of any kind fails CLOSED to needs-review.
+assert.equal(needsHumanReview({ recipient_email: "x@y.com" }), true);
+assert.equal(needsHumanReview({}), true);
+
 for (const pair of inlineDiffVectors.flatMap((vector) => vector.spacing_pairs || [])) {
   assert.equal(needsInlineSpace(pair.previous_token, pair.token), pair.needs_space, `${pair.previous_token} + ${pair.token}`);
 }

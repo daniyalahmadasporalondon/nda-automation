@@ -28,9 +28,26 @@ export function clauseStatus(clause) {
     idle = canonicalState === "pending";
   } else {
     // No canonical verdict present -> fall back to the legacy raw-field
-    // derivation. needs_review still escalates; a clause with no result signal
-    // at all stays pre-review "Pending" (idle), matching prior behavior.
-    review = clause?.needs_review === true;
+    // derivation. FAIL-CLOSED, mirroring the Python normalizer's unknown -> review
+    // fail-safe (review_state._normalize_clause_decision: an unrecognized decision
+    // becomes REVIEW, never PASS). The old code let an unknown/error status fall
+    // through to PASS whenever `passes === true`; here an error or an unrecognized
+    // status escalates to review instead of silently clearing.
+    const KNOWN_STATUSES = new Set([
+      "pass", "match", "check", "fail", "not_present", "review",
+      "pending", "idle", "pre_review", "not_reviewed", "",
+    ]);
+    const isError = rawStatus === "error" || clause?.error === true || Boolean(clause?.error);
+    const isUnknownStatus = !KNOWN_STATUSES.has(rawStatus);
+    // A `decision` field that is PRESENT but not one of pass/review/fail mirrors
+    // review_state._normalize_clause_decision's "decision in clause but
+    // unrecognized -> REVIEW" branch (it never reaches here when recognized
+    // because _decisionState already mapped it into canonicalState).
+    const hasDecisionField = clause != null
+      && typeof clause === "object"
+      && Object.prototype.hasOwnProperty.call(clause, "decision");
+    const isUnknownDecision = hasDecisionField && !hasDecision;
+    review = clause?.needs_review === true || isError || isUnknownStatus || isUnknownDecision;
     fail = !review && !rawPasses && (rawStatus === "check" || rawStatus === "not_present" || rawStatus === "fail");
     passes = rawPasses && !review && !fail;
     const hasResultSignal = typeof clause?.passes === "boolean"
