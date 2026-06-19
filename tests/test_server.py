@@ -5399,6 +5399,192 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(non_text_status, 400)
         self.assertEqual(non_text_payload["error"], "Personalisation settings must be text values.")
 
+    # --- Per-user (non-admin) self-serve personalisation --------------------
+    # A NON-admin must be able to set THEIR OWN email sign-off/signature and have
+    # the outbound send use it, with strict per-owner isolation and a default
+    # fallback so it never hard-blocks.
+
+    def test_non_admin_can_set_and_read_own_personalisation(self):
+        # NDA_ADMIN_USERS empty => the Google caller is authenticated but NOT admin.
+        auth_env = self._google_oauth_auth_env(NDA_ADMIN_USERS="")
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                session_headers, _user = self.google_session_headers(
+                    subject="google-nonadmin-1", email="nonadmin@example.com"
+                )
+                with patch.dict(os.environ, auth_env):
+                    # Non-admin POST to the SELF route succeeds (200, not the admin 403).
+                    post_status, post_payload = self.request(
+                        "POST",
+                        "/api/personalisation-settings",
+                        {
+                            "sign_off": "  Kind regards,  ",
+                            "signature": "Nadia Non-Admin",
+                            "signature_block": "Kind regards,\nNadia Non-Admin",
+                        },
+                        headers=session_headers,
+                    )
+                    get_status, get_payload = self.request(
+                        "GET", "/api/personalisation-settings", headers=session_headers
+                    )
+
+        self.assertEqual(post_status, 200)
+        self.assertEqual(post_payload["personalisation"], {
+            "sign_off": "Kind regards,",
+            "signature": "Nadia Non-Admin",
+            "signature_block": "Kind regards,\nNadia Non-Admin",
+        })
+        self.assertEqual(get_status, 200)
+        self.assertEqual(get_payload["personalisation"], post_payload["personalisation"])
+        # The resolved block (what a send will actually use) reflects the override.
+        self.assertEqual(get_payload["resolved"], post_payload["personalisation"])
+
+    def test_send_uses_callers_own_personalisation_over_global_default(self):
+        auth_env = self._google_oauth_auth_env(NDA_ADMIN_USERS="")
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                # An admin/global default is in place...
+                app_settings.update_personalisation_settings({
+                    "signature_block": "Best,\nAspora Legal",
+                })
+                session_headers, user = self.google_session_headers(
+                    subject="google-nonadmin-2", email="nonadmin2@example.com"
+                )
+                with patch.dict(os.environ, auth_env):
+                    self.request(
+                        "POST",
+                        "/api/personalisation-settings",
+                        {"signature_block": "Cheers,\nNadia"},
+                        headers=session_headers,
+                    )
+                # The outbound-send body for THIS user uses their own override,
+                # NOT the global default.
+                body = gmail_matter_outbox.default_outbound_body(
+                    {"subject": "Partner NDA"}, owner_user_id=user["id"]
+                )
+                # A user who set NOTHING falls through to the global default
+                # (never blocked, never empty).
+                default_body = gmail_matter_outbox.default_outbound_body(
+                    {"subject": "Partner NDA"}, owner_user_id="google-nonadmin-no-settings"
+                )
+
+        self.assertEqual(
+            body,
+            "Hi,\n\nPlease find attached the redlined version of Partner NDA.\n\nCheers,\nNadia",
+        )
+        self.assertEqual(
+            default_body,
+            "Hi,\n\nPlease find attached the redlined version of Partner NDA.\n\nBest,\nAspora Legal",
+        )
+
+    def test_non_admin_with_no_personalisation_falls_back_to_builtin_default(self):
+        auth_env = self._google_oauth_auth_env(NDA_ADMIN_USERS="")
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                session_headers, user = self.google_session_headers(
+                    subject="google-nonadmin-3", email="nonadmin3@example.com"
+                )
+                with patch.dict(os.environ, auth_env):
+                    get_status, get_payload = self.request(
+                        "GET", "/api/personalisation-settings", headers=session_headers
+                    )
+                # No global default set + no per-user override => built-in default.
+                body = gmail_matter_outbox.default_outbound_body(
+                    {"subject": "Partner NDA"}, owner_user_id=user["id"]
+                )
+
+        self.assertEqual(get_status, 200)
+        # Own slice is empty/defaulted; resolved is the built-in default.
+        self.assertEqual(get_payload["resolved"], app_settings.DEFAULT_PERSONALISATION_SETTINGS)
+        self.assertEqual(
+            body,
+            "Hi,\n\nPlease find attached the redlined version of Partner NDA.\n\nBest,\nAspora Legal",
+        )
+
+    def test_user_cannot_read_or_write_another_users_personalisation(self):
+        auth_env = self._google_oauth_auth_env(NDA_ADMIN_USERS="")
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                headers_a, user_a = self.google_session_headers(
+                    subject="google-user-A", email="user-a@example.com"
+                )
+                headers_b, user_b = self.google_session_headers(
+                    subject="google-user-B", email="user-b@example.com"
+                )
+                with patch.dict(os.environ, auth_env):
+                    # User A writes their own personalisation.
+                    self.request(
+                        "POST",
+                        "/api/personalisation-settings",
+                        {"signature_block": "A's secret block"},
+                        headers=headers_a,
+                    )
+                    # User B writes their own.
+                    self.request(
+                        "POST",
+                        "/api/personalisation-settings",
+                        {"signature_block": "B's own block"},
+                        headers=headers_b,
+                    )
+                    # User B reading their slice NEVER sees A's value.
+                    _b_status, b_payload = self.request(
+                        "GET", "/api/personalisation-settings", headers=headers_b
+                    )
+                    _a_status, a_payload = self.request(
+                        "GET", "/api/personalisation-settings", headers=headers_a
+                    )
+                # Direct store reads confirm strict per-owner isolation.
+                a_stored = app_settings.user_personalisation_settings(user_a["id"])
+                b_stored = app_settings.user_personalisation_settings(user_b["id"])
+
+        self.assertEqual(b_payload["personalisation"]["signature_block"], "B's own block")
+        self.assertNotIn("A's secret block", b_payload["personalisation"]["signature_block"])
+        self.assertEqual(a_payload["personalisation"]["signature_block"], "A's secret block")
+        self.assertEqual(a_stored["signature_block"], "A's secret block")
+        self.assertEqual(b_stored["signature_block"], "B's own block")
+        # A writing did not leak into B's slice and vice versa.
+        self.assertNotEqual(a_stored["signature_block"], b_stored["signature_block"])
+
+    def test_self_personalisation_route_rejects_invalid_payloads(self):
+        auth_env = self._google_oauth_auth_env(NDA_ADMIN_USERS="")
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                session_headers, _user = self.google_session_headers(
+                    subject="google-nonadmin-4", email="nonadmin4@example.com"
+                )
+                with patch.dict(os.environ, auth_env):
+                    unsupported_status, unsupported_payload = self.request(
+                        "POST",
+                        "/api/personalisation-settings",
+                        {"display_name": "Nadia"},
+                        headers=session_headers,
+                    )
+                    missing_status, missing_payload = self.request(
+                        "POST", "/api/personalisation-settings", {}, headers=session_headers
+                    )
+                    non_text_status, _non_text_payload = self.request(
+                        "POST",
+                        "/api/personalisation-settings",
+                        {"signature": 123},
+                        headers=session_headers,
+                    )
+
+        self.assertEqual(unsupported_status, 400)
+        self.assertEqual(
+            unsupported_payload["error"], "Unsupported personalisation setting: display_name."
+        )
+        self.assertEqual(missing_status, 400)
+        self.assertEqual(
+            missing_payload["error"],
+            "Provide a sign_off, signature, or signature_block setting to update.",
+        )
+        self.assertEqual(non_text_status, 400)
+
     def test_ai_settings_endpoint_updates_runtime_review_engine(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)

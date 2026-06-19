@@ -170,6 +170,11 @@ MAX_AI_API_KEY_LENGTH = 2000
 MAX_PERSONALISATION_SIGN_OFF_LENGTH = 120
 MAX_PERSONALISATION_SIGNATURE_LENGTH = 200
 MAX_PERSONALISATION_SIGNATURE_BLOCK_LENGTH = 1000
+MAX_USER_PERSONALISATION_KEY_LENGTH = 254
+# Owner ids are OAuth subject identifiers like "google:1015..." or opaque session
+# ids -- a conservative token set keeps a user's slice from ever colliding with or
+# escaping into another user's slice in the shared settings file.
+_USER_PERSONALISATION_KEY_PATTERN = re.compile(r"[A-Za-z0-9_.:@+\-]+")
 GMAIL_SYNC_FREQUENCIES = {
     "always_on": 60,
     "10_minutes": 10 * 60,
@@ -204,6 +209,118 @@ def review_runtime_settings() -> dict[str, Any]:
 
 def personalisation_settings() -> dict[str, Any]:
     return _repository().read_section("personalisation", personalisation_settings_from_payload)
+
+
+def user_personalisation_settings(owner_user_id: str) -> dict[str, Any]:
+    """Read the CALLER'S OWN per-user personalisation overrides.
+
+    Strictly owner-scoped: the ``owner_user_id`` is sanitised into a storage key
+    (see :func:`_user_personalisation_key`) and only that user's slice of the
+    ``user_personalisation`` section is returned. A blank/invalid owner id yields
+    the defaults (never another user's data).
+    """
+    key = _user_personalisation_key(owner_user_id)
+    section = _repository().read_section("user_personalisation", _user_personalisation_section_from_payload)
+    payload = section.get(key) if key else None
+    if not isinstance(payload, dict):
+        payload = {}
+    return personalisation_settings_from_payload(payload)
+
+
+def update_user_personalisation_settings(owner_user_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+    """Persist the CALLER'S OWN per-user personalisation overrides.
+
+    Writes ONLY into ``user_personalisation[<owner_key>]`` so a user can never
+    touch another user's slice or the global ``personalisation`` default. A blank/
+    invalid owner id is rejected (returns current view without writing).
+    """
+    key = _user_personalisation_key(owner_user_id)
+    if not key:
+        return user_personalisation_settings(owner_user_id)
+    cleaned = {
+        setting: _clean_personalisation_setting(setting, value)
+        for setting, value in updates.items()
+        if _valid_personalisation_setting(setting, value)
+    }
+    if not cleaned:
+        return user_personalisation_settings(owner_user_id)
+
+    def _apply(section: dict[str, Any]) -> dict[str, Any]:
+        existing = section.get(key)
+        if not isinstance(existing, dict):
+            existing = {}
+        section = dict(section)
+        section[key] = {**existing, **cleaned}
+        return section
+
+    updated = _repository().update_section_with(
+        "user_personalisation",
+        _user_personalisation_section_from_payload,
+        _apply,
+    )
+    payload = updated.get(key)
+    if not isinstance(payload, dict):
+        payload = {}
+    return personalisation_settings_from_payload(payload)
+
+
+def resolved_personalisation_settings(owner_user_id: str = "") -> dict[str, Any]:
+    """Resolve the personalisation values to apply for ``owner_user_id``.
+
+    Resolution order, per field, NEVER hard-blocks:
+    1. the caller's own per-user override (if they set that field);
+    2. the admin/global ``personalisation`` deployment default;
+    3. the built-in :data:`DEFAULT_PERSONALISATION_SETTINGS`.
+
+    A field is only taken from the per-user layer when the user actually stored a
+    non-empty value for it, so partial per-user overrides fall through cleanly.
+    """
+    key = _user_personalisation_key(owner_user_id)
+    global_settings = personalisation_settings()
+    if not key:
+        return global_settings
+    section = _repository().read_section("user_personalisation", _user_personalisation_section_from_payload)
+    stored = section.get(key)
+    if not isinstance(stored, dict):
+        return global_settings
+    resolved = dict(global_settings)
+    for field in ("sign_off", "signature", "signature_block"):
+        value = stored.get(field)
+        if isinstance(value, str) and value.strip():
+            resolved[field] = personalisation_settings_from_payload(stored)[field]
+    return resolved
+
+
+def _user_personalisation_key(owner_user_id: str) -> str:
+    """Sanitise an owner id into a stable storage key, or "" when unusable.
+
+    Only a conservative character set is allowed so the value can never collide
+    with another user's key or escape its slice; anything else is rejected.
+    """
+    candidate = str(owner_user_id or "").strip()
+    if not candidate or len(candidate) > MAX_USER_PERSONALISATION_KEY_LENGTH:
+        return ""
+    if not _USER_PERSONALISATION_KEY_PATTERN.fullmatch(candidate):
+        return ""
+    return candidate
+
+
+def _user_personalisation_section_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalise the whole ``user_personalisation`` section on read/write.
+
+    Drops any key that is not a valid owner key and any value that is not an
+    object, then normalises each user's slice through the shared personalisation
+    normaliser so the stored shape is always trustworthy.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    normalised: dict[str, Any] = {}
+    for raw_key, raw_value in payload.items():
+        key = _user_personalisation_key(raw_key)
+        if not key or not isinstance(raw_value, dict):
+            continue
+        normalised[key] = personalisation_settings_from_payload(raw_value)
+    return normalised
 
 
 def admin_settings() -> dict[str, Any]:
