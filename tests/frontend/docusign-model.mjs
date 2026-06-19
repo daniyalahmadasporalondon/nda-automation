@@ -195,6 +195,18 @@ test("defaultSigners: counterparty (signer 1) prefilled from matter, Aspora (sig
   assert.deepEqual(signers[1], { role: "aspora", name: "Jane Aspora", email: "jane@aspora.com", order: 2 });
 });
 
+test("defaultSigners: prefers the persisted counterparty_email (real envelope signer) over a stale reply address on a re-send", () => {
+  // After a void/decline + re-route, counterparty_email holds the real DocuSign
+  // signer, which can diverge from the inbound reply recipient. The composer must
+  // prefill the verified signer, not the old reply-to. (Matches
+  // MatterUtils.counterpartyEmail's resolution order.)
+  const signers = defaultSigners(
+    { counterparty_email: "real@signer.com", recipient_email: "old@reply.com", reply_to: "old@reply.com" },
+    {},
+  );
+  assert.equal(signers[0].email, "real@signer.com");
+});
+
 test("defaultSigners: extracts a bare email from a 'Name <addr>' recipient", () => {
   const signers = defaultSigners({ sender: "Bob <bob@acme.com>" }, {});
   assert.equal(signers[0].email, "bob@acme.com");

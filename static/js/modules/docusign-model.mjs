@@ -130,8 +130,13 @@ function accountLabel(status = {}) {
 // defaults to "sequential" so signer 1 must complete before signer 2 is
 // notified — matching how a finalised NDA is countersigned.
 export function defaultSigners(matter = {}, options = {}) {
+  // Match MatterUtils.counterpartyEmail's order: prefer the backend-derived
+  // counterparty_email (the real DocuSign envelope signer, which can diverge
+  // from the inbound reply recipient after a void/decline + re-route) before
+  // falling back to the inbound reply/sender derivation. On a RE-SEND this keeps
+  // the composer prefilled with the verified signer, not a stale reply address.
   const counterpartyEmail = String(
-    matter?.recipient_email || matter?.reply_to || matter?.sender || "",
+    matter?.counterparty_email || matter?.recipient_email || matter?.reply_to || matter?.sender || "",
   ).trim();
   const counterpartyName = String(
     matter?.counterparty_name || matter?.counterparty || matter?.document_title || "Counterparty",
@@ -164,6 +169,10 @@ export function generatorSignatureMatter(generated) {
     id: matterId,
     counterparty: name,
     counterparty_name: name,
+    // Carry the signer address under both keys so this synthetic matter stays in
+    // sync with the public_matter contract defaultSigners now reads
+    // (counterparty_email first, recipient_email as the fallback).
+    counterparty_email: email,
     recipient_email: email,
     document_title: name,
   };
