@@ -6615,6 +6615,15 @@ button.active-clause-status:hover {
   margin: 9px 0 0;
 }
 
+/* A FAIL whose auto-redline was unavailable: the reviewer must redline by hand.
+   Warmer than .action-muted so "manual redline needed" reads as an action item,
+   not an absence of one. */
+.action-warning {
+  color: var(--warn-ink, #8a5300);
+  font-weight: 600;
+  margin: 9px 0 0;
+}
+
 .proposed-change-meta span,
 .recommended-option span {
   color: var(--ink-muted);

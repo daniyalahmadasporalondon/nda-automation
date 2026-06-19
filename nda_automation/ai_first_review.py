@@ -672,6 +672,11 @@ def _clause_result_from_assessment(
     if not isinstance(proposed_redline, Mapping):
         proposed_redline = {"action": AI_REDLINE_NO_CHANGE}
     blocks_send = bool(assessment.get("blocks_send"))
+    # METADATA flag (decoupled from the verdict): the clause is bad (FAIL/REVIEW) but
+    # no automatic redline wording could be produced, so a human must redline it by
+    # hand. Threaded onto the result so the FE/export can show a "manual redline
+    # needed" affordance. Never alters the decision/status.
+    manual_redline_needed = bool(assessment.get("manual_redline_needed"))
     # Display-only chain-of-thought already cleaned by the contract parser
     # ({step, finding} list, capped, fail-open). Thread it onto the result so the
     # audit-trace builder can surface the model's real reasoning instead of the
@@ -734,6 +739,7 @@ def _clause_result_from_assessment(
         "suggested_redline": _assessment_suggested_redline(assessment, proposed_redline, decision, what_to_fix),
         "recommended_option": _assessment_recommended_option(assessment, playbook_clause, decision),
         "blocks_send": blocks_send,
+        "manual_redline_needed": manual_redline_needed,
         "proposed_redline": deepcopy(proposed_redline),
         "proposed_edits": deepcopy(proposed_edits),
         "reasoning_steps": reasoning_steps,
@@ -786,6 +792,7 @@ def _clause_result_from_assessment(
         "suggested_redline": result.get("suggested_redline"),
         "recommended_option": result.get("recommended_option"),
         "blocks_send": blocks_send,
+        "manual_redline_needed": manual_redline_needed,
         "proposed_redline_action": str(proposed_redline.get("action") or ""),
         "proposed_edit_count": len(proposed_edits),
         "evidence_count": len(result["matched_paragraph_ids"]),
