@@ -119,18 +119,21 @@ function createOverviewController({ state, root, fillSection, renderFill }) {
 
   function hasAiReview() {
     const matter = state.selectedMatter;
-    // Gate verdict surfaces on whether an AI review ACTUALLY ran (ai_review_ran).
-    // A deterministic-only matter has has_ai_review=true but ai_review_ran=false,
-    // so the roster shows each clause's muted "Not Reviewed" status (and the
-    // footer disables Approve/Send) instead of leaking the deterministic verdict
-    // (the last "deterministic ghost"). Explicit backend flag wins; fall back to
-    // "are there any review clauses" only for matters/fixtures that predate
-    // ai_review_ran.
-    if (matter && typeof matter.ai_review_ran === "boolean") return matter.ai_review_ran;
+    // Gate verdict surfaces on whether a STORED review with clause verdicts EXISTS,
+    // NOT on the engine-marker boolean matter.ai_review_ran. A genuinely-reviewed
+    // matter can carry ai_review_ran===false (an older review, a stub engine, or a
+    // marker that never recorded executed_engine=="ai_first"); keying off that
+    // marker made the roster show every clause as muted "Not Reviewed" and the
+    // footer disable Approve/Send on a matter that HAS real stored verdicts — the
+    // "reviewed matter looks un-reviewed + actions locked" bug. Stored verdicts WIN.
+    // The ai_review_ran marker is only a tie-breaker for the empty case (no stored
+    // clauses but an explicit ai_review_ran===true, e.g. an all-pass review).
     const hasResults = typeof window !== "undefined" && typeof window.hasReviewResults === "function"
       ? window.hasReviewResults()
       : Array.isArray(state.reviewClauses) && state.reviewClauses.length > 0;
-    return Boolean(hasResults);
+    if (hasResults) return true;
+    if (matter && matter.ai_review_ran === true) return true;
+    return false;
   }
 
   // Normalize a clause's backend decision into the component verdict vocabulary

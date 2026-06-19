@@ -893,12 +893,23 @@ function loadMatterIntoReview(matter) {
   renderResult(reviewResult, matter.extracted_text || reviewResult.extracted_text || "");
   applyMatterRedlineDraft(matter.redline_draft);
   renderReviewRefreshNotice(matter.review_refresh);
+  // The freshness file-meta line follows the SAME (a)/(b)/(c) contract as the
+  // header indicator (renderReviewRefreshNotice): a stored review opened WITHOUT
+  // re-running AI is NOT "stale" just because review_may_be_stale is set on open —
+  // that broad flag only means "AI did not run on open". Only surface a freshness
+  // warning on a GENUINE drift signal: the narrow server gate (review_refresh.stale)
+  // or an in-session edit of an ALREADY-reviewed matter (review_may_be_stale on a
+  // matter that has stored verdicts). A genuinely unreviewed matter has no stored
+  // verdicts, so this stays quiet and the empty-state copy speaks instead.
+  const hasStoredReview = Boolean(
+    Array.isArray(reviewResult.clauses) && reviewResult.clauses.length,
+  );
   const refreshMessage = matter.review_refresh?.redline_draft_cleared
     ? matter.review_refresh.message || "Saved redline draft cleared after review refresh"
     : matter.review_refresh?.stale
       ? staleReviewMessage(matter.review_refresh)
-      : matter.review_may_be_stale
-        ? "Review may be stale. Use Refresh with AI to re-run the review."
+      : hasStoredReview && matter.review_may_be_stale
+        ? "This review may be out of date — the document changed since it last ran. Refresh with AI to re-check."
         : "";
   setFileMeta(
     refreshMessage

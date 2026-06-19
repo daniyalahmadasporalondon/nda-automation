@@ -95,6 +95,7 @@ const tests = [
   ["opens repository matters into review repeatedly", testRepositoryOpenReviewRepeatedly],
   ["wires stale review refresh controls", testStaleReviewRefreshWiring],
   ["shows a Retry button when the background review fails and re-posts on Retry", testAsyncReviewFailedShowsRetry],
+  ["shows a stored-reviewed matter's real verdict on open, never 'Not reviewed' with actions locked", testStoredReviewLooksReviewedOnOpen],
   ["shows a live Reviewing badge on the board while review_status is in_progress", testBoardReviewingBadge],
   ["flags stale matters on the board and refreshes from the inspector", testRepositoryStaleBadgeAndRefresh],
   ["polls the async background review to completion from the repository inspector", testRepositoryRefreshReviewAsyncPoll],
@@ -3872,14 +3873,17 @@ async function testStaleReviewRefreshWiring(page) {
   await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
   await page.getByRole("button", { name: "Open Review" }).click();
   await page.waitForSelector("#reviewView:not([hidden])");
-  // Opening the matter shows the stale indicator + the always-present "Review"
-  // button. No-jump header: the button label is ALWAYS "Review" (no
-  // "Review"/"Refresh Review" relabel); because this reviewed matter is stale it is
-  // ENABLED (there is something to re-run). Opening does NOT run the AI (no
-  // /review-refresh POST yet).
+  // Opening the matter shows the freshness indicator + the always-present "Review"
+  // button. This matter HAS a stored review (verdicts present) and opened with the
+  // broad review_may_be_stale flag set, so it is an already-reviewed-but-out-of-date
+  // matter: the indicator reads "Reviewed (may be out of date)" — a freshness HINT,
+  // NEVER "Not reviewed" (a stored review DID run). No-jump header: the button label
+  // is ALWAYS "Review" (no "Review"/"Refresh Review" relabel); because this reviewed
+  // matter is out of date it is ENABLED (there is something to re-run). Opening does
+  // NOT run the AI (no /review-refresh POST yet).
   await page.waitForSelector("#studioReviewStaleIndicator:not([hidden])");
   await page.waitForSelector("#studioRefreshReviewButton:not([hidden])");
-  await assertTextContains(page.locator("#studioReviewStaleIndicator"), "Review may be stale");
+  await assertTextContains(page.locator("#studioReviewStaleIndicator"), "Reviewed (may be out of date)");
   await assertTextContains(page.locator("#studioRefreshReviewButton"), "Review");
   assert.equal(await page.locator("#studioRefreshReviewButton").isEnabled(), true);
   assert.equal(refreshCount, 0);
@@ -4037,6 +4041,197 @@ async function testAsyncReviewFailedShowsRetry(page) {
   await page.locator(".review-retry-button").click();
   await page.waitForSelector("#studioRefreshReviewButton.is-refreshing", { state: "attached" });
   assert.equal(refreshCount, 2);
+
+  await page.unroute("**/api/gmail/status");
+  await page.unroute("**/api/matters**");
+}
+
+// REGRESSION: a matter that HAS a complete stored review (review_result with
+// clause verdicts) must surface its REAL outcome on open — NOT "Not reviewed"
+// with every terminal action locked. This is the "reviewed matter looks
+// un-reviewed + actions locked" bug. The trap: the open path never re-runs AI
+// so the backend returns review_may_be_stale, and the status derivation used to
+// key off the strict ai_review_ran engine-marker (a deterministic-only / missing
+// marker yields ai_review_ran:false) instead of "does a stored review with
+// verdicts exist". The result was "Not reviewed" + Approve/Export/Send/Reviewed
+// all disabled on a genuinely reviewed matter.
+//
+// This test pins THREE states from the spec:
+//   (b) stored review + document UNCHANGED  -> shows the verdict summary,
+//       Approve + Export enabled, stale badge NOT shown.
+//   (c) stored review + document text edited -> "Reviewed (may be out of date)".
+//   reset: an explicit refresh that completes CLEARS the stale flag.
+// A genuinely no-review matter is covered separately by the empty-state tests.
+async function testStoredReviewLooksReviewedOnOpen(page) {
+  const reviewText = [
+    "This Agreement shall be governed by the laws of India.",
+    "Confidential Information means all non-public business information.",
+  ].join("\n\n");
+  const reviewResult = {
+    checked_at: "2026-06-01T09:01:00+00:00",
+    // A complete stored review carrying real clause verdicts.
+    clauses: [
+      {
+        decision: "pass",
+        id: "governing_law",
+        issue_label: "Pass",
+        name: "Governing Law",
+        passes: true,
+        requirement: "Use an approved governing law.",
+        review_state: { state: "pass" },
+        status: "pass",
+        why: "Approved governing law found.",
+      },
+      {
+        decision: "review",
+        id: "confidential_information",
+        issue_label: "Needs review",
+        name: "Confidential Information",
+        needs_review: true,
+        requirement: "Confidential information must be scoped.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+        why: "Definition is broad; confirm scope.",
+      },
+    ],
+    // The review records the exact text it ran on (state-c change detection).
+    extracted_text: reviewText,
+    overall_status: "needs_review",
+    paragraphs: [
+      { id: "p1", index: 1, source_index: 1, text: "This Agreement shall be governed by the laws of India." },
+      { id: "p2", index: 2, source_index: 2, text: "Confidential Information means all non-public business information." },
+    ],
+    redline_edits: [],
+    requirements_failed: 0,
+    requirements_needs_review: 1,
+    requirements_passed: 1,
+  };
+  // The matter carries a stored review with verdicts. CRITICALLY the backend
+  // advertises ai_review_ran:false — this mirrors a stored review whose engine
+  // marker is absent (older review / stub engine / a marker that did not record
+  // executed_engine=="ai_first"), the exact shape that made the workstation
+  // declare a fully-reviewed matter "Not reviewed" and lock every terminal
+  // action. A reviewed matter with stored verdicts must read as reviewed.
+  const matter = {
+    id: "matter_stored_reviewed",
+    ai_review_ran: false,
+    attachment_filename: "Stored Reviewed NDA.docx",
+    board_column: "in_review",
+    can_send_redline: true,
+    document_title: "Stored Reviewed NDA",
+    extracted_text: reviewText,
+    human_reviewed: false,
+    issue_count: 1,
+    message_snippet: reviewText,
+    received_at: "2026-06-01T09:00:00+00:00",
+    recipient_email: "legal@example.com",
+    review_result: reviewResult,
+    sender: "Legal Team <legal@example.com>",
+    source_filename: "Stored Reviewed NDA.docx",
+    source_type: "manual_upload",
+    subject: "Stored Reviewed NDA",
+    triage_status: "approved",
+    updated_at: "2026-06-01T09:01:00+00:00",
+  };
+
+  await page.route("**/api/gmail/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        gmail: {
+          inbound: { ready: true, email: "inbound@example.com" },
+          outbound: { ready: true, email: "daniyal.ahmad@aspora.com" },
+        },
+      }),
+    });
+  });
+  await page.route("**/api/matters**", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    const method = route.request().method();
+    if (requestUrl.pathname === "/api/matters" && method === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matters: [matter] }) });
+      return;
+    }
+    if (requestUrl.pathname.endsWith("/stage")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter }) });
+      return;
+    }
+    if (requestUrl.pathname.endsWith("/review")) {
+      // The open path returns the STORED review. The backend's broad open-time
+      // indicator (review_may_be_stale) is true because opening never re-runs AI
+      // — but the narrow export/send gate (review_refresh.stale) is false: the
+      // playbook is current and the text is unchanged.
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          extracted_text: reviewText,
+          matter,
+          review_may_be_stale: true,
+          review_refresh: { stale: false, review_may_be_stale: true, stale_reasons: [] },
+          review_result: reviewResult,
+        }),
+      });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter }) });
+  });
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await page.waitForSelector(".repository-card");
+  await page.locator(".repository-card").click();
+  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+  await page.getByRole("button", { name: "Open Review" }).click();
+  await page.waitForSelector("#reviewView:not([hidden])");
+
+  // --- State (b): stored review, document unchanged ------------------------
+  // NON-VACUITY: the overall verdict must reflect the real stored outcome, not
+  // "Not reviewed". The summary header (#studioOverallTitle) reads the verdict.
+  await page.waitForFunction(() => {
+    const title = document.querySelector("#studioOverallTitle")?.textContent || "";
+    return title.trim() && title.trim() !== "Not reviewed" && title.trim() !== "Awaiting review";
+  });
+  const overallTitle = (await page.locator("#studioOverallTitle").innerText()).trim();
+  assert.notEqual(overallTitle, "Not reviewed", "a stored-reviewed matter must not show the 'Not reviewed' verdict");
+  // It surfaces the real needs-review outcome from the stored verdicts.
+  assert.equal(overallTitle, "Needs review", `expected the stored verdict 'Needs review', got '${overallTitle}'`);
+
+  // The stale indicator must NOT claim "Not reviewed" on a matter that HAS a
+  // stored review. (It is either hidden or, at most, a freshness hint.)
+  const staleIndicatorText = await page.evaluate(() => {
+    const el = document.querySelector("#studioReviewStaleIndicator");
+    if (!el || el.hidden) return "";
+    return el.textContent || "";
+  });
+  assert.notEqual(staleIndicatorText.trim(), "Not reviewed", "the stale indicator must not read 'Not reviewed' on a stored-reviewed matter");
+
+  // Terminal actions operate on the valid stored review. Approve lives on the
+  // Overview footer; it must be ENABLED (not locked behind a never-ran AI run).
+  await page.waitForSelector("#studioDetailPanel .ov-approve");
+  assert.equal(await page.locator("#studioDetailPanel .ov-approve").isDisabled(), false, "Approve must be enabled on a valid stored review");
+  // Export must be enabled — the review is valid and not (narrowly) stale.
+  assert.equal(await page.locator("#studioExportButton").isEnabled(), true, "Export must be enabled on a valid stored review");
+  // The header "Reviewed" sign-off (the gate that unblocks Send) must be
+  // interactive: there is a needs-review clause to acknowledge.
+  assert.equal(await page.locator("#studioReviewedButton").isHidden(), false, "the Reviewed sign-off must be offered on a needs-review stored matter");
+  assert.equal(await page.locator("#studioReviewedButton").isDisabled(), false, "the Reviewed sign-off must be clickable on a valid stored review");
+
+  // --- State (c): the reviewer edits the document text since the review ----
+  // A genuine edit marks the review out-of-date. The indicator surfaces a
+  // freshness warning (NOT "Not reviewed"), and the verdict still reads reviewed.
+  await page.evaluate(() => {
+    // Simulate a viewer text edit on a paragraph.
+    if (Array.isArray(state.reviewParagraphs) && state.reviewParagraphs.length) {
+      state.reviewParagraphs[0].text = "This Agreement shall be governed by the laws of Singapore.";
+    }
+    if (typeof markReviewMayBeStaleFromEdit === "function") markReviewMayBeStaleFromEdit();
+  });
+  await page.waitForSelector("#studioReviewStaleIndicator:not([hidden])");
+  const editedIndicator = (await page.locator("#studioReviewStaleIndicator").innerText()).trim();
+  assert.notEqual(editedIndicator, "Not reviewed", "after a doc edit the indicator must not read 'Not reviewed' (a review DID run)");
+  assert.ok(/out of date|stale/i.test(editedIndicator), `expected an out-of-date/stale freshness hint after an edit, got '${editedIndicator}'`);
 
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/matters**");
