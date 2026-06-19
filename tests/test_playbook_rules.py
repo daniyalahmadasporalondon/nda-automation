@@ -115,6 +115,32 @@ class PlaybookRulesTests(unittest.TestCase):
         self.assertEqual(non_circumvention["evidence_guidance"], active_non_circumvention["evidence_guidance"])
         self.assertEqual(non_circumvention["semantic_signals"], active_non_circumvention["semantic_signals"])
 
+    def test_ai_packet_carries_forum_jurisdiction_for_each_governing_law_option(self):
+        # The AI packet's governing_law options must carry forum_jurisdiction so the
+        # reviewer can verify the document's forum/venue pairs with the chosen law.
+        # The normalizer previously rebuilt the options and dropped this field; this
+        # locks in that every approved_option authored with a forum_jurisdiction in
+        # the playbook surfaces it unchanged in the AI packet.
+        playbook = load_playbook()
+        packet = playbook_rules_for_ai(playbook)
+        active_governing_law = next(
+            clause for clause in playbook["clauses"] if clause["id"] == "governing_law"
+        )
+        packet_governing_law = next(
+            clause for clause in packet["clauses"] if clause["clause_id"] == "governing_law"
+        )
+        active_forums = {
+            option["id"]: option.get("forum_jurisdiction")
+            for option in active_governing_law["rules"]["approved_options"]
+        }
+        # The fixture must actually exercise the field, otherwise the assertion is vacuous.
+        self.assertTrue(any(active_forums.values()), "playbook fixture carries no forum_jurisdiction")
+        for option in packet_governing_law["rules"]["approved_options"]:
+            expected = active_forums.get(option["id"])
+            if expected:
+                with self.subTest(option=option["id"]):
+                    self.assertEqual(option.get("forum_jurisdiction"), expected)
+
     def test_ai_rules_packet_carries_wave_one_judgment_guidance(self):
         packet = playbook_rules_for_ai(load_playbook())
         clauses = {clause["clause_id"]: clause for clause in packet["clauses"]}
