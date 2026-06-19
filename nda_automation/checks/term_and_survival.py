@@ -123,11 +123,12 @@ CONFIDENTIALITY_SURVIVAL_PREDICATE_PATTERN = (
 # STRUCTURAL backstop trigger: a negated-expiry / never-cease idiom over
 # confidentiality is open-ended survival that no closed vocabulary enumerates --
 # "shall not cease to be confidential at any time", "shall never cease to be
-# confidential", "shall not (ever) expire", "does not expire". Treated as an
-# indefinite hit (subject to the same carve-out / benign / governance filters as the
-# vocabulary). The "not ... at any time" / "never" / "no longer ... never" negation is
-# required so a POSITIVE bounded statement ("shall cease to be confidential after five
-# years", "expires after the term") is NOT swept in.
+# confidential", "shall not (ever) expire", "does not expire", and the LEADING-negation
+# variants "shall at no time ... cease to be confidential" / "under no circumstance ...
+# cease to be confidential". Treated as an indefinite hit (subject to the same carve-out
+# / benign / governance filters as the vocabulary). A negation ("not"/"never"/"at no
+# time"/"under no circumstance") is required so a POSITIVE bounded statement ("shall
+# cease to be confidential after five years", "expires after the term") is NOT swept in.
 STRUCTURAL_OPEN_ENDED_SURVIVAL_PATTERN = (
     r"\b(?:shall\s+|will\s+|does\s+|do\s+)?"
     r"(?:not\s+(?:ever\s+)?|never\s+)"
@@ -135,6 +136,12 @@ STRUCTURAL_OPEN_ENDED_SURVIVAL_PATTERN = (
     r"(?:\W+\w+){0,3}?(?:\bat\s+any\s+time\b)?"
     r"|\b(?:cease\s+to\s+be\s+(?:confidential|secret)|expire(?:s)?)\b"
     r"(?:\W+\w+){0,3}?\bat\s+no\s+time\b"
+    # LEADING negation: "at no time" / "under no circumstance(s)" before the cease/expire
+    # verb, possibly with intervening words ("at no time and under no circumstance shall
+    # ... cease to be confidential").
+    r"|\b(?:at\s+no\s+time|under\s+no\s+circumstances?)\b"
+    r"(?:\W+\w+){0,8}?\W+(?:cease\s+to\s+be\s+(?:confidential|secret)|expire(?:s)?|"
+    r"be\s+(?:released|disclosed))\b"
 )
 # Single source of truth: the playbook's term_and_survival
 # ``longer_survival_carve_out_terms``. This in-code copy is ONLY a defensive
@@ -206,6 +213,13 @@ DEFAULT_INDEFINITE_TERMS = (
     "ad infinitum",
     "in perpetuum",
     "until the end of days",
+    "for the lifetime of",
+    "no sunset",
+    "never released",
+    "without any temporal limit",
+    "without temporal limit",
+    "endure beyond the dissolution",
+    "beyond the dissolution of the parties",
 )
 GENERIC_NON_SURVIVAL_DURATION_TERMS = {
     "after termination",
@@ -676,6 +690,50 @@ _CONFIDENTIALITY_DURATION_HEAD_PATTERN = re.compile(
 )
 
 
+# Always-fire vocabulary words that nonetheless have a BENIGN ADVERBIAL reading on a
+# destructive/transactional action ("permanently DESTROY / DELETE the Confidential
+# Information", "permanently RESTRAINING any breach"). Like the polarity words these
+# must be routed through the governance gate so the boilerplate-destruction /
+# injunctive-relief idioms do not over-flag, while "(shall) permanently remain
+# confidential" / "permanently confidential" still flags. The polarity words are gated
+# separately (they also carry an attributive-noun reading); these are the adverbial
+# "forever"-class words whose only false trigger is an action verb.
+INDEFINITE_BENIGN_PRONE_WORDS = ("permanently", "forever", "everlasting", "for all time")
+# Vocabulary phrases that read as open-ended ONLY when they govern confidentiality: the
+# same words apply benignly to a NON-CI noun -- "the beta product was NEVER RELEASED to
+# the public", "NO SUNSET clause exists for the warranty provisions". They fire only
+# when an ordinary-CI survival signal sits in the marker's window (the same
+# ``_confidentiality_in_marker_window`` governance the adverbial polarity markers use),
+# so "the Confidential Information shall be maintained and never released" / "no sunset
+# shall apply to the confidentiality obligations" still flag.
+INDEFINITE_GOVERNANCE_REQUIRED_WORDS = ("never released", "no sunset")
+# Destructive / transactional action verbs: an open-ended marker timing one of THESE
+# governs the ACTION (return, destroy, delete, ...), not the confidentiality survival --
+# even when Confidential Information is the verb's object ("permanently destroy all
+# Confidential Information"). A genuine survival-state predicate (remain / be / kept
+# confidential, survive) is NOT in this list, so a real perpetual rider still fires.
+_INDEFINITE_ACTION_VERB_PATTERN = re.compile(
+    r"^(?:\W+(?:and|or|to|then|also|immediately|promptly|thereafter)\b){0,2}\W+"
+    r"(?:destroy(?:s|ed|ing)?|delet(?:e|es|ed|ing)|eras(?:e|es|ed|ing)|"
+    r"purg(?:e|es|ed|ing)|return(?:s|ed|ing)?|dispos(?:e|es|ed|ing)|"
+    r"remov(?:e|es|ed|ing)|destruct(?:s|ed|ing)?|shred(?:s|ded|ding)?|"
+    r"affix(?:es|ed|ing)?|mark(?:s|ed|ing)?|label(?:s|led|ling|ed|ing)?|"
+    r"restrain(?:s|ed|ing)?|enjoin(?:s|ed|ing)?|bar(?:s|red|ring)?|"
+    r"prohibit(?:s|ed|ing)?|prevent(?:s|ed|ing)?|ceas(?:e|es|ed|ing)\s+(?:to\s+)?use)\b"
+)
+
+
+def _marker_modifies_action_verb(fragment: str, relative_end: int) -> bool:
+    """Whether the marker immediately governs a destructive/transactional action verb.
+
+    "permanently destroy / delete / return / restrain ..." -- the marker times the
+    action, so it is benign even when Confidential Information is the verb's OBJECT. Only
+    the text immediately AFTER the marker is consulted (the adverb attaches forward to
+    its verb); a survival-state predicate is deliberately excluded from the verb list.
+    """
+    return bool(_INDEFINITE_ACTION_VERB_PATTERN.match(fragment[relative_end:]))
+
+
 def _indefinite_match_governs_ci_survival(
     normalized: str, match: "re.Match[str]", clause: Dict[str, object]
 ) -> bool:
@@ -686,21 +744,55 @@ def _indefinite_match_governs_ci_survival(
     ambiguous -- the same substring appears incidentally in a party name ("Perpetual
     Holdings"), a product line, a manner noun ("perpetual diligence"), an inventory, or
     agreement renewal -- so they fire ONLY when they locally time a confidentiality
-    survival (``_indefinite_polarity_governs_ci_survival``). The rest of the vocabulary
-    (forever, everlasting, never expire, no end date, for an indefinite duration, ...)
-    is unambiguous open-ended-survival wording with no benign reading, so it always
-    fires. Fail-safe: any unexpected input keeps the flag (treat as governing).
+    survival (``_indefinite_polarity_governs_ci_survival``).
+
+    The "forever"-class adverbs (permanently / forever / everlasting / for all time)
+    are unambiguous open-ended-survival wording EXCEPT that they also read as an adverb
+    on a destructive/transactional action ("permanently destroy / delete the
+    Confidential Information", "permanently restraining any breach") -- common
+    boilerplate that must not over-flag. They fire unless they modify such an action
+    verb, while "(shall) permanently remain confidential" / "permanently confidential"
+    still flags.
+
+    A third group (never released / no sunset) reads as open-ended only when it governs
+    confidentiality -- the same phrase applies benignly to a non-CI noun ("the product
+    was never released", "no sunset clause exists for the warranty") -- so it fires only
+    when an ordinary-CI survival signal sits in the marker's window.
+
+    Every other vocabulary entry (never expire, no end date, for an indefinite duration,
+    on an enduring basis, for the lifetime of, without temporal limit, endure beyond the
+    dissolution, ...) has no benign reading and always fires. Fail-safe: any unexpected
+    input keeps the flag (treat as governing).
     """
     try:
         token = normalized[match.start():match.end()].strip().lower()
-        if not any(word in token for word in INDEFINITE_POLARITY_WORDS):
+        is_polarity = any(word in token for word in INDEFINITE_POLARITY_WORDS)
+        is_benign_prone = any(word in token for word in INDEFINITE_BENIGN_PRONE_WORDS)
+        is_governance_required = any(
+            word in token for word in INDEFINITE_GOVERNANCE_REQUIRED_WORDS
+        )
+        if not (is_polarity or is_benign_prone or is_governance_required):
             return True
         fragment, relative_start, relative_end = _term_fragment_bounds(
             normalized, match.start(), match.end()
         )
-        return _indefinite_polarity_governs_ci_survival(
-            fragment, relative_start, relative_end, clause
-        )
+        if is_polarity:
+            return _indefinite_polarity_governs_ci_survival(
+                fragment, relative_start, relative_end, clause
+            )
+        # Both the governance-required phrases (never released / no sunset) and the
+        # benign-prone "forever"-class adverbs (permanently / forever / everlasting /
+        # for all time) fire only when an ordinary-CI survival signal sits in the
+        # marker's window AND the marker is not merely timing a destructive/labelling
+        # action. This demotes "permanently destroy / affix a confidentiality legend",
+        # "forever grateful", "the product was never released", "no sunset for the
+        # warranty", while "(shall) permanently remain confidential", "kept confidential
+        # forever", "the confidentiality obligations are everlasting", "maintained and
+        # never released", "no sunset shall apply to the confidentiality obligations"
+        # still flag (CI survival is in the window and no action verb is timed).
+        return _confidentiality_in_marker_window(
+            fragment, relative_start, relative_end, before_only=False
+        ) and not _marker_modifies_action_verb(fragment, relative_end)
     except Exception:
         return True
 

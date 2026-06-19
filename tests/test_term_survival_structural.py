@@ -214,6 +214,141 @@ class GovernanceMustPassTests(unittest.TestCase):
                 self.assertPasses(text)
 
 
+# ---------------------------------------------------------------------------
+# RE-GATE round: the "forever"-class adverbs (permanently / forever / everlasting /
+# for all time) and the governance-required phrases (never released / no sunset) must
+# be routed through the SAME governance gate as the polarity words, so common
+# boilerplate does NOT over-flag.
+# ---------------------------------------------------------------------------
+
+# "permanently <action verb>" boilerplate -- the marker times the ACTION (destroy /
+# delete / restrain), not the confidentiality survival, even when CI is the object.
+# Must NOT be flagged as perpetual.  (Standalone these are "no survival clause here";
+# the partner full-clause forms below prove they PASS cleanly alongside a real term.)
+PERMANENTLY_ACTION_BOILERPLATE = [
+    ("permanently_destroy",
+     "Upon termination the Receiving Party shall return or permanently destroy all "
+     "Confidential Information."),
+    ("permanently_restrain",
+     "The Disclosing Party shall be entitled to injunctive relief permanently "
+     "restraining any breach."),
+    ("permanently_delete",
+     "The Receiving Party shall permanently delete all electronic copies."),
+]
+
+# The same boilerplate paired with a real, capped term -> a clean PASS (not a flag).
+PERMANENTLY_ACTION_IN_FULL_CLAUSE = [
+    ("permanently_destroy_full",
+     "The confidentiality obligations survive for five (5) years. Upon termination the "
+     "Receiving Party shall return or permanently destroy all Confidential Information."),
+    ("permanently_restrain_full",
+     "The Confidential Information shall be kept confidential for five (5) years. The "
+     "Disclosing Party shall be entitled to injunctive relief permanently restraining "
+     "any breach."),
+    ("permanently_delete_full",
+     "The confidentiality obligations survive for five (5) years; the Receiving Party "
+     "shall permanently delete all electronic copies."),
+]
+
+# Governance-required phrases applied to a NON-CI noun -> benign, must NOT flag.
+GOVERNANCE_REQUIRED_NON_CI = [
+    ("never_released_product",
+     "The confidentiality obligations survive for five (5) years. The beta product was "
+     "never released to the public."),
+    ("no_sunset_warranty",
+     "The confidentiality obligations survive for five (5) years. No sunset clause "
+     "exists for the warranty provisions."),
+    ("lifetime_warranty",
+     "The product carries a lifetime warranty. The confidentiality obligations survive "
+     "for five (5) years."),
+]
+
+
+class PermanentlyActionBoilerplateMustNotFlagTests(unittest.TestCase):
+    """FP regression: an open-ended adverb timing a destructive/transactional action is
+    boilerplate, not a perpetual survival -- it must not be flagged as indefinite."""
+
+    def _not_indefinite_flagged(self, text: str) -> dict:
+        clause = _term_clause(text)
+        # Must NOT be flagged as indefinite/perpetual. (Standalone may be "not_present"
+        # -- there is no survival clause -- which is correct and not a perpetual flag.)
+        reason = str(clause.get("reason") or "").lower()
+        self.assertNotIn(
+            "indefinite", reason,
+            f"Boilerplate action wrongly flagged perpetual: {clause.get('reason')!r}",
+        )
+        self.assertNotIn("perpetual", reason)
+        return clause
+
+    def test_standalone_boilerplate_not_flagged_perpetual(self) -> None:
+        for name, text in PERMANENTLY_ACTION_BOILERPLATE:
+            with self.subTest(case=name):
+                self._not_indefinite_flagged(text)
+
+    def test_full_clause_boilerplate_passes(self) -> None:
+        for name, text in PERMANENTLY_ACTION_IN_FULL_CLAUSE:
+            with self.subTest(case=name):
+                clause = _term_clause(text)
+                self.assertTrue(
+                    clause.get("passes"),
+                    f"Capped clause with destruction boilerplate wrongly flagged: "
+                    f"{clause.get('status')!r} / {clause.get('reason')!r}",
+                )
+
+    def test_governance_required_non_ci_passes(self) -> None:
+        for name, text in GOVERNANCE_REQUIRED_NON_CI:
+            with self.subTest(case=name):
+                clause = _term_clause(text)
+                self.assertTrue(
+                    clause.get("passes"),
+                    f"Governance-required phrase on a non-CI noun wrongly flagged: "
+                    f"{clause.get('status')!r} / {clause.get('reason')!r}",
+                )
+
+
+# Realistic novel bypasses that previously PASSED and must now FLAG.
+NOVEL_BYPASS_MUST_FLAG = [
+    ("at_no_time_cease",
+     "The Confidential Information shall at no time and under no circumstance cease to "
+     "be confidential."),
+    ("endure_beyond_dissolution",
+     "The confidentiality obligations shall endure beyond the dissolution of the parties."),
+    ("for_the_lifetime_of",
+     "The Confidential Information shall remain confidential for the lifetime of the "
+     "disclosing party."),
+    ("no_sunset_ci",
+     "No sunset shall apply to the confidentiality obligations."),
+    ("maintained_never_released",
+     "The Confidential Information shall be maintained and never released."),
+    ("without_temporal_limit",
+     "The Confidential Information shall be protected without any temporal limit "
+     "whatsoever."),
+]
+
+
+class NovelBypassMustFlagTests(unittest.TestCase):
+    """Realistic novel perpetual phrasings that fell through the closed vocab / structural
+    backstop / scope selection must now FLAG (scoped in AND flagged indefinite)."""
+
+    def test_novel_bypasses_flag(self) -> None:
+        for name, text in NOVEL_BYPASS_MUST_FLAG:
+            with self.subTest(case=name):
+                clause = _term_clause(text)
+                self.assertFalse(
+                    clause.get("passes"),
+                    f"Novel perpetual bypass not flagged: {clause.get('reason')!r}",
+                )
+                self.assertNotEqual(
+                    str(clause.get("status") or ""), "not_present",
+                    f"Novel perpetual bypass not even scoped in (reported missing): "
+                    f"{clause.get('reason')!r}",
+                )
+                self.assertTrue(
+                    _is_indefinite_or_overcap_flag(clause),
+                    f"Expected an indefinite/perpetual flag, got: {clause.get('reason')!r}",
+                )
+
+
 class Gate3RequirementIdiomGuardTests(unittest.TestCase):
     """gate-3 Family 2 at the guard level: a determiner (a/an/any/the) between the
     requirement idiom and the carve-out term must still be recognized as a
