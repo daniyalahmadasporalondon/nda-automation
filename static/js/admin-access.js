@@ -165,6 +165,34 @@ const AdminAccessView = (() => {
       setMessage("Add an admin by email, or remove a persisted admin.");
     }
 
+    // Normalize one env-root entry to a friendly {display, id, isSelf} shape.
+    // The backend now sends enriched objects ({id, kind, email, display, name,
+    // is_self}); we ALSO accept a bare string (an older cached payload) so the
+    // panel never regresses to a blank row. For a bare google:<sub> id with no
+    // known name we derive the same "Google account ···<last 6>" friendly form
+    // the backend uses, so even the legacy path is human-readable.
+    function envRootDisplay(entry) {
+      if (entry && typeof entry === "object") {
+        const id = String(entry.id || "");
+        const display = String(entry.display || entry.email || "").trim() || friendlyId(id);
+        return { display, id, isSelf: Boolean(entry.is_self) };
+      }
+      const id = String(entry || "");
+      return { display: friendlyId(id), id, isSelf: false };
+    }
+
+    // A bare google:<sub> id -> "Google account ···<last 6>"; anything else is
+    // shown as-is. Used only when no email/display was supplied.
+    function friendlyId(id) {
+      const value = String(id || "");
+      if (value.startsWith("google:")) {
+        const sub = value.slice("google:".length);
+        const tail = sub.length >= 6 ? sub.slice(-6) : sub;
+        return tail ? `Google account ···${tail}` : "Google account";
+      }
+      return value;
+    }
+
     function renderEnvRoots(envRoots) {
       if (!envRootsList) return;
       if (!envRoots.length) {
@@ -172,13 +200,27 @@ const AdminAccessView = (() => {
         return;
       }
       envRootsList.innerHTML = envRoots
-        .map(
-          (id) => `
+        .map((entry) => {
+          const { display, id, isSelf } = envRootDisplay(entry);
+          // Primary = friendly name/email; the raw id is demoted to a small mono
+          // subtitle (and a tooltip) so a human can still see google:<sub> when
+          // they need to, but isn't confronted by it. Show the subtitle only when
+          // the raw id differs from the displayed label (no redundant echo for an
+          // email root whose display already IS the id).
+          const youTag = isSelf ? ` <span class="admin-access-you">(you)</span>` : "";
+          const subtitle =
+            id && id !== display
+              ? `<span class="admin-access-id" title="${esc(id)}">${esc(id)}</span>`
+              : "";
+          return `
             <li class="admin-access-row">
-              <span class="admin-access-email">${esc(id)}</span>
+              <span class="admin-access-identity">
+                <span class="admin-access-email" title="${esc(id)}">${esc(display)}${youTag}</span>
+                ${subtitle}
+              </span>
               <span class="admin-access-badge" title="Set in NDA_ADMIN_USERS; managed in the environment.">Bootstrap</span>
-            </li>`,
-        )
+            </li>`;
+        })
         .join("");
     }
 

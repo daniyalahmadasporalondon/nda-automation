@@ -11398,11 +11398,35 @@ body.modal-open {
   padding: 8px 12px;
 }
 
+.admin-access-identity {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
 .admin-access-email {
   flex: 1 1 auto;
   font-size: 13px;
   font-weight: 600;
   overflow-wrap: anywhere;
+}
+
+/* The raw google:<sub> / verbatim id, demoted under the friendly label as a
+   small monospace subtitle (full value also in a hover tooltip). */
+.admin-access-id {
+  color: var(--ink-muted);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.admin-access-you {
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .admin-access-meta {
