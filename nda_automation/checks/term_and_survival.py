@@ -763,48 +763,98 @@ INDEFINITE_POLARITY_TRIGGER_PATTERN = re.compile(
     r"\b(?:" + r"|".join(re.escape(word) for word in INDEFINITE_POLARITY_WORDS) + r")\b"
 )
 
+# Broadened ordinary-CONFIDENTIAL-INFORMATION DATA-NOUN detector. The narrow
+# ORDINARY_CI_SUBJECT_PATTERN only recognised "information" / "confidential
+# information" / "confidentiality obligations"; NB-W1b launders through synonyms
+# ("materials", "data", "items", "documents", "records") and defined disclosed-info
+# terms ("the disclosed items", "Discloser Data", "such materials", "proprietary
+# information"). This pattern is the DISCRIMINATOR: a legitimate trade-secret /
+# required-by-law carve-out names no ordinary-CI data noun as the perpetual subject,
+# so it does not match; an ordinary-CI perpetual rider always does.
+ORDINARY_CI_DATA_NOUN_PATTERN = re.compile(
+    r"\b(?:"
+    r"(?:all|the|any|such|this|these|those|its|their|"
+    r"disclosing\s+part(?:y|ies).?s?|discloser.?s?|receiving\s+part(?:y|ies).?s?)\s+"
+    r"(?:confidential\s+|proprietary\s+|disclosed\s+|secret\s+|protected\s+)?"
+    r"(?:information|materials?|data|items?|documents?|records?)"
+    r"|confidential\s+information"
+    r"|proprietary\s+information"
+    r"|confidential\s+materials?"
+    r"|confidential\s+data"
+    r"|confidentiality\s+(?:obligations?|undertakings?|provisions?|duties?)"
+    r"|obligations?\s+of\s+confidentiality"
+    r")\b"
+)
+
+# Exception connectors that START a carve-out sub-clause carrying its OWN cap. These
+# are the narrow subset (NOT the broad scoping set, which includes "for" / "as to"
+# that also appear inside "for as long as") used to peel off a leading CAPPED
+# ordinary-CI sub-clause so that "...survive five (5) years, except that trade
+# secrets survive in perpetuity" still clears.
+CAPPED_HEAD_EXCEPTION_CONNECTOR_PATTERN = re.compile(
+    r"\b(?:except(?:ing|\s+that|\s+for)?|other\s+than|save\s+(?:for|as|that)?|"
+    r"but\s+(?:for|not)|provided\s+that)\b"
+)
+
 
 def _ordinary_ci_governs_trigger_subclause(
     fragment: str, term_start: int, term_end: int
 ) -> bool:
     """True when ordinary CONFIDENTIAL INFORMATION is the governed subject of an
-    UNCONDITIONAL perpetual trigger in the trigger's OWN sub-clause.
+    UNCONDITIONAL perpetual trigger in the trigger's sentence.
 
     This closes the NB-W1b class of false-negative: a real abusive ordinary-CI
-    perpetual rider ("...all Confidential Information shall remain confidential in
-    perpetuity...") that wears a carve-out signal (a "with respect to trade secrets"
-    lead, or a trailing "as required by applicable law" / "for trade secrets"
-    scope) so that one of the carve-out clearance paths would otherwise launder it
-    to PASS. The carve-out term legitimately governs longer survival ONLY when the
-    thing held in perpetuity is the carve-out itself (a trade secret, or a
-    required-by-law retention) -- NOT ordinary CI.
+    perpetual rider that wears a carve-out signal so one of the carve-out clearance
+    paths would otherwise launder it to PASS. The carve-out term legitimately
+    governs longer survival ONLY when the thing held in perpetuity is the carve-out
+    itself (a trade secret, or a required-by-law retention) -- NOT ordinary CI.
 
-    Two precision guards keep the legitimate carve-outs clearing:
+    The check scans the WHOLE trigger sentence-fragment, BOTH before AND after the
+    trigger, because the laundering CI noun can sit on either side -- e.g. it sits
+    AFTER the trigger in the canonical NB-W1b "...continues indefinitely with respect
+    to all Confidential Information disclosed." (A before-only scan -- the first,
+    inert version of this guard, and the earlier removed demotion -- missed exactly
+    that.)
+
+    Three precision guards keep the legitimate carve-outs clearing:
 
     1. ONLY unconditional indefinite words (perpetual / perpetually / indefinitely /
        in perpetuity) are gated. The conditional "for as long as ... law requires"
        connector is left untouched, so a genuine required-by-law retention of
-       ordinary information still passes.
+       ordinary information still passes. A sentence may contain BOTH a conditional
+       connector AND a separate unconditional perpetuity ("...for as long as required
+       by applicable law, and in any event in perpetuity"); the unconditional one is
+       still gated -- the conditional connector does not exempt it.
 
-    2. Scope is the trigger's OWN sub-clause: text from the last exception/scoping
-       connector before the trigger ("except", "but", "with respect to", ...) up to
-       the trigger. Anchoring at that connector preserves the asymmetry where
-       ordinary CI is CAPPED in a PRIOR sub-clause and only the carve-out is
-       perpetual ("Confidential Information shall remain confidential for five (5)
-       years, except that trade secrets survive in perpetuity") -- the ordinary-CI
-       subject sits in front of the connector and is correctly excluded. The
-       legitimate inline trade-secret carve-out ("with respect to trade secrets,
-       confidentiality shall continue in perpetuity") has no ordinary-CI DATA noun
-       in the trigger sub-clause, so it is not rejected -- that absence is the
-       discriminator.
+    2. A leading CAPPED ordinary-CI sub-clause is peeled off: when an exception
+       connector ("except that", "other than", "save for", ...) precedes the trigger
+       and the head before it carries its own year-term cap, that capped head is
+       dropped from the scan. This preserves "...survive for five (5) years, except
+       that trade secrets survive in perpetuity" -- the ordinary CI there is capped,
+       only the trade-secret carve-out is perpetual.
+
+    3. The data-noun detector (ORDINARY_CI_DATA_NOUN_PATTERN) matches ordinary-CI
+       DATA nouns (information / materials / data / items / documents / records and
+       defined disclosed-info terms) -- NOT a bare "confidentiality shall continue"
+       verb phrase. The legitimate inline trade-secret carve-out ("with respect to
+       trade secrets, confidentiality shall continue in perpetuity") carries no such
+       data noun, so it is not rejected -- that absence is the discriminator.
     """
     trigger_text = fragment[term_start:term_end]
     if not INDEFINITE_POLARITY_TRIGGER_PATTERN.search(trigger_text):
         return False
-    before_trigger = fragment[:term_start]
-    connectors = list(re.finditer(CARVE_OUT_EXCEPTION_CONNECTOR_PATTERN, before_trigger))
-    trigger_subclause = before_trigger[connectors[-1].end():] if connectors else before_trigger
-    return _ordinary_ci_subject_present(trigger_subclause)
+    scan_text = fragment
+    for exception in CAPPED_HEAD_EXCEPTION_CONNECTOR_PATTERN.finditer(fragment):
+        # Only an exception connector that lies BEFORE the trigger can wall off a
+        # leading capped ordinary-CI sub-clause; and only when that leading head
+        # actually carries its own year-term cap (otherwise it is not a capped
+        # carve-out and must not be peeled).
+        if exception.end() <= term_start and re.search(
+            YEAR_TERM_PATTERN, fragment[: exception.start()]
+        ):
+            scan_text = fragment[exception.end():]
+            break
+    return bool(ORDINARY_CI_DATA_NOUN_PATTERN.search(scan_text))
 
 
 # Connectors that introduce a carve-out sub-clause; an ordinary capped term sitting

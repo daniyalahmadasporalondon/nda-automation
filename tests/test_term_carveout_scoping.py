@@ -242,5 +242,114 @@ class InlineCarveOutLaunderingNBW1bTests(unittest.TestCase):
         self.assertTrue(clause["passes"])
 
 
+class NBW1bDecoyCapLaunderingProbesTests(unittest.TestCase):
+    """The seven canonical NB-W1b laundering probes, each with a 5-year DECOY cap so
+    a year-term is present and the perpetual rider is the only defect.
+
+    These cover the two failure modes the first (inert) fix missed:
+      (a) POST-TRIGGER CI noun -- the ordinary-CI subject sits AFTER the perpetual
+          trigger ("...continues indefinitely with respect to all Confidential
+          Information disclosed");
+      (b) SYNONYM CI nouns -- "materials", "data", "items", defined disclosed-info
+          terms ("Discloser Data", "disclosed items", "such materials").
+    Plus the conditional+unconditional co-occurrence (probe 7): a conditional
+    "for as long as ... required by applicable law" connector must NOT exempt a
+    separate unconditional "in perpetuity" in the same sentence.
+    """
+
+    def test_probe1_posttrigger_all_ci_disclosed_fails(self):
+        clause = _term_clause(
+            "The confidentiality obligations survive for five (5) years following "
+            "termination. With respect to trade secrets, the duty continues "
+            "indefinitely with respect to all Confidential Information disclosed."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertIn("indefinite or perpetual", clause["finding"])
+
+    def test_probe2_such_materials_perpetuity_fails(self):
+        clause = _term_clause(
+            "The confidentiality obligations survive for five (5) years following "
+            "termination. With respect to trade secrets, such materials shall be held "
+            "in perpetuity."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertIn("indefinite or perpetual", clause["finding"])
+
+    def test_probe3_the_data_perpetuity_fails(self):
+        clause = _term_clause(
+            "The confidentiality obligations survive for five (5) years following "
+            "termination. With respect to trade secrets, the data shall remain "
+            "confidential in perpetuity."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertIn("indefinite or perpetual", clause["finding"])
+
+    def test_probe4_the_disclosed_items_perpetuity_fails(self):
+        clause = _term_clause(
+            "The confidentiality obligations survive for five (5) years following "
+            "termination. With respect to trade secrets, the disclosed items shall "
+            "remain confidential in perpetuity."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertIn("indefinite or perpetual", clause["finding"])
+
+    def test_probe5_discloser_data_perpetuity_fails(self):
+        clause = _term_clause(
+            "The confidentiality obligations survive for five (5) years following "
+            "termination. With respect to trade secrets, the Discloser Data shall be "
+            "held in perpetuity."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertIn("indefinite or perpetual", clause["finding"])
+
+    def test_probe6_perpetual_then_applies_to_all_ci_fails(self):
+        clause = _term_clause(
+            "The confidentiality obligations survive for five (5) years following "
+            "termination. As to trade secrets, survival is perpetual, and this "
+            "applies to all Confidential Information."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertIn("indefinite or perpetual", clause["finding"])
+
+    def test_probe7_conditional_connector_does_not_exempt_unconditional_perpetuity(self):
+        # A conditional "for as long as ... required by applicable law" co-occurs with
+        # a SEPARATE unconditional "in perpetuity" on ordinary CI in the same
+        # sentence; the unconditional perpetuity must still be caught.
+        clause = _term_clause(
+            "The Confidential Information shall remain confidential for as long as "
+            "required by applicable law, and in any event in perpetuity."
+        )
+        self.assertEqual(clause["status"], "check")
+        self.assertFalse(clause["passes"])
+        self.assertIn("indefinite or perpetual", clause["finding"])
+
+    # ---- The legit cousins each probe must NOT also flag ----
+
+    def test_legit_inline_ts_with_decoy_cap_still_passes(self):
+        clause = _term_clause(
+            "The confidentiality obligations survive for five (5) years following "
+            "termination; with respect to trade secrets, confidentiality shall "
+            "continue in perpetuity."
+        )
+        self.assertEqual(clause["status"], "match")
+        self.assertTrue(clause["passes"])
+
+    def test_legit_pure_required_by_law_retention_no_perpetuity_passes(self):
+        # PURE required-by-law retention with NO unconditional perpetuity anywhere.
+        clause = _term_clause(
+            "The confidentiality obligations survive for five (5) years, except that "
+            "the Confidential Information shall be retained for as long as required by "
+            "applicable law."
+        )
+        self.assertEqual(clause["status"], "match")
+        self.assertTrue(clause["passes"])
+
+
 if __name__ == "__main__":
     unittest.main()
