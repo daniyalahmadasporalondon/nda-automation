@@ -312,6 +312,9 @@ class RepositoryMatterLifecycle:
             "confirmed_recipient": confirmed_recipient,
             "subject": subject,
             "to": to,
+            # The signature resolves to the CALLER's own personalisation (the
+            # matter owner), independent of which token owner sends the mail.
+            "personalisation_owner_user_id": owner_user_id,
         }
         if token_owner_user_id:
             send_kwargs["owner_user_id"] = token_owner_user_id
@@ -367,7 +370,13 @@ class RepositoryMatterLifecycle:
         from . import gmail_integration
 
         transient_matter = {"subject": subject, "reply_to": recipient}
-        send_kwargs = {"body": body, "subject": subject, "to": recipient}
+        send_kwargs = {
+            "body": body,
+            "subject": subject,
+            "to": recipient,
+            # Signature resolves to the CALLER's own personalisation.
+            "personalisation_owner_user_id": owner_user_id,
+        }
         if token_owner_user_id:
             send_kwargs["owner_user_id"] = token_owner_user_id
         sent = gmail_integration.send_redline_email(

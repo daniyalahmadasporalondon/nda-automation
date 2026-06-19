@@ -170,6 +170,11 @@ MAX_AI_API_KEY_LENGTH = 2000
 MAX_PERSONALISATION_SIGN_OFF_LENGTH = 120
 MAX_PERSONALISATION_SIGNATURE_LENGTH = 200
 MAX_PERSONALISATION_SIGNATURE_BLOCK_LENGTH = 1000
+# Per-user personalisation store bounds. The owner id key is bounded so a hostile
+# id cannot bloat the key space, and the number of distinct per-user entries is
+# capped so the keyed section cannot grow the settings file without bound.
+MAX_USER_PERSONALISATION_KEY_LENGTH = 254
+MAX_USER_PERSONALISATION_ENTRIES = 2000
 GMAIL_SYNC_FREQUENCIES = {
     "always_on": 60,
     "10_minutes": 10 * 60,
@@ -249,6 +254,120 @@ def update_personalisation_settings(updates: dict[str, Any]) -> dict[str, Any]:
         return personalisation_settings()
 
     return _repository().update_section("personalisation", personalisation_settings_from_payload, cleaned)
+
+
+def user_personalisation_settings(owner_user_id: str) -> dict[str, Any]:
+    """The CALLER's own personalisation overrides, or ``{}`` when none are set.
+
+    Strictly scoped to ``owner_user_id``: only that user's stored block is read
+    out of the keyed ``user_personalisation`` section, so one user can never read
+    another's. An empty/blank owner id (an unauthenticated/owner-less caller)
+    always resolves to ``{}`` and is never used as a storage key.
+
+    Returns the raw per-user overrides (only the keys the user actually set), NOT
+    the defaulted shape -- callers compose this over the admin/global default and
+    then the built-in default. ``resolve_personalisation_settings`` does exactly
+    that composition for the send flows.
+    """
+    key = _user_personalisation_key(owner_user_id)
+    if not key:
+        return {}
+    section = _repository().read_section(
+        "user_personalisation", _user_personalisation_section_from_payload
+    )
+    stored = section.get(key)
+    return dict(stored) if isinstance(stored, dict) else {}
+
+
+def update_user_personalisation_settings(
+    owner_user_id: str, updates: dict[str, Any]
+) -> dict[str, Any]:
+    """Persist the CALLER's own personalisation overrides, scoped to their id.
+
+    Cleans the same three text fields as the global setter and writes them under
+    the caller's ``owner_user_id`` key ONLY -- other users' blocks in the section
+    are left untouched (read-modify-write of just this user's entry). A blank
+    owner id is refused (an owner-less caller has no private store to write to).
+    Returns the caller's own stored overrides after the write.
+    """
+    key = _user_personalisation_key(owner_user_id)
+    if not key:
+        raise AppSettingsError("A signed-in user is required to save personalisation.")
+    cleaned = {
+        setting_key: _clean_personalisation_setting(setting_key, value)
+        for setting_key, value in updates.items()
+        if _valid_personalisation_setting(setting_key, value)
+    }
+    if not cleaned:
+        return user_personalisation_settings(owner_user_id)
+
+    def _apply(section: dict[str, Any]) -> dict[str, Any]:
+        existing = section.get(key)
+        merged = dict(existing) if isinstance(existing, dict) else {}
+        merged.update(cleaned)
+        return {**section, key: merged}
+
+    section = _repository().update_section_with(
+        "user_personalisation",
+        _user_personalisation_section_from_payload,
+        _apply,
+    )
+    stored = section.get(key)
+    return dict(stored) if isinstance(stored, dict) else {}
+
+
+def resolve_personalisation_settings(owner_user_id: str = "") -> dict[str, Any]:
+    """The effective personalisation for ``owner_user_id``, fully defaulted.
+
+    Resolution order, per field: the caller's OWN saved value (per-user store) ->
+    the admin/global personalisation setting -> the built-in default. This NEVER
+    hard-blocks: an owner-less caller, or a caller who saved nothing, simply falls
+    through to the admin/global setting (and ultimately the built-in default),
+    exactly as the send flow behaved before per-user personalisation existed.
+    """
+    base = personalisation_settings()
+    user_overrides = user_personalisation_settings(owner_user_id)
+    resolved = dict(base)
+    for field in ("sign_off", "signature", "signature_block"):
+        value = str(user_overrides.get(field) or "").strip()
+        if value:
+            resolved[field] = value
+    return resolved
+
+
+def _user_personalisation_key(owner_user_id: object) -> str:
+    """Normalise an owner id into a safe storage key, or "" to skip storage."""
+    return str(owner_user_id or "").strip()[:MAX_USER_PERSONALISATION_KEY_LENGTH]
+
+
+def _user_personalisation_section_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalise the keyed per-user personalisation section on read AND write.
+
+    The section is a flat ``{owner_user_id: {sign_off, signature, signature_block}}``
+    map. Each user's block is cleaned through the same per-field cleaners as the
+    global setting (only the three known text fields survive), blank entries are
+    dropped, and the whole map is capped so a hostile/runaway writer cannot grow
+    the settings file without bound.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    cleaned: dict[str, Any] = {}
+    for raw_key, raw_value in payload.items():
+        key = _user_personalisation_key(raw_key)
+        if not key or not isinstance(raw_value, dict):
+            continue
+        block = {
+            field: _clean_personalisation_setting(field, raw_value[field])
+            for field in ("sign_off", "signature", "signature_block")
+            if isinstance(raw_value.get(field), str)
+        }
+        block = {field: value for field, value in block.items() if value}
+        if not block:
+            continue
+        cleaned[key] = block
+        if len(cleaned) >= MAX_USER_PERSONALISATION_ENTRIES:
+            break
+    return cleaned
 
 
 def update_admin_settings(updates: dict[str, Any]) -> dict[str, Any]:

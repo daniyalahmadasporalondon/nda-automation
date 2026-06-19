@@ -24,6 +24,7 @@ def send_redline_email(
     to: str | None = None,
     confirmed_recipient: str | None = None,
     owner_user_id: str = "",
+    personalisation_owner_user_id: str | None = None,
 ) -> dict[str, str]:
     recipient, service, outbound_account = outbound_send_context(
         matter,
@@ -37,7 +38,16 @@ def send_redline_email(
     message["To"] = recipient
     message["Subject"] = outbound_subject
     message["Date"] = formatdate(localtime=True)
-    message.set_content(body or default_outbound_body(matter))
+    # The signature is the SENDER's own personalisation. ``owner_user_id`` here is
+    # the Gmail token owner (used for the OAuth service lookup); the caller passes
+    # ``personalisation_owner_user_id`` for the human sender's identity when it
+    # differs, falling back to the token owner so existing callers keep working.
+    signature_owner = (
+        personalisation_owner_user_id
+        if personalisation_owner_user_id is not None
+        else owner_user_id
+    )
+    message.set_content(body or default_outbound_body(matter, owner_user_id=signature_owner))
     message.add_attachment(
         attachment_bytes,
         maintype="application",
@@ -215,17 +225,21 @@ def reply_subject(subject: str) -> str:
     return cleaned if cleaned.lower().startswith("re:") else f"Re: {cleaned}"
 
 
-def default_outbound_body(matter: dict[str, Any]) -> str:
+def default_outbound_body(matter: dict[str, Any], *, owner_user_id: str = "") -> str:
     subject = str(matter.get("subject") or matter.get("document_title") or "the NDA")
     return (
         f"Hi,\n\n"
         f"Please find attached the redlined version of {subject}.\n\n"
-        f"{personalisation_signature_block()}"
+        f"{personalisation_signature_block(owner_user_id=owner_user_id)}"
     )
 
 
-def personalisation_signature_block() -> str:
-    settings = app_settings.personalisation_settings()
+def personalisation_signature_block(*, owner_user_id: str = "") -> str:
+    # Resolve the SENDER's signature: their own per-user personalisation first,
+    # then the admin/global setting, then a built-in default -- so a non-admin who
+    # set their own signature gets it, and one who set none still falls through to
+    # the deployment default and never blocks the send.
+    settings = app_settings.resolve_personalisation_settings(owner_user_id)
     signature_block = str(settings.get("signature_block") or "").strip()
     if signature_block:
         return signature_block
