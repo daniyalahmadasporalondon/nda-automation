@@ -281,10 +281,132 @@ function setStudioSendButtonLabel(label = "Send Redline", title = label) {
 
 function renderStudioResult(result) {
   const clauses = result.clauses || [];
+  renderReviewOverlayBanner();
   renderStudioSummary(clauses);
   renderStudioClauseLane();
   renderStudioDetail();
   renderStudioDocumentHighlights();
+}
+
+// --- Additive review-overlay surfacing ---------------------------------------
+// A review OVERLAY (the law/forum mismatch detector + the cross-clause coverage
+// detectors: notwithstanding-carveout, incorporation-by-reference, definition-
+// poison) can ELEVATE a clean AI "pass" to "review" and BLOCK send. The overlay
+// writes its reason(s) onto the matter's review_state in matter_view.public_matter
+// — NOT onto the AI review_result that drives the per-clause pills — so without
+// this surface the reviewer sees every clause green and no explanation for the
+// block. These helpers read the overlay channel off state.selectedMatter.review_state
+// and (1) render a matter-level banner listing every active flag and (2) attach
+// each clause-targeted reason to its clause as a review finding. ALL overlay sources
+// share the same overlay_review_reasons channel, so this is ONE code path — no
+// per-detector special-casing. SECURITY: overlay messages may carry document-derived
+// text, so every interpolated value is escapeHtml()'d.
+
+// Map an overlay reason_code -> the clause id it should attach to. An overlay that
+// is not clause-targeted (absent / unknown code) is covered by the banner alone.
+const OVERLAY_REASON_CODE_TO_CLAUSE_ID = {
+  law_forum_mismatch: "governing_law",
+};
+
+// The matter's overlay-carrying review_state. This comes from the board/detail
+// payload (public_matter), where apply_review_overlays ran — NOT from the AI
+// review_result. Falls back gracefully to null when no matter is loaded.
+function matterOverlayReviewState() {
+  const reviewState = state.selectedMatter?.review_state;
+  return reviewState && typeof reviewState === "object" ? reviewState : null;
+}
+
+// Collect EVERY active overlay finding from the single shared channel, normalised to
+// { code, message, clauseId }. Sources unified here:
+//   * overlay_review_reasons[] (+ scalar overlay_review_reason) — every detector
+//   * law_forum_mismatch_reason — the law/forum overlay's specific reason field
+// reason_codes[] is consulted only to TARGET a clause (code -> clause id); a message
+// with no matching code is still surfaced (banner +, if law/forum, the gov-law clause).
+function collectOverlayFindings() {
+  const reviewState = matterOverlayReviewState();
+  if (!reviewState) return [];
+  const codes = Array.isArray(reviewState.reason_codes) ? reviewState.reason_codes.map((code) => String(code || "")) : [];
+  const messages = [];
+  const seen = new Set();
+  const pushMessage = (raw, preferredClauseId) => {
+    const message = String(raw || "").trim();
+    if (!message || seen.has(message)) return;
+    seen.add(message);
+    // Target a clause: an explicit preferred id (law/forum), else the first reason
+    // code that maps to a clause. Untargeted reasons get clauseId === null and are
+    // covered by the banner alone.
+    let clauseId = preferredClauseId || null;
+    if (!clauseId) {
+      for (const code of codes) {
+        if (OVERLAY_REASON_CODE_TO_CLAUSE_ID[code]) {
+          clauseId = OVERLAY_REASON_CODE_TO_CLAUSE_ID[code];
+          break;
+        }
+      }
+    }
+    messages.push({ message, clauseId });
+  };
+  // 1) The shared additive channel (every overlay/detector writes here).
+  const reasons = Array.isArray(reviewState.overlay_review_reasons) ? reviewState.overlay_review_reasons : [];
+  reasons.forEach((reason) => pushMessage(reason));
+  if (typeof reviewState.overlay_review_reason === "string") pushMessage(reviewState.overlay_review_reason);
+  // 2) The law/forum overlay's specific reason field, always targeted at the
+  //    governing-law clause (deduped against the shared channel above).
+  if (reviewState.law_forum_mismatch && reviewState.law_forum_mismatch_reason) {
+    pushMessage(reviewState.law_forum_mismatch_reason, OVERLAY_REASON_CODE_TO_CLAUSE_ID.law_forum_mismatch);
+  }
+  return messages;
+}
+
+// All overlay findings that should attach to a specific clause id, in order.
+function overlayFindingsForClause(clauseId) {
+  if (!clauseId) return [];
+  return collectOverlayFindings().filter((finding) => finding.clauseId === clauseId);
+}
+
+// Render the matter-level banner. Lists every active overlay flag in plain English.
+// Hidden (and emptied) when no overlay has fired. Every value is escaped.
+function renderReviewOverlayBanner() {
+  const banner = document.getElementById("studioOverlayBanner");
+  if (!banner) return;
+  const findings = collectOverlayFindings();
+  if (!findings.length) {
+    banner.hidden = true;
+    banner.innerHTML = "";
+    return;
+  }
+  const count = findings.length;
+  const heading = count === 1
+    ? "1 additional review check flagged this matter"
+    : `${count} additional review checks flagged this matter`;
+  const items = findings
+    .map((finding) => `<li>${escapeHtml(finding.message)}</li>`)
+    .join("");
+  banner.innerHTML = `
+    <div class="studio-overlay-banner-head">
+      <strong>${escapeHtml(heading)}</strong>
+      <span>Needs review before send.</span>
+    </div>
+    <ul class="studio-overlay-banner-list">${items}</ul>
+  `;
+  banner.hidden = false;
+}
+
+// Render the per-clause overlay-finding block for the clause detail panel, so a
+// clause an overlay flagged no longer renders a bare green/pass with no reason.
+// Returns "" when no overlay targets this clause. Every value is escaped.
+function renderClauseOverlayFindingsBlock(clause) {
+  const findings = overlayFindingsForClause(clause?.id);
+  if (!findings.length) return "";
+  const items = findings
+    .map((finding) => `<p>${escapeHtml(finding.message)}</p>`)
+    .join("");
+  return `
+    <div class="studio-detail-block clause-overlay-finding" data-card-section="overlay-finding">
+      <small>Additional review check</small>
+      ${items}
+    </div>
+  `;
 }
 
 function renderStudioSummary(clauses) {
@@ -1546,6 +1668,11 @@ function renderStudioDetail() {
   }
   const status = clauseDisplayStatus(clause);
   const verdictHeader = renderClauseVerdictHeader(clause, status);
+  // Additive review-overlay finding(s) targeted at THIS clause (e.g. the law/forum
+  // mismatch attaches to governing_law). Rendered first in the stack so a clause an
+  // overlay flagged never shows its bare AI pass with no reason. Empty when no
+  // overlay targets this clause.
+  const overlayFinding = renderClauseOverlayFindingsBlock(clause);
   const assessment = renderClauseAssessmentSection(clause);
   const documentEvidence = renderClauseDocumentEvidenceBlock(clause);
   const playbookPosition = renderClausePlaybookPositionBlock(clause);
@@ -1609,6 +1736,7 @@ function renderStudioDetail() {
   studioDetailPanel.innerHTML = `
     ${verdictHeader}
     <div class="studio-detail-stack">
+      ${overlayFinding}
       ${concurrenceBanner}
       ${glRedlinePicker}
       ${assessment}

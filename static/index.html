@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260619aicost">
+    <link rel="stylesheet" href="/static/styles.css?v=20260619aicost-overlay1">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260618asyncrev1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260618nodl1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
@@ -486,6 +486,16 @@
             <h2 id="studioOverallTitle">Awaiting review</h2>
             <p id="studioResultMeta" aria-live="polite">No hard-clause review has run yet.</p>
           </section>
+
+          <!-- Overlay-findings banner: a matter-level notice listing every active
+               additive review-overlay flag (law/forum mismatch + the cross-clause
+               coverage detectors: notwithstanding-carveout, incorporation-by-
+               reference, definition-poison) in plain English. Populated by
+               renderReviewOverlayBanner() from the matter's review_state overlay
+               fields; stays hidden when no overlay has fired. This is the only
+               surface that explains WHY an overlay flipped the matter to Needs
+               Review and blocked send. -->
+          <section id="studioOverlayBanner" class="studio-overlay-banner" role="alert" aria-live="polite" hidden></section>
 
           <section class="studio-grid">
             <section class="studio-document">
@@ -2295,7 +2305,7 @@
     <script src="/static/js/playbook-view.js?v=20260614c"></script>
     <script src="/static/js/review-workstation-actions.js?v=20260618asyncrev1"></script>
     <script src="/static/js/review-workstation-source.js?v=20260615cp1"></script>
-    <script src="/static/js/review-workstation-rendering.js?v=20260618asyncrev1"></script>
+    <script src="/static/js/review-workstation-rendering.js?v=20260619overlay1"></script>
     <script src="/static/js/review-workstation-format.js?v=20260617a"></script>
     <script src="/static/js/review-workstation-viewer.js?v=20260616xr1"></script>
     <script src="/static/js/viewer-controls.js?v=20260617hyg1"></script>

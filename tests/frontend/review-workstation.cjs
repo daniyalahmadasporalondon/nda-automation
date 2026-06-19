@@ -74,6 +74,7 @@ const tests = [
   ["keeps the Schedule/Section/Exhibit namespace guard on prose structure references", testStructureReferenceNamespaceGuard],
   ["keeps the checked radio on the staged export option while the entity law is advisory-only", testRadioCheckedTracksStagedExportNotRecommendation],
   ["keeps the governing-law concurrence mismatch advisory and never force-fails the backend verdict", testGovlawConcurrenceIsAdvisoryNotAForceFail],
+  ["surfaces additive review-overlay reasons in a banner and on the targeted clause, escaped", testReviewOverlayFindingsAreVisibleAndEscaped],
   ["reads the overall verdict from the authoritative review_state, not clause counts", testOverallVerdictReadsReviewState],
   ["toggles per-clause reviewed state from the lane", testPerClauseReviewedToggle],
   ["updates the review status summary after human sign-off", testReviewedMatterStatusSummary],
@@ -7495,6 +7496,113 @@ async function testGovlawOptionsTrackPickedEntity(page) {
 // JS re-derivation from clause counts. Here every clause reads PASS per-clause, but a
 // document-level gate set the authoritative review_state.state to "check" — the overall
 // mark must honour that FAIL, not the all-pass count tally (the re-derivation ghost).
+async function testReviewOverlayFindingsAreVisibleAndEscaped(page) {
+  // An additive review OVERLAY (law/forum mismatch + the cross-clause coverage
+  // detectors) elevated this matter from a clean AI pass to "review" and blocked
+  // send. The AI review_result still PASSES every clause (bare green), so the only
+  // signal is on state.selectedMatter.review_state (the public_matter overlay channel).
+  // The reviewer must see (1) a matter-level banner listing the flags and (2) the
+  // law/forum reason attached to the governing-law clause as a finding — and an
+  // overlay message carrying HTML must be ESCAPED, never injected.
+  const injectionProbe =
+    'Governed by <img src=x onerror="window.__overlayXss=1"> English law, but disputes assigned to Cayman courts — mismatch';
+  await loadReviewWithMatter(page, {
+    matter: {
+      // The overlay-carrying review_state from public_matter (apply_review_overlays).
+      review_state: {
+        state: "review",
+        label: "REVIEW",
+        blocks_send: true,
+        requires_human_review: true,
+        // The single shared additive channel every overlay/detector writes to.
+        overlay_review_reasons: [
+          injectionProbe,
+          "Confidential Information is poisoned by a competing definition in the schedule",
+        ],
+        overlay_review_reason: injectionProbe,
+        // The law/forum overlay's specific reason field, targeted at governing_law.
+        law_forum_mismatch: true,
+        law_forum_mismatch_reason: injectionProbe,
+        reason_codes: ["law_forum_mismatch", "definition_poison"],
+      },
+    },
+    clauses: [
+      {
+        // The AI review PASSED governing_law (bare green) — the overlay is the only
+        // thing flagging it.
+        decision: "pass",
+        evidence_paragraphs: [{ id: "p2", index: 2, text: "This Agreement shall be governed by English law." }],
+        id: "governing_law",
+        issue_label: "Pass",
+        name: "Governing Law",
+        passes: true,
+        reason: "Approved governing law found.",
+        review_state: { state: "pass" },
+        status: "pass",
+      },
+      {
+        decision: "pass",
+        evidence_paragraphs: [{ id: "p1", index: 1, text: "Confidential Information means all business information." }],
+        id: "confidential_information",
+        issue_label: "Pass",
+        name: "Confidential Information",
+        passes: true,
+        reason: "Definition in line with the playbook.",
+        review_state: { state: "pass" },
+        status: "pass",
+      },
+    ],
+    paragraphs: [
+      { id: "p1", index: 1, source_index: 1, text: "Confidential Information means all business information." },
+      { id: "p2", index: 2, source_index: 2, text: "This Agreement shall be governed by English law." },
+    ],
+  });
+
+  // 1) The matter-level banner is VISIBLE and lists every active overlay reason.
+  const banner = page.locator("#studioOverlayBanner");
+  await page.waitForSelector("#studioOverlayBanner:not([hidden])");
+  await assertTextContains(banner, "Cayman courts");
+  await assertTextContains(banner, "competing definition in the schedule");
+  // Both distinct overlay reasons render as list items (the law/forum reason is
+  // deduped across its three source fields, so exactly two unique messages).
+  assert.equal(
+    await banner.locator(".studio-overlay-banner-list li").count(),
+    2,
+    "the banner lists each unique overlay reason once (deduped across overlay fields)",
+  );
+
+  // 2) The law/forum reason is attached to the governing-law clause as a finding,
+  //    so the clause no longer renders a bare pass with no reason.
+  const detailPanel = page.locator("#studioDetailPanel");
+  await page.locator('[data-studio-lane-id="governing_law"]').click();
+  await page.waitForSelector("#studioDetailPanel .clause-overlay-finding");
+  const clauseFinding = detailPanel.locator(".clause-overlay-finding");
+  await assertTextContains(clauseFinding, "Cayman courts");
+
+  // The clause-targeted finding attaches ONLY to governing_law. Selecting an
+  // untargeted clause shows no overlay-finding block (the banner alone covers it).
+  await page.locator('[data-studio-lane-id="confidential_information"]').click();
+  await page.waitForSelector('#studioDetailPanel [data-card-section="assessment"]');
+  assert.equal(
+    await detailPanel.locator(".clause-overlay-finding").count(),
+    0,
+    "an untargeted overlay reason does not attach a finding to an unrelated clause",
+  );
+
+  // 3) SECURITY: the HTML in the overlay message was ESCAPED, never injected. The
+  //    probe's onerror must never have fired, and no live <img> was created from it.
+  const xssFired = await page.evaluate(() => Boolean(window.__overlayXss));
+  assert.equal(xssFired, false, "overlay message HTML must be escaped, not executed");
+  const injectedImg = await page.evaluate(
+    () => document.querySelector('#studioOverlayBanner img[src="x"]') !== null,
+  );
+  assert.equal(injectedImg, false, "overlay HTML must not inject a live element into the banner");
+  // The escaped markup is present as text (the literal "<img" appears in innerHTML
+  // as an entity, not as a child element).
+  const bannerHtml = await banner.evaluate((node) => node.innerHTML);
+  assert.ok(bannerHtml.includes("&lt;img"), "the overlay HTML is rendered as escaped text");
+}
+
 async function testOverallVerdictReadsReviewState(page) {
   await loadReviewWithMatter(page, {
     clauses: [
