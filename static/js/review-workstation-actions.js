@@ -620,13 +620,36 @@ async function markMatterReviewed({ sourceButton = studioReviewedButton, clauseI
   }
 
   markRedlineDraftDirty();
-  setFileMeta(
-    allReviewed
-      ? "All review clauses marked reviewed. You can send the redline now."
-      : nextReviewed
-        ? "Marked clause reviewed."
-        : "Marked clause not reviewed.",
-  );
+  // Gate the "you can send the redline now" wording on the SAME authoritative
+  // send-gate the Send button uses, so the banner can never claim "send now"
+  // while the Send button is correctly disabled. `human_reviewed` (allReviewed)
+  // clears only the review block; a document can still be unsendable for a
+  // non-review reason — a hard-FAIL document gate, a missing/invalid recipient,
+  // a self-send block, an account mismatch, Gmail outbound disabled, or a stale
+  // review. gmailSendBlock() returns the single reason string the button
+  // surfaces (empty == sendable); pair it with the stale-review check the
+  // button also applies. state.selectedMatter is already updated above with the
+  // post-toggle human_reviewed, so this reads exactly what the button re-renders.
+  const sendBlockReason = state.selectedMatter
+    ? MatterUtils.gmailSendBlock(state.selectedMatter, state.gmailStatus)
+    : "Matter is unavailable.";
+  const sendAllowed = allReviewed && !reviewIsStale() && !sendBlockReason;
+  let reviewedMessage;
+  if (sendAllowed) {
+    reviewedMessage = "All review clauses marked reviewed. You can send the redline now.";
+  } else if (allReviewed) {
+    // All clauses reviewed but send is still blocked for another reason — give the
+    // accurate reason instead of the false "send now" so the banner agrees with
+    // the disabled Send button.
+    reviewedMessage = sendBlockReason
+      ? `All review clauses marked reviewed. Send is still blocked: ${sendBlockReason}`
+      : reviewIsStale()
+        ? "All review clauses marked reviewed. Refresh the review before sending a redline."
+        : "All review clauses marked reviewed.";
+  } else {
+    reviewedMessage = nextReviewed ? "Marked clause reviewed." : "Marked clause not reviewed.";
+  }
+  setFileMeta(reviewedMessage);
   renderStudioSummary(state.reviewClauses);
   renderStudioClauseLane();
   renderStudioDetail();

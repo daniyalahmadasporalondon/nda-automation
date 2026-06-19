@@ -20,6 +20,9 @@ const PYTHON = process.env.PYTHON || "python3";
 const VIEWPORT = { width: 1440, height: 1000 };
 const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "nda-automation-data-"));
 const AI_FIRST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "nda-automation-aifirst-"));
+// Optional directory for browser-proof screenshots a test may capture. Set
+// FRONTEND_TEST_SHOTS to an existing dir to collect them; tests no-op otherwise.
+const SHOTS_DIR = process.env.FRONTEND_TEST_SHOTS || "";
 
 const passNda = fs.readFileSync(path.join(ROOT, "samples", "pass-nda.txt"), "utf8").trim();
 const redlineNda = [
@@ -78,6 +81,7 @@ const tests = [
   ["reads the overall verdict from the authoritative review_state, not clause counts", testOverallVerdictReadsReviewState],
   ["toggles per-clause reviewed state from the lane", testPerClauseReviewedToggle],
   ["updates the review status summary after human sign-off", testReviewedMatterStatusSummary],
+  ["gates the send-now banner on the same send gate the Send button uses", testReviewedBannerRespectsSendGate],
   ["sends the currently loaded review matter after switching documents", testReviewSendUsesCurrentMatterAfterSwitch],
   ["sends review email with a typed recipient when none was detected", testReviewSendAcceptsManualRecipient],
   ["opens the Generator tab, generates an NDA, and downloads the saved document", testDraftIntakeGenerateNda],
@@ -2558,6 +2562,142 @@ async function testReviewedMatterStatusSummary(page) {
   assert.equal((await page.locator("#studioResultMeta").innerText()).includes("human review before send"), false);
   assert.notEqual(await page.locator("#studioSendButton").innerText(), "Needs Review");
   assert.equal(await reviewedButton.isHidden(), true);
+  await page.unroute("**/api/matters/matter_review_panel/reviewed");
+}
+
+// Regression: the "you can send the redline now" banner must agree with the Send
+// button. Marking every review clause reviewed flips the human-review gate, but a
+// document can still be UNSENDABLE for a non-review reason (here: no recipient).
+// The banner must only claim "send now" when send is actually allowed; otherwise
+// it falls back to an accurate message so the two parts of the screen never
+// contradict each other.
+async function testReviewedBannerRespectsSendGate(page) {
+  const oneReviewClause = (overrides = {}) => ({
+    clauses: [
+      {
+        decision: "review",
+        evidence_paragraphs: [{ id: "p1", index: 1, text: "Confidential Information means all business information." }],
+        id: "confidential_information",
+        issue_label: "Needs review",
+        name: "Confidential Information",
+        needs_review: true,
+        reason: "Broad confidential information definition needs human review.",
+        review_state: { blocks_send: true, requires_human_review: true, state: "review" },
+        status: "review",
+      },
+    ],
+    paragraphs: [{ id: "p1", index: 1, source_index: 1, text: "Confidential Information means all business information." }],
+    result: { overall_status: "needs_review", requirements_failed: 0, requirements_needs_review: 1, requirements_passed: 0 },
+    ...overrides,
+  });
+
+  // The single review clause's mark-reviewed toggle lives in the DETAIL panel once
+  // the lane card is opened; flipping it makes human_reviewed (allReviewed) true
+  // because it is the ONLY needs-review clause on the matter.
+  const laneCard = page.locator('[data-studio-lane-id="confidential_information"]');
+  const reviewToggle = page.locator('#studioDetailPanel [data-review-action="mark-reviewed"]');
+  const banner = page.locator("#studioFileMeta");
+  const sendButton = page.locator("#studioSendButton");
+
+  // ---- State 1: all review clauses reviewed but send STILL blocked (no recipient).
+  // The /reviewed POST clears the review block server-side (human_reviewed:true) but
+  // returns NO recipient_email, so the document remains unsendable. The banner must
+  // NOT say "send now"; the Send button must stay blocked. They AGREE.
+  await page.route("**/api/matters/matter_review_panel/reviewed", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ matter: { id: "matter_review_panel", can_send_redline: true, human_reviewed: true } }),
+    });
+  });
+  await loadReviewWithMatter(page, oneReviewClause({
+    // can_send_redline true but NO recipient_email -> canSendRedline() is false ->
+    // gmailSendBlock() returns the "no valid reply recipient" reason.
+    matter: { can_send_redline: true, human_reviewed: false },
+  }));
+  // Seed the gmail status the actions-module banner gate (gmailSendBlock) reads so
+  // the ONLY remaining block is the missing recipient, not gmail readiness.
+  await page.evaluate(() => {
+    state.gmailStatus = { outbound: { ready: true, email: "outbound@aspora.com" }, inbound: { ready: true, email: "outbound@aspora.com" } };
+  });
+
+  await laneCard.click();
+  await reviewToggle.waitFor({ state: "visible" });
+  await reviewToggle.click();
+  await page.waitForFunction(() => state.selectedMatter?.human_reviewed === true);
+
+  // Banner must NOT claim "send now" while blocked, and must surface the reason.
+  const blockedBanner = await banner.innerText();
+  assert.ok(
+    !/you can send the redline now/i.test(blockedBanner),
+    `blocked banner should NOT say "send now", got: "${blockedBanner}"`,
+  );
+  assert.ok(
+    /reviewed/i.test(blockedBanner),
+    `blocked banner should still confirm the clause was reviewed, got: "${blockedBanner}"`,
+  );
+  assert.ok(
+    /recipient|blocked/i.test(blockedBanner),
+    `blocked banner should state the send block reason, got: "${blockedBanner}"`,
+  );
+  // And the Send button must agree: it is NOT in a ready "Send Redline" state.
+  assert.notEqual(
+    await sendButton.innerText(),
+    "Send Redline",
+    "Send button must not read as ready while send is blocked",
+  );
+  assert.equal(
+    await sendButton.getAttribute("aria-disabled") === "true" || (await sendButton.getAttribute("class") || "").includes("blocked"),
+    true,
+    "Send button must be disabled/blocked while send is blocked",
+  );
+  if (SHOTS_DIR) {
+    await page.screenshot({ path: path.join(SHOTS_DIR, "banner-blocked-agrees.png"), fullPage: false });
+  }
+  await page.unroute("**/api/matters/matter_review_panel/reviewed");
+
+  // ---- State 2: send genuinely allowed. A valid recipient + ready, matching gmail.
+  // Marking the clause reviewed clears the only block; the banner SHOULD say
+  // "send now" and the Send button is enabled. They AGREE.
+  await page.route("**/api/matters/matter_review_panel/reviewed", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        matter: { id: "matter_review_panel", can_send_redline: true, human_reviewed: true, recipient_email: "counterparty@example.com" },
+      }),
+    });
+  });
+  await loadReviewWithMatter(page, oneReviewClause({
+    matter: { can_send_redline: true, human_reviewed: false, recipient_email: "counterparty@example.com", gmail_account: "outbound@aspora.com" },
+  }));
+  await page.evaluate(() => {
+    state.gmailStatus = { outbound: { ready: true, email: "outbound@aspora.com" }, inbound: { ready: true, email: "outbound@aspora.com" } };
+  });
+
+  await laneCard.click();
+  await reviewToggle.waitFor({ state: "visible" });
+  await reviewToggle.click();
+  await page.waitForFunction(() => state.selectedMatter?.human_reviewed === true);
+
+  await waitForText(page, "#studioFileMeta", "You can send the redline now.");
+  const allowedBanner = await banner.innerText();
+  assert.ok(
+    /you can send the redline now/i.test(allowedBanner),
+    `allowed banner should say "send now", got: "${allowedBanner}"`,
+  );
+  // And the Send button agrees: ready, not blocked, not disabled.
+  assert.equal(await sendButton.innerText(), "Send Redline", "Send button should read ready when send is allowed");
+  assert.notEqual(
+    (await sendButton.getAttribute("class") || "").includes("blocked"),
+    true,
+    "Send button must NOT be blocked when send is allowed",
+  );
+  assert.notEqual(await sendButton.getAttribute("aria-disabled"), "true", "Send button must not be aria-disabled when send is allowed");
+  assert.equal(await sendButton.isDisabled(), false, "Send button must be enabled when send is allowed");
+  if (SHOTS_DIR) {
+    await page.screenshot({ path: path.join(SHOTS_DIR, "banner-allowed-agrees.png"), fullPage: false });
+  }
   await page.unroute("**/api/matters/matter_review_panel/reviewed");
 }
 
