@@ -697,4 +697,104 @@ test("facet rail counts == filtered set in BOTH modes (count parity)", () => {
   assert.equal(EXEC_MATTERS.filter(allStageFilter).length, 1, "count == filtered (widened)");
 });
 
-process.stdout.write(`\ncorpus-model: ${passed} passed\n`);
+// --- fresh-user ONBOARDING empty-state --------------------------------------
+// A genuinely empty corpus (no matters, no filters) is a new-user state: instead
+// of a bare "No NDAs" line, the corpus shows a welcoming "get started" panel with
+// a Generate CTA, a Connect-Gmail CTA, and (when Drive is not connected) a Drive
+// nudge. With data present, the panel must NOT render.
+
+test("onboardingEmptyHtml renders the get-started CTAs (Drive not connected -> Drive nudge)", () => {
+  const html = CorpusView.onboardingEmptyHtml(false);
+  assert.match(html, /corpus-empty-card/);
+  assert.match(html, /No NDAs on file yet/);
+  assert.match(html, /data-onboarding-goto="generator"/, "Generator CTA present");
+  assert.match(html, /data-onboarding-goto="admin"/, "Connect-Gmail CTA present");
+  assert.match(html, /Connect your Google Drive/i, "Drive nudge shown when not connected");
+});
+
+test("onboardingEmptyHtml drops the Drive nudge once Drive is connected", () => {
+  const html = CorpusView.onboardingEmptyHtml(true);
+  assert.match(html, /corpus-empty-card/);
+  assert.doesNotMatch(html, /Connect your Google Drive/i, "no Drive nudge when connected");
+  // The Generate + Connect-Gmail CTAs always remain.
+  assert.match(html, /data-onboarding-goto="generator"/);
+  assert.match(html, /data-onboarding-goto="admin"/);
+});
+
+// Drive the real controller end-to-end: an empty payload must paint the
+// onboarding card into the empty node; a payload WITH a group must not.
+// These assertions are async (the controller loads via a stubbed fetch), so we
+// run them in an awaited block and only print the summary once they settle.
+async function asyncTest(name, fn) {
+  await fn();
+  passed += 1;
+  process.stdout.write(`  ok ${name}\n`);
+}
+
+(async () => {
+  function emptyStateNode() {
+    const node = stubNode();
+    node.hidden = true;
+    node.classList = {
+      _set: new Set(),
+      add(c) { this._set.add(c); },
+      remove(c) { this._set.delete(c); },
+      toggle() {},
+      contains(c) { return this._set.has(c); },
+    };
+    return node;
+  }
+
+  function mountCorpus(payload) {
+    const emptyNode = emptyStateNode();
+    const listNode = stubNode();
+    const statusNode = stubNode();
+    statusNode.textContent = "";
+    statusNode.classList = { add() {}, remove() {} };
+    const controller = CorpusView.createController({
+      panel: stubNode(),
+      listNode,
+      emptyNode,
+      noResultsNode: stubNode(),
+      statusNode,
+      summaryNode: { textContent: "" },
+      refreshButton: null,
+      searchForm: null,
+      searchInput: null,
+      tokenField: null,
+      searchClear: null,
+      facetRail: stubNode(),
+      groupToggle: null,
+      executedToggle: null,
+      openMatter() {},
+    });
+    const prevFetch = global.fetch;
+    global.fetch = async () => ({ ok: true, status: 200, json: async () => payload });
+    return controller.load().then(() => {
+      global.fetch = prevFetch;
+      return emptyNode;
+    });
+  }
+
+  await asyncTest("controller paints the onboarding card for an empty corpus", async () => {
+    const emptyNode = await mountCorpus({ groups: [], drive: { connected: false } });
+    assert.equal(emptyNode.hidden, false, "empty node is shown");
+    assert.ok(emptyNode.classList.contains("corpus-empty-onboarding"), "onboarding class applied");
+    assert.match(emptyNode.innerHTML, /corpus-empty-card/);
+    assert.match(emptyNode.innerHTML, /data-onboarding-goto="generator"/);
+  });
+
+  await asyncTest("controller does NOT paint the onboarding card when matters are on file", async () => {
+    const emptyNode = await mountCorpus({
+      groups: [{ counterparty: "Acme", matters: [{ id: "m1", status: "reviewed", executed: true, workflow_state: { status: "fully_signed" } }] }],
+      drive: { connected: true },
+    });
+    assert.notEqual(emptyNode.hidden, false, "empty node stays hidden with data");
+    assert.doesNotMatch(emptyNode.innerHTML || "", /corpus-empty-card/);
+  });
+
+  process.stdout.write(`\ncorpus-model: ${passed} passed\n`);
+})().catch((error) => {
+  process.stderr.write(`\ncorpus-model FAILED: ${error && error.stack ? error.stack : error}\n`);
+  process.exit(1);
+});

@@ -100,6 +100,75 @@
   text-align: center;
 }
 
+/* Fresh-user onboarding variant of the empty corpus state. */
+.corpus-empty.corpus-empty-onboarding {
+  border-style: solid;
+  border-color: var(--border-strong);
+  padding: 0;
+  text-align: left;
+}
+
+.corpus-empty-card {
+  background: linear-gradient(180deg, var(--brand-glow), #fff 70%);
+  border-radius: var(--r-md);
+  padding: 28px 26px;
+}
+
+.corpus-empty-title {
+  color: var(--ink);
+  font-family: var(--display-font);
+  font-size: 18px;
+  font-weight: 800;
+  margin: 0 0 6px;
+}
+
+.corpus-empty-lead {
+  color: var(--ink-muted);
+  font-size: 14px;
+  margin: 0 0 18px;
+  max-width: 60ch;
+}
+
+.corpus-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.corpus-empty-action {
+  background: var(--brand);
+  border: 1px solid var(--brand);
+  border-radius: 999px;
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 18px;
+}
+
+.corpus-empty-action:hover,
+.corpus-empty-action:focus-visible {
+  background: var(--brand-bright);
+  border-color: var(--brand-bright);
+}
+
+.corpus-empty-action.secondary {
+  background: #fff;
+  border-color: var(--border-strong);
+  color: var(--brand);
+}
+
+.corpus-empty-action.secondary:hover,
+.corpus-empty-action.secondary:focus-visible {
+  background: var(--brand-glow);
+}
+
+.corpus-empty-drive-hint {
+  color: var(--ink-muted);
+  font-size: 13px;
+  margin: 16px 0 0;
+}
+
 .corpus-groups {
   display: flex;
   flex-direction: column;

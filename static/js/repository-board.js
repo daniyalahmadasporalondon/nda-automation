@@ -37,6 +37,12 @@ const RepositoryBoard = (() => {
       count.textContent = String(mattersByColumn.get(count.dataset.repositoryCount)?.length || 0);
     });
     renderSyncStatus(state);
+    // A fresh user with no matters at all sees six "No documents" columns, which
+    // reads as broken rather than empty. Surface a friendly onboarding panel that
+    // tells them how to get their first NDA on the board. It only shows for a
+    // genuinely empty board with no active error and no active search (a search
+    // that finds nothing is a different, already-handled state).
+    renderBoardOnboarding({ state, errorMessage, searchActive: Boolean(query) });
     document.querySelectorAll("[data-repository-list]").forEach((list) => {
       const matters = mattersByColumn.get(list.dataset.repositoryList) || [];
       list.innerHTML = errorMessage
@@ -137,6 +143,62 @@ const RepositoryBoard = (() => {
     node.textContent = `${ownerLabel} ${RepositoryModel.formatMatterDateTime(sync.last_sync_at) || sync.last_sync_at} - ${imported} imported / ${skipped} skipped`;
   }
 
+  // Whether the user's Gmail inbound is actually wired up. We only suppress the
+  // "Connect Gmail" onboarding nudge when inbound is genuinely ready; any unknown
+  // / not-ready / paused state keeps the nudge (fail toward showing guidance).
+  function gmailInboundReady(state) {
+    const inbound = state?.gmailStatus?.inbound;
+    return Boolean(inbound && inbound.ready === true);
+  }
+
+  function renderBoardOnboarding({ state, errorMessage = "", searchActive = false } = {}) {
+    const node = document.querySelector("[data-repository-onboarding]");
+    if (!node) return;
+    const totalMatters = Array.isArray(state?.matters) ? state.matters.length : 0;
+    // Show ONLY for a truly fresh board: no matters, no error to surface, and no
+    // active search (the per-column "No matching documents" covers that case).
+    const show = totalMatters === 0 && !errorMessage && !searchActive;
+    node.hidden = !show;
+    if (!show) {
+      node.innerHTML = "";
+      return;
+    }
+    const gmailReady = gmailInboundReady(state);
+    const gmailStep = gmailReady
+      ? `<li class="repository-onboarding-step is-done">
+           <span class="repository-onboarding-step-icon" aria-hidden="true">✓</span>
+           <span class="repository-onboarding-step-body">
+             <strong>Gmail is connected</strong>
+             <span>Inbound NDAs will appear in the Inbox column automatically.</span>
+           </span>
+         </li>`
+      : `<li class="repository-onboarding-step">
+           <span class="repository-onboarding-step-icon" aria-hidden="true">2</span>
+           <span class="repository-onboarding-step-body">
+             <strong>Connect Gmail to import inbound NDAs</strong>
+             <span>Incoming NDAs land in your Inbox column, ready to review.</span>
+             <button class="repository-onboarding-action secondary" type="button" data-onboarding-goto="admin">Connect Gmail</button>
+           </span>
+         </li>`;
+    node.innerHTML = `
+      <div class="repository-onboarding-card" role="note" aria-label="Get started with the contract repository">
+        <h2 class="repository-onboarding-title">Welcome — let's get your first NDA here</h2>
+        <p class="repository-onboarding-lead">Your repository is empty. NDAs show up here once you generate one or connect an inbox.</p>
+        <ol class="repository-onboarding-steps">
+          <li class="repository-onboarding-step">
+            <span class="repository-onboarding-step-icon" aria-hidden="true">1</span>
+            <span class="repository-onboarding-step-body">
+              <strong>Generate your first NDA</strong>
+              <span>Draft a fresh NDA from your playbook in a couple of clicks.</span>
+              <button class="repository-onboarding-action" type="button" data-onboarding-goto="generator">Open the Generator</button>
+            </span>
+          </li>
+          ${gmailStep}
+        </ol>
+      </div>
+    `;
+  }
+
   function renderMatterCard(matter, options = {}) {
     const issueCount = Number(matter.issue_count || 0);
     // The issue count is a DISPLAY of a verdict, so it only shows once an AI review
@@ -202,7 +264,7 @@ const RepositoryBoard = (() => {
     `;
   }
 
-  return { renderBoard, renderMatterCard, renderSyncStatus };
+  return { renderBoard, renderBoardOnboarding, renderMatterCard, renderSyncStatus };
 })();
 
 if (typeof module !== "undefined" && module.exports) {
