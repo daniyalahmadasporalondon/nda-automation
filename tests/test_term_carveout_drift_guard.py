@@ -29,8 +29,10 @@ import unittest
 from nda_automation.checker import review_nda
 from nda_automation.checks.term_and_survival import (
     DEFAULT_INDEFINITE_NON_SURVIVAL_OBJECTS,
+    DEFAULT_INDEFINITE_TERMS,
     DEFAULT_LONGER_SURVIVAL_CARVE_OUT_TERMS,
     _carve_out_context_patterns,
+    _indefinite_term_patterns,
     _is_allowed_carve_out_fragment,
     _normalize,
 )
@@ -81,6 +83,53 @@ class CarveOutDriftGuardTests(unittest.TestCase):
             clause["indefinite_non_survival_objects"],
             "In-code indefinite_non_survival_objects fallback drifted from "
             "playbook. Keep them byte-identical.",
+        )
+
+    def test_indefinite_terms_match_playbook_exactly(self):
+        # The perpetual/indefinite vocabulary fallback. A degraded clause missing
+        # ``indefinite_terms`` falls back to this in-code copy; a missing perpetual
+        # phrasing would let an everlasting ordinary-CI rider slip through as
+        # "missing" rather than be flagged too-long. Pin byte parity with the
+        # playbook so the two can't drift.
+        clause = _term_clause_from_playbook()
+        self.assertEqual(
+            list(DEFAULT_INDEFINITE_TERMS),
+            clause["indefinite_terms"],
+            "In-code DEFAULT_INDEFINITE_TERMS fallback drifted from playbook "
+            "indefinite_terms. Keep them byte-identical (both must change together).",
+        )
+
+    def test_indefinite_terms_vocab_additions_present_in_both(self):
+        # The exact perpetual phrasings added for the vocab-gap defect. A narrower
+        # belt-and-braces assertion so a partial regression is obvious.
+        clause = _term_clause_from_playbook()
+        for term in (
+            "forever",
+            "everlasting",
+            "no expiration",
+            "no expiration date",
+            "unlimited period",
+            "without limitation of time",
+            "until the end of time",
+        ):
+            self.assertIn(term, clause["indefinite_terms"])
+            self.assertIn(term, DEFAULT_INDEFINITE_TERMS)
+
+
+class IndefiniteTermsFallbackPathTests(unittest.TestCase):
+    """Drive the indefinite_terms FALLBACK path (clause missing the field) and prove
+    the new perpetual phrasings are recognized there too."""
+
+    def test_fallback_patterns_equal_full_playbook_indefinite_list(self):
+        patterns = _indefinite_term_patterns({"id": "term_and_survival"})
+        self.assertEqual(len(patterns), len(DEFAULT_INDEFINITE_TERMS))
+
+    def test_fallback_matches_everlasting(self):
+        patterns = _indefinite_term_patterns({"id": "term_and_survival"})
+        normalized = _normalize("the confidentiality obligations are everlasting")
+        self.assertTrue(
+            any(re.search(pattern, normalized) for pattern in patterns),
+            "Fallback indefinite vocab must catch 'everlasting'.",
         )
 
 

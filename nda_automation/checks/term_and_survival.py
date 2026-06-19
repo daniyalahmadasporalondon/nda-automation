@@ -103,6 +103,41 @@ DEFAULT_LONGER_SURVIVAL_CARVE_OUT_TERMS = (
     "data protection",
     "data-protection",
 )
+# Single source of truth: the playbook's term_and_survival ``indefinite_terms``.
+# This in-code copy is ONLY a defensive fallback for a degraded/legacy clause
+# config that arrives without the field; the normal review path carries the
+# playbook list on the clause and never touches this tuple. It MUST stay
+# byte-identical to the shipped playbook.json list -- a missing perpetual phrasing
+# here would let an everlasting ordinary-CI rider slip through as "missing" rather
+# than be flagged as too-long. The drift is pinned by
+# tests/test_term_carveout_drift_guard.py, which asserts this tuple equals the
+# playbook field exactly; do not edit one without the other.
+DEFAULT_INDEFINITE_TERMS = (
+    "indefinitely",
+    "perpetuity",
+    "perpetual",
+    "perpetually",
+    "perpetual confidentiality",
+    "for so long as",
+    "for as long as",
+    "for so long as the information remains confidential",
+    "ceases to have commercial value",
+    "until it ceases to have commercial value",
+    "until it ceases to have value",
+    "for so long as it retains commercial value",
+    "until released in writing",
+    "until the disclosing party releases",
+    "as long as it remains secret",
+    "forever",
+    "everlasting",
+    "no expiration",
+    "no expiration date",
+    "unlimited period",
+    "for an unlimited period",
+    "without limitation of time",
+    "without limitation in time",
+    "until the end of time",
+)
 GENERIC_NON_SURVIVAL_DURATION_TERMS = {
     "after termination",
     "continue",
@@ -128,7 +163,7 @@ def _check_term_and_survival(
     max_years = _max_term_years(clause)
     cap_label = _year_count_label(max_years)
     term_context_patterns = _term_context_patterns(clause)
-    indefinite_patterns = _clause_term_patterns(clause, "indefinite_terms")
+    indefinite_patterns = _indefinite_term_patterns(clause)
     term_paragraphs = _paragraph_matches(paragraphs, term_context_patterns)
     term_normalized = _normalize(" ".join(str(paragraph["text"]) for paragraph in term_paragraphs))
     reference_analysis = _survival_reference_analysis(term_paragraphs, paragraphs, review_context or {})
@@ -565,7 +600,15 @@ def _is_benign_indefinite_match(
         # --- POLARITY demotion: indefinite word -> non-survival object ---
         if any(word in token for word in INDEFINITE_POLARITY_WORDS):
             objects = _indefinite_non_survival_objects(clause)
-            if objects:
+            # Guard the same asymmetry the carve-out-present branch guards: a
+            # trailing non-survival object only makes the trigger benign when
+            # ordinary confidentiality is NOT the SUBJECT preceding the trigger.
+            # "The confidential information shall remain perpetually available."
+            # has ordinary CI as the subject -- the rider IS perpetual ordinary
+            # confidentiality and must still FAIL, not be laundered by the
+            # trailing object "available". A non-CI subject ("a perpetual license",
+            # "personal data shall remain perpetually available") still demotes.
+            if objects and not _ordinary_ci_subject_present(fragment[:relative_start]):
                 object_alt = "|".join(re.escape(obj).replace(r"\ ", r"\s+") for obj in objects)
                 # Allow up to two filler words ("a perpetual license", "remain
                 # indefinitely available", "perpetual right to use") between the
@@ -684,6 +727,30 @@ def _carve_out_governs_term_sentence(
     carve_out_matches = list(re.finditer(carve_out_pattern, before_term))
     after_signal_scope = False
     if not carve_out_matches:
+        # ASYMMETRY FIX (DEFECT A / NB-W1b): an UNCONDITIONAL perpetual trigger
+        # (perpetual / perpetually / indefinitely / in perpetuity) with a trailing
+        # carve-out idiom is only benign when ordinary confidentiality is NOT the
+        # SUBJECT governed by the trigger. Mirror the guard the carve-out-present
+        # branch below already applies (anchored at the carve-out sub-clause lead,
+        # so a prior CAPPED ordinary-CI clause isolated by an exception connector --
+        # "...survive five years, except that information ... required by applicable
+        # law" -- is left untouched). Otherwise a trailing "...to comply with
+        # applicable law" rationale launders an ordinary-CI perpetual rider to PASS,
+        # e.g. "The confidential information shall remain confidential indefinitely
+        # to comply with applicable law." -- ordinary CI IS held forever, so it must
+        # still FAIL. A non-CI subject ("personal data shall be retained for as long
+        # as required by applicable law") has no ordinary-CI subject leading the
+        # trigger and stays a legitimate longer-survival carve-out. The guard is
+        # scoped to the perpetual WORDS: a bare "for so/as long as" duration
+        # connector whose period is genuinely SET by law ("for as long as required
+        # by applicable law") is bounded, not perpetual, and is handled below.
+        trigger_token = fragment[term_start:term_end].strip().lower()
+        if any(word in trigger_token for word in INDEFINITE_POLARITY_WORDS) and (
+            _ordinary_ci_subject_present(
+                _carve_out_subclause_lead(before_term, len(before_term))
+            )
+        ):
+            return False
         # The carve-out may trail the trigger behind an explicit scoping signal,
         # e.g. "...shall continue for as long as required, for trade secrets", or
         # behind a requirement/necessity idiom that itself names the carve-out, e.g.
@@ -793,6 +860,20 @@ def _fragment_after_term_until_next_duration(fragment: str, term_end: int) -> st
     if next_duration:
         return after_term[:next_duration.start()]
     return after_term
+
+
+def _indefinite_term_patterns(clause: Dict[str, object]) -> List[str]:
+    """Literal-word patterns for the indefinite/perpetual vocabulary.
+
+    Uses the playbook's ``indefinite_terms`` on the clause (the normal review path),
+    falling back to the byte-identical in-code copy (drift-guarded by
+    tests/test_term_carveout_drift_guard.py) only when a degraded/legacy clause
+    arrives without the field, so a perpetual rider is still detected.
+    """
+    configured = clause.get("indefinite_terms")
+    if isinstance(configured, list):
+        return _clause_term_patterns(clause, "indefinite_terms")
+    return [_literal_word_pattern(term) for term in DEFAULT_INDEFINITE_TERMS if str(term).strip()]
 
 
 def _carve_out_context_patterns(clause: Dict[str, object]) -> List[str]:
