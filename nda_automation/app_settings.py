@@ -164,6 +164,12 @@ DEFAULT_PERSONALISATION_SETTINGS = {
     "signature": "Aspora Legal",
     "signature_block": "Best,\nAspora Legal",
 }
+# Per-user personalisation overrides live in their OWN dict-keyed section
+# (``personalisation_users``: ``{owner_user_id: {sign_off, signature,
+# signature_block}}``) so a non-admin can set THEIR OWN sign-off without ever
+# touching the shared global default. The map is capped so a runaway distinct-
+# user write loop can never balloon the settings blob.
+MAX_PERSONALISATION_USERS = 1000
 SUPPORTED_ACTIVE_REVIEW_ENGINES = {"ai_first"}
 AI_API_KEY_FILENAME = "ai_api_key.json"
 MAX_AI_API_KEY_LENGTH = 2000
@@ -249,6 +255,86 @@ def update_personalisation_settings(updates: dict[str, Any]) -> dict[str, Any]:
         return personalisation_settings()
 
     return _repository().update_section("personalisation", personalisation_settings_from_payload, cleaned)
+
+
+def user_personalisation_settings(owner_user_id: str) -> dict[str, Any] | None:
+    """The CALLER'S OWN stored personalisation override, or ``None`` if unset.
+
+    Reads ONLY the ``owner_user_id`` slot of the ``personalisation_users`` map, so
+    a user can never observe another tenant's signature. Returns ``None`` (not the
+    global default) when the user has not saved anything yet, so callers can tell
+    "no override" apart from "an override that happens to equal the default".
+    """
+    key = _clean_personalisation_owner_id(owner_user_id)
+    if not key:
+        return None
+    users = personalisation_users_from_payload(
+        _repository().read_section("personalisation_users", personalisation_users_from_payload)
+    )
+    stored = users.get(key)
+    if not isinstance(stored, dict):
+        return None
+    return personalisation_settings_from_payload(stored)
+
+
+def resolved_personalisation_settings(owner_user_id: str = "") -> dict[str, Any]:
+    """Personalisation for an outbound action: per-user -> global -> built-in.
+
+    Resolution order (so a non-admin send NEVER hard-blocks on missing config):
+      1. the caller's OWN per-user override, when they have saved one;
+      2. the shared admin/global ``personalisation`` section (deployment default);
+      3. the built-in ``DEFAULT_PERSONALISATION_SETTINGS`` (the global read already
+         falls back to this when nothing is stored).
+    """
+    own = user_personalisation_settings(owner_user_id)
+    if own is not None:
+        return own
+    return personalisation_settings()
+
+
+def update_user_personalisation_settings(owner_user_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+    """Write the CALLER'S OWN personalisation override (strict per-owner isolation).
+
+    Only the ``owner_user_id`` slot of ``personalisation_users`` is touched; every
+    other tenant's slot is preserved verbatim. The caller passes a partial update
+    (any of sign_off/signature/signature_block); it is merged onto that user's
+    current effective values, cleaned, and stored. Raises ``AppSettingsError`` when
+    the owner id is missing (an unauthenticated/anonymous caller must never write).
+    """
+    key = _clean_personalisation_owner_id(owner_user_id)
+    if not key:
+        raise AppSettingsError("A signed-in user is required to save personalisation.")
+    cleaned_updates = {
+        update_key: _clean_personalisation_setting(update_key, value)
+        for update_key, value in updates.items()
+        if _valid_personalisation_setting(update_key, value)
+    }
+    if not cleaned_updates:
+        existing = user_personalisation_settings(owner_user_id)
+        return existing if existing is not None else personalisation_settings_from_payload({})
+
+    def _apply(current: dict[str, Any]) -> dict[str, Any]:
+        users = personalisation_users_from_payload(current)
+        # Merge onto this user's CURRENT effective values (their stored override if
+        # any, else the cleaned defaults) so a partial update keeps untouched fields.
+        base = users.get(key)
+        base = base if isinstance(base, dict) else {}
+        users[key] = personalisation_settings_from_payload({**base, **cleaned_updates})
+        if key not in current and len(users) > MAX_PERSONALISATION_USERS:
+            # Cap distinct users; never evict an existing slot, just refuse to grow
+            # unbounded. Drop the just-added one so the write stays a no-op-on-cap.
+            del users[key]
+        return users
+
+    stored = _repository().update_section_with(
+        "personalisation_users",
+        personalisation_users_from_payload,
+        _apply,
+    )
+    result = stored.get(key) if isinstance(stored, dict) else None
+    if isinstance(result, dict):
+        return personalisation_settings_from_payload(result)
+    return personalisation_settings_from_payload({**cleaned_updates})
 
 
 def update_admin_settings(updates: dict[str, Any]) -> dict[str, Any]:
@@ -568,6 +654,29 @@ def personalisation_settings_from_payload(payload: dict[str, Any]) -> dict[str, 
     }
 
 
+def personalisation_users_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the per-user personalisation override map.
+
+    Runs on BOTH read and merged-write. The result is a plain dict keyed by a
+    cleaned ``owner_user_id`` whose values are fully-normalized personalisation
+    dicts. Non-dict slots and blank/anonymous keys are dropped, and the map is
+    capped at ``MAX_PERSONALISATION_USERS`` so the stored blob can never balloon.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    users: dict[str, Any] = {}
+    for raw_key, raw_value in payload.items():
+        if not isinstance(raw_value, dict):
+            continue
+        key = _clean_personalisation_owner_id(raw_key)
+        if not key or key in users:
+            continue
+        users[key] = personalisation_settings_from_payload(raw_value)
+        if len(users) >= MAX_PERSONALISATION_USERS:
+            break
+    return users
+
+
 def admin_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Normalize the persisted admin grant list.
 
@@ -737,6 +846,18 @@ def _clean_personalisation_text(value: object, *, max_length: int, multiline: bo
     else:
         cleaned = " ".join(text.split())
     return cleaned[:max_length]
+
+
+def _clean_personalisation_owner_id(value: object) -> str:
+    """Normalise an owner-user-id into a safe per-user store KEY.
+
+    Mirrors ``matter_store._clean_owner_user_id`` so the per-user personalisation
+    map keys are the same shape as matter ownership keys (the auth layer's stable
+    user id). Defined here, not imported, to keep this settings module off the
+    matter_store import graph. Returns "" for an empty/anonymous id (which the
+    callers treat as "no override / refuse write").
+    """
+    return re.sub(r"[^A-Za-z0-9_.@:-]+", "-", str(value or "").strip())[:160].strip("-")
 
 
 def _clean_drive_folder_id(value: object) -> str:

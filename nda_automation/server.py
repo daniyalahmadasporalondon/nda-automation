@@ -236,6 +236,10 @@ _GET_EXACT_ROUTES = {
     "/auth/drive/callback": drive_routes.handle_drive_connect_callback,
     "/auth/docusign/callback": docusign_routes.handle_docusign_callback,
     "/api/admin/personalisation-settings": admin_routes.handle_personalisation_settings,
+    # Non-admin self-serve: the caller reads/writes their OWN personalisation
+    # (scoped to their owner-user-id inside the handler), distinct from the
+    # admin-only global default above.
+    "/api/me/personalisation-settings": admin_routes.handle_my_personalisation_settings,
     "/api/admin/admins": admin_routes.handle_admin_list,
     "/api/ai/availability": admin_routes.handle_ai_availability,
     "/api/ai/settings": admin_routes.handle_ai_settings,
@@ -277,6 +281,8 @@ _POST_EXACT_ROUTES = {
     # handler, like the other drive-admin routes.
     "/api/admin/drive-folders": drive_routes.handle_drive_create_folder,
     "/api/admin/personalisation-settings": admin_routes.handle_personalisation_settings_update,
+    # Non-admin self-serve write counterpart (strict per-owner isolation).
+    "/api/me/personalisation-settings": admin_routes.handle_my_personalisation_settings_update,
     "/api/admin/admins/add": admin_routes.handle_admin_add,
     "/api/ai/api-key": admin_routes.handle_ai_api_key_update,
     "/api/ai/settings": admin_routes.handle_ai_settings_update,
