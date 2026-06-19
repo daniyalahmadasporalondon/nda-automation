@@ -88,13 +88,6 @@ class MatterApprovalResult:
 
 
 @dataclass(frozen=True)
-class MatterAIFirstReviewResult:
-    matter: dict[str, Any]
-    review_result: dict[str, Any]
-    metadata: dict[str, Any]
-
-
-@dataclass(frozen=True)
 class MatterRedlineSendResult:
     matter: dict[str, Any]
     filename: str
@@ -267,45 +260,6 @@ class RepositoryMatterLifecycle:
             timeline_event=timeline_event,
             resolution=approval.resolution_summary(updated_matter),
         )
-
-    def run_ai_first_review(
-        self,
-        matter_id: str,
-        *,
-        owner_user_id: str = "",
-        ai_assessor_func: Callable[..., dict[str, Any]] | None = None,
-    ) -> MatterAIFirstReviewResult:
-        from .ai_assessor import assess_nda_with_ai
-        from .review_result_contract import review_result_paragraphs
-
-        assessor = ai_assessor_func or assess_nda_with_ai
-        matter = self._repository.get_matter(matter_id, owner_user_id=owner_user_id)
-        if matter is None:
-            raise MatterNotFoundError("Matter not found.")
-        extracted_text = str(matter.get("extracted_text") or "")
-        if not extracted_text.strip():
-            raise MatterReviewUnavailableError("Matter has no extracted text to assess.")
-
-        started_at = datetime.now(timezone.utc).isoformat()
-        review_result = assessor(
-            extracted_text,
-            paragraphs=review_result_paragraphs(matter.get("review_result")),
-        )
-        completed_at = datetime.now(timezone.utc).isoformat()
-        metadata = ai_first_review_store_metadata(
-            review_result,
-            started_at=started_at,
-            completed_at=completed_at,
-        )
-        updated_matter = self._repository.update_matter_ai_first_review(
-            matter_id,
-            review_result,
-            metadata,
-            owner_user_id=owner_user_id,
-        )
-        if updated_matter is None:
-            raise MatterNotFoundError("Matter not found.")
-        return MatterAIFirstReviewResult(matter=updated_matter, review_result=review_result, metadata=metadata)
 
     def send_redline(
         self,
