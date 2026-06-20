@@ -247,6 +247,7 @@ _GET_EXACT_ROUTES = {
     "/api/matters/export": admin_routes.handle_matter_backup,
     "/api/corpus": corpus_routes.handle_corpus,
     "/api/signing-entities": entity_routes.handle_signing_entities,
+    "/api/dashboard/search-config": dashboard_routes.handle_dashboard_search_config,
     "/api/telemetry": admin_routes.handle_telemetry,
 }
 

@@ -361,14 +361,6 @@ const DashboardSearchView = (() => {
       return facts;
     }
 
-    function unsupportedFacts() {
-      return [
-        "Repository: ask “How many are in review?” or search for a counterparty.",
-        "System: ask about the Playbook, email templates, or what the assistant can do.",
-        "Workflows: ask to generate an NDA, open Admin, open Repository, or review Gmail setup.",
-      ];
-    }
-
     function clarificationActions(questions) {
       return questions
         .map((question, index) => {
@@ -531,14 +523,18 @@ const DashboardSearchView = (() => {
         });
       }
       if (type === "unsupported") {
-        return renderAssistantCard({
-          type,
-          title: "Unsupported request",
-          message: message || "This assistant cannot do that request yet.",
-          facts: unsupportedFacts(),
-          actions: assistantGuideActions(payload.query || input?.value || ""),
-          statusText: "Unsupported request",
-        });
+        // An "unsupported" classification is NOT a dead end: the user typed
+        // something the assistant couldn't structure (most commonly a bare
+        // counterparty name like "Moorwand"). Rather than terminating on the
+        // "Unsupported request" help card, fall back to the v1 deterministic
+        // keyword filter over the real matters — so a bare name (and ANY
+        // unclassified query) still filters the document list below. We consume the
+        // response (return true) so the caller doesn't also fire another AI/search
+        // roundtrip; renderKeywordResults shows its own honest empty message when
+        // nothing matches.
+        const query = String(payload.query || (input && input.value) || "").trim();
+        renderKeywordResults(query);
+        return true;
       }
       if (type === "clarification") {
         const questions = Array.isArray(payload.questions)
@@ -1164,4 +1160,11 @@ function initialQueryFromLocation() {
 
 function createDashboardSearchController(options) {
   return DashboardSearchView.createController(options);
+}
+
+// CommonJS export shim (guarded) so the zero-dep FE test harness can `require` this
+// classic controller and drive it against a hand-rolled DOM — the browser ignores
+// this branch (no `module` global). Matches the pattern other classic controllers use.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { createDashboardSearchController, DashboardSearchView };
 }

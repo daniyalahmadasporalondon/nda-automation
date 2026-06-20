@@ -37,6 +37,7 @@ import { DocuSignModel } from "./docusign-model.mjs";
 import {
   DASHBOARD_SEARCH_CHIPS,
   NULL_FILTER_SPEC,
+  SEARCH_CONFIG_ENDPOINT,
   SEARCH_INTENT_ENDPOINT,
   SUMMARY_LABEL,
   SUMMARY_UNAVAILABLE_MESSAGE,
@@ -54,6 +55,7 @@ import {
   matterStatusLabel,
   matterTitle,
   runChip,
+  setFilterSpecAllowlists,
   summaryEndpoint,
   summaryErrorMessage,
   validateFilterSpec,
@@ -102,6 +104,7 @@ Object.assign(window, {
   DashboardSearch: {
     DASHBOARD_SEARCH_CHIPS,
     NULL_FILTER_SPEC,
+    SEARCH_CONFIG_ENDPOINT,
     SEARCH_INTENT_ENDPOINT,
     SUMMARY_LABEL,
     SUMMARY_UNAVAILABLE_MESSAGE,
@@ -119,6 +122,7 @@ Object.assign(window, {
     matterStatusLabel,
     matterTitle,
     runChip,
+    setFilterSpecAllowlists,
     summaryEndpoint,
     summaryErrorMessage,
     validateFilterSpec,

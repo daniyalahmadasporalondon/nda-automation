@@ -35,6 +35,26 @@ from .common import request_owner_user_id
 MAX_QUERY_CHARS = 2000
 
 
+def handle_dashboard_search_config(handler, *, send_body: bool = True) -> None:
+    """GET /api/dashboard/search-config — the Playbook-derived enum allowlists.
+
+    The frontend re-validates a (server- or model-produced) filter spec against an
+    allowlist before applying it (defense in depth). Those allowlists MUST be the same
+    Playbook-derived sets the backend validator uses, or a legitimately-approved law /
+    clause would be silently dropped on the client. This route surfaces them
+    (governing-law option ids + clause ids) so the FE can feed its validators from the
+    server instead of a frozen literal -- a newly-approved law/clause flows through
+    automatically. Read-only, no matter data, nothing tenant-scoped.
+    """
+    handler._send_json(
+        {
+            "governing_laws": sorted(dashboard_search_intent.allowed_governing_laws()),
+            "clause_ids": sorted(dashboard_search_intent.allowed_clause_ids()),
+        },
+        send_body=send_body,
+    )
+
+
 def handle_dashboard_search_intent(handler) -> None:
     telemetry.increment("dashboard_search_intent_requests")
     payload = handler._read_json_payload()

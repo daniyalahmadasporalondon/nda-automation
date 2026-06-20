@@ -54,6 +54,30 @@ def governing_law_option_ids() -> tuple[str, ...]:
     return _OPTION_IDS_CACHE or ()
 
 
+def governing_law_phrase_map() -> dict[str, tuple[str, ...]]:
+    """option_id -> the lowercased phrases that map TO it (value, label, aliases, id).
+
+    Sourced from the same Playbook approved options as ``_option_lookup`` (it is just
+    that lookup inverted), so the deterministic governing-law fallback in
+    ``dashboard_search_intent`` derives its phrase map from the Playbook rather than a
+    frozen literal -- a newly-approved law maps automatically, no code change. The
+    phrases for each option are returned LONGEST-FIRST so a more specific phrase
+    ("england and wales") is tried before a shorter substring of it.
+    """
+    by_option: dict[str, list[str]] = {}
+    for phrase, option_id in _option_lookup().items():
+        token = str(phrase or "").strip().lower()
+        if not token:
+            continue
+        by_option.setdefault(option_id, [])
+        if token not in by_option[option_id]:
+            by_option[option_id].append(token)
+    return {
+        option_id: tuple(sorted(phrases, key=len, reverse=True))
+        for option_id, phrases in by_option.items()
+    }
+
+
 def governing_law_label(option_id: object) -> str:
     """The friendly UI label for a governing-law option id, sourced from the Playbook.
 

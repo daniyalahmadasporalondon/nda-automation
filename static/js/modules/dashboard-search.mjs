@@ -257,7 +257,14 @@ const FILTER_SPEC_SORTS = new Set(["oldest", "newest"]);
 // (dashboard_search_intent.allowed_clause_ids): the Playbook native clauses plus the
 // demo dynamic clauses (non_solicitation / non_compete) that ONLY the AI-first engine
 // emits — so has_clause for those only resolves on AI-reviewed matters.
-const FILTER_SPEC_CLAUSE_IDS = new Set([
+//
+// These two enum allowlists are Playbook-derived, so a frozen literal here would
+// silently DROP a legitimately-approved 6th law / new clause on the client re-
+// validation. The literal below is only a safe seed: the controller fetches the live
+// sets from GET /api/dashboard/search-config (the SAME Playbook source the backend
+// validator uses) and feeds them in via setFilterSpecAllowlists, so the FE never
+// drops an approved value. `let` (not `const`) so the setter can replace them.
+let FILTER_SPEC_CLAUSE_IDS = new Set([
   "mutuality",
   "confidential_information",
   "governing_law",
@@ -269,13 +276,49 @@ const FILTER_SPEC_CLAUSE_IDS = new Set([
 ]);
 // The governing-law approved-option ids. MIRRORS the Playbook approved_options
 // (dashboard_search_intent.allowed_governing_laws / governing_law_view).
-const FILTER_SPEC_GOVERNING_LAWS = new Set([
+let FILTER_SPEC_GOVERNING_LAWS = new Set([
   "india",
   "delaware",
   "england_and_wales",
   "difc",
   "ontario_canada",
 ]);
+
+// The config endpoint the controller fetches the live, Playbook-derived allowlists
+// from (so a newly-approved law/clause is honored, never dropped on re-validation).
+const SEARCH_CONFIG_ENDPOINT = "/api/dashboard/search-config";
+
+// Coerce an arbitrary value into a Set of clean lowercase enum tokens. Non-arrays /
+// blank entries are ignored, so a malformed config payload can never widen the schema
+// with junk — at worst it leaves the seed set unchanged.
+function toEnumSet(values) {
+  if (!Array.isArray(values)) return null;
+  const tokens = values
+    .map((value) => (typeof value === "string" ? value.trim().toLowerCase() : ""))
+    .filter(Boolean);
+  return tokens.length ? new Set(tokens) : null;
+}
+
+// Replace the Playbook-derived enum allowlists from the server config (the SAME
+// Playbook source the backend validator uses), so the FE re-validation matches the
+// backend exactly and never drops a legitimately-approved law/clause. Tolerant: a
+// missing/garbled field leaves that allowlist on its safe seed value. Returns the
+// applied sets for testability. The empty-array case is honored (an explicit empty
+// allowlist disables that dimension) only when the field is present as an array;
+// a wholly-absent field is left untouched.
+function setFilterSpecAllowlists(config) {
+  const source = config && typeof config === "object" ? config : {};
+  if (Array.isArray(source.governing_laws)) {
+    FILTER_SPEC_GOVERNING_LAWS = toEnumSet(source.governing_laws) || new Set();
+  }
+  if (Array.isArray(source.clause_ids)) {
+    FILTER_SPEC_CLAUSE_IDS = toEnumSet(source.clause_ids) || new Set();
+  }
+  return {
+    governing_laws: new Set(FILTER_SPEC_GOVERNING_LAWS),
+    clause_ids: new Set(FILTER_SPEC_CLAUSE_IDS),
+  };
+}
 const FILTER_SPEC_MAX_TEXT_CHARS = 200;
 const FILTER_SPEC_MAX_MIN_AGE_DAYS = 365;
 const FILTER_SPEC_MAX_TERM_YEARS = 100;
@@ -797,6 +840,7 @@ export {
   DASHBOARD_ASSISTANT_ENDPOINT,
   DASHBOARD_SEARCH_CHIPS,
   NULL_FILTER_SPEC,
+  SEARCH_CONFIG_ENDPOINT,
   SEARCH_INTENT_ENDPOINT,
   SUMMARY_LABEL,
   SUMMARY_UNAVAILABLE_MESSAGE,
@@ -821,6 +865,7 @@ export {
   matterTitle,
   queryTerms,
   runChip,
+  setFilterSpecAllowlists,
   summaryEndpoint,
   summaryErrorMessage,
   validateFilterSpec,
