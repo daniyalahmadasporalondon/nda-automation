@@ -83,26 +83,27 @@ class ClassifyGroundingTests(unittest.TestCase):
         )
         self.assertEqual(status, GROUNDING_UNGROUNDED)
 
-    def test_verifier_cleared_pass_on_required_clause_is_absence(self):
-        # The gap the verifier flagged: a refute-to-pass on a REQUIRED clause
-        # clears its evidence; without the verifier marker this would be read as
-        # ungrounded, but decision_source=ai_verifier makes it a legit absence.
-        ungrounded = classify_grounding(
-            decision="pass",
-            issue_type="none",
+    def test_ai_verifier_source_is_not_a_blanket_absence_exemption(self):
+        # FIX 2: decision_source=ai_verifier no longer waves a clause through as a
+        # legitimate absence. The verifier only downgrades to review and PRESERVES
+        # evidence, so an evidence-free required clause stays ungrounded (the
+        # original finding surfaces) whether or not the verifier marker is set.
+        without_marker = classify_grounding(
+            decision="review",
+            issue_type="unclear",
             clause_type="required",
             structured_evidence=[],
         )
-        self.assertEqual(ungrounded, GROUNDING_UNGROUNDED)
+        self.assertEqual(without_marker, GROUNDING_UNGROUNDED)
 
-        absence = classify_grounding(
-            decision="pass",
-            issue_type="none",
+        with_marker = classify_grounding(
+            decision="review",
+            issue_type="unclear",
             clause_type="required",
             structured_evidence=[],
             decision_source="ai_verifier",
         )
-        self.assertEqual(absence, GROUNDING_ABSENCE)
+        self.assertEqual(with_marker, GROUNDING_UNGROUNDED)
 
 
 class BuildGroundingTests(unittest.TestCase):
@@ -221,21 +222,40 @@ class DowngradeUngroundedFindingTests(unittest.TestCase):
 
 
 class RefinalizeClauseGroundingTests(unittest.TestCase):
-    def test_verifier_cleared_pass_becomes_absence_and_drops_citation(self):
-        # The verifier refuted a fail to a pass and cleared the disproven
-        # evidence; the stale grounded citation must not survive.
+    def test_verifier_downgrade_preserves_evidence_and_stays_grounded(self):
+        # FIX 1/2: the verifier downgrades a fail to *review* and PRESERVES the
+        # matched evidence. Re-grounding must therefore keep the clause grounded
+        # over its preserved quote (the finding stays auditable/challengeable),
+        # NOT wipe it to a fake absence.
         clause = {
-            "decision": "pass",
-            "issue_type": "none",
+            "decision": "review",
+            "issue_type": "present_but_wrong",
+            "type": "required",
+            "decision_source": "ai_verifier",
+            "structured_evidence": [_quoted_record(quote="laws of California", start=5, end=23)],
+            "grounding": {"status": GROUNDING_GROUNDED, "evidence_count": 1},
+            "citation": {"quote": "laws of California", "paragraph_id": "p1"},
+        }
+        refinalize_clause_grounding(clause)
+        self.assertEqual(clause["grounding"]["status"], GROUNDING_GROUNDED)
+        self.assertEqual(clause["grounding"]["evidence_count"], 1)
+        self.assertEqual(clause["citation"]["quote"], "laws of California")
+
+    def test_verifier_marker_does_not_force_absence_on_empty_evidence(self):
+        # If a verifier-owned clause somehow carries no groundable evidence, the
+        # ai_verifier marker no longer forces it to a legitimate absence -- it is
+        # ungrounded so the original finding still surfaces for human review.
+        clause = {
+            "decision": "review",
+            "issue_type": "unclear",
             "type": "required",
             "decision_source": "ai_verifier",
             "structured_evidence": [],
             "grounding": {"status": GROUNDING_GROUNDED, "evidence_count": 1},
-            "citation": {"quote": "old disproven text", "paragraph_id": "p1"},
+            "citation": {"quote": "old text", "paragraph_id": "p1"},
         }
         refinalize_clause_grounding(clause)
-        self.assertEqual(clause["grounding"]["status"], GROUNDING_ABSENCE)
-        self.assertEqual(clause["grounding"]["evidence_count"], 0)
+        self.assertEqual(clause["grounding"]["status"], GROUNDING_UNGROUNDED)
         self.assertNotIn("citation", clause)
 
     def test_rederives_fresh_citation_from_current_evidence(self):

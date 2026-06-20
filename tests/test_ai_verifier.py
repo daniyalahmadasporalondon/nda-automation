@@ -134,27 +134,38 @@ class ApplyVerifierTests(unittest.TestCase):
         )
         self.assertNotEqual(summary["status"], "deferred")
 
-    def test_refute_clears_a_fail_to_pass_only_when_verifier_beats_engine(self):
+    def test_confident_refute_downgrades_a_fail_to_review_never_pass(self):
+        # DESIGN (FIX 1): a confidently refuted FAIL that beats the engine is
+        # DOWNGRADED to review (a human still signs off) -- the verifier may never
+        # autonomously acquit to a clean PASS. FIX 2: the matched evidence is
+        # PRESERVED so the finding stays auditable + challengeable.
+        evidence_quote = "Each party shall not be restricted from dealing with introduced contacts."
         clauses = [
             _clause(
                 "non_circumvention",
                 "fail",
                 clause_type="prohibited",
                 confidence=0.70,
-                matched_text="Each party shall not be restricted from dealing with introduced contacts.",
-                evidence=["Each party shall not be restricted from dealing with introduced contacts."],
+                matched_text=evidence_quote,
+                evidence=[evidence_quote],
             )
         ]
         updated, summary = apply_ai_verifier(
             clauses, source_text="x", verifier=_scripted(VERIFIER_VERDICT_REFUTE, confidence=0.86)
         )
         clause = updated[0]
-        self.assertEqual(clause["decision"], "pass")
+        # NEVER pass: a confident refute downgrades severity to review, not pass.
+        self.assertEqual(clause["decision"], "review")
+        self.assertNotEqual(clause["decision"], "pass")
         self.assertEqual(clause["decision_source"], "ai_verifier")
-        self.assertTrue(clause["passes"])
+        self.assertFalse(clause["passes"])
+        self.assertTrue(clause["needs_review"])
         self.assertEqual(summary["changed_count"], 1)
         self.assertEqual(clause["ai_verifier"]["outcome"], "downgraded")
         self.assertEqual(clause["ai_verifier"]["original_decision"], "fail")
+        # Evidence is PRESERVED on the downgrade -- the trail is not wiped.
+        self.assertEqual(clause["matched_text"], evidence_quote)
+        self.assertEqual(clause["evidence"], [evidence_quote])
 
     def test_refuted_fail_routes_to_review_when_verifier_does_not_beat_engine(self):
         clauses = [
@@ -193,15 +204,31 @@ class ApplyVerifierTests(unittest.TestCase):
         self.assertFalse(updated[0]["ai_verifier"]["changed"])
         self.assertEqual(updated[0]["ai_verifier"]["outcome"], "flagged_for_review")
 
-    def test_refuted_review_clears_to_pass_when_verifier_beats_engine(self):
-        clauses = [_clause("non_circumvention", "review", clause_type="prohibited", confidence=0.70)]
+    def test_refuted_review_stays_review_when_verifier_beats_engine(self):
+        # A confidently refuted REVIEW that beats the engine stays REVIEW (a human
+        # still adjudicates). The verifier disagrees strongly, recorded as
+        # outcome="downgraded", but it never acquits the clause to a clean pass.
+        evidence_quote = "Each party shall not be restricted from dealing with introduced contacts."
+        clauses = [
+            _clause(
+                "non_circumvention",
+                "review",
+                clause_type="prohibited",
+                confidence=0.70,
+                matched_text=evidence_quote,
+                evidence=[evidence_quote],
+            )
+        ]
         updated, _ = apply_ai_verifier(
             clauses,
-            source_text="Each party shall not be restricted from dealing with introduced contacts.",
+            source_text=evidence_quote,
             verifier=_scripted(VERIFIER_VERDICT_REFUTE, confidence=0.86),
         )
-        self.assertEqual(updated[0]["decision"], "pass")
+        self.assertEqual(updated[0]["decision"], "review")
+        self.assertNotEqual(updated[0]["decision"], "pass")
         self.assertEqual(updated[0]["ai_verifier"]["outcome"], "downgraded")
+        # Evidence preserved even though the verifier confidently disagreed.
+        self.assertEqual(updated[0]["matched_text"], evidence_quote)
 
     def test_resolver_path_does_not_auto_run_any_regex_engine(self):
         # With NDA_AI_VERIFIER off and no injected verifier, the resolver path is a
