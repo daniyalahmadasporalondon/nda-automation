@@ -193,11 +193,12 @@ class EvidenceGroundedReviewTests(unittest.TestCase):
         # An ungrounded verdict carries no fabricated citation.
         self.assertNotIn("citation", mutuality)
 
-    def test_contract_blocks_ungrounded_fail_before_grounding_layer(self):
+    def test_contract_degrades_ungrounded_fail_without_discarding_the_batch(self):
         # Documents the division of labour: the contract enforces evidence on
-        # non-missing fails, so such an ungrounded finding never reaches review.
-        from nda_automation.ai_assessment_contract import AIAssessmentContractError
-
+        # non-missing fails. An ungrounded fail is a per-clause defect -- it is
+        # quarantined into a SAFE blocking review (never a silent pass) while every
+        # other valid clause in the batch survives, instead of rejecting the whole
+        # document's review.
         assessments = self._baseline_assessments()
         assessments[0] = {
             "clause_id": "mutuality",
@@ -213,9 +214,21 @@ class EvidenceGroundedReviewTests(unittest.TestCase):
             "confidence": 0.6,
             "blocks_send": False,
         }
-        with self.assertRaises(AIAssessmentContractError) as error:
-            build_ai_first_review_result(SOURCE_TEXT, assessments)
-        self.assertIn("fail decisions require at least one valid evidence item", str(error.exception))
+
+        result = build_ai_first_review_result(SOURCE_TEXT, assessments)
+
+        clauses_by_id = {clause["id"]: clause for clause in result["clauses"]}
+        mutuality = clauses_by_id["mutuality"]
+        # The ungrounded fail is NOT honoured as a fail-with-no-evidence; it degrades
+        # to a send-blocking review (never a silent pass).
+        self.assertEqual(mutuality["decision"], "review")
+        self.assertTrue(mutuality["blocks_send"])
+        self.assertEqual(
+            mutuality["ai_first_assessment"]["status"], "contract_invalid"
+        )
+        # The other grounded clauses survive (governing_law keeps its real fail).
+        self.assertEqual(clauses_by_id["governing_law"]["decision"], "fail")
+        self.assertEqual(clauses_by_id["confidential_information"]["decision"], "pass")
 
 
 if __name__ == "__main__":

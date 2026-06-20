@@ -52,6 +52,20 @@ AI_ASSESSMENT_BLOCKS_SEND_AUTOCORRECTED_COUNTER = "ai_assessment_blocks_send_aut
 # reconciled to the decision-derived rule. Visible in the audit trail; a clause
 # with no auto-correction keeps the default ``"contract_valid"``.
 AI_VALIDATION_STATUS_BLOCKS_SEND_AUTOCORRECTED = "blocks_send_autocorrected"
+# Telemetry counter bumped once per clause that carried a per-clause contract
+# DEFECT (an invented paragraph_id, a fabricated/ambiguous evidence quote, a
+# pass/fail/issue_type coupling violation, an unsupported field, a malformed
+# redline, etc.) and was therefore QUARANTINED -- dropped and replaced with a
+# safe review/needs-human fallback -- instead of rejecting the whole batch. See
+# ``validate_ai_clause_assessments``.
+AI_ASSESSMENT_CLAUSE_DEGRADED_COUNTER = "ai_assessment_clause_degraded"
+# ``validation_status`` value stamped on a clause synthesized as the safe
+# fallback for a defective clause. NEVER a pass: the fallback is always a
+# blocking REVIEW so a hallucinated-but-malformed clause can never clear the gate.
+AI_VALIDATION_STATUS_CONTRACT_INVALID = "contract_invalid"
+# Reason code carried on the degraded fallback so downstream readers / the audit
+# trail can see WHY this clause is a forced human review.
+AI_REASON_CODE_CONTRACT_INVALID = "ai_contract_invalid_clause"
 AI_ASSESSMENT_ISSUE_TYPES = (
     ISSUE_TYPE_NONE,
     ISSUE_TYPE_MISSING,
@@ -200,17 +214,23 @@ def validate_ai_clause_assessments(
     paragraphs: Sequence[Paragraph],
     playbook_clauses_by_id: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    errors: list[str] = []
     cleaned_by_clause_id: dict[str, dict[str, Any]] = {}
     valid_clause_id_set = {str(clause_id).strip() for clause_id in valid_clause_ids if str(clause_id).strip()}
     clauses_by_id = _playbook_clauses_by_id(playbook_clauses_by_id)
+    # A genuine STRUCTURAL / batch-level failure (the whole response is not a list)
+    # still rejects. Per-clause defects, by contrast, degrade just that clause
+    # (see the loop body) so one malformed clause never discards the rest.
     if not isinstance(assessments, Sequence) or isinstance(assessments, (str, bytes)):
         raise AIAssessmentContractError(["assessments must be a list"])
 
     for index, assessment in enumerate(assessments):
         location = f"assessment[{index}]"
         if not isinstance(assessment, Mapping):
-            errors.append(f"{location}: assessment must be an object")
+            # A non-object batch item has no clause_id to key a fallback on, so it
+            # cannot be quarantined into a specific clause. It is NOT a whole-batch
+            # killer either: drop it and let the playbook clause it would have
+            # covered receive the downstream missing-assessment review fallback.
+            telemetry.increment(AI_ASSESSMENT_CLAUSE_DEGRADED_COUNTER)
             continue
         cleaned, assessment_errors = validate_ai_clause_assessment(
             assessment,
@@ -219,18 +239,86 @@ def validate_ai_clause_assessments(
             location=location,
             playbook_clauses_by_id=clauses_by_id,
         )
-        errors.extend(assessment_errors)
         clause_id = str(cleaned.get("clause_id") or "").strip()
-        if not clause_id or assessment_errors:
+        # A per-clause contract DEFECT must DEGRADE THAT CLAUSE, not nuke the whole
+        # batch. One malformed clause out of 30 used to discard the entire
+        # document's review (every defect appended to the shared ``errors`` list,
+        # which then raised). Instead we QUARANTINE the offending clause: when it
+        # names a real, not-yet-seen playbook clause, replace it with a SAFE
+        # review/needs-human fallback (``blocks_send=true``, flagged
+        # ``contract_invalid``) so the document is still send-blocked by it and a
+        # hallucinated-but-malformed clause can NEVER clear the gate; the other
+        # (valid) clauses are kept and returned. A defect that leaves the clause
+        # unkeyable (missing/unknown/duplicate clause_id) is simply dropped -- the
+        # playbook clause it would have covered still gets the downstream
+        # missing-assessment review fallback, so nothing is silently passed.
+        if assessment_errors:
+            if clause_id and clause_id in valid_clause_id_set and clause_id not in cleaned_by_clause_id:
+                cleaned_by_clause_id[clause_id] = _degraded_clause_assessment(
+                    clause_id, assessment, assessment_errors
+                )
+            telemetry.increment(AI_ASSESSMENT_CLAUSE_DEGRADED_COUNTER)
+            continue
+        if not clause_id:
             continue
         if clause_id in cleaned_by_clause_id:
-            errors.append(f"{location}: duplicate assessment for clause {clause_id}")
+            # A duplicate is a per-clause defect, not a batch killer. The first
+            # (valid) assessment for this clause already won; drop the duplicate.
+            telemetry.increment(AI_ASSESSMENT_CLAUSE_DEGRADED_COUNTER)
             continue
         cleaned_by_clause_id[clause_id] = cleaned
 
-    if errors:
-        raise AIAssessmentContractError(errors)
     return cleaned_by_clause_id
+
+
+def _degraded_clause_assessment(
+    clause_id: str,
+    original: Mapping[str, Any],
+    errors: Sequence[str],
+) -> dict[str, Any]:
+    """Synthesize the SAFE fallback for a clause whose assessment failed validation.
+
+    A per-clause contract defect (invented paragraph_id, fabricated/ambiguous
+    quote, pass/fail/issue_type coupling violation, unsupported field, malformed
+    redline, ...) must not discard the rest of the document's review. We discard
+    only the UNTRUSTWORTHY parts of THIS clause (its evidence, redline, confidence,
+    and verdict) and replace them with a conservative review verdict:
+
+    - ``decision`` is forced to REVIEW and ``issue_type`` to ``unclear`` -- NEVER a
+      pass, so a hallucinated-but-malformed clause cannot slip through clean;
+    - ``blocks_send`` is True, so the document stays send-blocked by this clause;
+    - evidence/redline are emptied (we could not trust what the model sent);
+    - ``validation_status`` is ``contract_invalid`` and a reason code records why,
+      so the audit trail shows this was a quarantined clause, not a real review.
+
+    The model's free-text ``rationale`` is preserved when present (it is harmless
+    display text) so a human still sees the model's stated concern.
+    """
+    model_rationale = ""
+    if isinstance(original, Mapping):
+        model_rationale = str(original.get("rationale") or "").strip()
+    rationale = (
+        "This clause's AI assessment did not satisfy the review contract and was "
+        "quarantined for human review."
+    )
+    if model_rationale:
+        rationale = f"{rationale} The model's original note was: {model_rationale}"
+    return {
+        "schema_version": AI_ASSESSMENT_CONTRACT_VERSION,
+        "clause_id": clause_id,
+        "decision": CLAUSE_DECISION_REVIEW,
+        "issue_type": ISSUE_TYPE_UNCLEAR,
+        "rationale": rationale,
+        "evidence": [],
+        "proposed_redline": {"action": AI_REDLINE_NO_CHANGE},
+        "proposed_edits": [{"action": AI_REDLINE_NO_CHANGE}],
+        "confidence": 0.0,
+        "blocks_send": True,
+        "manual_redline_needed": True,
+        "reason_code": AI_REASON_CODE_CONTRACT_INVALID,
+        "reason_codes": [AI_REASON_CODE_CONTRACT_INVALID],
+        "validation_status": AI_VALIDATION_STATUS_CONTRACT_INVALID,
+    }
 
 
 def validate_ai_clause_assessment(

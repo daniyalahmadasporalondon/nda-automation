@@ -324,17 +324,26 @@ class AIAssessorTests(unittest.TestCase):
         self.assertTrue(mutuality["blocks_send"])
         self.assertIn("ungrounded_finding", mutuality.get("reason_codes", []))
 
-    def test_ai_first_assessor_rejects_nonexistent_paragraph_id(self):
+    def test_ai_first_assessor_degrades_clause_with_invented_paragraph_id(self):
         # A paragraph_id the model invented (no such reviewed paragraph) is a
-        # structural error and still hard-rejects the response.
+        # per-clause contract defect. End to end, it must NOT discard the whole
+        # review: the clause is quarantined into a SAFE blocking review (never a
+        # silent pass) and the document still surfaces a needs-review verdict.
         reviewer = InMemoryAssessmentReviewer(response={
             "assessments": [
                 _assessment("mutuality", "pass", paragraph_id="p999", quote="Each party may disclose Confidential Information"),
             ],
         })
 
-        with self.assertRaisesRegex(AIAssessorError, "paragraph_id does not exist: p999"):
-            assess_nda_with_ai(SOURCE_TEXT, reviewer=reviewer)
+        result = assess_nda_with_ai(SOURCE_TEXT, reviewer=reviewer)
+
+        mutuality = next(clause for clause in result["clauses"] if clause["id"] == "mutuality")
+        # The invented-id pass is NOT honoured as a clean pass; it fails safe.
+        self.assertEqual(mutuality["decision"], "review")
+        self.assertTrue(mutuality["blocks_send"])
+        self.assertEqual(
+            mutuality["ai_first_assessment"]["status"], "contract_invalid"
+        )
 
     def test_ai_first_assessor_rejects_bad_response_envelope(self):
         reviewer = InMemoryAssessmentReviewer(response={"assessments": [], "extra": "not allowed"})
