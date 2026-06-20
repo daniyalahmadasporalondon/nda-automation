@@ -32,6 +32,8 @@ __all__ = [
     "VALID_REDLINE_ACTIONS",
     "REDLINE_ACTIONS_NEEDING_TEMPLATE",
     "check_option_id_collision",
+    "check_governing_law_forum_present",
+    "check_trigger_terms_present",
 ]
 
 # ---------------------------------------------------------------------------
@@ -667,6 +669,100 @@ def check_option_id_collision(clause: Mapping[str, Any]) -> list[LintViolation]:
 
 
 # ---------------------------------------------------------------------------
+# Check 7: governing_law_forum_present
+# ---------------------------------------------------------------------------
+
+_GOVERNING_LAW_CLAUSE_ID = "governing_law"
+
+
+def check_governing_law_forum_present(clause: Mapping[str, Any]) -> list[LintViolation]:
+    """Every governing-law approved option must name a non-empty court/forum.
+
+    The ``forum_jurisdiction`` string pairs each approved governing law with the
+    venue whose courts have authority. It is the single source the AI law<->forum
+    recognition check (``law_forum_check``) reads to flag a law/forum mismatch, and
+    the value generation falls back to when no signing-entity registers a court for
+    the option. An approved law with NO authored forum means: the review engine
+    cannot recognise/verify that law's forum, and a generated NDA under that law
+    has no court to write -- so publishing a governing law with an empty forum is a
+    self-contradiction the gate must reject (you can't publish a law with no court).
+
+    Only applies to the ``governing_law`` clause; every other clause is a no-op.
+    """
+
+    if _clause_id(clause) != _GOVERNING_LAW_CLAUSE_ID:
+        return []
+
+    rules = _rules(clause)
+    raw_options = rules.get("approved_options")
+    if not isinstance(raw_options, Sequence) or isinstance(raw_options, (str, bytes)):
+        # The approved_options shape itself is enforced by the rules validator /
+        # approved_options_present; nothing to forum-check here.
+        return []
+
+    violations: list[LintViolation] = []
+    for index, option in enumerate(raw_options):
+        if not isinstance(option, Mapping):
+            continue
+        label = (
+            _text(option.get("label"))
+            or _text(option.get("value"))
+            or _text(option.get("id"))
+            or f"<approved_options[{index}]>"
+        )
+        if not _text(option.get("forum_jurisdiction")):
+            violations.append(
+                LintViolation(
+                    _GOVERNING_LAW_CLAUSE_ID,
+                    "governing_law_forum_present",
+                    f"approved governing law '{label}' has no forum_jurisdiction "
+                    "(court/forum); a governing law cannot be published without a "
+                    "court -- the review forum check and generation have nothing to "
+                    "pair the law with",
+                )
+            )
+    return violations
+
+
+# ---------------------------------------------------------------------------
+# Check 8: trigger_terms_present
+# ---------------------------------------------------------------------------
+
+
+def check_trigger_terms_present(clause: Mapping[str, Any]) -> list[LintViolation]:
+    """Every clause must carry at least one non-blank search term.
+
+    ``search_terms`` is the detection cue the deterministic checkers and the AI
+    detector use to surface a clause to the review engine -- ``mutuality.py``,
+    ``confidential_information.py``, and ``term_and_survival.py`` all read it, and
+    a dynamic clause is only ever surfaced through its terms. A clause with no
+    search term can never be located in a document, so its rules never fire: it is
+    silently dead. The schema validator already requires this for a well-formed
+    publish, but the publish lint enforces it independently so the trigger-term
+    editor (now live for every clause) cannot ship a clause that nothing detects.
+
+    ``semantic_signals`` is optional, so its absence is never flagged.
+    """
+
+    clause_id = _clause_id(clause)
+    raw = clause.get("search_terms")
+    terms: list[str] = []
+    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+        terms = [_text(term) for term in raw if _text(term)]
+    if terms:
+        return []
+    return [
+        LintViolation(
+            clause_id,
+            "trigger_terms_present",
+            "clause has no non-blank search_terms, so the detector can never "
+            "surface it and its review rules never fire -- add at least one "
+            "trigger term",
+        )
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Registry + entry point
 # ---------------------------------------------------------------------------
 
@@ -677,6 +773,8 @@ CHECKS: dict[str, CheckFn] = {
     "approved_options_present": check_approved_options_present,
     "referential_integrity": check_referential_integrity,
     "option_id_collision": check_option_id_collision,
+    "governing_law_forum_present": check_governing_law_forum_present,
+    "trigger_terms_present": check_trigger_terms_present,
 }
 
 # Stable, ordered registry of the check ids the engine runs.

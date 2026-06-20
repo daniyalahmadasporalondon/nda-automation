@@ -38,6 +38,9 @@ def _clean_required_clause() -> dict[str, Any]:
         "requirement": "The agreement must include a sample clause.",
         "preferred_position": "A clear sample clause is present.",
         "check_trigger": "The sample clause is missing or unclear.",
+        # A clause is only ever surfaced to the engine through its trigger terms,
+        # so a clean clause must carry at least one (trigger_terms_present check).
+        "search_terms": ["sample clause"],
         "redline_template": "This Agreement includes the standard sample clause.",
         "rules": {
             "version": 1,
@@ -689,6 +692,89 @@ def test_option_id_collision_identical_duplicate_rows_not_flagged() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Check 7: governing_law_forum_present
+# ---------------------------------------------------------------------------
+
+
+def test_governing_law_forum_present_clean() -> None:
+    clause = _governing_clause_with_options(
+        [
+            {
+                "id": "india",
+                "label": "India",
+                "value": "India",
+                "forum_jurisdiction": "Mumbai, India",
+            },
+            {
+                "id": "england_and_wales",
+                "label": "England and Wales",
+                "value": "England and Wales",
+                "forum_jurisdiction": "England and Wales",
+                "default": True,
+            },
+        ]
+    )
+    assert _run_check("governing_law_forum_present", clause) == []
+
+
+def test_governing_law_forum_present_missing_forum_is_flagged() -> None:
+    clause = _governing_clause_with_options(
+        [
+            {
+                "id": "india",
+                "label": "India",
+                "value": "India",
+                "forum_jurisdiction": "Mumbai, India",
+            },
+            # Newly-authored law with NO court/forum -- cannot be published.
+            {"id": "singapore", "label": "Singapore", "value": "Singapore"},
+        ]
+    )
+    violations = _run_check("governing_law_forum_present", clause)
+    assert len(violations) == 1
+    v = violations[0]
+    assert v.check_id == "governing_law_forum_present"
+    assert v.clause_id == "governing_law"
+    assert "Singapore" in v.message
+    assert "forum_jurisdiction" in v.message
+
+
+def test_governing_law_forum_present_blank_forum_is_flagged() -> None:
+    clause = _governing_clause_with_options(
+        [
+            {
+                "id": "delaware",
+                "label": "Delaware",
+                "value": "Delaware",
+                "forum_jurisdiction": "   ",
+            },
+        ]
+    )
+    violations = _run_check("governing_law_forum_present", clause)
+    assert len(violations) == 1
+    assert "Delaware" in violations[0].message
+
+
+def test_governing_law_forum_present_only_applies_to_governing_law() -> None:
+    # A non-governing-law clause carrying forumless options is a no-op.
+    clause = _clean_required_clause()
+    clause["rules"]["approved_options"] = [
+        {"id": "opt", "label": "Opt", "value": "Opt"},
+    ]
+    assert _run_check("governing_law_forum_present", clause) == []
+
+
+def test_governing_law_forum_present_flows_through_lint_playbook() -> None:
+    clause = _governing_clause_with_options(
+        [{"id": "singapore", "label": "Singapore", "value": "Singapore"}]
+    )
+    playbook = {"version": "1.0", "name": "Test", "clauses": [clause]}
+    violations = lint_playbook(playbook)
+    forum = [v for v in violations if v.check_id == "governing_law_forum_present"]
+    assert len(forum) == 1
+
+
+# ---------------------------------------------------------------------------
 # Vocabulary drift pin: the local valid sets must match the canonical contract.
 # ---------------------------------------------------------------------------
 
@@ -792,3 +878,47 @@ def test_one_throwing_check_does_not_disable_the_others(monkeypatch) -> None:
     assert any("raised" in v.message for v in violations)
     # ...AND the OTHER check (condition_well_formed) still ran on the same clause.
     assert "condition_well_formed" in check_ids
+
+
+# ---------------------------------------------------------------------------
+# Check 8: trigger_terms_present
+# ---------------------------------------------------------------------------
+
+
+def test_trigger_terms_present_clean_clause_passes() -> None:
+    clause = _clean_required_clause()
+    assert _run_check("trigger_terms_present", clause) == []
+
+
+def test_trigger_terms_present_flags_missing_search_terms() -> None:
+    clause = _clean_required_clause()
+    clause.pop("search_terms", None)
+    violations = _run_check("trigger_terms_present", clause)
+    assert [v.check_id for v in violations] == ["trigger_terms_present"]
+    assert violations[0].clause_id == "sample_required"
+
+
+def test_trigger_terms_present_flags_empty_list() -> None:
+    clause = _clean_required_clause()
+    clause["search_terms"] = []
+    assert len(_run_check("trigger_terms_present", clause)) == 1
+
+
+def test_trigger_terms_present_flags_blank_only_terms() -> None:
+    clause = _clean_required_clause()
+    clause["search_terms"] = ["   ", ""]
+    assert len(_run_check("trigger_terms_present", clause)) == 1
+
+
+def test_trigger_terms_present_blocks_publish_via_lint_playbook() -> None:
+    clause = _clean_required_clause()
+    clause["search_terms"] = []
+    playbook = {"version": "1.0", "name": "T", "clauses": [clause]}
+    violations = lint_playbook(playbook)
+    assert any(v.check_id == "trigger_terms_present" for v in violations)
+
+
+def test_live_playbook_has_trigger_terms_for_every_clause() -> None:
+    playbook = load_playbook()
+    for clause in playbook["clauses"]:
+        assert _run_check("trigger_terms_present", clause) == [], clause.get("id")

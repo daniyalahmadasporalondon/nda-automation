@@ -793,7 +793,7 @@ def _validate_clause_rules(clause: Mapping[str, Any], errors: list[str]) -> None
     )
     _validate_clause_type_rule_coverage(clause_id, clause_type, fail_conditions, errors)
     _validate_evidence_requirements(clause_id, rules.get("evidence_requirements"), errors)
-    _validate_redline_guidance(clause_id, rules.get("redline_guidance"), errors)
+    _validate_redline_guidance(clause, clause_id, rules.get("redline_guidance"), errors)
     _validate_approved_options(clause, rules, errors)
 
 
@@ -894,7 +894,9 @@ def _validate_evidence_requirements(clause_id: str, value: object, errors: list[
         errors.append(f"Playbook clause {clause_id} rules.evidence_requirements.guidance must be text.")
 
 
-def _validate_redline_guidance(clause_id: str, value: object, errors: list[str]) -> None:
+def _validate_redline_guidance(
+    clause: Mapping[str, Any], clause_id: str, value: object, errors: list[str]
+) -> None:
     if not isinstance(value, Mapping):
         errors.append(f"Playbook clause {clause_id} rules.redline_guidance must be an object.")
         return
@@ -902,11 +904,27 @@ def _validate_redline_guidance(clause_id: str, value: object, errors: list[str])
     if default_action not in AI_ASSESSMENT_REDLINE_ACTIONS:
         errors.append(f"Playbook clause {clause_id} rules.redline_guidance.default_action is unsupported.")
     if default_action in {REDLINE_REPLACE_PARAGRAPH, REDLINE_INSERT_AFTER_PARAGRAPH} and not (
-        _text(value.get("template_field")) or _text(value.get("option_source"))
+        _text(value.get("template_field"))
+        or _text(value.get("option_source"))
+        # A DYNAMIC clause supplies its replacement/insert wording via fallback.wording
+        # (it cannot carry a redline_template field), so that fallback IS a valid
+        # wording source for a text-building remedy. This is the same source the
+        # publish lint (check_redline_template_present) already accepts, so a required
+        # dynamic clause a user authors can name a replace/insert remedy.
+        or _dynamic_fallback_wording_present(clause)
     ):
         errors.append(
             f"Playbook clause {clause_id} rules.redline_guidance must name template_field or option_source for {default_action}."
         )
+
+
+def _dynamic_fallback_wording_present(clause: Mapping[str, Any]) -> bool:
+    if not is_dynamic_clause(clause):
+        return False
+    fallback = clause.get("fallback")
+    if not isinstance(fallback, Mapping):
+        return False
+    return bool(_text(fallback.get("wording")))
 
 
 def _validate_approved_options(clause: Mapping[str, Any], rules: Mapping[str, Any], errors: list[str]) -> None:

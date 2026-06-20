@@ -591,7 +591,18 @@ def _forum_for_option_id(option_id: str, playbook: Mapping[str, Any]) -> str:
         pass
     from . import governing_law_forum  # noqa: PLC0415
 
-    return governing_law_forum.court_name_for_law(dict(playbook), option_id)
+    # The per-entity registry jurisdiction is the city-level source of truth and
+    # wins above. When NO registry entity defaults to this option -- e.g. a law a
+    # user just AUTHORED in the Playbook editor that has no signing entity yet --
+    # fall back to the court/venue authored ON THE PLAYBOOK OPTION itself
+    # (forum_jurisdiction). The publish lint guarantees every approved option
+    # carries a non-empty forum_jurisdiction, so a published law always resolves a
+    # court here rather than hard-refusing generation. court_name (a removed field)
+    # is still preferred when present for backward compatibility.
+    pairing = governing_law_forum.canonical_forum_for_law(dict(playbook), option_id)
+    if pairing is None:
+        return ""
+    return str(pairing.get("court_name") or pairing.get("forum_jurisdiction") or "").strip()
 
 
 def _forum_jurisdiction_bucket(value: object) -> str:

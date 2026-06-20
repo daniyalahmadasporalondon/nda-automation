@@ -54,21 +54,37 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
   }
 
   function renderPlaybookList() {
-    playbookList.innerHTML = state.playbookClauses
+    const rows = state.playbookClauses
       .map((clause) => {
         const selected = clause.id === state.selectedClauseId ? "selected active" : "";
         const draft = hasClauseDraft(clause.id) ? '<em>Draft</em>' : "";
+        const dynamicBadge = isDynamicClause(clause)
+          ? '<small class="playbook-row-dynamic">AI-reviewed</small>'
+          : "";
         return `
           <button class="playbook-row ${selected}" type="button" data-clause-id="${escapeHtml(clause.id)}" aria-pressed="${selected ? "true" : "false"}">
             <span>
               <strong>${escapeHtml(clause.name)}</strong>
               <small>${escapeHtml(stanceLabel(clause))}</small>
             </span>
+            ${dynamicBadge}
             ${draft}
           </button>
         `;
       })
       .join("");
+
+    // A NATIVE clause cannot be user-added: it needs a code-registered checker in
+    // checks/registry.CLAUSE_CHECKS, and publish rejects a non-dynamic clause with
+    // no checker. So "Add Clause" always creates a DYNAMIC, data-driven, AI-reviewed
+    // clause (engine="dynamic"). The new clause is appended to the draft in-memory
+    // and only persisted on Save Draft / Publish.
+    playbookList.innerHTML = `
+      ${rows}
+      <div class="playbook-add-clause">
+        <button class="secondary" type="button" id="addPlaybookClause">+ Add Clause</button>
+      </div>
+    `;
 
     playbookList.querySelectorAll("[data-clause-id]").forEach((row) => {
       row.addEventListener("click", () => {
@@ -77,6 +93,93 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         renderClauseDetail();
       });
     });
+
+    const addButton = playbookList.querySelector("#addPlaybookClause");
+    if (addButton) {
+      addButton.addEventListener("click", addDynamicClause);
+    }
+  }
+
+  function isDynamicClause(clause) {
+    return String((clause && clause.engine) || "native") === "dynamic";
+  }
+
+  // Append a fresh DYNAMIC clause scaffold to the draft and select it. Every field
+  // the publish lint requires is seeded so the new clause is lint-clean the moment
+  // it is created (the author then edits the prose + conditions). A unique id is
+  // derived from the running clause list so two adds never collide.
+  function addDynamicClause() {
+    const clause = newDynamicClauseScaffold();
+    state.playbook.clauses = [...(state.playbook.clauses || []), clause];
+    state.playbookClauses = state.playbook.clauses;
+    state.selectedClauseId = clause.id;
+    renderPlaybookList();
+    renderClauseDetail();
+  }
+
+  function newDynamicClauseScaffold() {
+    const existingIds = new Set((state.playbookClauses || []).map((item) => String(item.id || "")));
+    let suffix = state.playbookClauses ? state.playbookClauses.length + 1 : 1;
+    let id = `custom_clause_${suffix}`;
+    while (existingIds.has(id)) {
+      suffix += 1;
+      id = `custom_clause_${suffix}`;
+    }
+    return {
+      id,
+      engine: "dynamic",
+      name: "New Clause",
+      type: "prohibited",
+      requirement: "Describe the standard the AI should judge each document against.",
+      preferred_position: "Describe the acceptable / approved language for this clause.",
+      check_trigger: "Describe the wording that should trigger this check.",
+      acceptable_language: "Describe the language that is acceptable for this clause.",
+      search_terms: ["new clause"],
+      semantic_signals: [],
+      fallback: { redline_action: "delete_paragraph" },
+      rules: {
+        version: 1,
+        clause_type: "prohibited",
+        acceptable_position: "Describe the acceptable / approved language for this clause.",
+        pass_conditions: [
+          {
+            id: "clause_absent",
+            decision: "pass",
+            issue_type: "none",
+            description: "The prohibited language is absent or properly carved out.",
+            redline_action: "no_change",
+          },
+        ],
+        fail_conditions: [
+          {
+            id: "clause_present",
+            decision: "fail",
+            issue_type: "present_but_wrong",
+            description: "The prohibited language appears in operative form.",
+            redline_action: "delete_paragraph",
+          },
+        ],
+        review_triggers: [
+          {
+            id: "clause_ambiguous",
+            decision: "review",
+            issue_type: "unclear",
+            description: "The language is ambiguous enough that a human should decide.",
+            redline_action: "no_change",
+          },
+        ],
+        evidence_requirements: {
+          quote_required: true,
+          minimum_evidence_for_pass: 0,
+          minimum_evidence_for_fail: 1,
+          guidance: "Cite the exact operative wording for failures and the ambiguous wording for review.",
+        },
+        redline_guidance: {
+          default_action: "delete_paragraph",
+          drafting_note: "Remove the prohibited language rather than replacing it.",
+        },
+      },
+    };
   }
 
   function renderClauseDetail() {
@@ -137,9 +240,9 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
               <span>Prohibited - Check if present</span>
             </label>
           </fieldset>
-          ${textArea("Preferred Standard Position", "preferred_position", preferredPosition(clause), 3)}
-          ${textArea("Check Trigger Position", "check_trigger", checkTrigger(clause), 3)}
+          ${standardPositionControls(clause)}
           ${policyPanelControls(clause)}
+          ${triggerTermsControls(clause)}
         </section>
 
         <section class="playbook-subpanel ${panelActive("redline") ? "active" : ""}" data-playbook-panel="redline" ${panelActive("redline") ? "" : "hidden"}>
@@ -205,8 +308,19 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     const data = new FormData(form);
     clause.name = String(data.get("name") || "").trim() || clause.name;
     clause.type = data.get("type") === "prohibited" ? "prohibited" : "required";
-    clause.preferred_position = String(data.get("preferred_position") || "").trim();
-    clause.check_trigger = String(data.get("check_trigger") || "").trim();
+    // preferred_position / check_trigger render as editable boxes ONLY for clauses
+    // where they are live levers (mutuality, confidential_information, and any other
+    // native clause). For governing_law / term_and_survival they are derived from
+    // the live levers and shown read-only (no form field), and dynamic clauses
+    // author requirement/acceptable_language instead. Guard the read so a clause
+    // that does not render these inputs keeps its seeded/derived value instead of
+    // being blanked into an invalid (missing-required-field) state.
+    if (data.has("preferred_position")) {
+      clause.preferred_position = String(data.get("preferred_position") || "").trim();
+    }
+    if (data.has("check_trigger")) {
+      clause.check_trigger = String(data.get("check_trigger") || "").trim();
+    }
     templateConfigsForClause(clause).forEach((config) => {
       if (data.has(config.field)) {
         clause[config.field] = String(data.get(config.field) || "").trim();
@@ -219,6 +333,22 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     if (clause.id === "governing_law") {
       applyGoverningLawFormData(clause, form, data);
     }
+    if (isDynamicClause(clause)) {
+      // A dynamic clause's requirement / acceptable language are first-class authored
+      // prose (the standard the AI judges against). Read them and the fallback redline
+      // out of the form into the model.
+      if (data.has("requirement")) {
+        clause.requirement = String(data.get("requirement") || "").trim();
+      }
+      if (data.has("acceptable_language")) {
+        clause.acceptable_language = String(data.get("acceptable_language") || "").trim();
+      }
+      applyDynamicFallback(clause);
+    }
+    // Decision conditions (pass/fail/review prose, issue_type, redline_action) are
+    // now editable for EVERY clause, so read them back for native clauses too. The
+    // reader is a no-op when the clause has no condition rows in the DOM.
+    applyDynamicConditions(clause);
     syncStructuredRules(clause, event?.target?.name);
     renderDraftState();
   }
@@ -528,15 +658,26 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     if (clause.id === "governing_law") {
       const addButton = clauseDetail.querySelector("#addGoverningLaw");
       const input = clauseDetail.querySelector("#governingLawInput");
+      const forumInput = clauseDetail.querySelector("#governingLawForumInput");
       if (addButton && input) {
         addButton.addEventListener("click", () => {
           const value = input.value.trim();
           if (!value) return;
+          const forum = forumInput ? forumInput.value.trim() : "";
           clause.approved_laws = dedupeList([...(clause.approved_laws || []), value]);
           clause.law_phrases = { ...(clause.law_phrases || {}), [value]: value };
           if (!clause.preferred_law) clause.preferred_law = value;
+          // Seed the new option's authored court/forum so syncStructuredRules'
+          // merge writes it onto the freshly-built option object. The publish
+          // lint requires a non-empty forum_jurisdiction, so authoring the court
+          // here at add-time is the happy path.
+          clause._forumByOptionId = {
+            ...(clause._forumByOptionId || {}),
+            [optionIdForLaw(value)]: forum,
+          };
           syncStructuredRules(clause);
           input.value = "";
+          if (forumInput) forumInput.value = "";
           renderClauseDetail();
         });
         input.addEventListener("keydown", (event) => {
@@ -569,6 +710,143 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         });
       });
     }
+    // Trigger-term chips and decision-condition editing are now available for
+    // EVERY clause (native + dynamic). The redline-action / fallback-wording
+    // handlers inside are self-guarded by element presence (only the dynamic
+    // redline panel renders #dynamicRedlineAction), so this is safe to run for
+    // native clauses too.
+    setupClauseEditorControls(clause);
+  }
+
+  function setupClauseEditorControls(clause) {
+    // --- Trigger-term chips (search_terms / semantic_signals) ---
+    const chipAdders = [
+      { buttonId: "addDynamicSearchTerm", inputId: "dynamicSearchTermInput", field: "search_terms" },
+      { buttonId: "addDynamicSemanticSignal", inputId: "dynamicSemanticSignalInput", field: "semantic_signals" },
+    ];
+    chipAdders.forEach(({ buttonId, inputId, field }) => {
+      const button = clauseDetail.querySelector(`#${buttonId}`);
+      const input = clauseDetail.querySelector(`#${inputId}`);
+      if (!button || !input) return;
+      const add = () => {
+        const value = input.value.trim();
+        if (!value) return;
+        clause[field] = dedupeList([...(clause[field] || []), value]);
+        input.value = "";
+        renderClauseDetail();
+      };
+      button.addEventListener("click", add);
+      input.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        add();
+      });
+    });
+    clauseDetail.querySelectorAll("[data-remove-chip]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const kind = button.dataset.removeChip;
+        const field = kind === "semantic-signal" ? "semantic_signals" : "search_terms";
+        const value = button.dataset.chipValue;
+        clause[field] = (clause[field] || []).filter((item) => item !== value);
+        renderClauseDetail();
+      });
+    });
+
+    // --- Redline action / wording ---
+    const redlineSelect = clauseDetail.querySelector("#dynamicRedlineAction");
+    if (redlineSelect) {
+      redlineSelect.addEventListener("change", () => {
+        applyDynamicFallback(clause);
+        renderClauseDetail();
+      });
+    }
+
+    // --- Decision conditions: add / remove ---
+    clauseDetail.querySelectorAll("[data-add-condition]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const field = button.dataset.addCondition;
+        addDynamicCondition(clause, field);
+        renderClauseDetail();
+      });
+    });
+    clauseDetail.querySelectorAll("[data-remove-condition]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const row = button.closest("[data-condition-field]");
+        if (!row) return;
+        const field = row.dataset.conditionField;
+        const index = Number.parseInt(row.dataset.conditionIndex, 10);
+        const list = (clause.rules && clause.rules[field]) || [];
+        if (Number.isInteger(index)) {
+          clause.rules[field] = list.filter((_item, itemIndex) => itemIndex !== index);
+        }
+        renderClauseDetail();
+      });
+    });
+  }
+
+  function addDynamicCondition(clause, field) {
+    if (!clause.rules || typeof clause.rules !== "object") return;
+    const list = Array.isArray(clause.rules[field]) ? clause.rules[field] : [];
+    const decision = field === "fail_conditions" ? "fail" : field === "review_triggers" ? "review" : "pass";
+    const issueType = (ISSUE_TYPES_BY_LIST[field] || ["none"])[0];
+    const base = {
+      id: `${field}_${list.length + 1}`,
+      decision,
+      issue_type: issueType,
+      description: "",
+    };
+    if (field !== "pass_conditions") {
+      base.redline_action = clause.type === "prohibited" ? "delete_paragraph" : "replace_paragraph";
+    } else {
+      base.redline_action = "no_change";
+    }
+    clause.rules[field] = [...list, base];
+  }
+
+  // Mirror the dynamic fallback select + wording textarea into clause.fallback.
+  function applyDynamicFallback(clause) {
+    const select = clauseDetail.querySelector("#dynamicRedlineAction");
+    const wordingArea = clauseDetail.querySelector('[name="fallback_wording"]');
+    const action = select ? String(select.value || "no_change") : "no_change";
+    const fallback = clause.fallback && typeof clause.fallback === "object" ? { ...clause.fallback } : {};
+    fallback.redline_action = action;
+    const wording = wordingArea ? String(wordingArea.value || "").trim() : String(fallback.wording || "").trim();
+    if (action === "replace_paragraph" || action === "insert_after_paragraph") {
+      fallback.wording = wording;
+    } else {
+      delete fallback.wording;
+    }
+    clause.fallback = fallback;
+  }
+
+  // Read every dynamic-condition control out of the DOM into clause.rules. Called
+  // from handleEditorInput so edits to condition prose / issue_type / redline_action
+  // are captured into the model the same way the static fields are.
+  function applyDynamicConditions(clause) {
+    if (!clause.rules || typeof clause.rules !== "object") return;
+    ["pass_conditions", "fail_conditions", "review_triggers"].forEach((field) => {
+      const decision = field === "fail_conditions" ? "fail" : field === "review_triggers" ? "review" : "pass";
+      const rows = [...clauseDetail.querySelectorAll(`[data-condition-field="${field}"]`)];
+      if (!rows.length) return;
+      clause.rules[field] = rows.map((row) => {
+        const idInput = row.querySelector("[data-condition-id]");
+        const descInput = row.querySelector("[data-condition-description]");
+        const issueSelect = row.querySelector("[data-condition-issue]");
+        const redlineSelect = row.querySelector("[data-condition-redline]");
+        const condition = {
+          id: idInput ? String(idInput.value || "").trim() : "",
+          decision,
+          issue_type: issueSelect ? String(issueSelect.value || "") : "",
+          description: descInput ? String(descInput.value || "").trim() : "",
+        };
+        if (field !== "pass_conditions") {
+          condition.redline_action = redlineSelect ? String(redlineSelect.value || "no_change") : "no_change";
+        } else {
+          condition.redline_action = "no_change";
+        }
+        return condition;
+      });
+    });
   }
 
   function setupPlaybookSubpanels() {
@@ -694,7 +972,12 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       await ensureRuntime();
       const api = playbookApi();
       if (!api) throw new Error("Draft tools are still loading. Try again in a moment.");
-      const payload = await api.publishPlaybook(state.playbook, { activeMeta: activeMetadata() });
+      const payload = await api.publishPlaybook(state.playbook, {
+        activeMeta: activeMetadata(),
+        // When a server draft is outstanding (the save-then-publish flow), publish
+        // THAT draft by id; a direct playbook-object publish 409s while a draft exists.
+        draftId: draftMetadataId(),
+      });
       applyActiveBlock(extractBlock(payload, "active", state.activePlaybook));
       // Publishing clears the server draft; reflect the now-in-sync state by
       // re-baselining the draft block to the freshly published active version.
@@ -733,6 +1016,13 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
   function activeMetadata() {
     const block = state.activePlaybook;
     return block && typeof block.metadata === "object" ? block.metadata : null;
+  }
+
+  // The id of the outstanding server draft (empty when none). Threaded into publish
+  // so the saved draft is the publish target.
+  function draftMetadataId() {
+    const meta = state.draftMeta && typeof state.draftMeta.metadata === "object" ? state.draftMeta.metadata : null;
+    return meta && meta.draft_id ? String(meta.draft_id) : "";
   }
 
   function discardSelectedDraft() {
@@ -833,8 +1123,15 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
 
   function diffForClause(clauseId) {
     const clause = state.playbookClauses.find((item) => item.id === clauseId);
+    if (!clause) return "";
     const saved = savedClause(clauseId);
-    if (!clause || !saved) return "";
+    // A clause with no saved counterpart is a NEWLY-ADDED (Add-Clause) clause: it is
+    // entirely an unsaved change, so report a diff against an empty baseline. Without
+    // this, a freshly-added dynamic clause registers no diff -> hasAnyDraft() stays
+    // false -> Save Draft never enables and the new clause can never be published.
+    if (!saved) {
+      return `new clause:\n+ ${formatDiffValue(clause.name || clause.id || clauseId)} (added)`;
+    }
     const fields = [
       "name",
       "type",
@@ -846,10 +1143,21 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       "approved_laws",
       "preferred_law",
       "law_phrases",
+      // Dynamic-clause authoring fields, so edits to an authored clause's prose,
+      // trigger terms, redline fallback, and decision conditions count as unsaved
+      // changes (the same way the native-clause fields above do).
+      "requirement",
+      "acceptable_language",
+      "search_terms",
+      "semantic_signals",
+      "fallback",
       "rules.clause_type",
       "rules.acceptable_position",
       "rules.approved_options",
       "rules.redline_guidance",
+      "rules.pass_conditions",
+      "rules.fail_conditions",
+      "rules.review_triggers",
     ];
     return fields
       .filter((field) => stableJson(valueAt(clause, field)) !== stableJson(valueAt(saved, field)))
@@ -864,10 +1172,108 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     if (clause.id === "governing_law") {
       return governingLawPolicyControls(clause);
     }
+    if (isDynamicClause(clause)) {
+      return dynamicPolicyControls(clause);
+    }
     return "";
   }
 
+  // Authoring controls for a dynamic (AI-reviewed) clause's prose: the standard the
+  // AI judges against (requirement), the acceptable/approved language, and the
+  // trigger terms (search_terms / semantic_signals) that surface the clause to the
+  // detector. These are the data the AI engine reads to assess a clause type the
+  // code has never seen.
+  function dynamicPolicyControls(clause) {
+    return `
+      <section class="admin-special" data-dynamic-policy="1">
+        <h3>AI Review Standard</h3>
+        <p class="admin-muted">The standard the AI judges each document against, and the language it should accept.</p>
+        ${textArea("Requirement (the standard the AI judges against)", "requirement", String(clause.requirement || ""), 3)}
+        ${textArea("Acceptable / Approved Language", "acceptable_language", String(clause.acceptable_language || ""), 3)}
+      </section>
+    `;
+  }
+
+  // The governing_law and term_and_survival clauses RE-DERIVE preferred_position
+  // and check_trigger from their live levers (the approved-jurisdiction list /
+  // max_term_years) on every AI-packet build (playbook_rules._normalize_*). So a
+  // free-text edit to these boxes is silently overwritten -- editable-but-inert.
+  // For those two clauses we show the derived text read-only and point the author
+  // at the real lever; for every other clause the boxes are genuinely live.
+  const DERIVED_STANDARD_CLAUSES = {
+    governing_law: "the Approved Governing Laws list below",
+    term_and_survival: "the Ordinary Confidentiality Cap (years) below",
+  };
+
+  function standardPositionControls(clause) {
+    const lever = DERIVED_STANDARD_CLAUSES[clause.id];
+    if (lever) {
+      return `
+        <section class="admin-special" data-derived-standard="1">
+          <h3>Standard Position (derived)</h3>
+          <p class="admin-muted">For this clause the preferred position and check trigger are generated from ${escapeHtml(lever)} on every review. They cannot be edited as free text here -- change the live lever instead.</p>
+          <label class="admin-field compact"><span>Preferred Standard Position (read-only, derived)</span>
+            <textarea rows="3" readonly disabled>${escapeHtml(preferredPosition(clause))}</textarea>
+          </label>
+          <label class="admin-field compact"><span>Check Trigger Position (read-only, derived)</span>
+            <textarea rows="3" readonly disabled>${escapeHtml(checkTrigger(clause))}</textarea>
+          </label>
+        </section>
+      `;
+    }
+    if (isDynamicClause(clause)) {
+      // Dynamic clauses author requirement / acceptable_language in their own
+      // section (dynamicPolicyControls); preferred_position / check_trigger are
+      // not separate live levers for them, so don't render duplicate boxes.
+      return "";
+    }
+    return `
+      ${textArea("Preferred Standard Position", "preferred_position", preferredPosition(clause), 3)}
+      ${textArea("Check Trigger Position", "check_trigger", checkTrigger(clause), 3)}
+    `;
+  }
+
+  // Editable trigger-term chips (search_terms / semantic_signals) for EVERY
+  // clause -- native and dynamic alike. search_terms drive the deterministic
+  // detector (e.g. mutuality.py reads them); semantic_signals ride into the AI
+  // packet. At least one search term is required (the publish gate enforces it).
+  function triggerTermsControls(clause) {
+    const searchTerms = chipList(clause.search_terms || [], "search-term");
+    const semanticSignals = chipList(clause.semantic_signals || [], "semantic-signal");
+    return `
+      <section class="admin-special" data-dynamic-triggers="1">
+        <h3>Trigger Terms</h3>
+        <p class="admin-muted">Words and phrases that surface this clause to the detector and AI packet. At least one search term is required.</p>
+        <label class="admin-field compact"><span>Search Terms</span></label>
+        <div class="admin-chip-row" data-chip-row="search-term">${searchTerms || '<span class="admin-muted">No search terms yet</span>'}</div>
+        <div class="admin-inline-add">
+          <input type="text" id="dynamicSearchTermInput" placeholder="e.g. non-compete">
+          <button class="secondary" type="button" id="addDynamicSearchTerm">Add</button>
+        </div>
+        <label class="admin-field compact"><span>Semantic Signals (optional)</span></label>
+        <div class="admin-chip-row" data-chip-row="semantic-signal">${semanticSignals || '<span class="admin-muted">No semantic signals yet</span>'}</div>
+        <div class="admin-inline-add">
+          <input type="text" id="dynamicSemanticSignalInput" placeholder="e.g. restraint on competition">
+          <button class="secondary" type="button" id="addDynamicSemanticSignal">Add</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function chipList(values, kind) {
+    return (values || [])
+      .map((item) => `
+        <button class="admin-chip removable" type="button" data-remove-chip="${escapeHtml(kind)}" data-chip-value="${escapeHtml(item)}">
+          ${escapeHtml(item)} <span aria-hidden="true">x</span>
+        </button>
+      `)
+      .join("");
+  }
+
   function redlinePanelControls(clause) {
+    if (isDynamicClause(clause)) {
+      return dynamicRedlineControls(clause);
+    }
     const controls = [redlineTemplateEditors(clause)];
     if (clause.id === "confidential_information") {
       controls.push(templateEditorBlock(clause, standardExclusionsTemplateConfig()));
@@ -888,7 +1294,116 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     return `
       ${checkerVisibilityPanel(clause)}
       ${clause.id === "term_and_survival" ? termSurvivalDecisionControls() : ""}
+      ${dynamicDecisionControls(clause)}
       ${sharedContextControls(clause)}
+    `;
+  }
+
+  // The redline the engine applies when a dynamic clause is flagged. A dynamic
+  // clause carries its wording in fallback.wording (it cannot carry a
+  // redline_template). The action set mirrors the backend's AI_ASSESSMENT actions;
+  // delete_paragraph / no_change need no wording, replace / insert do.
+  const DYNAMIC_REDLINE_ACTIONS = [
+    { value: "no_change", label: "No change" },
+    { value: "delete_paragraph", label: "Delete paragraph (remove prohibited language)" },
+    { value: "replace_paragraph", label: "Replace paragraph (substitute approved wording)" },
+    { value: "insert_after_paragraph", label: "Insert after paragraph (add required wording)" },
+  ];
+
+  function dynamicRedlineControls(clause) {
+    const fallback = clause.fallback && typeof clause.fallback === "object" ? clause.fallback : {};
+    const action = String(fallback.redline_action || "no_change");
+    const wording = String(fallback.wording || "");
+    const wordingNeeded = action === "replace_paragraph" || action === "insert_after_paragraph";
+    const options = DYNAMIC_REDLINE_ACTIONS
+      .map((opt) => `<option value="${escapeHtml(opt.value)}" ${opt.value === action ? "selected" : ""}>${escapeHtml(opt.label)}</option>`)
+      .join("");
+    return `
+      <section class="admin-special" data-dynamic-redline="1">
+        <h3>Redline Action</h3>
+        <p class="admin-muted">What the review engine does to a flagged paragraph for this clause.</p>
+        <label class="admin-field compact">
+          <span>Redline Action</span>
+          <select name="fallback_redline_action" id="dynamicRedlineAction">${options}</select>
+        </label>
+        <label class="admin-field ${wordingNeeded ? "" : "is-hidden"}" data-dynamic-wording="1">
+          <span>Redline Wording${wordingNeeded ? " (required for replace / insert)" : ""}</span>
+          <textarea name="fallback_wording" rows="3" placeholder="The approved language to substitute or insert.">${escapeHtml(wording)}</textarea>
+        </label>
+      </section>
+    `;
+  }
+
+  // The structured decision conditions (pass / fail / review) the lint validates but
+  // the UI previously could not author. Each condition is fully editable: its
+  // description (what the AI judges), its issue_type, and -- for fail / review -- the
+  // redline_action. The decision is fixed by which list the condition lives in
+  // (pass->pass, fail->fail, review->review); the publish lint enforces that and
+  // rejects malformed / contradictory conditions.
+  const ISSUE_TYPES_BY_LIST = {
+    pass_conditions: ["none"],
+    fail_conditions: ["present_but_wrong", "missing", "unclear"],
+    review_triggers: ["unclear"],
+  };
+
+  function dynamicDecisionControls(clause) {
+    const rules = clause.rules && typeof clause.rules === "object" ? clause.rules : {};
+    // governing_law and term_and_survival re-derive a couple of named condition
+    // DESCRIPTIONS from their live levers on packet build, so those specific texts
+    // can read back differently. The structure (which conditions exist, their
+    // decision/issue_type/redline_action, and adding/removing conditions) is fully
+    // live for every clause; flag the derived-description nuance for the author.
+    const derivedNote = DERIVED_STANDARD_CLAUSES[clause.id]
+      ? `<p class="admin-muted" data-derived-condition-note="1">Note: some condition descriptions for this clause are regenerated from ${escapeHtml(DERIVED_STANDARD_CLAUSES[clause.id])} on each review. Adding, removing, and re-typing conditions, issue types, and redline actions is still live.</p>`
+      : "";
+    return `
+      <section class="admin-special" data-dynamic-conditions="1">
+        <h3>Decision Conditions</h3>
+        <p class="admin-muted">The structured pass / fail / review logic the AI applies. A clause needs at least one pass condition and at least one fail or review condition.</p>
+        ${derivedNote}
+        ${dynamicConditionGroup(clause, "pass_conditions", "Pass", rules.pass_conditions)}
+        ${dynamicConditionGroup(clause, "fail_conditions", "Fail", rules.fail_conditions)}
+        ${dynamicConditionGroup(clause, "review_triggers", "Review", rules.review_triggers)}
+      </section>
+    `;
+  }
+
+  function dynamicConditionGroup(clause, field, label, conditions) {
+    const list = Array.isArray(conditions) ? conditions : [];
+    const showRedline = field !== "pass_conditions";
+    const rows = list
+      .map((condition, index) => {
+        const issueOptions = ISSUE_TYPES_BY_LIST[field]
+          .map((value) => `<option value="${escapeHtml(value)}" ${String(condition.issue_type || "") === value ? "selected" : ""}>${escapeHtml(value)}</option>`)
+          .join("");
+        const redlineOptions = DYNAMIC_REDLINE_ACTIONS
+          .map((opt) => `<option value="${escapeHtml(opt.value)}" ${String(condition.redline_action || "no_change") === opt.value ? "selected" : ""}>${escapeHtml(opt.label)}</option>`)
+          .join("");
+        return `
+          <div class="admin-condition" data-condition-field="${escapeHtml(field)}" data-condition-index="${index}">
+            <div class="admin-condition-head">
+              <input type="text" data-condition-id="1" value="${escapeHtml(condition.id || "")}" placeholder="condition id (e.g. ${escapeHtml(field)}_1)">
+              <button class="admin-chip removable" type="button" data-remove-condition="1" title="Remove condition"><span aria-hidden="true">x</span></button>
+            </div>
+            <textarea data-condition-description="1" rows="2" placeholder="What the AI should judge for this ${escapeHtml(label.toLowerCase())} outcome.">${escapeHtml(condition.description || "")}</textarea>
+            <div class="admin-condition-meta">
+              <label class="admin-field compact"><span>Issue type</span>
+                <select data-condition-issue="1">${issueOptions}</select>
+              </label>
+              ${showRedline ? `<label class="admin-field compact"><span>Redline action</span><select data-condition-redline="1">${redlineOptions}</select></label>` : ""}
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+    return `
+      <div class="admin-condition-group" data-condition-group="${escapeHtml(field)}">
+        <div class="admin-condition-group-head">
+          <h4>${escapeHtml(label)} conditions</h4>
+          <button class="secondary" type="button" data-add-condition="${escapeHtml(field)}">+ Add ${escapeHtml(label.toLowerCase())} condition</button>
+        </div>
+        ${rows || `<p class="admin-muted">No ${escapeHtml(label.toLowerCase())} conditions yet.</p>`}
+      </div>
     `;
   }
 
@@ -940,6 +1455,15 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     `;
   }
 
+  function governingLawForumForLaw(clause, law) {
+    const options = clause.rules && Array.isArray(clause.rules.approved_options)
+      ? clause.rules.approved_options
+      : [];
+    const id = optionIdForLaw(law);
+    const match = options.find((option) => option && String(option.id || "") === id);
+    return match && typeof match.forum_jurisdiction === "string" ? match.forum_jurisdiction : "";
+  }
+
   function governingLawPolicyControls(clause) {
     const approved = clause.approved_laws || [];
     const preferredLaw = clause.preferred_law || approved[0] || "";
@@ -959,6 +1483,10 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
             <span>Draft phrase</span>
             <input name="governing_law_phrase_${index}" data-governing-law-phrase="${index}" type="text" value="${escapeHtml(lawPhrases[law] || law)}">
           </label>
+          <label class="admin-field">
+            <span>Court / forum</span>
+            <input name="governing_law_forum_${index}" data-governing-law-forum="${index}" type="text" value="${escapeHtml(governingLawForumForLaw(clause, law))}" placeholder="e.g. courts of England and Wales">
+          </label>
           <button class="secondary admin-remove-button" type="button" data-remove-governing-law="${index}" ${approved.length <= 1 ? "disabled" : ""}>Remove</button>
         </article>
       `)
@@ -966,10 +1494,11 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     return `
       <section class="admin-special">
         <h3>Approved Governing Laws</h3>
-        <p class="admin-muted">These jurisdictions drive the AI assessment options, deterministic approved-law check, and insertable Governing Law redline choices.</p>
+        <p class="admin-muted">These jurisdictions drive the AI assessment options, deterministic approved-law check, the law&lt;-&gt;forum recognition the review engine uses, and insertable Governing Law redline choices. The court / forum names the venue that must pair with each law and is required to publish.</p>
         <div class="admin-policy-options">${rows}</div>
         <div class="admin-inline-add">
           <input id="governingLawInput" type="text" placeholder="Add approved jurisdiction">
+          <input id="governingLawForumInput" type="text" placeholder="Court / forum (e.g. courts of Singapore)">
           <button class="secondary" id="addGoverningLaw" type="button">Add</button>
         </div>
       </section>
@@ -1060,7 +1589,15 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
   }
 
   function sanitizePlaybookTemplatesForSave() {
-    state.playbookClauses.forEach(removeUnsupportedTemplateFields);
+    state.playbookClauses.forEach((clause) => {
+      removeUnsupportedTemplateFields(clause);
+      // _forumByOptionId is a transient FE-only scratch field used to thread the
+      // authored court/forum into syncGoverningLawRules; it must never reach the
+      // backend (it is not a valid clause field and would fail the publish gate).
+      if (clause && Object.prototype.hasOwnProperty.call(clause, "_forumByOptionId")) {
+        delete clause._forumByOptionId;
+      }
+    });
   }
 
   function validateTemplateValue(value, config) {
@@ -1894,16 +2431,22 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     const rows = [...form.querySelectorAll("[data-governing-law-row]")];
     const approvedLaws = [];
     const lawPhrases = {};
+    // Authored court/forum per option, keyed by the option's derived id, so
+    // syncGoverningLawRules can write it onto the matching merged option object.
+    const forumByOptionId = {};
     rows.forEach((row) => {
       const law = String(row.querySelector("[data-governing-law-value]")?.value || "").trim();
       if (!law) return;
       if (approvedLaws.some((item) => item.toLowerCase() === law.toLowerCase())) return;
       const phrase = String(row.querySelector("[data-governing-law-phrase]")?.value || "").trim() || law;
+      const forum = String(row.querySelector("[data-governing-law-forum]")?.value || "").trim();
       approvedLaws.push(law);
       lawPhrases[law] = phrase;
+      forumByOptionId[optionIdForLaw(law)] = forum;
     });
     clause.approved_laws = approvedLaws;
     clause.law_phrases = lawPhrases;
+    clause._forumByOptionId = forumByOptionId;
     const preferredIndex = Number.parseInt(data.get("preferred_law_index"), 10);
     clause.preferred_law = approvedLaws[preferredIndex] || approvedLaws[0] || "";
   }
@@ -1913,6 +2456,15 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     clause.rules.clause_type = clause.type;
     if (changedField === "preferred_position" && clause.preferred_position) {
       clause.rules.acceptable_position = clause.preferred_position;
+    }
+    if (isDynamicClause(clause)) {
+      // Keep the structured rules.acceptable_position coherent with the authored
+      // acceptable language / preferred position so the lint's referential checks
+      // and the binding-policy block read a non-empty, consistent value.
+      const acceptable = String(clause.acceptable_language || clause.preferred_position || "").trim();
+      if (acceptable) {
+        clause.rules.acceptable_position = acceptable;
+      }
     }
     if (clause.id === "governing_law") {
       syncGoverningLawRules(clause);
@@ -1932,12 +2484,40 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     });
     clause.law_phrases = lawPhrases;
     const rules = clause.rules || {};
-    rules.approved_options = approved.map((law) => ({
-      id: optionIdForLaw(law),
-      label: law,
-      value: law,
-      default: law === clause.preferred_law,
-    }));
+    // Rebuild the option list by MERGING the {id,label,value,default} the editor
+    // controls onto the EXISTING loaded option objects (matched by derived id),
+    // never replacing them outright. The backend authors per-option fields the
+    // FE has no control for -- forum_jurisdiction (the law<->court pairing the AI
+    // forum check + generation read), aliases, entity_prefixes (the governing-law
+    // checker's recognition terms). Replacing the array would strip those before
+    // the POST, and the backend carry-over could not recover what never arrived.
+    const existingOptions = Array.isArray(rules.approved_options) ? rules.approved_options : [];
+    const existingById = {};
+    existingOptions.forEach((option) => {
+      if (!option || typeof option !== "object") return;
+      const id = String(option.id || optionIdForLaw(option.value || option.label || "")).trim();
+      if (id) existingById[id] = option;
+    });
+    const forumByOptionId = (clause._forumByOptionId && typeof clause._forumByOptionId === "object")
+      ? clause._forumByOptionId
+      : {};
+    rules.approved_options = approved.map((law) => {
+      const id = optionIdForLaw(law);
+      const prior = existingById[id];
+      const merged = (prior && typeof prior === "object") ? { ...prior } : {};
+      merged.id = id;
+      merged.label = law;
+      merged.value = law;
+      merged.default = law === clause.preferred_law;
+      // The authored court/forum: take the edited value when this sync ran from a
+      // forum edit, otherwise preserve whatever the merged option already carried.
+      if (Object.prototype.hasOwnProperty.call(forumByOptionId, id)) {
+        const forum = String(forumByOptionId[id] || "").trim();
+        if (forum) merged.forum_jurisdiction = forum;
+        else delete merged.forum_jurisdiction;
+      }
+      return merged;
+    });
     if (rules.redline_guidance && typeof rules.redline_guidance === "object") {
       const preferred = clause.preferred_law || approved[0] || "the preferred approved jurisdiction";
       rules.redline_guidance.drafting_note = `Use one of the approved jurisdiction options. Default to ${preferred} unless another approved option is selected.`;

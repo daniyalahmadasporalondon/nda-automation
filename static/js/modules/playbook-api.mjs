@@ -62,11 +62,15 @@ export function createPlaybookApi({ fetchImpl = globalThis.fetch } = {}) {
   }
 
   // Promote the saved draft to active. Sends the playbook so the backend can
-  // verify the client and server agree on what is being published.
-  async function publishPlaybook(playbook, { activeMeta, actor = "admin" } = {}) {
+  // verify the client and server agree on what is being published. When a server
+  // draft exists (the normal save-then-publish flow), the draft_id is sent so the
+  // backend publishes THAT draft (a direct playbook-object publish is rejected with
+  // a 409 "draft already exists" while an unpublished draft is outstanding).
+  async function publishPlaybook(playbook, { activeMeta, actor = "admin", draftId = "" } = {}) {
+    const draftFields = draftId ? { draft_id: draftId } : {};
     return jsonRequest(
       "/api/playbook/publish",
-      { method: "POST", ...jsonBody({ playbook, actor, ...expectedActiveFields(activeMeta) }) },
+      { method: "POST", ...jsonBody({ playbook, actor, ...draftFields, ...expectedActiveFields(activeMeta) }) },
       "Playbook could not be published",
     );
   }
