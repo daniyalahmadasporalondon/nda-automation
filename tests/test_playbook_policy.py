@@ -323,10 +323,20 @@ class AuthoredTextNeutralizationTests(unittest.TestCase):
 
     def test_authored_long_text_is_length_capped(self):
         from nda_automation.playbook_policy import AUTHORED_LONG_TEXT_MAX_CHARS
+        from nda_automation.playbook_rules import MAX_AUTHORED_TEXT_LENGTH
 
+        # Defense-in-depth render cap: the binding-policy block caps each authored
+        # run to AUTHORED_LONG_TEXT_MAX_CHARS (2000) even though the publish-gate
+        # validation already rejects fields over MAX_AUTHORED_TEXT_LENGTH (4000).
+        # Use a value that PASSES validation (<= 4000, so build_playbook_policy_block
+        # -> normalize_playbook_policy -> validate_playbook_rules does not reject it)
+        # but still EXCEEDS the render cap (> 2000), so the cap is exercised. (The
+        # over-4000 reject path is covered by the publish-gate validation tests.)
+        over_cap = AUTHORED_LONG_TEXT_MAX_CHARS + 1000
+        assert over_cap <= MAX_AUTHORED_TEXT_LENGTH
         pb = copy.deepcopy(self.playbook)
         clause = _dynamic_clause("flood", "Flood")
-        clause["requirement"] = "A" * (AUTHORED_LONG_TEXT_MAX_CHARS + 5000)
+        clause["requirement"] = "A" * over_cap
         pb["clauses"].append(clause)
         block = build_playbook_policy_block(pb)
         # The longest unbroken authored run must not exceed the cap.

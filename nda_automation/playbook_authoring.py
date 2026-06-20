@@ -86,12 +86,22 @@ def _format_lint_violation(violation: Any) -> str:
     return f"Playbook clause {clause_id} {message}" if clause_id else message
 
 
-def lint_violations_for(playbook: Any) -> list[str]:
+def _violation_severity(violation: Any) -> str:
+    """A lint violation's severity, defaulting to the blocking ``"error"``."""
+    return str(getattr(violation, "severity", "") or "error").strip().lower() or "error"
+
+
+def lint_violations_for(playbook: Any, *, severities: set[str] | None = None) -> list[str]:
     """Return formatted consistency-lint violation messages for a candidate playbook.
 
     Resolves ``lint_playbook`` at call time so tests (and the integrator) can
     monkeypatch :data:`nda_automation.playbook_authoring.lint_playbook` and so the
     integration degrades gracefully when the lint module is not yet wired.
+
+    ``severities`` filters which violation severities are returned. ``None`` returns
+    all (the draft-validation surface, which shows warnings AND errors); the publish
+    hard-gate passes ``{"error"}`` so advisory ``"warning"`` violations (e.g. a law
+    alias collision) surface in the UI without wedging a legitimate publish.
     """
     lint = lint_playbook
     if lint is None:
@@ -112,7 +122,12 @@ def lint_violations_for(playbook: Any) -> list[str]:
             f"playbook consistency lint could not run ({type(exc).__name__}: {exc}); "
             "blocking publish until the lint machinery is healthy"
         ]
-    return [_format_lint_violation(violation) for violation in (violations or [])]
+    selected = [
+        violation
+        for violation in (violations or [])
+        if severities is None or _violation_severity(violation) in severities
+    ]
+    return [_format_lint_violation(violation) for violation in selected]
 
 
 def _enforce_playbook_lint(playbook: Any) -> None:
@@ -121,8 +136,13 @@ def _enforce_playbook_lint(playbook: Any) -> None:
     Raises :class:`PlaybookTemplateError` (the existing publish-failure type) with a
     message that enumerates every violation, so it surfaces through the same handlers
     and response shape as any other ``validate_playbook`` failure.
+
+    Only ``"error"``-severity violations BLOCK: advisory ``"warning"`` violations
+    (e.g. a law alias collision) are surfaced in draft validation but must not wedge
+    a legitimate publish, matching the project's "don't false-positive-block authoring"
+    stance.
     """
-    messages = lint_violations_for(playbook)
+    messages = lint_violations_for(playbook, severities={"error"})
     if messages:
         raise PlaybookTemplateError(_LINT_FAILURE_PREFIX + "; ".join(messages))
 
@@ -173,6 +193,38 @@ def semantic_lint_warnings_for(playbook: Any) -> list[dict[str, Any]]:
         LOGGER.warning("Playbook semantic lint raised; skipping the advisory pass.", exc_info=True)
         return []
     return [_format_semantic_lint_violation(violation) for violation in (violations or [])]
+
+
+#: The semantic-lint check id that marks a POISONED standard (prose telling the
+#: reviewer to ignore the playbook / mark everything pass). Mirrors
+#: ``playbook_semantic_lint.POISON_CHECK_ID``; surfaced prominently at publish.
+_POISON_CHECK_ID = "poison_instruction"
+
+
+def _log_prominent_semantic_warnings(warnings: list[dict[str, Any]]) -> None:
+    """Log Layer-2 semantic warnings at publish, ELEVATING poison findings.
+
+    A poison standard (a clause that instructs the downstream reviewer to ignore the
+    playbook / mark everything pass) is the most dangerous semantic finding. It does
+    NOT hard-block publish -- an AI judgement must not wedge authoring -- but it is
+    logged at ERROR so it is impossible to miss, while ordinary advisories log at a
+    quieter level.
+    """
+    for warning in warnings or []:
+        message = str(warning.get("message") or "").strip()
+        clause = str(warning.get("clause") or "").strip()
+        if str(warning.get("check_id") or "").strip() == _POISON_CHECK_ID:
+            LOGGER.error(
+                "PLAYBOOK POISON SUGGESTED at publish (clause %s): %s",
+                clause or "?",
+                message,
+            )
+        else:
+            LOGGER.info(
+                "Playbook semantic-lint advisory at publish (clause %s): %s",
+                clause or "?",
+                message,
+            )
 
 
 def load_playbook_workspace(
@@ -343,6 +395,13 @@ def publish_playbook(
                 raise PlaybookAuthoringError(conflict, status=409)
             validate_playbook(publish_playbook)
             _enforce_playbook_lint(publish_playbook)
+            # Layer-2 AI semantic lint at PUBLISH (default-off, fail-open). ADVISORY:
+            # it never blocks publish (false positives + model flakiness must not wedge
+            # a legitimate publish), but it RUNS here and its findings -- especially a
+            # POISON standard that tells the reviewer to ignore the playbook -- are
+            # surfaced prominently in the response and logged loudly.
+            semantic_warnings = semantic_lint_warnings_for(publish_playbook)
+            _log_prominent_semantic_warnings(semantic_warnings)
 
             runtime = _active_runtime_from_playbook(
                 publish_playbook,
@@ -381,6 +440,10 @@ def publish_playbook(
         "draft": None,
         "history": public_playbook_history(history),
         "published_at": runtime["published_at"],
+        # Advisory Layer-2 warnings surfaced PROMINENTLY at publish. Empty when the
+        # semantic lint is disabled (default) or finds nothing. Poison findings are
+        # tagged so the UI can elevate them above ordinary advisories.
+        "semantic_warnings": semantic_warnings,
     }
 
 

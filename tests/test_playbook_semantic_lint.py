@@ -63,20 +63,28 @@ class _StubLinter:
 
 
 class SemanticLintEnabledFlagTests(unittest.TestCase):
-    def test_default_off(self) -> None:
+    def test_default_on(self) -> None:
+        # Design call (b): the semantic lint is ON by default. With the env var unset
+        # it runs (still fail-open + a no-op when no key is configured).
         with mock.patch.dict("os.environ", {}, clear=False):
             import os
 
             os.environ.pop(SEMANTIC_LINT_ENABLED_ENV, None)
-            self.assertFalse(semantic_lint_enabled())
+            self.assertTrue(semantic_lint_enabled())
+
+    def test_empty_value_is_default_on(self) -> None:
+        # An empty string is treated as "unset" -> default ON.
+        with mock.patch.dict("os.environ", {SEMANTIC_LINT_ENABLED_ENV: ""}):
+            self.assertTrue(semantic_lint_enabled())
 
     def test_truthy_values_enable(self) -> None:
         for value in ("1", "true", "TRUE", "yes", "on"):
             with mock.patch.dict("os.environ", {SEMANTIC_LINT_ENABLED_ENV: value}):
                 self.assertTrue(semantic_lint_enabled(), value)
 
-    def test_falsy_values_stay_off(self) -> None:
-        for value in ("0", "false", "no", "off", ""):
+    def test_falsy_values_disable(self) -> None:
+        # The kill switch: an explicit falsy value turns the pass off.
+        for value in ("0", "false", "no", "off"):
             with mock.patch.dict("os.environ", {SEMANTIC_LINT_ENABLED_ENV: value}):
                 self.assertFalse(semantic_lint_enabled(), value)
 
@@ -287,6 +295,76 @@ class SemanticLintAdvisoryIntegrationTests(unittest.TestCase):
                 mock.patch.object(playbook_authoring, "semantic_lint_enabled", None):
             result = self._validate(candidate)
         self.assertEqual(result["warnings"], [])
+
+
+class SemanticLintPoisonTests(unittest.TestCase):
+    """P3: the poison_instruction check + prominent publish surfacing."""
+
+    def test_poison_check_id_in_prompt_and_registry(self) -> None:
+        self.assertIn("poison_instruction", CHECK_IDS)
+        self.assertIn("poison_instruction", playbook_semantic_lint.SYSTEM_PROMPT)
+        self.assertIn("ignore the playbook", playbook_semantic_lint.SYSTEM_PROMPT.lower())
+
+    def test_poison_violation_surfaced_from_raw(self) -> None:
+        from nda_automation.playbook_semantic_lint import _violations_from_raw
+
+        raw = [
+            {
+                "check_id": "poison_instruction",
+                "message": "the requirement tells the reviewer to ignore the playbook and mark everything pass",
+                "confidence": 0.97,
+            }
+        ]
+        violations = _violations_from_raw(raw, clause_id="mutuality")
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].check_id, "poison_instruction")
+
+    def test_publish_surfaces_semantic_warnings_prominently(self) -> None:
+        import json
+        import tempfile
+        from copy import deepcopy
+        from pathlib import Path
+
+        poison = [
+            SemanticLintViolation(
+                clause_id="mutuality",
+                check_id="poison_instruction",
+                message="requirement instructs the reviewer to mark everything pass",
+                confidence=0.98,
+            )
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "playbook.json"
+            active = deepcopy(load_playbook())
+            path.write_text(json.dumps(active), encoding="utf-8")
+            with mock.patch.object(playbook_authoring, "semantic_lint_enabled", lambda: True), \
+                    mock.patch.object(playbook_authoring, "semantic_lint_playbook", lambda pb: poison):
+                with self.assertLogs("nda_automation.playbook_authoring", level="ERROR") as logs:
+                    response = playbook_authoring.publish_playbook(
+                        {"playbook": active, "actor": "admin"}, playbook_path=path
+                    )
+        # Publish SUCCEEDS (advisory, never hard-blocks) but surfaces the warning...
+        self.assertIn("semantic_warnings", response)
+        self.assertEqual(len(response["semantic_warnings"]), 1)
+        self.assertEqual(response["semantic_warnings"][0]["check_id"], "poison_instruction")
+        # ...and logs the poison finding PROMINENTLY at ERROR level.
+        self.assertTrue(any("POISON" in line for line in logs.output), logs.output)
+
+    def test_publish_no_warnings_when_lint_disabled(self) -> None:
+        import json
+        import tempfile
+        from copy import deepcopy
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "playbook.json"
+            active = deepcopy(load_playbook())
+            path.write_text(json.dumps(active), encoding="utf-8")
+            with mock.patch.object(playbook_authoring, "semantic_lint_enabled", lambda: False):
+                response = playbook_authoring.publish_playbook(
+                    {"playbook": active, "actor": "admin"}, playbook_path=path
+                )
+        self.assertEqual(response["semantic_warnings"], [])
 
 
 if __name__ == "__main__":

@@ -668,6 +668,20 @@ def _require_court_forum(
             "forum for this option (entity registry jurisdiction or the Playbook "
             "approved option's court_name)."
         )
+    # Court-SHAPE gate: even a resolved, non-empty forum must look like a real
+    # court/venue. A template placeholder ("{{forum}}", "[Court]"), an injected
+    # control phrase, an oversized string, or an obviously-fictional venue ("the
+    # moon", "arbitration in Narnia") would otherwise render verbatim into a signed
+    # NDA. forum_shape_problem() is the single screen shared with the publish lint.
+    from .forum_shape import forum_shape_problem  # noqa: PLC0415
+
+    problem = forum_shape_problem(forum)
+    if problem is not None:
+        raise NdaGenerationError(
+            f"Refusing to generate: the forum/venue {forum!r} for governing-law option "
+            f"{option_id!r} (law {governing_law_value!r}) is not a valid court/venue -- "
+            f"{problem}. A non-court venue must not reach a signed NDA."
+        )
 
     # Wrong-jurisdiction guard for the FALLBACK path only. The signing entity's own
     # forum is authoritative for that entity (it is where the entity actually
