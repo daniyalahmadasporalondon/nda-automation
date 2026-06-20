@@ -137,6 +137,75 @@ class EntityAuthoringTests(unittest.TestCase):
         # The store was NOT written (a rejected save is a no-op).
         self.assertFalse(store_path.exists())
 
+    def test_save_fails_closed_when_playbook_unreadable(self):
+        # C1: when the playbook can't be read the orphan-approval join cannot be
+        # proven, so a save carrying an orphan governing-law id must be REJECTED
+        # (fail-closed) and NOT persisted -- never silently skip the guard.
+        store_path = _tmp_store()
+        entities = self._seed()
+        entities[0]["governing_law"] = {"playbook_option_id": "narnia", "label": "Narnia"}
+        with patch.object(
+            entity_authoring, "_read_playbook_or_none", return_value=None
+        ):
+            with self.assertRaises(entity_authoring.EntityAuthoringError) as ctx:
+                entity_authoring.save_entities_registry(
+                    {"entities": entities}, store_path=store_path
+                )
+        self.assertEqual(ctx.exception.status, 503)
+        # The store was NOT written (a rejected save is a no-op).
+        self.assertFalse(store_path.exists())
+
+    def test_save_fails_closed_when_playbook_unreadable_even_if_law_clean(self):
+        # C1: fail-closed is unconditional on the save path -- even a registry whose
+        # laws WOULD be approved is rejected when the playbook is unreadable, because
+        # the single-source-of-truth join cannot be evaluated. Nothing is persisted.
+        store_path = _tmp_store()
+        with patch.object(
+            entity_authoring, "_read_playbook_or_none", return_value=None
+        ):
+            with self.assertRaises(entity_authoring.EntityAuthoringError) as ctx:
+                entity_authoring.save_entities_registry(
+                    {"entities": self._seed()}, store_path=store_path
+                )
+        self.assertEqual(ctx.exception.status, 503)
+        self.assertFalse(store_path.exists())
+
+    def test_save_rejects_bracket_in_legal_name(self):
+        # C2: a template-token-shaped legal_name (e.g. "[GOVERNING LAW]") collides
+        # with the engine fill markers (DoSes generation) -- reject, do not persist.
+        store_path = _tmp_store()
+        entities = self._seed()
+        entities[0]["legal_name"] = "Aspora [GOVERNING LAW] Ltd"
+        with self.assertRaises(entity_authoring.EntityAuthoringError) as ctx:
+            entity_authoring.save_entities_registry(
+                {"entities": entities}, store_path=store_path
+            )
+        self.assertEqual(ctx.exception.status, 400)
+        self.assertIn("bracket", str(ctx.exception.payload["error"]).lower())
+        self.assertFalse(store_path.exists())
+
+    def test_save_rejects_bracket_in_address_line(self):
+        # C2: a "[FORUM]"-style token in an address line would be silently rewritten
+        # to the resolved forum (address corruption) -- reject, do not persist.
+        store_path = _tmp_store()
+        entities = self._seed()
+        entities[0]["addresses"][0]["lines"] = ["1 Test Street", "[FORUM]"]
+        with self.assertRaises(entity_authoring.EntityAuthoringError) as ctx:
+            entity_authoring.save_entities_registry(
+                {"entities": entities}, store_path=store_path
+            )
+        self.assertEqual(ctx.exception.status, 400)
+        self.assertIn("bracket", str(ctx.exception.payload["error"]).lower())
+        self.assertFalse(store_path.exists())
+
+    def test_validate_payload_flags_bracket_identity_field(self):
+        # C2: the preview gate surfaces the bracket rejection too (before a save).
+        entities = self._seed()
+        entities[0]["legal_name"] = "Bad [COMPANY NAME] Co"
+        result = entity_authoring.validate_entities_payload({"entities": entities})
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("bracket" in e.lower() for e in result["errors"]))
+
     def test_rejects_missing_required_fields(self):
         store_path = _tmp_store()
         bad = [

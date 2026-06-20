@@ -18,6 +18,16 @@ Validation is two-layered, same discipline as the playbook editor:
   option in the playbook, so an entity can never point at a law the playbook does
   not sanction. The display label is normalised to the playbook's label before
   the check, so an admin only has to pick the option id from the joined dropdown.
+  This guard FAILS CLOSED on the save path: if the playbook can't be read we
+  cannot prove the law is approved, so the save is REJECTED (503) rather than
+  persisting a possibly-unsanctioned law — the single-source-of-truth join holds
+  especially when the playbook is missing.
+* **Bracket guard** on identity fields: an entity's ``legal_name`` and every
+  address line are written verbatim into the NDA's structured slots, and the
+  engine fills square-bracket template tokens (``[GOVERNING LAW]``). A ``[`` / ``]``
+  in one of these admin-writable values is REJECTED (parity with the counterparty
+  intake gate) so it can never corrupt an address into the resolved forum or DoS
+  generation via the leftover-placeholder guard.
 
 A malformed payload is rejected with a structured 400 and the on-disk store is
 never touched (validation runs entirely before any write), so a bad save can
@@ -44,6 +54,55 @@ _ALLOWED_ENTITY_KEYS = {
     "signatory",
 }
 _ALLOWED_ADDRESS_KEYS = {"id", "label", "lines", "country", "default"}
+
+
+def _reject_bracket_identity_fields(entities: list[dict[str, Any]]) -> None:
+    """Reject admin-supplied identity values that conflict with the fill markers.
+
+    Mirrors :func:`nda_automation.nda_generation.validate_intake_identity_fields`
+    (the counterparty intake gate) for the Aspora-entity side: an entity's
+    ``legal_name`` and every address line are written verbatim into the NDA's
+    structured identity slots, and the engine fills square-bracket template tokens
+    (``[GOVERNING LAW]``, ``[COMPANY NAME]``). A ``[`` / ``]`` in one of these
+    values therefore either collides with a real fill token — silently rewriting an
+    address to the resolved forum (corruption) or tripping the fail-closed
+    leftover-placeholder guard (a ``[GOVERNING LAW]`` legal_name DoSes generation) —
+    or leaves stray bracketed text in a signed legal document. We REJECT (never
+    rewrite — a name/address is a legal value) with a clear, field-scoped error.
+    The first offending field is reported (one fix per attempt).
+    """
+
+    for entity in entities:
+        entity_id = entity.get("id") or "(unnamed entity)"
+        legal_name = str(entity.get("legal_name") or "")
+        if "[" in legal_name or "]" in legal_name:
+            bad = "[" if "[" in legal_name else "]"
+            raise EntityAuthoringError(
+                {
+                    "error": (
+                        f"Entity '{entity_id}' legal_name contains a square bracket "
+                        f"'{bad}', which conflicts with the NDA template's fill markers "
+                        f"(e.g. [GOVERNING LAW]). Remove the bracketed text and try again."
+                    )
+                },
+                status=400,
+            )
+        for address in entity.get("addresses") or []:
+            for line in address.get("lines") or []:
+                line_text = str(line or "")
+                if "[" in line_text or "]" in line_text:
+                    bad = "[" if "[" in line_text else "]"
+                    raise EntityAuthoringError(
+                        {
+                            "error": (
+                                f"Entity '{entity_id}' has an address line containing a "
+                                f"square bracket '{bad}', which conflicts with the NDA "
+                                f"template's fill markers (e.g. [GOVERNING LAW]). Remove "
+                                f"the bracketed text and try again."
+                            )
+                        },
+                        status=400,
+                    )
 
 
 class EntityAuthoringError(RuntimeError):
@@ -192,8 +251,31 @@ def save_entities_registry(
 
     entities = [_coerce_entity(raw) for raw in entities_raw]
 
+    # Bracket guard on admin-writable identity fields (legal_name + address lines),
+    # parity with the counterparty intake gate: a '[' / ']' would collide with the
+    # engine's fill tokens (address corruption / generation DoS). Reject before any
+    # write.
+    _reject_bracket_identity_fields(entities)
+
     playbook = _read_playbook_or_none()
     _normalise_law_labels(entities, playbook)
+
+    # FAIL-CLOSED: the orphan guard (every governing-law id must be a currently
+    # approved playbook option) is the single-source-of-truth join and must hold
+    # ESPECIALLY when the playbook is missing. If the playbook can't be read we
+    # cannot prove the law is approved, so we REJECT the save rather than skipping
+    # the guard and persisting an entity that may point at an unsanctioned law.
+    if playbook is None:
+        raise EntityAuthoringError(
+            {
+                "error": (
+                    "The governing-law playbook could not be read, so signing-entity "
+                    "law options cannot be validated against it. The registry was not "
+                    "saved. Restore the playbook and try again."
+                )
+            },
+            status=503,
+        )
 
     # Structural validation first (id/name/law-id/court/address invariants), then
     # the orphan guard against the live playbook (the law must be approved). Both
@@ -201,8 +283,7 @@ def save_entities_registry(
     # the store.
     try:
         entity_registry.validate_registry(entities)
-        if playbook is not None:
-            entity_registry.validate_registry_against_playbook(playbook, entities)
+        entity_registry.validate_registry_against_playbook(playbook, entities)
     except ValueError as error:
         raise EntityAuthoringError({"error": str(error)}, status=400) from error
 
@@ -233,6 +314,13 @@ def validate_entities_payload(payload: dict[str, Any]) -> dict[str, Any]:
         entities = [_coerce_entity(raw) for raw in entities_raw]
     except EntityAuthoringError as error:
         return {"valid": False, "errors": [str(error)]}
+
+    # Surface the bracket-identity-field rejection (C2) in the preview gate too, so
+    # the editor flags it before a save attempt rather than only at persist time.
+    try:
+        _reject_bracket_identity_fields(entities)
+    except EntityAuthoringError as error:
+        errors.append(str(error))
 
     playbook = _read_playbook_or_none()
     _normalise_law_labels(entities, playbook)
