@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260620integ2">
+    <link rel="stylesheet" href="/static/styles.css?v=20260620integ3">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260619onboard1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260619onboard1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
@@ -307,21 +307,31 @@
               <footer class="upload-actions">
                 <p class="upload-status" id="draftIntakeStatus" aria-live="polite"></p>
                 <div class="draft-actions-row">
-                  <button class="secondary" id="draftIntakeClearButton" type="button">Clear</button>
-                  <button id="draftIntakeGenerateButton" type="submit" disabled title="Pick a signing entity and counterparty to generate">Generate NDA</button>
-                  <button class="secondary icon-text" id="draftIntakeDownloadButton" type="button" title="Download the NDA" aria-label="Download the NDA">
-                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
-                    <span>Download</span>
-                  </button>
-                  <button class="secondary icon-text" id="draftIntakeSendButton" type="button" title="Email the NDA" aria-label="Email the NDA">
-                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 3 10.8 13.2"/><path d="M21 3 14.5 21 10.8 13.2 3 10.5 21 3Z"/></svg>
-                    <span>Send</span>
-                  </button>
-                  <span id="draftIntakeSignatureBadge" class="docusign-status-badge" hidden aria-live="polite"></span>
-                  <button class="secondary icon-text" id="draftIntakeSendForSignatureButton" type="button" disabled title="Generate the NDA first" aria-label="Send the NDA for signature via DocuSign">
-                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>
-                    <span>Send for Signature</span>
-                  </button>
+                  <!-- Two deliberate rows (3 + 3): create/reset actions on top,
+                       output actions below — never an awkward single-line cram. -->
+                  <div class="draft-actions-subrow">
+                    <button class="secondary" id="draftIntakeClearButton" type="button">Clear</button>
+                    <button class="secondary icon-text" id="draftIntakeNewNdaButton" type="button" title="Reset the form and editor to start a new NDA" aria-label="Start a new NDA">
+                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+                      <span>Start a new NDA</span>
+                    </button>
+                    <button id="draftIntakeGenerateButton" type="submit" disabled title="Pick a signing entity and counterparty to generate">Generate NDA</button>
+                  </div>
+                  <div class="draft-actions-subrow">
+                    <button class="secondary icon-text" id="draftIntakeDownloadButton" type="button" title="Download the NDA" aria-label="Download the NDA">
+                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
+                      <span>Download</span>
+                    </button>
+                    <button class="secondary icon-text" id="draftIntakeSendButton" type="button" title="Email the NDA" aria-label="Email the NDA">
+                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 3 10.8 13.2"/><path d="M21 3 14.5 21 10.8 13.2 3 10.5 21 3Z"/></svg>
+                      <span>Send</span>
+                    </button>
+                    <span id="draftIntakeSignatureBadge" class="docusign-status-badge" hidden aria-live="polite"></span>
+                    <button class="secondary icon-text" id="draftIntakeSendForSignatureButton" type="button" disabled title="Generate the NDA first" aria-label="Send the NDA for signature via DocuSign">
+                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>
+                      <span>Send for Signature</span>
+                    </button>
+                  </div>
                 </div>
               </footer>
             </form>
@@ -2492,7 +2502,7 @@
     <script src="/static/js/corpus.js?v=20260619onboard1"></script>
     <script src="/static/js/manual-upload.js?v=20260617hyg1"></script>
     <script src="/static/js/send-document.js?v=20260606i"></script>
-    <script src="/static/js/draft-intake.js?v=20260619forum1"></script>
+    <script src="/static/js/draft-intake.js?v=20260619genpostgen1"></script>
     <script src="/static/js/auth-session.js?v=20260618depstatus1"></script>
     <script src="/static/js/admin-ai.js?v=20260618aiconfig"></script>
     <script src="/static/js/admin-health.js?v=20260619a"></script>
@@ -2521,9 +2531,9 @@
     <script src="/static/js/viewer-controls.js?v=20260617hyg1"></script>
     <script src="/static/js/pdf-markup.js?v=20260618err1"></script>
     <script src="/static/js/app-state.js?v=20260617ov1"></script>
-    <script src="/static/js/dashboard-search.js?v=20260620search1"></script>
-    <script src="/static/js/notifications.js?v=20260619reviewfail1"></script>
-    <script src="/static/js/generator-editor.js?v=20260617a"></script>
-    <script src="/static/app.js?v=20260620integ1"></script>
+    <script src="/static/js/dashboard-search.js?v=20260620integ1"></script>
+    <script src="/static/js/notifications.js?v=20260620integ2"></script>
+    <script src="/static/js/generator-editor.js?v=20260620integ1"></script>
+    <script src="/static/app.js?v=20260620integ2"></script>
   </body>
 </html>

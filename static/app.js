@@ -333,6 +333,7 @@ const draftIntakeController = createDraftIntakeController({
   lawResetButton: document.querySelector("#draftIntakeLawResetButton"),
   statusNode: document.querySelector("#draftIntakeStatus"),
   clearButton: document.querySelector("#draftIntakeClearButton"),
+  newNdaButton: document.querySelector("#draftIntakeNewNdaButton"),
   generateButton: document.querySelector("#draftIntakeGenerateButton"),
   sideEntityNode: document.querySelector("#draftIntakeSideEntity"),
   sideLawNode: document.querySelector("#draftIntakeSideLaw"),
@@ -347,6 +348,10 @@ const draftIntakeController = createDraftIntakeController({
   onDownloadGenerated: downloadGeneratedNda,
   onSendGenerated: sendGeneratedNda,
   onEditGenerated: editGeneratedNda,
+  // Fire the transient green SUCCESS toast on a finished generation (this replaced
+  // the persistent inline green status text). Reuses the one in-app notification
+  // toaster — the same machinery as the inbound-NDA / review-failed toasts.
+  notifyGenerated: (message) => notificationsController.notifySuccess(message),
   // Reveal/hide the "Send for Signature" CTA in step with the staged generation:
   // a saved generated matter -> show + prime the composer's matter; null -> hide.
   onStagedActionsChanged: setGeneratorSignatureMatter,
@@ -1013,6 +1018,7 @@ async function generateNdaFromDraft(payload) {
       // Don't auto-download — stage the Download/Send actions instead.
       return {
         message: "NDA generated — use Download or Send.",
+        toast: generatedToastSummary(null, counterpartyName),
         tone: "success",
         generated: { blob: result.blob, filename, counterpartyEmail, counterpartyName, subject },
       };
@@ -1057,6 +1063,7 @@ async function generateNdaFromDraft(payload) {
     }
     return {
       message: `NDA generated and saved${savedFor}${summary}. Use Download or Send.`,
+      toast: generatedToastSummary(result.manifest, generated.counterpartyName || counterpartyName),
       tone: "success",
       generated,
     };
@@ -1083,6 +1090,7 @@ async function generateNdaFromDraft(payload) {
         const savedFor = counterpartyName ? ` for ${counterpartyName}` : "";
         return {
           message: `NDA generated and saved${savedFor} (the request was slow to respond, so it was recovered from the Repository). Use Download or Send.`,
+          toast: generatedToastSummary(null, counterpartyName),
           tone: "success",
           generated: recovered,
         };
@@ -1346,6 +1354,29 @@ function generatedManifestSummary(manifest) {
     if (Number.isFinite(years) && years > 0) bits.push(`${years}-year term`);
   }
   return bits.length ? ` (${bits.join(", ")})` : "";
+}
+
+// The concise SUCCESS-toast line for a finished generation: "NDA generated for
+// <Counterparty> — <law>, <term>". The law + term come from the same manifest
+// generatedManifestSummary reads (server-authoritative effective values); the
+// counterparty falls back to the intake name. Used for the transient green toast
+// that replaced the persistent inline green status text in the Generator.
+function generatedToastSummary(manifest, counterpartyName) {
+  const name = String(counterpartyName || manifest?.counterparty_name || "").trim();
+  const head = name ? `NDA generated for ${name}` : "NDA generated";
+  const bits = [];
+  if (manifest && manifest.governing_law_value) {
+    let law = String(manifest.governing_law_value);
+    if (manifest.governing_law_overridden && manifest.entity_default_governing_law_value) {
+      law += ` (overridden from ${manifest.entity_default_governing_law_value})`;
+    }
+    bits.push(law);
+  }
+  if (manifest && manifest.term_years) {
+    const years = Number(manifest.term_years);
+    if (Number.isFinite(years) && years > 0) bits.push(`${years}-year term`);
+  }
+  return bits.length ? `${head} — ${bits.join(", ")}` : head;
 }
 
 // Derives a download filename when the response carries none, from the

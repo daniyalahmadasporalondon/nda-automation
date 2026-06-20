@@ -298,7 +298,32 @@ const NotificationsView = (() => {
       mountToast(node, () => {});
     }
 
-    return { observe, poll, notify };
+    // Fire a transient SUCCESS toast (green ".toast--success" variant) through the
+    // same toast machinery as the inbound/alert toasts. Used for the post-generate
+    // "NDA generated" confirmation, which replaced the persistent green inline
+    // status text in the Generator. role="status" + aria-live="polite" so a screen
+    // reader announces the success without stealing focus; static (non-clickable)
+    // body like notify(), auto-dismissed by mountToast.
+    function notifySuccess(title, subtitle) {
+      const node = document.createElement("div");
+      node.className = "toast toast--success";
+      node.setAttribute("role", "status");
+      node.setAttribute("aria-live", "polite");
+      node.dataset.toastSuccess = "true";
+      node.innerHTML = `
+        <button class="toast-close" type="button" data-toast-close aria-label="Dismiss notification">&times;</button>
+        <span class="toast-open toast-open--static">
+          <span class="toast-icon" aria-hidden="true">\u{2705}</span>
+          <span class="toast-body">
+            <span class="toast-title">${esc(title)}</span>
+            ${subtitle ? `<span class="toast-subtitle">${esc(subtitle)}</span>` : ""}
+          </span>
+        </span>
+      `;
+      mountToast(node, () => {});
+    }
+
+    return { observe, poll, notify, notifySuccess };
   }
 
   return { createController };

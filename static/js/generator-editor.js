@@ -233,6 +233,28 @@ window.generatorEditor = (function () {
   }
 
   // ---- Load the generated NDA --------------------------------------------
+  // Split a document's full text into the {id,index,text} paragraph shape the editor
+  // renders, for the "generated but not yet reviewed" fallback in load(). This mirrors
+  // the backend split_document_paragraphs (nda_automation/review_document.py): blocks
+  // are separated by BLANK lines when the text has any (`\n\s*\n`), otherwise by single
+  // newlines; each block is trimmed and empty blocks are dropped; ids are the same
+  // `p{N}` 1-based ordinals the backend assigns. Returns a flat plain-text paragraph
+  // list (no runs / structure metadata), which renderParagraph draws as clean text.
+  function splitExtractedText(text) {
+    const source = String(text || "");
+    if (!source.trim()) return [];
+    const hasBlankLineBreaks = /\n\s*\n/.test(source);
+    const separator = hasBlankLineBreaks ? /\n\s*\n/ : /\n+/;
+    const paras = [];
+    source.split(separator).forEach((block) => {
+      const trimmed = String(block || "").trim();
+      if (!trimmed) return;
+      const index = paras.length + 1;
+      paras.push({ id: `p${index}`, index, text: trimmed });
+    });
+    return paras;
+  }
+
   async function load(matterId) {
     if (!matterId) return false;
     let matter = null;
@@ -246,7 +268,18 @@ window.generatorEditor = (function () {
       return false;
     }
     const result = matter.review_result || matter;
-    const paras = Array.isArray(result.paragraphs) ? result.paragraphs : [];
+    let paras = Array.isArray(result.paragraphs) ? result.paragraphs : [];
+    // A freshly GENERATED matter has not been reviewed yet, so its review payload
+    // carries NO `review_result`/`paragraphs` -> the editor would render a BLANK
+    // pane. Fall back to the document's OWN text: the review payload always includes
+    // the full generated NDA as `extracted_text`. Split it into the {id,index,text}
+    // paragraph shape the editor expects (mirrors the backend split_document_paragraphs,
+    // ~49 paras) so the user SEES the NDA they just generated instead of an empty box.
+    // No review verdicts are fabricated — this is just the plain document text in a
+    // clean "no review yet" presentation (no clause findings, no redline marks).
+    if (!paras.length) {
+      paras = splitExtractedText(matter.extracted_text || result.extracted_text || "");
+    }
     Object.assign(state, model()?.generatedGeneratorState({ matterId, paragraphs: paras }) || {
       generatorMode: "generated",
       generatorMatterId: matterId,
