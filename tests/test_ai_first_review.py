@@ -4,7 +4,6 @@ from copy import deepcopy
 from nda_automation.ai_assessment_contract import (
     AI_ASSESSMENT_CONTRACT_VERSION,
     AI_REDLINE_NO_CHANGE,
-    AIAssessmentContractError,
 )
 from nda_automation.ai_first_review import AI_FIRST_REVIEW_MODE, build_ai_first_review_result
 from nda_automation.checker import load_playbook
@@ -318,37 +317,52 @@ class AIFirstReviewTests(unittest.TestCase):
         self.assertEqual(governing_law["structured_evidence"][0]["matched_text"], "laws of california")
         self.assertEqual(governing_law["structured_evidence"][0]["match_spans"][0]["text"], "laws of California")
 
-    def test_ambiguous_quote_without_paragraph_id_is_rejected_before_redline_anchor(self):
-        with self.assertRaises(AIAssessmentContractError) as error:
-            build_ai_first_review_result(
-                SOURCE_TEXT,
-                [
-                    _assessment("mutuality", "pass"),
-                    _assessment("confidential_information", "pass", paragraph_id="p2"),
-                    _assessment(
-                        "governing_law",
-                        "fail",
-                        paragraph_id="p3",
-                        issue_type="present_but_wrong",
-                        rationale="Governing law is present but not an approved jurisdiction.",
-                        proposed_redline={
-                            "action": REDLINE_REPLACE_PARAGRAPH,
-                            "paragraph_id": "p3",
-                            "text": "This Agreement shall be governed by the laws of England and Wales.",
-                            "jurisdiction": "England and Wales",
-                        },
-                        evidence=[{
-                            "quote": "Confidential Information",
-                            "relevance": "This short phrase appears in more than one paragraph.",
-                        }],
-                    ),
-                    _assessment("term_and_survival", "pass", paragraph_id="p4"),
-                    _assessment("non_circumvention", "pass", paragraph_id="p5"),
-                    _assessment("signatures", "pass", paragraph_id="p6"),
-                ],
-            )
+    def test_ambiguous_quote_degrades_one_clause_and_keeps_the_rest(self):
+        # NON-VACUITY end to end: 6 clauses, exactly one (governing_law) carries an
+        # ambiguous quote-only evidence item. On the pre-fix code this RAISED and
+        # discarded the whole review. After the fix the five valid passes survive
+        # and the offender is quarantined into a SEND-BLOCKING review.
+        result = build_ai_first_review_result(
+            SOURCE_TEXT,
+            [
+                _assessment("mutuality", "pass"),
+                _assessment("confidential_information", "pass", paragraph_id="p2"),
+                _assessment(
+                    "governing_law",
+                    "fail",
+                    paragraph_id="p3",
+                    issue_type="present_but_wrong",
+                    rationale="Governing law is present but not an approved jurisdiction.",
+                    proposed_redline={
+                        "action": REDLINE_REPLACE_PARAGRAPH,
+                        "paragraph_id": "p3",
+                        "text": "This Agreement shall be governed by the laws of England and Wales.",
+                        "jurisdiction": "England and Wales",
+                    },
+                    evidence=[{
+                        "quote": "Confidential Information",
+                        "relevance": "This short phrase appears in more than one paragraph.",
+                    }],
+                ),
+                _assessment("term_and_survival", "pass", paragraph_id="p4"),
+                _assessment("non_circumvention", "pass", paragraph_id="p5"),
+                _assessment("signatures", "pass", paragraph_id="p6"),
+            ],
+        )
 
-        self.assertIn("quote matches multiple reviewed paragraphs; provide paragraph_id", str(error.exception))
+        clauses_by_id = {clause["id"]: clause for clause in result["clauses"]}
+        # The offender degraded to a blocking review (NOT a silent pass).
+        governing_law = clauses_by_id["governing_law"]
+        self.assertEqual(governing_law["decision"], "review")
+        self.assertTrue(governing_law["blocks_send"])
+        self.assertEqual(
+            governing_law["ai_first_assessment"]["status"], "contract_invalid"
+        )
+        # Every other clause's valid pass survived.
+        for clause_id in ("mutuality", "confidential_information", "term_and_survival", "non_circumvention", "signatures"):
+            self.assertEqual(clauses_by_id[clause_id]["decision"], "pass", clause_id)
+        # The document is still send-blocked by the one degraded clause.
+        self.assertEqual(result["requirements_needs_review"], 1)
 
     def test_term_years_scalar_is_emitted_for_a_clear_term(self):
         # PURELY ADDITIVE provenance: the AI-first engine records a detected term-in-

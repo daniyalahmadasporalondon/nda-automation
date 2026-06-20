@@ -126,36 +126,45 @@ class AIAssessmentContractTests(unittest.TestCase):
             "reason": "It is the default approved playbook option.",
         })
 
-    def test_invalid_optional_ai_analysis_fields_report_contract_errors(self):
-        with self.assertRaises(AIAssessmentContractError) as error:
-            validate_ai_clause_assessments(
-                [_valid_assessment(
-                    recommended_option={"option": "England and Wales"},
-                )],
-                valid_clause_ids=_valid_clause_ids(),
-                paragraphs=_paragraphs(),
-            )
+    def test_invalid_optional_ai_analysis_field_degrades_the_clause(self):
+        # A malformed optional field (recommended_option missing its reason) is a
+        # per-clause defect: detected and quarantined into a blocking review, not
+        # raised for the whole batch.
+        assessments = validate_ai_clause_assessments(
+            [_valid_assessment(
+                recommended_option={"option": "England and Wales"},
+            )],
+            valid_clause_ids=_valid_clause_ids(),
+            paragraphs=_paragraphs(),
+        )
 
-        message = str(error.exception)
-        self.assertIn("recommended_option: reason must be non-empty text", message)
+        degraded = assessments["governing_law"]
+        self.assertEqual(degraded["decision"], "review")
+        self.assertTrue(degraded["blocks_send"])
+        self.assertEqual(degraded["validation_status"], "contract_invalid")
 
-    def test_quote_only_evidence_must_resolve_to_one_paragraph(self):
+    def test_ambiguous_quote_only_evidence_degrades_the_clause(self):
+        # A quote-only evidence item that recurs in several paragraphs is genuinely
+        # ambiguous. Rather than guess (or raise for the whole document) the clause
+        # is quarantined into a blocking review.
         source_text = "\n\n".join([
             "Confidential Information may be disclosed by either party.",
             "Confidential Information means non-public technical information.",
         ])
 
-        with self.assertRaises(AIAssessmentContractError) as error:
-            validate_ai_clause_assessments(
-                [_valid_assessment(evidence=[{
-                    "quote": "Confidential Information",
-                    "relevance": "Short phrase appears more than once.",
-                }])],
-                valid_clause_ids=_valid_clause_ids(),
-                paragraphs=split_document_paragraphs(source_text),
-            )
+        assessments = validate_ai_clause_assessments(
+            [_valid_assessment(evidence=[{
+                "quote": "Confidential Information",
+                "relevance": "Short phrase appears more than once.",
+            }])],
+            valid_clause_ids=_valid_clause_ids(),
+            paragraphs=split_document_paragraphs(source_text),
+        )
 
-        self.assertIn("quote matches multiple reviewed paragraphs; provide paragraph_id", str(error.exception))
+        degraded = assessments["governing_law"]
+        self.assertEqual(degraded["decision"], "review")
+        self.assertTrue(degraded["blocks_send"])
+        self.assertEqual(degraded["validation_status"], "contract_invalid")
 
     def test_pass_assessment_requires_no_change_redline_and_none_issue_type(self):
         assessments = validate_ai_clause_assessments(
@@ -197,7 +206,11 @@ class AIAssessmentContractTests(unittest.TestCase):
 
         self.assertEqual(assessments["non_circumvention"]["evidence"], [])
 
-    def test_invalid_assessment_reports_contract_errors(self):
+    def test_defective_clause_degrades_to_blocking_review_not_batch_reject(self):
+        # A clause with multiple genuine contract defects (empty rationale, a
+        # pass/issue_type coupling violation, an ungroundable quote, no redline)
+        # must NOT nuke the whole batch. It is quarantined into a SAFE blocking
+        # review fallback, and the other valid clauses survive.
         bad = _valid_assessment(
             rationale="",
             issue_type="none",
@@ -206,23 +219,22 @@ class AIAssessmentContractTests(unittest.TestCase):
             blocks_send=True,
         )
 
-        with self.assertRaises(AIAssessmentContractError) as error:
-            validate_ai_clause_assessments([bad], valid_clause_ids=_valid_clause_ids(), paragraphs=_paragraphs())
+        assessments = validate_ai_clause_assessments(
+            [bad],
+            valid_clause_ids=_valid_clause_ids(),
+            paragraphs=_paragraphs(),
+        )
 
-        message = str(error.exception)
-        self.assertIn("rationale must be non-empty text", message)
-        self.assertIn("fail/review decisions must not use issue_type none", message)
-        # "laws of France" appears nowhere in the document, so the ungroundable
-        # quote is dropped (a fabrication is not crashed on); the fail then has no
-        # surviving evidence, which the decision/evidence coupling rejects.
-        self.assertIn("fail decisions require at least one valid evidence item", message)
-        self.assertIn("fail decisions require a proposed redline action", message)
-        # The blocks_send polarity mismatch (fail + blocks_send=True) is NO LONGER a
-        # fatal contract error -- it is auto-corrected (see the dedicated
-        # blocks_send auto-correction tests). The genuine malformations above still
-        # reject this clause; the polarity mismatch is silently reconciled and never
-        # contributes to the error message.
-        self.assertNotIn("blocks_send must be true only for review decisions", message)
+        degraded = assessments["governing_law"]
+        # NEVER a silent pass: a malformed-but-hallucinated clause fails safe.
+        self.assertEqual(degraded["decision"], "review")
+        self.assertNotEqual(degraded["issue_type"], "none")
+        self.assertTrue(degraded["blocks_send"])
+        self.assertTrue(degraded["manual_redline_needed"])
+        self.assertEqual(degraded["validation_status"], "contract_invalid")
+        self.assertEqual(degraded["evidence"], [])
+        self.assertEqual(degraded["proposed_redline"]["action"], AI_REDLINE_NO_CHANGE)
+        self.assertEqual(degraded["reason_code"], "ai_contract_invalid_clause")
 
     def test_blank_redline_text_is_defaulted_from_governing_law_playbook(self):
         # The AI supplies the judgment (fail) but leaves the replacement wording
@@ -506,35 +518,149 @@ class AIAssessmentContractTests(unittest.TestCase):
         self.assertEqual(clause["proposed_change"]["safety"]["status"], "needs_human_choice")
         self.assertIn("not grounded enough", clause["proposed_change"]["safety"]["reason"])
 
-    def test_nonexistent_cited_paragraph_id_still_errors(self):
+    def test_invented_paragraph_id_degrades_clause_to_blocking_review(self):
         # A paragraph_id the model invented (points at no reviewed paragraph) is a
-        # structural error, distinct from a quote that merely spans boundaries.
+        # per-clause structural defect. It must degrade THAT clause to a safe
+        # blocking review, not discard the whole document's review.
         ghost = _valid_assessment(evidence=[{
             "paragraph_id": "p999",
             "quote": "laws of california",
             "relevance": "Cites a paragraph that does not exist.",
         }])
 
+        assessments = validate_ai_clause_assessments(
+            [ghost],
+            valid_clause_ids=_valid_clause_ids(),
+            paragraphs=_paragraphs(),
+        )
+
+        degraded = assessments["governing_law"]
+        self.assertEqual(degraded["decision"], "review")
+        self.assertTrue(degraded["blocks_send"])
+        self.assertEqual(degraded["validation_status"], "contract_invalid")
+
+    def test_duplicate_clause_keeps_first_and_unknown_clause_is_dropped(self):
+        # A duplicate assessment is a per-clause defect: the first (valid) one wins
+        # and the duplicate is dropped. An unknown clause_id maps to no playbook
+        # clause and is also dropped. NEITHER nukes the batch -- the one valid
+        # governing_law assessment survives.
+        assessments = validate_ai_clause_assessments(
+            [_valid_assessment(), _valid_assessment(), _valid_assessment(clause_id="unknown_clause")],
+            valid_clause_ids=_valid_clause_ids(),
+            paragraphs=_paragraphs(),
+            playbook_clauses_by_id=_playbook_clauses_by_id(),
+        )
+
+        # The first valid governing_law assessment is kept (a real fail, NOT the
+        # contract-invalid fallback); the duplicate and the unknown clause vanish.
+        self.assertIn("governing_law", assessments)
+        self.assertEqual(assessments["governing_law"]["decision"], "fail")
+        self.assertNotEqual(
+            assessments["governing_law"]["validation_status"], "contract_invalid"
+        )
+        self.assertNotIn("unknown_clause", assessments)
+
+    def test_non_list_response_is_a_batch_level_reject(self):
+        # A genuine STRUCTURAL failure (the whole response is not a list) still
+        # rejects -- the degrade path is per-clause, not a blanket suppressor.
         with self.assertRaises(AIAssessmentContractError) as error:
             validate_ai_clause_assessments(
-                [ghost],
+                {"clause_id": "governing_law"},  # a dict, not a list of clauses
                 valid_clause_ids=_valid_clause_ids(),
                 paragraphs=_paragraphs(),
             )
+        self.assertIn("assessments must be a list", str(error.exception))
 
-        self.assertIn("paragraph_id does not exist: p999", str(error.exception))
+    def _absence_pass(self, clause_id):
+        return {
+            "clause_id": clause_id,
+            "decision": "pass",
+            "issue_type": "none",
+            "rationale": (
+                f"No issue with {clause_id} appears in the supplied text, so this "
+                "clause passes on absence with no redline required."
+            ),
+            "evidence": [],
+            "proposed_redline": {"action": AI_REDLINE_NO_CHANGE},
+            "confidence": 0.8,
+            "blocks_send": False,
+        }
 
-    def test_duplicate_and_unknown_clause_ids_are_invalid(self):
-        with self.assertRaises(AIAssessmentContractError) as error:
-            validate_ai_clause_assessments(
-                [_valid_assessment(), _valid_assessment(), _valid_assessment(clause_id="unknown_clause")],
-                valid_clause_ids=_valid_clause_ids(),
-                paragraphs=_paragraphs(),
+    def test_one_bad_clause_in_a_full_batch_keeps_every_other_valid_clause(self):
+        # NON-VACUITY: a multi-clause batch with exactly ONE clause carrying an
+        # invented paragraph_id would, on the pre-fix code, RAISE and discard
+        # ZERO clauses. After the fix it returns all the OTHER valid clauses PLUS
+        # the one offender degraded to a blocking review.
+        valid_ids = ["mutuality", "confidential_information", "term_and_survival", "non_circumvention", "signatures"]
+        batch = [self._absence_pass(clause_id) for clause_id in valid_ids]
+        offender = _valid_assessment(evidence=[{
+            "paragraph_id": "p999",  # invented: points at no reviewed paragraph
+            "quote": "laws of california",
+            "relevance": "Cites a paragraph that does not exist.",
+        }])
+        batch.append(offender)
+
+        assessments = validate_ai_clause_assessments(
+            batch,
+            valid_clause_ids=_valid_clause_ids(),
+            paragraphs=_paragraphs(),
+            playbook_clauses_by_id=_playbook_clauses_by_id(),
+        )
+
+        # All six clauses are present: the five valid passes survive untouched...
+        self.assertEqual(set(assessments), set(valid_ids) | {"governing_law"})
+        for clause_id in valid_ids:
+            self.assertEqual(assessments[clause_id]["decision"], "pass")
+            self.assertNotEqual(
+                assessments[clause_id]["validation_status"], "contract_invalid"
             )
+        # ...and the single offender is degraded to a SEND-BLOCKING review, never a
+        # silent pass, so the document is still gated by it.
+        degraded = assessments["governing_law"]
+        self.assertEqual(degraded["decision"], "review")
+        self.assertTrue(degraded["blocks_send"])
+        self.assertEqual(degraded["validation_status"], "contract_invalid")
 
-        message = str(error.exception)
-        self.assertIn("duplicate assessment for clause governing_law", message)
-        self.assertIn("unknown clause_id unknown_clause", message)
+    def test_each_per_clause_defect_mode_degrades_instead_of_raising(self):
+        # Each listed per-clause defect, in isolation, degrades the clause to a
+        # blocking review rather than raising for the whole batch.
+        cases = {
+            # invented paragraph_id
+            "invented_paragraph_id": _valid_assessment(evidence=[{
+                "paragraph_id": "p999",
+                "quote": "laws of california",
+                "relevance": "Cites a paragraph that does not exist.",
+            }]),
+            # fabricated quote (grounds nowhere) leaves a FAIL with no evidence
+            "fabricated_quote": _valid_assessment(evidence=[{
+                "quote": "this exact phrase does not appear anywhere in the document at all",
+                "relevance": "Fabricated.",
+            }]),
+            # pass with a non-none issue_type (coupling violation)
+            "pass_with_issue_type": _valid_assessment(
+                decision="pass",
+                issue_type="present_but_wrong",
+                proposed_redline={"action": AI_REDLINE_NO_CHANGE},
+                blocks_send=False,
+            ),
+            # unsupported field
+            "unsupported_field": _valid_assessment(totally_unknown_field="x"),
+        }
+        for label, offender in cases.items():
+            with self.subTest(defect=label):
+                assessments = validate_ai_clause_assessments(
+                    [offender],
+                    valid_clause_ids=_valid_clause_ids(),
+                    paragraphs=_paragraphs(),
+                    playbook_clauses_by_id=_playbook_clauses_by_id(),
+                )
+                degraded = assessments["governing_law"]
+                self.assertEqual(degraded["decision"], "review", label)
+                self.assertNotEqual(degraded["issue_type"], "none", label)
+                self.assertTrue(degraded["blocks_send"], label)
+                self.assertEqual(
+                    degraded["validation_status"], "contract_invalid", label
+                )
 
 
 # Category A: a clause may now carry a LIST of proposed edits, with sentence-level
@@ -674,7 +800,7 @@ class CategoryASpanAndListContractTests(unittest.TestCase):
         self.assertFalse(clause["blocks_send"])
         self.assertEqual(clause["proposed_edits"][0]["action"], AI_REDLINE_NO_CHANGE)
 
-    def test_span_action_rejected_under_schema_version_two(self):
+    def test_span_action_under_schema_version_two_degrades_the_clause(self):
         assessment = _span_assessment(
             schema_version=2,
             proposed_edits=[{
@@ -683,9 +809,13 @@ class CategoryASpanAndListContractTests(unittest.TestCase):
                 "anchor_quote": "solicit, hire, or circumvent",
             }],
         )
-        with self.assertRaises(AIAssessmentContractError) as error:
-            self._validate(assessment)
-        self.assertIn("requires schema_version 3", str(error.exception))
+        # A v3-only span action on a v2 payload is a per-clause defect: it degrades
+        # this clause to a blocking review rather than rejecting the whole batch.
+        cleaned = self._validate(assessment)
+        degraded = cleaned["non_circumvention"]
+        self.assertEqual(degraded["decision"], "review")
+        self.assertTrue(degraded["blocks_send"])
+        self.assertEqual(degraded["validation_status"], "contract_invalid")
 
     def test_pass_with_a_noop_edit_list_is_accepted(self):
         assessment = _span_assessment(
@@ -701,7 +831,7 @@ class CategoryASpanAndListContractTests(unittest.TestCase):
         self.assertEqual(clause["decision"], "pass")
         self.assertFalse(any(e["action"] != AI_REDLINE_NO_CHANGE for e in clause["proposed_edits"]))
 
-    def test_pass_with_an_actionable_edit_is_rejected(self):
+    def test_pass_with_an_actionable_edit_degrades_the_clause(self):
         assessment = _span_assessment(
             decision="pass",
             issue_type="none",
@@ -714,9 +844,14 @@ class CategoryASpanAndListContractTests(unittest.TestCase):
                 "anchor_quote": "solicit, hire, or circumvent",
             }],
         )
-        with self.assertRaises(AIAssessmentContractError) as error:
-            self._validate(assessment)
-        self.assertIn("pass decisions must use proposed_redline.action no_change", str(error.exception))
+        # A pass that nonetheless carries an actionable edit is a coupling defect.
+        # It must degrade to a blocking review -- crucially NOT stay a pass, so a
+        # malformed "clean" verdict can never clear the gate.
+        cleaned = self._validate(assessment)
+        degraded = cleaned["non_circumvention"]
+        self.assertEqual(degraded["decision"], "review")
+        self.assertTrue(degraded["blocks_send"])
+        self.assertEqual(degraded["validation_status"], "contract_invalid")
 
     def test_clause_proposed_edits_accessor_falls_back_to_legacy_singular(self):
         # A stored v2 matter persists only proposed_redline; the accessor wraps it.
@@ -1062,10 +1197,12 @@ class BlocksSendPolarityAutoCorrectTests(unittest.TestCase):
         counters = telemetry.snapshot()["counters"]
         self.assertNotIn(AI_ASSESSMENT_BLOCKS_SEND_AUTOCORRECTED_COUNTER, counters)
 
-    def test_genuine_malformation_still_rejects_after_fix(self):
+    def test_genuine_malformation_degrades_clause_and_keeps_the_rest(self):
         # The validator did NOT become permissive: a clause with an INVALID decision
-        # enum still rejects the batch (a structural malformation, not a polarity
-        # bookkeeping mismatch). This is the "didn't loosen the validator" proof.
+        # enum is a genuine malformation. Under the per-clause degrade contract it is
+        # QUARANTINED into a SAFE blocking review (NEVER a silent pass) while the
+        # other clauses survive -- not rejected as a whole batch, but not loosened
+        # into a clean pass either.
         clause_ids = _batch_clause_ids(3)
         bad_decision = {
             "clause_id": clause_ids[1],
@@ -1079,16 +1216,24 @@ class BlocksSendPolarityAutoCorrectTests(unittest.TestCase):
         }
         assessments = [_pass_clause(clause_ids[0]), bad_decision, _pass_clause(clause_ids[2])]
 
-        with self.assertRaises(AIAssessmentContractError) as error:
-            validate_ai_clause_assessments(
-                assessments, valid_clause_ids=clause_ids, paragraphs=_batch_paragraphs()
-            )
-        self.assertIn("decision must be one of", str(error.exception))
+        cleaned = validate_ai_clause_assessments(
+            assessments, valid_clause_ids=clause_ids, paragraphs=_batch_paragraphs()
+        )
 
-    def test_missing_required_field_still_rejects_after_fix(self):
-        # A second malformation flavour: a missing REQUIRED field (rationale) still
-        # rejects even when that same clause ALSO has a blocks_send polarity mismatch
-        # -- the genuine error is never masked by the auto-correction.
+        self.assertEqual(set(cleaned), set(clause_ids))
+        degraded = cleaned[clause_ids[1]]
+        self.assertEqual(degraded["decision"], "review")
+        self.assertTrue(degraded["blocks_send"])
+        self.assertEqual(degraded["validation_status"], "contract_invalid")
+        # The two well-formed passes are untouched.
+        self.assertEqual(cleaned[clause_ids[0]]["decision"], "pass")
+        self.assertEqual(cleaned[clause_ids[2]]["decision"], "pass")
+
+    def test_missing_required_field_degrades_and_is_not_rescued_by_blocks_send(self):
+        # A second malformation flavour: a missing REQUIRED field (rationale)
+        # degrades the clause to a blocking review even when that same clause ALSO
+        # has a blocks_send polarity mismatch. The polarity auto-correct must NOT
+        # "rescue" the malformed clause into a kept, contract-valid result.
         clause_ids = _batch_clause_ids(3)
         missing_rationale = {
             "clause_id": clause_ids[1],
@@ -1102,16 +1247,20 @@ class BlocksSendPolarityAutoCorrectTests(unittest.TestCase):
         }
         assessments = [_pass_clause(clause_ids[0]), missing_rationale, _pass_clause(clause_ids[2])]
 
-        with self.assertRaises(AIAssessmentContractError) as error:
-            validate_ai_clause_assessments(
-                assessments, valid_clause_ids=clause_ids, paragraphs=_batch_paragraphs()
-            )
-        message = str(error.exception)
-        self.assertIn("rationale is required", message)
-        # The polarity mismatch on that same clause is NOT auto-corrected (the clause
-        # is rejected for the genuine error), so it must not appear as a reconciled
-        # success anywhere -- and it certainly must not be the thing that rejects it.
-        self.assertNotIn("blocks_send must be true only for review decisions", message)
+        cleaned = validate_ai_clause_assessments(
+            assessments, valid_clause_ids=clause_ids, paragraphs=_batch_paragraphs()
+        )
+
+        degraded = cleaned[clause_ids[1]]
+        # Quarantined, NOT rescued: the status is the contract-invalid fallback, NOT
+        # the blocks_send auto-correct "success" status.
+        self.assertEqual(degraded["validation_status"], "contract_invalid")
+        self.assertNotEqual(degraded["validation_status"], "blocks_send_autocorrected")
+        self.assertEqual(degraded["decision"], "review")
+        self.assertTrue(degraded["blocks_send"])
+        # The other clauses survive untouched.
+        self.assertEqual(cleaned[clause_ids[0]]["decision"], "pass")
+        self.assertEqual(cleaned[clause_ids[2]]["decision"], "pass")
 
 
 if __name__ == "__main__":
