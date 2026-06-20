@@ -30,6 +30,13 @@ from .playbook_rules import (
     normalize_playbook_policy,
     playbook_rules_for_ai,
 )
+from .untrusted_text import neutralize_untrusted_text
+
+# Length caps on AUTHORED free-text fields before they enter the AI packet, so a
+# user-authored clause cannot blow the prompt budget. These bound the per-field
+# contribution; the values are generous enough for legitimate authored prose.
+AUTHORED_NAME_MAX_CHARS = 200
+AUTHORED_LONG_TEXT_MAX_CHARS = 2000
 
 # Dynamic clause ids ALREADY rendered as one of the five built-in rules above, so
 # they are not re-emitted in the "ADDITIONAL AUTHORED CLAUSE RULES" section. Only
@@ -83,6 +90,17 @@ _RULE1_EXCLUDED_LABELS = frozenset({"penalty", "perpetual_confidentiality"})
 
 def _text(value: object) -> str:
     return str(value).strip() if value is not None else ""
+
+
+def _authored_text(value: object, max_chars: int) -> str:
+    """Neutralize + length-cap an AUTHORED free-text field for the binding policy.
+
+    Authored clause text is attacker-controllable, yet it enters the highest-trust
+    "treat each as binding" section of the policy block. Route it through the shared
+    neutralizer (strip control chars, defang line-start role markers) and bound its
+    length so it cannot impersonate an instruction block or exhaust the prompt budget.
+    """
+    return neutralize_untrusted_text(value, max_chars=max_chars).strip()
 
 
 def _clause_by_id(clauses: Sequence[Mapping[str, Any]], clause_id: str) -> Mapping[str, Any]:
@@ -193,13 +211,27 @@ def _dynamic_clause_rule_lines(
         if not clause_id or clause_id in _BUILTIN_RENDERED_CLAUSE_IDS:
             continue
         packet = _packet_clause_by_id(packet_clauses, clause_id)
-        name = _text(packet.get("name")) or _text(clause.get("name")) or clause_id
+        # AUTHORED free-text fields are attacker-controllable (a user can author any
+        # clause text in the Playbook editor, or smuggle it via a direct-API publish)
+        # and they land in the highest-trust "treat each as binding" section of the
+        # policy block. Neutralize each so an authored payload cannot pose as a new
+        # role/turn ("System:", "Assistant:") or smuggle control characters, and cap
+        # the length so it cannot blow the prompt budget.
+        name = (
+            _authored_text(packet.get("name"), AUTHORED_NAME_MAX_CHARS)
+            or _authored_text(clause.get("name"), AUTHORED_NAME_MAX_CHARS)
+            or clause_id
+        )
         stance = _text(packet.get("type")) or _text(clause.get("type"))
         stance_label = "PROHIBITED" if stance == "prohibited" else "REQUIRED"
-        requirement = _text(packet.get("requirement")) or _text(clause.get("requirement"))
+        requirement = _authored_text(
+            packet.get("requirement"), AUTHORED_LONG_TEXT_MAX_CHARS
+        ) or _authored_text(clause.get("requirement"), AUTHORED_LONG_TEXT_MAX_CHARS)
         rules = clause.get("rules") if isinstance(clause.get("rules"), Mapping) else {}
-        acceptable = _text(rules.get("acceptable_position")) or _text(
-            packet.get("acceptable_language")
+        acceptable = _authored_text(
+            rules.get("acceptable_position"), AUTHORED_LONG_TEXT_MAX_CHARS
+        ) or _authored_text(
+            packet.get("acceptable_language"), AUTHORED_LONG_TEXT_MAX_CHARS
         )
         remedy = _fail_remedy_phrase(rules)
 

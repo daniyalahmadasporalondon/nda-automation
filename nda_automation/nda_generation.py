@@ -47,6 +47,7 @@ from docx.document import Document as DocxDocument
 from . import telemetry
 from .checks.common import _year_count_label
 from .playbook_runtime import ActivePlaybookBundle
+from .untrusted_text import neutralize_untrusted_text
 
 # The tracked template asset (the company's Generic NDA). Resolved relative to
 # this module so it works from any worktree / install location.
@@ -62,6 +63,10 @@ NDA_TYPE_ONE_WAY = "one_way"
 CLAUSE_TERM = "term_and_survival"
 CLAUSE_CONFIDENTIAL = "confidential_information"
 CLAUSE_GOVERNING_LAW = "governing_law"
+
+# Length cap on the AUTHORED Playbook forum string before it renders into a signed
+# NDA. A court/venue label is short; this bounds a smuggled blob.
+AUTHORED_LONG_TEXT_MAX_CHARS = 2000
 
 # Kill-switch for the generation prose-polish AI. The AI clause adapter only
 # rephrases already-on-position clause text (it never changes which position a
@@ -588,7 +593,13 @@ def _forum_for_option_id(option_id: str, playbook: Mapping[str, Any]) -> str:
     pairing = governing_law_forum.canonical_forum_for_law(dict(playbook), option_id)
     if pairing is None:
         return ""
-    return str(pairing.get("court_name") or pairing.get("forum_jurisdiction") or "").strip()
+    forum = str(pairing.get("court_name") or pairing.get("forum_jurisdiction") or "").strip()
+    # The AUTHORED Playbook forum_jurisdiction is attacker-controllable (a user can
+    # type any value on the approved option, or smuggle one via a direct-API publish)
+    # and from here it renders VERBATIM into a generated -> signed NDA. Neutralize it
+    # so injected control characters / role-marker phrases cannot land in the executed
+    # document. (The ENTITY-registry forum is bracket-guarded on the entities branch.)
+    return neutralize_untrusted_text(forum, max_chars=AUTHORED_LONG_TEXT_MAX_CHARS).strip()
 
 
 def _require_court_forum(forum: str, option_id: str, governing_law_value: str) -> str:

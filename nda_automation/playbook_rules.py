@@ -24,9 +24,57 @@ from .redline_actions import (
     REDLINE_REPLACE_PARAGRAPH,
 )
 from .review_state import CLAUSE_DECISION_FAIL, CLAUSE_DECISION_PASS, CLAUSE_DECISION_REVIEW
+from .untrusted_text import neutralize_untrusted_text
 
 PLAYBOOK_RULES_VERSION = 1
 PLAYBOOK_POLICY_SCHEMA_VERSION = 1
+
+# Length caps on AUTHORED free-text fields before they enter the per-clause AI packet,
+# so an authored clause cannot blow the prompt budget. Generous enough for legitimate
+# authored prose.
+AUTHORED_NAME_MAX_CHARS = 200
+AUTHORED_LONG_TEXT_MAX_CHARS = 2000
+
+
+def _authored(value: object, max_chars: int) -> str:
+    """Neutralize + length-cap an AUTHORED free-text field for the AI packet.
+
+    Authored clause text (in the Playbook editor, or smuggled via a direct-API
+    publish) is attacker-controllable yet flows verbatim into the AI prompt. Route it
+    through the shared neutralizer (strip control chars, defang line-start role
+    markers) and bound its length so it cannot impersonate an instruction block or
+    exhaust the prompt budget.
+    """
+    return neutralize_untrusted_text(value, max_chars=max_chars)
+
+
+def _neutralized_rules(rules: Mapping[str, Any]) -> dict[str, Any]:
+    """Deep-copy a clause's ``rules`` and neutralize its authored free-text fields.
+
+    Covers ``rules.acceptable_position`` and every condition's ``description`` (in
+    pass_conditions / fail_conditions / review_triggers), all of which are authored,
+    attacker-controllable, and reach the per-clause AI packet verbatim.
+    """
+    copied = deepcopy(dict(rules))
+    if "acceptable_position" in copied:
+        copied["acceptable_position"] = _authored(
+            copied.get("acceptable_position"), AUTHORED_LONG_TEXT_MAX_CHARS
+        )
+    for bucket in ("pass_conditions", "fail_conditions", "review_triggers"):
+        conditions = copied.get(bucket)
+        if not isinstance(conditions, list):
+            continue
+        for condition in conditions:
+            if isinstance(condition, dict) and "description" in condition:
+                condition["description"] = _authored(
+                    condition.get("description"), AUTHORED_LONG_TEXT_MAX_CHARS
+                )
+    redline_guidance = copied.get("redline_guidance")
+    if isinstance(redline_guidance, dict) and "drafting_note" in redline_guidance:
+        redline_guidance["drafting_note"] = _authored(
+            redline_guidance.get("drafting_note"), AUTHORED_LONG_TEXT_MAX_CHARS
+        )
+    return copied
 
 CORE_REQUIRED_TEXT_FIELDS = ["id", "name", "requirement", "type", "preferred_position", "check_trigger"]
 
@@ -266,25 +314,81 @@ def normalize_clause_policy(clause: Mapping[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+# Clauses whose ``preferred_position`` and ``check_trigger`` are DERIVED (the
+# Playbook editor renders them read-only), so a value smuggled into those fields via
+# a direct-API publish must NOT reach the AI packet. The normalizers re-derive them
+# from the structured fields (approved_laws / max_term_years); we re-derive again at
+# packet-build as a backstop for the path where the normalizer skips (e.g.
+# governing_law with an empty approved_laws list), where a smuggled raw value would
+# otherwise survive verbatim.
+_DERIVED_READONLY_FIELDS: dict[str, tuple[str, ...]] = {
+    "governing_law": ("preferred_position", "check_trigger"),
+    "term_and_survival": ("preferred_position", "check_trigger"),
+}
+
+
+def _derived_readonly_overrides(
+    normalized: Mapping[str, Any], raw_clause: dict[str, Any]
+) -> dict[str, str]:
+    """Authoritative DERIVED values for a clause's read-only fields.
+
+    For ``governing_law`` / ``term_and_survival`` the ``preferred_position`` and
+    ``check_trigger`` are derived in the editor (rendered read-only), so a value
+    smuggled into them via a direct-API publish must never reach the packet. We
+    re-derive from the structured source by re-normalizing a copy of the raw clause
+    with those fields stripped: whatever the normalizer then writes is the genuine
+    derived value (and "" when no structured source exists, dropping the smuggle).
+    """
+    clause_id = str(normalized.get("id") or "")
+    fields = _DERIVED_READONLY_FIELDS.get(clause_id)
+    if not fields:
+        return {}
+    stripped = deepcopy(raw_clause)
+    for field in fields:
+        stripped.pop(field, None)
+    rederived = normalize_clause_policy(stripped)
+    return {field: str(rederived.get(field) or "") for field in fields}
+
+
 def clause_rules_for_ai(clause: Mapping[str, Any]) -> dict[str, Any]:
     normalized = normalize_clause_policy(clause)
+    clause_id = str(normalized.get("id") or "")
     rules = normalized.get("rules")
+    # FIX 2: for clauses whose preferred_position/check_trigger are derived read-only,
+    # re-derive them here from the raw clause (or blank them if the structured source
+    # is absent) so a smuggled value can never reach the packet, even when the
+    # clause-level normalizer took an early-return path.
+    derived_overrides = _derived_readonly_overrides(normalized, dict(clause))
+
+    def _field(name: str) -> str:
+        if name in derived_overrides:
+            return derived_overrides[name]
+        return str(normalized.get(name) or "")
+
+    # FIX 1: every AUTHORED free-text field is attacker-controllable and flows into the
+    # per-clause AI packet. Neutralize each (strip control chars, defang line-start
+    # role markers) and cap its length so an authored payload cannot pose as a new
+    # turn/role or exhaust the prompt budget.
     packet_clause = {
-        "clause_id": str(normalized.get("id") or ""),
-        "name": str(normalized.get("name") or ""),
+        "clause_id": clause_id,
+        "name": _authored(_field("name"), AUTHORED_NAME_MAX_CHARS),
         "type": str(normalized.get("type") or ""),
         "engine": clause_engine(normalized),
-        "requirement": str(normalized.get("requirement") or ""),
-        "preferred_position": str(normalized.get("preferred_position") or ""),
-        "check_trigger": str(normalized.get("check_trigger") or ""),
-        "acceptable_language": str(normalized.get("acceptable_language") or ""),
+        "requirement": _authored(_field("requirement"), AUTHORED_LONG_TEXT_MAX_CHARS),
+        "preferred_position": _authored(
+            _field("preferred_position"), AUTHORED_LONG_TEXT_MAX_CHARS
+        ),
+        "check_trigger": _authored(_field("check_trigger"), AUTHORED_LONG_TEXT_MAX_CHARS),
+        "acceptable_language": _authored(
+            _field("acceptable_language"), AUTHORED_LONG_TEXT_MAX_CHARS
+        ),
         "evidence_guidance": str(normalized.get("evidence_guidance") or ""),
         "semantic_signals": [
             str(signal)
             for signal in normalized.get("semantic_signals", [])
             if str(signal).strip()
         ],
-        "rules": deepcopy(rules) if isinstance(rules, Mapping) else {},
+        "rules": _neutralized_rules(rules) if isinstance(rules, Mapping) else {},
     }
     # Dynamic clauses carry their fallback/redline wording and clause-specific
     # instructions in data; surface them so the AI packet is fully self-describing
