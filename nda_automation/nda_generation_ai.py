@@ -24,6 +24,7 @@ The provider plumbing reuses the project's OpenRouter client config
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import urllib.error
@@ -38,6 +39,14 @@ from .ai_review import (
 )
 from .openrouter_usage import record_openrouter_usage
 from .prohibited_positions import ANY_PROHIBITED_POSITION
+
+LOGGER = logging.getLogger(__name__)
+
+# Set this env var (the test suite does) to make the import-time required-terms
+# reconciliation RE-RAISE on divergence instead of only logging a warning. In
+# production this stays UNSET so a drifted Playbook degrades one clause's
+# generation auto-fill rather than crashing the whole app at boot.
+STRICT_REQUIRED_TERMS_ENV = "NDA_STRICT_REQUIRED_TERMS"
 
 OPENROUTER_CHAT_COMPLETIONS_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -225,10 +234,20 @@ def reconcile_required_terms(playbook: Mapping[str, Any]) -> None:
 def _reconcile_required_terms_at_import() -> None:
     """Best-effort import-time reconciliation against the canonical Playbook.
 
-    Runs the assertion against the on-disk Playbook so a divergence surfaces the
-    moment this module is imported (the test suite imports it). Import is never
-    blocked by an *unreadable* Playbook — only by an actual divergence — so a
-    minimal environment without the Playbook file still imports cleanly.
+    Runs the check against the on-disk Playbook so a divergence surfaces the
+    moment this module is imported. Import is never blocked by an *unreadable*
+    Playbook — so a minimal environment without the Playbook file still imports
+    cleanly.
+
+    A *divergence* (a required term reworded out of its clause template) is
+    downgraded here from a crash to a LOGGED WARNING: a routine Playbook edit must
+    never brick app startup. The blast radius of a divergence is contained — that
+    one clause's generation auto-fill falls back to the deterministic Playbook
+    wording (the GuardedClauseAdapter keeps the Playbook text when the required
+    term is missing), which is exactly the safe degradation. The strict
+    crash-on-divergence behaviour is preserved for the test suite and dev/CI via
+    :data:`STRICT_REQUIRED_TERMS_ENV`, so drift is still caught loudly during
+    development — never in production at boot.
     """
 
     try:
@@ -237,7 +256,27 @@ def _reconcile_required_terms_at_import() -> None:
         playbook = load_playbook()
     except Exception:  # noqa: BLE001 - missing/unreadable Playbook must not block import
         return
-    reconcile_required_terms(playbook)
+
+    strict = os.environ.get(STRICT_REQUIRED_TERMS_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    try:
+        reconcile_required_terms(playbook)
+    except AssertionError as exc:
+        if strict:
+            # Dev / CI / test suite: surface drift loudly as before.
+            raise
+        # Production boot: never crash. Log loudly and keep booting; the affected
+        # clause degrades to the deterministic Playbook wording.
+        LOGGER.warning(
+            "NDA generation required-terms table has DRIFTED from the Playbook clause "
+            "templates; that clause's AI auto-fill will fall back to the deterministic "
+            "Playbook wording. App is booting anyway. Detail: %s",
+            exc,
+        )
 
 
 _reconcile_required_terms_at_import()

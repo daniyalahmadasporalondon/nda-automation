@@ -258,6 +258,56 @@ class TestRequiredTermsReconciliation:
         with pytest.raises(AssertionError):
             gen_ai.reconcile_required_terms(edited)
 
+    def _drifted_playbook(self, playbook):
+        from copy import deepcopy
+
+        edited = deepcopy(playbook)
+        ci = next(c for c in edited["clauses"] if c["id"] == "confidential_information")
+        # Reword the template away from the required "independently developed" term.
+        ci["standard_exclusions_template"] = "Confidential Information does not include public information."
+        return edited
+
+    def test_import_time_check_warns_not_crashes_by_default(self, playbook, monkeypatch, caplog):
+        """A drifted Playbook must NOT brick app boot.
+
+        In production (strict flag unset) the import-time reconciliation logs a
+        WARNING and keeps booting, so a routine Playbook edit that reworded a
+        required term can never take the whole site down. Worst case the affected
+        clause's generation auto-fill degrades to the deterministic Playbook wording.
+        """
+        drifted = self._drifted_playbook(playbook)
+        monkeypatch.delenv(gen_ai.STRICT_REQUIRED_TERMS_ENV, raising=False)
+        monkeypatch.setattr("nda_automation.checker.load_playbook", lambda: drifted)
+        with caplog.at_level("WARNING", logger=gen_ai.LOGGER.name):
+            # Must not raise — the app boots.
+            gen_ai._reconcile_required_terms_at_import()
+        assert any("DRIFTED" in rec.getMessage() for rec in caplog.records), (
+            "a drifted Playbook should log a WARNING at import"
+        )
+
+    def test_import_time_check_still_crashes_under_strict_flag(self, playbook, monkeypatch):
+        """The strict crash-on-drift behaviour is preserved for dev/CI/the test suite.
+
+        With NDA_STRICT_REQUIRED_TERMS set, a divergence re-raises at import so
+        developers catch drift loudly instead of shipping it to production.
+        """
+        drifted = self._drifted_playbook(playbook)
+        monkeypatch.setenv(gen_ai.STRICT_REQUIRED_TERMS_ENV, "1")
+        monkeypatch.setattr("nda_automation.checker.load_playbook", lambda: drifted)
+        with pytest.raises(AssertionError):
+            gen_ai._reconcile_required_terms_at_import()
+
+    def test_import_time_check_tolerates_unreadable_playbook(self, monkeypatch):
+        """An unreadable/missing Playbook must never block import (even under strict)."""
+
+        def boom():
+            raise RuntimeError("playbook unreadable")
+
+        monkeypatch.setenv(gen_ai.STRICT_REQUIRED_TERMS_ENV, "1")
+        monkeypatch.setattr("nda_automation.checker.load_playbook", boom)
+        # Must return cleanly: a missing Playbook is not a divergence.
+        gen_ai._reconcile_required_terms_at_import()
+
 
 class TestFrozenClauseAdapter:
     """The frozen adapter replays recorded on-position clause text so gen-verify
