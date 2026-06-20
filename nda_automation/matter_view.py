@@ -241,18 +241,48 @@ def public_matter(
     if recipient_warning:
         public["recipient_redirected_from_reply_to"] = True
         public["recipient_warning"] = recipient_warning
+    # SOURCE-LEVEL deterministic-ghost demotion. Computed ONCE here (also surfaced
+    # below as ``public["ai_review_ran"]``) and used to gate every DISPLAY/STATE
+    # verdict surface in the payload so the demotion is enforced at THE SOURCE, not
+    # re-implemented per FE consumer. A deterministic-only matter (clauses stored but
+    # ``executed_engine != "ai_first"`` -- e.g. an outbound-generated NDA, or an
+    # inbound matter reviewed while the AI engine was off) must NOT surface a verdict.
+    #
+    # CRITICAL: this is DISPLAY/STATE-level only. The send-authority gate
+    # (``needs_human_review`` / ``blocks_send`` above) is derived from the RAW
+    # ``review_result`` and is intentionally NOT demoted -- a deterministic fail still
+    # blocks send. We only stop the deterministic verdict from being SHOWN as a
+    # reviewed outcome.
+    ai_review_ran = _matter_ai_review_ran(matter)
     review_state = matter_review_state(matter)
-    # ADDITIVE review overlays: a pipeline of deterministic gap-fillers that can each
-    # ELEVATE a clean PASS to REVIEW when they detect a coverage gap the AI review is
-    # contractually told to ignore (law<->forum jurisdiction split, carve-out
-    # negation, incorporation override, definition poison, ...). Every overlay obeys
-    # one anti-ghost contract enforced in ``review_overlays``: it NEVER overrides a
-    # stronger AI verdict (already review/check is left untouched), never force-FAILs,
-    # and is fail-safe (any error returns the state unchanged), so it can only ADD a
-    # review signal -- never become a deterministic ghost.
-    review_state = review_overlays.apply_review_overlays(review_state, matter)
-    if review_state:
-        public["review_state"] = review_state
+    if ai_review_ran:
+        # ADDITIVE review overlays: a pipeline of deterministic gap-fillers that can each
+        # ELEVATE a clean PASS to REVIEW when they detect a coverage gap the AI review is
+        # contractually told to ignore (law<->forum jurisdiction split, carve-out
+        # negation, incorporation override, definition poison, ...). Every overlay obeys
+        # one anti-ghost contract enforced in ``review_overlays``: it NEVER overrides a
+        # stronger AI verdict (already review/check is left untouched), never force-FAILs,
+        # and is fail-safe (any error returns the state unchanged), so it can only ADD a
+        # review signal -- never become a deterministic ghost.
+        #
+        # Gated on ai_review_ran: on a NON-AI matter the overlays would otherwise
+        # synthesize a REVIEW verdict on top of the (demoted) deterministic state and
+        # re-introduce a ghost, so we skip elevation entirely and surface PENDING.
+        review_state = review_overlays.apply_review_overlays(review_state, matter)
+        if review_state:
+            public["review_state"] = review_state
+    else:
+        # DEMOTE the surfaced state to a clear PENDING/unreviewed marker so NO
+        # consumer sees the deterministic verdict (state/label/counts), and DROP the
+        # deterministic ``requirements_*`` integers copied raw from the matter above.
+        # The raw ``review_result`` is untouched (send authority unchanged).
+        public["review_state"] = _pending_review_state()
+        for _requirement_key in (
+            "requirements_passed",
+            "requirements_needs_review",
+            "requirements_failed",
+        ):
+            public.pop(_requirement_key, None)
     # Async-review lifecycle status (review_status / review_error / review_started_at)
     # with the 300s in_progress TTL override applied on read, so the board poll
     # carries live progress for the async AI review without the route blocking.
@@ -318,7 +348,9 @@ def public_matter(
     # deterministic-only matter has has_ai_review=True but ai_review_ran=False, so
     # the UI shows "Review not run / Pending" instead of deterministic verdicts.
     # Triage metadata (counterparty/dedup/issue_count routing) is unaffected.
-    public["ai_review_ran"] = _matter_ai_review_ran(matter)
+    # Reuses the value computed once above (which also drove the state/overlay
+    # demotion) so the gate and the surfaced flag can never disagree.
+    public["ai_review_ran"] = ai_review_ran
     public["document_downloads"] = public_matter_document_downloads(matter)
     # The artifact registry view: the tracked documents on the matter plus the
     # current_artifact_id pointer ("the version that matters now"). A compact
@@ -642,6 +674,23 @@ def matter_needs_human_review(matter: dict[str, Any]) -> bool:
     except (TypeError, ValueError):
         return True
     return needs_review or failed
+
+
+def _pending_review_state() -> dict[str, Any]:
+    """The canonical PENDING (unreviewed) review_state surfaced for the
+    deterministic-ghost demotion.
+
+    Built from ``aggregate_review_state([])`` -- the single source for the PENDING
+    shape (state="pending", label="PENDING", all counts 0, no block flags) -- with an
+    explicit ``ai_review_ran=False`` marker so any consumer can tell this is the
+    deliberate "AI review has not run" state, not a clean pass. Carries NO deterministic
+    verdict: state/label/counts read as pending so no FE component can surface a
+    deterministic clean/fail. The raw send-authority gate (computed from
+    ``review_result``) is unaffected -- this is display/state only.
+    """
+    pending = aggregate_review_state([])
+    pending["ai_review_ran"] = False
+    return pending
 
 
 def matter_review_state(matter: dict[str, Any]) -> dict[str, Any]:

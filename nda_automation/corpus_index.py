@@ -342,9 +342,24 @@ def _review_outcome_from_result(review_result: Any) -> str | None:
     * else at least one clause passed -> ``clean``
     * otherwise (no clause verdicts)  -> ``None`` (unreviewed; never claimed clean).
 
+    GATE (deterministic-ghost demotion): surface an outcome ONLY when an AI
+    (ai_first) review actually ran for this result
+    (``review_state.review_was_ai_executed`` -- the same single signal
+    ``matter_view`` gates its ``ai_review_ran`` projection and the sibling
+    ``_app_requirement_counts`` gate on). A deterministic-only matter (e.g. an
+    outbound-generated NDA, or an inbound matter reviewed while the AI engine was
+    off) stores ``review_result.clauses`` but no AI verdict; without this gate its
+    deterministic clean/fail verdict leaked into the corpus "Review outcome" facet
+    and the durable matter_summary. Returning ``None`` keeps it ``unreviewed`` so no
+    consumer claims a deterministic verdict. Enforced HERE (the single source) so
+    BOTH call sites -- ``_app_facets`` (app-state) and
+    ``drive_integration._summary_master_filter_facets`` (durable) -- inherit it.
+
     Never raises; an odd shape -> ``None``.
     """
     if not isinstance(review_result, dict) or not _review_clauses(review_result):
+        return None
+    if not review_state.review_was_ai_executed(review_result):
         return None
     try:
         state = review_state.review_state_from_result(review_result)
