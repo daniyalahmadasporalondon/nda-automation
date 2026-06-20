@@ -424,5 +424,64 @@ def _sync_governing_law_options(governing_law):
     ]
 
 
+class PlaybookRulesContentHardeningTests(unittest.TestCase):
+    """P4: size caps, unknown-condition-key rejection, zero-width-term rejection."""
+
+    def _errors(self, playbook):
+        try:
+            validate_playbook_rules(playbook)
+        except PlaybookRulesError as error:
+            return error.errors
+        return []
+
+    def _mutate_mutuality(self, fn):
+        playbook = deepcopy(load_playbook())
+        mut = next(c for c in playbook["clauses"] if c["id"] == "mutuality")
+        fn(mut)
+        return playbook
+
+    def test_unknown_condition_key_is_rejected(self):
+        def add_key(mut):
+            mut["rules"]["fail_conditions"][0]["reason_code"] = "sneaky"
+
+        errors = self._errors(self._mutate_mutuality(add_key))
+        self.assertTrue(
+            any("unsupported field" in e and "reason_code" in e for e in errors),
+            errors,
+        )
+
+    def test_oversized_requirement_is_rejected(self):
+        def blow_up(mut):
+            mut["requirement"] = "A" * 5000
+
+        errors = self._errors(self._mutate_mutuality(blow_up))
+        self.assertTrue(any("requirement is too long" in e for e in errors), errors)
+
+    def test_oversized_condition_description_is_rejected(self):
+        def blow_up(mut):
+            mut["rules"]["fail_conditions"][0]["description"] = "B" * 5000
+
+        errors = self._errors(self._mutate_mutuality(blow_up))
+        self.assertTrue(any("description is too long" in e for e in errors), errors)
+
+    def test_zero_width_only_search_term_is_rejected(self):
+        def zw(mut):
+            mut["search_terms"] = ["​‌‍﻿"]
+
+        errors = self._errors(self._mutate_mutuality(zw))
+        self.assertTrue(any("search_terms" in e for e in errors), errors)
+
+    def test_zero_width_only_search_term_rejected_by_contract(self):
+        playbook = self._mutate_mutuality(
+            lambda mut: mut.__setitem__("search_terms", ["‌‍"])
+        )
+        with self.assertRaises(PlaybookTemplateError):
+            validate_playbook(playbook)
+
+    def test_live_playbook_passes_content_hardening(self):
+        # No false positives: the shipped playbook must still validate cleanly.
+        self.assertEqual(self._errors(deepcopy(load_playbook())), [])
+
+
 if __name__ == "__main__":
     unittest.main()

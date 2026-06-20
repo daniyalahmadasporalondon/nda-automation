@@ -19,9 +19,12 @@ Public API (stable -- the integration is built against this):
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Callable
+
+from .forum_shape import forum_shape_problem as _forum_shape_problem
 
 __all__ = [
     "LintViolation",
@@ -34,7 +37,35 @@ __all__ = [
     "check_option_id_collision",
     "check_governing_law_forum_present",
     "check_trigger_terms_present",
+    "check_condition_contradiction",
+    "check_law_alias_collision",
+    "has_printable_content",
 ]
+
+
+# Unicode format/zero-width characters that carry NO printable content but a naive
+# ``str.strip()`` leaves in place. A "term" or value built only from these is
+# effectively blank -- it can never be matched in a document -- so the lint must
+# treat it as empty rather than as a present-but-invisible value.
+_ZERO_WIDTH_CHARS = frozenset({"​", "‌", "‍", "﻿", " "})
+_WORD_CHAR_PATTERN = re.compile(r"\w", re.UNICODE)
+
+
+def has_printable_content(value: object) -> bool:
+    """True when ``value`` has visible/word content after stripping zero-width chars.
+
+    Strips Cf-category code points (zero-width space/joiner, BOM, ...) and the
+    non-breaking space, then requires at least one ``\\w`` character to remain. An
+    invisible-unicode-only string returns ``False`` so it can never pass as a
+    present term.
+    """
+    text = str(value or "")
+    kept = [
+        ch
+        for ch in text
+        if ch not in _ZERO_WIDTH_CHARS and unicodedata.category(ch) != "Cf"
+    ]
+    return bool(_WORD_CHAR_PATTERN.search("".join(kept)))
 
 # ---------------------------------------------------------------------------
 # Vocabulary -- kept locally so the lint can run on a raw playbook mapping
@@ -710,7 +741,8 @@ def check_governing_law_forum_present(clause: Mapping[str, Any]) -> list[LintVio
             or _text(option.get("id"))
             or f"<approved_options[{index}]>"
         )
-        if not _text(option.get("forum_jurisdiction")):
+        forum = _text(option.get("forum_jurisdiction"))
+        if not forum:
             violations.append(
                 LintViolation(
                     _GOVERNING_LAW_CLAUSE_ID,
@@ -719,6 +751,23 @@ def check_governing_law_forum_present(clause: Mapping[str, Any]) -> list[LintVio
                     "(court/forum); a governing law cannot be published without a "
                     "court -- the review forum check and generation have nothing to "
                     "pair the law with",
+                )
+            )
+            continue
+        # Court-SHAPE: the forum_jurisdiction must look like a real court/venue.
+        # The same screen the generation gate uses, so a non-court venue ("the
+        # moon", "arbitration in Narnia"), a template placeholder, an injected
+        # control phrase, or an oversized string is rejected at PUBLISH -- before it
+        # can ever reach a signed NDA -- rather than only at generation time.
+        problem = _forum_shape_problem(forum)
+        if problem is not None:
+            violations.append(
+                LintViolation(
+                    _GOVERNING_LAW_CLAUSE_ID,
+                    "governing_law_forum_present",
+                    f"approved governing law '{label}' has forum_jurisdiction "
+                    f"'{forum}' which is not a valid court/venue: {problem}. A "
+                    "non-court venue cannot be published into the law/forum pairing",
                 )
             )
     return violations
@@ -748,18 +797,169 @@ def check_trigger_terms_present(clause: Mapping[str, Any]) -> list[LintViolation
     raw = clause.get("search_terms")
     terms: list[str] = []
     if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
-        terms = [_text(term) for term in raw if _text(term)]
+        # A term is "present" only if it has printable/word content AFTER stripping
+        # unicode format/zero-width characters. A zero-width-only "term" (e.g.
+        # "​​") survives ``str.strip()`` and so would look present, but it
+        # can never be matched in a document -- the clause would be silently dead. We
+        # reject it the same as a blank term.
+        terms = [_text(term) for term in raw if has_printable_content(term)]
     if terms:
         return []
     return [
         LintViolation(
             clause_id,
             "trigger_terms_present",
-            "clause has no non-blank search_terms, so the detector can never "
-            "surface it and its review rules never fire -- add at least one "
-            "trigger term",
+            "clause has no search_terms with printable content (after stripping "
+            "zero-width / format characters), so the detector can never surface it "
+            "and its review rules never fire -- add at least one real trigger term",
         )
     ]
+
+
+# ---------------------------------------------------------------------------
+# Check 9: condition_contradiction
+# ---------------------------------------------------------------------------
+
+# Normalises a condition description to a comparable key: lowercase, collapse
+# whitespace, drop surrounding punctuation. Two conditions whose descriptions
+# normalise identically describe the SAME triggering state.
+_DESC_WS = re.compile(r"\s+")
+_DESC_EDGE_PUNCT = re.compile(r"^[\W_]+|[\W_]+$")
+
+
+def _normalize_description(value: object) -> str:
+    text = _DESC_WS.sub(" ", str(value or "").strip().lower())
+    return _DESC_EDGE_PUNCT.sub("", text)
+
+
+def check_condition_contradiction(clause: Mapping[str, Any]) -> list[LintViolation]:
+    """Reject a clause whose conditions assert the SAME state is both pass and fail.
+
+    A condition's ``description`` names the document state that triggers its
+    decision. If the very same state (same normalised description) appears as a
+    ``pass_condition`` AND as a ``fail_condition`` (or ``review_trigger``), the rule
+    set is self-contradictory: the engine is told the identical situation both
+    passes and is flagged, so the clause's verdict is undefined / order-dependent.
+
+    This catches the CLEAR contradiction the spec calls for -- the same trigger
+    described as both pass and fail -- deterministically, without judging meaning
+    (Layer 2's job). Two conditions that merely share an id are already caught by
+    ``condition_well_formed``; here we compare the human-described TRIGGER.
+    """
+
+    rules = _rules(clause)
+    clause_id = _clause_id(clause)
+
+    pass_descs: dict[str, str] = {}
+    for condition in _condition_list(rules, "pass_conditions"):
+        key = _normalize_description(condition.get("description"))
+        if key:
+            pass_descs.setdefault(key, _text(condition.get("description")))
+
+    if not pass_descs:
+        return []
+
+    violations: list[LintViolation] = []
+    seen: set[str] = set()
+    for field in ("fail_conditions", "review_triggers"):
+        for condition in _condition_list(rules, field):
+            key = _normalize_description(condition.get("description"))
+            if key and key in pass_descs and key not in seen:
+                seen.add(key)
+                described = pass_descs[key]
+                violations.append(
+                    LintViolation(
+                        clause_id,
+                        "condition_contradiction",
+                        f"the same state '{described}' is described as BOTH a "
+                        f"pass_condition and a {field[:-1] if field.endswith('s') else field} "
+                        "-- the rules contradict themselves on whether this state "
+                        "passes or is flagged",
+                    )
+                )
+    return violations
+
+
+# ---------------------------------------------------------------------------
+# Check 10: law_alias_collision
+# ---------------------------------------------------------------------------
+
+
+def _law_aliases(option: Any) -> list[str]:
+    """The recognition aliases an approved governing-law option carries.
+
+    An option may name aliases under ``aliases`` / ``law_phrases`` / ``synonyms``
+    (a list of strings) plus its own ``label``/``value`` as implicit aliases. These
+    are the strings the review-side recognition matches a document's governing law
+    against, so two approved laws sharing an alias are ambiguous: a document naming
+    that alias resolves to whichever law happens to be checked first.
+    """
+
+    if not isinstance(option, Mapping):
+        return []
+    aliases: list[str] = []
+    for key in ("aliases", "law_phrases", "synonyms"):
+        raw = option.get(key)
+        if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+            aliases.extend(_text(item) for item in raw if _text(item))
+        elif isinstance(raw, str) and _text(raw):
+            aliases.append(_text(raw))
+    return aliases
+
+
+def check_law_alias_collision(clause: Mapping[str, Any]) -> list[LintViolation]:
+    """Warn when two approved governing laws share a recognition alias.
+
+    Only applies to the ``governing_law`` clause. Each approved option's aliases
+    (``aliases``/``law_phrases``/``synonyms``) are the strings the review side
+    matches a document against to recognise its governing law. If two DISTINCT
+    approved laws claim the same alias, recognition is ambiguous -- a document naming
+    that alias could resolve to either law. We flag the collision so the author
+    disambiguates before publishing.
+    """
+
+    if _clause_id(clause) != _GOVERNING_LAW_CLAUSE_ID:
+        return []
+
+    rules = _rules(clause)
+    raw_options = rules.get("approved_options")
+    if not isinstance(raw_options, Sequence) or isinstance(raw_options, (str, bytes)):
+        return []
+
+    # alias (normalised) -> set of distinct option labels that claim it.
+    owners_by_alias: dict[str, dict[str, str]] = {}
+    for option in raw_options:
+        if not isinstance(option, Mapping):
+            continue
+        label = (
+            _text(option.get("label"))
+            or _text(option.get("value"))
+            or _text(option.get("id"))
+        )
+        if not label:
+            continue
+        option_key = label.lower()
+        for alias in _law_aliases(option):
+            norm = _normalize_description(alias)
+            if not norm:
+                continue
+            owners_by_alias.setdefault(norm, {})[option_key] = label
+
+    violations: list[LintViolation] = []
+    for norm, owners in owners_by_alias.items():
+        if len(owners) > 1:
+            colliding = ", ".join(f"'{name}'" for name in sorted(owners.values()))
+            violations.append(
+                LintViolation(
+                    _GOVERNING_LAW_CLAUSE_ID,
+                    "law_alias_collision",
+                    f"approved governing laws {colliding} share the recognition alias "
+                    f"'{norm}', so a document naming it resolves ambiguously -- "
+                    "distinct laws must not share an alias",
+                    severity="warning",
+                )
+            )
+    return violations
 
 
 # ---------------------------------------------------------------------------
@@ -775,6 +975,8 @@ CHECKS: dict[str, CheckFn] = {
     "option_id_collision": check_option_id_collision,
     "governing_law_forum_present": check_governing_law_forum_present,
     "trigger_terms_present": check_trigger_terms_present,
+    "condition_contradiction": check_condition_contradiction,
+    "law_alias_collision": check_law_alias_collision,
 }
 
 # Stable, ordered registry of the check ids the engine runs.

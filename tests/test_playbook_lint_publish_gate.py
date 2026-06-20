@@ -272,5 +272,98 @@ class PlaybookLintPublishGateTests(unittest.TestCase):
         self.assertTrue(located, result["errors"])
 
 
+    # ------------------------------------------------------------------
+    # Content-hardening end-to-end: each fix rejects through the REAL lint
+    # at the same 400 / {"error"} publish gate.
+    # ------------------------------------------------------------------
+
+    def test_publish_rejected_on_non_court_forum(self) -> None:
+        # PROOF (P2): a non-court forum ("the moon") was accepted on base and could
+        # reach a signed NDA; now the publish gate rejects it via the REAL lint.
+        candidate = deepcopy(self.active_playbook)
+        gl = next(c for c in candidate["clauses"] if c["id"] == "governing_law")
+        gl["rules"]["approved_options"][0]["forum_jurisdiction"] = "the moon"
+
+        with self.assertRaises(playbook_authoring.PlaybookAuthoringError) as ctx:
+            self._publish(candidate)
+        error = ctx.exception
+        self.assertEqual(error.status, 400)
+        self.assertIn("not a valid court/venue", error.payload["error"])
+        # No-op: disk unchanged.
+        self.assertEqual(
+            json.loads(self.playbook_path.read_text(encoding="utf-8")),
+            self.active_playbook,
+        )
+
+    def test_publish_rejected_on_contradictory_conditions(self) -> None:
+        # PROOF (P2): the same state described as both pass and fail is rejected.
+        candidate = deepcopy(self.active_playbook)
+        mut = next(c for c in candidate["clauses"] if c["id"] == "mutuality")
+        shared = mut["rules"]["pass_conditions"][0]["description"]
+        mut["rules"]["fail_conditions"].append(
+            {
+                "id": "contradiction_probe",
+                "decision": "fail",
+                "issue_type": "present_but_wrong",
+                "description": shared,
+                "redline_action": "replace_paragraph",
+            }
+        )
+        with self.assertRaises(playbook_authoring.PlaybookAuthoringError) as ctx:
+            self._publish(candidate)
+        self.assertEqual(ctx.exception.status, 400)
+        self.assertIn("contradict themselves", ctx.exception.payload["error"])
+
+    def test_publish_rejected_on_zero_width_only_search_term(self) -> None:
+        # PROOF (P2): an invisible-unicode-only search term cannot publish.
+        candidate = deepcopy(self.active_playbook)
+        mut = next(c for c in candidate["clauses"] if c["id"] == "mutuality")
+        mut["search_terms"] = ["​‌‍﻿"]
+        with self.assertRaises(playbook_authoring.PlaybookAuthoringError) as ctx:
+            self._publish(candidate)
+        self.assertEqual(ctx.exception.status, 400)
+
+    def test_publish_rejected_on_unknown_condition_key(self) -> None:
+        # PROOF (P4): an invented condition key (reason_code) is rejected.
+        candidate = deepcopy(self.active_playbook)
+        mut = next(c for c in candidate["clauses"] if c["id"] == "mutuality")
+        mut["rules"]["fail_conditions"][0]["reason_code"] = "sneaky"
+        with self.assertRaises(playbook_authoring.PlaybookAuthoringError) as ctx:
+            self._publish(candidate)
+        self.assertEqual(ctx.exception.status, 400)
+        self.assertIn("unsupported field", ctx.exception.payload["error"])
+
+    def test_publish_rejected_on_oversized_field(self) -> None:
+        # PROOF (P4): an oversized authored requirement is rejected.
+        candidate = deepcopy(self.active_playbook)
+        mut = next(c for c in candidate["clauses"] if c["id"] == "mutuality")
+        mut["requirement"] = "A" * 5000
+        with self.assertRaises(playbook_authoring.PlaybookAuthoringError) as ctx:
+            self._publish(candidate)
+        self.assertEqual(ctx.exception.status, 400)
+        self.assertIn("too long", ctx.exception.payload["error"])
+
+    def test_alias_collision_is_advisory_not_blocking(self) -> None:
+        # The law alias-collision lint is a WARNING: it must NOT block a publish (it
+        # surfaces in draft validation), so a clean-but-colliding playbook publishes.
+        candidate = deepcopy(self.active_playbook)
+        gl = next(c for c in candidate["clauses"] if c["id"] == "governing_law")
+        opts = gl["rules"]["approved_options"]
+        opts[0].setdefault("aliases", []).append("shared_alias")
+        opts[1].setdefault("aliases", []).append("shared_alias")
+        # Publish succeeds (warning does not block)...
+        response = self._publish(candidate)
+        self.assertEqual(response["playbook"], candidate)
+        # ...but the warning surfaces in draft validation.
+        result = playbook_authoring.validate_playbook_draft({"playbook": candidate})
+        self.assertTrue(
+            any(
+                err.get("message", "").find("share the recognition alias") != -1
+                for err in result["errors"]
+            ),
+            result["errors"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

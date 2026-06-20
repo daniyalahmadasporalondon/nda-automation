@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from copy import deepcopy
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -89,6 +90,17 @@ DYNAMIC_FALLBACK_FIELDS = {
     "redline_action",
     "wording",
     "approved_positions",
+}
+
+# The CLOSED set of keys a pass/fail/review CONDITION object may carry. The engine
+# reads exactly these; an invented key (e.g. ``reason_code``, ``override``) is
+# rejected rather than silently ignored.
+_CONDITION_ALLOWED_FIELDS = {
+    "id",
+    "decision",
+    "description",
+    "issue_type",
+    "redline_action",
 }
 
 CLAUSE_POLICY_FIELDS: dict[str, set[str]] = {
@@ -571,10 +583,27 @@ def _validate_dynamic_clause_schema(clause: Mapping[str, Any], clause_id: str, e
     _validate_prohibited_position_patterns(clause, clause_id, errors)
 
 
+# Authored free-text clause fields that get a size cap. ``requirement`` /
+# ``preferred_position`` / ``check_trigger`` can be a paragraph of prose, so they
+# use the generous long cap; ``name`` is a short label.
+_LONG_TEXT_CLAUSE_FIELDS = ("requirement", "preferred_position", "check_trigger")
+
+
 def _validate_clause_common_fields(clause: Mapping[str, Any], clause_id: str, errors: list[str]) -> None:
     for field in CORE_REQUIRED_TEXT_FIELDS:
         if not _text(clause.get(field)):
             errors.append(f"Playbook clause {clause_id} must include {field}.")
+    name = _text(clause.get("name"))
+    if name and len(name) > MAX_AUTHORED_SHORT_TEXT_LENGTH:
+        errors.append(
+            f"Playbook clause {clause_id} name is too long ({len(name)} chars > {MAX_AUTHORED_SHORT_TEXT_LENGTH})."
+        )
+    for field in _LONG_TEXT_CLAUSE_FIELDS:
+        value = _text(clause.get(field))
+        if value and len(value) > MAX_AUTHORED_TEXT_LENGTH:
+            errors.append(
+                f"Playbook clause {clause_id} {field} is too long ({len(value)} chars > {MAX_AUTHORED_TEXT_LENGTH})."
+            )
     if _text(clause.get("type")) not in {"required", "prohibited"}:
         errors.append(f"Playbook clause {clause_id} type must be required or prohibited.")
     _validate_text_list_field(clause, "search_terms", clause_id, errors, required=True)
@@ -727,8 +756,17 @@ def _validate_text_list_field(
     seen: set[str] = set()
     for index, item in enumerate(value):
         text = _text(item)
-        if not text:
+        if not text or not _has_printable_content(item):
+            # Reject blanks AND zero-width-only "terms": a value built solely from
+            # unicode format / zero-width characters survives ``strip()`` but has no
+            # matchable content, so it must not pass as a present term/value.
             errors.append(f"Playbook clause {clause_id} {field}[{index}] must be text.")
+            continue
+        if len(text) > MAX_AUTHORED_TEXT_LENGTH:
+            errors.append(
+                f"Playbook clause {clause_id} {field}[{index}] is too long "
+                f"({len(text)} chars > {MAX_AUTHORED_TEXT_LENGTH})."
+            )
             continue
         normalized = text.lower()
         if normalized in seen:
@@ -758,8 +796,14 @@ def _validate_clause_rules(clause: Mapping[str, Any], errors: list[str]) -> None
     clause_type = _text(rules.get("clause_type"))
     if clause_type not in {"required", "prohibited"}:
         errors.append(f"Playbook clause {clause_id} rules.clause_type must be required or prohibited.")
-    if not _text(rules.get("acceptable_position")):
+    acceptable_position = _text(rules.get("acceptable_position"))
+    if not acceptable_position:
         errors.append(f"Playbook clause {clause_id} rules.acceptable_position must be text.")
+    elif len(acceptable_position) > MAX_AUTHORED_TEXT_LENGTH:
+        errors.append(
+            f"Playbook clause {clause_id} rules.acceptable_position is too long "
+            f"({len(acceptable_position)} chars > {MAX_AUTHORED_TEXT_LENGTH})."
+        )
 
     pass_conditions = _required_rule_list(rules, "pass_conditions", clause_id, errors)
     fail_conditions = _required_rule_list(rules, "fail_conditions", clause_id, errors)
@@ -835,11 +879,28 @@ def _validate_condition_list(
 ) -> None:
     for index, condition in enumerate(conditions):
         prefix = f"Playbook clause {clause_id} rules.{field}[{index}]"
+        # Reject INVENTED keys on a condition object. The condition grammar is
+        # closed -- only the fields the engine reads are allowed -- so an unknown key
+        # (e.g. a hand-authored ``reason_code`` or a smuggled ``override``) is
+        # silently dead at best and a confusion vector at worst, and must fail the
+        # gate rather than be quietly ignored.
+        unknown = sorted(str(key) for key in condition.keys() if str(key) not in _CONDITION_ALLOWED_FIELDS)
+        if unknown:
+            errors.append(f"{prefix} has unsupported field(s): {', '.join(unknown)}.")
         condition_id = _text(condition.get("id"))
         if not condition_id:
             errors.append(f"{prefix} must include id.")
-        if not _text(condition.get("description")):
+        elif len(condition_id) > MAX_AUTHORED_SHORT_TEXT_LENGTH:
+            errors.append(
+                f"{prefix} id is too long ({len(condition_id)} chars > {MAX_AUTHORED_SHORT_TEXT_LENGTH})."
+            )
+        description = _text(condition.get("description"))
+        if not description:
             errors.append(f"{prefix} must include description.")
+        elif len(description) > MAX_AUTHORED_TEXT_LENGTH:
+            errors.append(
+                f"{prefix} description is too long ({len(description)} chars > {MAX_AUTHORED_TEXT_LENGTH})."
+            )
         decision = _text(condition.get("decision"))
         if decision != expected_decision:
             errors.append(f"{prefix} decision must be {expected_decision}.")
@@ -964,6 +1025,35 @@ def _validate_approved_options(clause: Mapping[str, Any], rules: Mapping[str, An
 
 def _text(value: object) -> str:
     return str(value or "").strip()
+
+
+#: Size cap (maxLength) for authored free-text fields and list entries. A real
+#: clause requirement / position / search term is a sentence or phrase, not a
+#: document; capping the length stops an authored field from carrying an injected
+#: paragraph, a pasted contract, or unbounded junk into the rules. 4000 chars is
+#: generous headroom for the longest legitimate requirement/redline prose.
+MAX_AUTHORED_TEXT_LENGTH = 4000
+
+#: Short free-text fields (names, single-line positions, search terms) get a
+#: tighter cap than the long prose fields.
+MAX_AUTHORED_SHORT_TEXT_LENGTH = 600
+
+# Unicode format/zero-width code points that survive ``str.strip()`` but carry no
+# printable content. Mirrors ``checker._has_printable_content`` /
+# ``playbook_lint.has_printable_content``; a divergence test pins them together.
+_ZERO_WIDTH_CHARS = frozenset({"​", "‌", "‍", "﻿", " "})
+_WORD_CHAR_RE = re.compile(r"\w", re.UNICODE)
+
+
+def _has_printable_content(value: object) -> bool:
+    """True when ``value`` has visible/word content after stripping zero-width chars."""
+    text = str(value or "")
+    kept = [
+        ch
+        for ch in text
+        if ch not in _ZERO_WIDTH_CHARS and unicodedata.category(ch) != "Cf"
+    ]
+    return bool(_WORD_CHAR_RE.search("".join(kept)))
 
 
 def _int_value(value: object) -> int | None:

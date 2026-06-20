@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import string
+import unicodedata
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
@@ -1053,7 +1055,34 @@ def _required_clause_terms(clause: Dict[str, object], field: str) -> List[str]:
     values = clause.get(field, [])
     if not isinstance(values, list):
         return []
-    return [str(term).lower().strip() for term in values if str(term).strip()]
+    # A term counts as present only when it has printable/word content after
+    # stripping unicode format / zero-width characters. A zero-width-only term
+    # survives ``str.strip()`` but can never be matched in a document, so it must
+    # not pass the schema's required-terms check as a present search term.
+    return [
+        str(term).lower().strip()
+        for term in values
+        if _has_printable_content(term)
+    ]
+
+
+# Unicode format/zero-width code points that carry no printable content but
+# survive a naive ``str.strip()``. Mirrors ``playbook_lint.has_printable_content``;
+# a divergence test pins the two so the schema gate and the publish lint agree on
+# what "blank" means.
+_ZERO_WIDTH_CHARS = frozenset({"​", "‌", "‍", "﻿", " "})
+_WORD_CHAR_RE = re.compile(r"\w", re.UNICODE)
+
+
+def _has_printable_content(value: object) -> bool:
+    """True when ``value`` has visible/word content after stripping zero-width chars."""
+    text = str(value or "")
+    kept = [
+        ch
+        for ch in text
+        if ch not in _ZERO_WIDTH_CHARS and unicodedata.category(ch) != "Cf"
+    ]
+    return bool(_WORD_CHAR_RE.search("".join(kept)))
 
 
 def _build_redline_edits(clause_results: List[ClauseResult], paragraphs: List[Paragraph]) -> List[RedlineEdit]:
