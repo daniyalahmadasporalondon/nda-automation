@@ -207,7 +207,7 @@ def public_matter_document_downloads(
                     unavailable_reason=(
                         ""
                         if reviewed_source_supported or (reviewed_ready and reconstructed_pdf_docx_available)
-                        else "Reviewed downloads are available after the matter is approved."
+                        else "Reviewed downloads are available after the NDA is approved."
                         if not reviewed_ready
                         else str(pdf_docx_health["message"])
                         if source_is_pdf
@@ -247,7 +247,7 @@ def public_matter_document_downloads(
                             and reconstructed_pdf_docx_available
                             and bool(health["available"])
                         )
-                        else "Reviewed downloads are available after the matter is approved."
+                        else "Reviewed downloads are available after the NDA is approved."
                         if not reviewed_ready
                         else str(pdf_docx_health["message"])
                         if source_is_pdf and not reconstructed_pdf_docx_available
@@ -288,7 +288,7 @@ def build_matter_source_pdf_export(
     rendered = result.rendered
     if rendered.status != document_rendering.READY_STATUS or rendered.pdf_path is None:
         status = 503 if rendered.error_code == "converter_unavailable" else 409
-        message = rendered.error_message or "PDF export is not available for this matter."
+        message = rendered.error_message or "PDF export is not available for this NDA."
         raise PdfExportError(
             {
                 "error": message,
@@ -324,13 +324,13 @@ def build_matter_pdf_source_docx_export(
     repository = repository or DiskMatterRepository()
     matter = repository.get_matter(matter_id, owner_user_id=owner_user_id) if matter_id else None
     if matter is None:
-        raise PdfExportError({"error": "Matter not found."}, status=404)
+        raise PdfExportError({"error": "NDA not found."}, status=404)
     source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "")
     if Path(source_filename).suffix.lower() != ".pdf":
         raise PdfExportError({"error": "PDF-to-Word reconstruction is available only for source PDFs."}, status=409)
     pdf_bytes = repository.get_source_document_bytes(matter)
     if pdf_bytes is None:
-        raise PdfExportError({"error": "Matter source document is missing from storage."}, status=404)
+        raise PdfExportError({"error": "NDA source document is missing from storage."}, status=404)
     try:
         reconstructed = pdf_docx_reconstruction.reconstruct_pdf_to_docx(
             pdf_bytes,

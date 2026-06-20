@@ -78,9 +78,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 # signed stage is the only one fixed to a single extension by the design.
 SIGNED_EXTENSION = ".pdf"
 SIGNED_FILENAME_MESSAGE = "Upload the executed copy as a PDF."
-MATTER_NOT_FOUND_MESSAGE = "Matter not found."
+MATTER_NOT_FOUND_MESSAGE = "NDA not found."
 MISSING_DOCUMENT_MESSAGE = "Provide the executed document to capture."
-ALREADY_EXECUTED_MESSAGE = "This matter is already marked executed."
+ALREADY_EXECUTED_MESSAGE = "This NDA is already marked executed."
 DECODE_FAILED_MESSAGE = "The signed document could not be decoded."
 
 # The chronological precedence for the document the executed copy descends from.

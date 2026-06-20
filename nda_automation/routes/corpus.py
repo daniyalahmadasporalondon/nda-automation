@@ -88,7 +88,7 @@ def handle_corpus_artifact_download(handler, path: str, *, send_body: bool = Tru
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return
     if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
         return
 
     artifact = artifact_registry.find_artifact(matter, artifact_id)

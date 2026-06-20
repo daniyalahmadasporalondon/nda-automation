@@ -46,7 +46,7 @@ def parse_clause_decision_path(path: str) -> tuple[str, str] | None:
 def handle_clause_decision(handler, path: str) -> None:
     parsed = parse_clause_decision_path(path)
     if parsed is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
     matter_id, clause_id = parsed
 
@@ -58,10 +58,10 @@ def handle_clause_decision(handler, path: str) -> None:
     repository = _repository(handler)
     matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
     if approval.find_clause(matter, clause_id) is None:
-        handler._send_json({"error": "Clause not found in this matter's review."}, status=404)
+        handler._send_json({"error": "Clause not found in this NDA's review."}, status=404)
         return
 
     try:
@@ -76,7 +76,7 @@ def handle_clause_decision(handler, path: str) -> None:
         matter_id, clause_id, reviewer_decision, owner_user_id=owner_user_id,
     )
     if updated_matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
 
     telemetry.increment("reviewer_decisions_recorded")
@@ -90,7 +90,7 @@ def handle_clause_decision(handler, path: str) -> None:
 def handle_matter_approve(handler, path: str) -> None:
     matter_id = parse_matter_id(path, suffix="/approve")
     if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
 
     owner_user_id = request_owner_user_id(handler)
@@ -102,13 +102,13 @@ def handle_matter_approve(handler, path: str) -> None:
             owner_user_id=owner_user_id,
         )
     except MatterNotFoundError:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
     except MatterApprovalBlockedError as error:
         telemetry.increment("matter_approvals_blocked")
         handler._send_json(
             {
-                "error": "Matter cannot be approved yet.",
+                "error": "NDA cannot be approved yet.",
                 "blocks_approval": error.blocks,
                 "resolution": error.resolution,
             },
@@ -130,17 +130,17 @@ def handle_matter_approve(handler, path: str) -> None:
 def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -> None:
     matter_id = parse_matter_id(path, suffix="/reviewed-docx")
     if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
         return
 
     owner_user_id = request_owner_user_id(handler)
     matter = _repository(handler).get_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
         return
     if str(matter.get("status") or "") != approval.MATTER_STATUS_APPROVED:
         handler._send_json(
-            {"error": "Reviewed DOCX is available only after the matter is approved."},
+            {"error": "Reviewed DOCX is available only after the NDA is approved."},
             status=409,
             send_body=send_body,
         )
@@ -221,17 +221,17 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
 def handle_matter_reviewed_pdf(handler, path: str, *, send_body: bool = True) -> None:
     matter_id = parse_matter_id(path, suffix="/reviewed-pdf")
     if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
         return
 
     owner_user_id = request_owner_user_id(handler)
     matter = _repository(handler).get_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
         return
     if str(matter.get("status") or "") != approval.MATTER_STATUS_APPROVED:
         handler._send_json(
-            {"error": "Reviewed PDF is available only after the matter is approved."},
+            {"error": "Reviewed PDF is available only after the NDA is approved."},
             status=409,
             send_body=send_body,
         )

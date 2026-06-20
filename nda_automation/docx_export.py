@@ -149,7 +149,7 @@ def build_review_report_docx(review_result: ReviewResult, title: str = "NDA Revi
     )
     paragraphs = [
         _paragraph("NDA Redline", style="Title"),
-        _paragraph(f"Matter: {title or 'Untitled NDA'}", style="Subtitle"),
+        _paragraph(f"NDA: {title or 'Untitled NDA'}", style="Subtitle"),
         _paragraph(note_text, style="Note"),
         _paragraph("Redlined NDA", style="Heading1"),
         *_redlined_nda_section(review_result),

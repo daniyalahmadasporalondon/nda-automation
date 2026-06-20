@@ -768,7 +768,7 @@ const CorpusRender = (() => {
         <header class="corpus-group-head">
           <h2 class="corpus-group-name">${html(CorpusModel.counterpartyName(group))}</h2>
           ${repeatEntityBadge(matters)}
-          <span class="corpus-group-count">${matterCount} ${matterCount === 1 ? "matter" : "matters"}</span>
+          <span class="corpus-group-count">${matterCount} ${matterCount === 1 ? "NDA" : "NDAs"}</span>
         </header>
         <div class="corpus-matter-list">
           ${matters.map((matter) => renderMatter(matter)).join("")}
@@ -827,7 +827,7 @@ const CorpusRender = (() => {
           <h2 class="corpus-group-name">${html(CorpusModel.monthLabel(key))}</h2>
           <span class="corpus-group-meta">
             ${recurringNote}
-            <span class="corpus-group-count">${matterCount} ${matterCount === 1 ? "matter" : "matters"}</span>
+            <span class="corpus-group-count">${matterCount} ${matterCount === 1 ? "NDA" : "NDAs"}</span>
           </span>
         </header>
         <div class="corpus-matter-list">
@@ -847,7 +847,7 @@ const CorpusRender = (() => {
     if (!dup) return "";
     const matchedId = String(dup.matched_matter_id || "");
     if (!matchedId) return "";
-    const matchedTitle = String(dup.matched_title || "another matter");
+    const matchedTitle = String(dup.matched_title || "another NDA");
     const sim = CorpusModel.similarityLabel(dup.similarity);
     const simPart = sim ? `${sim} ` : "";
     return `<button class="corpus-dupdoc-chip" type="button" data-corpus-dupdoc-target="${html(matchedId)}" title="Near-duplicate content of ${html(matchedTitle)} — jump to it">Duplicate document · ${html(simPart)}→ ${html(matchedTitle)}</button>`;
@@ -884,7 +884,7 @@ const CorpusRender = (() => {
         <div class="corpus-matter-body" hidden>
           <div class="corpus-matter-actions">
             ${driveUrl ? `<a class="corpus-link" href="${html(driveUrl)}" target="_blank" rel="noopener noreferrer">Open in Drive</a>` : ""}
-            <button class="corpus-link corpus-open-matter" type="button" data-corpus-open-matter="${html(matter.matter_id || "")}" ${inApp && matter.matter_id ? "" : "disabled"} title="${inApp ? "Open this matter in the workstation" : "Not available in app (Drive-only)"}">Open matter</button>
+            <button class="corpus-link corpus-open-matter" type="button" data-corpus-open-matter="${html(matter.matter_id || "")}" ${inApp && matter.matter_id ? "" : "disabled"} title="${inApp ? "Open this NDA in the workstation" : "Not available in app (Drive-only)"}">Open NDA</button>
           </div>
           ${renderDuplicateNote(matter)}
           ${renderArtifacts(matter, artifacts)}
@@ -1236,7 +1236,7 @@ const CorpusView = (() => {
         counterparties = Number(payload.counterparty_count || 0);
       }
       const lens = state.executedOnly ? "Executed · " : "";
-      summaryNode.textContent = `${lens}${counterparties} ${counterparties === 1 ? "counterparty" : "counterparties"} · ${matters} ${matters === 1 ? "matter" : "matters"}`;
+      summaryNode.textContent = `${lens}${counterparties} ${counterparties === 1 ? "counterparty" : "counterparties"} · ${matters} ${matters === 1 ? "NDA" : "NDAs"}`;
     }
 
     const handlers = {

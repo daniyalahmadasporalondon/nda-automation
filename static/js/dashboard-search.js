@@ -203,7 +203,7 @@ const DashboardSearchView = (() => {
       return citations
         .filter((citation) => citation && typeof citation === "object")
         .map((citation) => {
-          const title = String(citation.title || citation.subject || citation.matter_id || "Matter").trim();
+          const title = String(citation.title || citation.subject || citation.matter_id || "NDA").trim();
           const bits = [];
           if (citation.workflow_phase) bits.push(String(citation.workflow_phase).replace(/_/g, " "));
           if (citation.last_outbound_at) bits.push(String(citation.last_outbound_at).slice(0, 10));
@@ -261,7 +261,7 @@ const DashboardSearchView = (() => {
       if (action === "gmail_import" || action === "sync_gmail") return "Sync Gmail now";
       if (action === "refresh_review" || action === "run_review") return "Refresh Review";
       if (action === "send_redline") return "Send Redline";
-      if (action === "approve_matter") return "Approve Matter";
+      if (action === "approve_matter") return "Approve NDA";
       if (action === "open_repository") return "Open Repository";
       if (action === "open_admin") return "Open Admin";
       if (action === "open_playbook") return "Open Playbook";
@@ -279,7 +279,7 @@ const DashboardSearchView = (() => {
         return "Runs the existing Gmail import route after confirmation.";
       }
       if (action === "refresh_review" || action === "run_review") {
-        return "Runs the existing matter review-refresh route after confirmation.";
+        return "Runs the existing NDA review-refresh route after confirmation.";
       }
       if (action === "send_redline") {
         return "Sends through the existing Gmail redline route after recipient confirmation.";
@@ -298,12 +298,12 @@ const DashboardSearchView = (() => {
         {
           id: "guide_open_repository",
           label: "Open Repository",
-          description: "Inspect intake, review, sent, and uploaded matters.",
+          description: "Inspect intake, review, sent, and uploaded NDAs.",
           requiresConfirmation: false,
           payload: {
             action: "open_repository",
             target: { tab: "repository" },
-            statusText: "Repository opened. Choose a matter before running review or export actions.",
+            statusText: "Repository opened. Choose an NDA before running review or export actions.",
           },
         },
         {
@@ -436,7 +436,7 @@ const DashboardSearchView = (() => {
         case "review_finding_explanation":
           return "Review explanation";
         case "matter_summary":
-          return "Matter summary";
+          return "NDA summary";
         case "system_search":
           return "System search";
         case "how_it_works":
@@ -562,7 +562,7 @@ const DashboardSearchView = (() => {
         : "";
       const exactFacts = [
         humanSummary ? `Will happen: ${humanSummary}` : "",
-        matter.title ? `Matter: ${matter.title}` : "",
+        matter.title ? `NDA: ${matter.title}` : "",
         matter.resolved_recipient ? `Recipient: ${matter.resolved_recipient}` : "",
         routeText,
       ].filter(Boolean);
@@ -1118,7 +1118,7 @@ const DashboardSearchView = (() => {
       const lines = [
         action.humanSummary || payload.humanSummary || action.description || "Confirm this assistant action.",
       ];
-      if (matter.title) lines.push(`Matter: ${matter.title}`);
+      if (matter.title) lines.push(`NDA: ${matter.title}`);
       if (matter.resolved_recipient) lines.push(`Recipient: ${matter.resolved_recipient}`);
       if (route.method && route.url) lines.push(`Route: ${String(route.method).toUpperCase()} ${route.url}`);
       if (Array.isArray(payload.sideEffects) && payload.sideEffects.length) {

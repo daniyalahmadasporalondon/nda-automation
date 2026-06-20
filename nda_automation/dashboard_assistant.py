@@ -427,7 +427,7 @@ def matter_clause_count_response(
     if matter is None:
         return clarification_response(
             context,
-            matter_error or "Which matter's clauses should I count?",
+            matter_error or "Which NDA's clauses should I count?",
             questions=_matter_question_options(context),
         )
     public = matter_view.public_matter(matter)
@@ -534,7 +534,7 @@ def assistant_capabilities_response(context: AssistantContext) -> dict[str, Any]
         "domain": "assistant",
         "question": "capability_catalog",
         "answer": {
-            "text": "I can search matters, answer repository and Playbook questions, explain outbound email templates, and start safe app workflows with confirmation.",
+            "text": "I can search NDAs, answer repository and Playbook questions, explain outbound email templates, and start safe app workflows with confirmation.",
             "domains": domains,
             "capabilities": capabilities,
         },
@@ -555,7 +555,7 @@ def explain_review_finding_response(
     if matter is None:
         return clarification_response(
             context,
-            matter_error or "Which matter should I explain?",
+            matter_error or "Which NDA should I explain?",
             questions=_matter_question_options(context),
         )
 
@@ -647,7 +647,7 @@ def summarize_matter_response(
     if matter is None:
         return clarification_response(
             context,
-            matter_error or "Which matter should I summarize?",
+            matter_error or "Which NDA should I summarize?",
             questions=_matter_question_options(context),
         )
     public = matter_view.public_matter(matter)
@@ -665,12 +665,12 @@ def summarize_matter_response(
     ai_reviewed = bool(public.get("ai_review_ran"))
     risk_bits = _matter_risk_bits(public, review) if ai_reviewed else []
     if not ai_reviewed:
-        risk_text = "this matter hasn't been AI-reviewed yet, so there are no review findings to report"
+        risk_text = "this NDA hasn't been AI-reviewed yet, so there are no review findings to report"
     elif risk_bits:
         risk_text = "; ".join(risk_bits)
     else:
         risk_text = "no current review risks were found in the stored review result"
-    next_text = next_action or "open the matter and choose the next workflow step"
+    next_text = next_action or "open the NDA and choose the next workflow step"
     summary = (
         f'"{title}" is in {phase}'
         + (f" ({status_label})" if status_label else "")
@@ -708,9 +708,9 @@ def search_system_response(
     count = len(hits)
     noun = "hit" if count == 1 else "hits"
     if hits:
-        text = f"Found {count} owner-scoped {noun} across matters, review clauses, and the Playbook."
+        text = f"Found {count} owner-scoped {noun} across NDAs, review clauses, and the Playbook."
     else:
-        text = "No owner-scoped matches were found across matters, review clauses, or the Playbook."
+        text = "No owner-scoped matches were found across NDAs, review clauses, or the Playbook."
     return {
         "intent": "system_search",
         "version": DASHBOARD_ASSISTANT_VERSION,
@@ -868,7 +868,7 @@ def open_repository_response(context: AssistantContext) -> dict[str, Any]:
         action="open_repository",
         domain="repository",
         label="Open Repository",
-        message="I can open the Repository so you can inspect matters and choose the next step.",
+        message="I can open the Repository so you can inspect NDAs and choose the next step.",
         target_tab="repository",
         requires_confirmation=False,
     )
@@ -930,7 +930,7 @@ def review_request_response(
         if context.public_matters:
             return clarification_response(
                 context,
-                matter_error or "Which matter should I refresh review for?",
+                matter_error or "Which NDA should I refresh review for?",
                 questions=_matter_question_options(context),
             )
         return open_repository_response(context)
@@ -943,7 +943,7 @@ def review_request_response(
         action="refresh_review",
         domain="review",
         label="Refresh Review",
-        message="I can refresh this matter's review after you confirm. The existing matter review route will enforce ownership.",
+        message="I can refresh this NDA's review after you confirm. The existing NDA review route will enforce ownership.",
         target_tab="review",
         requires_confirmation=True,
         side_effects=("review_refresh",),
@@ -969,7 +969,7 @@ def approve_matter_request_response(
     if matter is None:
         return clarification_response(
             context,
-            matter_error or "Which matter should I approve?",
+            matter_error or "Which NDA should I approve?",
             questions=_matter_question_options(context),
         )
     public = matter_view.public_matter(matter)
@@ -979,8 +979,8 @@ def approve_matter_request_response(
         context,
         action="approve_matter",
         domain="approval",
-        label="Approve Matter",
-        message="I can approve this matter after hard confirmation. The existing approval route will enforce owner scope and approval blockers.",
+        label="Approve NDA",
+        message="I can approve this NDA after hard confirmation. The existing approval route will enforce owner scope and approval blockers.",
         target_tab="review",
         requires_confirmation=True,
         side_effects=("approve_matter",),
@@ -1006,7 +1006,7 @@ def send_redline_request_response(
     if matter is None:
         return clarification_response(
             context,
-            matter_error or "Which matter should I send a redline for?",
+            matter_error or "Which NDA should I send a redline for?",
             questions=_matter_question_options(context),
         )
     public = matter_view.public_matter(matter)
@@ -1044,7 +1044,7 @@ def drive_export_request_response(context: AssistantContext) -> dict[str, Any]:
         action="open_drive_export",
         domain="drive",
         label="Review Drive/export options",
-        message="I can take you to the relevant matter/export controls. Nothing is uploaded or downloaded from the assistant response.",
+        message="I can take you to the relevant NDA/export controls. Nothing is uploaded or downloaded from the assistant response.",
         target_tab="repository",
         requires_confirmation=True,
         side_effects=("drive_upload_or_export",),
@@ -1066,7 +1066,7 @@ def search_filter_response(context: AssistantContext) -> dict[str, Any]:
             }
     return unsupported_response(
         context.query,
-        message="I could not map that to a supported assistant command or matter search filter.",
+        message="I could not map that to a supported assistant command or NDA search filter.",
     )
 
 
@@ -1153,16 +1153,16 @@ def _resolve_matter(
         matter = context.repository.get_matter(matter_id, owner_user_id=context.owner_user_id)
         if matter is not None:
             return matter, ""
-        return None, "I could not find an owner-scoped matter with that id."
+        return None, "I could not find an owner-scoped NDA with that id."
 
     matters = context.owner_matters
     if not matters:
-        return None, "No owner-scoped matters are available."
+        return None, "No owner-scoped NDAs are available."
     terms = _query_terms(matter_query)
     if not terms:
         if allow_single and len(matters) == 1:
             return matters[0], ""
-        return None, "Which matter should I use?"
+        return None, "Which NDA should I use?"
 
     scored = [
         (_matter_match_score(matter, terms), matter)
@@ -1170,12 +1170,12 @@ def _resolve_matter(
     ]
     scored = [(score, matter) for score, matter in scored if score > 0]
     if not scored:
-        return None, "I could not match that to one of your matters."
+        return None, "I could not match that to one of your NDAs."
     scored.sort(key=lambda item: (-item[0], str(item[1].get("created_at") or "")), reverse=False)
     best_score = scored[0][0]
     best = [matter for score, matter in scored if score == best_score]
     if len(best) > 1:
-        return None, "That matched more than one matter. Please choose the exact matter."
+        return None, "That matched more than one NDA. Please choose the exact NDA."
     return best[0], ""
 
 
@@ -1210,14 +1210,14 @@ def _resolve_clause(
     clauses = review_result.get("clauses") if isinstance(review_result, Mapping) else []
     clause_list = [clause for clause in clauses if isinstance(clause, Mapping)] if isinstance(clauses, list) else []
     if not clause_list:
-        return None, "This matter does not have stored review clauses to explain."
+        return None, "This NDA does not have stored review clauses to explain."
 
     clause_id = clause_id.strip()
     if clause_id:
         for clause in clause_list:
             if str(clause.get("id") or "").casefold() == clause_id.casefold():
                 return clause, ""
-        return None, "I could not find that clause in the matter's review result."
+        return None, "I could not find that clause in the NDA's review result."
 
     terms = _query_terms(clause_query)
     scored = [(_clause_match_score(clause, terms), clause) for clause in clause_list]
@@ -1615,16 +1615,16 @@ def _trusted_how_it_works_knowledge() -> dict[str, dict[str, Any]]:
     return {
         "review": {
             "text": (
-                "Review extracts the uploaded matter, runs the active review engine against the published Playbook, "
-                "stores clause verdicts/evidence, and keeps refresh/approval/send behind the existing matter routes."
+                "Review extracts the uploaded NDA, runs the active review engine against the published Playbook, "
+                "stores clause verdicts/evidence, and keeps refresh/approval/send behind the existing NDA routes."
             ),
             "steps": [
                 "Read the stored document text and paragraph structure.",
                 "Assess clauses against the active published Playbook.",
-                "Store verdicts, evidence, proposed changes, and workflow state on the owner-scoped matter.",
+                "Store verdicts, evidence, proposed changes, and workflow state on the owner-scoped NDA.",
                 "Require human review or approval before export/send when the stored gates say so.",
             ],
-            "security": "Matter reads are owner-scoped. Refresh, approval, export, and send use existing guarded matter routes.",
+            "security": "NDA reads are owner-scoped. Refresh, approval, export, and send use existing guarded NDA routes.",
             "citations": [
                 {"source": "code", "title": "nda_automation/routes/matters.py"},
                 {"source": "code", "title": "nda_automation/review_engine.py"},
@@ -1652,10 +1652,10 @@ def _trusted_how_it_works_knowledge() -> dict[str, dict[str, Any]]:
             "steps": [
                 "Author draft Playbook changes in the Playbook workspace.",
                 "Publish to make a validated Playbook snapshot active.",
-                "Review and generation read the active snapshot, not matter-provided instructions.",
-                "Staleness checks detect when a matter was reviewed against an older snapshot.",
+                "Review and generation read the active snapshot, not NDA-provided instructions.",
+                "Staleness checks detect when an NDA was reviewed against an older snapshot.",
             ],
-            "security": "Playbook explanations come from trusted Playbook runtime data, not counterparty matter text.",
+            "security": "Playbook explanations come from trusted Playbook runtime data, not counterparty NDA text.",
             "citations": [{"source": "code", "title": "nda_automation/playbook_runtime.py"}],
         },
         "gmail": {
@@ -1665,7 +1665,7 @@ def _trusted_how_it_works_knowledge() -> dict[str, dict[str, Any]]:
             ),
             "steps": [
                 "Import uses the connected user's Gmail scope and owner id.",
-                "Outbound redline send resolves the matter recipient server-side.",
+                "Outbound redline send resolves the NDA recipient server-side.",
                 "The sender must confirm the exact recipient.",
                 "The route re-checks review freshness and send blockers before emailing.",
             ],
@@ -1683,7 +1683,7 @@ def _trusted_how_it_works_knowledge() -> dict[str, dict[str, Any]]:
                 "Force confirmation whenever side_effects is non-empty.",
                 "Execute only after the user confirms, through existing app endpoints.",
             ],
-            "security": "Untrusted matter text is neutralized for display/search and never becomes an instruction or authority source.",
+            "security": "Untrusted NDA text is neutralized for display/search and never becomes an instruction or authority source.",
             "citations": [{"source": "code", "title": "nda_automation/dashboard_assistant.py"}],
         },
     }
@@ -2092,7 +2092,7 @@ def _approved_governing_law_options(playbook: Mapping[str, Any]) -> list[Mapping
 
 def _capability_prompt() -> str:
     return (
-        "I can search matters, answer repository, Playbook, Gmail/email-template and system questions, "
+        "I can search NDAs, answer repository, Playbook, Gmail/email-template and system questions, "
         "or prepare safe action requests for generation, review, Gmail, Drive/export, Admin and Playbook workflows."
     )
 
@@ -2151,7 +2151,7 @@ ASSISTANT_CAPABILITIES: tuple[AssistantCapability, ...] = (
         name="explain_review_finding",
         domain="review",
         intent="review_finding_explanation",
-        description="Explain a matter review clause verdict, evidence, and Playbook position from owner-scoped review results.",
+        description="Explain an NDA review clause verdict, evidence, and Playbook position from owner-scoped review results.",
         matcher=lambda context: _looks_like_explain_review_finding_request(context.lowered),
         handler=explain_review_finding_response,
     ),
@@ -2159,7 +2159,7 @@ ASSISTANT_CAPABILITIES: tuple[AssistantCapability, ...] = (
         name="summarize_matter",
         domain="repository",
         intent="matter_summary",
-        description="Summarize an owner-scoped matter's state, risks, and next action.",
+        description="Summarize an owner-scoped NDA's state, risks, and next action.",
         matcher=lambda context: _looks_like_summarize_matter_request(context.lowered),
         handler=summarize_matter_response,
     ),
@@ -2167,7 +2167,7 @@ ASSISTANT_CAPABILITIES: tuple[AssistantCapability, ...] = (
         name="search_system",
         domain="system_search",
         intent="system_search",
-        description="Search owner-scoped matter contents, review clauses, and the trusted Playbook.",
+        description="Search owner-scoped NDA contents, review clauses, and the trusted Playbook.",
         matcher=lambda context: _looks_like_search_system_request(context.lowered),
         handler=search_system_response,
     ),
@@ -2183,7 +2183,7 @@ ASSISTANT_CAPABILITIES: tuple[AssistantCapability, ...] = (
         name="count_in_review",
         domain="repository",
         intent="repository_question",
-        description="Count owner-scoped matters currently in review.",
+        description="Count owner-scoped NDAs currently in review.",
         matcher=lambda context: _looks_like_count_in_review_question(context.lowered),
         handler=count_in_review_response,
     ),
@@ -2241,7 +2241,7 @@ ASSISTANT_CAPABILITIES: tuple[AssistantCapability, ...] = (
         name="approve_matter",
         domain="approval",
         intent="action_request",
-        description="Prepare a hard-confirmation matter approval request through the existing approval route.",
+        description="Prepare a hard-confirmation NDA approval request through the existing approval route.",
         matcher=lambda context: _looks_like_approve_matter_request(context.lowered),
         handler=approve_matter_request_response,
         side_effectful=True,
@@ -2250,7 +2250,7 @@ ASSISTANT_CAPABILITIES: tuple[AssistantCapability, ...] = (
         name="review_workflow",
         domain="review",
         intent="action_request",
-        description="Prepare a confirmation-gated matter review refresh request through the existing review route.",
+        description="Prepare a confirmation-gated NDA review refresh request through the existing review route.",
         matcher=lambda context: _looks_like_review_request(context.lowered),
         handler=review_request_response,
         side_effectful=True,
@@ -2268,7 +2268,7 @@ ASSISTANT_CAPABILITIES: tuple[AssistantCapability, ...] = (
         name="matter_search_filter",
         domain="repository",
         intent="search_filter",
-        description="Translate matter-search/filter requests into the existing dashboard search contract.",
+        description="Translate NDA-search/filter requests into the existing dashboard search contract.",
         matcher=lambda context: _looks_like_search_request(context.lowered),
         handler=search_filter_response,
     ),

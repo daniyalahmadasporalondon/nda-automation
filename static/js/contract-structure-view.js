@@ -32,7 +32,7 @@ function createContractStructureController({ state, root }) {
     }
 
     if (!structure || typeof structure !== "object") {
-      root.innerHTML = '<div class="structure-empty">This review does not include a structure map yet. Reload the matter or run the review again to generate it.</div>';
+      root.innerHTML = '<div class="structure-empty">This review does not include a structure map yet. Reload the NDA or run the review again to generate it.</div>';
       return;
     }
 

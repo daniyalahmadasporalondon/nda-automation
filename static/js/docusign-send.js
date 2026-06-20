@@ -182,7 +182,7 @@ function createDocuSignSendController({
   function openComposer() {
     const matter = currentMatter();
     if (!matter?.id) {
-      setStatus("Save this review as a matter before sending for signature.", "error");
+      setStatus("Save this review as an NDA before sending for signature.", "error");
       return;
     }
     if (!modalNode || !form) {
@@ -219,7 +219,7 @@ function createDocuSignSendController({
     if (busy) return;
     const matter = currentMatter();
     if (!matter?.id) {
-      setStatus("Save this review as a matter before sending for signature.", "error");
+      setStatus("Save this review as an NDA before sending for signature.", "error");
       return;
     }
     // #30: never POST a second envelope for a matter already out for signature.

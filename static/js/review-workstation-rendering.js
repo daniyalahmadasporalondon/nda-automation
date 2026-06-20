@@ -377,8 +377,8 @@ function renderReviewOverlayBanner() {
   }
   const count = findings.length;
   const heading = count === 1
-    ? "1 additional review check flagged this matter"
-    : `${count} additional review checks flagged this matter`;
+    ? "1 additional review check flagged this NDA"
+    : `${count} additional review checks flagged this NDA`;
   const items = findings
     .map((finding) => `<li>${escapeHtml(finding.message)}</li>`)
     .join("");

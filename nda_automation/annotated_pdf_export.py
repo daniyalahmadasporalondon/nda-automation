@@ -61,11 +61,11 @@ def build_matter_annotated_pdf(
     repository = repository or DiskMatterRepository()
     matter = repository.get_matter(str(matter_id or "").strip(), owner_user_id=owner_user_id)
     if matter is None:
-        raise AnnotatedPdfMatterNotFoundError("Matter not found.")
+        raise AnnotatedPdfMatterNotFoundError("NDA not found.")
 
     review_result = matter.get("review_result")
     if not isinstance(review_result, dict):
-        raise AnnotatedPdfExportError("Matter does not have a stored review result.")
+        raise AnnotatedPdfExportError("NDA does not have a stored review result.")
 
     staleness = review_result_staleness(review_result)
     if staleness["stale"]:
@@ -73,7 +73,7 @@ def build_matter_annotated_pdf(
 
     source_filename = str(matter.get("source_filename") or "")
     if not source_filename.lower().endswith(".pdf"):
-        raise AnnotatedPdfUnsupportedSourceError("Annotated PDF export is available only for PDF matters.")
+        raise AnnotatedPdfUnsupportedSourceError("Annotated PDF export is available only for PDF NDAs.")
 
     source_bytes = repository.get_source_document_bytes(matter)
     if source_bytes is None:

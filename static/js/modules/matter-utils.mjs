@@ -119,8 +119,8 @@ export function canSendRedline(matter) {
 
 export function gmailSendBlock(matter, gmailStatus = {}) {
   if (matter?.send_block_reason) return String(matter.send_block_reason);
-  if (sendIsBlockedByReview(matter)) return "Matter needs human review before a redline can be sent.";
-  if (!canSendRedline(matter)) return "Matter does not have a valid reply recipient email address.";
+  if (sendIsBlockedByReview(matter)) return "NDA needs human review before a redline can be sent.";
+  if (!canSendRedline(matter)) return "NDA does not have a valid reply recipient email address.";
   const outbound = gmailStatus?.outbound || {};
   if (outbound.enabled === false) return "Gmail outbound is disabled in Admin.";
   if (outbound.ready === false) return outbound.error || "Outbound Gmail is not ready.";
@@ -131,7 +131,7 @@ export function gmailSendBlock(matter, gmailStatus = {}) {
     outbound.email,
   ].map((email) => String(email || "").trim().toLowerCase()).filter(Boolean);
   if (recipient && ownEmails.includes(recipient)) {
-    return `Matter appears to be an outbound or self-sent Gmail message; refusing to send a redline back to ${recipient}.`;
+    return `NDA appears to be an outbound or self-sent Gmail message; refusing to send a redline back to ${recipient}.`;
   }
   const matterInbound = String(matter?.gmail_account || "").trim().toLowerCase();
   const outboundEmail = String(outbound.email || "").trim().toLowerCase();

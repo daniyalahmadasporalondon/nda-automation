@@ -214,7 +214,7 @@ def handle_drive_upload_matter(handler) -> None:
     matter_id = payload.get("matter_id")
     if not isinstance(matter_id, str) or not matter_id.strip():
         telemetry.increment("drive_upload_failed")
-        handler._send_json({"error": "Matter not found."}, status=400)
+        handler._send_json({"error": "NDA not found."}, status=400)
         return
     matter_id = matter_id.strip()
 
@@ -225,7 +225,7 @@ def handle_drive_upload_matter(handler) -> None:
     matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
         telemetry.increment("drive_upload_failed")
-        handler._send_json({"error": "Matter not found."}, status=400)
+        handler._send_json({"error": "NDA not found."}, status=400)
         return
 
     if not drive_integration.drive_connected(drive_token_owner_user_id):
@@ -235,7 +235,7 @@ def handle_drive_upload_matter(handler) -> None:
 
     if not artifact_registry.matter_artifacts(matter):
         telemetry.increment("drive_upload_failed")
-        handler._send_json({"error": "Matter has no document to save to Drive."}, status=400)
+        handler._send_json({"error": "NDA has no document to save to Drive."}, status=400)
         return
 
     settings = app_settings.drive_settings()

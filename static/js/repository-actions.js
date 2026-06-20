@@ -94,7 +94,7 @@ const RepositoryActions = (() => {
         renderBoard();
         renderDetailPanel(matter);
       } catch (error) {
-        console.warn(error.message || "Matter could not load");
+        console.warn(error.message || "NDA could not load");
       }
     }
 
@@ -143,9 +143,9 @@ const RepositoryActions = (() => {
           control.removeAttribute("aria-busy");
         }
         if (repositoryMatterPanel && !repositoryMatterPanel.hidden) {
-          setPanelMessage(error.message || "Matter could not be deleted");
+          setPanelMessage(error.message || "NDA could not be deleted");
         } else {
-          console.warn(error.message || "Matter could not be deleted");
+          console.warn(error.message || "NDA could not be deleted");
         }
       }
     }
@@ -177,9 +177,9 @@ const RepositoryActions = (() => {
       const reviewMatter = await loadMatterReview(selectedReviewMatter.id);
       if (!reviewMatter) {
         if (typeof showMatterReviewLoadError === "function") {
-          showMatterReviewLoadError("Matter review details could not load.");
+          showMatterReviewLoadError("NDA review details could not load.");
         } else {
-          setPanelMessage("Matter review details could not load.");
+          setPanelMessage("NDA review details could not load.");
         }
         return;
       }
@@ -190,7 +190,7 @@ const RepositoryActions = (() => {
       try {
         return await api.getMatterReview(matterId, options);
       } catch (error) {
-        console.warn(error.message || "Matter review details could not load");
+        console.warn(error.message || "NDA review details could not load");
         return null;
       }
     }
@@ -213,7 +213,7 @@ const RepositoryActions = (() => {
       if (
         dirtyOtherMatter
         && typeof confirmDiscardUnsavedReviewEdits === "function"
-        && !confirmDiscardUnsavedReviewEdits("Refreshing this review will discard the unsaved redline edits on the matter open in Review.")
+        && !confirmDiscardUnsavedReviewEdits("Refreshing this review will discard the unsaved redline edits on the NDA open in Review.")
       ) {
         return;
       }
@@ -309,7 +309,7 @@ const RepositoryActions = (() => {
             ...DocumentDownloadMenu.contractChoice(reviewedDocx, {
               label: "DOCX",
               onSelect: () => exportMatter(matter),
-              unavailableReason: "DOCX is not available for this reviewed document yet.",
+              unavailableReason: "DOCX is not available for this reviewed NDA yet.",
             }),
             description: docxDescription,
           }
@@ -330,7 +330,7 @@ const RepositoryActions = (() => {
             DocumentDownloadMenu.contractChoice(reviewedPdf, {
               label: "PDF",
               onSelect: (choice) => downloadMatterPdf(matter, choice),
-              unavailableReason: "PDF is not available for this reviewed document yet.",
+              unavailableReason: "PDF is not available for this reviewed NDA yet.",
             }),
           ],
         }],
@@ -351,8 +351,8 @@ const RepositoryActions = (() => {
       if (filename) parts.push(filename);
       parts.push(
         MatterUtils.needsHumanReview(matter)
-          ? "Downloads the reviewed Word file. This matter still needs human review, so it stays where it is."
-          : "Downloads and moves this matter to Reviewed.",
+          ? "Downloads the reviewed Word file. This NDA still needs human review, so it stays where it is."
+          : "Downloads and moves this NDA to Reviewed.",
       );
       const preview = downloadContentsPreview(matter);
       if (preview) parts.push(preview);
@@ -412,7 +412,7 @@ const RepositoryActions = (() => {
         const blob = await response.blob();
         downloadBlob(blob, filename);
         if (MatterUtils.needsHumanReview(matter)) {
-          setPanelMessage(`Downloading ${filename}. Matter still needs human review before send.${reconstructionCaveat}`);
+          setPanelMessage(`Downloading ${filename}. NDA still needs human review before send.${reconstructionCaveat}`);
         } else {
           const movedMatter = await moveMatterToColumn(matter.id, "reviewed", { quiet: true });
           const stageMessage = movedMatter ? "Moved to Reviewed." : "Stage could not update.";
@@ -431,7 +431,7 @@ const RepositoryActions = (() => {
     function downloadMatterPdf(matter, choice) {
       const filename = choice?.filename || redlineDownloadFilename(matter.source_filename || matter.document_title || "nda.pdf").replace(/\.docx$/i, ".pdf");
       if (!choice?.url) {
-        setPanelMessage("PDF is not available for this reviewed document yet.");
+        setPanelMessage("PDF is not available for this reviewed NDA yet.");
         return;
       }
       if (typeof downloadUrl === "function") {
@@ -453,7 +453,7 @@ const RepositoryActions = (() => {
       if (!recipient) {
         setPendingSendMatterId(null);
         setPendingDeleteMatterId(null);
-        setPanelMessage("Matter does not have a valid reply recipient email address.");
+        setPanelMessage("NDA does not have a valid reply recipient email address.");
         return;
       }
       if (getPendingSendMatterId() !== matter.id) {
@@ -547,11 +547,11 @@ const RepositoryActions = (() => {
       const folderUrl = String(drive.matter_folder_url || "");
       const summary = syncedCount > 0
         ? `Synced ${syncedCount} file${syncedCount === 1 ? "" : "s"} to Drive.`
-        : "Matter folder up to date.";
+        : "NDA folder up to date.";
       const parts = [`<span class="repository-drive-summary">${escapeHtml(summary)}</span>`];
       if (folderUrl) {
         parts.push(
-          `<a class="repository-detail-link repository-drive-folder-link" href="${escapeHtml(folderUrl)}" target="_blank" rel="noopener">Open matter folder</a>`,
+          `<a class="repository-detail-link repository-drive-folder-link" href="${escapeHtml(folderUrl)}" target="_blank" rel="noopener">Open NDA folder</a>`,
         );
       }
       const artifacts = Array.isArray(drive.artifacts) ? drive.artifacts : [];
@@ -588,7 +588,7 @@ const RepositoryActions = (() => {
         return updatedMatter;
       } catch (error) {
         if (!options.quiet) {
-          setPanelMessage(error.message || "Matter could not move");
+          setPanelMessage(error.message || "NDA could not move");
         }
         return null;
       }

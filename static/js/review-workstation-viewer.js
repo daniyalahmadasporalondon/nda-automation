@@ -921,8 +921,8 @@ function loadMatterIntoReview(matter) {
   setFileMeta(
     refreshMessage
       || (matter.redline_draft
-        ? `${RepositoryView.sourceTypeLabel(matter.source_type)} matter loaded - draft redline saved`
-        : `${RepositoryView.sourceTypeLabel(matter.source_type)} matter loaded`)
+        ? `${RepositoryView.sourceTypeLabel(matter.source_type)} NDA loaded - draft redline saved`
+        : `${RepositoryView.sourceTypeLabel(matter.source_type)} NDA loaded`)
   );
   activateTab("review");
   requestAnimationFrame(resizeSourceEditors);
@@ -937,11 +937,11 @@ function prepareMatterReviewLoad(matter) {
   setCounterpartyMeta(MatterUtils.counterpartyEmail(matter, state.gmailStatus));
   renderCounterpartyConfirmation(matter);
   renderStudioEmpty();
-  setFileMeta(`${RepositoryView.sourceTypeLabel(matter.source_type)} matter loading review`);
+  setFileMeta(`${RepositoryView.sourceTypeLabel(matter.source_type)} NDA loading review`);
   activateTab("review");
   requestAnimationFrame(resizeSourceEditors);
 }
 
 function showMatterReviewLoadError(message) {
-  setFileMeta(message || "Matter review details could not load.");
+  setFileMeta(message || "NDA review details could not load.");
 }

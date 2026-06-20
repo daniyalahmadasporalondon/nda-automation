@@ -208,7 +208,7 @@ def handle_matter_review_refresh(handler, path: str) -> None:
 
 def _matter_for_review_response(handler, matter_id: str | None, *, send_body: bool) -> dict | None:
     if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
         return None
     repository = _repository(handler)
     try:
@@ -217,7 +217,7 @@ def _matter_for_review_response(handler, matter_id: str | None, *, send_body: bo
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return None
     if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
         return None
     return _with_restored_paragraph_structure(matter, repository=repository)
 
@@ -432,7 +432,7 @@ def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:
     """Stream a matter's stored original .docx/.pdf for faithful rendering."""
     matter_id = parse_matter_id(path, suffix="/source")
     if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
         return
     repository = _repository(handler)
     try:
@@ -441,7 +441,7 @@ def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return
     if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
         return
     source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "")
     try:
@@ -450,7 +450,7 @@ def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return
     if source_bytes is None:
-        handler._send_json({"error": "No source document for this matter."}, status=404, send_body=send_body)
+        handler._send_json({"error": "No source document for this NDA."}, status=404, send_body=send_body)
         return
     ext = Path(source_filename).suffix.lower()
     if ext == ".docx":
@@ -581,7 +581,7 @@ def handle_matter_upload(handler, *, create_matter_from_document_func=create_mat
     source_type = source_type.strip()
     default_board_column = HTTP_MATTER_SOURCE_COLUMNS.get(source_type)
     if default_board_column is None:
-        handler._send_json({"error": "Unsupported matter source."}, status=400)
+        handler._send_json({"error": "Unsupported NDA source."}, status=400)
         return
     board_column = _manual_upload_board_column(payload, default_board_column)
     if board_column is None:
@@ -725,7 +725,7 @@ def handle_matter_counterparty_confirm(handler, path: str) -> None:
     """
     matter_id = parse_matter_id(path, suffix="/counterparty")
     if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
 
     payload = handler._read_json_payload()
@@ -753,7 +753,7 @@ def handle_matter_counterparty_confirm(handler, path: str) -> None:
         handler._send_json({"error": str(error)}, status=500)
         return
     if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
 
     telemetry.increment("matter_counterparty_confirmations")
@@ -776,7 +776,7 @@ def handle_matter_summary(handler, path: str) -> None:
     telemetry.increment("matter_summary_requests")
     matter_id = parse_matter_id(path, suffix="/summary")
     if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
 
     repository = _repository(handler)
@@ -786,7 +786,7 @@ def handle_matter_summary(handler, path: str) -> None:
         handler._send_json({"error": str(error)}, status=500)
         return
     if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
 
     try:
@@ -828,7 +828,7 @@ def ai_first_review_store_metadata(
 def handle_matter_redline_draft_update(handler, path: str) -> None:
     matter_id = parse_matter_id(path, suffix="/redline-draft")
     if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
 
     payload = handler._read_json_payload()
@@ -845,7 +845,7 @@ def handle_matter_redline_draft_update(handler, path: str) -> None:
         handler._send_json({"error": str(error)}, status=400)
         return
     except MatterNotFoundError:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
     handler._send_json({"matter": matter_view.public_matter(matter)})
 

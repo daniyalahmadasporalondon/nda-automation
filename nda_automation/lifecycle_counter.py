@@ -128,7 +128,7 @@ def handle_counter_upload(handler, path: str) -> None:
     """
     matter_id = parse_matter_id(path, suffix="/counter")
     if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
 
     payload = handler._read_json_payload()
@@ -168,12 +168,12 @@ def handle_counter_upload(handler, path: str) -> None:
         filename,
     )
     if artifact is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
 
     matter = DiskMatterRepository().get_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
 
     handler._send_json(
