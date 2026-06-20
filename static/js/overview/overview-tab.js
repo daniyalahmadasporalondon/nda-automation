@@ -119,21 +119,15 @@ function createOverviewController({ state, root, fillSection, renderFill }) {
 
   function hasAiReview() {
     const matter = state.selectedMatter;
-    // Gate verdict surfaces on whether a STORED review with clause verdicts EXISTS,
-    // NOT on the engine-marker boolean matter.ai_review_ran. A genuinely-reviewed
-    // matter can carry ai_review_ran===false (an older review, a stub engine, or a
-    // marker that never recorded executed_engine=="ai_first"); keying off that
-    // marker made the roster show every clause as muted "Not Reviewed" and the
-    // footer disable Approve/Send on a matter that HAS real stored verdicts — the
-    // "reviewed matter looks un-reviewed + actions locked" bug. Stored verdicts WIN.
-    // The ai_review_ran marker is only a tie-breaker for the empty case (no stored
-    // clauses but an explicit ai_review_ran===true, e.g. an all-pass review).
-    const hasResults = typeof window !== "undefined" && typeof window.hasReviewResults === "function"
-      ? window.hasReviewResults()
-      : Array.isArray(state.reviewClauses) && state.reviewClauses.length > 0;
-    if (hasResults) return true;
-    if (matter && matter.ai_review_ran === true) return true;
-    return false;
+    // Gate verdict surfaces SOLELY on whether the AI review ACTUALLY ran
+    // (matter.ai_review_ran), NOT on whether a stored review_result with clause
+    // verdicts exists. A deterministic-only matter can carry stored verdicts but
+    // ai_review_ran===false; surfacing those verdicts would leak the demoted
+    // deterministic result and unlock Approve/Send on a matter the AI never
+    // reviewed. So when ai_review_ran is false the roster shows each clause's muted
+    // "Not Reviewed" status (no verdict leak) and the footer disables Approve/Send.
+    // This is the deterministic-ghost demotion, and it is INTENTIONAL.
+    return Boolean(matter && matter.ai_review_ran === true);
   }
 
   // Normalize a clause's backend decision into the component verdict vocabulary

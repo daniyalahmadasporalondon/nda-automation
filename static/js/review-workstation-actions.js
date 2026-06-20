@@ -1493,26 +1493,27 @@ function reviewMayBeStale(matter = state.selectedMatter, refresh = matter?.revie
   return Boolean(refresh?.stale || matter?.review_may_be_stale);
 }
 
-// True when the open matter has a STORED review to act on. This is the signal for
-// progressive disclosure of the review-header actions: on a genuinely UNREVIEWED
-// matter (no stored verdicts) there is nothing to approve or send, so the header
-// collapses to a single "Review" button (which runs the AI review).
+// True when an AI review has ACTUALLY run on the open matter. This is THE single
+// "is this reviewed?" discriminator for the whole workstation (progressive
+// disclosure of the header actions, the freshness traffic-light, and the
+// verdict-surfacing gate), and it keys SOLELY off the backend engine-marker
+// boolean matter.ai_review_ran.
 //
-// The discriminator is "does a stored review with clause verdicts EXIST"
-// (hasReviewResults() -> reviewClauses.length, populated from review_result.clauses
-// on open), NOT the engine-marker boolean matter.ai_review_ran. A complete stored
-// review can legitimately carry ai_review_ran===false (an older review, a stub
-// engine, or a marker that never recorded executed_engine=="ai_first"); keying off
-// that marker made a genuinely-reviewed matter render "Not reviewed" with every
-// terminal action locked on open — the bug this fixes. Stored verdicts WIN: if they
-// exist the matter is reviewed. The ai_review_ran marker is only a tie-breaker for
-// the empty case — a matter with NO stored clauses but an explicit
-// ai_review_ran===true (e.g. an all-pass review that produced no flagged clauses)
-// still counts as reviewed.
+// `ai_review_ran` is true ONLY when the AI reviewer executed against this document.
+// It is DELIBERATELY false for:
+//   - a deterministic-only matter (the engine ran but the AI did not),
+//   - a freshly generated NDA, a fresh inbound, or a matter with nothing at all.
+// In every one of those cases the matter is NOT reviewed: the header collapses to a
+// single "Review" button, the traffic-light reads red "Not Reviewed", and NO clause
+// verdicts are surfaced (the deterministic-ghost demotion is INTENTIONAL — a
+// deterministic-only verdict must never read as "reviewed").
+//
+// This is intentionally NOT hasReviewResults(): a stored review_result with clause
+// verdicts can exist on a deterministic-only matter, and treating that as "reviewed"
+// would leak the demoted deterministic verdict and unlock Approve/Send on a matter
+// the AI never actually reviewed. ai_review_ran is the sole authority.
 function aiReviewRan(matter = state.selectedMatter) {
-  if (hasReviewResults()) return true;
-  if (matter && matter.ai_review_ran === true) return true;
-  return false;
+  return Boolean(matter && matter.ai_review_ran === true);
 }
 
 // True when a matter is already executed (fully signed). Mirrors the backend

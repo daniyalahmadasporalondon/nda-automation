@@ -95,7 +95,7 @@ const tests = [
   ["opens repository matters into review repeatedly", testRepositoryOpenReviewRepeatedly],
   ["wires stale review refresh controls", testStaleReviewRefreshWiring],
   ["shows a Retry button when the background review fails and re-posts on Retry", testAsyncReviewFailedShowsRetry],
-  ["shows a stored-reviewed matter's real verdict on open, never 'Not reviewed' with actions locked", testStoredReviewLooksReviewedOnOpen],
+  ["gates the review traffic-light on ai_review_ran: deterministic-only reads 'Not Reviewed' + Approve locked + no verdict leak; AI-current reads 'Reviewed'; an edit reads 'Review is Stale'", testReviewTrafficLightGatedOnAiReviewRan],
   ["shows a live Reviewing badge on the board while review_status is in_progress", testBoardReviewingBadge],
   ["flags stale matters on the board and refreshes from the inspector", testRepositoryStaleBadgeAndRefresh],
   ["polls the async background review to completion from the repository inspector", testRepositoryRefreshReviewAsyncPoll],
@@ -3748,6 +3748,10 @@ async function testStaleReviewRefreshWiring(page) {
   };
   const matter = {
     id: "matter_stale_review",
+    // The AI review DID run (ai_review_ran:true) — this is a genuinely-stale stored
+    // review that has since drifted, so it must read AMBER "Review is Stale", not the
+    // RED "Not Reviewed" reserved for matters the AI never reviewed.
+    ai_review_ran: true,
     attachment_filename: "Stale Review NDA.docx",
     board_column: "in_review",
     can_send_redline: true,
@@ -4057,30 +4061,32 @@ async function testAsyncReviewFailedShowsRetry(page) {
   await page.unroute("**/api/matters**");
 }
 
-// REGRESSION: a matter that HAS a complete stored review (review_result with
-// clause verdicts) must surface its REAL outcome on open — NOT "Not reviewed"
-// with every terminal action locked. This is the "reviewed matter looks
-// un-reviewed + actions locked" bug. The trap: the open path never re-runs AI
-// so the backend returns review_may_be_stale, and the status derivation used to
-// key off the strict ai_review_ran engine-marker (a deterministic-only / missing
-// marker yields ai_review_ran:false) instead of "does a stored review with
-// verdicts exist". The result was "Not reviewed" + Approve/Export/Send/Reviewed
-// all disabled on a genuinely reviewed matter.
+// DECISION-B traffic-light: `ai_review_ran` is the SOLE "is this reviewed?"
+// discriminator — NOT hasReviewResults() / "do stored verdicts exist". This test
+// pins all three states of the freshness traffic-light against that contract:
 //
-// This test pins THREE states from the spec:
-//   (b) stored review + document UNCHANGED  -> shows the verdict summary,
-//       Approve + Export enabled, stale badge NOT shown.
-//   (c) stored review + document text edited -> "Reviewed (may be out of date)".
-//   reset: an explicit refresh that completes CLEARS the stale flag.
-// A genuinely no-review matter is covered separately by the empty-state tests.
-async function testStoredReviewLooksReviewedOnOpen(page) {
+//   ai_review_ran:false (deterministic-only / generated / fresh inbound / nothing)
+//       -> RED "Not Reviewed", Approve LOCKED, and NO clause verdicts surfaced
+//          (the summary reads "Not reviewed" even though a stored review_result
+//          with verdicts EXISTS — the deterministic-ghost demotion is honored, no
+//          leak). This is the regression the spec demands.
+//   ai_review_ran:true + not stale -> GREEN "Reviewed", verdict surfaced, Approve
+//          enabled.
+//   ai_review_ran:true + in-session edit -> AMBER "Review is Stale".
+//
+// CRITICALLY the deterministic-only matter carries a FULL stored review_result with
+// clause verdicts: keying off hasReviewResults() (the prior, rejected design) would
+// read it as "Reviewed" and leak the demoted deterministic verdict + unlock Approve.
+// ai_review_ran is the only authority.
+async function testReviewTrafficLightGatedOnAiReviewRan(page) {
   const reviewText = [
     "This Agreement shall be governed by the laws of India.",
     "Confidential Information means all non-public business information.",
   ].join("\n\n");
+  // A complete stored review carrying real clause verdicts. The SAME review_result
+  // backs both matters below — the ONLY difference between them is ai_review_ran.
   const reviewResult = {
     checked_at: "2026-06-01T09:01:00+00:00",
-    // A complete stored review carrying real clause verdicts.
     clauses: [
       {
         decision: "pass",
@@ -4105,7 +4111,6 @@ async function testStoredReviewLooksReviewedOnOpen(page) {
         why: "Definition is broad; confirm scope.",
       },
     ],
-    // The review records the exact text it ran on (state-c change detection).
     extracted_text: reviewText,
     overall_status: "needs_review",
     paragraphs: [
@@ -4117,19 +4122,11 @@ async function testStoredReviewLooksReviewedOnOpen(page) {
     requirements_needs_review: 1,
     requirements_passed: 1,
   };
-  // The matter carries a stored review with verdicts. CRITICALLY the backend
-  // advertises ai_review_ran:false — this mirrors a stored review whose engine
-  // marker is absent (older review / stub engine / a marker that did not record
-  // executed_engine=="ai_first"), the exact shape that made the workstation
-  // declare a fully-reviewed matter "Not reviewed" and lock every terminal
-  // action. A reviewed matter with stored verdicts must read as reviewed.
-  const matter = {
-    id: "matter_stored_reviewed",
-    ai_review_ran: false,
-    attachment_filename: "Stored Reviewed NDA.docx",
+  const baseMatter = {
+    attachment_filename: "Traffic Light NDA.docx",
     board_column: "in_review",
     can_send_redline: true,
-    document_title: "Stored Reviewed NDA",
+    document_title: "Traffic Light NDA",
     extracted_text: reviewText,
     human_reviewed: false,
     issue_count: 1,
@@ -4138,11 +4135,19 @@ async function testStoredReviewLooksReviewedOnOpen(page) {
     recipient_email: "legal@example.com",
     review_result: reviewResult,
     sender: "Legal Team <legal@example.com>",
-    source_filename: "Stored Reviewed NDA.docx",
+    source_filename: "Traffic Light NDA.docx",
     source_type: "manual_upload",
-    subject: "Stored Reviewed NDA",
+    subject: "Traffic Light NDA",
     triage_status: "approved",
     updated_at: "2026-06-01T09:01:00+00:00",
+  };
+  // The currently-served matter. `currentMatter` is swapped between phases so the
+  // SAME routes serve the deterministic-only and the AI-reviewed shapes in turn.
+  let currentMatter = {
+    ...baseMatter,
+    id: "matter_det_only",
+    // Deterministic-only: the engine ran but the AI did NOT. Stored verdicts exist.
+    ai_review_ran: false,
   };
 
   await page.route("**/api/gmail/status", async (route) => {
@@ -4161,24 +4166,23 @@ async function testStoredReviewLooksReviewedOnOpen(page) {
     const requestUrl = new URL(route.request().url());
     const method = route.request().method();
     if (requestUrl.pathname === "/api/matters" && method === "GET") {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matters: [matter] }) });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matters: [currentMatter] }) });
       return;
     }
     if (requestUrl.pathname.endsWith("/stage")) {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter }) });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter: currentMatter }) });
       return;
     }
     if (requestUrl.pathname.endsWith("/review")) {
-      // The open path returns the STORED review. The backend's broad open-time
-      // indicator (review_may_be_stale) is true because opening never re-runs AI
-      // — but the narrow export/send gate (review_refresh.stale) is false: the
-      // playbook is current and the text is unchanged.
+      // Open path returns the STORED review. The broad open-time review_may_be_stale
+      // flag is true (opening never re-runs AI); the narrow gate review_refresh.stale
+      // is false. Neither makes a deterministic-only matter "reviewed".
       await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
           extracted_text: reviewText,
-          matter,
+          matter: currentMatter,
           review_may_be_stale: true,
           review_refresh: { stale: false, review_may_be_stale: true, stale_reasons: [] },
           review_result: reviewResult,
@@ -4186,35 +4190,72 @@ async function testStoredReviewLooksReviewedOnOpen(page) {
       });
       return;
     }
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter }) });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ matter: currentMatter }) });
   });
 
-  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
-  await page.getByRole("tab", { name: "Repository" }).click();
-  await page.waitForSelector(".repository-card");
-  await page.locator(".repository-card").click();
-  await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
-  await page.getByRole("button", { name: "Open Review" }).click();
-  await page.waitForSelector("#reviewView:not([hidden])");
+  async function openCurrentMatterIntoReview() {
+    await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("tab", { name: "Repository" }).click();
+    await page.waitForSelector(".repository-card");
+    await page.locator(".repository-card").click();
+    await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
+    await page.getByRole("button", { name: "Open Review" }).click();
+    await page.waitForSelector("#reviewView:not([hidden])");
+  }
 
-  // --- State (b): stored review, document unchanged ------------------------
-  // NON-VACUITY: the overall verdict must reflect the real stored outcome, not
-  // "Not reviewed". The summary header (#studioOverallTitle) reads the verdict.
+  // ===================================================================
+  // PHASE 1 — ai_review_ran:false (deterministic-only) -> RED "Not Reviewed".
+  // ===================================================================
+  await openCurrentMatterIntoReview();
+
+  // TRAFFIC-LIGHT (a): RED "Not Reviewed" with the is-not-reviewed tone.
+  await page.waitForFunction(() => {
+    const el = document.querySelector("#studioReviewStaleIndicator");
+    return el && !el.hidden && (el.textContent || "").trim() === "Not Reviewed";
+  });
+  const redFreshness = await page.evaluate(() => {
+    const el = document.querySelector("#studioReviewStaleIndicator");
+    return {
+      text: (el.textContent || "").trim(),
+      red: el.classList.contains("is-not-reviewed") && !el.classList.contains("is-reviewed") && !el.classList.contains("is-stale"),
+    };
+  });
+  assert.equal(redFreshness.text, "Not Reviewed", `a deterministic-only matter must read RED "Not Reviewed", got '${redFreshness.text}'`);
+  assert.equal(redFreshness.red, true, "the Not-Reviewed indicator must carry the red is-not-reviewed tone, not green/amber");
+
+  // NO VERDICT LEAK: the most authoritative surface (the studio summary) must NOT
+  // surface the demoted deterministic verdict — it reads "Not reviewed" even though
+  // a stored review_result with verdicts EXISTS.
+  const detOverallTitle = (await page.locator("#studioOverallTitle").innerText()).trim();
+  assert.equal(detOverallTitle, "Not reviewed", `a deterministic-only matter must show "Not reviewed" (no verdict leak), got '${detOverallTitle}'`);
+
+  // APPROVE LOCKED: the Overview footer Approve must be disabled — nothing to
+  // approve until the AI review has actually run.
+  await page.waitForSelector("#studioDetailPanel .ov-approve");
+  assert.equal(
+    await page.locator("#studioDetailPanel .ov-approve").isDisabled(),
+    true,
+    "Approve must be LOCKED on a deterministic-only (ai_review_ran:false) matter",
+  );
+
+  // ===================================================================
+  // PHASE 2 — ai_review_ran:true, not stale -> GREEN "Reviewed".
+  // ===================================================================
+  currentMatter = { ...baseMatter, id: "matter_ai_reviewed", ai_review_ran: true };
+  await openCurrentMatterIntoReview();
+
+  // The real stored verdict is surfaced now that the AI review actually ran.
   await page.waitForFunction(() => {
     const title = document.querySelector("#studioOverallTitle")?.textContent || "";
     return title.trim() && title.trim() !== "Not reviewed" && title.trim() !== "Awaiting review";
   });
-  const overallTitle = (await page.locator("#studioOverallTitle").innerText()).trim();
-  assert.notEqual(overallTitle, "Not reviewed", "a stored-reviewed matter must not show the 'Not reviewed' verdict");
-  // It surfaces the real needs-review outcome from the stored verdicts.
-  assert.equal(overallTitle, "Needs review", `expected the stored verdict 'Needs review', got '${overallTitle}'`);
+  const aiOverallTitle = (await page.locator("#studioOverallTitle").innerText()).trim();
+  assert.equal(aiOverallTitle, "Needs review", `an AI-reviewed matter must surface the stored verdict 'Needs review', got '${aiOverallTitle}'`);
 
-  // TRAFFIC-LIGHT (b): a stored review opened with NO genuine drift must show the
-  // CONFIDENT green "Reviewed" — NOT "Not Reviewed" and NOT "Review is Stale". The
-  // fixture opens with the broad review_may_be_stale flag set (the open path never
-  // re-runs AI) and review_refresh.stale=false; that broad flag must NOT trigger the
-  // stale state. This assertion would FAIL if the broad flag leaked back into (c).
-  const freshness = await page.evaluate(() => {
+  // TRAFFIC-LIGHT (b): GREEN "Reviewed" — the broad review_may_be_stale flag is set
+  // (open never re-runs AI) and review_refresh.stale=false, so this is the confident
+  // current state, NOT amber.
+  const greenFreshness = await page.evaluate(() => {
     const el = document.querySelector("#studioReviewStaleIndicator");
     if (!el || el.hidden) return { text: "", green: false };
     return {
@@ -4222,26 +4263,17 @@ async function testStoredReviewLooksReviewedOnOpen(page) {
       green: el.classList.contains("is-reviewed") && !el.classList.contains("is-stale") && !el.classList.contains("is-not-reviewed"),
     };
   });
-  assert.equal(freshness.text, "Reviewed", `a plain reopen of an unedited stored review must read the confident "Reviewed", got '${freshness.text}'`);
-  assert.equal(freshness.green, true, "the confident Reviewed indicator must carry the green is-reviewed tone, not amber/red");
+  assert.equal(greenFreshness.text, "Reviewed", `an AI-current matter must read the confident "Reviewed", got '${greenFreshness.text}'`);
+  assert.equal(greenFreshness.green, true, "the Reviewed indicator must carry the green is-reviewed tone");
 
-  // Terminal actions operate on the valid stored review. Approve lives on the
-  // Overview footer; it must be ENABLED (not locked behind a never-ran AI run).
+  // Approve is now ENABLED — the AI review ran.
   await page.waitForSelector("#studioDetailPanel .ov-approve");
-  assert.equal(await page.locator("#studioDetailPanel .ov-approve").isDisabled(), false, "Approve must be enabled on a valid stored review");
-  // Export must be enabled — the review is valid and not (narrowly) stale.
-  assert.equal(await page.locator("#studioExportButton").isEnabled(), true, "Export must be enabled on a valid stored review");
-  // The header "Reviewed" sign-off (the gate that unblocks Send) must be
-  // interactive: there is a needs-review clause to acknowledge.
-  assert.equal(await page.locator("#studioReviewedButton").isHidden(), false, "the Reviewed sign-off must be offered on a needs-review stored matter");
-  assert.equal(await page.locator("#studioReviewedButton").isDisabled(), false, "the Reviewed sign-off must be clickable on a valid stored review");
+  assert.equal(await page.locator("#studioDetailPanel .ov-approve").isDisabled(), false, "Approve must be ENABLED on an AI-reviewed matter");
 
-  // --- TRAFFIC-LIGHT (c): the reviewer edits the document text since the review --
-  // A genuine in-session edit marks the review stale: the indicator flips to AMBER
-  // "Review is Stale" (NOT "Not Reviewed" — a review DID run), and the verdict still
-  // reads reviewed.
+  // ===================================================================
+  // PHASE 3 — ai_review_ran:true + in-session edit -> AMBER "Review is Stale".
+  // ===================================================================
   await page.evaluate(() => {
-    // Simulate a viewer text edit on a paragraph.
     if (Array.isArray(state.reviewParagraphs) && state.reviewParagraphs.length) {
       state.reviewParagraphs[0].text = "This Agreement shall be governed by the laws of Singapore.";
     }
@@ -4251,12 +4283,12 @@ async function testStoredReviewLooksReviewedOnOpen(page) {
     const el = document.querySelector("#studioReviewStaleIndicator");
     return el && !el.hidden && (el.textContent || "").trim() === "Review is Stale";
   });
-  const editedFreshness = await page.evaluate(() => {
+  const amberFreshness = await page.evaluate(() => {
     const el = document.querySelector("#studioReviewStaleIndicator");
     return { text: (el.textContent || "").trim(), amber: el.classList.contains("is-stale") };
   });
-  assert.equal(editedFreshness.text, "Review is Stale", `after a doc edit the indicator must read amber "Review is Stale", got '${editedFreshness.text}'`);
-  assert.equal(editedFreshness.amber, true, "the stale indicator must carry the amber is-stale tone after an edit");
+  assert.equal(amberFreshness.text, "Review is Stale", `after a doc edit the indicator must read amber "Review is Stale", got '${amberFreshness.text}'`);
+  assert.equal(amberFreshness.amber, true, "the stale indicator must carry the amber is-stale tone after an edit");
 
   await page.unroute("**/api/gmail/status");
   await page.unroute("**/api/matters**");
@@ -8378,6 +8410,12 @@ async function loadReviewWithMatter(page, { matter = {}, clauses, paragraphs, re
       id: "matter_review_panel",
       source_filename: "Counterparty NDA.docx",
       status: "in_review",
+      // These fixtures model an AI-reviewed matter (they assert surfaced verdicts,
+      // Approve/Export enabled, reasoning trails, etc.). Decision-B keys "is this
+      // reviewed?" SOLELY off ai_review_ran, so the default matter must carry it.
+      // A test that wants the un-reviewed (deterministic-only) shape overrides with
+      // matter: { ai_review_ran: false }.
+      ai_review_ran: true,
       ...payload.matter,
     };
     renderResult(
