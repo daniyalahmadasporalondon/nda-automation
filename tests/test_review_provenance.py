@@ -185,11 +185,18 @@ class PlaybookVersionHashStabilityTests(unittest.TestCase):
         term["max_term_years"] = 7
         runtime = self._active_runtime()
 
+        class _LoopbackServer:
+            # handle_playbook_publish is admin-gated; a loopback host makes the
+            # trusted local developer an admin so this provenance test reaches the
+            # publish path it is actually exercising.
+            server_address = ("127.0.0.1", 0)
+
         class _Handler:
             def __init__(self, payload):
                 self.payload = payload
                 self.status = None
                 self.response = None
+                self.server = _LoopbackServer()
 
             def _read_json_payload(self):
                 return self.payload
