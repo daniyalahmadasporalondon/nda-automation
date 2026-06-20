@@ -240,9 +240,9 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
               <span>Prohibited - Check if present</span>
             </label>
           </fieldset>
-          ${textArea("Preferred Standard Position", "preferred_position", preferredPosition(clause), 3)}
-          ${textArea("Check Trigger Position", "check_trigger", checkTrigger(clause), 3)}
+          ${standardPositionControls(clause)}
           ${policyPanelControls(clause)}
+          ${triggerTermsControls(clause)}
         </section>
 
         <section class="playbook-subpanel ${panelActive("redline") ? "active" : ""}" data-playbook-panel="redline" ${panelActive("redline") ? "" : "hidden"}>
@@ -308,8 +308,19 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     const data = new FormData(form);
     clause.name = String(data.get("name") || "").trim() || clause.name;
     clause.type = data.get("type") === "prohibited" ? "prohibited" : "required";
-    clause.preferred_position = String(data.get("preferred_position") || "").trim();
-    clause.check_trigger = String(data.get("check_trigger") || "").trim();
+    // preferred_position / check_trigger render as editable boxes ONLY for clauses
+    // where they are live levers (mutuality, confidential_information, and any other
+    // native clause). For governing_law / term_and_survival they are derived from
+    // the live levers and shown read-only (no form field), and dynamic clauses
+    // author requirement/acceptable_language instead. Guard the read so a clause
+    // that does not render these inputs keeps its seeded/derived value instead of
+    // being blanked into an invalid (missing-required-field) state.
+    if (data.has("preferred_position")) {
+      clause.preferred_position = String(data.get("preferred_position") || "").trim();
+    }
+    if (data.has("check_trigger")) {
+      clause.check_trigger = String(data.get("check_trigger") || "").trim();
+    }
     templateConfigsForClause(clause).forEach((config) => {
       if (data.has(config.field)) {
         clause[config.field] = String(data.get(config.field) || "").trim();
@@ -324,8 +335,8 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     }
     if (isDynamicClause(clause)) {
       // A dynamic clause's requirement / acceptable language are first-class authored
-      // prose (the standard the AI judges against). Read them, the fallback redline,
-      // and the structured conditions out of the form into the model.
+      // prose (the standard the AI judges against). Read them and the fallback redline
+      // out of the form into the model.
       if (data.has("requirement")) {
         clause.requirement = String(data.get("requirement") || "").trim();
       }
@@ -333,8 +344,11 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         clause.acceptable_language = String(data.get("acceptable_language") || "").trim();
       }
       applyDynamicFallback(clause);
-      applyDynamicConditions(clause);
     }
+    // Decision conditions (pass/fail/review prose, issue_type, redline_action) are
+    // now editable for EVERY clause, so read them back for native clauses too. The
+    // reader is a no-op when the clause has no condition rows in the DOM.
+    applyDynamicConditions(clause);
     syncStructuredRules(clause, event?.target?.name);
     renderDraftState();
   }
@@ -696,12 +710,15 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         });
       });
     }
-    if (isDynamicClause(clause)) {
-      setupDynamicClauseControls(clause);
-    }
+    // Trigger-term chips and decision-condition editing are now available for
+    // EVERY clause (native + dynamic). The redline-action / fallback-wording
+    // handlers inside are self-guarded by element presence (only the dynamic
+    // redline panel renders #dynamicRedlineAction), so this is safe to run for
+    // native clauses too.
+    setupClauseEditorControls(clause);
   }
 
-  function setupDynamicClauseControls(clause) {
+  function setupClauseEditorControls(clause) {
     // --- Trigger-term chips (search_terms / semantic_signals) ---
     const chipAdders = [
       { buttonId: "addDynamicSearchTerm", inputId: "dynamicSearchTermInput", field: "search_terms" },
@@ -1167,8 +1184,6 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
   // detector. These are the data the AI engine reads to assess a clause type the
   // code has never seen.
   function dynamicPolicyControls(clause) {
-    const searchTerms = chipList(clause.search_terms || [], "search-term");
-    const semanticSignals = chipList(clause.semantic_signals || [], "semantic-signal");
     return `
       <section class="admin-special" data-dynamic-policy="1">
         <h3>AI Review Standard</h3>
@@ -1176,9 +1191,59 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         ${textArea("Requirement (the standard the AI judges against)", "requirement", String(clause.requirement || ""), 3)}
         ${textArea("Acceptable / Approved Language", "acceptable_language", String(clause.acceptable_language || ""), 3)}
       </section>
+    `;
+  }
+
+  // The governing_law and term_and_survival clauses RE-DERIVE preferred_position
+  // and check_trigger from their live levers (the approved-jurisdiction list /
+  // max_term_years) on every AI-packet build (playbook_rules._normalize_*). So a
+  // free-text edit to these boxes is silently overwritten -- editable-but-inert.
+  // For those two clauses we show the derived text read-only and point the author
+  // at the real lever; for every other clause the boxes are genuinely live.
+  const DERIVED_STANDARD_CLAUSES = {
+    governing_law: "the Approved Governing Laws list below",
+    term_and_survival: "the Ordinary Confidentiality Cap (years) below",
+  };
+
+  function standardPositionControls(clause) {
+    const lever = DERIVED_STANDARD_CLAUSES[clause.id];
+    if (lever) {
+      return `
+        <section class="admin-special" data-derived-standard="1">
+          <h3>Standard Position (derived)</h3>
+          <p class="admin-muted">For this clause the preferred position and check trigger are generated from ${escapeHtml(lever)} on every review. They cannot be edited as free text here -- change the live lever instead.</p>
+          <label class="admin-field compact"><span>Preferred Standard Position (read-only, derived)</span>
+            <textarea rows="3" readonly disabled>${escapeHtml(preferredPosition(clause))}</textarea>
+          </label>
+          <label class="admin-field compact"><span>Check Trigger Position (read-only, derived)</span>
+            <textarea rows="3" readonly disabled>${escapeHtml(checkTrigger(clause))}</textarea>
+          </label>
+        </section>
+      `;
+    }
+    if (isDynamicClause(clause)) {
+      // Dynamic clauses author requirement / acceptable_language in their own
+      // section (dynamicPolicyControls); preferred_position / check_trigger are
+      // not separate live levers for them, so don't render duplicate boxes.
+      return "";
+    }
+    return `
+      ${textArea("Preferred Standard Position", "preferred_position", preferredPosition(clause), 3)}
+      ${textArea("Check Trigger Position", "check_trigger", checkTrigger(clause), 3)}
+    `;
+  }
+
+  // Editable trigger-term chips (search_terms / semantic_signals) for EVERY
+  // clause -- native and dynamic alike. search_terms drive the deterministic
+  // detector (e.g. mutuality.py reads them); semantic_signals ride into the AI
+  // packet. At least one search term is required (the publish gate enforces it).
+  function triggerTermsControls(clause) {
+    const searchTerms = chipList(clause.search_terms || [], "search-term");
+    const semanticSignals = chipList(clause.semantic_signals || [], "semantic-signal");
+    return `
       <section class="admin-special" data-dynamic-triggers="1">
         <h3>Trigger Terms</h3>
-        <p class="admin-muted">Words and phrases that surface this clause to the detector. At least one search term is required.</p>
+        <p class="admin-muted">Words and phrases that surface this clause to the detector and AI packet. At least one search term is required.</p>
         <label class="admin-field compact"><span>Search Terms</span></label>
         <div class="admin-chip-row" data-chip-row="search-term">${searchTerms || '<span class="admin-muted">No search terms yet</span>'}</div>
         <div class="admin-inline-add">
@@ -1229,7 +1294,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     return `
       ${checkerVisibilityPanel(clause)}
       ${clause.id === "term_and_survival" ? termSurvivalDecisionControls() : ""}
-      ${isDynamicClause(clause) ? dynamicDecisionControls(clause) : ""}
+      ${dynamicDecisionControls(clause)}
       ${sharedContextControls(clause)}
     `;
   }
@@ -1283,10 +1348,19 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
 
   function dynamicDecisionControls(clause) {
     const rules = clause.rules && typeof clause.rules === "object" ? clause.rules : {};
+    // governing_law and term_and_survival re-derive a couple of named condition
+    // DESCRIPTIONS from their live levers on packet build, so those specific texts
+    // can read back differently. The structure (which conditions exist, their
+    // decision/issue_type/redline_action, and adding/removing conditions) is fully
+    // live for every clause; flag the derived-description nuance for the author.
+    const derivedNote = DERIVED_STANDARD_CLAUSES[clause.id]
+      ? `<p class="admin-muted" data-derived-condition-note="1">Note: some condition descriptions for this clause are regenerated from ${escapeHtml(DERIVED_STANDARD_CLAUSES[clause.id])} on each review. Adding, removing, and re-typing conditions, issue types, and redline actions is still live.</p>`
+      : "";
     return `
       <section class="admin-special" data-dynamic-conditions="1">
         <h3>Decision Conditions</h3>
         <p class="admin-muted">The structured pass / fail / review logic the AI applies. A clause needs at least one pass condition and at least one fail or review condition.</p>
+        ${derivedNote}
         ${dynamicConditionGroup(clause, "pass_conditions", "Pass", rules.pass_conditions)}
         ${dynamicConditionGroup(clause, "fail_conditions", "Fail", rules.fail_conditions)}
         ${dynamicConditionGroup(clause, "review_triggers", "Review", rules.review_triggers)}

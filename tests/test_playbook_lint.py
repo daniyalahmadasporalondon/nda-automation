@@ -38,6 +38,9 @@ def _clean_required_clause() -> dict[str, Any]:
         "requirement": "The agreement must include a sample clause.",
         "preferred_position": "A clear sample clause is present.",
         "check_trigger": "The sample clause is missing or unclear.",
+        # A clause is only ever surfaced to the engine through its trigger terms,
+        # so a clean clause must carry at least one (trigger_terms_present check).
+        "search_terms": ["sample clause"],
         "redline_template": "This Agreement includes the standard sample clause.",
         "rules": {
             "version": 1,
@@ -875,3 +878,47 @@ def test_one_throwing_check_does_not_disable_the_others(monkeypatch) -> None:
     assert any("raised" in v.message for v in violations)
     # ...AND the OTHER check (condition_well_formed) still ran on the same clause.
     assert "condition_well_formed" in check_ids
+
+
+# ---------------------------------------------------------------------------
+# Check 8: trigger_terms_present
+# ---------------------------------------------------------------------------
+
+
+def test_trigger_terms_present_clean_clause_passes() -> None:
+    clause = _clean_required_clause()
+    assert _run_check("trigger_terms_present", clause) == []
+
+
+def test_trigger_terms_present_flags_missing_search_terms() -> None:
+    clause = _clean_required_clause()
+    clause.pop("search_terms", None)
+    violations = _run_check("trigger_terms_present", clause)
+    assert [v.check_id for v in violations] == ["trigger_terms_present"]
+    assert violations[0].clause_id == "sample_required"
+
+
+def test_trigger_terms_present_flags_empty_list() -> None:
+    clause = _clean_required_clause()
+    clause["search_terms"] = []
+    assert len(_run_check("trigger_terms_present", clause)) == 1
+
+
+def test_trigger_terms_present_flags_blank_only_terms() -> None:
+    clause = _clean_required_clause()
+    clause["search_terms"] = ["   ", ""]
+    assert len(_run_check("trigger_terms_present", clause)) == 1
+
+
+def test_trigger_terms_present_blocks_publish_via_lint_playbook() -> None:
+    clause = _clean_required_clause()
+    clause["search_terms"] = []
+    playbook = {"version": "1.0", "name": "T", "clauses": [clause]}
+    violations = lint_playbook(playbook)
+    assert any(v.check_id == "trigger_terms_present" for v in violations)
+
+
+def test_live_playbook_has_trigger_terms_for_every_clause() -> None:
+    playbook = load_playbook()
+    for clause in playbook["clauses"]:
+        assert _run_check("trigger_terms_present", clause) == [], clause.get("id")

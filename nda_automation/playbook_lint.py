@@ -33,6 +33,7 @@ __all__ = [
     "REDLINE_ACTIONS_NEEDING_TEMPLATE",
     "check_option_id_collision",
     "check_governing_law_forum_present",
+    "check_trigger_terms_present",
 ]
 
 # ---------------------------------------------------------------------------
@@ -724,6 +725,44 @@ def check_governing_law_forum_present(clause: Mapping[str, Any]) -> list[LintVio
 
 
 # ---------------------------------------------------------------------------
+# Check 8: trigger_terms_present
+# ---------------------------------------------------------------------------
+
+
+def check_trigger_terms_present(clause: Mapping[str, Any]) -> list[LintViolation]:
+    """Every clause must carry at least one non-blank search term.
+
+    ``search_terms`` is the detection cue the deterministic checkers and the AI
+    detector use to surface a clause to the review engine -- ``mutuality.py``,
+    ``confidential_information.py``, and ``term_and_survival.py`` all read it, and
+    a dynamic clause is only ever surfaced through its terms. A clause with no
+    search term can never be located in a document, so its rules never fire: it is
+    silently dead. The schema validator already requires this for a well-formed
+    publish, but the publish lint enforces it independently so the trigger-term
+    editor (now live for every clause) cannot ship a clause that nothing detects.
+
+    ``semantic_signals`` is optional, so its absence is never flagged.
+    """
+
+    clause_id = _clause_id(clause)
+    raw = clause.get("search_terms")
+    terms: list[str] = []
+    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+        terms = [_text(term) for term in raw if _text(term)]
+    if terms:
+        return []
+    return [
+        LintViolation(
+            clause_id,
+            "trigger_terms_present",
+            "clause has no non-blank search_terms, so the detector can never "
+            "surface it and its review rules never fire -- add at least one "
+            "trigger term",
+        )
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Registry + entry point
 # ---------------------------------------------------------------------------
 
@@ -735,6 +774,7 @@ CHECKS: dict[str, CheckFn] = {
     "referential_integrity": check_referential_integrity,
     "option_id_collision": check_option_id_collision,
     "governing_law_forum_present": check_governing_law_forum_present,
+    "trigger_terms_present": check_trigger_terms_present,
 }
 
 # Stable, ordered registry of the check ids the engine runs.
