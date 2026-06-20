@@ -26,6 +26,12 @@ os.environ["NDA_USERS_PATH"] = str(Path(_TEST_DATA_DIR) / "users.json")
 os.environ["NDA_AI_REVIEW_ENABLED"] = "true"
 os.environ["NDA_AI_ASSESSMENT_STUB"] = "1"
 os.environ["NDA_ACTIVE_REVIEW_ENGINE"] = "ai_first"
+# Keep the required-terms reconciliation STRICT under test (it is downgraded to a
+# logged warning in production so a drifted Playbook can never brick app boot).
+# Setting this before any nda_automation import means a divergence between the
+# CLAUSE_REQUIRED_TERMS table and the Playbook clause templates still fails the
+# suite loudly, so developers catch drift in dev/CI rather than in prod.
+os.environ["NDA_STRICT_REQUIRED_TERMS"] = "1"
 
 # Belt-and-suspenders: if matter_store was already imported (so DATA_DIR froze to
 # whatever NDA_DATA_DIR/./data was at that moment), re-point its module-level
