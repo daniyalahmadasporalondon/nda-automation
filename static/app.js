@@ -110,6 +110,7 @@ let adminIntegrationsController;
 let adminDriveController;
 let adminDocuSignController;
 let adminAccessController;
+let adminEntitiesController;
 let adminPersonalisationController;
 let adminGlobalPersonalisationController;
 let docusignSendController;
@@ -440,6 +441,16 @@ adminAccessController = createAdminAccessController({
   envRootsList: document.querySelector("#adminAccessEnvRoots"),
   persistedList: document.querySelector("#adminAccessPersisted"),
   reviewErrorFromPayload,
+});
+adminEntitiesController = createAdminEntitiesController({
+  panel: document.querySelector("#adminEntitiesPanel"),
+  list: document.querySelector("#adminEntitiesList"),
+  message: document.querySelector("#adminEntitiesMessage"),
+  refreshButton: document.querySelector("#adminEntitiesRefreshButton"),
+  addButton: document.querySelector("#adminEntitiesAddButton"),
+  saveButton: document.querySelector("#adminEntitiesSaveButton"),
+  cardTemplate: document.querySelector("#adminEntityCardTemplate"),
+  addressTemplate: document.querySelector("#adminEntityAddressTemplate"),
 });
 // SELF-SERVE: every authenticated user (admin or not) edits their OWN
 // signature here, through /api/me/personalisation-settings (no `endpoint` =
@@ -2076,6 +2087,9 @@ function activateAdminSection(sectionName) {
   }
   if (sectionName === "access") {
     adminAccessController.load();
+  }
+  if (sectionName === "entities") {
+    adminEntitiesController.load();
   }
   if (sectionName === "personalisation") {
     adminPersonalisationController.load();

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260619adminidentity1">
+    <link rel="stylesheet" href="/static/styles.css?v=20260620entities1">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260619onboard1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260619onboard1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
@@ -861,6 +861,10 @@
               <button class="admin-section-button" type="button" data-admin-section="access" data-admin-surface="admin" aria-pressed="false">
                 <strong>Admin Access</strong>
                 <span>Who can administer</span>
+              </button>
+              <button class="admin-section-button" type="button" data-admin-section="entities" data-admin-surface="admin" aria-pressed="false">
+                <strong>Entities</strong>
+                <span>Signing-entity registry</span>
               </button>
               <button class="admin-section-button" type="button" data-admin-section="document" data-admin-surface="guide" aria-pressed="false">
                 <strong>Document</strong>
@@ -2033,10 +2037,116 @@
                 </article>
               </section>
             </section>
+
+            <section class="admin-section-panel" id="adminEntitiesPanel" data-admin-panel="entities" hidden>
+              <header class="admin-section-head">
+                <div>
+                  <p class="eyebrow">registry</p>
+                  <h1>Signing entities</h1>
+                </div>
+                <div class="admin-section-actions">
+                  <button class="secondary" id="adminEntitiesRefreshButton" type="button">Refresh</button>
+                  <button class="secondary" id="adminEntitiesAddButton" type="button">Add entity</button>
+                  <button class="primary" id="adminEntitiesSaveButton" type="button" disabled>Save registry</button>
+                </div>
+              </header>
+
+              <section class="entities-console" id="adminEntitiesConsole" aria-live="polite">
+                <p class="entities-message" id="adminEntitiesMessage" data-entities="message">Loading signing entities.</p>
+                <div class="entities-list" id="adminEntitiesList"></div>
+              </section>
+            </section>
           </section>
         </main>
       </section>
     </div>
+
+    <template id="adminEntityCardTemplate">
+      <article class="entity-card" data-entity-card>
+        <header class="entity-card-head">
+          <div class="entity-card-title">
+            <span class="entity-card-id" data-entity-field="id-display"></span>
+            <strong data-entity-field="legal_name-display">New entity</strong>
+          </div>
+          <button class="link-button entity-remove" type="button" data-entity-remove>Remove</button>
+        </header>
+
+        <div class="entity-field-grid">
+          <label class="entity-field">
+            <span>Entity id</span>
+            <input type="text" data-entity-field="id" autocomplete="off" spellcheck="false" placeholder="acme_co">
+          </label>
+          <label class="entity-field">
+            <span>Legal name</span>
+            <input type="text" data-entity-field="legal_name" autocomplete="off" placeholder="Acme Co Limited">
+          </label>
+          <label class="entity-field">
+            <span>Short name</span>
+            <input type="text" data-entity-field="short_name" autocomplete="off" placeholder="Acme">
+          </label>
+          <label class="entity-field">
+            <span>Governing law</span>
+            <select data-entity-field="governing_law"></select>
+          </label>
+          <label class="entity-field">
+            <span>Court / jurisdiction</span>
+            <input type="text" data-entity-field="jurisdiction" autocomplete="off" placeholder="courts in England and Wales">
+          </label>
+          <label class="entity-field">
+            <span>Incorporation jurisdiction</span>
+            <input type="text" data-entity-field="incorporation_jurisdiction" autocomplete="off" placeholder="England and Wales">
+          </label>
+          <label class="entity-field">
+            <span>Signatory name</span>
+            <input type="text" data-entity-field="signatory_name" autocomplete="off" placeholder="[Authorised Signatory]">
+          </label>
+          <label class="entity-field">
+            <span>Signatory title</span>
+            <input type="text" data-entity-field="signatory_title" autocomplete="off" placeholder="[Title]">
+          </label>
+        </div>
+
+        <div class="entity-law-warning" data-entity-field="law-warning" hidden></div>
+
+        <section class="entity-addresses">
+          <header class="entity-addresses-head">
+            <h4>Addresses</h4>
+            <button class="link-button entity-address-add" type="button" data-entity-address-add>Add address</button>
+          </header>
+          <div class="entity-address-list" data-entity-field="address-list"></div>
+        </section>
+      </article>
+    </template>
+
+    <template id="adminEntityAddressTemplate">
+      <div class="entity-address" data-entity-address>
+        <div class="entity-address-grid">
+          <label class="entity-field">
+            <span>Address id</span>
+            <input type="text" data-address-field="id" autocomplete="off" placeholder="registered">
+          </label>
+          <label class="entity-field">
+            <span>Label</span>
+            <input type="text" data-address-field="label" autocomplete="off" placeholder="Registered office">
+          </label>
+          <label class="entity-field">
+            <span>Country</span>
+            <input type="text" data-address-field="country" autocomplete="off" placeholder="United Kingdom">
+          </label>
+          <label class="entity-field entity-field-wide">
+            <span>Address lines (one per line)</span>
+            <textarea data-address-field="lines" rows="3" placeholder="1 Test Street&#10;London"></textarea>
+          </label>
+        </div>
+        <div class="entity-address-actions">
+          <label class="entity-default-toggle">
+            <input type="radio" data-address-field="default" name="entity-default">
+            <span>Default address</span>
+          </label>
+          <button class="link-button entity-address-remove" type="button" data-entity-address-remove>Remove address</button>
+        </div>
+      </div>
+    </template>
 
     <div class="upload-modal" id="manualUploadModal" role="dialog" aria-modal="true" aria-labelledby="manualUploadModalTitle" hidden>
       <div class="upload-modal-dialog">
@@ -2391,6 +2501,7 @@
     <script src="/static/js/admin-personalisation.js?v=20260619selfserve1"></script>
     <script src="/static/js/admin-docusign.js?v=20260617a401"></script>
     <script src="/static/js/admin-access.js?v=20260619adminidentity1"></script>
+    <script src="/static/js/admin-entities.js?v=20260620entities1"></script>
     <script src="/static/js/docusign-send.js?v=20260618dsrefresh1"></script>
     <script src="/static/js/contract-structure-view.js?v=20260618a"></script>
     <script src="/static/js/review-fill.js?v=20260617occ1"></script>
@@ -2413,6 +2524,6 @@
     <script src="/static/js/dashboard-search.js?v=20260614a"></script>
     <script src="/static/js/notifications.js?v=20260619reviewfail1"></script>
     <script src="/static/js/generator-editor.js?v=20260617a"></script>
-    <script src="/static/app.js?v=20260619selfserve1"></script>
+    <script src="/static/app.js?v=20260620entities1"></script>
   </body>
 </html>
