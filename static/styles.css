@@ -6982,7 +6982,7 @@ button.active-clause-status:hover {
   align-items: end;
   display: grid;
   gap: 10px;
-  grid-template-columns: 28px 1fr 1fr;
+  grid-template-columns: 24px 28px 1fr 1fr;
 }
 
 .docusign-signer-order {
@@ -6997,6 +6997,49 @@ button.active-clause-status:hover {
   justify-content: center;
   margin-bottom: 6px;
   width: 24px;
+}
+
+/* "Who signs first" reorder control: a stacked up/down pair per signer row. The
+   order number to the left reflects the row position, which collectSigners() reads
+   back as each signer's routing_order. */
+.docusign-signer-reorder {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 2px;
+}
+
+.docusign-signer-move {
+  align-items: center;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--ink-soft);
+  cursor: pointer;
+  display: inline-flex;
+  height: 18px;
+  justify-content: center;
+  padding: 0;
+  width: 24px;
+}
+
+.docusign-signer-move svg {
+  height: 12px;
+  width: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.docusign-signer-move:hover:not(:disabled) {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.docusign-signer-move:disabled {
+  cursor: default;
+  opacity: 0.35;
 }
 
 .docusign-signer-field {

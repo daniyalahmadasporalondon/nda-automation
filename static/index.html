@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260620integ3">
+    <link rel="stylesheet" href="/static/styles.css?v=20260620integ4">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260619onboard1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260619onboard1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
@@ -2394,7 +2394,7 @@
             <legend>Signing order</legend>
             <label>
               <input type="radio" name="docusignSigningOrder" value="sequential" data-docusign-signing-order checked>
-              <span>Sequential — counterparty signs first, then Aspora</span>
+              <span>Sequential — signers sign in the order above (use the arrows to reorder)</span>
             </label>
             <label>
               <input type="radio" name="docusignSigningOrder" value="parallel" data-docusign-signing-order>
@@ -2449,7 +2449,7 @@
             <legend>Signing order</legend>
             <label>
               <input type="radio" name="generatorDocusignSigningOrder" value="sequential" data-docusign-signing-order checked>
-              <span>Sequential — counterparty signs first, then Aspora</span>
+              <span>Sequential — signers sign in the order above (use the arrows to reorder)</span>
             </label>
             <label>
               <input type="radio" name="generatorDocusignSigningOrder" value="parallel" data-docusign-signing-order>
@@ -2485,7 +2485,7 @@
       no divergent untested .js duplicate. Module scripts are deferred, so this
       runs before any user interaction; all consumers call these at runtime.
     -->
-    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260620search1"></script>
+    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260620integ1"></script>
     <script src="/static/js/redline-rendering.js?v=20260619redlineword1"></script>
     <!-- Global session-expiry handling + the shared ok-before-parse JSON guard.
          Must load before app.js (which registers the handler) and before any
@@ -2510,9 +2510,9 @@
     <script src="/static/js/admin-drive.js?v=20260618drivename"></script>
     <script src="/static/js/admin-personalisation.js?v=20260619selfserve1"></script>
     <script src="/static/js/admin-docusign.js?v=20260617a401"></script>
-    <script src="/static/js/admin-access.js?v=20260619adminidentity1"></script>
+    <script src="/static/js/admin-access.js?v=20260620integ1"></script>
     <script src="/static/js/admin-entities.js?v=20260620entities1"></script>
-    <script src="/static/js/docusign-send.js?v=20260618dsrefresh1"></script>
+    <script src="/static/js/docusign-send.js?v=20260620integ1"></script>
     <script src="/static/js/contract-structure-view.js?v=20260618a"></script>
     <script src="/static/js/review-fill.js?v=20260617occ1"></script>
     <!-- Overview inspector sub-tab: the three presentational component renderers

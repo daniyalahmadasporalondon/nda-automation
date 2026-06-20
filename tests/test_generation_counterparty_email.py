@@ -100,12 +100,16 @@ class GenerationCounterpartyEmailTests(unittest.TestCase):
         self.assertIsNotNone(signer, "counterparty signer did not resolve")
         self.assertEqual(signer["email"], email)
 
-        # And the full signer-resolution step does not raise.
+        # And the full signer-resolution step does not raise. _resolve_signers now
+        # returns RAW signer dicts (normalization/routing is deferred to the single
+        # create_envelope pass), so read the dict key.
         try:
             signers = docusign_workflow._resolve_signers(matter, None)
         except docusign_workflow.SignerResolutionError as error:  # pragma: no cover
             self.fail(f"SignerResolutionError raised for a matter with an email: {error}")
-        resolved_emails = {getattr(s, "email", None) for s in signers}
+        resolved_emails = {
+            (s.get("email") if isinstance(s, dict) else getattr(s, "email", None)) for s in signers
+        }
         self.assertIn(email, resolved_emails)
 
     def test_email_is_canonicalised_from_display_name_form(self):

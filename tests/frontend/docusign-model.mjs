@@ -239,7 +239,7 @@ test("validateSigners: accepts and normalises a valid row set", () => {
   assert.equal(result.signers[1].order, 2);
 });
 
-test("buildSendForSignaturePayload: matches the REST contract body shape", () => {
+test("buildSendForSignaturePayload: matches the REST contract body shape, carrying per-signer routing_order", () => {
   const payload = buildSendForSignaturePayload(
     [
       { role: "counterparty", name: "Acme", email: "cp@acme.com" },
@@ -247,13 +247,49 @@ test("buildSendForSignaturePayload: matches the REST contract body shape", () =>
     ],
     "sequential",
   );
+  // Sequential: each signer carries its row-position routing_order (1,2) so the
+  // backend honours the chosen signing order instead of collapsing to parallel.
   assert.deepEqual(payload, {
     signers: [
-      { name: "Acme", email: "cp@acme.com", role: "counterparty" },
-      { name: "Jane", email: "jane@aspora.com", role: "aspora" },
+      { name: "Acme", email: "cp@acme.com", role: "counterparty", routing_order: 1 },
+      { name: "Jane", email: "jane@aspora.com", role: "aspora", routing_order: 2 },
     ],
     signing_order: "sequential",
   });
+});
+
+test("buildSendForSignaturePayload: a REORDER (Aspora first) carries the chosen per-signer routing_order", () => {
+  // The rows were reordered so Aspora signs first: its row position (order 1) is
+  // carried as routing_order 1, the counterparty as 2 — the backend treats an
+  // explicit per-signer routing_order as authoritative, so this reorders signing.
+  const payload = buildSendForSignaturePayload(
+    [
+      { role: "aspora", name: "Jane", email: "jane@aspora.com", order: 1 },
+      { role: "counterparty", name: "Acme", email: "cp@acme.com", order: 2 },
+    ],
+    "sequential",
+  );
+  const byEmail = Object.fromEntries(payload.signers.map((s) => [s.email, s.routing_order]));
+  assert.equal(byEmail["jane@aspora.com"], 1);
+  assert.equal(byEmail["cp@acme.com"], 2);
+  // Order is positional: the first row is always routing_order 1.
+  assert.equal(payload.signers[0].routing_order, 1);
+  assert.equal(payload.signers[1].routing_order, 2);
+});
+
+test("buildSendForSignaturePayload: parallel collapses every signer to routing_order 1", () => {
+  // Parallel mode: every signer shares routing_order 1 (notify all at once), even
+  // though the rows carry distinct positions — the mode wins for parallel so the
+  // backend builds a true parallel envelope.
+  const payload = buildSendForSignaturePayload(
+    [
+      { role: "counterparty", name: "Acme", email: "cp@acme.com", order: 1 },
+      { role: "aspora", name: "Jane", email: "jane@aspora.com", order: 2 },
+    ],
+    "parallel",
+  );
+  assert.equal(payload.signing_order, "parallel");
+  assert.deepEqual(payload.signers.map((s) => s.routing_order), [1, 1]);
 });
 
 test("buildSendForSignaturePayload: coerces an unknown signing_order to sequential", () => {
@@ -301,8 +337,8 @@ test("generator send: matter view -> defaultSigners derives counterparty + Aspor
   const payload = buildSendForSignaturePayload(validated.signers, "sequential");
   assert.deepEqual(payload, {
     signers: [
-      { name: "Beta Labs", email: "legal@beta.io", role: "counterparty" },
-      { name: "Jane Aspora", email: "jane@aspora.com", role: "aspora" },
+      { name: "Beta Labs", email: "legal@beta.io", role: "counterparty", routing_order: 1 },
+      { name: "Jane Aspora", email: "jane@aspora.com", role: "aspora", routing_order: 2 },
     ],
     signing_order: "sequential",
   });

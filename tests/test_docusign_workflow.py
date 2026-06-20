@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from nda_automation import artifact_service, docusign_workflow
+from nda_automation import artifact_service, docusign_integration, docusign_workflow
 from nda_automation.artifact_registry import (
     ACTOR_HUMAN,
     ROLE_REVIEWED,
@@ -66,7 +66,9 @@ def test_send_for_signature_creates_envelope_and_records_state(matter_with_revie
     assert stored["board_column"] == "sent"
 
 
-def test_send_for_signature_defaults_to_parallel_signing(matter_with_reviewed, in_memory_matters):
+def test_send_for_signature_defaults_to_sequential_signing(matter_with_reviewed, in_memory_matters):
+    """No explicit signing_order -> the SEQUENTIAL default routes 1,2 (matching the
+    FE radio default). The signers persist their ranked routing order."""
     matter, matter_id = matter_with_reviewed
     fake = FakeDocuSignClient()
     docusign_workflow.send_for_signature(
@@ -78,8 +80,91 @@ def test_send_for_signature_defaults_to_parallel_signing(matter_with_reviewed, i
         signers=[{"name": "A", "email": "a@x.com"}, {"name": "B", "email": "b@y.com"}],
     )
     stored = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
-    orders = [s["routing_order"] for s in stored[docusign_workflow.SIGNATURE_FIELD]["signers"]]
-    assert orders == [1, 1]
+    block = stored[docusign_workflow.SIGNATURE_FIELD]
+    orders = [s["routing_order"] for s in block["signers"]]
+    assert orders == [1, 2]
+    assert block["signing_order"] == "sequential"
+
+
+def test_send_for_signature_sequential_routes_one_two_not_collapsed(
+    matter_with_reviewed, in_memory_matters
+):
+    """Regression for the sequential-collapse bug: picking "sequential" must produce
+    routingOrder 1,2 on the ENVELOPE DEFINITION (the authoritative wire contract).
+
+    Before the fix, ``_resolve_signers`` normalized to parallel FIRST (stamping
+    routing_order=1 on every signer), and the second, mode-aware normalize inside
+    ``create_envelope`` saw an order already set and left it — so a "sequential"
+    request shipped BOTH recipients at routingOrder=1 (parallel). This asserts the
+    real envelope body the workflow sends now ranks them 1,2.
+    """
+    matter, matter_id = matter_with_reviewed
+    client = _RecordingClient()
+    docusign_workflow.send_for_signature(
+        matter,
+        matter_id,
+        OWNER,
+        repository=in_memory_matters,
+        client=client,
+        signers=[{"name": "A", "email": "a@x.com"}, {"name": "B", "email": "b@y.com"}],
+        signing_order="sequential",
+    )
+    # The envelope DEFINITION built from exactly the signers the workflow sent.
+    definition = docusign_integration.build_envelope_definition(
+        b"%PDF-1.4 body", "nda.pdf", client.last_signers
+    )
+    routing = [r["routingOrder"] for r in definition["recipients"]["signers"]]
+    assert routing == ["1", "2"], f"sequential collapsed to {routing}"
+
+
+def test_send_for_signature_parallel_routes_all_one(matter_with_reviewed, in_memory_matters):
+    """Picking "parallel" shares routingOrder 1 across recipients (the envelope
+    definition carries 1,1)."""
+    matter, matter_id = matter_with_reviewed
+    client = _RecordingClient()
+    docusign_workflow.send_for_signature(
+        matter,
+        matter_id,
+        OWNER,
+        repository=in_memory_matters,
+        client=client,
+        signers=[{"name": "A", "email": "a@x.com"}, {"name": "B", "email": "b@y.com"}],
+        signing_order="parallel",
+    )
+    definition = docusign_integration.build_envelope_definition(
+        b"%PDF-1.4 body", "nda.pdf", client.last_signers
+    )
+    routing = [r["routingOrder"] for r in definition["recipients"]["signers"]]
+    assert routing == ["1", "1"]
+
+
+def test_send_for_signature_honors_explicit_reorder_aspora_first(
+    matter_with_reviewed, in_memory_matters
+):
+    """An explicit per-signer routing_order from the request (the UI "who signs
+    first" reorder) is AUTHORITATIVE: putting Aspora at order 1 routes Aspora=1,
+    counterparty=2 on the envelope definition — the chosen order, not row order."""
+    matter, matter_id = matter_with_reviewed
+    client = _RecordingClient()
+    docusign_workflow.send_for_signature(
+        matter,
+        matter_id,
+        OWNER,
+        repository=in_memory_matters,
+        client=client,
+        # Aspora listed second but explicitly pinned to sign FIRST via routing_order.
+        signers=[
+            {"name": "Counterparty", "email": "cp@acme.com", "role": "counterparty", "routing_order": 2},
+            {"name": "Aspora", "email": "signer@aspora.com", "role": "aspora", "routing_order": 1},
+        ],
+        signing_order="sequential",
+    )
+    definition = docusign_integration.build_envelope_definition(
+        b"%PDF-1.4 body", "nda.pdf", client.last_signers
+    )
+    by_email = {r["email"]: r["routingOrder"] for r in definition["recipients"]["signers"]}
+    assert by_email["signer@aspora.com"] == "1"
+    assert by_email["cp@acme.com"] == "2"
 
 
 def test_full_flow_send_sign_sync_stores_signed_artifact(matter_with_reviewed, in_memory_matters):
@@ -321,9 +406,11 @@ class _RecordingClient(FakeDocuSignClient):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.last_signers = []
+        self.last_signing_order = ""
 
     def create_envelope(self, document_bytes, filename, signers, **kwargs):
         self.last_signers = list(signers)
+        self.last_signing_order = kwargs.get("signing_order", "")
         return super().create_envelope(document_bytes, filename, signers, **kwargs)
 
 
@@ -763,11 +850,13 @@ def test_override_stamps_aspora_role_by_domain_when_listed_first():
             {"name": "Pranav Sharma", "email": "pranav@acme.com"},
         ],
     )
-    by_email = {s.email: s.role for s in signers}
+    # _resolve_signers returns RAW signer dicts now (normalization is deferred to
+    # the single create_envelope pass), so read the dict keys.
+    by_email = {s["email"]: s.get("role") for s in signers}
     assert by_email["daniyal.ahmad@aspora.com"] == "aspora"
     assert by_email["pranav@acme.com"] == "counterparty"
     # Order / who-receives is preserved; only the role label is stamped.
-    assert [s.email for s in signers] == [
+    assert [s["email"] for s in signers] == [
         "daniyal.ahmad@aspora.com",
         "pranav@acme.com",
     ]
@@ -784,7 +873,7 @@ def test_override_stamps_aspora_role_by_configured_email(monkeypatch):
             {"name": "Pranav", "email": "pranav@acme.com"},
         ],
     )
-    by_email = {s.email: s.role for s in signers}
+    by_email = {s["email"]: s.get("role") for s in signers}
     assert by_email["ops@example.org"] == "aspora"
     assert by_email["pranav@acme.com"] == "counterparty"
 
@@ -800,7 +889,7 @@ def test_override_preserves_explicit_non_blank_roles():
             {"name": "Daniyal", "email": "daniyal.ahmad@aspora.com", "role": "aspora"},
         ],
     )
-    by_email = {s.email: s.role for s in signers}
+    by_email = {s["email"]: s.get("role") for s in signers}
     assert by_email["pranav@acme.com"] == "signer1"
     assert by_email["daniyal.ahmad@aspora.com"] == "aspora"
 
@@ -811,5 +900,5 @@ def test_override_blank_role_non_aspora_defaults_to_counterparty():
         {},
         [{"name": "Pranav", "email": "pranav@acme.com"}],
     )
-    assert signers[0].role == "counterparty"
-    assert signers[0].email == "pranav@acme.com"
+    assert signers[0].get("role") == "counterparty"
+    assert signers[0]["email"] == "pranav@acme.com"

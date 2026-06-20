@@ -34,13 +34,24 @@ from nda_automation.docusign_test_double import FakeDocuSignClient
 # --------------------------------------------------------------------------
 # Signer normalization + envelope definition
 # --------------------------------------------------------------------------
-def test_default_signing_order_is_parallel():
-    assert DEFAULT_SIGNING_ORDER == SIGNING_ORDER_PARALLEL
+def test_default_signing_order_is_sequential():
+    # The default is sequential to match the frontend chooser (the "Signing order"
+    # radio defaults to sequential; docusign-model.mjs defaults to sequential).
+    assert DEFAULT_SIGNING_ORDER == SIGNING_ORDER_SEQUENTIAL
+
+
+def test_default_signers_increment_routing_order():
+    # No explicit signing_order -> the sequential default ranks 1,2.
+    signers = normalize_signers(
+        [{"name": "A", "email": "a@x.com"}, {"name": "B", "email": "b@y.com"}]
+    )
+    assert [s.routing_order for s in signers] == [1, 2]
 
 
 def test_parallel_signers_share_routing_order_one():
     signers = normalize_signers(
-        [{"name": "A", "email": "a@x.com"}, {"name": "B", "email": "b@y.com"}]
+        [{"name": "A", "email": "a@x.com"}, {"name": "B", "email": "b@y.com"}],
+        signing_order=SIGNING_ORDER_PARALLEL,
     )
     assert [s.routing_order for s in signers] == [1, 1]
 
@@ -53,12 +64,49 @@ def test_sequential_signers_increment_routing_order():
     assert [s.routing_order for s in signers] == [1, 2]
 
 
-def test_parallel_collapses_explicit_order_to_one():
+def test_explicit_routing_order_is_authoritative_under_parallel():
+    # An explicit per-signer routing_order is AUTHORITATIVE: parallel mode no longer
+    # clobbers it to 1 (that clobber is what dropped a caller's chosen order).
     signers = normalize_signers(
-        [{"name": "A", "email": "a@x.com", "routing_order": 5}],
+        [
+            {"name": "A", "email": "a@x.com", "routing_order": 5},
+            {"name": "B", "email": "b@y.com", "routing_order": 3},
+        ],
         signing_order=SIGNING_ORDER_PARALLEL,
     )
-    assert signers[0].routing_order == 1
+    assert [s.routing_order for s in signers] == [5, 3]
+
+
+def test_explicit_routing_order_reorders_recipients():
+    # Aspora pinned to sign first via an explicit routing_order, even though listed
+    # second -> the envelope definition reflects the chosen order (Aspora=1, cp=2).
+    signers = normalize_signers(
+        [
+            {"name": "CP", "email": "cp@x.com", "routing_order": 2},
+            {"name": "Aspora", "email": "a@aspora.com", "routing_order": 1},
+        ],
+        signing_order=SIGNING_ORDER_SEQUENTIAL,
+    )
+    definition = build_envelope_definition(b"%PDF-1.4 data", "nda.pdf", signers)
+    by_email = {r["email"]: r["routingOrder"] for r in definition["recipients"]["signers"]}
+    assert by_email["a@aspora.com"] == "1"
+    assert by_email["cp@x.com"] == "2"
+
+
+def test_normalize_signers_is_idempotent_under_sequential():
+    # Re-normalizing already-ranked signers (as the live send path does inside
+    # create_envelope) preserves the order rather than collapsing it -> the
+    # sequential-collapse regression can never recur.
+    once = normalize_signers(
+        [{"name": "A", "email": "a@x.com"}, {"name": "B", "email": "b@y.com"}],
+        signing_order=SIGNING_ORDER_SEQUENTIAL,
+    )
+    twice = normalize_signers(once, signing_order=SIGNING_ORDER_SEQUENTIAL)
+    assert [s.routing_order for s in twice] == [1, 2]
+    # Even re-normalizing the ranked signers under PARALLEL keeps the explicit orders
+    # (the orders were set explicitly by the first pass, so they are authoritative).
+    parallel_twice = normalize_signers(once, signing_order=SIGNING_ORDER_PARALLEL)
+    assert [s.routing_order for s in parallel_twice] == [1, 2]
 
 
 def test_signer_missing_email_rejected():
