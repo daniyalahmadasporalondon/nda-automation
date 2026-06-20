@@ -170,7 +170,7 @@ def save_entities_registry(
     payload: dict[str, Any],
     *,
     actor: str = "admin",
-    store_path=entity_store.ENTITY_STORE_PATH,
+    store_path=None,
 ) -> dict[str, Any]:
     """Validate and durably persist a proposed signing-entity registry.
 
@@ -178,7 +178,12 @@ def save_entities_registry(
     candidate is coerced, structurally validated, and orphan-guarded against the
     live playbook BEFORE any disk write, so a rejected save is a no-op. On success
     the store is rewritten atomically and the fresh workspace payload is returned.
+
+    ``store_path`` resolves at call time from ``entity_store.ENTITY_STORE_PATH``
+    when not supplied, so a test (or a relocated data dir) is honoured.
     """
+    if store_path is None:
+        store_path = entity_store.ENTITY_STORE_PATH
     entities_raw = payload.get("entities")
     if not isinstance(entities_raw, list):
         raise EntityAuthoringError(

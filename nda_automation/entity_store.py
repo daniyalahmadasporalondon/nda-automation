@@ -124,7 +124,7 @@ def _read_stored_entities(store_path: Path) -> list[dict[str, Any]] | None:
 def load_entities(
     *,
     defaults: list[dict[str, Any]],
-    store_path: Path = ENTITY_STORE_PATH,
+    store_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Return the live entity bundles, seeding the store from ``defaults`` once.
 
@@ -134,6 +134,8 @@ def load_entities(
     are not yet persisted. Thereafter the persisted snapshot is authoritative —
     even a redeploy with new bundled defaults does not clobber a saved store.
     """
+    if store_path is None:
+        store_path = ENTITY_STORE_PATH
     with locked_entity_store(store_path):
         stored = _read_stored_entities(store_path)
         if stored is not None:
@@ -151,7 +153,7 @@ def load_entities(
 def save_entities(
     entities: list[dict[str, Any]],
     *,
-    store_path: Path = ENTITY_STORE_PATH,
+    store_path: Path | None = None,
     actor: str = "admin",
 ) -> list[dict[str, Any]]:
     """Atomically persist ``entities`` as the new live registry snapshot.
@@ -161,6 +163,8 @@ def save_entities(
     Returns the stored entities (a deep copy) so the caller cannot mutate the
     on-disk snapshot through the returned reference.
     """
+    if store_path is None:
+        store_path = ENTITY_STORE_PATH
     with locked_entity_store(store_path):
         snapshot = [deepcopy(entity) for entity in entities]
         _write_snapshot(snapshot, store_path=store_path, actor=actor, source="save")
