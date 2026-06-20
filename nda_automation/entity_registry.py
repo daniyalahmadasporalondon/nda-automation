@@ -13,6 +13,14 @@ The four positions exposed by the playbook today are ``india``, ``delaware``,
 checks that every bundle maps to one of those positions and fails loudly if the
 playbook drifts (e.g. an option id is renamed), rather than silently generating
 an unapproved governing law.
+
+The bundles below (:data:`DEFAULT_SIGNING_ENTITIES`) are the *seed* defaults. The
+live registry is now authorable and durable: it is read from a persistent JSON
+store under ``$NDA_DATA_DIR`` (see :mod:`nda_automation.entity_store`), seeded
+once from these defaults so nothing breaks on first run. The accessors
+(:func:`list_entities`, :func:`get_entity`, ...) read the *live* store, so an
+admin edit in the Entities console is reflected everywhere the registry is
+consumed (the Generator's signing-entity picker, generation, DocuSign, etc.).
 """
 
 from __future__ import annotations
@@ -33,7 +41,7 @@ from typing import Any, Mapping
 # in playbook.json. Keep these in sync; validate_registry_against_playbook()
 # enforces it.
 
-SIGNING_ENTITIES: list[dict[str, Any]] = [
+DEFAULT_SIGNING_ENTITIES: list[dict[str, Any]] = [
     {
         "id": "aspora_technology",
         "legal_name": "Aspora Technology Services Private Limited",
@@ -259,21 +267,42 @@ ENTITY_LAW_MAPPING_NOTES: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
-# Accessors
+# Live registry (store-backed) accessors
 # ---------------------------------------------------------------------------
+#
+# The accessors read the LIVE registry from the persistent store, seeded from
+# DEFAULT_SIGNING_ENTITIES on first run. The store import is deferred to the call
+# site to avoid an import cycle (entity_store imports checker.ROOT, and checker
+# pulls in much of the review pipeline; entity_registry is imported very early by
+# generation/counterparty modules).
+
+
+def _live_entities() -> list[dict[str, Any]]:
+    """Return the live registry bundles from the persistent store.
+
+    Falls back to the in-repo defaults if the store module or disk is
+    unavailable, so the registry is never empty and never crashes a reader.
+    """
+
+    try:
+        from . import entity_store  # noqa: PLC0415 - deferred to avoid an import cycle
+
+        return entity_store.load_entities(defaults=DEFAULT_SIGNING_ENTITIES)
+    except Exception:  # noqa: BLE001 - a store/disk failure must never break a reader
+        return [_copy_bundle(entity) for entity in DEFAULT_SIGNING_ENTITIES]
 
 
 def list_entities() -> list[dict[str, Any]]:
-    """Return all signing-entity bundles."""
+    """Return all signing-entity bundles from the live registry."""
 
-    return [_copy_bundle(entity) for entity in SIGNING_ENTITIES]
+    return [_copy_bundle(entity) for entity in _live_entities()]
 
 
 def get_entity(entity_id: str) -> dict[str, Any] | None:
     """Return the bundle for ``entity_id`` or ``None`` if it is not registered."""
 
-    for entity in SIGNING_ENTITIES:
-        if entity["id"] == entity_id:
+    for entity in _live_entities():
+        if entity.get("id") == entity_id:
             return _copy_bundle(entity)
     return None
 
@@ -375,15 +404,27 @@ def _playbook_max_term_years(playbook: Mapping[str, Any]) -> int | None:
     return None
 
 
-def validate_registry() -> None:
+def validate_registry(entities: list[dict[str, Any]] | None = None) -> None:
     """Validate internal consistency of the bundles (no playbook needed).
 
     Checks that every bundle has the required fields and that each entity has
     exactly one default address. Raises ``ValueError`` on the first problem.
+
+    When ``entities`` is supplied, that candidate list is validated (used by the
+    authoring layer to vet a proposed save before it is persisted); otherwise the
+    live registry is validated.
     """
 
+    if entities is None:
+        entities = _live_entities()
+
+    if not isinstance(entities, list) or not entities:
+        raise ValueError("The signing-entity registry must contain at least one entity.")
+
     seen_ids: set[str] = set()
-    for entity in SIGNING_ENTITIES:
+    for entity in entities:
+        if not isinstance(entity, dict):
+            raise ValueError("Each signing entity must be an object.")
         entity_id = entity.get("id")
         if not entity_id:
             raise ValueError("Signing entity is missing an id.")
@@ -399,16 +440,23 @@ def validate_registry() -> None:
                 f"Entity {entity_id} is missing incorporation_jurisdiction."
             )
 
+        if not str(entity.get("jurisdiction") or "").strip():
+            raise ValueError(
+                f"Entity {entity_id} is missing a court/jurisdiction."
+            )
+
         addresses = entity.get("addresses") or []
         if not addresses:
             raise ValueError(f"Entity {entity_id} has no addresses.")
-        defaults = [a for a in addresses if a.get("default")]
+        defaults = [a for a in addresses if isinstance(a, dict) and a.get("default")]
         if len(defaults) != 1:
             raise ValueError(
                 f"Entity {entity_id} must have exactly one default address, "
                 f"found {len(defaults)}."
             )
         for address in addresses:
+            if not isinstance(address, dict):
+                raise ValueError(f"Entity {entity_id} has a malformed address.")
             if not address.get("id"):
                 raise ValueError(f"Entity {entity_id} has an address with no id.")
             if not address.get("lines"):
@@ -417,13 +465,16 @@ def validate_registry() -> None:
                 )
 
         law = entity.get("governing_law") or {}
-        if not law.get("playbook_option_id"):
+        if not isinstance(law, dict) or not law.get("playbook_option_id"):
             raise ValueError(
                 f"Entity {entity_id} is missing governing_law.playbook_option_id."
             )
 
 
-def validate_registry_against_playbook(playbook: Mapping[str, Any]) -> None:
+def validate_registry_against_playbook(
+    playbook: Mapping[str, Any],
+    entities: list[dict[str, Any]] | None = None,
+) -> None:
     """Validate the registry, then check the law mapping against ``playbook``.
 
     Every entity's ``governing_law.playbook_option_id`` must exist among the
@@ -433,9 +484,17 @@ def validate_registry_against_playbook(playbook: Mapping[str, Any]) -> None:
     relies on, or if a bundle's display label has drifted from the playbook's
     (the label is display-only -- the operative value already comes from the
     playbook via the id -- but asserting it here keeps the duplicated copy honest).
+
+    When ``entities`` is supplied, that candidate list is checked against the
+    playbook (used by the authoring layer to reject a save that points an entity
+    at a non-approved law -- the ORPHAN GUARD); otherwise the live registry is
+    checked.
     """
 
-    validate_registry()
+    if entities is None:
+        entities = _live_entities()
+
+    validate_registry(entities)
 
     options = _playbook_governing_law_options(playbook)
     if not options:
@@ -453,7 +512,7 @@ def validate_registry_against_playbook(playbook: Mapping[str, Any]) -> None:
     # name. Asserting equality here fails loudly instead, closing that drift.
     option_label_by_id = {option["id"]: option["label"] for option in options}
 
-    for entity in SIGNING_ENTITIES:
+    for entity in entities:
         option_id = entity["governing_law"]["playbook_option_id"]
         if option_id not in option_ids:
             raise ValueError(
@@ -484,7 +543,7 @@ def entity_law_mapping(playbook: Mapping[str, Any] | None = None) -> list[dict[s
         _playbook_governing_law_option_ids(playbook) if playbook is not None else set()
     )
     rows: list[dict[str, Any]] = []
-    for entity in SIGNING_ENTITIES:
+    for entity in _live_entities():
         option_id = entity["governing_law"]["playbook_option_id"]
         row: dict[str, Any] = {
             "entity_id": entity["id"],
@@ -542,7 +601,13 @@ def signing_entities_payload(playbook: Mapping[str, Any] | None = None) -> dict[
     return payload
 
 
+# Backward-compatibility alias: the hardcoded list used to be the live registry.
+# It is now the seed default. A few call sites / tests may still reference the old
+# name; keep it pointing at the defaults (which is what it always contained).
+SIGNING_ENTITIES = DEFAULT_SIGNING_ENTITIES
+
 __all__ = [
+    "DEFAULT_SIGNING_ENTITIES",
     "SIGNING_ENTITIES",
     "ENTITY_LAW_MAPPING_NOTES",
     "list_entities",

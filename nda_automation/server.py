@@ -247,6 +247,9 @@ _GET_EXACT_ROUTES = {
     "/api/matters/export": admin_routes.handle_matter_backup,
     "/api/corpus": corpus_routes.handle_corpus,
     "/api/signing-entities": entity_routes.handle_signing_entities,
+    # Admin-only Entities console workspace (live registry + playbook law
+    # options). Admin-gated inside the handler, like the other admin GET routes.
+    "/api/admin/signing-entities": entity_routes.handle_admin_signing_entities,
     "/api/telemetry": admin_routes.handle_telemetry,
 }
 
@@ -280,6 +283,10 @@ _POST_EXACT_ROUTES = {
     # write counterpart of the GET browse route above). Admin-gated inside the
     # handler, like the other drive-admin routes.
     "/api/admin/drive-folders": drive_routes.handle_drive_create_folder,
+    # Entities console writes (admin-gated inside the handler; CSRF enforced by
+    # do_POST before dispatch). The save body is the full replacement registry.
+    "/api/admin/signing-entities": entity_routes.handle_admin_signing_entities_save,
+    "/api/admin/signing-entities/validate": entity_routes.handle_admin_signing_entities_validate,
     "/api/admin/personalisation-settings": admin_routes.handle_personalisation_settings_update,
     # Non-admin self-serve write counterpart (strict per-owner isolation).
     "/api/me/personalisation-settings": admin_routes.handle_my_personalisation_settings_update,
