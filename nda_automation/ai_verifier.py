@@ -517,11 +517,21 @@ def _should_verify(clause: Mapping[str, object]) -> bool:
         # quote can ground (you cannot quote absent text), so the grounding gate
         # cannot catch a hallucinated clear. Always second-look it, even at high
         # confidence.
-        if str(clause.get("type") or "").strip().lower() == "prohibited":
+        #
+        # REQUIRED clauses get the same treatment: a confident-but-wrong "approved
+        # governing law" or over-long survival term sails through the grounding gate
+        # (the quote it cites is real, the *judgement* about it is wrong), so a
+        # high-confidence PASS must still be adversarially re-checked. Both the
+        # prohibited and required families therefore force-verify on every PASS.
+        clause_type = str(clause.get("type") or "").strip().lower()
+        if clause_type in {"prohibited", "required"}:
             return True
         confidence = _confidence(clause)
-        # Only spend a call on a *low*-confidence pass; trust confident clears.
-        return confidence is not None and confidence < HIGH_CONFIDENCE_PASS_THRESHOLD
+        # Unknown confidence is the MOST suspicious signal -- a PASS with no
+        # confidence (e.g. via the deterministic checker path) cannot be trusted as a
+        # confident clear, so verify it. Otherwise only spend a call on a *low*-
+        # confidence pass; trust confident clears.
+        return confidence is None or confidence < HIGH_CONFIDENCE_PASS_THRESHOLD
     return False
 
 

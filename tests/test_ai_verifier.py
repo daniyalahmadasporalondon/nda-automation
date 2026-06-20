@@ -28,6 +28,7 @@ from nda_automation.ai_verifier import (
     resolve_verifier,
     verifier_status,
     verifier_enabled,
+    _should_verify,
 )
 from nda_automation.ai_assessment_contract import AI_REDLINE_NO_CHANGE
 from nda_automation.ai_first_review import build_ai_first_review_result
@@ -339,6 +340,62 @@ class ApplyVerifierTests(unittest.TestCase):
 
         apply_ai_verifier(clauses, source_text="x", verifier=spy)
         self.assertEqual(called, ["governing_law"])
+
+    def test_confident_pass_on_required_clause_is_force_verified(self):
+        # P0 coverage gap: a confident PASS on a REQUIRED clause (governing_law,
+        # term_and_survival, etc.) must be re-checked, exactly like a prohibited
+        # PASS. The grounding gate cannot catch a confident-but-wrong *judgement*
+        # about a real quote (e.g. an unapproved governing law called "approved").
+        clause = _clause("governing_law", "pass", clause_type="required", confidence=0.9)
+        self.assertTrue(_should_verify(clause))
+        called = []
+
+        def spy(packet):
+            called.append(packet["clause_id"])
+            return {"verdict": VERIFIER_VERDICT_AFFIRM, "confidence": 1.0}
+
+        apply_ai_verifier([clause], source_text="x", verifier=spy)
+        self.assertEqual(called, ["governing_law"])
+
+    def test_unknown_confidence_required_pass_is_verified(self):
+        # Unknown confidence is the MOST suspicious signal, not the most trusted.
+        clause = _clause("term_and_survival", "pass", clause_type="required")
+        clause.pop("confidence", None)
+        self.assertIsNone(clause.get("confidence"))
+        self.assertTrue(_should_verify(clause))
+
+    def test_unknown_confidence_pass_is_verified_even_without_required_type(self):
+        # Reachable via the deterministic checker path where confidence can be None:
+        # a typeless PASS with no confidence must still be second-looked.
+        clause = _clause("some_clause", "pass", clause_type="")
+        clause.pop("confidence", None)
+        self.assertTrue(_should_verify(clause))
+
+    def test_prohibited_pass_behavior_is_unchanged(self):
+        # Regression guard: a confident prohibited PASS is still always verified.
+        clause = _clause("non_circumvention", "pass", clause_type="prohibited", confidence=0.99)
+        self.assertTrue(_should_verify(clause))
+
+    def test_confident_typeless_pass_is_still_skipped(self):
+        # The narrow fast-path survives: a confident PASS with a known (non-None)
+        # confidence and neither required nor prohibited type is still trusted.
+        clause = _clause("note", "pass", clause_type="advisory", confidence=0.9)
+        self.assertFalse(_should_verify(clause))
+
+    def test_refuted_required_pass_is_downgraded_to_review(self):
+        # END-TO-END REPRO (the exact audit case): a wrong confident PASS on a
+        # REQUIRED clause is now SEEN by the verifier and, when the verifier refutes
+        # it at high confidence, downgraded to review. On base 18e809cf the verifier
+        # never ran on this clause, so the wrong PASS shipped untouched.
+        clause = _clause("governing_law", "pass", clause_type="required", confidence=0.9)
+        updated, summary = apply_ai_verifier(
+            [clause],
+            source_text="Governed by the laws of Narnia.",
+            verifier=_scripted(VERIFIER_VERDICT_REFUTE, confidence=0.95),
+        )
+        self.assertEqual(updated[0]["decision"], "review")
+        self.assertEqual(summary["changed_count"], 1)
+        self.assertTrue(updated[0]["ai_verifier"]["changed"])
 
     def test_verifier_exception_is_recorded_not_raised(self):
         telemetry.reset()
@@ -653,22 +710,44 @@ class ClauseBoundaryMarkerTests(unittest.TestCase):
 class ShouldVerifyTests(unittest.TestCase):
     """BUGFIX: a prohibited-clause pass asserts the restriction is ABSENT -- a claim
     no quote can ground -- so it must always be second-looked, even at high
-    confidence (the grounding gate cannot catch a hallucinated clear there)."""
+    confidence (the grounding gate cannot catch a hallucinated clear there).
+
+    COVERAGE FIX: REQUIRED-clause passes get the same force-verify. A confident-but-
+    wrong "approved governing law" or over-long survival term cites a real quote, so
+    the grounding gate cannot catch the wrong *judgement* -- the verifier must.
+    And an unknown (None) confidence on any pass is the MOST suspicious signal, so it
+    is verified rather than waved through."""
 
     def test_high_confidence_prohibited_pass_is_verified(self):
         from nda_automation.ai_verifier import _should_verify
 
         self.assertTrue(_should_verify({"decision": "pass", "type": "prohibited", "confidence": 0.97}))
 
-    def test_high_confidence_required_pass_is_trusted(self):
+    def test_high_confidence_required_pass_is_verified(self):
         from nda_automation.ai_verifier import _should_verify
 
-        self.assertFalse(_should_verify({"decision": "pass", "type": "required", "confidence": 0.97}))
+        # COVERAGE FIX: was trusted (False) on base 18e809cf; now force-verified.
+        self.assertTrue(_should_verify({"decision": "pass", "type": "required", "confidence": 0.97}))
 
     def test_low_confidence_pass_is_still_verified(self):
         from nda_automation.ai_verifier import _should_verify
 
         self.assertTrue(_should_verify({"decision": "pass", "type": "required", "confidence": 0.50}))
+
+    def test_unknown_confidence_pass_is_verified(self):
+        from nda_automation.ai_verifier import _should_verify
+
+        # Unknown confidence is the MOST suspicious case (reachable via the
+        # deterministic checker path), so it must be verified, not skipped.
+        self.assertTrue(_should_verify({"decision": "pass", "type": "advisory"}))
+        self.assertTrue(_should_verify({"decision": "pass", "type": "advisory", "confidence": None}))
+
+    def test_confident_pass_outside_required_or_prohibited_is_still_trusted(self):
+        from nda_automation.ai_verifier import _should_verify
+
+        # The narrow confident-clear fast-path survives for non-required, non-
+        # prohibited clauses with a known confidence.
+        self.assertFalse(_should_verify({"decision": "pass", "type": "advisory", "confidence": 0.97}))
 
 
 class NormalizeVerdictTests(unittest.TestCase):
@@ -887,7 +966,16 @@ class AIFirstPathIntegrationTests(unittest.TestCase):
         # Evidence-trust holds (build raises EvidenceProvenanceError otherwise).
         self.assertEqual(result["evidence_trust"]["status"], "verified")
         self.assertEqual(result["audit_trace"]["decision"] if "audit_trace" in result else nc["audit_trace"]["decision"], "review")
-        self.assertEqual(result["ai_verifier"]["changed_count"], 1)
+        # COVERAGE FIX: the verifier now force-checks every REQUIRED clause pass too,
+        # not just the prohibited one. With a scripted refute-everything verifier all
+        # six clauses (5 required + 1 prohibited) are seen and refuted to review --
+        # whereas on base 18e809cf only the single prohibited clause was verified
+        # (changed_count == 1). Each required clause is genuinely re-checked now.
+        self.assertEqual(result["ai_verifier"]["verified_count"], 6)
+        self.assertEqual(result["ai_verifier"]["changed_count"], 6)
+        for clause in result["clauses"]:
+            self.assertEqual(clause["decision"], "review")
+            self.assertTrue(clause["ai_verifier"]["changed"])
 
     def test_verifier_leaves_correct_ai_first_pass_untouched(self):
         # The AI got it right (pass). The verifier must not disturb a confident pass.

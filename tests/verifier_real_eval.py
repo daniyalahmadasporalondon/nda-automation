@@ -26,7 +26,7 @@ Every case hits a live provider, so the whole layer is gated behind
 key. Key-free / flag-free CI skips it cleanly. It is small (one batched call per
 case) and deliberately not part of the always-on gate.
 
-The four failure modes (named by the audit)
+The failure modes (named by the audit)
 --------------------------------------------
 1. POLARITY TRAP -- a genuine prohibition co-located with freedom-to-deal
    language ("...shall not be restricted from dealing... BUT shall not solicit
@@ -41,6 +41,14 @@ The four failure modes (named by the audit)
    to refute B's restriction.
 4. OVER-CLEAR GUARD -- a real, unambiguous FAIL (a hard non-compete). The
    verifier must NOT downgrade it to pass.
+5. REQUIRED-CLAUSE CONFIDENT-PASS COVERAGE -- a confident-but-WRONG PASS on a
+   REQUIRED clause (an unapproved governing law -- "the laws of the State of
+   Texas" -- mislabelled "approved"). On base 18e809cf ``_should_verify`` only
+   force-verified PROHIBITED passes, so a confident required PASS like this was
+   never re-checked and shipped untouched. Now the required family is force-
+   verified too: the verifier SEES this clause and must NOT affirm the wrong
+   clear (refute->review or uncertain are the safe answers; a sustained ``pass``
+   is the regression).
 
 How to run
 ----------
@@ -170,6 +178,54 @@ def _non_circ_finding(
             {"paragraph_id": "p0", "quote": matched_text[:200]}
         ],
     }
+
+
+def _required_govlaw_finding(
+    *,
+    decision: str,
+    matched_text: str,
+    reason: str,
+    confidence: float = 0.9,
+) -> Dict[str, object]:
+    """A finalized governing_law (REQUIRED) clause result.
+
+    Shaped to pass ``_should_verify`` via the required-type force-verify path
+    (the coverage this branch adds), carrying the matched_text/evidence the
+    verifier reads. Used for the confident-but-wrong required-PASS case.
+    """
+    return {
+        "id": "governing_law",
+        "name": "Governing Law",
+        "type": "required",
+        "decision": decision,
+        "passes": decision == CLAUSE_DECISION_PASS,
+        "needs_review": decision == CLAUSE_DECISION_REVIEW,
+        "confidence": confidence,
+        "requirement": (
+            "The NDA must be governed by one of the approved governing laws: the "
+            "laws of India, Delaware, England and Wales, or the DIFC."
+        ),
+        "matched_text": matched_text,
+        "evidence": [matched_text],
+        "decision_reason": reason,
+        "reason": reason,
+        "finding": reason,
+        "matched_paragraph_ids": ["p0"],
+        "structured_evidence": [
+            {"paragraph_id": "p0", "quote": matched_text[:200]}
+        ],
+    }
+
+
+# ---- Case 5: required-clause confident-wrong PASS ----
+# An UNAPPROVED governing law (Texas) the first pass confidently called "approved".
+# This is the exact coverage gap: a confident required PASS that base never
+# re-checked. The verifier must NOT sustain the wrong clear.
+_UNAPPROVED_GOVLAW_TEXT = (
+    "This Agreement shall be governed by and construed in accordance with the laws "
+    "of the State of Texas, without regard to its conflict-of-laws principles, and "
+    "the parties submit to the exclusive jurisdiction of the courts of Texas."
+)
 
 
 # ---- Case 1: polarity trap ----
@@ -320,6 +376,25 @@ def build_cases() -> List[Dict[str, object]]:
             "contract_structure": None,
             # An unambiguous hard non-compete. The verifier must never downgrade it
             # to pass; affirm (fail) is the only safe outcome.
+            "forbidden_decisions": [CLAUSE_DECISION_PASS],
+        },
+        {
+            "name": "required_govlaw_confident_wrong_pass_must_not_sustain_clear",
+            "failure_mode": "required_clause_confident_pass_coverage",
+            "finding": _required_govlaw_finding(
+                # A CONFIDENT PASS (0.9) on a REQUIRED clause -- exactly what base
+                # 18e809cf skipped. The branch's required-family force-verify is what
+                # gets this finding in front of the verifier at all.
+                decision=CLAUSE_DECISION_PASS,
+                matched_text=_UNAPPROVED_GOVLAW_TEXT,
+                reason="Governing law present and approved.",
+                confidence=0.9,
+            ),
+            "source_text": _UNAPPROVED_GOVLAW_TEXT,
+            "contract_structure": None,
+            # Texas is NOT an approved governing law, so the confident PASS is wrong.
+            # The verifier must refute it (-> review) or flag uncertain; sustaining
+            # the ``pass`` is the regression this coverage fix exists to catch.
             "forbidden_decisions": [CLAUSE_DECISION_PASS],
         },
     ]
