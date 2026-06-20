@@ -96,14 +96,14 @@ async function main() {
     );
     assert.ok(dynamicBadges >= 1, "new clause should be flagged AI-reviewed (dynamic)");
 
-    // The Decision-Logic panel must expose an EDITABLE condition editor (the thing
-    // the UI previously could not author).
-    await page.click('[data-playbook-panel-tab="decision"]');
+    // The consolidated clause editor exposes the EDITABLE decision-condition editor
+    // inline (no more per-clause sub-tabs) -- on the same scrolling screen as the
+    // policy fields.
     await page.waitForSelector('[data-dynamic-conditions] [data-condition-field="fail_conditions"]');
 
     // --- 2. Author the clause ---------------------------------------------------
-    // Policy panel carries name + requirement + acceptable language + trigger terms.
-    await page.click('[data-playbook-panel-tab="policy"]');
+    // The consolidated view carries name + requirement + acceptable language +
+    // trigger terms + decision conditions all on one screen (no tab switching).
     await page.waitForSelector('#playbookEditor textarea[name="requirement"]', { state: "visible" });
     await page.fill('#playbookEditor input[name="name"]', "Exclusive Dealing");
     await page.fill(
@@ -118,9 +118,8 @@ async function main() {
     await page.click("#addDynamicSearchTerm");
     await page.waitForSelector('[data-chip-row="search-term"] .admin-chip');
 
-    // Decision panel: EDIT the fail condition's description (prove conditions are
-    // authorable).
-    await page.click('[data-playbook-panel-tab="decision"]');
+    // EDIT the fail condition's description (prove conditions are authorable). The
+    // condition editor is already on screen in the consolidated view.
     const failDesc = '[data-condition-field="fail_conditions"][data-condition-index="0"] [data-condition-description]';
     await page.fill(
       failDesc,
@@ -183,8 +182,8 @@ async function main() {
     // and confirm Validate flags it invalid (the gate would reject publish).
     await page.click("#addPlaybookClause");
     await page.waitForSelector("#clauseDetail #playbookEditor");
-    await page.click('[data-playbook-panel-tab="decision"]');
-    // Remove all fail + review conditions.
+    await page.waitForSelector('[data-dynamic-conditions]');
+    // Remove all fail + review conditions (the condition editor is inline now).
     let removeButtons = await page.$$(
       '[data-condition-field="fail_conditions"] [data-remove-condition], [data-condition-field="review_triggers"] [data-remove-condition]'
     );
