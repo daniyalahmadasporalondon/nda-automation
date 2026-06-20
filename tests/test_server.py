@@ -4071,6 +4071,33 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(public["can_send_redline"], True)
 
     def test_public_matter_blocks_send_when_review_is_needed(self):
+        # AI-reviewed matter that needs review: SEND AUTHORITY blocks AND the surfaced
+        # review_state shows the "review" verdict (the AI-reviewed path is unchanged).
+        public = matter_view.public_matter({
+            "id": "matter_1",
+            "sender": "Sender <sender@example.com>",
+            "subject": "NDA",
+            "requirements_needs_review": 1,
+            "review_result": {
+                "active_review_engine": {"executed_engine": "ai_first"},
+                "overall_status": "needs_review",
+                "requirements_needs_review": 1,
+            },
+        })
+
+        self.assertEqual(public["recipient_email"], "sender@example.com")
+        self.assertEqual(public["can_send_redline"], False)
+        self.assertEqual(public["review_state"]["state"], "review")
+        self.assertTrue(public["review_state"]["blocks_send"])
+        self.assertIn("human review", public["send_block_reason"])
+
+    def test_deterministic_only_review_blocks_send_but_surfaces_no_verdict(self):
+        # DETERMINISTIC-GHOST DEMOTION at the source: a NON-AI matter (no ai_first
+        # active-engine marker) that the deterministic engine flagged needs-review
+        # must STILL block send (send authority derives from the raw review_result),
+        # but its surfaced review_state must NOT show a "review" verdict -- it is
+        # demoted to PENDING and the raw requirements_* integers are dropped, so no
+        # consumer reads a deterministic verdict.
         public = matter_view.public_matter({
             "id": "matter_1",
             "sender": "Sender <sender@example.com>",
@@ -4082,11 +4109,16 @@ class ServerTests(unittest.TestCase):
             },
         })
 
-        self.assertEqual(public["recipient_email"], "sender@example.com")
+        # Send authority UNCHANGED -- still blocks.
         self.assertEqual(public["can_send_redline"], False)
-        self.assertEqual(public["review_state"]["state"], "review")
-        self.assertTrue(public["review_state"]["blocks_send"])
+        self.assertTrue(public["needs_human_review"])
+        self.assertTrue(public["blocks_send"])
         self.assertIn("human review", public["send_block_reason"])
+        # Display state DEMOTED -- no deterministic verdict surfaced.
+        self.assertFalse(public["ai_review_ran"])
+        self.assertEqual(public["review_state"]["state"], "pending")
+        self.assertFalse(public["review_state"]["blocks_send"])
+        self.assertNotIn("requirements_needs_review", public)
 
     def test_public_matter_allows_redline_send_for_pdf_source(self):
         public = matter_view.public_matter({

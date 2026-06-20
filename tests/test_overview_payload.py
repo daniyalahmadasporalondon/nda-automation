@@ -43,6 +43,10 @@ def _reviewed_matter() -> dict:
         },
         "extracted_text": "Mutual NDA text",
         "review_result": {
+            # An AI (ai_first) review ran -- the active-engine marker is what gates the
+            # surfaced review_state/counts in public_matter (deterministic-ghost
+            # demotion), so this fixture represents a genuinely AI-reviewed matter.
+            "active_review_engine": {"executed_engine": "ai_first"},
             "clauses": [
                 {"id": "confidentiality", "decision": "pass"},
                 {"id": "term_and_survival", "decision": "pass", "term_years": 1},
@@ -198,3 +202,69 @@ def test_has_ai_review_true_from_ai_first_review_result_only():
         {"id": "m3", "subject": "NDA", "ai_first_review_result": {"clauses": []}}
     )
     assert matter["has_ai_review"] is True
+
+
+# --- Deterministic-ghost demotion at the SOURCE (public_matter) ------------
+
+
+def _deterministic_only_matter() -> dict:
+    """A matter with stored clause verdicts but NO AI (ai_first) review.
+
+    Mirrors an outbound-generated NDA / an inbound matter reviewed while the AI
+    engine was off: review_result.clauses are present (a deterministic fail among
+    them) but executed_engine != "ai_first", so ai_review_ran is False.
+    """
+    return {
+        "id": "det1",
+        "subject": "Generated NDA",
+        "extracted_text": "Generated NDA text",
+        "review_result": {
+            "active_review_engine": {"executed_engine": "deterministic"},
+            "clauses": [
+                {"id": "confidentiality", "decision": "pass"},
+                {"id": "governing_law", "decision": "fail"},
+            ],
+            "requirements_passed": 1,
+            "requirements_needs_review": 0,
+            "requirements_failed": 1,
+        },
+    }
+
+
+def test_deterministic_only_matter_surfaces_no_verdict_state():
+    # DEMOTION at the source: the surfaced review_state is PENDING (no deterministic
+    # verdict), counts are zeroed, and the raw deterministic requirements_* integers
+    # are dropped from the public payload so NO consumer can read a verdict.
+    matter = public_matter(_deterministic_only_matter())
+    assert matter["ai_review_ran"] is False
+    state = matter["review_state"]
+    assert state["state"] == "pending"
+    assert state["label"] == "PENDING"
+    assert state["counts"]["total"] == 0
+    assert state.get("ai_review_ran") is False
+    # The deterministic clause_ids must NOT leak (no "check"/"pass" verdicts shown).
+    assert state["clause_ids"]["check"] == []
+    assert state["clause_ids"]["pass"] == []
+    # The raw deterministic requirement integers are dropped, not surfaced.
+    assert "requirements_failed" not in matter
+    assert "requirements_needs_review" not in matter
+    assert "requirements_passed" not in matter
+
+
+def test_deterministic_only_fail_still_blocks_send():
+    # SEND AUTHORITY is unchanged by the display demotion: the send gate derives from
+    # the RAW review_result, so a deterministic FAIL still blocks send / needs human.
+    matter = public_matter(_deterministic_only_matter())
+    assert matter["needs_human_review"] is True
+    assert matter["blocks_send"] is True
+
+
+def test_ai_reviewed_matter_still_surfaces_verdict_and_counts():
+    # The AI-reviewed path is untouched: verdicts, counts and clause_ids surface.
+    matter = public_matter(_reviewed_matter())
+    assert matter["ai_review_ran"] is True
+    state = matter["review_state"]
+    assert state["counts"]["total"] == 4
+    assert state["clause_ids"]["check"] == ["governing_law"]
+    # And a fail still blocks send on the AI path too.
+    assert matter["blocks_send"] is True

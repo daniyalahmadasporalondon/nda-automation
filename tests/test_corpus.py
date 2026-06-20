@@ -120,7 +120,13 @@ def _seed_matter(repo, *, owner, title="NDA", subject="", board_column="in_revie
         source_filename=f"{title}.docx",
         document_bytes=b"PK\x03\x04 fake docx",
         extracted_text="This Agreement is mutual.",
-        review_result={"clauses": [{"id": "mutuality", "decision": "pass"}]},
+        # An AI (ai_first) review ran -- the active-engine marker is what gates the
+        # review_outcome facet (deterministic-ghost demotion), so this seed represents
+        # a genuinely AI-reviewed matter and surfaces review_outcome=clean.
+        review_result={
+            "active_review_engine": {"executed_engine": "ai_first"},
+            "clauses": [{"id": "mutuality", "decision": "pass"}],
+        },
         triage={"triage_status": "review"},
         source_type="manual_upload",
         board_column=board_column,
@@ -1109,21 +1115,48 @@ class CorpusMasterFilterFacetTests(unittest.TestCase):
 
     # --- review_outcome ----------------------------------------------------
     def test_review_outcome_has_fail_needs_review_clean(self):
+        # All three outcomes require an AI (ai_first) review to have run -- the
+        # active-engine marker gates the facet (deterministic-ghost demotion).
+        ai = {"active_review_engine": {"executed_engine": "ai_first"}}
         has_fail = self._facets_for_review(
-            {"clauses": [{"id": "a", "decision": "fail"}, {"id": "b", "decision": "pass"}]}
+            {**ai, "clauses": [{"id": "a", "decision": "fail"}, {"id": "b", "decision": "pass"}]}
         )
         self.assertEqual(has_fail["review_outcome"], "has_fail")
         needs_review = self._facets_for_review(
-            {"clauses": [{"id": "a", "decision": "review"}, {"id": "b", "decision": "pass"}]}
+            {**ai, "clauses": [{"id": "a", "decision": "review"}, {"id": "b", "decision": "pass"}]}
         )
         self.assertEqual(needs_review["review_outcome"], "needs_review")
-        clean = self._facets_for_review({"clauses": [{"id": "a", "decision": "pass"}]})
+        clean = self._facets_for_review({**ai, "clauses": [{"id": "a", "decision": "pass"}]})
         self.assertEqual(clean["review_outcome"], "clean")
 
     def test_review_outcome_none_when_unreviewed(self):
         # A review_result with no clause verdicts is unreviewed -> None (never "clean").
         facets = self._facets_for_review({})
         self.assertIsNone(facets["review_outcome"])
+
+    def test_review_outcome_none_for_deterministic_only_matter(self):
+        # DETERMINISTIC-GHOST DEMOTION at the source (_review_outcome_from_result):
+        # a matter that stored clause verdicts but whose review was NOT produced by the
+        # AI engine (no ai_first active-engine marker -- e.g. an outbound-generated NDA
+        # or an inbound matter reviewed while the AI engine was off) must NOT surface a
+        # review outcome, even though its clauses would otherwise read "clean"/"has_fail".
+        deterministic_clean = self._facets_for_review(
+            {
+                "active_review_engine": {"executed_engine": "deterministic"},
+                "clauses": [{"id": "a", "decision": "pass"}],
+            }
+        )
+        self.assertIsNone(deterministic_clean["review_outcome"])
+        self.assertFalse(deterministic_clean["ai_review_ran"])
+        # A deterministic FAIL is likewise not surfaced as an outcome (display-level
+        # demotion only -- the send gate still derives from the raw result elsewhere).
+        deterministic_fail = self._facets_for_review(
+            {
+                "active_review_engine": {"executed_engine": "deterministic"},
+                "clauses": [{"id": "a", "decision": "fail"}, {"id": "b", "decision": "pass"}],
+            }
+        )
+        self.assertIsNone(deterministic_fail["review_outcome"])
 
     # --- clauses_present ---------------------------------------------------
     def test_clauses_present_mirrors_has_clauses(self):
