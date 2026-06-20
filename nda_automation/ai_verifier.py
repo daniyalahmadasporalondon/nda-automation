@@ -516,12 +516,18 @@ def _should_verify(clause: Mapping[str, object]) -> bool:
         # A prohibited-clause pass asserts the restriction is ABSENT -- a claim no
         # quote can ground (you cannot quote absent text), so the grounding gate
         # cannot catch a hallucinated clear. Always second-look it, even at high
-        # confidence.
-        if str(clause.get("type") or "").strip().lower() == "prohibited":
+        # confidence. The same coverage gap applies to REQUIRED clauses: a confident
+        # clear on a clause the playbook MANDATES (governing_law, term_and_survival,
+        # confidential_information, mutuality, signatures) was never adversarially
+        # re-checked, so a hallucinated pass on a required clause could ship. Force
+        # a second look on any required-clause pass too.
+        if str(clause.get("type") or "").strip().lower() in {"prohibited", "required"}:
             return True
         confidence = _confidence(clause)
         # Only spend a call on a *low*-confidence pass; trust confident clears.
-        return confidence is not None and confidence < HIGH_CONFIDENCE_PASS_THRESHOLD
+        # Unknown confidence (None) is suspicious -- treat it as worth verifying
+        # rather than silently trusting an unscored clear.
+        return confidence is None or confidence < HIGH_CONFIDENCE_PASS_THRESHOLD
     return False
 
 

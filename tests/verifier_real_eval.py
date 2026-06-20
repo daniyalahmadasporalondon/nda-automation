@@ -205,6 +205,56 @@ _HARD_NONCOMPETE_TEXT = (
 )
 
 
+def _required_clause_finding(
+    *,
+    clause_id: str,
+    name: str,
+    requirement: str,
+    matched_text: str,
+    reason: str,
+    confidence: float = 0.9,
+) -> Dict[str, object]:
+    """A finalized REQUIRED-clause result the engine confidently CLEARED.
+
+    Shaped to pass ``_should_verify`` (type=="required" forces a re-check now,
+    even on a high-confidence pass -- the P0 coverage gap this layer guards).
+    """
+    return {
+        "id": clause_id,
+        "name": name,
+        "type": "required",
+        "decision": CLAUSE_DECISION_PASS,
+        "passes": True,
+        "needs_review": False,
+        "confidence": confidence,
+        "requirement": requirement,
+        "matched_text": matched_text,
+        "evidence": [matched_text],
+        "decision_reason": reason,
+        "reason": reason,
+        "finding": reason,
+        "matched_paragraph_ids": ["p0"],
+        "structured_evidence": [
+            {"paragraph_id": "p0", "quote": matched_text[:200]}
+        ],
+    }
+
+
+# ---- Case 5: required-clause over-clear (the P0 coverage fix) ----
+# The engine confidently PASSED governing_law on text that names NO governing law
+# at all -- a required clause the playbook MANDATES be present and explicit. Before
+# the _should_verify fix this confident required pass was NEVER re-checked, so a
+# hallucinated clear shipped. The verifier must NOT let the clear stand: a required
+# clause with no actual governing-law designation is missing, so the safe answer is
+# to refute the clear (-> review). An affirm of this clear is the regression.
+_REQUIRED_GOVLAW_MISSING_TEXT = (
+    "This Agreement constitutes the entire understanding between the parties and "
+    "supersedes all prior discussions. Any notices shall be sent to the addresses "
+    "set out above. The parties have executed this Agreement as of the date first "
+    "written."
+)
+
+
 def _cross_section_case() -> Dict[str, object]:
     """Case 3: cross-section carve-out borrowing.
 
@@ -308,6 +358,27 @@ def build_cases() -> List[Dict[str, object]]:
             "forbidden_decisions": [CLAUSE_DECISION_PASS],
         },
         _cross_section_case(),
+        {
+            "name": "required_govlaw_overclear_must_not_stand_as_pass",
+            "failure_mode": "required_clause_overclear",
+            "finding": _required_clause_finding(
+                clause_id="governing_law",
+                name="Governing Law",
+                requirement=(
+                    "The NDA must specify an explicit, approved governing law and "
+                    "jurisdiction for the Agreement."
+                ),
+                matched_text=_REQUIRED_GOVLAW_MISSING_TEXT,
+                reason="Governing law designation present and acceptable.",
+            ),
+            "source_text": _REQUIRED_GOVLAW_MISSING_TEXT,
+            "contract_structure": None,
+            # The text designates NO governing law -- a REQUIRED clause the engine
+            # wrongly cleared at high confidence. With the _should_verify fix this
+            # confident required pass is now re-checked; the verifier must refute the
+            # clear (-> review). The clear standing as ``pass`` is the regression.
+            "forbidden_decisions": [CLAUSE_DECISION_PASS],
+        },
         {
             "name": "over_clear_hard_noncompete_must_not_downgrade",
             "failure_mode": "over_clear",
