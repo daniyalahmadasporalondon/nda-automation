@@ -36,7 +36,6 @@ never silently corrupt the registry.
 from __future__ import annotations
 
 import json
-from copy import deepcopy
 from typing import Any
 
 from . import entity_registry, entity_store

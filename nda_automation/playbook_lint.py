@@ -1025,7 +1025,7 @@ def check_clause_id_uniqueness(
             seen[key] = raw
 
     violations: list[LintViolation] = []
-    for key, display in duplicates.items():
+    for _key, display in duplicates.items():
         violations.append(
             LintViolation(
                 display,
