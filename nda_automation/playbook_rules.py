@@ -34,6 +34,62 @@ PLAYBOOK_POLICY_SCHEMA_VERSION = 1
 # authored prose.
 AUTHORED_NAME_MAX_CHARS = 200
 AUTHORED_LONG_TEXT_MAX_CHARS = 2000
+# Authored LIST fields (search_terms, prohibited-pattern text) surfaced to the AI as
+# detection cues. Each item is a short term/phrase, not prose, so it gets a tighter
+# per-item cap; the list as a whole is bounded so an authored clause cannot pad the
+# packet with thousands of cue entries.
+AUTHORED_TERM_MAX_CHARS = 200
+AUTHORED_TERM_LIST_MAX_ITEMS = 200
+
+# Human-readable description for each non_circumvention ``prohibited_position_patterns``
+# label. The labels are the playbook's stable machine identifiers; this map renders
+# them as the restraint categories the model reads. A label with no entry here still
+# reaches the model (humanized from its raw token) so a newly-added pattern is never
+# silently reduced to a bare identifier. Lives here (the lower-level module) so both
+# the per-clause AI packet (clause_rules_for_ai) and the binding policy block
+# (playbook_policy) read ONE source; playbook_policy re-exports it.
+RESTRAINT_LABEL_DESCRIPTIONS: dict[str, str] = {
+    "non_compete": (
+        "non-compete / agreements not to compete or engage in competing business"
+    ),
+    "non_solicit": (
+        "non-solicitation / no-hire / no-poach of the other party's employees, "
+        "consultants, contractors, customers, or suppliers — INCLUDING "
+        '"introduced-party" / "became known to it" restraints'
+    ),
+    "non_circumvention": (
+        "non-circumvention / no-direct-dealing / no-bypass / introduced-party dealing "
+        "restrictions"
+    ),
+    "exclusivity": (
+        "substitute-purpose or exclusivity / sole-and-exclusive / exclusive-dealing "
+        "obligations"
+    ),
+    "ip_assignment": (
+        'IP assignment ("hereby assigns", "all right, title and interest in ...")'
+    ),
+    "auto_renew_lock": (
+        'auto-renewal locks, evergreen terms, or "may not terminate" / no-termination '
+        "locks"
+    ),
+    "perpetual_confidentiality": (
+        "perpetual / indefinite / never-expiring confidentiality or survival terms"
+    ),
+    "penalty": (
+        "liquidated-damages / penalty / punitive-damages clauses"
+    ),
+}
+
+
+def _humanize_label(label: str) -> str:
+    """Best-effort human-readable form for an UNKNOWN restraint label.
+
+    Degrades a machine token like ``no_direct_dealing`` to ``no direct dealing`` so an
+    author who adds a new pattern still sees a readable category instead of a bare
+    identifier, even before a curated gloss exists for it.
+    """
+
+    return label.replace("_", " ").strip() or label
 
 
 def _authored(value: object, max_chars: int) -> str:
@@ -75,6 +131,67 @@ def _neutralized_rules(rules: Mapping[str, Any]) -> dict[str, Any]:
             redline_guidance.get("drafting_note"), AUTHORED_LONG_TEXT_MAX_CHARS
         )
     return copied
+
+
+def _authored_term_list(value: object) -> list[str]:
+    """Neutralize + cap an authored list of short detection-cue terms.
+
+    Each term is attacker-controllable authored text, so it goes through the shared
+    neutralizer and a per-item char cap; the list itself is bounded so an authored
+    clause cannot pad the packet with an unbounded cue list. Blank items are dropped.
+    """
+
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[str] = []
+    for item in value:
+        term = _authored(item, AUTHORED_TERM_MAX_CHARS).strip()
+        if term:
+            out.append(term)
+        if len(out) >= AUTHORED_TERM_LIST_MAX_ITEMS:
+            break
+    return out
+
+
+def _prohibited_patterns_for_ai(value: object) -> list[dict[str, str]]:
+    """Surface a dynamic clause's ``prohibited_position_patterns`` to the AI packet.
+
+    Today only a HARDCODED label->description gloss reaches the model (via
+    playbook_policy's binding RULE-1 block); the actual authored pattern text never
+    does, so editing a pattern changes nothing the model reads. Here we surface each
+    entry as ``{label, description, pattern}``:
+
+    * ``description`` -- the curated gloss for a known label, or a humanized form of an
+      UNKNOWN label (so a newly-authored restraint degrades to a readable category
+      instead of a bare token).
+    * ``pattern`` -- the authored regex text itself, neutralized + capped, as a
+      detection cue (this is the field that makes editing it change the AI's reading).
+
+    Each surfaced field is attacker-controllable and is neutralized + length-capped.
+    The list is bounded by the same per-item budget as other authored term lists.
+    """
+
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[dict[str, str]] = []
+    for entry in value:
+        if not isinstance(entry, Mapping):
+            continue
+        raw_label = _text(entry.get("label"))
+        if not raw_label:
+            continue
+        label = _authored(raw_label, AUTHORED_TERM_MAX_CHARS).strip()
+        gloss = RESTRAINT_LABEL_DESCRIPTIONS.get(raw_label) or _humanize_label(raw_label)
+        description = _authored(gloss, AUTHORED_LONG_TEXT_MAX_CHARS).strip()
+        pattern = _authored(entry.get("pattern"), AUTHORED_LONG_TEXT_MAX_CHARS).strip()
+        surfaced: dict[str, str] = {"label": label, "description": description}
+        if pattern:
+            surfaced["pattern"] = pattern
+        out.append(surfaced)
+        if len(out) >= AUTHORED_TERM_LIST_MAX_ITEMS:
+            break
+    return out
+
 
 CORE_REQUIRED_TEXT_FIELDS = ["id", "name", "requirement", "type", "preferred_position", "check_trigger"]
 
@@ -383,6 +500,10 @@ def clause_rules_for_ai(clause: Mapping[str, Any]) -> dict[str, Any]:
             _field("acceptable_language"), AUTHORED_LONG_TEXT_MAX_CHARS
         ),
         "evidence_guidance": str(normalized.get("evidence_guidance") or ""),
+        # search_terms used to feed ONLY the deterministic detector; surface it to the
+        # model as a detection cue alongside semantic_signals so editing it changes
+        # what the AI looks for (true round-trip). Neutralized + per-item/list capped.
+        "search_terms": _authored_term_list(normalized.get("search_terms")),
         "semantic_signals": [
             str(signal)
             for signal in normalized.get("semantic_signals", [])
@@ -390,6 +511,21 @@ def clause_rules_for_ai(clause: Mapping[str, Any]) -> dict[str, Any]:
         ],
         "rules": _neutralized_rules(rules) if isinstance(rules, Mapping) else {},
     }
+    # A rule author's "why" (rationale) -- surface it as context so the intent behind
+    # the rule reaches the model, not just the rule itself. Neutralized + capped; only
+    # emitted when present so the packet is not bloated with an empty key.
+    rationale = _authored(normalized.get("rationale"), AUTHORED_LONG_TEXT_MAX_CHARS).strip()
+    if rationale:
+        packet_clause["rationale"] = rationale
+    # prohibited_position_patterns used to reach the model only as a hardcoded
+    # label->description gloss in the binding policy block; surface the AUTHORED entries
+    # (label + gloss/humanized fallback + neutralized pattern text) here so editing a
+    # pattern changes what the per-clause packet contains.
+    prohibited_patterns = _prohibited_patterns_for_ai(
+        normalized.get("prohibited_position_patterns")
+    )
+    if prohibited_patterns:
+        packet_clause["prohibited_position_patterns"] = prohibited_patterns
     # Dynamic clauses carry their fallback/redline wording and clause-specific
     # instructions in data; surface them so the AI packet is fully self-describing
     # for clause types the code has never seen.

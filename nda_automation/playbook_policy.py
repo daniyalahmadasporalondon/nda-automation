@@ -26,6 +26,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .playbook_rules import (
+    RESTRAINT_LABEL_DESCRIPTIONS,
     is_dynamic_clause,
     normalize_playbook_policy,
     playbook_rules_for_ai,
@@ -52,35 +53,12 @@ _REDLINE_ACTION_REMEDY: dict[str, str] = {
     "no_change": "flag for human review (no automatic edit)",
 }
 
-# Human-readable description for each prohibited_position_patterns label. The labels are
-# the playbook's stable machine identifiers; this map renders them as the restraint
-# categories the model reads. A label with no entry here still appears (rendered from
-# its raw label) so a newly-added pattern is never silently dropped from the policy.
-_RESTRAINT_LABEL_DESCRIPTIONS: dict[str, str] = {
-    "non_compete": (
-        "non-compete / agreements not to compete or engage in competing business"
-    ),
-    "non_solicit": (
-        "non-solicitation / no-hire / no-poach of the other party's employees, "
-        "consultants, contractors, customers, or suppliers — INCLUDING "
-        '"introduced-party" / "became known to it" restraints'
-    ),
-    "non_circumvention": (
-        "non-circumvention / no-direct-dealing / no-bypass / introduced-party dealing "
-        "restrictions"
-    ),
-    "exclusivity": (
-        "substitute-purpose or exclusivity / sole-and-exclusive / exclusive-dealing "
-        "obligations"
-    ),
-    "ip_assignment": (
-        'IP assignment ("hereby assigns", "all right, title and interest in ...")'
-    ),
-    "auto_renew_lock": (
-        'auto-renewal locks, evergreen terms, or "may not terminate" / no-termination '
-        "locks"
-    ),
-}
+# Human-readable description for each prohibited_position_patterns label. SINGLE
+# SOURCE: the gloss now lives in playbook_rules (the lower-level module) so the binding
+# RULE-1 policy block here and the per-clause AI packet (clause_rules_for_ai) read the
+# SAME map. A label with no entry still appears (rendered from its raw label) so a
+# newly-added pattern is never silently dropped from the policy.
+_RESTRAINT_LABEL_DESCRIPTIONS: dict[str, str] = RESTRAINT_LABEL_DESCRIPTIONS
 
 # The penalty restraint is rendered as its own RULE 2, so it is excluded from the
 # RULE 1 restraint catalogue. perpetual_confidentiality is governed by RULE 3 (the
