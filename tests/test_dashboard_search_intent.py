@@ -216,6 +216,45 @@ class TermYearsDimensionTests(unittest.TestCase):
         self.assertIn("1-year term", dsi.describe_filter_spec(dsi.validate_filter_spec({"term_years": 1})))
 
 
+class NonFiniteNumericRegressionTests(unittest.TestCase):
+    """P0 crash guard: ``json.loads`` accepts the non-standard ``NaN``/``Infinity``/
+    ``-Infinity`` literals, so an intent-model response can hand the numeric
+    validators a non-finite float. ``int(nan)``/``int(inf)`` raise (ValueError/
+    OverflowError) and that exception is NOT caught by the route -> unhandled HTTP
+    500. The contract is "junk model output collapses to all-null, never crashes",
+    so each non-finite value must drop to None and never throw."""
+
+    # (json-literal, validated python float) for each non-finite case.
+    _NON_FINITE = [
+        ("NaN", float("nan")),
+        ("Infinity", float("inf")),
+        ("-Infinity", float("-inf")),
+    ]
+
+    def test_validate_filter_spec_collapses_non_finite_to_none_without_throwing(self):
+        for literal, value in self._NON_FINITE:
+            for field in ("term_years", "min_age_days"):
+                with self.subTest(literal=literal, field=field):
+                    # The validator must not raise and must drop the dimension.
+                    spec = dsi.validate_filter_spec({field: value})
+                    self.assertIsNone(spec[field])
+
+    def test_translate_does_not_crash_on_non_finite_json_literals(self):
+        # End-to-end through translate_search_intent: the stub transport returns the
+        # raw model content carrying the non-standard literal, which json.loads parses
+        # into a non-finite float before it reaches the validator.
+        for literal, _value in self._NON_FINITE:
+            for field in ("term_years", "min_age_days"):
+                with self.subTest(literal=literal, field=field):
+                    result = dsi.translate_search_intent(
+                        "any query",
+                        transport=_stub(f'{{"{field}": {literal}}}'),
+                    )
+                    self.assertIsNone(result["filters"][field])
+                    # The describe line must still render (all-null -> "All documents").
+                    self.assertEqual(result["interpreted"], "All documents")
+
+
 class DeterministicCorpusMappingTests(unittest.TestCase):
     def test_non_solicit_maps_to_has_clause(self):
         spec = dsi.deterministic_filter_spec("which NDAs have a non-solicit")

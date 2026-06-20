@@ -38,6 +38,7 @@ Design notes
 from __future__ import annotations
 
 import json
+import math
 import re
 import urllib.error
 import urllib.request
@@ -312,9 +313,14 @@ def _corpus_matter_has_issues(matter: Mapping[str, Any]) -> bool:
 
 
 def _coerce_count(value: object) -> int:
+    # A non-finite float (NaN/Infinity, which json.loads can produce) makes int()
+    # raise ValueError/OverflowError; treat any such junk as "no count" rather than
+    # letting it escape.
+    if isinstance(value, float) and not math.isfinite(value):
+        return 0
     try:
         return int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 
@@ -774,6 +780,12 @@ def _validate_min_age_days(value: object) -> int | None:
     if isinstance(value, int):
         days = value
     elif isinstance(value, float):
+        # ``json.loads`` accepts the non-standard ``NaN``/``Infinity`` literals, so a
+        # non-finite float can reach here; ``int(nan)``/``int(inf)`` would raise
+        # (ValueError/OverflowError) and escape the route. Collapse it to None like
+        # any other junk so the dimension is simply dropped (never crash).
+        if not math.isfinite(value):
+            return None
         days = int(value)
     elif isinstance(value, str):
         try:
@@ -796,6 +808,12 @@ def _validate_term_years(value: object) -> int | None:
     if isinstance(value, int):
         years = value
     elif isinstance(value, float):
+        # ``json.loads`` accepts the non-standard ``NaN``/``Infinity`` literals, so a
+        # non-finite float can reach here; ``int(nan)``/``int(inf)`` would raise
+        # (ValueError/OverflowError) and escape the route. Collapse it to None like
+        # any other junk so the dimension is simply dropped (never crash).
+        if not math.isfinite(value):
+            return None
         years = int(value)
     elif isinstance(value, str):
         try:
