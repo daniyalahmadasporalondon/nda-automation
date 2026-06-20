@@ -17,8 +17,12 @@ from nda_automation.playbook_lint import (
     CHECK_IDS,
     CHECKS,
     LintViolation,
+    PLAYBOOK_CHECK_IDS,
+    PLAYBOOK_CHECKS,
     VALID_ISSUE_TYPES,
     VALID_REDLINE_ACTIONS,
+    check_clause_id_uniqueness,
+    check_native_clause_inventory,
     lint_playbook,
 )
 
@@ -922,3 +926,180 @@ def test_live_playbook_has_trigger_terms_for_every_clause() -> None:
     playbook = load_playbook()
     for clause in playbook["clauses"]:
         assert _run_check("trigger_terms_present", clause) == [], clause.get("id")
+
+
+# ---------------------------------------------------------------------------
+# FIX 2: PLAYBOOK-LEVEL checks (cross-clause / inventory invariants).
+#
+# These run once over the WHOLE clause list -- invariants the per-clause loop is
+# structurally blind to (dup id, native-clause inventory). They previously
+# survived only because a SEPARATE validator also ran; now the lint enforces
+# them itself, so it is a genuine structural gate.
+# ---------------------------------------------------------------------------
+
+
+def _native_clause(clause_id: str) -> dict[str, Any]:
+    """A minimal native clause (engine defaults to native) for inventory tests."""
+
+    clause = _clean_required_clause()
+    clause["id"] = clause_id
+    clause["name"] = clause_id.replace("_", " ").title()
+    return clause
+
+
+def _full_native_book() -> dict[str, Any]:
+    """A book carrying the complete canonical native clause set."""
+
+    from nda_automation.playbook_rules import NATIVE_CLAUSE_IDS
+
+    return {
+        "version": "1.0",
+        "name": "Native Book",
+        "clauses": [_native_clause(nid) for nid in sorted(NATIVE_CLAUSE_IDS)],
+    }
+
+
+def test_playbook_check_ids_match_registry() -> None:
+    assert set(PLAYBOOK_CHECK_IDS) == set(PLAYBOOK_CHECKS.keys())
+    assert tuple(PLAYBOOK_CHECKS.keys()) == PLAYBOOK_CHECK_IDS
+    # The playbook-level ids must be distinct from the per-clause ids.
+    assert set(PLAYBOOK_CHECK_IDS).isdisjoint(set(CHECK_IDS))
+
+
+# ---- clause_id_uniqueness ----
+
+
+def test_clause_id_uniqueness_clean_distinct_ids() -> None:
+    a = _clean_required_clause()
+    a["id"] = "alpha"
+    b = _clean_required_clause()
+    b["id"] = "beta"
+    assert check_clause_id_uniqueness([a, b]) == []
+
+
+def test_clause_id_uniqueness_flags_duplicate() -> None:
+    a = _clean_required_clause()
+    a["id"] = "dup_clause"
+    b = _clean_required_clause()
+    b["id"] = "dup_clause"
+    violations = check_clause_id_uniqueness([a, b])
+    assert [v.check_id for v in violations] == ["clause_id_uniqueness"]
+    assert violations[0].clause_id == "dup_clause"
+
+
+def test_clause_id_uniqueness_is_case_insensitive() -> None:
+    a = _clean_required_clause()
+    a["id"] = "Mixed_Case"
+    b = _clean_required_clause()
+    b["id"] = "mixed_case"
+    violations = check_clause_id_uniqueness([a, b])
+    assert len(violations) == 1
+    assert violations[0].check_id == "clause_id_uniqueness"
+
+
+def test_clause_id_uniqueness_blank_ids_do_not_collide() -> None:
+    # Blank ids have nothing to collide on; the schema/trigger checks own the
+    # "every clause needs an id" rule, so this check must not fire on them.
+    a = _clean_required_clause()
+    a["id"] = ""
+    b = _clean_required_clause()
+    b["id"] = ""
+    assert check_clause_id_uniqueness([a, b]) == []
+
+
+def test_dup_id_rejected_at_publish_via_lint_playbook() -> None:
+    """A dup-id book is REJECTED by the lint alone (no other validator running)."""
+
+    a = _clean_required_clause()
+    a["id"] = "same_id"
+    b = _clean_required_clause()
+    b["id"] = "same_id"
+    playbook = {"version": "1.0", "name": "T", "clauses": [a, b]}
+    violations = lint_playbook(playbook)
+    assert any(v.check_id == "clause_id_uniqueness" for v in violations)
+
+
+# ---- native_clause_inventory ----
+
+
+def test_native_inventory_clean_full_set() -> None:
+    book = _full_native_book()
+    assert check_native_clause_inventory(book["clauses"]) == []
+    # And clean through the whole lint.
+    assert [v.check_id for v in lint_playbook(book)
+            if v.check_id == "native_clause_inventory"] == []
+
+
+def test_native_inventory_removed_native_is_flagged() -> None:
+    from nda_automation.playbook_rules import NATIVE_CLAUSE_IDS
+
+    book = _full_native_book()
+    # Drop ``signatures`` from a book that still carries the rest of the native set.
+    book["clauses"] = [c for c in book["clauses"] if c["id"] != "signatures"]
+    violations = check_native_clause_inventory(book["clauses"])
+    flagged = {v.clause_id for v in violations}
+    assert "signatures" in flagged
+    assert all(v.check_id == "native_clause_inventory" for v in violations)
+    # The other natives are still present, so only the removed one is flagged.
+    assert flagged == {"signatures"}
+    assert flagged <= NATIVE_CLAUSE_IDS
+
+
+def test_removed_native_rejected_at_publish_via_lint_playbook() -> None:
+    """A native-bearing book that drops a native clause is rejected by the lint."""
+
+    book = _full_native_book()
+    book["clauses"] = [c for c in book["clauses"] if c["id"] != "governing_law"]
+    violations = lint_playbook(book)
+    assert any(
+        v.check_id == "native_clause_inventory" and v.clause_id == "governing_law"
+        for v in violations
+    )
+
+
+def test_native_inventory_no_op_on_pure_dynamic_book() -> None:
+    """A book that declares NO native clause is not 'removing' anything.
+
+    The synthetic single-clause unit fixtures (and a genuine pure-dynamic book)
+    must not be flagged for the absence of native clauses they never carried.
+    """
+
+    a = _clean_required_clause()
+    a["id"] = "alpha_dynamic"
+    assert check_native_clause_inventory([a]) == []
+    # The whole-lint path agrees: the existing clean single-clause fixture stays clean.
+    assert [v.check_id for v in lint_playbook(_clean_playbook())
+            if v.check_id == "native_clause_inventory"] == []
+
+
+def test_native_inventory_native_id_shadowed_by_dynamic_is_flagged() -> None:
+    """A native id declared with engine 'dynamic' silently disables its checker."""
+
+    clause = _clean_required_clause()
+    clause["id"] = "governing_law"
+    clause["engine"] = "dynamic"
+    violations = check_native_clause_inventory([clause])
+    assert any(
+        v.check_id == "native_clause_inventory" and v.clause_id == "governing_law"
+        for v in violations
+    )
+
+
+def test_native_inventory_shadow_does_not_count_as_present() -> None:
+    """A dynamic-shadowed native must NOT satisfy the complete-set requirement.
+
+    If a native id appears only as a dynamic shadow, the book still carries the
+    rest of the native set, so the shadowed native counts as BOTH a shadow
+    violation AND (because no genuine native clause supplies it) absent. We assert
+    the shadow is flagged; absence handling is covered by the removed-native test.
+    """
+
+    book = _full_native_book()
+    for clause in book["clauses"]:
+        if clause["id"] == "signatures":
+            clause["engine"] = "dynamic"
+    violations = check_native_clause_inventory(book["clauses"])
+    assert any(
+        v.check_id == "native_clause_inventory" and v.clause_id == "signatures"
+        for v in violations
+    )

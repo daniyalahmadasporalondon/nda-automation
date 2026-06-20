@@ -24,9 +24,174 @@ from .redline_actions import (
     REDLINE_REPLACE_PARAGRAPH,
 )
 from .review_state import CLAUSE_DECISION_FAIL, CLAUSE_DECISION_PASS, CLAUSE_DECISION_REVIEW
+from .untrusted_text import neutralize_untrusted_text
 
 PLAYBOOK_RULES_VERSION = 1
 PLAYBOOK_POLICY_SCHEMA_VERSION = 1
+
+# Length caps on AUTHORED free-text fields before they enter the per-clause AI packet,
+# so an authored clause cannot blow the prompt budget. Generous enough for legitimate
+# authored prose.
+AUTHORED_NAME_MAX_CHARS = 200
+AUTHORED_LONG_TEXT_MAX_CHARS = 2000
+# Authored LIST fields (search_terms, prohibited-pattern text) surfaced to the AI as
+# detection cues. Each item is a short term/phrase, not prose, so it gets a tighter
+# per-item cap; the list as a whole is bounded so an authored clause cannot pad the
+# packet with thousands of cue entries.
+AUTHORED_TERM_MAX_CHARS = 200
+AUTHORED_TERM_LIST_MAX_ITEMS = 200
+
+# Human-readable description for each non_circumvention ``prohibited_position_patterns``
+# label. The labels are the playbook's stable machine identifiers; this map renders
+# them as the restraint categories the model reads. A label with no entry here still
+# reaches the model (humanized from its raw token) so a newly-added pattern is never
+# silently reduced to a bare identifier. Lives here (the lower-level module) so both
+# the per-clause AI packet (clause_rules_for_ai) and the binding policy block
+# (playbook_policy) read ONE source; playbook_policy re-exports it.
+RESTRAINT_LABEL_DESCRIPTIONS: dict[str, str] = {
+    "non_compete": (
+        "non-compete / agreements not to compete or engage in competing business"
+    ),
+    "non_solicit": (
+        "non-solicitation / no-hire / no-poach of the other party's employees, "
+        "consultants, contractors, customers, or suppliers — INCLUDING "
+        '"introduced-party" / "became known to it" restraints'
+    ),
+    "non_circumvention": (
+        "non-circumvention / no-direct-dealing / no-bypass / introduced-party dealing "
+        "restrictions"
+    ),
+    "exclusivity": (
+        "substitute-purpose or exclusivity / sole-and-exclusive / exclusive-dealing "
+        "obligations"
+    ),
+    "ip_assignment": (
+        'IP assignment ("hereby assigns", "all right, title and interest in ...")'
+    ),
+    "auto_renew_lock": (
+        'auto-renewal locks, evergreen terms, or "may not terminate" / no-termination '
+        "locks"
+    ),
+    "perpetual_confidentiality": (
+        "perpetual / indefinite / never-expiring confidentiality or survival terms"
+    ),
+    "penalty": (
+        "liquidated-damages / penalty / punitive-damages clauses"
+    ),
+}
+
+
+def _humanize_label(label: str) -> str:
+    """Best-effort human-readable form for an UNKNOWN restraint label.
+
+    Degrades a machine token like ``no_direct_dealing`` to ``no direct dealing`` so an
+    author who adds a new pattern still sees a readable category instead of a bare
+    identifier, even before a curated gloss exists for it.
+    """
+
+    return label.replace("_", " ").strip() or label
+
+
+def _authored(value: object, max_chars: int) -> str:
+    """Neutralize + length-cap an AUTHORED free-text field for the AI packet.
+
+    Authored clause text (in the Playbook editor, or smuggled via a direct-API
+    publish) is attacker-controllable yet flows verbatim into the AI prompt. Route it
+    through the shared neutralizer (strip control chars, defang line-start role
+    markers) and bound its length so it cannot impersonate an instruction block or
+    exhaust the prompt budget.
+    """
+    return neutralize_untrusted_text(value, max_chars=max_chars)
+
+
+def _neutralized_rules(rules: Mapping[str, Any]) -> dict[str, Any]:
+    """Deep-copy a clause's ``rules`` and neutralize its authored free-text fields.
+
+    Covers ``rules.acceptable_position`` and every condition's ``description`` (in
+    pass_conditions / fail_conditions / review_triggers), all of which are authored,
+    attacker-controllable, and reach the per-clause AI packet verbatim.
+    """
+    copied = deepcopy(dict(rules))
+    if "acceptable_position" in copied:
+        copied["acceptable_position"] = _authored(
+            copied.get("acceptable_position"), AUTHORED_LONG_TEXT_MAX_CHARS
+        )
+    for bucket in ("pass_conditions", "fail_conditions", "review_triggers"):
+        conditions = copied.get(bucket)
+        if not isinstance(conditions, list):
+            continue
+        for condition in conditions:
+            if isinstance(condition, dict) and "description" in condition:
+                condition["description"] = _authored(
+                    condition.get("description"), AUTHORED_LONG_TEXT_MAX_CHARS
+                )
+    redline_guidance = copied.get("redline_guidance")
+    if isinstance(redline_guidance, dict) and "drafting_note" in redline_guidance:
+        redline_guidance["drafting_note"] = _authored(
+            redline_guidance.get("drafting_note"), AUTHORED_LONG_TEXT_MAX_CHARS
+        )
+    return copied
+
+
+def _authored_term_list(value: object) -> list[str]:
+    """Neutralize + cap an authored list of short detection-cue terms.
+
+    Each term is attacker-controllable authored text, so it goes through the shared
+    neutralizer and a per-item char cap; the list itself is bounded so an authored
+    clause cannot pad the packet with an unbounded cue list. Blank items are dropped.
+    """
+
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[str] = []
+    for item in value:
+        term = _authored(item, AUTHORED_TERM_MAX_CHARS).strip()
+        if term:
+            out.append(term)
+        if len(out) >= AUTHORED_TERM_LIST_MAX_ITEMS:
+            break
+    return out
+
+
+def _prohibited_patterns_for_ai(value: object) -> list[dict[str, str]]:
+    """Surface a dynamic clause's ``prohibited_position_patterns`` to the AI packet.
+
+    Today only a HARDCODED label->description gloss reaches the model (via
+    playbook_policy's binding RULE-1 block); the actual authored pattern text never
+    does, so editing a pattern changes nothing the model reads. Here we surface each
+    entry as ``{label, description, pattern}``:
+
+    * ``description`` -- the curated gloss for a known label, or a humanized form of an
+      UNKNOWN label (so a newly-authored restraint degrades to a readable category
+      instead of a bare token).
+    * ``pattern`` -- the authored regex text itself, neutralized + capped, as a
+      detection cue (this is the field that makes editing it change the AI's reading).
+
+    Each surfaced field is attacker-controllable and is neutralized + length-capped.
+    The list is bounded by the same per-item budget as other authored term lists.
+    """
+
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[dict[str, str]] = []
+    for entry in value:
+        if not isinstance(entry, Mapping):
+            continue
+        raw_label = _text(entry.get("label"))
+        if not raw_label:
+            continue
+        label = _authored(raw_label, AUTHORED_TERM_MAX_CHARS).strip()
+        gloss = RESTRAINT_LABEL_DESCRIPTIONS.get(raw_label) or _humanize_label(raw_label)
+        description = _authored(gloss, AUTHORED_LONG_TEXT_MAX_CHARS).strip()
+        pattern = _authored(entry.get("pattern"), AUTHORED_LONG_TEXT_MAX_CHARS).strip()
+        surfaced: dict[str, str] = {"label": label, "description": description}
+        if pattern:
+            surfaced["pattern"] = pattern
+        out.append(surfaced)
+        if len(out) >= AUTHORED_TERM_LIST_MAX_ITEMS:
+            break
+    return out
+
 
 CORE_REQUIRED_TEXT_FIELDS = ["id", "name", "requirement", "type", "preferred_position", "check_trigger"]
 
@@ -266,26 +431,101 @@ def normalize_clause_policy(clause: Mapping[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+# Clauses whose ``preferred_position`` and ``check_trigger`` are DERIVED (the
+# Playbook editor renders them read-only), so a value smuggled into those fields via
+# a direct-API publish must NOT reach the AI packet. The normalizers re-derive them
+# from the structured fields (approved_laws / max_term_years); we re-derive again at
+# packet-build as a backstop for the path where the normalizer skips (e.g.
+# governing_law with an empty approved_laws list), where a smuggled raw value would
+# otherwise survive verbatim.
+_DERIVED_READONLY_FIELDS: dict[str, tuple[str, ...]] = {
+    "governing_law": ("preferred_position", "check_trigger"),
+    "term_and_survival": ("preferred_position", "check_trigger"),
+}
+
+
+def _derived_readonly_overrides(
+    normalized: Mapping[str, Any], raw_clause: dict[str, Any]
+) -> dict[str, str]:
+    """Authoritative DERIVED values for a clause's read-only fields.
+
+    For ``governing_law`` / ``term_and_survival`` the ``preferred_position`` and
+    ``check_trigger`` are derived in the editor (rendered read-only), so a value
+    smuggled into them via a direct-API publish must never reach the packet. We
+    re-derive from the structured source by re-normalizing a copy of the raw clause
+    with those fields stripped: whatever the normalizer then writes is the genuine
+    derived value (and "" when no structured source exists, dropping the smuggle).
+    """
+    clause_id = str(normalized.get("id") or "")
+    fields = _DERIVED_READONLY_FIELDS.get(clause_id)
+    if not fields:
+        return {}
+    stripped = deepcopy(raw_clause)
+    for field in fields:
+        stripped.pop(field, None)
+    rederived = normalize_clause_policy(stripped)
+    return {field: str(rederived.get(field) or "") for field in fields}
+
+
 def clause_rules_for_ai(clause: Mapping[str, Any]) -> dict[str, Any]:
     normalized = normalize_clause_policy(clause)
+    clause_id = str(normalized.get("id") or "")
     rules = normalized.get("rules")
+    # FIX 2: for clauses whose preferred_position/check_trigger are derived read-only,
+    # re-derive them here from the raw clause (or blank them if the structured source
+    # is absent) so a smuggled value can never reach the packet, even when the
+    # clause-level normalizer took an early-return path.
+    derived_overrides = _derived_readonly_overrides(normalized, dict(clause))
+
+    def _field(name: str) -> str:
+        if name in derived_overrides:
+            return derived_overrides[name]
+        return str(normalized.get(name) or "")
+
+    # FIX 1: every AUTHORED free-text field is attacker-controllable and flows into the
+    # per-clause AI packet. Neutralize each (strip control chars, defang line-start
+    # role markers) and cap its length so an authored payload cannot pose as a new
+    # turn/role or exhaust the prompt budget.
     packet_clause = {
-        "clause_id": str(normalized.get("id") or ""),
-        "name": str(normalized.get("name") or ""),
+        "clause_id": clause_id,
+        "name": _authored(_field("name"), AUTHORED_NAME_MAX_CHARS),
         "type": str(normalized.get("type") or ""),
         "engine": clause_engine(normalized),
-        "requirement": str(normalized.get("requirement") or ""),
-        "preferred_position": str(normalized.get("preferred_position") or ""),
-        "check_trigger": str(normalized.get("check_trigger") or ""),
-        "acceptable_language": str(normalized.get("acceptable_language") or ""),
+        "requirement": _authored(_field("requirement"), AUTHORED_LONG_TEXT_MAX_CHARS),
+        "preferred_position": _authored(
+            _field("preferred_position"), AUTHORED_LONG_TEXT_MAX_CHARS
+        ),
+        "check_trigger": _authored(_field("check_trigger"), AUTHORED_LONG_TEXT_MAX_CHARS),
+        "acceptable_language": _authored(
+            _field("acceptable_language"), AUTHORED_LONG_TEXT_MAX_CHARS
+        ),
         "evidence_guidance": str(normalized.get("evidence_guidance") or ""),
+        # search_terms used to feed ONLY the deterministic detector; surface it to the
+        # model as a detection cue alongside semantic_signals so editing it changes
+        # what the AI looks for (true round-trip). Neutralized + per-item/list capped.
+        "search_terms": _authored_term_list(normalized.get("search_terms")),
         "semantic_signals": [
             str(signal)
             for signal in normalized.get("semantic_signals", [])
             if str(signal).strip()
         ],
-        "rules": deepcopy(rules) if isinstance(rules, Mapping) else {},
+        "rules": _neutralized_rules(rules) if isinstance(rules, Mapping) else {},
     }
+    # A rule author's "why" (rationale) -- surface it as context so the intent behind
+    # the rule reaches the model, not just the rule itself. Neutralized + capped; only
+    # emitted when present so the packet is not bloated with an empty key.
+    rationale = _authored(normalized.get("rationale"), AUTHORED_LONG_TEXT_MAX_CHARS).strip()
+    if rationale:
+        packet_clause["rationale"] = rationale
+    # prohibited_position_patterns used to reach the model only as a hardcoded
+    # label->description gloss in the binding policy block; surface the AUTHORED entries
+    # (label + gloss/humanized fallback + neutralized pattern text) here so editing a
+    # pattern changes what the per-clause packet contains.
+    prohibited_patterns = _prohibited_patterns_for_ai(
+        normalized.get("prohibited_position_patterns")
+    )
+    if prohibited_patterns:
+        packet_clause["prohibited_position_patterns"] = prohibited_patterns
     # Dynamic clauses carry their fallback/redline wording and clause-specific
     # instructions in data; surface them so the AI packet is fully self-describing
     # for clause types the code has never seen.

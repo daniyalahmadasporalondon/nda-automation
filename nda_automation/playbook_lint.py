@@ -23,17 +23,27 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from .playbook_rules import (
+    CLAUSE_ENGINE_DYNAMIC,
+    NATIVE_CLAUSE_IDS,
+    clause_engine,
+)
+
 __all__ = [
     "LintViolation",
     "lint_playbook",
     "CHECK_IDS",
     "CHECKS",
+    "PLAYBOOK_CHECKS",
+    "PLAYBOOK_CHECK_IDS",
     "VALID_ISSUE_TYPES",
     "VALID_REDLINE_ACTIONS",
     "REDLINE_ACTIONS_NEEDING_TEMPLATE",
     "check_option_id_collision",
     "check_governing_law_forum_present",
     "check_trigger_terms_present",
+    "check_clause_id_uniqueness",
+    "check_native_clause_inventory",
 ]
 
 # ---------------------------------------------------------------------------
@@ -766,6 +776,137 @@ def check_trigger_terms_present(clause: Mapping[str, Any]) -> list[LintViolation
 # Registry + entry point
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Playbook-LEVEL checks (cross-clause / inventory invariants)
+#
+# Every check above is per-CLAUSE: it sees one clause at a time and is blind to
+# relationships BETWEEN clauses and to the book's clause inventory as a whole.
+# Two such invariants -- clause-id uniqueness and the native-clause inventory
+# contract -- previously survived only because a SEPARATE validator
+# (``playbook_rules.validate_playbook_rules``) also runs at publish. That made
+# the lint a partial gate: were it the sole structural check, a dup-id or a
+# dropped native clause would slip through. These playbook-level checks close
+# that gap so ``lint_playbook`` is a genuine structural gate on its own.
+#
+# A playbook-level check takes the WHOLE clause list and yields violations.
+# ---------------------------------------------------------------------------
+
+PlaybookCheckFn = Callable[[Sequence[Mapping[str, Any]]], list[LintViolation]]
+
+
+def check_clause_id_uniqueness(
+    clauses: Sequence[Mapping[str, Any]],
+) -> list[LintViolation]:
+    """No two clauses may share an id (case-insensitive).
+
+    Clause ids are the join key for every downstream consumer -- the review
+    engine, redline anchoring, the AI packet, the Structure tab. Two clauses with
+    the same id silently collide: only one set of rules ever fires for that id,
+    so the other clause's policy is dead the moment it ships. A per-clause check
+    cannot see this because it never sees a SECOND clause. Match the canonical
+    rules-validator semantics (``playbook_rules`` lower-cases the id and treats a
+    blank id as "no id to collide on", which the trigger/schema checks catch).
+    """
+
+    seen: dict[str, str] = {}
+    duplicates: dict[str, str] = {}
+    for clause in clauses:
+        if not isinstance(clause, Mapping):
+            continue
+        raw = _text(clause.get("id"))
+        if not raw:
+            # A blank id has nothing to collide on; the schema/trigger checks own
+            # the "every clause needs an id" rule.
+            continue
+        key = raw.lower()
+        if key in seen:
+            # Report the duplicate once, naming the first display form we saw.
+            duplicates.setdefault(key, seen[key])
+        else:
+            seen[key] = raw
+
+    violations: list[LintViolation] = []
+    for key, display in duplicates.items():
+        violations.append(
+            LintViolation(
+                display,
+                "clause_id_uniqueness",
+                f"clause id '{display}' appears more than once; clause ids are the "
+                "join key for review/redline/AI -- a duplicate silently shadows one "
+                "clause's rules, leaving its policy dead",
+            )
+        )
+    return violations
+
+
+def check_native_clause_inventory(
+    clauses: Sequence[Mapping[str, Any]],
+) -> list[LintViolation]:
+    """The native-clause inventory contract.
+
+    Two invariants the per-clause checks are structurally blind to:
+
+    1. **No native id shadowed by a dynamic clause.** The ids in
+       ``NATIVE_CLAUSE_IDS`` are backed by hand-written Python checkers. Declaring
+       a clause with a native id but ``engine: dynamic`` would route it through the
+       generic data engine instead, silently disabling the native checker for that
+       clause -- a regression no single-clause check can see in isolation.
+
+    2. **No native clause removed.** A book that carries the native clause set
+       (i.e. at least one native-id clause) must carry the WHOLE set; dropping
+       e.g. ``signatures`` or ``governing_law`` means that policy stops being
+       enforced even though the engine still expects it. This only applies to a
+       native-bearing book: a purely-dynamic or synthetic book that never declared
+       native clauses is left alone (it isn't "removing" anything).
+    """
+
+    violations: list[LintViolation] = []
+
+    native_engine_present: set[str] = set()
+    for clause in clauses:
+        if not isinstance(clause, Mapping):
+            continue
+        clause_id = _text(clause.get("id"))
+        if clause_id.lower() not in {nid.lower() for nid in NATIVE_CLAUSE_IDS}:
+            continue
+        # Invariant 1: native id must NOT be redefined as a dynamic clause.
+        if clause_engine(clause) == CLAUSE_ENGINE_DYNAMIC:
+            violations.append(
+                LintViolation(
+                    clause_id,
+                    "native_clause_inventory",
+                    f"native clause id '{clause_id}' is declared with engine "
+                    f"'{CLAUSE_ENGINE_DYNAMIC}'; a native id is backed by a Python "
+                    "checker and cannot be redefined as a data-driven dynamic clause "
+                    "(the native checker would be silently disabled)",
+                )
+            )
+        else:
+            native_engine_present.add(clause_id.lower())
+
+    # Invariant 2: only enforce the COMPLETE native set for a native-bearing book.
+    # A book that declares no native clause at all (pure-dynamic / synthetic unit
+    # fixture) is not "removing" a native clause, so it is left alone.
+    if native_engine_present:
+        canonical = {nid.lower(): nid for nid in NATIVE_CLAUSE_IDS}
+        missing = sorted(
+            canonical[key]
+            for key in canonical
+            if key not in native_engine_present
+        )
+        for clause_id in missing:
+            violations.append(
+                LintViolation(
+                    clause_id,
+                    "native_clause_inventory",
+                    f"native clause '{clause_id}' is missing; this book carries the "
+                    "native clause set, so dropping a native clause silently stops "
+                    "its policy being enforced while the engine still expects it",
+                )
+            )
+    return violations
+
+
 CHECKS: dict[str, CheckFn] = {
     "decision_space_coverage": check_decision_space_coverage,
     "condition_well_formed": check_condition_well_formed,
@@ -777,8 +918,15 @@ CHECKS: dict[str, CheckFn] = {
     "trigger_terms_present": check_trigger_terms_present,
 }
 
-# Stable, ordered registry of the check ids the engine runs.
+# Stable, ordered registry of the per-clause check ids the engine runs.
 CHECK_IDS: tuple[str, ...] = tuple(CHECKS.keys())
+
+# Playbook-LEVEL checks: run once over the whole clause list, not per clause.
+PLAYBOOK_CHECKS: dict[str, PlaybookCheckFn] = {
+    "clause_id_uniqueness": check_clause_id_uniqueness,
+    "native_clause_inventory": check_native_clause_inventory,
+}
+PLAYBOOK_CHECK_IDS: tuple[str, ...] = tuple(PLAYBOOK_CHECKS.keys())
 
 
 def lint_playbook(playbook: Mapping[str, Any]) -> list[LintViolation]:
@@ -830,4 +978,22 @@ def lint_playbook(playbook: Mapping[str, Any]) -> list[LintViolation]:
                         "broken check cannot silently pass an unchecked playbook",
                     )
                 )
+
+    # Playbook-LEVEL pass: cross-clause / inventory invariants the per-clause loop
+    # above cannot see (dup id, native-clause inventory). Same fail-closed
+    # isolation so a buggy playbook-level check cannot silently no-op the gate.
+    clause_mappings = [c for c in clauses if isinstance(c, Mapping)]
+    for check_id, playbook_check in PLAYBOOK_CHECKS.items():
+        try:
+            violations.extend(playbook_check(clause_mappings))
+        except Exception as exc:  # noqa: BLE001 - isolate one check's crash
+            violations.append(
+                LintViolation(
+                    "<playbook>",
+                    check_id,
+                    f"playbook-level lint check '{check_id}' raised "
+                    f"({type(exc).__name__}: {exc}); blocking publish so a broken "
+                    "check cannot silently pass an unchecked playbook",
+                )
+            )
     return violations
