@@ -11,11 +11,16 @@ import json
 import logging
 import os
 import re
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
 
 from .checker import PLAYBOOK_PATH, PlaybookTemplateError, validate_playbook
-from .playbook_rules import PlaybookRulesError, validate_playbook_rules
+from .playbook_rules import (
+    PlaybookRulesError,
+    derived_policy_fields,
+    validate_playbook_rules,
+)
 
 try:  # pragma: no cover - exercised only when the lint module is present
     from .playbook_lint import lint_playbook
@@ -667,10 +672,37 @@ def _workspace_payload(
         "active": _active_payload(playbook, runtime),
         "draft": public_playbook_draft_payload(runtime, draft),
         "history": public_playbook_history(history),
+        # Programmatic map of (clause_id -> [server-derived field names]) so the editor
+        # FE can grey out + explain the inputs (governing_law / term_and_survival
+        # preferred_position + check_trigger) that the server re-derives and would
+        # otherwise silently discard an admin edit to. Derivation behaviour is unchanged;
+        # this only makes it DISCOVERABLE.
+        "derived_fields": _derived_fields_map(playbook),
     }
     if include_playbook:
         payload = {"playbook": playbook, **payload}
     return payload
+
+
+def _derived_fields_map(playbook: dict[str, Any]) -> dict[str, list[str]]:
+    """Map each clause id to its SERVER-DERIVED (read-only) field names.
+
+    Reads :func:`derived_policy_fields` so it stays the single source of truth with the
+    packet-build re-derivation. Only clauses that actually carry derived fields appear,
+    keyed by clause id, so the FE can look up ``derived_fields[clause_id]`` directly.
+    """
+    clauses = playbook.get("clauses", [])
+    out: dict[str, list[str]] = {}
+    if isinstance(clauses, list):
+        for clause in clauses:
+            if not isinstance(clause, Mapping):
+                continue
+            derived = derived_policy_fields(clause)
+            if derived:
+                clause_id = str(clause.get("id") or "")
+                if clause_id:
+                    out[clause_id] = list(derived)
+    return out
 
 
 def _active_payload(playbook: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
