@@ -414,7 +414,9 @@ class ClauseBoundaryMarkerTests(unittest.TestCase):
     restriction in section B)."""
 
     def _structure(self):
-        # Two real sections; p3/p4 live in section-1, p9 in section-2.
+        # Two SOURCE-BACKED sections (real Word numbering metadata under ``source``);
+        # p3/p4 live in section-1, p9 in section-2. Source-backed so the verifier's
+        # boundary index admits them (FIX 3 gates the index on source-backed only).
         return {
             "reference_index": {
                 "paragraph_to_section_id": {
@@ -423,8 +425,18 @@ class ClauseBoundaryMarkerTests(unittest.TestCase):
                     "p9": "section-2",
                 },
                 "sections_by_id": {
-                    "section-1": {"id": "section-1", "label": "2. Non-Circumvention", "heading": "Non-Circumvention"},
-                    "section-2": {"id": "section-2", "label": "5. Permitted Dealings", "heading": "Permitted Dealings"},
+                    "section-1": {
+                        "id": "section-1",
+                        "label": "2. Non-Circumvention",
+                        "heading": "Non-Circumvention",
+                        "source": {"numbering": {"num_id": 1, "level": 0}},
+                    },
+                    "section-2": {
+                        "id": "section-2",
+                        "label": "5. Permitted Dealings",
+                        "heading": "Permitted Dealings",
+                        "source": {"numbering": {"num_id": 1, "level": 0}},
+                    },
                 },
             }
         }
@@ -506,6 +518,62 @@ class ClauseBoundaryMarkerTests(unittest.TestCase):
         self.assertNotIn("matched_section_ids", captured)
         self.assertNotIn("clause_scope_is_single", captured)
         self.assertEqual(captured["clause_id"], "non_circumvention")
+
+    def _phantom_structure(self):
+        # A flat/PDF parse: "sections" scraped from plain text carry NO ``source``
+        # metadata, so they are phantom boundaries that must never reach the verifier.
+        return {
+            "reference_index": {
+                "paragraph_to_section_id": {"p3": "section-1", "p4": "section-1", "p9": "section-2"},
+                "sections_by_id": {
+                    "section-1": {"id": "section-1", "label": "2. Non-Circumvention"},
+                    "section-2": {"id": "section-2", "label": "5. Permitted Dealings"},
+                },
+            }
+        }
+
+    def test_phantom_pdf_sections_never_reach_the_packet(self):
+        # FIX 3: a PDF/flat parse's non-source-backed (phantom) sections are gated
+        # OUT -- the packet carries no boundary markers, so the verifier cannot
+        # borrow a carve-out from a hallucinated section.
+        captured = {}
+
+        def capture(packet):
+            captured.update(packet)
+            return {"verdict": VERIFIER_VERDICT_AFFIRM, "confidence": 0.9, "rationale": "x"}
+
+        apply_ai_verifier(
+            [self._evidence_clause("p3", "p4")],
+            source_text="full doc",
+            verifier=capture,
+            contract_structure=self._phantom_structure(),
+        )
+        self.assertNotIn("matched_section_ids", captured)
+        self.assertNotIn("clause_scope_is_single", captured)
+        self.assertNotIn("section_labels", captured)
+
+    def test_section_index_drops_non_source_backed_sections(self):
+        # Unit: a mixed structure keeps ONLY the source-backed section in the index.
+        from nda_automation.ai_verifier import _section_index
+
+        structure = {
+            "reference_index": {
+                "paragraph_to_section_id": {"p1": "real", "p2": "phantom"},
+                "sections_by_id": {
+                    "real": {"id": "real", "label": "1. Real", "source": {"numbering": {"num_id": 1}}},
+                    "phantom": {"id": "phantom", "label": "9. Phantom"},
+                },
+            }
+        }
+        index = _section_index(structure)
+        self.assertEqual(index["paragraph_to_section_id"], {"p1": "real"})
+        self.assertNotIn("phantom", index["section_labels"])
+        self.assertEqual(index["section_labels"], {"real": "1. Real"})
+
+    def test_section_index_empty_when_no_source_backed_sections(self):
+        from nda_automation.ai_verifier import _section_index
+
+        self.assertEqual(_section_index(self._phantom_structure()), {})
 
     def test_falls_back_to_matched_paragraph_ids_without_structured_evidence(self):
         clause = _clause(

@@ -348,9 +348,19 @@ def build_verifier_packet(
 def _section_index(contract_structure: Mapping[str, object] | None) -> Dict[str, object]:
     """Extract the paragraph->section map + section labels from a contract structure.
 
-    Returns ``{}`` when there is no usable structure (e.g. a PDF parse, or a caller
-    that did not supply one), which disables the clause-boundary markers entirely --
-    they are strictly additive context, never load-bearing.
+    SOURCE-BACKED ONLY: the section index is gated on sections that carry real
+    document structure (a non-empty ``source`` mapping from Word numbering/heading
+    metadata), matching the other reference-index consumers (e.g. the section-aware
+    AI-review budget). A flat/PDF parse scrapes phantom "sections" out of plain text
+    (an address digit read as a clause number); feeding those hallucinated boundaries
+    to the verifier would let it borrow a carve-out from a phantom section. So a
+    paragraph mapped to a NON-source-backed section is dropped, and when there is no
+    source-backed structure at all this returns ``{}`` -- the boundary markers are
+    omitted entirely rather than anchored to phantom sections.
+
+    Returns ``{}`` when there is no usable (source-backed) structure (e.g. a PDF
+    parse, or a caller that did not supply one), which disables the clause-boundary
+    markers entirely -- they are strictly additive context, never load-bearing.
     """
     if not isinstance(contract_structure, Mapping):
         return {}
@@ -360,22 +370,47 @@ def _section_index(contract_structure: Mapping[str, object] | None) -> Dict[str,
     paragraph_to_section_id = reference_index.get("paragraph_to_section_id")
     if not isinstance(paragraph_to_section_id, Mapping) or not paragraph_to_section_id:
         return {}
-    labels: Dict[str, str] = {}
     sections_by_id = reference_index.get("sections_by_id")
-    if isinstance(sections_by_id, Mapping):
-        for section_id, section in sections_by_id.items():
-            if isinstance(section, Mapping):
-                label = str(section.get("label") or section.get("heading") or "").strip()
-                if label:
-                    labels[str(section_id)] = label
+    sections_by_id = sections_by_id if isinstance(sections_by_id, Mapping) else {}
+    # Only sections with real document structure may anchor a clause boundary.
+    source_backed_ids = {
+        str(section_id)
+        for section_id, section in sections_by_id.items()
+        if _section_is_source_backed(section) and str(section_id)
+    }
+    if not source_backed_ids:
+        return {}
+    filtered_map = {
+        str(paragraph_id): str(section_id)
+        for paragraph_id, section_id in paragraph_to_section_id.items()
+        if isinstance(section_id, str) and str(section_id) in source_backed_ids
+    }
+    if not filtered_map:
+        return {}
+    labels: Dict[str, str] = {}
+    for section_id in source_backed_ids:
+        section = sections_by_id.get(section_id)
+        if isinstance(section, Mapping):
+            label = str(section.get("label") or section.get("heading") or "").strip()
+            if label:
+                labels[section_id] = label
     return {
-        "paragraph_to_section_id": {
-            str(paragraph_id): str(section_id)
-            for paragraph_id, section_id in paragraph_to_section_id.items()
-            if isinstance(section_id, str) and section_id
-        },
+        "paragraph_to_section_id": filtered_map,
         "section_labels": labels,
     }
+
+
+def _section_is_source_backed(section: object) -> bool:
+    """A section is source-backed when contract_structure attached a non-empty
+    ``source`` mapping (real Word numbering/heading/style metadata). A section
+    scraped from plain text (e.g. a PDF/flat parse, an address digit read as a
+    clause number) exposes no such ``source`` and is NOT source-backed. Mirrors
+    ai_first_review._section_is_source_backed / ai_assessment_prompt's check.
+    """
+    if not isinstance(section, Mapping):
+        return False
+    source = section.get("source")
+    return isinstance(source, Mapping) and bool(source)
 
 
 def _clause_boundary_markers(
