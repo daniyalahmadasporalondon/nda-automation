@@ -498,34 +498,41 @@ _DETERMINISTIC_CLAUSE_PHRASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("mutuality", ("mutuality clause", "mutual clause")),
 )
 
-# Phrase -> governing-law approved-option id for the deterministic fallback. Each
-# entry is only applied when the option id is a Playbook approved option
-# (allowed_governing_laws).
-_DETERMINISTIC_GOVERNING_LAW_PHRASES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("difc", ("difc", "dubai international financial centre", "dubai international financial center")),
-    ("england_and_wales", ("england and wales", "english law", "england & wales", "laws of england")),
-    ("delaware", ("delaware",)),
-    ("india", ("india", "indian law")),
-    ("ontario_canada", ("ontario", "ontario, canada")),
-)
+# Phrase -> governing-law approved-option id for the deterministic fallback. DERIVED
+# from the Playbook approved options (their value/label/aliases/id, via
+# governing_law_view.governing_law_phrase_map) rather than a frozen literal, so a
+# newly-approved law maps automatically with NO code change. Each entry is still only
+# applied when the option id is a Playbook approved option (allowed_governing_laws);
+# the longest-phrase-first ordering inside each option is provided by the source map.
+def deterministic_governing_law_phrases() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """The Playbook-derived (option_id, phrases) list for the deterministic fallback.
 
-# Keyword tokens the new corpus dimensions consume, kept out of the free-text field
-# so a structured query ("DIFC NDAs we sent but haven't signed") doesn't also try to
-# keyword-match "DIFC" against the haystack.
-_CORPUS_FILTER_WORDS: frozenset[str] = frozenset(
+    The option order is longest-most-specific-phrase first so a richer match
+    ("england and wales") is attempted before a shorter option whose phrase is a
+    substring elsewhere. Empty/unavailable Playbook -> empty tuple (the dimension
+    simply isn't mapped deterministically), mirroring allowed_governing_laws().
+    """
+    phrase_map = governing_law_view.governing_law_phrase_map()
+    entries = [(option_id, phrases) for option_id, phrases in phrase_map.items() if phrases]
+    # Order options by their longest phrase first so the most specific option wins
+    # the first-match break in _apply_deterministic_corpus_flags.
+    entries.sort(key=lambda item: max((len(p) for p in item[1]), default=0), reverse=True)
+    return tuple(entries)
+
+
+# The static (non-jurisdiction) corpus keyword tokens kept out of the free-text field
+# so a structured query ("non-solicit NDAs we sent but haven't signed") doesn't also
+# keyword-match "non-solicit" against the haystack. The JURISDICTION tokens are added
+# at call time from the Playbook-derived phrase map (governing_law_filter_words) so a
+# newly-approved law's name is also kept out of the free-text field automatically.
+_STATIC_CORPUS_FILTER_WORDS: frozenset[str] = frozenset(
     {
         "compete",
         "competition",
         "circumvention",
         "circumvent",
-        "delaware",
-        "difc",
-        "england",
-        "english",
         "haven't",
         "havent",
-        "india",
-        "indian",
         "law",
         "non-circumvent",
         "non-circumvention",
@@ -535,14 +542,37 @@ _CORPUS_FILTER_WORDS: frozenset[str] = frozenset(
         "non-solicitation",
         "noncompete",
         "nonsolicit",
-        "ontario",
         "signed",
         "solicit",
         "solicitation",
         "unsigned",
-        "wales",
     }
 )
+
+
+def governing_law_filter_words() -> frozenset[str]:
+    """Single-word jurisdiction tokens (from the Playbook law phrases) to keep out of
+    the free-text field, so a named approved law never leaks into the keyword haystack.
+
+    Derived from the same Playbook phrase map the deterministic fallback uses, so a
+    newly-approved law contributes its tokens automatically. Only single, non-numeric
+    word tokens are taken (a multi-word phrase like "england and wales" is matched as a
+    phrase by the governing_law mapper; its component words "england"/"wales" are
+    surfaced here so neither leaks into free text)."""
+    words: set[str] = set()
+    for _option_id, phrases in deterministic_governing_law_phrases():
+        for phrase in phrases:
+            for token in re.split(r"[\s,]+", phrase):
+                token = token.strip().lower()
+                if token and not token.isdigit():
+                    words.add(token)
+    return frozenset(words)
+
+
+def corpus_filter_words() -> frozenset[str]:
+    """The full set of corpus keyword tokens kept out of the free-text field: the
+    static clause/sign tokens plus the Playbook-derived jurisdiction tokens."""
+    return _STATIC_CORPUS_FILTER_WORDS | governing_law_filter_words()
 
 
 def deterministic_search_intent(query: str, *, reason: str = "deterministic_fallback") -> dict[str, Any]:
@@ -638,9 +668,10 @@ def _apply_deterministic_corpus_flags(lowered: str, spec: dict[str, Any]) -> Non
             break
 
     # governing_law: map a named jurisdiction to its approved-option id, but only when
-    # that id is actually a Playbook approved option.
+    # that id is actually a Playbook approved option. The phrase map itself is now
+    # Playbook-derived, so a newly-approved law maps without a code change.
     allowed = allowed_governing_laws()
-    for option_id, phrases in _DETERMINISTIC_GOVERNING_LAW_PHRASES:
+    for option_id, phrases in deterministic_governing_law_phrases():
         if option_id in allowed and _contains_any(lowered, phrases):
             spec["governing_law"] = option_id
             break
@@ -690,13 +721,14 @@ def _deterministic_sort(lowered: str) -> str | None:
 
 def _deterministic_text_terms(cleaned: str) -> str | None:
     terms: list[str] = []
+    corpus_words = corpus_filter_words()
     for token in _TOKEN_RE.findall(cleaned):
         lowered = token.lower().strip("'")
         if not lowered or lowered.isdigit():
             continue
         if _YEAR_TERM_TOKEN_RE.match(lowered):
             continue
-        if lowered in _TEXT_STOP_WORDS or lowered in _FILTER_WORDS or lowered in _CORPUS_FILTER_WORDS:
+        if lowered in _TEXT_STOP_WORDS or lowered in _FILTER_WORDS or lowered in corpus_words:
             continue
         terms.append(token)
     if not terms:

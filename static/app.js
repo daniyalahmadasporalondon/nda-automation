@@ -183,6 +183,26 @@ function ensureSearchCorpus() {
       return state.corpusSearchMatters;
     });
 }
+// Load the Playbook-derived enum allowlists (governing-law option ids + clause ids)
+// from the server and feed them into the smart-search validators, so the FE re-
+// validation uses the SAME Playbook source the backend does and never silently drops
+// a legitimately-approved 6th law / new clause. Best-effort: on any failure the
+// validators keep their safe seed sets, so search still works (it just can't honor a
+// brand-new approved value until the fetch succeeds). Runs once at bootstrap.
+function loadDashboardSearchConfig() {
+  const lib = dashboardSearchLib();
+  const apply = lib.setFilterSpecAllowlists;
+  const endpoint = lib.SEARCH_CONFIG_ENDPOINT || "/api/dashboard/search-config";
+  if (typeof apply !== "function") return Promise.resolve();
+  return fetch(endpoint, { headers: { Accept: "application/json" } })
+    .then((response) => (response.ok ? response.json() : null))
+    .then((config) => {
+      if (config && typeof config === "object") apply(config);
+    })
+    .catch(() => {
+      // Keep the seed allowlists; search must always be graceful.
+    });
+}
 // Open a search result respecting CORPUS PROVENANCE: an app/both matter opens in-app
 // via the repository flow; a Drive-only matter (no app-state) links out to its Drive
 // folder in a new tab (no in-app deep link, no Summarize). Falls back to the in-app
@@ -800,6 +820,12 @@ Promise.resolve(repositoryController.loadMatters()).then(() => {
   // Silent seed: record the inbox already present at load so only genuinely new
   // inbound NDAs toast during the session.
   notificationsController.observe(state.matters);
+});
+// Feed the Playbook-derived search allowlists into the smart-search validators so a
+// newly-approved law/clause isn't dropped on FE re-validation, then refresh any
+// active search so it re-applies with the live allowlists.
+loadDashboardSearchConfig().then(() => {
+  dashboardSearchController.refresh();
 });
 repositoryController.loadGmailStatus();
 authSessionController.load();

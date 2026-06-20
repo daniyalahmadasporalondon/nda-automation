@@ -501,5 +501,63 @@ class TranslateSearchIntentTests(unittest.TestCase):
             )
 
 
+class SixthApprovedLawDerivedFromPlaybookTests(unittest.TestCase):
+    """FIX 2: a newly-approved (6th) governing law must map on the deterministic
+    fallback WITHOUT a code change, because the phrase map is now Playbook-derived.
+
+    A temp set of approved options (the existing five PLUS a sixth, ``singapore``) is
+    injected through governing_law_view's single source (_approved_governing_law_options)
+    and the caches are reset, mirroring how a Playbook republish would add a law.
+    """
+
+    _SIX_LAW_OPTIONS = [
+        {"id": "india", "value": "India", "label": "India", "aliases": ["indian"]},
+        {"id": "delaware", "value": "Delaware", "label": "Delaware"},
+        {"id": "england_and_wales", "value": "England and Wales", "label": "England and Wales", "aliases": ["english", "england"]},
+        {"id": "difc", "value": "DIFC", "label": "DIFC", "aliases": ["dubai international financial centre"]},
+        {"id": "ontario_canada", "value": "Ontario, Canada", "label": "Ontario, Canada", "aliases": ["ontario"]},
+        # The sixth, newly-approved law. No code in dashboard_search_intent names it.
+        {"id": "singapore", "value": "Singapore", "label": "Singapore", "aliases": ["singaporean"]},
+    ]
+
+    def setUp(self):
+        from nda_automation import governing_law_view as glv
+
+        self._glv = glv
+        self._orig = glv._approved_governing_law_options
+        glv._approved_governing_law_options = lambda: list(self._SIX_LAW_OPTIONS)
+        glv.reset_caches()
+
+    def tearDown(self):
+        self._glv._approved_governing_law_options = self._orig
+        self._glv.reset_caches()
+
+    def test_sixth_law_is_in_the_allowlist(self):
+        self.assertIn("singapore", dsi.allowed_governing_laws())
+
+    def test_sixth_law_maps_on_the_deterministic_fallback(self):
+        # The whole point: no hardcoded phrase for "singapore" exists, yet it maps,
+        # because the phrase map is derived from the Playbook approved options.
+        spec = dsi.deterministic_filter_spec("Singapore NDAs")
+        self.assertEqual(spec["governing_law"], "singapore")
+
+    def test_sixth_law_alias_also_maps(self):
+        spec = dsi.deterministic_filter_spec("singaporean law NDAs")
+        self.assertEqual(spec["governing_law"], "singapore")
+
+    def test_sixth_law_name_does_not_leak_into_free_text(self):
+        # The jurisdiction token is consumed by the governing_law dimension, so it must
+        # NOT also keyword-match the free-text haystack (mirrors the five-law contract).
+        self.assertIn("singapore", dsi.corpus_filter_words())
+        spec = dsi.deterministic_filter_spec("Singapore NDAs")
+        self.assertIsNone(spec["text"])
+
+    def test_phrase_map_covers_every_approved_option(self):
+        phrase_map = self._glv.governing_law_phrase_map()
+        for option in self._SIX_LAW_OPTIONS:
+            self.assertIn(option["id"], phrase_map)
+            self.assertTrue(phrase_map[option["id"]])
+
+
 if __name__ == "__main__":
     unittest.main()

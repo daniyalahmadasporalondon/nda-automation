@@ -74,6 +74,7 @@ import {
   matterTermYears,
   matterTitle,
   runChip,
+  setFilterSpecAllowlists,
   summaryEndpoint,
   summaryErrorMessage,
   validateFilterSpec,
@@ -2042,6 +2043,36 @@ assert.equal(validateFilterSpec({ signed: "yes" }).signed, null);
 assert.equal(validateFilterSpec({ governing_law: "DIFC" }).governing_law, "difc");
 assert.equal(validateFilterSpec({ governing_law: "england_and_wales" }).governing_law, "england_and_wales");
 assert.equal(validateFilterSpec({ governing_law: "narnia" }).governing_law, null);
+
+// FIX 2: the governing-law / clause-id allowlists are fed FROM THE SERVER
+// (setFilterSpecAllowlists, sourced from GET /api/dashboard/search-config) so a
+// newly-approved 6th law isn't dropped on the client re-validation. Before the feed,
+// a 6th law ("singapore") is rejected by the seed allowlist; after the feed carries
+// it, validateFilterSpec keeps it — proving the FE no longer drops a legitimately-
+// approved law. We snapshot + restore the module allowlists so other tests are
+// unaffected (the .mjs allowlist state is module-global).
+const _seedAllowlists = setFilterSpecAllowlists({}); // no-op read of current sets
+assert.equal(validateFilterSpec({ governing_law: "singapore" }).governing_law, null); // dropped by seed
+const _applied = setFilterSpecAllowlists({
+  governing_laws: ["india", "delaware", "england_and_wales", "difc", "ontario_canada", "singapore"],
+  clause_ids: ["mutuality", "governing_law", "data_protection"],
+});
+assert.ok(_applied.governing_laws.has("singapore"), "the 6th law is in the applied allowlist");
+assert.equal(validateFilterSpec({ governing_law: "singapore" }).governing_law, "singapore"); // now honored
+assert.equal(validateFilterSpec({ governing_law: "SINGAPORE" }).governing_law, "singapore"); // still case-insensitive
+assert.equal(validateFilterSpec({ governing_law: "narnia" }).governing_law, null); // junk still dropped
+// A brand-new clause id flows through the same way.
+assert.equal(validateFilterSpec({ has_clause: "data_protection" }).has_clause, "data_protection");
+// A malformed config (non-array) leaves that allowlist untouched (graceful).
+setFilterSpecAllowlists({ governing_laws: "not-an-array" });
+assert.equal(validateFilterSpec({ governing_law: "singapore" }).governing_law, "singapore");
+// Restore the seed allowlists so subsequent assertions use the shipped sets.
+setFilterSpecAllowlists({
+  governing_laws: [..._seedAllowlists.governing_laws],
+  clause_ids: [..._seedAllowlists.clause_ids],
+});
+assert.equal(validateFilterSpec({ governing_law: "singapore" }).governing_law, null); // back to seed
+assert.equal(validateFilterSpec({ governing_law: "difc" }).governing_law, "difc"); // shipped law intact
 // term_years: clamps + rejects like min_age_days; bool != int, float truncates, junk drops.
 assert.equal("term_years" in NULL_FILTER_SPEC, true);
 assert.equal(validateFilterSpec({ term_years: 5 }).term_years, 5);

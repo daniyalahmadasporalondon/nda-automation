@@ -320,6 +320,101 @@ class DashboardSearchIntentRouteTests(unittest.TestCase):
         return _EnvPatch(env)
 
 
+class DashboardSearchConfigRouteTests(unittest.TestCase):
+    """GET /api/dashboard/search-config — the Playbook-derived FE allowlists.
+
+    FIX 2: the FE re-validation must use the SAME Playbook source the backend does, so
+    a legitimately-approved law/clause is never dropped on the client. This route is
+    the feed; here we prove it returns the live allowlists and honors a 6th law.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.host, cls.port = cls.server.server_address
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=5)
+
+    def setUp(self):
+        server_module._reset_rate_limits()
+        telemetry.reset()
+
+    def _get(self, headers=None):
+        connection = http.client.HTTPConnection(self.host, self.port, timeout=10)
+        try:
+            connection.request("GET", "/api/dashboard/search-config", headers=dict(headers or {}))
+            response = connection.getresponse()
+            raw = response.read()
+            content_type = response.getheader("Content-Type", "")
+            payload = json.loads(raw.decode("utf-8")) if "application/json" in content_type else raw
+            return response.status, payload
+        finally:
+            connection.close()
+
+    def _auth_headers(self):
+        token = base64.b64encode(b"nda-admin:secret").decode("ascii")
+        return {"Authorization": f"Basic {token}"}
+
+    def _env(self):
+        return _EnvPatch(
+            {
+                "NDA_REQUIRE_AUTH": "true",
+                "NDA_AUTH_USERNAME": "nda-admin",
+                "NDA_AUTH_PASSWORD": "secret",
+            }
+        )
+
+    def test_requires_auth(self):
+        with self._env():
+            status, payload = self._get()
+        self.assertEqual(status, 401)
+
+    def test_returns_playbook_derived_allowlists(self):
+        with self._env():
+            status, payload = self._get(headers=self._auth_headers())
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(
+            sorted(payload["governing_laws"]),
+            sorted(dashboard_search_intent.allowed_governing_laws()),
+        )
+        self.assertEqual(
+            sorted(payload["clause_ids"]),
+            sorted(dashboard_search_intent.allowed_clause_ids()),
+        )
+        # The shipped playbook's five laws are present.
+        self.assertIn("difc", payload["governing_laws"])
+        self.assertIn("governing_law", payload["clause_ids"])
+
+    def test_sixth_approved_law_flows_through_to_the_feed(self):
+        from nda_automation import governing_law_view as glv
+
+        original = glv._approved_governing_law_options
+        glv._approved_governing_law_options = lambda: [
+            {"id": "india", "value": "India", "label": "India"},
+            {"id": "delaware", "value": "Delaware", "label": "Delaware"},
+            {"id": "england_and_wales", "value": "England and Wales", "label": "England and Wales"},
+            {"id": "difc", "value": "DIFC", "label": "DIFC"},
+            {"id": "ontario_canada", "value": "Ontario, Canada", "label": "Ontario, Canada"},
+            {"id": "singapore", "value": "Singapore", "label": "Singapore"},
+        ]
+        glv.reset_caches()
+        try:
+            with self._env():
+                status, payload = self._get(headers=self._auth_headers())
+            self.assertEqual(status, 200, payload)
+            # The 6th law is NOT dropped — the feed carries it so the FE allowlist can.
+            self.assertIn("singapore", payload["governing_laws"])
+        finally:
+            glv._approved_governing_law_options = original
+            glv.reset_caches()
+
+
 class _EnvPatch:
     def __init__(self, env):
         self.env = env
