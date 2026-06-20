@@ -87,7 +87,7 @@ def test_board_detail_enforces_owner_scope():
         workflow.detail_card(matter["id"], owner_user_id="tenant-b")
 
     assert exc_info.value.status == 404
-    assert exc_info.value.payload == {"error": "Matter not found."}
+    assert exc_info.value.payload == {"error": "NDA not found."}
 
 
 def test_board_move_card_owns_stage_validation_and_public_payload():
@@ -105,7 +105,7 @@ def test_board_move_card_owns_stage_validation_and_public_payload():
     with pytest.raises(RepositoryBoardWorkflowError) as exc_info:
         workflow.move_card(matter["id"], "redline_ready")
     assert exc_info.value.status == 400
-    assert exc_info.value.payload == {"error": "Unsupported matter stage."}
+    assert exc_info.value.payload == {"error": "Unsupported NDA stage."}
 
 
 def test_board_reviewed_command_validates_boolean_and_updates_card():

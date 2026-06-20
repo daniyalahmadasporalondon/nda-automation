@@ -246,7 +246,7 @@ class MatterSummaryRouteTests(unittest.TestCase):
                 status, payload, _ = self.summarize(other_matter["id"], headers=self.basic_auth_headers())
         # The ownership filter hides it: 404, not another tenant's summary.
         self.assertEqual(status, 404, payload)
-        self.assertEqual(payload["error"], "Matter not found.")
+        self.assertEqual(payload["error"], "NDA not found.")
 
     def test_missing_matter_is_not_found(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -254,7 +254,7 @@ class MatterSummaryRouteTests(unittest.TestCase):
             with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()):
                 status, payload, _ = self.summarize("matter_doesnotexist", headers=self.basic_auth_headers())
         self.assertEqual(status, 404, payload)
-        self.assertEqual(payload["error"], "Matter not found.")
+        self.assertEqual(payload["error"], "NDA not found.")
 
     def test_matter_without_document_text_is_a_clear_400(self):
         with tempfile.TemporaryDirectory() as data_dir:

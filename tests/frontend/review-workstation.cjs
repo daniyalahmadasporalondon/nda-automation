@@ -2895,7 +2895,7 @@ async function testReviewSendAcceptsManualRecipient(page) {
     requirements_failed: 1,
     requirements_needs_review: 0,
     requirements_passed: 4,
-    send_block_reason: "Matter does not have a valid reply recipient email address.",
+    send_block_reason: "NDA does not have a valid reply recipient email address.",
     review_result: {
       checked_at: "2026-06-04T09:00:00+00:00",
       clauses: [{
@@ -3492,14 +3492,14 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "2");
   await assertTextContains(page.locator(".repository-card").first(), deleteStem);
   const deleteCard = page.locator(".repository-card").filter({ hasText: deleteStem });
-  await deleteCard.getByRole("button", { name: "Delete matter" }).click();
+  await deleteCard.getByRole("button", { name: "Delete NDA" }).click();
   await assertTextContains(deleteCard, "Delete matter and stored document?");
   assert.equal(await page.locator(".repository-card").filter({ hasText: deleteStem }).count(), 1);
   assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "2");
-  await deleteCard.getByRole("button", { name: "Cancel delete matter" }).click();
-  assert.equal(await deleteCard.getByRole("group", { name: "Delete matter confirmation" }).count(), 0);
-  await deleteCard.getByRole("button", { name: "Delete matter" }).click();
-  await deleteCard.getByRole("button", { name: "Confirm delete matter" }).click();
+  await deleteCard.getByRole("button", { name: "Cancel delete NDA" }).click();
+  assert.equal(await deleteCard.getByRole("group", { name: "Delete NDA confirmation" }).count(), 0);
+  await deleteCard.getByRole("button", { name: "Delete NDA" }).click();
+  await deleteCard.getByRole("button", { name: "Confirm delete NDA" }).click();
   await waitForRepositoryCount(page, "in_review", "1");
   assert.equal(await page.locator(".repository-card").filter({ hasText: deleteStem }).count(), 0);
   assert.equal(await page.locator("#repositoryMatterPanel:not([hidden])").count(), 0);
@@ -3560,7 +3560,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await page.locator(".repository-card").filter({ hasText: path.basename(docxPath, ".docx") }).click();
   await page.waitForSelector("#repositoryMatterPanel:not([hidden])");
   assert.equal(await page.getByRole("button", { name: "Close Matter", exact: true }).count(), 0);
-  await page.getByRole("button", { name: "Close matter inspector" }).click();
+  await page.getByRole("button", { name: "Close NDA inspector" }).click();
   await page.waitForSelector("#repositoryMatterPanel[hidden]", { state: "attached" });
   assert.equal(await page.getByRole("button", { name: "Reset Demo" }).count(), 0);
   assert.equal(await page.locator("#repositoryImportStatus").count(), 0);
@@ -4883,9 +4883,9 @@ async function testManualUploadModal(page) {
   await waitForRepositoryCount(page, "manual_upload", "0");
   await waitForRepositoryCount(page, "in_review", "1");
   const uploadedCard = page.locator('[data-repository-list="in_review"] .repository-card').filter({ hasText: stem });
-  await uploadedCard.getByRole("button", { name: "Delete matter" }).click();
+  await uploadedCard.getByRole("button", { name: "Delete NDA" }).click();
   await assertTextContains(uploadedCard, "Delete matter and stored document?");
-  await uploadedCard.getByRole("button", { name: "Confirm delete matter" }).click();
+  await uploadedCard.getByRole("button", { name: "Confirm delete NDA" }).click();
   await page.waitForFunction(
     (uploadedStem) => !document.querySelector('[data-repository-list="in_review"]')?.innerText.includes(uploadedStem),
     stem,
@@ -4913,12 +4913,12 @@ async function testManualUploadModal(page) {
     (uploadedStem) => document.querySelector('[data-repository-list="in_review"]')?.innerText.includes(uploadedStem),
     reviewedStem,
   );
-  await page.getByRole("button", { name: "Close matter inspector" }).click();
+  await page.getByRole("button", { name: "Close NDA inspector" }).click();
   await page.waitForSelector("#repositoryMatterPanel[hidden]", { state: "attached" });
 
   const reviewedCard = page.locator('[data-repository-list="in_review"] .repository-card').filter({ hasText: reviewedStem });
-  await reviewedCard.getByRole("button", { name: "Delete matter" }).click();
-  await reviewedCard.getByRole("button", { name: "Confirm delete matter" }).click();
+  await reviewedCard.getByRole("button", { name: "Delete NDA" }).click();
+  await reviewedCard.getByRole("button", { name: "Confirm delete NDA" }).click();
   await page.waitForFunction(
     (uploadedStem) => !document.querySelector('[data-repository-list="in_review"]')?.innerText.includes(uploadedStem),
     reviewedStem,
@@ -7361,7 +7361,7 @@ async function testPdfReconstructionExportAndSendCaveat(page) {
       requirements_failed: 0,
       requirements_needs_review: 0,
       requirements_passed: 4,
-      send_block_reason: "Matter does not have a valid reply recipient email address.",
+      send_block_reason: "NDA does not have a valid reply recipient email address.",
       review_result: {
         checked_at: "2026-06-04T09:00:00+00:00",
         clauses: [{
@@ -7564,7 +7564,7 @@ async function testRepositoryDownloadDisclosureAndCaveat(page) {
     // Item A: open the menu and assert the disclosure is visible BEFORE downloading.
     const menu = await openDownloadMenu(panel.getByRole("button", { name: "Download" }));
     const docxOption = menu.locator('[data-download-format="docx"]').first();
-    await assertTextContains(docxOption, "Downloads and moves this matter to Reviewed.");
+    await assertTextContains(docxOption, "Downloads and moves this NDA to Reviewed.");
     await assertTextContains(docxOption, "Includes 2 flagged issues.");
 
     // Item C: choosing DOCX downloads and the toast carries the right caveat (or not).
@@ -10457,7 +10457,7 @@ async function testDashboardSmartSearchV2(page) {
               {
                 name: "count_in_review",
                 domain: "repository",
-                description: "Count owner-scoped matters currently in review.",
+                description: "Count owner-scoped NDAs currently in review.",
               },
             ],
           },
