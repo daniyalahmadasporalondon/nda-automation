@@ -708,29 +708,35 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "Unsaved changes (this clause)");
   await assertTextContains(page.locator("#clauseDetail"), "Check Trigger Position");
   await assertTextContains(page.locator("#clauseDetail"), "Required - Check if absent or deficient");
-  // The Decision Logic sub-tab and its checker-internals dump are removed.
+  // The Decision Logic sub-tab and its checker-internals dump are removed from the
+  // clause editor (scoped to #clauseDetail -- the "how the AI reviews" static
+  // reference elsewhere on the page is unaffected).
   assert.equal(await page.locator('[data-playbook-panel-tab]').count(), 0);
-  assert.equal(await page.getByText("Decision Logic Visibility", { exact: false }).count(), 0);
-  assert.equal(await page.getByText("AUDIT READING ORDER", { exact: false }).count(), 0);
-  assert.equal(await page.getByText("Raw Engine Rules", { exact: false }).count(), 0);
-  assert.equal(await page.getByText("mutuality_analysis", { exact: false }).count(), 0);
+  assert.equal(await page.locator("#clauseDetail").getByText("Decision Logic Visibility", { exact: false }).count(), 0);
+  assert.equal(await page.locator("#clauseDetail").getByText("AUDIT READING ORDER", { exact: false }).count(), 0);
+  assert.equal(await page.locator("#clauseDetail").getByText("Raw Engine Rules", { exact: false }).count(), 0);
+  assert.equal(await page.locator("#clauseDetail").getByText("mutuality_analysis", { exact: false }).count(), 0);
   // Mutuality exposes the one-way-terms list editor inline (a check-driving list).
   await assertTextContains(page.locator("#clauseDetail"), "One-Way / Unilateral Terms");
   await assertTextContains(page.locator("#clauseDetail"), "Update wording with AI");
 
   // --- Check-driving list editor: add marks the draft dirty (Save enables) ------
   // The list field is registered in diffForClause, so adding an item flips the
-  // draft to unsaved-changes and shows in the per-clause diff.
+  // draft to unsaved-changes and shows in the per-clause diff. (Use a distinctive
+  // lowercase token so the assertion does not depend on chip display casing.)
+  const ONE_WAY_TERM = "zzbespoke one-way marker";
   assert.equal(await page.getByRole("button", { name: "Save Draft" }).isEnabled(), false);
-  await page.locator('[data-list-input="one_way_terms"]').fill("only the Receiving Party");
+  await page.locator('[data-list-input="one_way_terms"]').fill(ONE_WAY_TERM);
   await page.locator('[data-list-add="one_way_terms"]').click();
-  await assertTextContains(page.locator('[data-list-row="one_way_terms"]'), "only the Receiving Party");
+  // The new chip is present (matched via its exact-case data-value attribute).
+  await page.waitForSelector(`[data-remove-list-item="one_way_terms"][data-list-value="${ONE_WAY_TERM}"]`);
   await assertTextContains(page.locator("#playbookDraftDiff"), "one_way_terms");
+  await assertTextContains(page.locator("#playbookDraftDiff"), ONE_WAY_TERM);
   assert.equal(await page.getByRole("button", { name: "Save Draft" }).isEnabled(), true);
   // Drift warning appears: the list changed but the dependent prose did not.
   await assertTextContains(page.locator('[data-list-drift]'), "doesn't mention the new item yet");
   // Remove it again -> back to a clean (non-dirty) state.
-  await page.locator('[data-remove-list-item="one_way_terms"][data-list-value="only the Receiving Party"]').click();
+  await page.locator(`[data-remove-list-item="one_way_terms"][data-list-value="${ONE_WAY_TERM}"]`).click();
   await page.waitForFunction(() => document.querySelector("#playbookDraftDiff")?.textContent.includes("No unsaved changes."));
   assert.equal(await page.getByRole("button", { name: "Save Draft" }).isEnabled(), false);
 
@@ -768,8 +774,13 @@ async function testPlaybookAdminEditor(page) {
   await page.waitForFunction(() => document.querySelector("[data-ai-wording-diff]")?.querySelector("[data-ai-wording-field]"));
   assert.ok(lastSuggestBody && lastSuggestBody.clause && lastSuggestBody.fields, "request must send {clause, fields}");
   assert.ok("preferred_position" in lastSuggestBody.fields, "fields must include the editable prose");
-  // The diff preview shows the changed field old + new; unchanged fields are hidden.
-  await assertTextContains(page.locator('[data-ai-wording-field="preferred_position"]'), "AI-REVISED POSITION");
+  // The diff preview shows the changed field old (in the Current pre) + new (in the
+  // editable suggestion textarea); unchanged fields are hidden.
+  await assertTextContains(page.locator('[data-ai-wording-field="preferred_position"]'), "OLD POSITION");
+  assert.equal(
+    await page.locator('[data-ai-wording-text="preferred_position"]').inputValue(),
+    "AI-REVISED POSITION mentioning one-way terms.",
+  );
   assert.equal(await page.locator('[data-ai-wording-field="check_trigger"]').count(), 0);
   // Preview-only: the live preferred_position textarea is UNCHANGED before Apply.
   assert.equal(await page.locator('#playbookEditor textarea[name="preferred_position"]').inputValue(), beforePosition);
@@ -797,13 +808,16 @@ async function testPlaybookAdminEditor(page) {
   // Version History is now GLOBAL -- it lives at the playbook level (#playbookHistory),
   // NOT inside the per-clause editor.
   await assertTextContains(page.locator("#playbookHistory"), "Policy Version History");
-  await page.getByRole("button", { name: "Confidential Information" }).click();
+  // Select by the clause-row data attribute -- in the consolidated editor the
+  // semantic-signal chips are always visible, so a name-based button lookup would
+  // be ambiguous with a chip containing "confidential information".
+  await page.locator('#playbookList .playbook-row[data-clause-id="confidential_information"]').click();
   // Everything is on one screen -- no tab clicks. Redline template + the two
   // confidential-information check-driving list editors are all visible.
   await assertTextContains(page.locator("#clauseDetail"), "Standard Exclusions Language");
   await assertTextContains(page.locator("#clauseDetail"), "Required Definition Categories");
   await assertTextContains(page.locator("#clauseDetail"), "Problematic Exclusion Terms");
-  assert.equal(await page.getByText("confidential_information_analysis", { exact: false }).count(), 0);
+  assert.equal(await page.locator("#clauseDetail").getByText("confidential_information_analysis", { exact: false }).count(), 0);
   assert.equal(await page.getByText("Confidential-Info Exclusions Allowlist", { exact: false }).count(), 0);
   assert.equal(await page.getByPlaceholder("Add exclusion key").count(), 0);
   await page.locator('textarea[name="standard_exclusions_template"]').fill("Publicly known information is excluded.");
@@ -818,7 +832,7 @@ async function testPlaybookAdminEditor(page) {
   assert.equal(await page.locator('[data-derived-field="check_trigger"]').getAttribute("readonly"), "");
   await assertTextContains(page.locator("#clauseDetail"), "Auto-derived from the approved list");
   assert.equal(await page.getByText("Checker Logic Visibility", { exact: false }).count(), 0);
-  assert.equal(await page.getByText("term_survival_analysis", { exact: false }).count(), 0);
+  assert.equal(await page.locator("#clauseDetail").getByText("term_survival_analysis", { exact: false }).count(), 0);
   // The redline template + its preview/validation are inline in the same screen.
   await assertTextContains(page.locator("#clauseDetail"), "Template Preview");
   await assertTextContains(page.locator("#clauseDetail"), "{max_term_years_label}");
@@ -844,7 +858,7 @@ async function testPlaybookAdminEditor(page) {
   // The redline preview is inline (no tab).
   await assertTextContains(page.locator("#clauseDetail"), "Generated Governing Law Redlines");
   await assertTextContains(page.locator("#clauseDetail"), "This Agreement shall be governed by the laws of India.");
-  assert.equal(await page.getByText("governing_law_analysis", { exact: false }).count(), 0);
+  assert.equal(await page.locator("#clauseDetail").getByText("governing_law_analysis", { exact: false }).count(), 0);
   await page.getByPlaceholder("Add approved jurisdiction").fill("UAE");
   await page.locator("#addGoverningLaw").click();
   const uaeGoverningLawIndex = (await page.locator("[data-governing-law-row]").count()) - 1;
@@ -860,7 +874,7 @@ async function testPlaybookAdminEditor(page) {
   // Names-only prohibited-position editor (the regex is derived behind the scenes).
   await assertTextContains(page.locator("#clauseDetail"), "Prohibited Position Names");
   await assertTextContains(page.locator("#clauseDetail"), "Names only");
-  assert.equal(await page.getByText("non_circumvention_analysis", { exact: false }).count(), 0);
+  assert.equal(await page.locator("#clauseDetail").getByText("non_circumvention_analysis", { exact: false }).count(), 0);
   await page.locator('[data-clause-id="mutuality"]').click();
 
   // The version banner distinguishes the active published Playbook from the draft.
