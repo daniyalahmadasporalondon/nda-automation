@@ -16,6 +16,7 @@ from urllib.parse import unquote, urlparse
 
 from . import (
     app_settings,
+    entity_registry,
     export_service,
     gmail_integration,
     matter_store,
@@ -24,6 +25,7 @@ from . import (
     telemetry,
     user_store,
 )
+from .playbook_runtime import read_playbook_from_path
 from .checker import (
     PLAYBOOK_PATH,
     ai_validate_draft_fix,
@@ -804,6 +806,7 @@ def main() -> None:
         parser.error(str(error))
 
     _record_data_dir_boot_sentinel()
+    _validate_entity_registry_against_playbook()
 
     server = ThreadingHTTPServer((args.host, args.port), NdaAutomationHandler)
     _start_gmail_sync_scheduler()
@@ -857,6 +860,35 @@ def _run_startup_inbound_review_recovery() -> None:
             _recover_unreviewed_inbound_matters(owner_user_id=owner_user_id)
     else:
         _recover_unreviewed_inbound_matters()
+
+
+def _validate_entity_registry_against_playbook() -> None:
+    """Proactively catch entity-registry <-> playbook drift at boot. WARN-only.
+
+    The signing-entity registry joins onto the live playbook by governing-law
+    option id, and its per-entity ``jurisdiction`` must reconcile (at bucket
+    granularity) with the playbook's per-option ``forum_jurisdiction``. If the
+    playbook drifts -- a renamed/removed approved option, a cached label gone stale,
+    or a law/forum jurisdiction divergence -- a generated NDA could carry the wrong
+    governing law or a court from the wrong jurisdiction.
+
+    This runs at startup so the drift is surfaced in the boot log proactively,
+    rather than only when someone hits generate. Detection only -- it NEVER refuses
+    to boot (avoid prod-down); generation still hard-fails on an actually-unapproved
+    option downstream.
+    """
+
+    try:
+        playbook = read_playbook_from_path(PLAYBOOK_PATH)
+    except Exception as error:  # pragma: no cover - missing/unreadable playbook.
+        _log_background_error("Entity-registry drift check could not load the playbook", error)
+        return
+    try:
+        entity_registry.validate_registry_against_playbook(playbook)
+    except ValueError as drift:
+        print(f"WARNING: entity-registry/playbook drift detected at boot: {drift}")
+    except Exception as error:  # pragma: no cover - defensive: never crash boot.
+        _log_background_error("Entity-registry drift check failed", error)
 
 
 def _record_data_dir_boot_sentinel() -> None:
