@@ -76,11 +76,14 @@ _VERIFIABLE_DECISIONS = {CLAUSE_DECISION_FAIL, CLAUSE_DECISION_REVIEW}
 # Below it (or when confidence is unknown) a pass is still cheap insurance to check.
 HIGH_CONFIDENCE_PASS_THRESHOLD = 0.85
 
-# Below this confidence, the verifier must clear its own bar before it is allowed
-# to overturn the engine -- a hesitant refutation should escalate, not flip.
+# A refute below VERIFIER_MIN_CONFIDENCE is too hesitant to act on confidently --
+# it still routes to human review (the verifier never flips silently).
 VERIFIER_MIN_CONFIDENCE = 0.6
+# ABSOLUTE bar (FIX 4): a refuted escalation is marked a STRONG ("downgraded")
+# disagreement only when the verifier's OWN confidence clears this floor. The bar
+# is engine-independent -- the verifier is not calibrated against the confidence of
+# the engine it audits.
 VERIFIER_CLEAR_MIN_CONF = 0.85
-VERIFIER_CLEAR_MARGIN = 0.10
 
 # A verifier-downgraded clause (refute/uncertain -> review) sets
 # decision_source="ai_verifier" but PRESERVES its evidence; the evidence-grounding
@@ -311,6 +314,14 @@ def build_verifier_packet(
     the human-readable finding -- the verifier judges the finding against the clause
     text and cited evidence, the same material a human reviewer would see.
 
+    ANTI-ANCHORING (FIX 4): the packet does NOT carry the engine's CONFIDENCE. The
+    verifier is told the engine's decision + finding so it knows what to audit, but
+    withholding the engine's numeric certainty stops the model from calibrating its
+    own confidence to the engine's (a verifier that sees "engine 0.95 confident"
+    tends to defer; a verifier that sees "engine 0.5 confident" tends to pile on).
+    The clearing logic likewise no longer measures the verifier against the engine's
+    confidence -- it uses an ABSOLUTE bar (see _can_clear_refuted_escalation).
+
     ``section_index`` (derived from the contract structure's reference_index) lets
     the packet anchor the finding to the document section(s) its evidence lives in,
     so the verifier respects clause boundaries -- it must not borrow a carve-out from
@@ -336,7 +347,9 @@ def build_verifier_packet(
         "engine_finding": str(
             clause.get("decision_reason") or clause.get("reason") or clause.get("finding") or ""
         ),
-        "engine_confidence": _confidence(clause),
+        # FIX 4: engine_confidence is deliberately WITHHELD from the verifier so it
+        # cannot anchor its own certainty to the engine's. The clearing baseline is
+        # absolute (VERIFIER_CLEAR_MIN_CONF), not relative to the engine.
         "matched_text": neutralize_untrusted_text(clause.get("matched_text")),
         "evidence": evidence,
         "source_text": neutralize_untrusted_text(source_text),
@@ -615,13 +628,18 @@ def _can_clear_refuted_escalation(
     *,
     verifier_confidence: float,
 ) -> bool:
-    engine_confidence = _confidence(clause)
-    if engine_confidence is None:
-        return False
-    return (
-        verifier_confidence >= VERIFIER_CLEAR_MIN_CONF
-        and verifier_confidence > engine_confidence + VERIFIER_CLEAR_MARGIN
-    )
+    """Whether the verifier disagrees strongly enough to mark a STRONG downgrade.
+
+    ANTI-ANCHORING (FIX 4): the bar is ABSOLUTE -- the verifier must clear its own
+    VERIFIER_CLEAR_MIN_CONF floor on its OWN confidence. It is no longer measured
+    relative to the engine's confidence (the old ``> engine_confidence + margin``
+    rule anchored the verifier to the engine it was meant to independently audit).
+    Note this gate no longer changes the *decision* (a refuted escalation always
+    lands on ``review`` now) -- it only distinguishes a strong "downgraded" outcome
+    from a weaker "flagged_for_review" in the audit trail. ``clause`` is unused but
+    kept for signature stability.
+    """
+    return verifier_confidence >= VERIFIER_CLEAR_MIN_CONF
 
 
 def _rewrite_decision(

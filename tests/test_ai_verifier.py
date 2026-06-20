@@ -167,7 +167,11 @@ class ApplyVerifierTests(unittest.TestCase):
         self.assertEqual(clause["matched_text"], evidence_quote)
         self.assertEqual(clause["evidence"], [evidence_quote])
 
-    def test_refuted_fail_routes_to_review_when_verifier_does_not_beat_engine(self):
+    def test_refute_below_absolute_clear_bar_is_flagged_for_review(self):
+        # FIX 4: the downgrade-strength outcome is gated on the verifier's OWN
+        # confidence against an ABSOLUTE bar (0.85), independent of engine
+        # confidence. A confident-enough-to-act (>=0.6) but sub-clear-bar (<0.85)
+        # refute still routes to review, marked "flagged_for_review".
         clauses = [
             _clause(
                 "non_circumvention",
@@ -181,24 +185,49 @@ class ApplyVerifierTests(unittest.TestCase):
             )
         ]
         updated, _ = apply_ai_verifier(
-            clauses, source_text=clauses[0]["matched_text"], verifier=_scripted(VERIFIER_VERDICT_REFUTE)
+            clauses,
+            source_text=clauses[0]["matched_text"],
+            verifier=_scripted(VERIFIER_VERDICT_REFUTE, confidence=0.70),
         )
         self.assertEqual(updated[0]["decision"], "review")
         self.assertEqual(updated[0]["ai_verifier"]["outcome"], "flagged_for_review")
 
+    def test_clear_bar_is_engine_independent(self):
+        # FIX 4 anti-anchoring: the SAME verifier confidence yields the SAME outcome
+        # regardless of the engine's confidence -- the bar no longer measures the
+        # verifier against the engine. Here a 0.95 refute clears the absolute bar
+        # ("downgraded") whether the engine was 0.50 or 0.99 confident; either way
+        # the decision is review, never pass.
+        for engine_conf in (0.50, 0.99):
+            clauses = [
+                _clause("non_circumvention", "fail", clause_type="prohibited", confidence=engine_conf)
+            ]
+            updated, _ = apply_ai_verifier(
+                clauses, source_text="x", verifier=_scripted(VERIFIER_VERDICT_REFUTE, confidence=0.95)
+            )
+            self.assertEqual(updated[0]["decision"], "review", f"engine_conf={engine_conf}")
+            self.assertEqual(
+                updated[0]["ai_verifier"]["outcome"], "downgraded", f"engine_conf={engine_conf}"
+            )
+
     def test_refuted_fail_routes_to_review_when_engine_confidence_missing(self):
+        # Engine confidence is no longer read by the clearing logic, so a missing
+        # engine confidence does not change anything: the refute still routes to
+        # review. The outcome reflects the verifier's own confidence vs the bar.
         clause = _clause("non_circumvention", "fail", clause_type="prohibited")
         clause.pop("confidence")
         updated, _ = apply_ai_verifier(
-            [clause], source_text="x", verifier=_scripted(VERIFIER_VERDICT_REFUTE)
+            [clause], source_text="x", verifier=_scripted(VERIFIER_VERDICT_REFUTE, confidence=0.70)
         )
         self.assertEqual(updated[0]["decision"], "review")
         self.assertEqual(updated[0]["ai_verifier"]["outcome"], "flagged_for_review")
 
-    def test_refuted_review_stays_review_when_verifier_does_not_beat_engine(self):
+    def test_refuted_review_below_clear_bar_stays_review_unchanged(self):
+        # A sub-clear-bar refute of a REVIEW leaves it review (no decision change)
+        # and is flagged_for_review -- engine confidence is irrelevant now.
         clauses = [_clause("non_circumvention", "review", clause_type="prohibited", confidence=0.90)]
         updated, _ = apply_ai_verifier(
-            clauses, source_text="x", verifier=_scripted(VERIFIER_VERDICT_REFUTE)
+            clauses, source_text="x", verifier=_scripted(VERIFIER_VERDICT_REFUTE, confidence=0.70)
         )
         self.assertEqual(updated[0]["decision"], "review")
         self.assertFalse(updated[0]["ai_verifier"]["changed"])
@@ -370,6 +399,20 @@ class BuildPacketTests(unittest.TestCase):
             packet["playbook_guidance"]["rules"]["fail_conditions"][0]["id"],
             "restriction",
         )
+        # FIX 4: the engine's confidence is WITHHELD so the verifier classifies cold
+        # rather than anchoring its certainty to the engine's.
+        self.assertNotIn("engine_confidence", packet)
+
+    def test_engine_confidence_is_withheld_regardless_of_clause_confidence(self):
+        # Anti-anchoring (FIX 4): no matter how confident the engine was, the packet
+        # never reveals that number to the verifier.
+        for conf in (0.10, 0.55, 0.99):
+            clause = _clause("non_circumvention", "fail", clause_type="prohibited", confidence=conf)
+            packet = build_verifier_packet(clause, source_text="full doc")
+            self.assertNotIn("engine_confidence", packet, f"confidence={conf}")
+            # The decision + finding are still supplied so the verifier knows what to audit.
+            self.assertEqual(packet["engine_decision"], "fail")
+            self.assertIn("engine_finding", packet)
 
     def test_injected_role_marker_and_control_char_are_neutralized_in_packet(self):
         # Injection defence: untrusted source_text / matched_text / evidence that try
