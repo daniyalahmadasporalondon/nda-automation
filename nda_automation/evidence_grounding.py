@@ -94,9 +94,10 @@ def classify_grounding(
     carries a quote that was matched into a source paragraph. The two
     quote-less verdicts above are ``absence``. Anything else is ``ungrounded``.
 
-    ``decision_source`` lets the AI verifier mark a finding it owns: when it
-    refutes a clause to a pass it deliberately clears the disproven evidence, so
-    that empty-evidence verdict is a legitimate absence regardless of clause type.
+    ``decision_source`` is accepted for API stability but is NO LONGER a blanket
+    absence exemption: the AI verifier only downgrades a finding to ``review`` and
+    PRESERVES its evidence, so a verifier-owned clause is grounded honestly against
+    that preserved evidence rather than being waved through as a legitimate absence.
     """
 
     if _has_groundable_quote(structured_evidence):
@@ -169,23 +170,22 @@ def build_citation(structured_evidence: Sequence[Mapping[str, Any]]) -> dict[str
     return None
 
 
-# A clause whose decision was rewritten by the AI verifier owns its evidence
-# state intentionally: a verifier refute-to-pass deliberately CLEARS the
-# disproven evidence, so an empty-evidence verifier pass is legitimate, not
-# ungrounded. Grounding treats such a pass as an absence rather than re-flagging
-# it. See [[ai-verifier-pass-design]] for the composition contract.
+# Marker stamped onto a clause whose decision the AI verifier rewrote. The
+# verifier now only DOWNGRADES a finding to ``review`` and PRESERVES its evidence,
+# so this marker no longer grants a blanket grounding exemption -- a verifier-owned
+# clause is grounded honestly against its preserved evidence. See
+# [[ai-verifier-pass-design]] for the composition contract.
 VERIFIER_DECISION_SOURCE = "ai_verifier"
 
 
 def refinalize_clause_grounding(clause: dict[str, Any]) -> dict[str, Any]:
     """Recompute ``grounding`` + ``citation`` on a clause edited after grounding.
 
-    The AI verifier runs after grounding and may rewrite a clause's decision and
-    clear its evidence. That leaves the clause carrying a stale ``grounding`` /
-    ``citation`` from the first pass, describing evidence that no longer exists.
-    Call this on each verifier-changed clause (right after its
-    ``structured_evidence`` is rebuilt, before aggregation) to re-derive a
-    consistent grounding surface from the clause's CURRENT state.
+    The AI verifier runs after grounding and may rewrite a clause's decision (a
+    downgrade to ``review``). Its evidence is PRESERVED, but the first-pass
+    ``grounding`` / ``citation`` can still be stale relative to the rewritten
+    decision. Call this on each verifier-changed clause (before aggregation) to
+    re-derive a consistent grounding surface from the clause's CURRENT state.
 
     Mutates and returns ``clause``. A clause that is no longer grounded loses its
     ``citation`` so nothing dangles a quote the finding no longer relies on.
@@ -202,9 +202,9 @@ def refinalize_clause_grounding(clause: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(structured_evidence, Sequence) or isinstance(structured_evidence, (str, bytes)):
         structured_evidence = []
 
-    # ``decision_source`` carries the verifier marker, so a verifier-cleared pass
-    # of any clause type resolves to a legitimate absence (handled uniformly in
-    # _is_legitimate_absence) rather than being re-flagged as ungrounded.
+    # ``decision_source`` is forwarded for API stability; it no longer forces an
+    # absence. The verifier's downgrade preserves evidence, so grounding is derived
+    # honestly from the clause's preserved structured_evidence.
     clause["grounding"] = build_grounding(
         decision=decision,
         issue_type=issue_type,
@@ -290,11 +290,12 @@ def _is_legitimate_absence(
     # A prohibited clause that does not appear: you cannot quote absent text.
     if normalized_decision == CLAUSE_DECISION_PASS and normalized_type == CLAUSE_TYPE_PROHIBITED:
         return True
-    # A clause the AI verifier owns: a refute-to-pass deliberately clears the
-    # disproven evidence, so an empty-evidence verifier verdict is a legitimate
-    # absence for any clause type, not an ungrounded finding to re-downgrade.
-    if str(decision_source or "") == VERIFIER_DECISION_SOURCE:
-        return True
+    # NOTE: ``decision_source == "ai_verifier"`` is deliberately NOT a blanket
+    # absence exemption. The verifier only ever DOWNGRADES a finding to ``review``
+    # (it never acquits to a clean pass) and PRESERVES the original matched
+    # evidence, so a verifier-owned clause must still be grounded honestly against
+    # that preserved evidence -- the original finding stays visible and
+    # challengeable rather than being wiped to a fake "legitimate absence".
     return False
 
 

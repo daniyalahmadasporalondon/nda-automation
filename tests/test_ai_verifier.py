@@ -134,29 +134,44 @@ class ApplyVerifierTests(unittest.TestCase):
         )
         self.assertNotEqual(summary["status"], "deferred")
 
-    def test_refute_clears_a_fail_to_pass_only_when_verifier_beats_engine(self):
+    def test_confident_refute_downgrades_a_fail_to_review_never_pass(self):
+        # DESIGN (FIX 1): a confidently refuted FAIL that beats the engine is
+        # DOWNGRADED to review (a human still signs off) -- the verifier may never
+        # autonomously acquit to a clean PASS. FIX 2: the matched evidence is
+        # PRESERVED so the finding stays auditable + challengeable.
+        evidence_quote = "Each party shall not be restricted from dealing with introduced contacts."
         clauses = [
             _clause(
                 "non_circumvention",
                 "fail",
                 clause_type="prohibited",
                 confidence=0.70,
-                matched_text="Each party shall not be restricted from dealing with introduced contacts.",
-                evidence=["Each party shall not be restricted from dealing with introduced contacts."],
+                matched_text=evidence_quote,
+                evidence=[evidence_quote],
             )
         ]
         updated, summary = apply_ai_verifier(
             clauses, source_text="x", verifier=_scripted(VERIFIER_VERDICT_REFUTE, confidence=0.86)
         )
         clause = updated[0]
-        self.assertEqual(clause["decision"], "pass")
+        # NEVER pass: a confident refute downgrades severity to review, not pass.
+        self.assertEqual(clause["decision"], "review")
+        self.assertNotEqual(clause["decision"], "pass")
         self.assertEqual(clause["decision_source"], "ai_verifier")
-        self.assertTrue(clause["passes"])
+        self.assertFalse(clause["passes"])
+        self.assertTrue(clause["needs_review"])
         self.assertEqual(summary["changed_count"], 1)
         self.assertEqual(clause["ai_verifier"]["outcome"], "downgraded")
         self.assertEqual(clause["ai_verifier"]["original_decision"], "fail")
+        # Evidence is PRESERVED on the downgrade -- the trail is not wiped.
+        self.assertEqual(clause["matched_text"], evidence_quote)
+        self.assertEqual(clause["evidence"], [evidence_quote])
 
-    def test_refuted_fail_routes_to_review_when_verifier_does_not_beat_engine(self):
+    def test_refute_below_absolute_clear_bar_is_flagged_for_review(self):
+        # FIX 4: the downgrade-strength outcome is gated on the verifier's OWN
+        # confidence against an ABSOLUTE bar (0.85), independent of engine
+        # confidence. A confident-enough-to-act (>=0.6) but sub-clear-bar (<0.85)
+        # refute still routes to review, marked "flagged_for_review".
         clauses = [
             _clause(
                 "non_circumvention",
@@ -170,38 +185,79 @@ class ApplyVerifierTests(unittest.TestCase):
             )
         ]
         updated, _ = apply_ai_verifier(
-            clauses, source_text=clauses[0]["matched_text"], verifier=_scripted(VERIFIER_VERDICT_REFUTE)
+            clauses,
+            source_text=clauses[0]["matched_text"],
+            verifier=_scripted(VERIFIER_VERDICT_REFUTE, confidence=0.70),
         )
         self.assertEqual(updated[0]["decision"], "review")
         self.assertEqual(updated[0]["ai_verifier"]["outcome"], "flagged_for_review")
 
+    def test_clear_bar_is_engine_independent(self):
+        # FIX 4 anti-anchoring: the SAME verifier confidence yields the SAME outcome
+        # regardless of the engine's confidence -- the bar no longer measures the
+        # verifier against the engine. Here a 0.95 refute clears the absolute bar
+        # ("downgraded") whether the engine was 0.50 or 0.99 confident; either way
+        # the decision is review, never pass.
+        for engine_conf in (0.50, 0.99):
+            clauses = [
+                _clause("non_circumvention", "fail", clause_type="prohibited", confidence=engine_conf)
+            ]
+            updated, _ = apply_ai_verifier(
+                clauses, source_text="x", verifier=_scripted(VERIFIER_VERDICT_REFUTE, confidence=0.95)
+            )
+            self.assertEqual(updated[0]["decision"], "review", f"engine_conf={engine_conf}")
+            self.assertEqual(
+                updated[0]["ai_verifier"]["outcome"], "downgraded", f"engine_conf={engine_conf}"
+            )
+
     def test_refuted_fail_routes_to_review_when_engine_confidence_missing(self):
+        # Engine confidence is no longer read by the clearing logic, so a missing
+        # engine confidence does not change anything: the refute still routes to
+        # review. The outcome reflects the verifier's own confidence vs the bar.
         clause = _clause("non_circumvention", "fail", clause_type="prohibited")
         clause.pop("confidence")
         updated, _ = apply_ai_verifier(
-            [clause], source_text="x", verifier=_scripted(VERIFIER_VERDICT_REFUTE)
+            [clause], source_text="x", verifier=_scripted(VERIFIER_VERDICT_REFUTE, confidence=0.70)
         )
         self.assertEqual(updated[0]["decision"], "review")
         self.assertEqual(updated[0]["ai_verifier"]["outcome"], "flagged_for_review")
 
-    def test_refuted_review_stays_review_when_verifier_does_not_beat_engine(self):
+    def test_refuted_review_below_clear_bar_stays_review_unchanged(self):
+        # A sub-clear-bar refute of a REVIEW leaves it review (no decision change)
+        # and is flagged_for_review -- engine confidence is irrelevant now.
         clauses = [_clause("non_circumvention", "review", clause_type="prohibited", confidence=0.90)]
         updated, _ = apply_ai_verifier(
-            clauses, source_text="x", verifier=_scripted(VERIFIER_VERDICT_REFUTE)
+            clauses, source_text="x", verifier=_scripted(VERIFIER_VERDICT_REFUTE, confidence=0.70)
         )
         self.assertEqual(updated[0]["decision"], "review")
         self.assertFalse(updated[0]["ai_verifier"]["changed"])
         self.assertEqual(updated[0]["ai_verifier"]["outcome"], "flagged_for_review")
 
-    def test_refuted_review_clears_to_pass_when_verifier_beats_engine(self):
-        clauses = [_clause("non_circumvention", "review", clause_type="prohibited", confidence=0.70)]
+    def test_refuted_review_stays_review_when_verifier_beats_engine(self):
+        # A confidently refuted REVIEW that beats the engine stays REVIEW (a human
+        # still adjudicates). The verifier disagrees strongly, recorded as
+        # outcome="downgraded", but it never acquits the clause to a clean pass.
+        evidence_quote = "Each party shall not be restricted from dealing with introduced contacts."
+        clauses = [
+            _clause(
+                "non_circumvention",
+                "review",
+                clause_type="prohibited",
+                confidence=0.70,
+                matched_text=evidence_quote,
+                evidence=[evidence_quote],
+            )
+        ]
         updated, _ = apply_ai_verifier(
             clauses,
-            source_text="Each party shall not be restricted from dealing with introduced contacts.",
+            source_text=evidence_quote,
             verifier=_scripted(VERIFIER_VERDICT_REFUTE, confidence=0.86),
         )
-        self.assertEqual(updated[0]["decision"], "pass")
+        self.assertEqual(updated[0]["decision"], "review")
+        self.assertNotEqual(updated[0]["decision"], "pass")
         self.assertEqual(updated[0]["ai_verifier"]["outcome"], "downgraded")
+        # Evidence preserved even though the verifier confidently disagreed.
+        self.assertEqual(updated[0]["matched_text"], evidence_quote)
 
     def test_resolver_path_does_not_auto_run_any_regex_engine(self):
         # With NDA_AI_VERIFIER off and no injected verifier, the resolver path is a
@@ -343,6 +399,20 @@ class BuildPacketTests(unittest.TestCase):
             packet["playbook_guidance"]["rules"]["fail_conditions"][0]["id"],
             "restriction",
         )
+        # FIX 4: the engine's confidence is WITHHELD so the verifier classifies cold
+        # rather than anchoring its certainty to the engine's.
+        self.assertNotIn("engine_confidence", packet)
+
+    def test_engine_confidence_is_withheld_regardless_of_clause_confidence(self):
+        # Anti-anchoring (FIX 4): no matter how confident the engine was, the packet
+        # never reveals that number to the verifier.
+        for conf in (0.10, 0.55, 0.99):
+            clause = _clause("non_circumvention", "fail", clause_type="prohibited", confidence=conf)
+            packet = build_verifier_packet(clause, source_text="full doc")
+            self.assertNotIn("engine_confidence", packet, f"confidence={conf}")
+            # The decision + finding are still supplied so the verifier knows what to audit.
+            self.assertEqual(packet["engine_decision"], "fail")
+            self.assertIn("engine_finding", packet)
 
     def test_injected_role_marker_and_control_char_are_neutralized_in_packet(self):
         # Injection defence: untrusted source_text / matched_text / evidence that try
@@ -387,7 +457,9 @@ class ClauseBoundaryMarkerTests(unittest.TestCase):
     restriction in section B)."""
 
     def _structure(self):
-        # Two real sections; p3/p4 live in section-1, p9 in section-2.
+        # Two SOURCE-BACKED sections (real Word numbering metadata under ``source``);
+        # p3/p4 live in section-1, p9 in section-2. Source-backed so the verifier's
+        # boundary index admits them (FIX 3 gates the index on source-backed only).
         return {
             "reference_index": {
                 "paragraph_to_section_id": {
@@ -396,8 +468,18 @@ class ClauseBoundaryMarkerTests(unittest.TestCase):
                     "p9": "section-2",
                 },
                 "sections_by_id": {
-                    "section-1": {"id": "section-1", "label": "2. Non-Circumvention", "heading": "Non-Circumvention"},
-                    "section-2": {"id": "section-2", "label": "5. Permitted Dealings", "heading": "Permitted Dealings"},
+                    "section-1": {
+                        "id": "section-1",
+                        "label": "2. Non-Circumvention",
+                        "heading": "Non-Circumvention",
+                        "source": {"numbering": {"num_id": 1, "level": 0}},
+                    },
+                    "section-2": {
+                        "id": "section-2",
+                        "label": "5. Permitted Dealings",
+                        "heading": "Permitted Dealings",
+                        "source": {"numbering": {"num_id": 1, "level": 0}},
+                    },
                 },
             }
         }
@@ -479,6 +561,62 @@ class ClauseBoundaryMarkerTests(unittest.TestCase):
         self.assertNotIn("matched_section_ids", captured)
         self.assertNotIn("clause_scope_is_single", captured)
         self.assertEqual(captured["clause_id"], "non_circumvention")
+
+    def _phantom_structure(self):
+        # A flat/PDF parse: "sections" scraped from plain text carry NO ``source``
+        # metadata, so they are phantom boundaries that must never reach the verifier.
+        return {
+            "reference_index": {
+                "paragraph_to_section_id": {"p3": "section-1", "p4": "section-1", "p9": "section-2"},
+                "sections_by_id": {
+                    "section-1": {"id": "section-1", "label": "2. Non-Circumvention"},
+                    "section-2": {"id": "section-2", "label": "5. Permitted Dealings"},
+                },
+            }
+        }
+
+    def test_phantom_pdf_sections_never_reach_the_packet(self):
+        # FIX 3: a PDF/flat parse's non-source-backed (phantom) sections are gated
+        # OUT -- the packet carries no boundary markers, so the verifier cannot
+        # borrow a carve-out from a hallucinated section.
+        captured = {}
+
+        def capture(packet):
+            captured.update(packet)
+            return {"verdict": VERIFIER_VERDICT_AFFIRM, "confidence": 0.9, "rationale": "x"}
+
+        apply_ai_verifier(
+            [self._evidence_clause("p3", "p4")],
+            source_text="full doc",
+            verifier=capture,
+            contract_structure=self._phantom_structure(),
+        )
+        self.assertNotIn("matched_section_ids", captured)
+        self.assertNotIn("clause_scope_is_single", captured)
+        self.assertNotIn("section_labels", captured)
+
+    def test_section_index_drops_non_source_backed_sections(self):
+        # Unit: a mixed structure keeps ONLY the source-backed section in the index.
+        from nda_automation.ai_verifier import _section_index
+
+        structure = {
+            "reference_index": {
+                "paragraph_to_section_id": {"p1": "real", "p2": "phantom"},
+                "sections_by_id": {
+                    "real": {"id": "real", "label": "1. Real", "source": {"numbering": {"num_id": 1}}},
+                    "phantom": {"id": "phantom", "label": "9. Phantom"},
+                },
+            }
+        }
+        index = _section_index(structure)
+        self.assertEqual(index["paragraph_to_section_id"], {"p1": "real"})
+        self.assertNotIn("phantom", index["section_labels"])
+        self.assertEqual(index["section_labels"], {"real": "1. Real"})
+
+    def test_section_index_empty_when_no_source_backed_sections(self):
+        from nda_automation.ai_verifier import _section_index
+
+        self.assertEqual(_section_index(self._phantom_structure()), {})
 
     def test_falls_back_to_matched_paragraph_ids_without_structured_evidence(self):
         clause = _clause(
