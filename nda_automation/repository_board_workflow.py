@@ -55,7 +55,7 @@ class RepositoryBoardWorkflow:
         if matter_id is None:
             raise _not_found()
         if not isinstance(board_column, str) or board_column not in BOARD_COLUMNS:
-            raise RepositoryBoardWorkflowError("Unsupported matter stage.", status=400)
+            raise RepositoryBoardWorkflowError("Unsupported NDA stage.", status=400)
         try:
             matter = self._repository.update_matter_stage(
                 matter_id,

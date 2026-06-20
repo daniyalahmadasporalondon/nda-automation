@@ -223,7 +223,7 @@ class RepositoryMatterLifecycle:
             raise RedlineDraftError("Redline draft must be an object or null.")
         matter = self._repository.update_redline_draft(matter_id, draft, owner_user_id=owner_user_id)
         if matter is None:
-            raise MatterNotFoundError("Matter not found.")
+            raise MatterNotFoundError("NDA not found.")
         return matter
 
     def approve_matter(
@@ -237,7 +237,7 @@ class RepositoryMatterLifecycle:
 
         matter = self._repository.get_matter(matter_id, owner_user_id=owner_user_id)
         if matter is None:
-            raise MatterNotFoundError("Matter not found.")
+            raise MatterNotFoundError("NDA not found.")
         blocks = approval.approval_blocks(matter)
         if blocks:
             raise MatterApprovalBlockedError(blocks, approval.resolution_summary(matter))
@@ -252,7 +252,7 @@ class RepositoryMatterLifecycle:
             owner_user_id=owner_user_id,
         )
         if updated_matter is None:
-            raise MatterNotFoundError("Matter not found.")
+            raise MatterNotFoundError("NDA not found.")
         return MatterApprovalResult(
             matter=updated_matter,
             approved_at=approved_at,
@@ -277,13 +277,13 @@ class RepositoryMatterLifecycle:
 
         matter = self._repository.get_matter(matter_id, owner_user_id=owner_user_id)
         if matter is None:
-            raise MatterNotFoundError("Matter not found.")
+            raise MatterNotFoundError("NDA not found.")
         if not to and not gmail_integration.matter_reply_recipient(matter):
-            raise MatterDeliveryError("Matter does not have a valid reply recipient email address.")
+            raise MatterDeliveryError("NDA does not have a valid reply recipient email address.")
         if not confirmed_recipient:
             raise MatterDeliveryError("Confirm the outbound recipient email address before sending.")
         if matter_view.matter_needs_human_review(matter) and not _matter_review_block_resolved(matter):
-            raise MatterSendBlockedError("Matter needs human review before a redline can be sent.")
+            raise MatterSendBlockedError("NDA needs human review before a redline can be sent.")
         if not app_settings.gmail_role_enabled("outbound"):
             raise MatterSendBlockedError("Gmail outbound is disabled in Admin.")
 
@@ -303,9 +303,9 @@ class RepositoryMatterLifecycle:
         )
         send_matter = self._repository.get_matter(matter_id, owner_user_id=owner_user_id)
         if send_matter is None:
-            raise MatterNotFoundError("Matter not found.")
+            raise MatterNotFoundError("NDA not found.")
         if matter_view.matter_needs_human_review(send_matter) and not _matter_review_block_resolved(send_matter):
-            raise MatterSendBlockedError("Matter needs human review before a redline can be sent.")
+            raise MatterSendBlockedError("NDA needs human review before a redline can be sent.")
 
         send_kwargs = {
             "body": body,
@@ -431,7 +431,7 @@ class RepositoryMatterLifecycle:
             owner_user_id=owner_user_id,
         )
         if updated_matter is None:
-            raise MatterNotFoundError("Matter not found.")
+            raise MatterNotFoundError("NDA not found.")
         self._stamp_sent_timeline(updated_matter, sent, owner_user_id=owner_user_id)
         return updated_matter
 

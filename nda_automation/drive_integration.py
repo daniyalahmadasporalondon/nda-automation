@@ -576,7 +576,7 @@ def sync_matter_folder(
 
     artifacts = artifact_registry.matter_artifacts(matter)
     if not artifacts:
-        raise DriveIntegrationError("Matter has no artifacts to save to Drive.")
+        raise DriveIntegrationError("NDA has no artifacts to save to Drive.")
 
     counterparty = derive_counterparty(matter)
     matter_folder_name = derive_matter_folder_name(matter, matter_id, counterparty)

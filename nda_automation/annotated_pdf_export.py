@@ -77,7 +77,7 @@ def build_matter_annotated_pdf(
 
     source_bytes = repository.get_source_document_bytes(matter)
     if source_bytes is None:
-        raise AnnotatedPdfExportError("Matter source PDF is missing from storage.")
+        raise AnnotatedPdfExportError("NDA source PDF is missing from storage.")
 
     return build_annotated_pdf(source_bytes, source_filename=source_filename, review_result=review_result)
 

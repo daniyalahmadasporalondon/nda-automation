@@ -95,7 +95,7 @@ def outbound_send_context(
     operator_recipient = recipient_email(recipient_override)
     recipient = operator_recipient or matter_reply_recipient(matter)
     if not recipient:
-        raise transport.GmailIntegrationError("Matter does not have a valid reply recipient email address.")
+        raise transport.GmailIntegrationError("NDA does not have a valid reply recipient email address.")
     require_confirmed_recipient(
         recipient,
         confirmed_recipient,
@@ -136,7 +136,7 @@ def require_confirmed_recipient(
         )
     if not email_addresses_match(confirmed, recipient):
         raise transport.RecipientConfirmationError(
-            "The confirmed recipient does not match the matter recipient; refusing to send. "
+            "The confirmed recipient does not match the NDA recipient; refusing to send. "
             f"Confirm sending to {recipient}."
         )
 
@@ -201,7 +201,7 @@ def ensure_recipient_is_not_own_account(
     ]
     if any(email_addresses_match(recipient, own_account) for own_account in own_accounts):
         raise transport.GmailIntegrationError(
-            "Matter appears to be an outbound or self-sent Gmail message; refusing to send a redline "
+            "NDA appears to be an outbound or self-sent Gmail message; refusing to send a redline "
             f"back to {recipient}."
         )
 

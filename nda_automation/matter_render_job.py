@@ -19,7 +19,7 @@ class MatterRenderJobError(RuntimeError):
         status: int = 400,
         headers: dict[str, str] | None = None,
     ) -> None:
-        super().__init__(str(payload.get("error") or "Matter render job failed."))
+        super().__init__(str(payload.get("error") or "NDA render job failed."))
         self.payload = payload
         self.status = status
         self.headers = headers or {}

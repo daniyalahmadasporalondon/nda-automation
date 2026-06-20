@@ -199,7 +199,7 @@ def dashboard_assistant_tool_registry(context: Any) -> dict[str, DashboardAssist
         "get_repository_facts": DashboardAssistantTool(
             name="get_repository_facts",
             domain="repository",
-            description="Read owner-scoped repository counts, matter phases, and last-sent facts. No side effects.",
+            description="Read owner-scoped repository counts, NDA phases, and last-sent facts. No side effects.",
             parameters=schema_no_args,
             handler=lambda _args: _repository_facts(context),
         ),
@@ -237,7 +237,7 @@ def dashboard_assistant_tool_registry(context: Any) -> dict[str, DashboardAssist
         "summarize_matter": DashboardAssistantTool(
             name="summarize_matter",
             domain="repository",
-            description="Summarize an owner-scoped matter's workflow state, risks, and next action. No side effects.",
+            description="Summarize an owner-scoped NDA's workflow state, risks, and next action. No side effects.",
             parameters=_strict_schema(
                 {
                     "matter_id": {"type": "string"},
@@ -249,14 +249,14 @@ def dashboard_assistant_tool_registry(context: Any) -> dict[str, DashboardAssist
         "search_system": DashboardAssistantTool(
             name="search_system",
             domain="system_search",
-            description="Search owner-scoped matter contents, review clauses, and trusted Playbook clauses. No side effects.",
+            description="Search owner-scoped NDA contents, review clauses, and trusted Playbook clauses. No side effects.",
             parameters=_strict_schema({"query": {"type": "string"}}, required=("query",)),
             handler=lambda args: _search_system(context, args),
         ),
         "explain_how_it_works": DashboardAssistantTool(
             name="explain_how_it_works",
             domain="assistant",
-            description="Explain review, generation, Playbook, Gmail, or assistant behavior from trusted curated knowledge. No matter content.",
+            description="Explain review, generation, Playbook, Gmail, or assistant behavior from trusted curated knowledge. No NDA content.",
             parameters=_strict_schema(
                 {
                     "topic": {
@@ -306,7 +306,7 @@ def dashboard_assistant_tool_registry(context: Any) -> dict[str, DashboardAssist
         "resolve_matter_search_filter": DashboardAssistantTool(
             name="resolve_matter_search_filter",
             domain="repository",
-            description="Translate a matter search/filter query into the existing dashboard search-intent contract.",
+            description="Translate an NDA search/filter query into the existing dashboard search-intent contract.",
             parameters=_strict_schema({"query": {"type": "string"}}, required=("query",)),
             handler=lambda args: _search_filter(context, args),
         ),

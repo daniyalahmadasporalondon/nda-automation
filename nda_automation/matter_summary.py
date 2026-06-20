@@ -337,7 +337,7 @@ def summarize_matter(
     """
     context = build_summary_context(matter)
     if not has_summarizable_content(context):
-        raise MatterSummaryError("This matter has no document text to summarize.")
+        raise MatterSummaryError("This NDA has no document text to summarize.")
 
     resolved_settings = dict(settings or _ai_review_settings())
     model = str(resolved_settings.get("model") or DEFAULT_OPENROUTER_MODEL)
