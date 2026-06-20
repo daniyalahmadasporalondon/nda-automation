@@ -14,6 +14,7 @@ from ..playbook_authoring import (
     save_playbook_draft,
     validate_playbook_draft,
 )
+from .common import require_admin
 
 __all__ = [
     "collect_playbook_validation_errors",
@@ -50,6 +51,8 @@ def handle_playbook_draft_get(handler, *, playbook_path=PLAYBOOK_PATH, send_body
 
 
 def handle_playbook_validate_draft(handler, *, playbook_path=PLAYBOOK_PATH) -> None:
+    if not require_admin(handler):
+        return
     del playbook_path
     payload = handler._read_json_payload()
     if payload is None:
@@ -63,6 +66,8 @@ def handle_playbook_validate_draft(handler, *, playbook_path=PLAYBOOK_PATH) -> N
 
 
 def handle_playbook_draft_save(handler, *, playbook_path=PLAYBOOK_PATH, replace_file=os.replace) -> None:
+    if not require_admin(handler):
+        return
     payload = handler._read_json_payload()
     if payload is None:
         return
@@ -75,6 +80,8 @@ def handle_playbook_draft_save(handler, *, playbook_path=PLAYBOOK_PATH, replace_
 
 
 def handle_playbook_draft_discard(handler, *, playbook_path=PLAYBOOK_PATH, replace_file=os.replace) -> None:
+    if not require_admin(handler):
+        return
     payload = handler._read_json_payload() or {}
     try:
         response = discard_playbook_draft(payload, playbook_path=playbook_path, replace_file=replace_file)
@@ -85,6 +92,8 @@ def handle_playbook_draft_discard(handler, *, playbook_path=PLAYBOOK_PATH, repla
 
 
 def handle_playbook_publish(handler, *, playbook_path=PLAYBOOK_PATH, replace_file=os.replace) -> None:
+    if not require_admin(handler):
+        return
     payload = handler._read_json_payload()
     if payload is None:
         return
@@ -97,6 +106,8 @@ def handle_playbook_publish(handler, *, playbook_path=PLAYBOOK_PATH, replace_fil
 
 
 def handle_playbook_save(handler, *, playbook_path=PLAYBOOK_PATH, replace_file=os.replace) -> None:
+    if not require_admin(handler):
+        return
     payload = handler._read_json_payload()
     if payload is None:
         return
@@ -109,6 +120,8 @@ def handle_playbook_save(handler, *, playbook_path=PLAYBOOK_PATH, replace_file=o
 
 
 def handle_playbook_restore(handler, *, playbook_path=PLAYBOOK_PATH, replace_file=os.replace) -> None:
+    if not require_admin(handler):
+        return
     payload = handler._read_json_payload()
     if payload is None:
         return

@@ -39,12 +39,20 @@ from nda_automation.routes import playbook as playbook_routes
 from nda_automation import playbook_runtime
 
 
+class _LoopbackServer:
+    # The authoring routes are now admin-gated. A loopback host makes the trusted
+    # local developer an admin (no NDA_REQUIRE_AUTH set here), which is the right
+    # context for these behaviour tests -- they exercise authoring logic, not authz.
+    server_address = ("127.0.0.1", 0)
+
+
 class _JsonHandler:
     def __init__(self, payload: dict | None = None):
         self.payload = payload
         self.status = None
         self.response = None
         self.send_body = None
+        self.server = _LoopbackServer()
 
     def _read_json_payload(self):
         return self.payload
