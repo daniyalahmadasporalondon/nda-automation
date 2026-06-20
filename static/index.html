@@ -476,12 +476,12 @@
                    controls. The signature-status badge stays — it is the
                    always-visible "out for signature / signed" status, driven by the
                    DocuSign controller independently of any send button. -->
-              <div class="studio-matter-actions actions" role="group" aria-label="Matter actions">
+              <div class="studio-matter-actions actions" role="group" aria-label="NDA actions">
                 <span id="studioReviewStaleIndicator" class="studio-review-stale-indicator" role="status" aria-live="polite" hidden>Review may be stale</span>
                 <button id="studioRefreshReviewButton" class="studio-refresh-review" type="button" hidden>Review</button>
                 <button id="studioReviewedButton" class="studio-reviewed-btn" type="button" hidden title="Confirm you've checked the flagged clauses — this enables Send Redline">Reviewed</button>
                 <span id="studioSignatureBadge" class="docusign-status-badge" hidden aria-live="polite"></span>
-                <button id="studioRefreshStatusButton" class="link-button studio-refresh-status" type="button" hidden title="Re-check the live DocuSign envelope status — self-heals a matter whose completion webhook was missed.">Refresh status</button>
+                <button id="studioRefreshStatusButton" class="link-button studio-refresh-status" type="button" hidden title="Re-check the live DocuSign envelope status — self-heals an NDA whose completion webhook was missed.">Refresh status</button>
                 <button id="studioMarkExecutedButton" class="link-button studio-mark-executed" type="button" hidden title="Already signed outside DocuSign? File this NDA into the executed library.">Mark as executed</button>
                 <button id="studioSaveDraftButton" class="secondary" type="button" disabled>Save Draft</button>
                 <button id="studioDiscardDraftButton" class="secondary" type="button" disabled>Reset Draft</button>
@@ -780,8 +780,8 @@
                 </article>
               </section>
 
-              <aside class="repository-detail-panel" id="repositoryMatterPanel" role="dialog" aria-modal="true" aria-label="Matter inspector" hidden>
-                <div class="repository-detail-empty">Select a matter</div>
+              <aside class="repository-detail-panel" id="repositoryMatterPanel" role="dialog" aria-modal="true" aria-label="NDA inspector" hidden>
+                <div class="repository-detail-empty">Select an NDA</div>
               </aside>
             </section>
           </section>
@@ -798,12 +798,12 @@
                 <div class="corpus-group-toggle corpus-executed-toggle" id="corpusExecutedToggle" role="group" aria-label="Corpus scope">
                   <span class="corpus-group-toggle-label">Show</span>
                   <button class="corpus-group-toggle-btn" type="button" data-corpus-executed="executed" aria-pressed="true" title="Only fully-signed (executed) agreements — the library">Executed only</button>
-                  <button class="corpus-group-toggle-btn" type="button" data-corpus-executed="all" aria-pressed="false" title="Include matters still in progress (unsigned)">Include in-progress</button>
+                  <button class="corpus-group-toggle-btn" type="button" data-corpus-executed="all" aria-pressed="false" title="Include NDAs still in progress (unsigned)">Include in-progress</button>
                 </div>
                 <div class="corpus-group-toggle" id="corpusGroupToggle" role="group" aria-label="Group corpus by">
                   <span class="corpus-group-toggle-label">Group by</span>
-                  <button class="corpus-group-toggle-btn" type="button" data-corpus-group-by="counterparty" aria-pressed="true" title="Group matters by counterparty">Counterparty</button>
-                  <button class="corpus-group-toggle-btn" type="button" data-corpus-group-by="month" aria-pressed="false" title="Group matters by month — spot entities that sent more than one NDA in a month">Month</button>
+                  <button class="corpus-group-toggle-btn" type="button" data-corpus-group-by="counterparty" aria-pressed="true" title="Group NDAs by counterparty">Counterparty</button>
+                  <button class="corpus-group-toggle-btn" type="button" data-corpus-group-by="month" aria-pressed="false" title="Group NDAs by month — spot entities that sent more than one NDA in a month">Month</button>
                 </div>
                 <span class="corpus-drive-status" id="corpusDriveStatus" data-corpus-drive-status>Loading</span>
                 <button class="corpus-refresh" type="button" id="corpusRefreshButton" title="Re-list Drive and rebuild the corpus">Refresh</button>
@@ -813,7 +813,7 @@
             <form class="corpus-searchbar" id="corpusSearchForm" role="search">
               <div class="corpus-token-field" id="corpusTokenField">
                 <input class="corpus-search-input" id="corpusSearchInput" type="search"
-                       placeholder="Search counterparties, matters…" autocomplete="off" aria-label="Search corpus" />
+                       placeholder="Search counterparties, NDAs…" autocomplete="off" aria-label="Search corpus" />
               </div>
               <button class="corpus-search-clear" id="corpusSearchClear" type="button" hidden>Clear</button>
             </form>
@@ -823,7 +823,7 @@
 
               <div class="corpus-results">
                 <div class="corpus-noresults" id="corpusNoResults" hidden>
-                  No matters match these filters.
+                  No NDAs match these filters.
                   <button class="corpus-link corpus-noresults-reset" type="button" id="corpusNoResultsReset">Clear filters</button>
                 </div>
                 <div class="corpus-empty" id="corpusEmpty" hidden></div>
@@ -917,7 +917,7 @@
                   <article class="engine-card">
                     <span>1</span>
                     <h2>Ingest</h2>
-                    <p>Manual upload, repository matter, or Gmail intake provides the source document and metadata.</p>
+                    <p>Manual upload, repository NDA, or Gmail intake provides the source document and metadata.</p>
                   </article>
                   <article class="engine-card">
                     <span>2</span>
@@ -1872,7 +1872,7 @@
 
                   <section class="integration-subsection">
                     <h3>NDAs root folder (optional)</h3>
-                    <p class="integration-subsection-help" data-admin-drive="folder-help">Each matter syncs into its own subfolder under this root, organised as {counterparty}/{matter}. Leave blank to create an "NDAs" folder in My Drive.</p>
+                    <p class="integration-subsection-help" data-admin-drive="folder-help">Each NDA syncs into its own subfolder under this root, organised as {counterparty}/{nda}. Leave blank to create an "NDAs" folder in My Drive.</p>
                     <form class="integration-search-form" id="adminDriveFolderForm">
                       <label for="adminDriveFolderIdInput">Root folder</label>
                       <!-- Name-first display: the admin sees the friendly folder NAME;
@@ -1894,7 +1894,7 @@
                         <button class="secondary" id="adminDriveBrowseButtonAlt" type="button">Browse Drive</button>
                       </div>
                       <div class="integration-search-actions">
-                        <p data-admin-drive="folder-message">Per-matter subfolders are created inside this root folder when set. Click "Browse Drive" to pick or create a folder — its name is captured automatically.</p>
+                        <p data-admin-drive="folder-message">Per-NDA subfolders are created inside this root folder when set. Click "Browse Drive" to pick or create a folder — its name is captured automatically.</p>
                         <button class="secondary" id="adminDriveFolderSaveButton" type="submit">Save folder</button>
                       </div>
                     </form>
