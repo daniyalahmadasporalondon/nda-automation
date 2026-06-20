@@ -6,7 +6,7 @@
 // before using `PlaybookRuntime.draft` / `PlaybookRuntime.api`.
 const PlaybookRuntime = (() => {
   const draftModule = import("./modules/playbook-draft.mjs?v=20260614c");
-  const apiModule = import("./modules/playbook-api.mjs?v=20260605a");
+  const apiModule = import("./modules/playbook-api.mjs?v=20260620addclause1");
   const authoringModule = import("./modules/playbook-authoring-model.mjs?v=20260614c");
 
   const runtime = {

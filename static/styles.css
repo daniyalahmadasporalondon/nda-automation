@@ -8065,6 +8065,73 @@ body.modal-open {
   text-transform: uppercase;
 }
 
+.playbook-row-dynamic {
+  color: var(--accent, #4a6cf7);
+}
+
+.playbook-add-clause {
+  padding: 8px 4px 4px;
+}
+
+.playbook-add-clause button {
+  width: 100%;
+}
+
+/* Add-Clause dynamic-clause authoring controls */
+.admin-condition-group {
+  margin-bottom: 14px;
+}
+
+.admin-condition-group-head {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.admin-condition-group-head h4 {
+  margin: 0;
+}
+
+.admin-condition {
+  border: 1px solid var(--line, #e2e4ea);
+  border-radius: 8px;
+  margin-bottom: 8px;
+  padding: 10px;
+}
+
+.admin-condition-head {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.admin-condition-head input {
+  flex: 1;
+}
+
+.admin-condition textarea {
+  width: 100%;
+  min-height: 48px;
+  height: auto;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.admin-condition-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.admin-field.is-hidden,
+label.is-hidden {
+  display: none;
+}
+
 .clause-detail {
   overflow: auto;
   padding: 0;
