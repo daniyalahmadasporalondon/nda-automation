@@ -193,6 +193,71 @@ class GoverningLawMappingTests(unittest.TestCase):
             er.validate_registry_against_playbook({"clauses": []})
 
 
+class ForumReconciliationTests(unittest.TestCase):
+    """FIX 3: the playbook's per-option ``forum_jurisdiction`` (review-side
+    detector) and the entity registry's per-entity ``jurisdiction`` (what
+    generation writes) must not silently drift to different jurisdiction buckets,
+    and the playbook forum must be present and resolve to a known bucket."""
+
+    def test_live_registry_and_playbook_forums_reconcile(self):
+        # The shipped playbook + registry are forum-consistent at bucket granularity.
+        er.validate_forum_reconciliation(load_playbook())
+
+    def test_two_india_cities_reconcile_to_the_same_bucket(self):
+        # The load-bearing case: two India entities sit in different CITIES
+        # (Bengaluru vs Gandhinagar) but the same jurisdiction BUCKET (india), so
+        # reconciliation must pass even though the playbook says "Mumbai, India".
+        er.validate_forum_reconciliation(load_playbook())  # both india entities present
+        self.assertEqual(er._forum_bucket("courts in Bengaluru, Karnataka"), "india")
+        self.assertEqual(er._forum_bucket("courts in Gandhinagar, Gujarat"), "india")
+        self.assertEqual(er._forum_bucket("Mumbai, India"), "india")
+
+    def test_missing_forum_jurisdiction_is_flagged(self):
+        playbook = load_playbook()
+        for clause in playbook["clauses"]:
+            if clause["id"] == "governing_law":
+                clause["rules"]["approved_options"][0].pop("forum_jurisdiction", None)
+        with self.assertRaises(ValueError) as ctx:
+            er.validate_forum_reconciliation(playbook)
+        self.assertIn("forum_jurisdiction", str(ctx.exception))
+
+    def test_unresolvable_forum_jurisdiction_is_flagged(self):
+        playbook = load_playbook()
+        for clause in playbook["clauses"]:
+            if clause["id"] == "governing_law":
+                clause["rules"]["approved_options"][0]["forum_jurisdiction"] = "Atlantis"
+        with self.assertRaises(ValueError) as ctx:
+            er.validate_forum_reconciliation(playbook)
+        self.assertIn("forum bucket", str(ctx.exception))
+
+    def test_cross_bucket_forum_drift_is_flagged(self):
+        # Drift the india option's forum_jurisdiction to England -> the india
+        # entities (Bengaluru/Gandhinagar -> india bucket) no longer match the
+        # playbook's england_and_wales bucket. This must be caught.
+        playbook = load_playbook()
+        for clause in playbook["clauses"]:
+            if clause["id"] == "governing_law":
+                for option in clause["rules"]["approved_options"]:
+                    if option["id"] == "india":
+                        option["forum_jurisdiction"] = "England and Wales"
+        with self.assertRaises(ValueError) as ctx:
+            er.validate_forum_reconciliation(playbook)
+        self.assertIn("Forum drift", str(ctx.exception))
+
+    def test_reconciliation_runs_inside_validate_against_playbook(self):
+        # validate_registry_against_playbook now also reconciles forums, so a forum
+        # bucket drift is caught by the broader validator too (the one the runtime
+        # guard / route invoke).
+        playbook = load_playbook()
+        for clause in playbook["clauses"]:
+            if clause["id"] == "governing_law":
+                for option in clause["rules"]["approved_options"]:
+                    if option["id"] == "difc":
+                        option["forum_jurisdiction"] = "Province of Ontario, Canada"
+        with self.assertRaises(ValueError):
+            er.validate_registry_against_playbook(playbook)
+
+
 class SigningEntitiesPayloadTests(unittest.TestCase):
     def test_payload_has_entities_mapping_and_option_ids(self):
         playbook = load_playbook()
@@ -309,6 +374,36 @@ class SigningEntitiesRouteTests(unittest.TestCase):
         self.assertEqual(handler.status, 200)
         self.assertEqual(len(handler.response["entities"]), 7)
         self.assertEqual(handler.response["playbook_option_ids"], [])
+
+    def test_route_clean_registry_has_no_drift_diagnostic(self):
+        # FIX 2: the live playbook/registry reconcile, so the route surfaces NO
+        # registry_drift key.
+        handler = _FakeHandler()
+        entity_routes.handle_signing_entities(handler)
+        self.assertEqual(handler.status, 200)
+        self.assertNotIn("registry_drift", handler.response)
+
+    def test_route_surfaces_drift_without_failing(self):
+        # FIX 2: a drifted playbook (renamed approved option) is caught proactively
+        # at the entities route and surfaced as a registry_drift diagnostic, WITHOUT
+        # a 500 that would break the draft UI.
+        playbook = load_playbook()
+        for clause in playbook["clauses"]:
+            if clause["id"] == "governing_law":
+                for option in clause["rules"]["approved_options"]:
+                    if option["id"] == "england_and_wales":
+                        option["id"] = "england_renamed"
+        handler = _FakeHandler()
+        with patch.object(
+            entity_routes, "read_playbook_from_path", return_value=playbook
+        ):
+            entity_routes.handle_signing_entities(handler)
+        # Route still succeeds (no exception, 200) and still returns the entities.
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(len(handler.response["entities"]), 7)
+        # But the drift is surfaced for the UI to warn on.
+        self.assertIn("registry_drift", handler.response)
+        self.assertIn("england_and_wales", handler.response["registry_drift"])
 
 
 if __name__ == "__main__":

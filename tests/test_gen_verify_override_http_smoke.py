@@ -75,13 +75,13 @@ def _law_value(option_id: str) -> str:
     raise KeyError(option_id)
 
 
-# These sampled override options are coupled law+forum packages: an override to a
-# given law must also yield that option's proper FORUM (forum follows the override
-# is correct coherence). ENTITY-FORUM: the forum is the registry court of whichever
-# entity defaults to the overridden option (the entity is the source of truth), and
-# it IS rendered into the generated clause.
+# ENTITY-FORUM (corrected): the forum is the SIGNING entity's OWN court, regardless
+# of any governing-law override. Each sampled entity below is seated such that its
+# own court equals its DEFAULT option's representative court here -- so an override
+# changes only the LAW, while the forum stays the entity's own (default) court. This
+# map is the per-entity OWN court keyed by the entity's default option.
 _OPTION_FORUM = {
-    "india": "courts in Bengaluru, Karnataka",
+    "india": "courts in Bengaluru, Karnataka",  # aspora_technology's own seat
     "delaware": "courts in Delaware, USA",
     "england_and_wales": "courts in England and Wales",
     "difc": "the DIFC Courts",
@@ -235,15 +235,14 @@ class OverrideHttpSmoke(unittest.TestCase):
                     self.assertIn(default_value, text, f"{entity_id}: default law not rendered")
 
     def test_override_forum_follows_the_chosen_option(self):
-        """FORUM-COUPLING coherence for sampled override options.
+        """Override decouples LAW from FORUM: the forum is the SIGNING entity's OWN court.
 
-        An override to e.g. DIFC must yield DIFC law AND the DIFC forum on the
-        manifest AND in the rendered clause. ENTITY-FORUM: the forum is the registry
-        court of whichever entity defaults to the overridden option, and it IS now
-        rendered into the "Governing law and jurisdiction" clause. Through the full
-        HTTP round-trip the manifest forum and the rendered clause must both be the
-        OVERRIDE option's forum (never the entity default), while the override LAW
-        must appear in the rendered prose and the default law must not leak in.
+        An override to e.g. DIFC yields DIFC LAW, but the FORUM stays the signing
+        entity's own court (the fixed entity litigates in its own seat). Through the
+        full HTTP round-trip the manifest forum and the rendered clause must both be
+        the SIGNING ENTITY's own (default-seat) court -- NEVER another entity's court
+        pulled from the overridden option -- while the override LAW appears in the
+        rendered prose and the default law does not leak into the clause.
         """
         for entity_id, (default_opt, override_opt) in _OVERRIDE_TARGET.items():
             with self.subTest(entity_id=entity_id, override=override_opt):
@@ -254,21 +253,25 @@ class OverrideHttpSmoke(unittest.TestCase):
                             _fe_payload(entity_id, override_opt, overridden=True)
                         )
                     text = extract_docx_text(docx)
-                    expected_forum = _OPTION_FORUM[override_opt]
-                    default_forum = _OPTION_FORUM[default_opt]
+                    # The forum is the SIGNING entity's OWN court (its default seat),
+                    # not the overridden option's court.
+                    expected_forum = _OPTION_FORUM[default_opt]
+                    override_forum = _OPTION_FORUM[override_opt]
                     override_value = _law_value(override_opt)
                     default_value = _law_value(default_opt)
-                    # Forum provenance follows the override on the manifest.
+                    # Forum provenance is the entity's own court on the manifest.
                     self.assertEqual(
                         payload["manifest"]["forum"], expected_forum,
-                        f"{entity_id}: forum did not follow the override (got "
+                        f"{entity_id}: forum is not the signing entity's own court (got "
                         f"{payload['manifest']['forum']!r}, expected {expected_forum!r})",
                     )
+                    # It must NOT have followed the override to another entity's court.
                     self.assertNotEqual(
-                        payload["manifest"]["forum"], default_forum if expected_forum != default_forum else "",
+                        payload["manifest"]["forum"], override_forum,
+                        f"{entity_id}: forum wrongly followed the override option",
                     )
-                    # ENTITY-FORUM: the override forum IS now rendered into the
-                    # governing-law clause with exclusive-jurisdiction wording.
+                    # The entity's own court IS rendered into the governing-law clause
+                    # with exclusive-jurisdiction wording.
                     gov_line = next(
                         (
                             line
@@ -279,7 +282,7 @@ class OverrideHttpSmoke(unittest.TestCase):
                     )
                     self.assertIn(
                         f"{expected_forum} shall have exclusive jurisdiction", gov_line,
-                        f"{entity_id}: override forum not rendered in the clause",
+                        f"{entity_id}: signing entity's own forum not rendered in the clause",
                     )
                     # The override LAW still tracks into the prose; default does not leak.
                     self.assertIn(override_value, text, f"{entity_id}: override law not in prose")

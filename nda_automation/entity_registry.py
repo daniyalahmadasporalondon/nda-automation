@@ -471,6 +471,135 @@ def validate_registry_against_playbook(playbook: Mapping[str, Any]) -> None:
                 f"governing_law.label to match the playbook."
             )
 
+    # Reconcile the two forum sources at jurisdiction-bucket granularity so the
+    # review-side detector (playbook forum_jurisdiction) and the generator (registry
+    # jurisdiction) cannot silently drift to different jurisdictions.
+    validate_forum_reconciliation(playbook)
+
+
+def _forum_bucket(value: object) -> str:
+    """Map a forum/law label to its jurisdiction bucket (or "").
+
+    Reuses ``law_forum_check._normalize_to_bucket`` -- the same canonicaliser the
+    review-side detector uses -- so the registry's ``jurisdiction`` strings and the
+    playbook's ``forum_jurisdiction`` strings are bucketed by the SAME vocabulary
+    and can be compared apples-to-apples. Defensive: an import/lookup failure yields
+    "" so reconciliation degrades to "cannot bucket" rather than crashing a caller.
+    """
+
+    try:
+        from . import law_forum_check  # noqa: PLC0415
+
+        return str(law_forum_check._normalize_to_bucket(value) or "")
+    except Exception:  # noqa: BLE001 - bucketing is best-effort.
+        return ""
+
+
+def validate_forum_reconciliation(playbook: Mapping[str, Any]) -> None:
+    """Reconcile the TWO forum sources so they cannot silently diverge.
+
+    There are two forum-bearing sources in the system:
+
+    * the playbook's per-option ``forum_jurisdiction`` (what the REVIEW side detects
+      a counterparty's law/forum mismatch against), and
+    * the entity registry's per-entity ``jurisdiction`` (the city-level court that
+      GENERATION writes into a signed NDA).
+
+    These describe the same jurisdiction at different granularities (the playbook is
+    jurisdiction-level, e.g. "Mumbai, India"; the registry is entity/city-level, e.g.
+    "courts in Gandhinagar, Gujarat"). They are allowed to differ in city, but must
+    NOT drift to different *jurisdiction buckets* (countries/legal systems) -- that
+    would mean the review side and the generator disagree about which jurisdiction's
+    courts an option implies. This validator pins them at BUCKET granularity:
+
+    1. Every approved governing-law option must carry a non-empty
+       ``forum_jurisdiction`` that resolves to a KNOWN jurisdiction bucket.
+    2. For each option, every registry entity defaulting to it must have a
+       ``jurisdiction`` that resolves to the SAME bucket as the option's
+       ``forum_jurisdiction``.
+
+    Raises ``ValueError`` on the first mismatch so the drift-guard / publish gate can
+    surface a clear error. Pure: reads only the passed ``playbook`` plus the module
+    registry.
+    """
+
+    validate_registry()
+
+    options = _playbook_governing_law_options(playbook)
+    if not options:
+        raise ValueError(
+            "Playbook has no governing_law approved_options to reconcile forums against."
+        )
+
+    # option id -> the raw forum_jurisdiction string off the matching approved option.
+    forum_jurisdiction_by_id = _playbook_forum_jurisdiction_by_id(playbook)
+
+    option_bucket_by_id: dict[str, str] = {}
+    for option in options:
+        option_id = option["id"]
+        raw_forum = forum_jurisdiction_by_id.get(option_id, "")
+        if not raw_forum:
+            raise ValueError(
+                f"Playbook governing-law option '{option_id}' is missing a "
+                "'forum_jurisdiction'. The review side cannot pair a law with its "
+                "forum without it."
+            )
+        bucket = _forum_bucket(raw_forum)
+        if not bucket:
+            raise ValueError(
+                f"Playbook governing-law option '{option_id}' has forum_jurisdiction "
+                f"'{raw_forum}', which does not resolve to any known jurisdiction "
+                "forum bucket."
+            )
+        option_bucket_by_id[option_id] = bucket
+
+    for entity in SIGNING_ENTITIES:
+        option_id = entity["governing_law"]["playbook_option_id"]
+        option_bucket = option_bucket_by_id.get(option_id)
+        if option_bucket is None:
+            # The option-existence check is owned by
+            # validate_registry_against_playbook; skip silently here.
+            continue
+        entity_forum = str(entity.get("jurisdiction") or "").strip()
+        if not entity_forum:
+            raise ValueError(
+                f"Entity {entity['id']} is missing a 'jurisdiction' (the court written "
+                "into a generated NDA)."
+            )
+        entity_bucket = _forum_bucket(entity_forum)
+        if not entity_bucket:
+            raise ValueError(
+                f"Entity {entity['id']} jurisdiction '{entity_forum}' does not resolve "
+                "to any known jurisdiction forum bucket."
+            )
+        if entity_bucket != option_bucket:
+            raise ValueError(
+                f"Forum drift: entity {entity['id']} jurisdiction '{entity_forum}' "
+                f"resolves to bucket '{entity_bucket}', but the playbook's "
+                f"forum_jurisdiction for option '{option_id}' resolves to bucket "
+                f"'{option_bucket}'. The generator would write a court in a different "
+                "jurisdiction than the review side expects for this governing law."
+            )
+
+
+def _playbook_forum_jurisdiction_by_id(playbook: Mapping[str, Any]) -> dict[str, str]:
+    """Map each governing_law approved-option id to its raw ``forum_jurisdiction``."""
+
+    result: dict[str, str] = {}
+    for clause in playbook.get("clauses", []):
+        if clause.get("id") != "governing_law":
+            continue
+        rules = clause.get("rules") or {}
+        for option in rules.get("approved_options") or []:
+            if not isinstance(option, Mapping):
+                continue
+            option_id = str(option.get("id") or "").strip()
+            if not option_id:
+                continue
+            result[option_id] = str(option.get("forum_jurisdiction") or "").strip()
+        break
+    return result
+
 
 def entity_law_mapping(playbook: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
     """Return the entity -> governing-law mapping for reporting/UI.
@@ -551,6 +680,7 @@ __all__ = [
     "actor_slug",
     "validate_registry",
     "validate_registry_against_playbook",
+    "validate_forum_reconciliation",
     "entity_law_mapping",
     "signing_entities_payload",
     "_playbook_max_term_years",

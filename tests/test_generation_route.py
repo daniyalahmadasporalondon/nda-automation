@@ -290,9 +290,10 @@ class GenerateNdaRouteTests(unittest.TestCase):
         self.assertEqual(m["governing_law_option_id"], "england_and_wales")
         self.assertTrue(m["governing_law_overridden"])
         self.assertEqual(m["entity_default_governing_law_value"], "India")
-        # ENTITY-FORUM: the override forum is the registry court of the entity that
-        # defaults to england_and_wales (real_transfer -> "courts in England and Wales").
-        self.assertEqual(m["forum"], "courts in England and Wales")
+        # ENTITY-FORUM (corrected): the forum is the SIGNING entity's OWN court.
+        # aspora_technology is seated in Bengaluru, so overriding only the LAW to
+        # England keeps its own Bengaluru court as the forum.
+        self.assertEqual(m["forum"], "courts in Bengaluru, Karnataka")
         self.assertTrue(payload["self_check"]["passed"], payload["self_check"])
         self.assertEqual(payload["download_url"], f"/api/matters/{payload['matter_id']}/source")
         self.assertEqual(payload["pdf_download_url"], f"/api/matters/{payload['matter_id']}/source-pdf")
@@ -540,8 +541,10 @@ class GenerateNdaRouteTests(unittest.TestCase):
 
     def test_route_override_survives_to_rendered_docx_via_nested_fe_shape(self):
         # aspora default is India; the FE nests an override to Delaware. The override
-        # must win on the manifest AND the rendered DOCX governing-law clause AND the
-        # derived forum -- proving the override travels the real route, not a bypass.
+        # LAW must win on the manifest AND the rendered DOCX governing-law clause,
+        # while the FORUM stays the signing entity's OWN court (Bengaluru) -- proving
+        # the override travels the real route, not a bypass, AND that law/forum are
+        # correctly decoupled.
         fe_payload = {
             "counterparty": {"name": "Wayne Enterprises Ltd"},
             "project_purpose": "evaluating a partnership",
@@ -565,8 +568,12 @@ class GenerateNdaRouteTests(unittest.TestCase):
                 self.assertEqual(manifest["governing_law_value"], "Delaware")
                 self.assertTrue(manifest["governing_law_overridden"])
                 self.assertEqual(manifest["entity_default_governing_law_value"], "India")
-                self.assertNotIn("India", manifest["forum"])
-                self.assertIn("Delaware", manifest["forum"])
+                # ENTITY-FORUM (corrected): the override changes the LAW only; the
+                # forum stays the SIGNING entity's OWN court. aspora_technology is
+                # seated in Bengaluru, so the forum is its own Bengaluru court --
+                # NOT Delaware's (the overridden option's) court.
+                self.assertEqual(manifest["forum"], "courts in Bengaluru, Karnataka")
+                self.assertNotIn("Delaware", manifest["forum"])
                 # Signal 2: the rendered DOCX's GOVERNING-LAW CLAUSE names the override
                 # law. "the laws of India" legitimately remains in Aspora's
                 # incorporation recital (incorporation jurisdiction != governing law),

@@ -476,10 +476,12 @@ def entity_party_from_bundle(
 
     ``governing_law_option_id`` overrides the entity's default law with another
     Playbook-approved option (the product lets the user pick a different — still
-    approved — governing law). An unapproved override is rejected. When the law is
-    overridden, the forum tracks the overridden law (rather than the entity's
-    default courts) so the draft never pairs one jurisdiction's law with another's
-    forum.
+    approved — governing law). An unapproved override is rejected. The forum is
+    ALWAYS the SIGNING entity's own registry ``jurisdiction`` (where that fixed
+    entity actually litigates), regardless of any law override; the option's
+    registry/Playbook forum is consulted only as a fallback when the signing entity
+    carries no forum of its own. This prevents an override from pulling another
+    entity's court (e.g. the WRONG India city) into a signed NDA.
 
     ``address_id`` selects which registry address fills the entity's registered
     office (the product lets the user pick a non-default office). A blank id falls
@@ -501,7 +503,6 @@ def entity_party_from_bundle(
         )
 
     override_id = str(governing_law_option_id or "").strip()
-    overridden = bool(override_id) and override_id != default_option_id
     if override_id and override_id not in approved:
         raise NdaGenerationError(
             f"Governing-law override {override_id!r} is not an approved Playbook option "
@@ -512,19 +513,32 @@ def entity_party_from_bundle(
 
     address, chosen_address_id = select_bundle_address(bundle, address_id)
     signatory = bundle.get("signatory") or {}
-    # ENTITY-FORUM: the entity's registry forum (its ``jurisdiction`` field) is the
-    # SOURCE OF TRUTH for the court written into the clause, and is correct for its
-    # default law (e.g. aspora_technology -> "courts in Bengaluru, Karnataka"). When
-    # the law is overridden to a different option, derive the forum that goes WITH
-    # the chosen option from whichever registry entity defaults to it (e.g.
-    # england_and_wales -> "courts in England and Wales"), so we never pair one
-    # jurisdiction's law with another's courts. If that lookup is unavailable, fall
-    # back to the law value rather than the wrong forum.
-    if not overridden:
-        forum = str(bundle.get("jurisdiction") or "").strip() or governing_law_value
+    # ENTITY-FORUM: the entity's OWN registry forum (its ``jurisdiction`` field) is
+    # the SOURCE OF TRUTH for the court written into the clause, regardless of any
+    # governing-law override. The SIGNING entity is a fixed Aspora company seated in
+    # a fixed city (e.g. aspora_financial_services -> "courts in Gandhinagar,
+    # Gujarat"); its disputes are heard by ITS OWN competent courts, not the courts
+    # of whichever other entity happens to default to the overridden law. Reading the
+    # forum off some other entity that defaults to the chosen option (the old
+    # override path) wrote the WRONG city into a signed NDA -- two India entities sit
+    # in different cities (Bengaluru vs Gandhinagar), so overriding one to ``india``
+    # would have pulled the other's court. We therefore use the signing entity's own
+    # ``jurisdiction`` first (matching the non-override path), and fall back to the
+    # option's playbook/registry forum ONLY when the signing entity carries none.
+    entity_forum = str(bundle.get("jurisdiction") or "").strip()
+    if entity_forum:
+        forum = entity_forum
+        forum_from_entity = True
     else:
         forum = _forum_for_option_id(option_id, playbook)
-    forum = _require_court_forum(forum, option_id, governing_law_value)
+        forum_from_entity = False
+    forum = _require_court_forum(
+        forum,
+        option_id,
+        governing_law_value,
+        playbook=playbook,
+        forum_from_entity=forum_from_entity,
+    )
 
     return EntityParty(
         legal_name=legal_name,
@@ -543,22 +557,22 @@ def entity_party_from_bundle(
 
 
 def _forum_for_option_id(option_id: str, playbook: Mapping[str, Any]) -> str:
-    """The proper court/forum for a governing-law option.
+    """FALLBACK forum for a governing-law option when the SIGNING entity has none.
 
-    Resolution order:
+    The primary, authoritative forum is the SIGNING entity's own registry
+    ``jurisdiction`` (resolved by the caller). This resolver is only consulted when
+    that signing entity carries no forum of its own, to derive *a* court for the
+    option. Resolution order:
 
-    1. The registry (the SOURCE OF TRUTH): each entity registers a ``jurisdiction``
-       that goes WITH its default governing-law option (e.g. england_and_wales ->
-       "courts in England and Wales", india -> "courts in Bengaluru, Karnataka" for
-       aspora_technology), so an overridden option's forum is taken from whichever
-       registry entity defaults to that option. The CITY-level court is entity-
-       specific -- two India entities sit in different cities (Bengaluru vs
-       Gandhinagar) -- which is exactly why a per-jurisdiction value cannot express it.
+    1. The registry: pick the ``jurisdiction`` of whichever entity defaults to this
+       option (e.g. england_and_wales -> "courts in England and Wales"). Note this
+       is a DIFFERENT entity than the (forum-less) signer, so the caller's
+       :func:`_require_court_forum` gate additionally proves the resulting court
+       sits in the option's own jurisdiction bucket before it is written.
     2. The Playbook itself, via :func:`governing_law_forum.court_name_for_law`: a
        defensive last resort. The per-option ``court_name`` was REMOVED from the
        Playbook (it cannot express the per-entity city), so this now resolves "" for
-       every live option -- the gate turns that into a hard refusal. Every approved
-       option has a defaulting registry entity, so path 1 always resolves first.
+       every live option -- the gate turns that into a hard refusal.
 
     Returns "" only for an option id we have no court for at all, which the caller
     (:func:`_require_court_forum`) turns into a hard refusal rather than writing a
@@ -580,16 +594,48 @@ def _forum_for_option_id(option_id: str, playbook: Mapping[str, Any]) -> str:
     return governing_law_forum.court_name_for_law(dict(playbook), option_id)
 
 
-def _require_court_forum(forum: str, option_id: str, governing_law_value: str) -> str:
-    """Hard gate: refuse to write a non-court venue into the NDA.
+def _forum_jurisdiction_bucket(value: object) -> str:
+    """Map a forum/law string (or option id) to its jurisdiction bucket, or "".
+
+    Reuses ``law_forum_check._normalize_to_bucket`` -- the same canonicaliser the
+    review side uses to compare law vs forum -- so the generation gate and the
+    review detector bucket identically. Defensive: any import/lookup failure yields
+    "" so the gate degrades to "cannot prove a mismatch" rather than crashing."""
+
+    try:
+        from . import law_forum_check  # noqa: PLC0415
+
+        return str(law_forum_check._normalize_to_bucket(value) or "")
+    except Exception:  # noqa: BLE001 - bucketing is best-effort; never crash gen.
+        return ""
+
+
+def _require_court_forum(
+    forum: str,
+    option_id: str,
+    governing_law_value: str,
+    *,
+    playbook: Mapping[str, Any] | None = None,
+    forum_from_entity: bool = True,
+) -> str:
+    """Hard gate: refuse to write a non-court / WRONG-jurisdiction venue into the NDA.
 
     The forum/submission clause must name a COURT, not a bare jurisdiction/law
     label. The old fallback ``forum = _forum_for_option_id(...) or
     governing_law_value`` wrote the LAW NAME (e.g. "DIFC", "Delaware") whenever no
     forum resolved -- a value that is not a court. The manifest flagged it but the
-    doc still rendered/sent/signed. We now REFUSE generation rather than emit such
-    a venue: a resolved court is required, and a resolved value that merely echoes
-    the law name is rejected as non-court."""
+    doc still rendered/sent/signed. We REFUSE generation rather than emit such a
+    venue: a resolved court is required, and a resolved value that merely echoes the
+    law name is rejected as non-court.
+
+    Beyond "is it *a* court", the gate validates it is the *right* court for the
+    FALLBACK path: when the forum did NOT come from the signing entity itself (it
+    was derived from the option via another registry entity / the Playbook), the
+    resolved court must sit in the SAME jurisdiction bucket as the chosen
+    governing-law option. That stops a fallback from writing, say, an English court
+    for a DIFC option. The signing entity's OWN registered forum is trusted as-is
+    (``forum_from_entity``): a fixed Aspora entity litigates in its own seat, which
+    is correct by construction even when the user overrides the governing law."""
 
     forum = str(forum or "").strip()
     if not forum or forum == governing_law_value.strip():
@@ -600,6 +646,24 @@ def _require_court_forum(forum: str, option_id: str, governing_law_value: str) -
             "forum for this option (entity registry jurisdiction or the Playbook "
             "approved option's court_name)."
         )
+
+    # Wrong-jurisdiction guard for the FALLBACK path only. The signing entity's own
+    # forum is authoritative for that entity (it is where the entity actually
+    # litigates), so it is never rejected here -- only a forum we synthesised for the
+    # option from elsewhere must prove it lands in the option's own jurisdiction.
+    if not forum_from_entity and playbook is not None:
+        forum_bucket = _forum_jurisdiction_bucket(forum)
+        option_bucket = _forum_jurisdiction_bucket(option_id) or _forum_jurisdiction_bucket(
+            governing_law_value
+        )
+        if forum_bucket and option_bucket and forum_bucket != option_bucket:
+            raise NdaGenerationError(
+                f"Refusing to generate: the resolved forum {forum!r} sits in "
+                f"jurisdiction '{forum_bucket}', which does not match governing-law "
+                f"option {option_id!r} (jurisdiction '{option_bucket}'). Writing a "
+                "court from a different jurisdiction than the governing law into a "
+                "signed NDA is a forum/law mismatch."
+            )
     return forum
 
 
