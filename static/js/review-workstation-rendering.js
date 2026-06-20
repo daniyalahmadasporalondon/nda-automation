@@ -199,9 +199,9 @@ function updateExportButtonState() {
       // DETERMINISTIC first-pass, which is meaningless until an AI review has run.
       // Rather than HIDE the button on an unreviewed matter (a layout jump), keep
       // it in place and GRAY/disable it. Layer the ai_review_ran gate ON TOP of the
-      // existing visibility: when shown, it is interactive only once reviewed. Safe
-      // fallback when ai_review_ran is absent: aiReviewRan() -> hasReviewResults(),
-      // i.e. the current/reviewed (enabled) behavior.
+      // existing visibility: when shown, it is interactive only once the AI review
+      // has actually run (aiReviewRan() -> matter.ai_review_ran === true). A
+      // deterministic-only matter (ai_review_ran === false) stays disabled.
       const reviewed = aiReviewRan(matter);
       studioReviewedButton.disabled = !reviewed;
       studioReviewedButton.setAttribute("aria-disabled", String(!reviewed));
@@ -415,9 +415,9 @@ function renderStudioSummary(clauses) {
   // AI never issued. On a deterministic-only matter (ai_review_ran === false) the
   // backend aggregate is absent and the code below would fall back to a JS
   // clauseStatus() recount — a "deterministic ghost". Gate the whole summary on
-  // aiReviewRan() and render the same "Awaiting review" Pending state as
-  // renderStudioEmpty() instead. Legacy payloads predating the flag fall back to
-  // "are there review results" (aiReviewRan default), so nothing regresses.
+  // aiReviewRan() (matter.ai_review_ran === true is the sole discriminator) and
+  // render the same "Awaiting review" Pending state as renderStudioEmpty() instead.
+  // A deterministic-only matter never surfaces a verdict here.
   if (!aiReviewRan()) {
     studioMatchSummary.textContent = `0/${getClauseTotal(clauses)}`;
     studioResultMark.textContent = "-";

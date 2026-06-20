@@ -119,18 +119,15 @@ function createOverviewController({ state, root, fillSection, renderFill }) {
 
   function hasAiReview() {
     const matter = state.selectedMatter;
-    // Gate verdict surfaces on whether an AI review ACTUALLY ran (ai_review_ran).
-    // A deterministic-only matter has has_ai_review=true but ai_review_ran=false,
-    // so the roster shows each clause's muted "Not Reviewed" status (and the
-    // footer disables Approve/Send) instead of leaking the deterministic verdict
-    // (the last "deterministic ghost"). Explicit backend flag wins; fall back to
-    // "are there any review clauses" only for matters/fixtures that predate
-    // ai_review_ran.
-    if (matter && typeof matter.ai_review_ran === "boolean") return matter.ai_review_ran;
-    const hasResults = typeof window !== "undefined" && typeof window.hasReviewResults === "function"
-      ? window.hasReviewResults()
-      : Array.isArray(state.reviewClauses) && state.reviewClauses.length > 0;
-    return Boolean(hasResults);
+    // Gate verdict surfaces SOLELY on whether the AI review ACTUALLY ran
+    // (matter.ai_review_ran), NOT on whether a stored review_result with clause
+    // verdicts exists. A deterministic-only matter can carry stored verdicts but
+    // ai_review_ran===false; surfacing those verdicts would leak the demoted
+    // deterministic result and unlock Approve/Send on a matter the AI never
+    // reviewed. So when ai_review_ran is false the roster shows each clause's muted
+    // "Not Reviewed" status (no verdict leak) and the footer disables Approve/Send.
+    // This is the deterministic-ghost demotion, and it is INTENTIONAL.
+    return Boolean(matter && matter.ai_review_ran === true);
   }
 
   // Normalize a clause's backend decision into the component verdict vocabulary

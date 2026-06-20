@@ -1381,6 +1381,22 @@ async function refreshSelectedMatterReview() {
     // 200 idle: nothing to do (the stored review is already current). No poll.
     stopReviewPoll();
     exitReviewInFlightUi();
+    // The refresh resolved this session, so the freshness flags must RESET — the
+    // review just (re-)ran against the current document, so any prior in-session edit
+    // marker (review_edited_since_load) and the broad open-path flag
+    // (review_may_be_stale) are no longer drift. The narrow server gate
+    // (review_refresh.stale) remains authoritative for genuine drift. Mirror this in
+    // the SELECTED matter AND adopt the server's review_refresh so
+    // renderReviewRefreshNotice reads the post-refresh truth.
+    if (state.selectedMatter?.id) {
+      const serverStale = Boolean(payload.review_refresh?.stale);
+      state.selectedMatter = {
+        ...state.selectedMatter,
+        review_may_be_stale: serverStale ? state.selectedMatter.review_may_be_stale : false,
+        review_edited_since_load: false,
+        review_refresh: payload.review_refresh ?? state.selectedMatter.review_refresh ?? null,
+      };
+    }
     if (payload.review_refresh?.stale) {
       setFileMeta(staleReviewMessage(payload.review_refresh));
     } else {
@@ -1477,16 +1493,27 @@ function reviewMayBeStale(matter = state.selectedMatter, refresh = matter?.revie
   return Boolean(refresh?.stale || matter?.review_may_be_stale);
 }
 
-// True when an AI review has ACTUALLY run on the open matter. This is the signal
-// for progressive disclosure of the review-header actions: on an UNREVIEWED
-// matter there is nothing to approve or send, so the header collapses to a single
-// "Review" button (which runs the AI review). The explicit backend flag wins;
-// fall back to "are there any review clauses" only for old payloads/fixtures that
-// predate ai_review_ran, so nothing disappears unexpectedly (matches the demote
-// fallback in overview-tab.js hasAiReview()).
+// True when an AI review has ACTUALLY run on the open matter. This is THE single
+// "is this reviewed?" discriminator for the whole workstation (progressive
+// disclosure of the header actions, the freshness traffic-light, and the
+// verdict-surfacing gate), and it keys SOLELY off the backend engine-marker
+// boolean matter.ai_review_ran.
+//
+// `ai_review_ran` is true ONLY when the AI reviewer executed against this document.
+// It is DELIBERATELY false for:
+//   - a deterministic-only matter (the engine ran but the AI did not),
+//   - a freshly generated NDA, a fresh inbound, or a matter with nothing at all.
+// In every one of those cases the matter is NOT reviewed: the header collapses to a
+// single "Review" button, the traffic-light reads red "Not Reviewed", and NO clause
+// verdicts are surfaced (the deterministic-ghost demotion is INTENTIONAL — a
+// deterministic-only verdict must never read as "reviewed").
+//
+// This is intentionally NOT hasReviewResults(): a stored review_result with clause
+// verdicts can exist on a deterministic-only matter, and treating that as "reviewed"
+// would leak the demoted deterministic verdict and unlock Approve/Send on a matter
+// the AI never actually reviewed. ai_review_ran is the sole authority.
 function aiReviewRan(matter = state.selectedMatter) {
-  if (matter && typeof matter.ai_review_ran === "boolean") return matter.ai_review_ran;
-  return hasReviewResults();
+  return Boolean(matter && matter.ai_review_ran === true);
 }
 
 // True when a matter is already executed (fully signed). Mirrors the backend
@@ -1500,32 +1527,63 @@ function matterIsExecuted(matter = state.selectedMatter) {
 }
 
 function renderReviewRefreshNotice(refresh = state.selectedMatter?.review_refresh || null) {
-  const stale = reviewMayBeStale(state.selectedMatter, refresh);
-  const message = stale ? staleReviewMessage(refresh || state.selectedMatter?.review_refresh) : "";
-  // Progressive disclosure: "stale" implies the matter WAS reviewed and has since
-  // drifted, so it is only honest once an AI review has actually run. The broad
-  // reviewMayBeStale() check ALSO fires on an UNREVIEWED matter (the open path sets
-  // review_may_be_stale to flag "no AI review yet"), which would mislabel it. Layer
-  // the ai_review_ran gate ON TOP: on an unreviewed matter relabel the indicator
-  // "Not reviewed" (reusing the corpus "Not reviewed" badge wording) instead of
-  // "Review may be stale". Safe fallback when ai_review_ran is absent: aiReviewRan()
-  // -> hasReviewResults(), i.e. the current/reviewed behavior, so old payloads/
-  // fixtures are unchanged.
+  // Three open-matter states (the freshness indicator must distinguish them):
+  //   (a) NO review ever                   -> "Not reviewed"
+  //   (b) stored review, NOT drifted       -> a confident "Reviewed"
+  //   (c) stored review, GENUINELY drifted -> "Reviewed (may be out of date)"
+  //
+  // (b) is the COMMON case: a plain reopen of a reviewed matter whose document has
+  // not changed since the review ran lands here, NOT in (c).
+  //
+  // The "reviewed?" decision is "does a stored review with verdicts exist"
+  // (aiReviewRan() -> hasReviewResults()), NEVER the broad review_may_be_stale flag.
+  //
+  // GENUINE DRIFT (the ONLY trigger for (c)) is the narrow real-staleness signal:
+  //   - review_refresh.stale: the server's document-edited-since-review / playbook-
+  //     drift gate, OR
+  //   - review_edited_since_load: a dedicated FE marker set ONLY by an in-session
+  //     viewer edit (markReviewMayBeStaleFromEdit), absent after every (re)open.
+  // The broad review_may_be_stale flag (set on EVERY open merely because the open
+  // path does not re-run AI) is DELIBERATELY NOT a drift signal here — routing it
+  // into (c) made every reopened reviewed matter falsely read "may be out of date"
+  // and made the confident "Reviewed" state (b) unreachable.
   const reviewed = aiReviewRan();
+  const serverStale = Boolean(refresh?.stale || state.selectedMatter?.review_refresh?.stale);
+  const editedSinceLoad = Boolean(state.selectedMatter?.review_edited_since_load);
+  const outOfDate = reviewed && (serverStale || editedSinceLoad);
+  const message = serverStale
+    ? staleReviewMessage(refresh || state.selectedMatter?.review_refresh)
+    : "This review may be out of date — the document changed since it last ran. Refresh with AI to re-check.";
   if (studioReviewStaleIndicator) {
+    // Traffic-light freshness indicator. Exactly one tone class is applied per
+    // render (red / green / amber); clear all three first so re-renders never stack.
+    studioReviewStaleIndicator.classList.remove("is-not-reviewed", "is-reviewed", "is-stale");
     if (!reviewed) {
-      // Unreviewed: surface the honest "Not reviewed" state, not a stale warning.
+      // (a) NO stored review -> RED "Not Reviewed".
       studioReviewStaleIndicator.hidden = false;
-      studioReviewStaleIndicator.textContent = "Not reviewed";
+      studioReviewStaleIndicator.textContent = "Not Reviewed";
       studioReviewStaleIndicator.title = "No AI review has run on this NDA yet. Use Review to run it.";
-    } else {
-      // Reviewed: the "Review may be stale" warning is meaningful again, and stays
-      // gated on the genuine staleness signal.
-      studioReviewStaleIndicator.hidden = !stale;
-      studioReviewStaleIndicator.textContent = "Review may be stale";
+      studioReviewStaleIndicator.classList.add("is-not-reviewed");
+    } else if (outOfDate) {
+      // (c) Stored review + GENUINELY drifted -> AMBER "Review is Stale". The stored
+      // verdict still stands; the operator MAY refresh, but is not forced to.
+      studioReviewStaleIndicator.hidden = false;
+      studioReviewStaleIndicator.textContent = "Review is Stale";
       studioReviewStaleIndicator.title = message;
+      studioReviewStaleIndicator.classList.add("is-stale");
+    } else {
+      // (b) Stored review + current (the default for a plain reopen) -> GREEN
+      // "Reviewed". No false "may be out of date" alarm.
+      studioReviewStaleIndicator.hidden = false;
+      studioReviewStaleIndicator.textContent = "Reviewed";
+      studioReviewStaleIndicator.title = "An AI review has run on this NDA and the document has not changed since.";
+      studioReviewStaleIndicator.classList.add("is-reviewed");
     }
   }
+  // `outOfDate` drives the refresh-button enablement below: a click should be
+  // offered when there is genuinely something to (re-)run — unreviewed, or
+  // reviewed-but-out-of-date.
+  const stale = outOfDate;
   if (!studioRefreshReviewButton) return;
   // This button is an always-PRESENT manual action: it runs the AI review on
   // demand whenever a matter is open. It is hidden only when there is no loaded
