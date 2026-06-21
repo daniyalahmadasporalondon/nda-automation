@@ -421,6 +421,286 @@ _RECITAL_PREFIX = re.compile(
 REASON_CODE = "law_forum_jurisdiction_mismatch"
 
 
+# ===========================================================================
+# GENERIC forum-jurisdiction detector (closes the "any forum outside the 4
+# hardcoded foreign buckets is silently missed" gap).
+#
+# The bucket system above (5 approved laws + 4 foreign-forum constants) is a
+# PRECISION layer: it recognises specific named jurisdictions with hand-tuned
+# regexes. But a forum it has never heard of -- "courts of California", "courts
+# of Texas", "courts of Hong Kong", "arbitration seated in Zurich" -- produces NO
+# bucket hit, so a genuine law<->forum split ships as a clean PASS.
+#
+# This generic layer fills that gap WITHOUT new buckets:
+#   1. _extract_forum_tokens   -- pull the raw <X> jurisdiction token out of any
+#                                 "courts of/in/at <X>", "<X> courts",
+#                                 "arbitration seated in <X>", "<X> arbitration"
+#                                 forum phrase.
+#   2. _token_family           -- normalise a token (or an approved-law id) to a
+#                                 coarse jurisdiction FAMILY (country / legal
+#                                 system). California/Texas/Delaware/New York ->
+#                                 "us"; London/England -> "england_and_wales";
+#                                 Paris -> "france"; Zurich -> "switzerland"; ...
+#   3. detect_mismatch compares the law's family to each forum token's family and
+#      FLAGS when they differ -- additive, elevate-to-REVIEW only, same contract.
+#
+# Precision rules baked in:
+#   * A forum whose family MATCHES the law's family never flags (England law +
+#     London courts, India law + Bengaluru courts, Delaware law + New York courts
+#     are all "us"/"england_and_wales"/"india" within-family, so silent).
+#   * A forum that is a SUB-REGION of the law's jurisdiction never flags (the
+#     family map collapses sub-regions onto the parent family, so "courts of
+#     California" under US law is within-family).
+#   * Unknown tokens (a forum we cannot map to any family) stay SILENT -- never a
+#     guess-flag. Detection still requires a resolvable law AND a recognisable
+#     foreign forum family.
+# ===========================================================================
+
+# Coarse jurisdiction families. Each approved-law bucket id and each recognisable
+# forum region/city is mapped to a FAMILY key (a country / unified legal system).
+# A law and a forum that share a family are the SAME jurisdiction for the purposes
+# of this check (so US-law + Delaware-courts, or England-law + London-courts, are
+# aligned and silent). Reuse the existing India smart-rule + bucket vocabulary
+# where possible; this map only adds the COARSE grouping the buckets don't carry.
+#
+# Keys are lowercased, whitespace-collapsed jurisdiction tokens; values are family
+# ids. Approved-law bucket ids map to their own family so the law side normalises
+# through the same table.
+_FORUM_FAMILY_ALIASES: dict[str, str] = {
+    # --- approved-law bucket ids (law side normalises through here too) ----------
+    "england_and_wales": "england_and_wales",
+    "india": "india",
+    "delaware": "us",
+    "difc": "difc",
+    "ontario_canada": "canada",
+    "new_york": "us",
+    "cayman_islands": "cayman_islands",
+    "singapore": "singapore",
+    "onshore_dubai": "onshore_uae",
+    # --- England & Wales ---------------------------------------------------------
+    "england": "england_and_wales",
+    "english": "england_and_wales",
+    "england and wales": "england_and_wales",
+    "london": "england_and_wales",
+    "wales": "england_and_wales",
+    "united kingdom": "england_and_wales",
+    "uk": "england_and_wales",
+    "great britain": "england_and_wales",
+    # --- United States (a unified family: any US state/city is "us") -------------
+    "united states": "us",
+    "united states of america": "us",
+    "usa": "us",
+    "u.s.": "us",
+    "u.s.a.": "us",
+    "america": "us",
+    "new york": "us",
+    "california": "us",
+    "texas": "us",
+    "florida": "us",
+    "illinois": "us",
+    "washington": "us",
+    "san francisco": "us",
+    "los angeles": "us",
+    "new york city": "us",
+    "manhattan": "us",
+    "boston": "us",
+    "chicago": "us",
+    "seattle": "us",
+    "state of delaware": "us",
+    "state of new york": "us",
+    "state of california": "us",
+    "state of texas": "us",
+    # --- Canada ------------------------------------------------------------------
+    "canada": "canada",
+    "canadian": "canada",
+    "ontario": "canada",
+    "province of ontario": "canada",
+    "toronto": "canada",
+    "british columbia": "canada",
+    "vancouver": "canada",
+    "quebec": "canada",
+    "montreal": "canada",
+    # --- France ------------------------------------------------------------------
+    "france": "france",
+    "french": "france",
+    "paris": "france",
+    # --- Switzerland -------------------------------------------------------------
+    "switzerland": "switzerland",
+    "swiss": "switzerland",
+    "zurich": "switzerland",
+    "geneva": "switzerland",
+    "zug": "switzerland",
+    # --- Hong Kong ---------------------------------------------------------------
+    "hong kong": "hong_kong",
+    "hksar": "hong_kong",
+    # --- Singapore (the bucket id "singapore" is mapped above) -------------------
+    "siac": "singapore",
+    # --- Germany -----------------------------------------------------------------
+    "germany": "germany",
+    "german": "germany",
+    "frankfurt": "germany",
+    "munich": "germany",
+    "berlin": "germany",
+    # --- Netherlands -------------------------------------------------------------
+    "netherlands": "netherlands",
+    "the netherlands": "netherlands",
+    "dutch": "netherlands",
+    "amsterdam": "netherlands",
+    # --- Cayman ------------------------------------------------------------------
+    "cayman islands": "cayman_islands",
+    "cayman": "cayman_islands",
+    # --- UAE / Dubai (onshore) ---------------------------------------------------
+    "dubai": "onshore_uae",
+    "abu dhabi": "onshore_uae",
+    "united arab emirates": "onshore_uae",
+    "uae": "onshore_uae",
+    # --- Ireland -----------------------------------------------------------------
+    "ireland": "ireland",
+    "irish": "ireland",
+    "dublin": "ireland",
+}
+
+# Human-readable family labels for the generic finding text (a generic token that
+# does not resolve to a labelled bucket falls back to its raw extracted token).
+_FAMILY_LABELS: dict[str, str] = {
+    "us": "the United States",
+    "england_and_wales": "England and Wales",
+    "india": "India",
+    "canada": "Canada",
+    "france": "France",
+    "switzerland": "Switzerland",
+    "hong_kong": "Hong Kong",
+    "singapore": "Singapore",
+    "germany": "Germany",
+    "netherlands": "the Netherlands",
+    "cayman_islands": "the Cayman Islands",
+    "onshore_uae": "onshore Dubai / UAE",
+    "difc": "the DIFC",
+    "ireland": "Ireland",
+}
+
+# India smart-rule sources (states + metros) all collapse to the India family, so
+# "courts of Karnataka" / "courts of Bengaluru" under India law stay silent.
+for _name in re.split(r"\|", _INDIA_STATE):
+    _FORUM_FAMILY_ALIASES.setdefault(_name.replace(r"\s+", " ").strip(), "india")
+for _name in re.split(r"\|", _INDIA_METRO):
+    _FORUM_FAMILY_ALIASES.setdefault(_name.replace(r"\s+", " ").strip(), "india")
+_FORUM_FAMILY_ALIASES.setdefault("india", "india")
+_FORUM_FAMILY_ALIASES.setdefault("indian", "india")
+
+# Forum-phrase patterns that capture the raw jurisdiction token <X>. Mirror the
+# vocabulary used by _FORUM_SENTENCE / the bucket forum regexes. The capture group
+# greedily takes the jurisdiction noun-phrase up to a clause boundary, and a
+# trailing normaliser trims connective tails ("for any dispute", "located in", a
+# trailing "court(s)").
+_FORUM_TOKEN_PATTERNS = [
+    re.compile(r"courts?\s+(?:located\s+)?(?:of|in|at)\s+(?:the\s+)?([a-z][\w .,'&-]*)", re.IGNORECASE),
+    re.compile(r"(?:arbitration|seat(?:ed)?)\s+(?:of\s+arbitration\s+)?(?:in|at|of)\s+(?:the\s+)?([a-z][\w .,'&-]*)", re.IGNORECASE),
+    re.compile(r"([a-z][\w .'&-]*?)\s+courts?\b", re.IGNORECASE),
+    re.compile(r"([a-z][\w .'&-]*?)\s+arbitration\b", re.IGNORECASE),
+]
+
+# Connective words that precede the real jurisdiction in a "<X> courts" / forum
+# phrase and must be stripped so the captured token is the jurisdiction itself, not
+# "exclusive jurisdiction of the" etc. Also the role nouns the bucket vocabulary
+# uses as context.
+_FORUM_TOKEN_STOPWORDS = {
+    "the", "a", "an", "of", "in", "at", "to", "and", "or", "for", "any", "all",
+    "exclusive", "non-exclusive", "nonexclusive", "competent", "courts", "court",
+    "jurisdiction", "venue", "forum", "seat", "seated", "located", "state",
+    "province", "emirate", "city", "republic", "federal", "national", "local",
+    "dispute", "disputes", "parties", "party", "submit", "submits", "irrevocably",
+    "arbitration", "arbitral", "tribunal", "this", "agreement", "before", "shall",
+    "by", "be", "resolved", "finally", "subject", "country",
+}
+
+
+def _clean_forum_token(raw: str) -> str:
+    """Normalise a captured forum token to a lowercased, trimmed jurisdiction name.
+
+    Splits on the first clause/connective boundary, drops leading/trailing stop
+    words and role nouns, collapses whitespace. Returns "" when nothing meaningful
+    remains. The result is looked up in ``_FORUM_FAMILY_ALIASES``.
+    """
+    token = str(raw or "").strip().lower()
+    if not token:
+        return ""
+    # Cut at the first clause-tail connective ("... for any dispute", "... in
+    # respect of", trailing punctuation runs) so only the jurisdiction noun-phrase
+    # survives.
+    token = re.split(
+        r"\b(?:for|in\s+respect|in\s+connection|arising|with\s+respect|to\s+the|"
+        r"shall|over|relating|regarding|concerning|pursuant)\b",
+        token,
+        maxsplit=1,
+    )[0]
+    token = token.strip(" .,;:-'\"()")
+    # Drop leading/trailing stop words ("exclusive jurisdiction of the State of
+    # California" -> "state of california"); the alias table keeps "state of X"
+    # forms directly, and _token_family also windows over the significant words.
+    words = [w for w in re.split(r"\s+", token) if w]
+    while words and words[0] in _FORUM_TOKEN_STOPWORDS:
+        words.pop(0)
+    while words and words[-1] in _FORUM_TOKEN_STOPWORDS:
+        words.pop()
+    return " ".join(words).strip()
+
+
+def _token_family(token: str) -> str:
+    """Map a cleaned jurisdiction token (or approved-law id) to a coarse family.
+
+    Returns the family id from ``_FORUM_FAMILY_ALIASES`` (exact match first, then a
+    progressive multi-word window so "state of california" and "california, usa"
+    resolve), or "" when the token is unknown -- an unknown forum is never flagged.
+    """
+    tok = str(token or "").strip().lower()
+    if not tok:
+        return ""
+    if tok in _FORUM_FAMILY_ALIASES:
+        return _FORUM_FAMILY_ALIASES[tok]
+    # Try progressively shorter contiguous windows over the significant words so
+    # "<city>, <country>" or "state of <X>" still resolve to a family.
+    parts = [p for p in re.split(r"[\s,]+", tok) if p and p not in _FORUM_TOKEN_STOPWORDS]
+    n = len(parts)
+    for size in range(n, 0, -1):
+        for start in range(0, n - size + 1):
+            phrase = " ".join(parts[start : start + size])
+            if phrase in _FORUM_FAMILY_ALIASES:
+                return _FORUM_FAMILY_ALIASES[phrase]
+    return ""
+
+
+def extract_forum_families(text: str) -> set[str]:
+    """All coarse jurisdiction families named in the document's FORUM sentence(s).
+
+    Generic counterpart to ``extract_forum_jurisdictions``: works for ANY forum the
+    family map recognises, not only the hand-tuned buckets. Only forum-role
+    sentences are inspected; unknown tokens are dropped (never a guess-flag).
+    """
+    families: set[str] = set()
+    for sentence in _sentences(text):
+        if not _FORUM_SENTENCE.search(sentence):
+            continue
+        for pattern in _FORUM_TOKEN_PATTERNS:
+            for match in pattern.finditer(sentence):
+                family = _token_family(_clean_forum_token(match.group(1)))
+                if family:
+                    families.add(family)
+    return families
+
+
+def _law_family(law_option_id: str) -> str:
+    """The coarse jurisdiction family of an approved governing-law option id.
+
+    Falls back to the option id itself as a singleton family when no explicit
+    alias exists, so a foreign forum still differs from a brand-new approved law.
+    """
+    fam = _FORUM_FAMILY_ALIASES.get(str(law_option_id or "").strip().lower(), "")
+    if fam:
+        return fam
+    return str(law_option_id or "").strip().lower()
+
+
 # ---------------------------------------------------------------------------
 # Extraction
 # ---------------------------------------------------------------------------
@@ -611,21 +891,51 @@ def detect_mismatch(
     if not expected:
         return None
 
+    # ---- PRECISION layer: the hand-tuned bucket vocabulary (4 foreign forums + 5
+    # approved laws). When the document names a recognised foreign BUCKET, prefer
+    # it -- the bucket label reads better in the finding ("Cayman Islands").
     document_forums = extract_forum_jurisdictions(text)
-    if not document_forums:
+    foreign = {bucket for bucket in document_forums if bucket and bucket != expected}
+    if foreign:
+        foreign_sorted = sorted(foreign)
+        foreign_labels = ", ".join(_label(b) for b in foreign_sorted)
+        expected_label = _label(expected)
+        reason = (
+            f"Governing law and forum name different jurisdictions: the agreement is "
+            f"governed by the law of {expected_label} but submits disputes to "
+            f"{foreign_labels}. A law/forum jurisdiction mismatch warrants human review."
+        )
+        return {
+            "reason_code": REASON_CODE,
+            "reason": reason,
+            "law_option_id": law_option_id,
+            "law_jurisdiction": expected,
+            "expected_forum": expected,
+            "document_forum": foreign_sorted[0],
+            "document_forums": foreign_sorted,
+        }
+
+    # ---- GENERIC layer: catch any forum OUTSIDE the hardcoded buckets (the bug).
+    # Compare the law's coarse jurisdiction FAMILY against every forum family the
+    # document names. A forum family that differs from the law family is a foreign
+    # forum the buckets were blind to (California / Texas / Hong Kong / Paris /
+    # Zurich / ...). A forum whose family MATCHES the law (England law + London
+    # courts) or is a SUB-REGION (US law + Delaware courts -> both "us") collapses
+    # to the same family and never flags. Unknown forum tokens are dropped upstream
+    # (never a guess-flag).
+    law_fam = _law_family(law_option_id)
+    if not law_fam:
+        return None
+    forum_families = extract_forum_families(text)
+    if not forum_families:
         # No recognizable forum at all -> nothing to compare -> stay silent.
         return None
-
-    # A mismatch exists when the document names a forum jurisdiction OTHER than the
-    # expected one. (The expected jurisdiction legitimately appearing alongside is
-    # fine; only a FOREIGN forum is a problem.)
-    foreign = {bucket for bucket in document_forums if bucket and bucket != expected}
-    if not foreign:
+    foreign_families = sorted(f for f in forum_families if f and f != law_fam)
+    if not foreign_families:
         return None
 
-    foreign_sorted = sorted(foreign)
-    foreign_labels = ", ".join(_label(b) for b in foreign_sorted)
     expected_label = _label(expected)
+    foreign_labels = ", ".join(_FAMILY_LABELS.get(f, f.replace("_", " ")) for f in foreign_families)
     reason = (
         f"Governing law and forum name different jurisdictions: the agreement is "
         f"governed by the law of {expected_label} but submits disputes to "
@@ -637,8 +947,8 @@ def detect_mismatch(
         "law_option_id": law_option_id,
         "law_jurisdiction": expected,
         "expected_forum": expected,
-        "document_forum": foreign_sorted[0],
-        "document_forums": foreign_sorted,
+        "document_forum": foreign_families[0],
+        "document_forums": foreign_families,
     }
 
 
