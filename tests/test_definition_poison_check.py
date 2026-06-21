@@ -230,6 +230,59 @@ class DefinitionPoisonTests(unittest.TestCase):
         for bad in ("", "asdf \x00 random ;;;; ....", "non-confidential text here"):
             self.assertIsNone(ci_poison_severity(bad))
 
+    # ---- Adversarial-benign: INLINE carve-outs with ORDINARY connectives --
+    # REGRESSION GUARD (over-fail). A clean NDA whose carve-out uses an ordinary
+    # connective ("save for" / "aside from" / "to the exclusion of" / ...) INLINE in
+    # the same sentence as a broad/public-touching inclusion must NOT be FAILed: the
+    # connective is a surviving carve-out. Over-failing a clean NDA is the dangerous
+    # direction; these all FAILed before the carve-out widening.
+    def test_severity_inline_carveout_connectives_never_fail(self):
+        templates = [
+            "save for information that is publicly available or already known",
+            "saving and excepting information that is publicly available",
+            "aside from information already known to the Receiving Party",
+            "apart from information that is publicly available",
+            "to the exclusion of information independently developed",
+            "unless and until it becomes publicly available through no fault",
+            "less any information already known to the Receiving Party",
+            "with the sole exception of information in the public domain",
+            "except for information independently developed",
+            "other than information that is publicly available",
+            "excluding information that is in the public domain",
+        ]
+        for tail in templates:
+            text = (
+                "\"Confidential Information\" means all information disclosed and "
+                "includes information that is publicly available, " + tail + "."
+            )
+            self.assertNotEqual(
+                ci_poison_severity(text), "fail",
+                f"inline carve-out '{tail}' must not be FAILed",
+            )
+
+    def test_severity_realistic_8category_inline_carveout_not_fail(self):
+        # The exact realistic shape the gate flagged: a broad 8-category definition
+        # with an inline "save for ... publicly available" carve-out.
+        text = (
+            "Confidential Information means all business, financial, technical, "
+            "customer, supplier, pricing, market and trade secret information "
+            "disclosed by either party, including information that may be publicly "
+            "available, save for information that is publicly available through no "
+            "fault of the Receiving Party or was already known to it."
+        )
+        self.assertNotEqual(ci_poison_severity(text), "fail")
+
+    def test_severity_bare_public_non_category_does_not_trigger(self):
+        # PRECISION: a bare "public" that is NOT the excluded category ("public
+        # interest" / "public company" / "publicly traded") must not be read as the
+        # public-information carve-out category -> no poison, never FAIL.
+        text = (
+            "\"Confidential Information\" means all information disclosed and "
+            "includes information disclosed in the public interest or by a public "
+            "company or that is publicly traded on a recognized exchange."
+        )
+        self.assertIsNone(ci_poison_severity(text))
+
     # ---- Fail-safe: garbage / empty -> None, no crash --------------------
     def test_empty_text_returns_none(self):
         self.assertIsNone(detect_definition_poison(_matter("")))

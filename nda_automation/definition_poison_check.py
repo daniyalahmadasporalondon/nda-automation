@@ -122,9 +122,17 @@ _INCLUSION_VERB = re.compile(
 # "public" inside "non-public" (a standard, narrow CI scope in a huge fraction of
 # real NDAs) does NOT register as the excluded category. "non-public" is handled as
 # a negation by ``_is_safe_polarity`` below.
+#
+# PRECISION: "public" must carry an availability/knowledge/domain qualifier
+# ("publicly available", "public domain", "public knowledge", "publicly known",
+# "public information/data") to count as the excluded category. A bare "public"
+# (e.g. "public interest", "public company", "publicly traded") is NOT the category
+# and must not trigger the poison path -- over-failing a clean NDA is the dangerous
+# direction.
 _EXCLUDED_CATEGORY = re.compile(
-    r"\bpublic(?:ly)?\b(?:\s+(?:available|known|disclosed|domain))?|"
-    r"\bpublic\s+domain\b|"
+    r"\bpublicly\s+(?:available|known|disclosed|accessible)\b|"
+    r"\bpublic\s+(?:domain|knowledge|information|record|records|data)\b|"
+    r"\bin\s+the\s+public\s+domain\b|"
     r"(?:generally|widely|already|publicly)\s+known|"
     r"(?:already|previously|lawfully|rightfully)\s+(?:in\s+(?:its|the\s+receiving\s+party.?s)\s+possession|"
     r"known|possessed)|"
@@ -143,11 +151,21 @@ _EXCLUDED_CATEGORY = re.compile(
 # poison. We only treat a POSITIVE "ceases to be / no longer ... confidential"
 # (handled by ``_obfuscated_negation_poison``) -- not the negated form -- and we
 # do NOT list it here, so it can never suppress the real finding.
+# Bias HARD toward recognizing a carve-out: this list is intentionally GENEROUS so
+# that ANY plausible exclusion connective -- including ones that appear INLINE in the
+# same sentence as an inclusion verb -- suppresses the poison finding. Under-failing
+# (leaving a poisoned-looking def to the base CI review backstop) is acceptable;
+# over-failing a clean NDA whose carve-out merely uses "save for" / "aside from" /
+# "to the exclusion of" instead of "shall not include" is NOT.
 _EXCLUSION_FRAMING = re.compile(
     r"shall\s+not\s+include|does\s+not\s+include|do\s+not\s+include|not\s+include|"
-    r"\bexclud(?:e|es|ing|ed)\b|\bexception(?:s)?\b|\bother\s+than\b|\bexcept\b|"
+    r"\bexclud(?:e|es|ing|ed)\b|\bexception(?:s)?\b|\bother\s+than\b|\bexcept(?:\s+(?:for|that))?\b|"
     r"shall\s+not\s+apply|do(?:es)?\s+not\s+apply|obligations?\s+[^.;:]{0,40}?not\s+apply|"
-    r"not\s+(?:be\s+)?(?:deemed|considered|treated|regarded)\s+(?:as\s+)?confidential",
+    r"not\s+(?:be\s+)?(?:deemed|considered|treated|regarded)\s+(?:as\s+)?confidential|"
+    # Ordinary carve-out connectives (generously recognized, incl. inline use).
+    r"\bsave\s+for\b|\bsaving(?:\s+and\s+excepting)?\b|\baside\s+from\b|\bapart\s+from\b|"
+    r"\bto\s+the\s+exclusion\s+of\b|\bunless(?:\s+and\s+until)?\b|\bless\s+any\b|"
+    r"\bwith\s+the\s+(?:sole\s+)?exception\s+of\b",
     re.IGNORECASE,
 )
 
