@@ -821,6 +821,7 @@ setupCounterpartyConfirmation();
 setActiveTab("dashboard");
 setupDocumentViewModes();
 setupReviewUndoControls();
+if (typeof setupReviewFindReplace === "function") setupReviewFindReplace();
 
 const emptyState = () => {
   renderStudioEmpty();

@@ -19,6 +19,57 @@ function setupReviewUndoControls() {
   updateReviewUndoButtonState();
 }
 
+// Apply a programmatic Find & Replace text change to one review paragraph. Reuses the
+// shared formatting-preserving re-tile (findReplace._retileRunsForReplace) so inline
+// run formatting around the replaced span survives, records an Undo entry, and routes
+// the edit through the SAME source-sync + dirty + render hooks a typed edit uses so it
+// rides the existing manual-redline export with no new serializer op.
+function applyReviewFindReplace(paragraph, newText, oldText) {
+  if (!paragraph) return;
+  const before = oldText !== undefined ? String(oldText) : String(paragraph.text || "");
+  if (before === newText) return;
+  pushReviewEditHistoryEntry({
+    paragraphId: paragraph.id,
+    previousText: before,
+    type: "paragraph_text",
+  });
+  if (window.findReplace && typeof window.findReplace._retileRunsForReplace === "function") {
+    const retiled = window.findReplace._retileRunsForReplace(paragraph.runs, before, newText);
+    if (retiled) paragraph.runs = retiled;
+    // When nothing was worth preserving the runs go inert via the join==text guards
+    // (same as a typed edit), so the paragraph renders as clean replaced text.
+  }
+  paragraph.text = newText;
+  paragraph.clauseRedlineWholeParagraph = false; // text changed -> word-level diff
+}
+
+// Re-sync + re-render once after a batch of Find & Replace edits, mirroring the
+// post-edit bookkeeping syncViewerParagraphEdit does (source rebuild, dirty marker,
+// re-render, staleness flag, export button) but only ONCE for the whole batch.
+function afterReviewFindReplaceBatch() {
+  syncReviewSourceFromParagraphs();
+  markRedlineDraftDirty();
+  markSourceEdited("Find & Replace", { preserveSourceDocument: true });
+  renderStudioDocumentHighlights();
+  scheduleViewerReviewRefresh("Document edited");
+  markReviewMayBeStaleFromEdit();
+  updateExportButtonState();
+}
+
+function setupReviewFindReplace() {
+  if (!window.findReplace || typeof window.findReplace.register !== "function") return;
+  window.findReplace.register("review", {
+    paragraphs: () => state.reviewParagraphs || [],
+    getRenderEl: () => studioDocumentRender,
+    getPanelHost: () => studioDocumentRender?.closest(".studio-page") || studioDocumentRender,
+    applyReplacement: applyReviewFindReplace,
+    afterBatch: afterReviewFindReplaceBatch,
+  });
+  // Toolbar trigger (additive button; co-exists with the other editor toolbar work).
+  const button = document.getElementById("studioFindReplaceButton");
+  if (button) button.addEventListener("click", () => window.findReplace.open("review"));
+}
+
 function updateReviewUndoButtonState() {
   if (!studioUndoEditButton) return;
   studioUndoEditButton.disabled = !(state.reviewEditHistory || []).length;
