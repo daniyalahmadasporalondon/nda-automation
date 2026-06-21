@@ -736,14 +736,22 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
     #     The id-existence check ranges over ALL priors (all_prior_ids), not just
     #     the extras-holders, so a survivor that legitimately id-matches a forum-
     #     less prior never falls through to a position graft.
-    #   Pass 2 (position fallback for a PURE RENAME): a law whose id matches NO
-    #     prior claims its same-slot prior, but ONLY when the option count is
-    #     unchanged (same_cardinality) AND that prior id is not still owned by a
-    #     surviving law. The same-cardinality gate is essential: when a law was
-    #     deleted (or inserted), the slots shift, so an id-mismatch at a slot is a
-    #     SHIFTED-IN neighbour, not a rename — taking its prior would graft a wrong
-    #     court. Only when no law was added/removed is a slot id-mismatch a genuine
-    #     in-place rename. This mirrors the FE twin.
+    #   Pass 2 (position fallback for a SINGLE, UNAMBIGUOUS rename): a law whose id
+    #     matches NO prior claims its same-slot prior, but ONLY when the edit is a
+    #     lone in-place rename. Three guards make the slot==identity assumption safe:
+    #       a) same_cardinality — no law was added/removed (a delete/insert shifts
+    #          slots, so an id-mismatch would be a shifted-in neighbour, not a
+    #          rename → wrong-court graft).
+    #       b) exactly_one_rename — only ONE law lost its id-match. With ≥2 renames
+    #          in one same-cardinality edit, slot==identity is ambiguous (cannot tell
+    #          "two in-place renames" from "two renames + a swap"), so the fallback
+    #          would graft a swapped neighbour's forum. When ambiguous we UNDER-carry
+    #          (no forum) for all renamed laws — the SAFE direction: the empty-forum
+    #          publish lint then blocks publish until the forum is re-entered, rather
+    #          than silently shipping a wrong court.
+    #       c) unclaimed slot — the same-slot prior id is not still owned by a
+    #          surviving law (guards a lone rename that also moved).
+    #     This mirrors the FE twin.
     rebuilt_options = [
         {
             "id": _option_id(law),
@@ -754,6 +762,10 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
         for law in approved_laws
     ]
     same_cardinality = len(rebuilt_options) == prior_count
+    unmatched_count = sum(
+        1 for option in rebuilt_options if option["id"] not in all_prior_ids
+    )
+    exactly_one_rename = unmatched_count == 1
     claimed_prior_ids = {
         option["id"] for option in rebuilt_options if option["id"] in all_prior_ids
     }
@@ -764,9 +776,9 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
             # fall through to a position graft when the id itself still exists.
             option.update(extras_by_id.get(option_id, {}))
             continue
-        # Rename gap (id matches no prior): only a same-cardinality, unclaimed-slot
-        # prior is a genuine in-place rename; otherwise leave the law forum-less.
-        if not same_cardinality:
+        # Rename gap (id matches no prior): take the same-slot prior ONLY for a lone,
+        # unambiguous, unclaimed-slot in-place rename; otherwise leave it forum-less.
+        if not (same_cardinality and exactly_one_rename):
             continue
         if prior_id_at_index.get(index) in claimed_prior_ids:
             continue

@@ -385,6 +385,62 @@ class PlaybookRulesTests(unittest.TestCase):
         ]
         self.assertEqual(india_holders, ["india"])
 
+    def test_rename_swap_two_renamed_laws_no_graft(self):
+        # TWO laws renamed AND swapped in one same-cardinality edit:
+        #   India(0)            -> England(1)   (id india -> england, slot 0)
+        #   England and Wales(1)-> Bharat(0)?   here we use the gate's input:
+        #   [India, England and Wales, Delaware] -> [England, Bharat, Delaware]
+        # Both "England" (id england) and "Bharat" (id bharat) lose their id-match;
+        # slot==identity is AMBIGUOUS, so the position fallback must NOT fire for
+        # either -> each renamed law gets NO forum (not the swapped neighbour's
+        # court). Delaware (unchanged) keeps its own. (Grafts on 23b85f23.)
+        clause = self._governing_law_clause_three_forums()
+        clause["approved_laws"] = ["England", "Bharat", "Delaware"]
+
+        normalized = normalize_clause_policy(clause)
+        options = {opt["id"]: opt for opt in normalized["rules"]["approved_options"]}
+
+        self.assertNotIn(
+            "forum_jurisdiction",
+            options["england"],
+            "ambiguous double-rename must not graft a neighbour's court",
+        )
+        self.assertNotIn(
+            "forum_jurisdiction",
+            options["bharat"],
+            "ambiguous double-rename must not graft a neighbour's court",
+        )
+        # The untouched law keeps its own forum (id-match).
+        self.assertEqual(
+            options["delaware"].get("forum_jurisdiction"), "Courts of Delaware, USA"
+        )
+        # And no wrong court leaked anywhere.
+        forums = {opt.get("forum_jurisdiction") for opt in options.values()}
+        self.assertNotIn("Courts of Mumbai, India", forums)
+        self.assertNotIn("Courts of England and Wales, London", forums)
+
+    def test_single_pure_rename_still_keeps_its_forum(self):
+        # Guard against re-breaking the ORIGINAL bug: a lone in-place rename
+        # (exactly one law loses its id-match) must still carry its forum forward.
+        clause = self._governing_law_clause_three_forums()
+        clause["approved_laws"] = ["Bharat", "England and Wales", "Delaware"]
+
+        normalized = normalize_clause_policy(clause)
+        options = {opt["id"]: opt for opt in normalized["rules"]["approved_options"]}
+
+        self.assertEqual(
+            options["bharat"].get("forum_jurisdiction"),
+            "Courts of Mumbai, India",
+            "a single pure rename must preserve the renamed law's forum",
+        )
+        self.assertEqual(
+            options["england_and_wales"].get("forum_jurisdiction"),
+            "Courts of England and Wales, London",
+        )
+        self.assertEqual(
+            options["delaware"].get("forum_jurisdiction"), "Courts of Delaware, USA"
+        )
+
     @staticmethod
     def _clause_forum_then_forumless():
         # A forum-BEARING law ("India") sitting BEFORE a forum-LESS survivor

@@ -2302,20 +2302,34 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     // Two-pass resolution mirroring the backend: id-match is primary (existingById
     // keys ALL priors, so a survivor matching a forum-less prior carries nothing,
     // never grafting a deleted neighbour's court). The same-slot position prior is
-    // the PURE-RENAME fallback, taken ONLY when the option count is unchanged
-    // (sameCardinality) AND that prior id is not still owned by a surviving law.
-    // The same-cardinality gate is essential: after a delete/insert the slots
-    // shift, so a slot id-mismatch is a shifted-in neighbour, not a rename --
-    // taking its prior would graft a wrong court.
+    // the fallback for a SINGLE, UNAMBIGUOUS in-place rename, taken ONLY when:
+    //   a) sameCardinality -- no law added/removed (a delete/insert shifts slots, so
+    //      a slot id-mismatch is a shifted-in neighbour, not a rename);
+    //   b) exactlyOneRename -- only ONE law lost its id-match. With >=2 renames in a
+    //      same-cardinality edit, slot==identity is ambiguous (two in-place renames
+    //      vs two renames + a swap), so taking the slot prior would graft a swapped
+    //      neighbour's forum. When ambiguous we UNDER-carry (no forum) -- the safe
+    //      direction: the empty-forum publish lint then blocks until it is re-entered;
+    //   c) the slot prior id is not still owned by a surviving law.
     const claimedPriorIds = new Set(
       approved.map((law) => optionIdForLaw(law)).filter((id) => id in existingById),
     );
     const sameCardinality = approved.length === priorCount;
+    const unmatchedCount = approved.reduce(
+      (count, law) => (optionIdForLaw(law) in existingById ? count : count + 1),
+      0,
+    );
+    const exactlyOneRename = unmatchedCount === 1;
     rules.approved_options = approved.map((law, index) => {
       const id = optionIdForLaw(law);
       const byIndex = existingOptions[index];
       let prior = existingById[id];
-      if (!prior && sameCardinality && !claimedPriorIds.has(priorIdAtIndex[index])) {
+      if (
+        !prior &&
+        sameCardinality &&
+        exactlyOneRename &&
+        !claimedPriorIds.has(priorIdAtIndex[index])
+      ) {
         prior = (byIndex && typeof byIndex === "object") ? byIndex : undefined;
       }
       const merged = (prior && typeof prior === "object") ? { ...prior } : {};

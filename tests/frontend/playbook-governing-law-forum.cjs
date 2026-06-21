@@ -264,4 +264,44 @@ function governingLawClauseForumThenForumless() {
   );
 }
 
+// 10) TWO laws renamed AND swapped in one same-cardinality edit -> ambiguous, so
+// NEITHER renamed law may take the position fallback: each gets NO forum (not the
+// swapped neighbour's court). The untouched law keeps its own. Identical FE/BE.
+{
+  const clause = governingLawClauseThreeForums();
+  // [India, England and Wales, Delaware] -> [England, Bharat, Delaware]
+  clause.approved_laws = ["England", "Bharat", "Delaware"];
+  controller.syncGoverningLawRules(clause);
+  const options = optionsById(clause);
+  assert.equal(
+    options.england.forum_jurisdiction,
+    undefined,
+    "ambiguous double-rename must not graft a neighbour's court (FE==BE)",
+  );
+  assert.equal(
+    options.bharat.forum_jurisdiction,
+    undefined,
+    "ambiguous double-rename must not graft a neighbour's court (FE==BE)",
+  );
+  assert.equal(options.delaware.forum_jurisdiction, "Courts of Delaware, USA");
+  const forums = new Set(Object.values(options).map((o) => o.forum_jurisdiction));
+  assert.ok(!forums.has("Courts of Mumbai, India"), "India's court must not leak");
+  assert.ok(!forums.has("Courts of England and Wales, London"), "England's court must not leak");
+}
+
+// 11) SINGLE pure rename still keeps its forum (don't re-break the original bug).
+{
+  const clause = governingLawClauseThreeForums();
+  clause.approved_laws = ["Bharat", "England and Wales", "Delaware"]; // India -> Bharat only
+  controller.syncGoverningLawRules(clause);
+  const options = optionsById(clause);
+  assert.equal(
+    options.bharat.forum_jurisdiction,
+    "Courts of Mumbai, India",
+    "a single pure rename must preserve the renamed law's forum (FE==BE)",
+  );
+  assert.equal(options.england_and_wales.forum_jurisdiction, "Courts of England and Wales, London");
+  assert.equal(options.delaware.forum_jurisdiction, "Courts of Delaware, USA");
+}
+
 console.log("playbook-governing-law-forum.cjs: all assertions passed");
