@@ -10,8 +10,11 @@ behaviour and the full on-``completed`` drive:
     archiver resolves the Drive-token owner from the matter, the #10 path).
 (b) an invalid OR missing signature WITH a key configured is rejected 401 with NO
     state change (the matter never flips).
-(c) with NO key configured the webhook still proceeds (unconfigured demo keeps
-    working) but a LOUD WARNING is logged that the webhook is unauthenticated.
+(c) with NO key configured the webhook FAILS CLOSED on a public (non-loopback)
+    bind: it is rejected 401 and never touches a matter (P0 anti-forgery). The
+    unsigned path is allowed ONLY for the trusted local developer — a loopback bind
+    — or behind the explicit ``NDA_DOCUSIGN_ALLOW_UNSIGNED_WEBHOOK`` opt-in, both of
+    which still process the callback (and log a LOUD WARNING).
 
 Reuses the existing fakes: ``FakeDocuSignClient`` (the DocuSign double),
 ``InMemoryMatterRepository``, and the ``_FakeHandler`` route-driver shape from
@@ -57,16 +60,29 @@ def _isolated_user_store(tmp_path, monkeypatch):
     monkeypatch.setenv("NDA_USERS_PATH", str(tmp_path / "users.json"))
 
 
+class _FakeServer:
+    """Minimal server double exposing ``server_address`` (the bind host/port).
+
+    ``_request_host`` reads ``server.server_address[0]`` to decide loopback vs a
+    public bind. Defaults to a NON-loopback bind so the fail-CLOSED path is the
+    default unless a test explicitly asks for ``0.0.0.0``/``127.0.0.1``.
+    """
+
+    def __init__(self, bind_host="0.0.0.0"):
+        self.server_address = (bind_host, 8787)
+
+
 class _FakeHandler:
     """Minimal request double matching the seam in test_docusign_route."""
 
-    def __init__(self, repo, *, owner=OWNER, raw_body=b"", headers=None):
+    def __init__(self, repo, *, owner=OWNER, raw_body=b"", headers=None, bind_host="0.0.0.0"):
         self.matter_repository = repo
         self.current_user_id = owner
         self.current_user = {"id": owner, "provider": "google", "email": "u@x.com"}
         self.path = "/api/docusign/webhook"
         self.rfile = io.BytesIO(raw_body)
         self.headers = headers or {"Content-Length": str(len(raw_body)), "Host": "app.test"}
+        self.server = _FakeServer(bind_host)
         self.status = 200
         self.response = None
 
@@ -259,22 +275,79 @@ def test_missing_hmac_header_with_key_rejected_401_no_state_change(
 
 
 # --------------------------------------------------------------------------
-# (c) no key configured -> proceeds, but logs a LOUD WARNING
+# (c) no key configured -> FAIL CLOSED on a public bind; escapes for loopback /
+#     explicit opt-in still process the callback
 # --------------------------------------------------------------------------
-def test_no_key_logs_unauthenticated_warning(repo, monkeypatch, caplog):
+def test_no_key_public_bind_fails_closed_401_no_state_change(
+    repo, connected, fake_client, archive_recorder, monkeypatch, caplog
+):
+    """P0 PROOF: no key + non-loopback bind + no opt-in -> REJECTED, no state change.
+
+    On base ``c4e3aa42`` ``_verify_hmac`` returned ``True`` here and the forged
+    "completed" event flipped the matter to executed + triggered the Drive archive.
+    """
     monkeypatch.delenv(docusign_connection.CONNECT_HMAC_KEY_ENV, raising=False)
-    # Unknown envelope keeps the test focused on the auth branch; the request must
-    # still be accepted (matched:false ack) and the warning must fire.
+    monkeypatch.delenv(docusign_connection.ALLOW_UNSIGNED_WEBHOOK_ENV, raising=False)
+    matter_id, envelope_id = _sent_envelope(repo, fake_client)
+
+    body = _webhook_body(envelope_id)
+    # A real, matchable envelope but NO signature header at all (a forged caller).
+    handler = _FakeHandler(
+        repo,
+        owner="",
+        raw_body=body,
+        headers={"Content-Length": str(len(body))},
+        bind_host="0.0.0.0",
+    )
+    with caplog.at_level(logging.WARNING, logger="nda_automation.routes.docusign"):
+        docusign_routes.handle_docusign_webhook(handler)
+
+    # Rejected with 401, and the matter is UNTOUCHED (never flips, never archives).
+    assert handler.status == 401
+    stored = repo.get_matter(matter_id, owner_user_id=OWNER)
+    assert stored["status"] != "fully_signed"
+    assert stored.get("executed") is not True
+    assert archive_recorder == []
+    joined = " ".join(r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
+    assert "REJECTED" in joined
+    assert docusign_connection.CONNECT_HMAC_KEY_ENV in joined
+
+
+def test_verify_hmac_returns_false_no_key_public_bind(repo, monkeypatch):
+    """Direct unit proof the helper FAILS CLOSED (non-vacuity vs base True)."""
+    monkeypatch.delenv(docusign_connection.CONNECT_HMAC_KEY_ENV, raising=False)
+    monkeypatch.delenv(docusign_connection.ALLOW_UNSIGNED_WEBHOOK_ENV, raising=False)
+    handler = _FakeHandler(repo, owner="", raw_body=b"{}", bind_host="0.0.0.0")
+    assert docusign_routes._verify_hmac(handler, b"{}") is False
+
+
+def test_no_key_loopback_bind_allowed_processes_and_warns(repo, monkeypatch, caplog):
+    """Dev escape: a LOOPBACK bind with no key still processes (local/demo)."""
+    monkeypatch.delenv(docusign_connection.CONNECT_HMAC_KEY_ENV, raising=False)
+    monkeypatch.delenv(docusign_connection.ALLOW_UNSIGNED_WEBHOOK_ENV, raising=False)
     body = _webhook_body("env-unknown")
-    handler = _FakeHandler(repo, owner="", raw_body=body)
+    handler = _FakeHandler(repo, owner="", raw_body=body, bind_host="127.0.0.1")
 
     with caplog.at_level(logging.WARNING, logger="nda_automation.routes.docusign"):
         docusign_routes.handle_docusign_webhook(handler)
 
+    # Accepted (matched:false ack for the unknown envelope) and warns it is unauth.
     assert handler.status == 200
     assert handler.response["received"] is True
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert warnings, "expected a WARNING that the webhook is unauthenticated"
-    joined = " ".join(r.getMessage() for r in warnings)
+    joined = " ".join(r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
     assert "UNAUTHENTICATED" in joined
-    assert docusign_connection.CONNECT_HMAC_KEY_ENV in joined
+
+
+def test_no_key_explicit_optin_allowed_processes(repo, monkeypatch):
+    """Dev escape: the explicit opt-in flag processes even on a public bind."""
+    monkeypatch.delenv(docusign_connection.CONNECT_HMAC_KEY_ENV, raising=False)
+    monkeypatch.setenv(docusign_connection.ALLOW_UNSIGNED_WEBHOOK_ENV, "true")
+    body = _webhook_body("env-unknown")
+    handler = _FakeHandler(repo, owner="", raw_body=body, bind_host="0.0.0.0")
+
+    docusign_routes.handle_docusign_webhook(handler)
+
+    assert handler.status == 200
+    assert handler.response["received"] is True
+    # And the helper itself returns True under the opt-in.
+    assert docusign_routes._verify_hmac(handler, body) is True

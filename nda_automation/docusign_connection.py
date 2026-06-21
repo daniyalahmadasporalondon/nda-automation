@@ -50,6 +50,15 @@ CLIENT_SECRET_ENV = "NDA_DOCUSIGN_CLIENT_SECRET"
 REDIRECT_URI_ENV = "NDA_DOCUSIGN_OAUTH_REDIRECT_URI"
 AUTH_SERVER_ENV = "NDA_DOCUSIGN_AUTH_SERVER"
 CONNECT_HMAC_KEY_ENV = "NDA_DOCUSIGN_CONNECT_HMAC_KEY"
+# Explicit opt-in that permits the PUBLIC, session-less /api/docusign/webhook to be
+# processed WITHOUT an HMAC signature (because CONNECT_HMAC_KEY_ENV is unset). This
+# exists ONLY so local/demo testing keeps working without configuring a Connect key.
+# It must NEVER be set on a public deployment: with no key the webhook is
+# unauthenticated, so any caller could forge a "completed" event and flip a matter
+# to executed. The webhook fails CLOSED unless this flag is set OR the server is
+# bound to a loopback interface (the trusted local developer). See
+# routes/docusign._verify_hmac.
+ALLOW_UNSIGNED_WEBHOOK_ENV = "NDA_DOCUSIGN_ALLOW_UNSIGNED_WEBHOOK"
 
 # A SINGLE default Aspora signatory (name + email) used for ALL Aspora signing
 # entities when routing an envelope. The per-entity registry signatory is a
@@ -267,6 +276,22 @@ def is_production() -> bool:
 
 def connect_hmac_key() -> str:
     return os.environ.get(CONNECT_HMAC_KEY_ENV, "")
+
+
+def allow_unsigned_webhook() -> bool:
+    """Whether the unsigned-webhook escape hatch is explicitly opted into.
+
+    True only when ``NDA_DOCUSIGN_ALLOW_UNSIGNED_WEBHOOK`` is set to a truthy value.
+    This is the EXPLICIT opt-in that lets the public ``/api/docusign/webhook`` be
+    processed when no HMAC key is configured. Without it (and off a loopback bind)
+    the webhook fails CLOSED. See ``routes/docusign._verify_hmac``.
+    """
+    return os.environ.get(ALLOW_UNSIGNED_WEBHOOK_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def aspora_default_signer() -> dict[str, str] | None:
