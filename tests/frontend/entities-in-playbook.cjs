@@ -177,8 +177,14 @@ async function main() {
     // incorporation_jurisdiction is a required field (pre-existing validation rule).
     await page.fill(`${newCard} [data-entity-field="incorporation_jurisdiction"]`, "England and Wales");
     await page.fill(`${newCard} .entity-address [data-address-field="lines"]`, "1 Test Street\nLondon");
-    // The new entity's governing law defaults to the first approved playbook option;
-    // align the court text is not required, but make the law explicit to be safe.
+    // The new entity's governing law defaults to the first approved playbook option
+    // (india). Forum reconciliation now validates the CANDIDATE entities being saved
+    // against the playbook forum buckets, so the chosen law must agree with the court
+    // text -- pick england_and_wales to match "courts in England and Wales" above.
+    await page.selectOption(
+      `${newCard} [data-entity-field="governing_law"]`,
+      "england_and_wales"
+    );
 
     // --- 5. Save registry -> POST carries the correct {entities:[...]} payload ---
     const saveReq = page.waitForRequest(
