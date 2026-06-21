@@ -969,14 +969,14 @@
                   <article>
                     <h2>Core Python modules</h2>
                     <dl class="engine-fact-list">
-                      <div><dt>Review orchestration</dt><dd>nda_automation/checker.py</dd></div>
-                      <div><dt>DOCX structure extraction</dt><dd>nda_automation/docx_text.py</dd></div>
-                      <div><dt>Paragraph alignment</dt><dd>nda_automation/review_document.py</dd></div>
-                      <div><dt>Structure mapping</dt><dd>nda_automation/contract_structure.py</dd></div>
-                      <div><dt>Reference resolver</dt><dd>nda_automation/reference_resolver.py</dd></div>
-                      <div><dt>Concept classifier</dt><dd>nda_automation/concept_classifier.py</dd></div>
-                      <div><dt>Clause registry</dt><dd>nda_automation/checks/</dd></div>
-                      <div><dt>DOCX export</dt><dd>nda_automation/docx_export.py</dd></div>
+                      <div><dt>Review orchestration</dt><dd>Review Engine</dd></div>
+                      <div><dt>DOCX structure extraction</dt><dd>Document Text Extractor</dd></div>
+                      <div><dt>Paragraph alignment</dt><dd>Paragraph Aligner</dd></div>
+                      <div><dt>Structure mapping</dt><dd>Structure Mapper</dd></div>
+                      <div><dt>Reference resolver</dt><dd>Cross-Reference Resolver</dd></div>
+                      <div><dt>Concept classifier</dt><dd>Concept Classifier</dd></div>
+                      <div><dt>Clause registry</dt><dd>Clause Check Registry</dd></div>
+                      <div><dt>DOCX export</dt><dd>Word Export</dd></div>
                     </dl>
                   </article>
                   <article>
@@ -1047,7 +1047,7 @@
                     <article>
                       <h3>Mutuality</h3>
                       <dl>
-                        <div><dt>Module</dt><dd>nda_automation/checks/mutuality.py</dd></div>
+                        <div><dt>Source</dt><dd>Mutuality Check</dd></div>
                         <div><dt>Purpose</dt><dd>Confirm the NDA creates reciprocal confidentiality obligations for both parties, not a one-way receiving-party model.</dd></div>
                         <div><dt>Inputs</dt><dd>Reviewed paragraphs, role definitions, reciprocal-obligation terms, one-way terms, and shared structure context.</dd></div>
                         <div><dt>Pass</dt><dd>Strong reciprocal obligation language binds both parties as disclosing and receiving parties.</dd></div>
@@ -1065,7 +1065,7 @@
                     <article>
                       <h3>Confidential Information</h3>
                       <dl>
-                        <div><dt>Module</dt><dd>nda_automation/checks/confidential_information.py</dd></div>
+                        <div><dt>Source</dt><dd>Confidential Information Check</dd></div>
                         <div><dt>Purpose</dt><dd>Confirm the Confidential Information definition is broad enough and does not add exclusions that weaken protection.</dd></div>
                         <div><dt>Inputs</dt><dd>Definition paragraphs, required category terms, exclusion terms, usage-right signals, and shared structure context.</dd></div>
                         <div><dt>Pass</dt><dd>A broad Confidential Information definition covers enough required categories with no extra exclusions.</dd></div>
@@ -1083,7 +1083,7 @@
                     <article>
                       <h3>Governing Law</h3>
                       <dl>
-                        <div><dt>Module</dt><dd>nda_automation/checks/governing_law.py</dd></div>
+                        <div><dt>Source</dt><dd>Governing Law Check</dd></div>
                         <div><dt>Purpose</dt><dd>Confirm the contract has a clear governing-law value and that the value is in the approved operating set.</dd></div>
                         <div><dt>Inputs</dt><dd>Governing-law candidates, approved jurisdiction aliases, placeholder signals, conflict signals, and shared structure context.</dd></div>
                         <div><dt>Pass</dt><dd>The governing-law value resolves to an approved law.</dd></div>
@@ -1101,7 +1101,7 @@
                     <article>
                       <h3>Term and Survival</h3>
                       <dl>
-                        <div><dt>Module</dt><dd>nda_automation/checks/term_and_survival.py</dd></div>
+                        <div><dt>Source</dt><dd>Term &amp; Survival Check</dd></div>
                         <div><dt>Purpose</dt><dd>Confirm ordinary confidentiality term or survival is time-limited while preserving approved longer carve-outs.</dd></div>
                         <div><dt>Inputs</dt><dd>Duration expressions, indefinite-survival terms, longer-survival carve-outs, resolved references, concept tags, and shared structure context.</dd></div>
                         <div><dt>Pass</dt><dd>Ordinary confidentiality term or survival period is fixed and within the configured cap.</dd></div>
@@ -1137,7 +1137,7 @@
                     <article>
                       <h3>Signatures</h3>
                       <dl>
-                        <div><dt>Module</dt><dd>nda_automation/checks/signatures.py</dd></div>
+                        <div><dt>Source</dt><dd>Signatures Check</dd></div>
                         <div><dt>Purpose</dt><dd>Confirm the NDA has an execution block that appears complete enough for both sides to sign.</dd></div>
                         <div><dt>Inputs</dt><dd>Execution-block text, party markers, title/capacity markers, date markers, and the signature redline template.</dd></div>
                         <div><dt>Pass</dt><dd>Execution block appears to include both parties, titles or capacities, and dates.</dd></div>
@@ -1535,7 +1535,7 @@
                   <div class="resolver-logic-grid">
                     <article>
                       <h3>Activation</h3>
-                      <p>Admin can save a local OpenRouter API key and turn AI on from the Admin tab, or deployment can use NDA_AI_REVIEW_ENABLED, NDA_AI_PROVIDER, NDA_AI_MODEL, and OPENROUTER_API_KEY in the backend environment.</p>
+                      <p>AI review is turned on from the Admin tab, or configured at deployment by system administrators.</p>
                     </article>
                     <article>
                       <h3>Scope</h3>
@@ -1554,11 +1554,11 @@
                   <dl class="resolver-audit-list">
                     <div>
                       <dt>Provider</dt>
-                      <dd>OpenRouter through nda_automation/ai_review.py using structured JSON output. API keys are read from backend configuration or ignored local app data and are never exposed to browser JavaScript.</dd>
+                      <dd>OpenRouter through the AI Review Service using structured JSON output. API keys are read from backend configuration or ignored local app data and are never exposed to browser JavaScript.</dd>
                     </div>
                     <div>
                       <dt>Default model</dt>
-                      <dd>x-ai/grok-4.3 by default; overridable with NDA_AI_MODEL in the backend environment.</dd>
+                      <dd>x-ai/grok-4.3 by default; the model is configurable at deployment by system administrators.</dd>
                     </div>
                     <div>
                       <dt>Confidence gate</dt>
