@@ -174,6 +174,8 @@ def _make_matter(repo, owner):
         repository=repo,
         owner_user_id=owner,
     )
+    # Cleared for the send-for-signature review/approval gate.
+    repo.update_matter_fields(matter_id, {"human_reviewed": True}, owner_user_id=owner)
     return repo.get_matter(matter_id, owner_user_id=owner), matter_id
 
 

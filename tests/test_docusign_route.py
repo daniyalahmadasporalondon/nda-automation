@@ -137,6 +137,9 @@ def _matter_with_reviewed(repo, *, owner=OWNER):
         repository=repo,
         owner_user_id=owner,
     )
+    # Cleared for the send-for-signature review/approval gate: a genuinely
+    # sendable matter has been human-reviewed (matter_cleared_for_signature).
+    repo.update_matter_fields(matter_id, {"human_reviewed": True}, owner_user_id=owner)
     return matter_id
 
 
@@ -344,6 +347,54 @@ def test_send_for_signature_success(repo, connected, fake_client):
     assert handler.response["envelope_id"]
     assert handler.response["status"] == "sent"
     assert "matter" in handler.response
+
+
+def _matter_unreviewed(repo, *, owner=OWNER):
+    """A freshly-generated (never-reviewed) matter: a generated-role document but
+    NO approval/human-review. Mirrors what nda_generation_workflow creates with
+    defer_ai_review=True. Must be BLOCKED by the send-for-signature gate.
+    """
+    from nda_automation.artifact_registry import ROLE_GENERATED  # noqa: PLC0415
+
+    matter = repo.create_matter(
+        source_filename="generated-nda.docx",
+        document_bytes=b"original",
+        extracted_text="text",
+        review_result={},
+        triage={},
+        source_type="generated",
+        board_column="generated",
+        owner_user_id=owner,
+        intake_metadata={"reply_to": "cp@acme.com", "sender": "cp@acme.com", "subject": "Gen NDA"},
+    )
+    matter_id = matter["id"]
+    artifact_service.add_artifact(
+        matter_id,
+        source=SOURCE_GENERATED,
+        actor=ACTOR_HUMAN,
+        role=ROLE_GENERATED,
+        document_bytes=PDF_BYTES,
+        repository=repo,
+        owner_user_id=owner,
+    )
+    return matter_id
+
+
+def test_send_for_signature_unreviewed_is_blocked_403(repo, connected, fake_client):
+    """P0: a freshly-generated, never-reviewed NDA must NOT be sent for signature.
+
+    DocuSign is connected and the document is signable, so the ONLY thing that
+    blocks the send is the review/approval gate. No envelope is created.
+    """
+    matter_id = _matter_unreviewed(repo)
+    handler = _FakeHandler(repo, payload={})
+    docusign_routes.handle_send_for_signature(handler, f"/api/matters/{matter_id}/send-for-signature")
+    assert handler.status == 403
+    assert handler.response["needs_review"] is True
+    assert "Review and approve" in handler.response["error"]
+    # No envelope was ever created on the unreviewed matter.
+    stored = repo.get_matter(matter_id, owner_user_id=OWNER)
+    assert docusign_routes.docusign_workflow.SIGNATURE_FIELD not in stored
 
 
 def test_send_for_signature_owner_mismatch_is_404_noop(repo, connected, fake_client):

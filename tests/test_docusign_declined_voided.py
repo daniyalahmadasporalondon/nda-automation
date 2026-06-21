@@ -55,6 +55,8 @@ def sent_matter(in_memory_matters):
         repository=in_memory_matters,
         owner_user_id=OWNER,
     )
+    # Cleared for the send-for-signature review/approval gate.
+    in_memory_matters.update_matter_fields(matter_id, {"human_reviewed": True}, owner_user_id=OWNER)
     matter = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
     fake = FakeDocuSignClient()
     send = docusign_workflow.send_for_signature(
