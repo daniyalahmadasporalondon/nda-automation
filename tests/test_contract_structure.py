@@ -637,5 +637,44 @@ class SoftReturnContinuationStructureTests(unittest.TestCase):
         self.assertEqual(aligned_split[1]["split_parent_number"], "5")
 
 
+class SectionRoleTests(unittest.TestCase):
+    """PROOF (change #3): each section carries a deterministic, additive ``role``."""
+
+    def test_roles_distinguish_recital_operative_definitions_signature(self):
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "MUTUAL NON-DISCLOSURE AGREEMENT",
+            "WHEREAS the parties wish to explore a business relationship.",
+            "1. Definitions",
+            "Confidential Information means non-public information disclosed by a party.",
+            "2. Confidentiality",
+            "The Receiving Party shall not disclose Confidential Information to any third party.",
+            "3. Execution",
+            "IN WITNESS WHEREOF the parties have executed this Agreement as of the date below.",
+        ]))
+        structure = build_contract_structure(paragraphs)
+        roles = {section["label"]: section["role"] for section in structure["sections"]}
+
+        # Every section carries a role (additive, never missing).
+        self.assertTrue(all("role" in section for section in structure["sections"]))
+        # Preamble + WHEREAS -> recital.
+        self.assertEqual(roles["Preamble"], "recital")
+        # Definitions heading -> definitions.
+        self.assertEqual(roles["1"], "definitions")
+        # Numbered clause with an operative verb ("shall") -> operative.
+        self.assertEqual(roles["2"], "operative")
+        # IN WITNESS WHEREOF signature-block cue -> signature.
+        self.assertEqual(roles["3"], "signature")
+
+    def test_role_flows_into_reference_index_record(self):
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "1. Confidentiality",
+            "The Receiving Party shall keep all Confidential Information confidential.",
+        ]))
+        structure = build_contract_structure(paragraphs)
+        sections_by_id = structure["reference_index"]["sections_by_id"]
+        self.assertTrue(sections_by_id)
+        self.assertTrue(all("role" in record for record in sections_by_id.values()))
+
+
 if __name__ == "__main__":
     unittest.main()
