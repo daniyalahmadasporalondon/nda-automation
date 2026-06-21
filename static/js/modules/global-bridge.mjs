@@ -40,7 +40,7 @@ import { ReviewWorkstationModel } from "./review-workstation-model.mjs";
 // (all other FE consumers read window.DocuSignModel via the global bridge, never
 // re-importing it), so versioning the specifier here cannot create a duplicate
 // module instance. Keep this token in lockstep with the docusign-model.mjs bytes.
-import { DocuSignModel } from "./docusign-model.mjs?v=20260619signorder2";
+import { DocuSignModel } from "./docusign-model.mjs?v=20260621recipientconfirm1";
 import {
   DASHBOARD_SEARCH_CHIPS,
   NULL_FILTER_SPEC,

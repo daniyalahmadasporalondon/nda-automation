@@ -294,6 +294,15 @@ def handle_send_for_signature(handler, path: str) -> None:
     signers = payload.get("signers") if isinstance(payload.get("signers"), list) else None
     signing_order = str(payload.get("signing_order") or docusign_integration.DEFAULT_SIGNING_ORDER)
     email_subject = str(payload.get("email_subject") or "")
+    # The counterparty signer email can originate from an attacker-controlled inbound
+    # header (Reply-To/From) or untrusted intake free-text. When the envelope would
+    # email a spoofable-derived address, the workflow requires the operator to have
+    # confirmed the EXACT visible recipient; this is the value the FE surfaces and
+    # passes back. A missing/mismatched confirmation -> RecipientConfirmationError ->
+    # 400 below, BEFORE any DocuSign API call (no envelope, no email).
+    confirm_recipient = payload.get("confirm_recipient")
+    if not isinstance(confirm_recipient, str):
+        confirm_recipient = None
 
     telemetry.increment("docusign_send_requests")
     try:
@@ -304,8 +313,16 @@ def handle_send_for_signature(handler, path: str) -> None:
             signers=signers,
             signing_order=signing_order,
             email_subject=email_subject,
+            confirm_recipient=confirm_recipient,
             repository=repository,
         )
+    except docusign_workflow.RecipientConfirmationError as error:
+        # Spoofable-derived recipient not confirmed (or confirmation mismatched):
+        # refuse the send. No envelope was created and the matter is unchanged.
+        telemetry.increment("docusign_send_failed")
+        telemetry.increment("docusign_send_recipient_unconfirmed")
+        handler._send_json({"error": str(error)}, status=400)
+        return
     except docusign_connection.DocuSignReconnectRequiredError as error:
         # The user's DocuSign authorization is dead (revoked / expired beyond
         # refresh). Distinct from a transient outage: tell them to RECONNECT instead

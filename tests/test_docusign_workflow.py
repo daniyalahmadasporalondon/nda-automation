@@ -51,7 +51,14 @@ def test_send_for_signature_creates_envelope_and_records_state(matter_with_revie
     matter, matter_id = matter_with_reviewed
     fake = FakeDocuSignClient()
     result = docusign_workflow.send_for_signature(
-        matter, matter_id, OWNER, repository=in_memory_matters, client=fake
+        matter,
+        matter_id,
+        OWNER,
+        repository=in_memory_matters,
+        client=fake,
+        # The counterparty email is derived from the inbound reply_to (spoofable),
+        # so the send now requires confirmation of the resolved recipient.
+        confirm_recipient="cp@acme.com",
     )
     assert result.envelope_id
     assert result.status == "sent"
@@ -158,6 +165,7 @@ def test_send_for_signature_honors_explicit_reorder_aspora_first(
             {"name": "Aspora", "email": "signer@aspora.com", "role": "aspora", "routing_order": 1},
         ],
         signing_order="sequential",
+        confirm_recipient="cp@acme.com",
     )
     definition = docusign_integration.build_envelope_definition(
         b"%PDF-1.4 body", "nda.pdf", client.last_signers
@@ -171,7 +179,8 @@ def test_full_flow_send_sign_sync_stores_signed_artifact(matter_with_reviewed, i
     matter, matter_id = matter_with_reviewed
     fake = FakeDocuSignClient()
     send = docusign_workflow.send_for_signature(
-        matter, matter_id, OWNER, repository=in_memory_matters, client=fake
+        matter, matter_id, OWNER, repository=in_memory_matters, client=fake,
+        confirm_recipient="cp@acme.com",
     )
     envelope_id = send.envelope_id
 
@@ -209,7 +218,7 @@ def test_full_flow_send_sign_sync_stores_signed_artifact(matter_with_reviewed, i
 def test_sync_is_idempotent_on_completed(matter_with_reviewed, in_memory_matters):
     matter, matter_id = matter_with_reviewed
     fake = FakeDocuSignClient(auto_complete=True)
-    docusign_workflow.send_for_signature(matter, matter_id, OWNER, repository=in_memory_matters, client=fake)
+    docusign_workflow.send_for_signature(matter, matter_id, OWNER, repository=in_memory_matters, client=fake, confirm_recipient="cp@acme.com")
     docusign_workflow.sync_signature_status(None, matter_id, OWNER, repository=in_memory_matters, client=fake)
     docusign_workflow.sync_signature_status(None, matter_id, OWNER, repository=in_memory_matters, client=fake)
     stored = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
@@ -303,6 +312,7 @@ def _send_two_party(matter, matter_id, in_memory_matters, fake):
         repository=in_memory_matters,
         client=fake,
         signers=list(_TWO_PARTY_SIGNERS),
+        confirm_recipient="cp@acme.com",
     ).envelope_id
 
 
@@ -471,7 +481,8 @@ def test_generated_nda_signers_anchor_to_their_party_token(generated_matter, in_
     matter, matter_id, _result = generated_matter
     client = _RecordingClient()
     result = docusign_workflow.send_for_signature(
-        matter, matter_id, OWNER, repository=in_memory_matters, client=client
+        matter, matter_id, OWNER, repository=in_memory_matters, client=client,
+        confirm_recipient="cp@acme.com",
     )
 
     by_role = {s["role"]: s for s in result.signers}
@@ -491,7 +502,8 @@ def test_generated_nda_envelope_tabs_carry_the_right_anchor_per_recipient(
     matter, matter_id, _result = generated_matter
     client = _RecordingClient()
     docusign_workflow.send_for_signature(
-        matter, matter_id, OWNER, repository=in_memory_matters, client=client
+        matter, matter_id, OWNER, repository=in_memory_matters, client=client,
+        confirm_recipient="cp@acme.com",
     )
 
     # Build the real envelope body from the exact signers the workflow sent.
@@ -530,7 +542,8 @@ def test_sent_generated_document_actually_contains_the_anchor_strings(
     matter, matter_id, _result = generated_matter
     client = _RecordingClient()
     docusign_workflow.send_for_signature(
-        matter, matter_id, OWNER, repository=in_memory_matters, client=client
+        matter, matter_id, OWNER, repository=in_memory_matters, client=client,
+        confirm_recipient="cp@acme.com",
     )
     # The fake stored the exact document bytes it was sent.
     sent_bytes = next(iter(client._envelopes.values())).document_bytes  # type: ignore[attr-defined]
@@ -551,7 +564,8 @@ def test_received_paper_matter_does_not_get_generated_anchors(matter_with_review
     matter, matter_id = matter_with_reviewed
     client = _RecordingClient()
     result = docusign_workflow.send_for_signature(
-        matter, matter_id, OWNER, repository=in_memory_matters, client=client
+        matter, matter_id, OWNER, repository=in_memory_matters, client=client,
+        confirm_recipient="cp@acme.com",
     )
     for signer in result.signers:
         assert signer["anchor"] != nda_generation.SIGNATURE_ANCHOR_ASPORA
@@ -562,7 +576,7 @@ def test_executed_capture_failure_does_not_block_completion(matter_with_reviewed
     """A download error during completion still flips the matter to completed."""
     matter, matter_id = matter_with_reviewed
     fake = FakeDocuSignClient(auto_complete=True)
-    docusign_workflow.send_for_signature(matter, matter_id, OWNER, repository=in_memory_matters, client=fake)
+    docusign_workflow.send_for_signature(matter, matter_id, OWNER, repository=in_memory_matters, client=fake, confirm_recipient="cp@acme.com")
 
     class _BrokenDownload(FakeDocuSignClient):
         def download_completed(self, envelope_id):
@@ -655,7 +669,8 @@ def test_default_aspora_signer_used_for_any_entity_when_configured(
     _set_aspora_default(monkeypatch)
     matter, matter_id = placeholder_generated_matter
     result = docusign_workflow.send_for_signature(
-        matter, matter_id, OWNER, repository=in_memory_matters, client=FakeDocuSignClient()
+        matter, matter_id, OWNER, repository=in_memory_matters, client=FakeDocuSignClient(),
+        confirm_recipient="cp@globex.com",
     )
 
     by_role = {s["role"]: s for s in result.signers}
@@ -678,7 +693,8 @@ def test_default_aspora_signer_omitted_when_env_unset(
     monkeypatch.delenv(docusign_connection.ASPORA_SIGNER_EMAIL_ENV, raising=False)
     matter, matter_id = placeholder_generated_matter
     result = docusign_workflow.send_for_signature(
-        matter, matter_id, OWNER, repository=in_memory_matters, client=FakeDocuSignClient()
+        matter, matter_id, OWNER, repository=in_memory_matters, client=FakeDocuSignClient(),
+        confirm_recipient="cp@globex.com",
     )
     roles = {s["role"] for s in result.signers}
     assert "aspora" not in roles
@@ -696,7 +712,8 @@ def test_default_aspora_signer_requires_both_name_and_email(
     monkeypatch.setenv(docusign_connection.ASPORA_SIGNER_EMAIL_ENV, ASPORA_DEFAULT_EMAIL)
     matter, matter_id = placeholder_generated_matter
     result = docusign_workflow.send_for_signature(
-        matter, matter_id, OWNER, repository=in_memory_matters, client=FakeDocuSignClient()
+        matter, matter_id, OWNER, repository=in_memory_matters, client=FakeDocuSignClient(),
+        confirm_recipient="cp@globex.com",
     )
     assert "aspora" not in {s["role"] for s in result.signers}
 
@@ -730,7 +747,7 @@ def test_completion_fires_drive_sync_with_signed_artifact(matter_with_reviewed, 
     matter — which already carries the captured signed artifact."""
     matter, matter_id = matter_with_reviewed
     fake = FakeDocuSignClient(auto_complete=True)
-    docusign_workflow.send_for_signature(matter, matter_id, OWNER, repository=in_memory_matters, client=fake)
+    docusign_workflow.send_for_signature(matter, matter_id, OWNER, repository=in_memory_matters, client=fake, confirm_recipient="cp@acme.com")
 
     calls: list[dict] = []
 
@@ -766,7 +783,8 @@ def test_drive_sync_not_fired_before_completion(matter_with_reviewed, in_memory_
     matter, matter_id = matter_with_reviewed
     fake = FakeDocuSignClient()
     send = docusign_workflow.send_for_signature(
-        matter, matter_id, OWNER, repository=in_memory_matters, client=fake
+        matter, matter_id, OWNER, repository=in_memory_matters, client=fake,
+        confirm_recipient="cp@acme.com",
     )
     fake.advance(send.envelope_id)  # -> delivered, not completed
 
@@ -796,7 +814,7 @@ def test_drive_down_is_swallowed_and_executed_transition_completes(
 
     matter, matter_id = matter_with_reviewed
     fake = FakeDocuSignClient(auto_complete=True)
-    docusign_workflow.send_for_signature(matter, matter_id, OWNER, repository=in_memory_matters, client=fake)
+    docusign_workflow.send_for_signature(matter, matter_id, OWNER, repository=in_memory_matters, client=fake, confirm_recipient="cp@acme.com")
 
     orig_connected = drive_integration.drive_connected
     orig_auto = app_settings.drive_auto_intake_enabled
@@ -902,3 +920,113 @@ def test_override_blank_role_non_aspora_defaults_to_counterparty():
     )
     assert signers[0].get("role") == "counterparty"
     assert signers[0]["email"] == "pranav@acme.com"
+
+
+# ---------------------------------------------------------------------------
+# P0 security: recipient-confirmation gate on send-for-signature.
+#
+# The counterparty signer email is derived from matter["reply_to"]/["sender"],
+# both written verbatim from the attacker-controlled inbound Reply-To/From header
+# (and from untrusted intake free-text). DocuSign emails the finalized NDA to that
+# address the instant the envelope is created, so a send to such a spoofable-
+# derived recipient must be confirmed first — mirroring the Gmail send-redline
+# path. These prove the gate fires BEFORE any envelope is created.
+# ---------------------------------------------------------------------------
+def test_send_without_confirm_to_spoofable_recipient_is_blocked_no_envelope(
+    matter_with_reviewed, in_memory_matters
+):
+    """An unconfirmed send to the inbound-derived counterparty raises and creates
+    NO envelope (the DocuSign client is never called)."""
+    matter, matter_id = matter_with_reviewed
+    fake = FakeDocuSignClient()
+    with pytest.raises(docusign_workflow.RecipientConfirmationError):
+        docusign_workflow.send_for_signature(
+            matter, matter_id, OWNER, repository=in_memory_matters, client=fake
+        )
+    # No envelope was created on the provider.
+    assert fake._counter == 0
+    assert fake._envelopes == {}
+    # The matter is unchanged: no signature block, no state flip.
+    stored = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
+    assert docusign_workflow.SIGNATURE_FIELD not in stored
+    assert stored.get("awaiting_signature") in (None, False)
+
+
+def test_send_with_mismatched_confirm_is_blocked_no_envelope(
+    matter_with_reviewed, in_memory_matters
+):
+    """A confirm_recipient that does NOT match the resolved counterparty is rejected
+    (an attacker cannot satisfy the gate with a different address)."""
+    matter, matter_id = matter_with_reviewed
+    fake = FakeDocuSignClient()
+    with pytest.raises(docusign_workflow.RecipientConfirmationError):
+        docusign_workflow.send_for_signature(
+            matter,
+            matter_id,
+            OWNER,
+            repository=in_memory_matters,
+            client=fake,
+            confirm_recipient="someone-else@acme.com",
+        )
+    assert fake._counter == 0
+    assert fake._envelopes == {}
+
+
+def test_send_with_matching_confirm_proceeds(matter_with_reviewed, in_memory_matters):
+    """A confirm_recipient matching the resolved counterparty lets the send through."""
+    matter, matter_id = matter_with_reviewed
+    fake = FakeDocuSignClient()
+    result = docusign_workflow.send_for_signature(
+        matter,
+        matter_id,
+        OWNER,
+        repository=in_memory_matters,
+        client=fake,
+        confirm_recipient="cp@acme.com",
+    )
+    assert result.envelope_id
+    assert fake._counter == 1
+    assert any(s["email"] == "cp@acme.com" for s in result.signers)
+
+
+def test_send_with_explicit_operator_signers_override_not_gated(
+    matter_with_reviewed, in_memory_matters
+):
+    """An explicit operator-typed signers override whose counterparty address
+    DIVERGES from the spoofable inbound value needs no confirmation — the operator
+    already chose that exact address by typing it."""
+    matter, matter_id = matter_with_reviewed
+    fake = FakeDocuSignClient()
+    result = docusign_workflow.send_for_signature(
+        matter,
+        matter_id,
+        OWNER,
+        repository=in_memory_matters,
+        client=fake,
+        # A genuinely different address than the inbound cp@acme.com — not gated.
+        signers=[{"name": "Operator Choice", "email": "typed@trusted.com"}],
+    )
+    assert result.envelope_id
+    assert fake._counter == 1
+    assert any(s["email"] == "typed@trusted.com" for s in result.signers)
+
+
+def test_send_override_that_echoes_spoofable_recipient_is_still_gated(
+    matter_with_reviewed, in_memory_matters
+):
+    """Defense in depth: even when the request carries a `signers` override, if the
+    counterparty address it routes to EQUALS the spoofable inbound value the gate
+    still fires (the FE always prefills the row from reply_to, so a passthrough must
+    not bypass confirmation)."""
+    matter, matter_id = matter_with_reviewed
+    fake = FakeDocuSignClient()
+    with pytest.raises(docusign_workflow.RecipientConfirmationError):
+        docusign_workflow.send_for_signature(
+            matter,
+            matter_id,
+            OWNER,
+            repository=in_memory_matters,
+            client=fake,
+            signers=[{"name": "Counterparty", "email": "cp@acme.com"}],
+        )
+    assert fake._counter == 0

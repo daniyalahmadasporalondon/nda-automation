@@ -33,6 +33,7 @@ from . import (
     docusign_integration,
     entity_registry,
     gmail_integration,
+    gmail_matter_outbox,
     lifecycle_signed,
     nda_generation,
     workflow,
@@ -109,6 +110,15 @@ class SignerResolutionError(DocuSignWorkflowError):
     pass
 
 
+# The counterparty signer email can originate from an attacker-controlled inbound
+# header (Reply-To/From) or untrusted intake free-text, so a send-for-signature
+# that would email the finalized NDA to such an address must be confirmed against
+# the resolved recipient first — exactly like the Gmail send-redline path. Reuse
+# the SAME exception type the Gmail outbox raises so a single error contract
+# governs both outbound channels (the route maps it to a 400).
+RecipientConfirmationError = gmail_integration.RecipientConfirmationError
+
+
 @dataclass(frozen=True)
 class SendForSignatureResult:
     matter: dict[str, Any]
@@ -135,6 +145,7 @@ def send_for_signature(
     signers: Any | None = None,
     signing_order: str = DEFAULT_SIGNING_ORDER,
     email_subject: str = "",
+    confirm_recipient: str | None = None,
     repository: MatterRepository | None = None,
     client: docusign_integration.DocuSignClient | None = None,
     client_factory: ClientFactory | None = None,
@@ -167,6 +178,17 @@ def send_for_signature(
     resolved_signers = docusign_integration.normalize_signers(
         _resolve_signers(matter, signers), signing_order=effective_order
     )
+    # SECURITY GATE (mirrors the Gmail send-redline path): the counterparty signer
+    # email can be derived from an attacker-controlled inbound header
+    # (Reply-To/From) or untrusted intake free-text. DocuSign dispatches the
+    # finalized NDA to every signer the moment the envelope is created (status
+    # "sent"), so a send that would email a SPOOFABLE-derived address must be
+    # confirmed by the operator against the resolved recipient BEFORE any DocuSign
+    # API call. When the operator typed a genuinely different address (an explicit
+    # override that does not match the spoofable inbound value) nothing untrusted is
+    # being trusted, so it proceeds unchanged. Raises RecipientConfirmationError ->
+    # the route returns 400 with NO envelope created and NO state change.
+    _require_confirmed_counterparty(matter, resolved_signers, confirm_recipient)
     subject = str(email_subject or "").strip() or _default_subject(matter)
 
     docusign_client = _client(client, client_factory, owner_user_id)
@@ -701,6 +723,74 @@ def _stamp_override_roles(override: list[Any]) -> list[Any]:
         else:
             stamped.append(raw)
     return stamped
+
+
+def _require_confirmed_counterparty(
+    matter: dict[str, Any],
+    resolved_signers: list[Any],
+    confirm_recipient: str | None,
+) -> None:
+    """Block a send to a spoofable-derived counterparty unless it is confirmed.
+
+    The DocuSign analogue of the Gmail outbox's ``require_confirmed_recipient``.
+    We compute the SPOOFABLE inbound/intake-derived recipient
+    (``matter_reply_recipient`` reads ``reply_to``/``sender``, both of which are
+    written verbatim from the attacker-controlled inbound ``Reply-To``/``From``
+    header and from untrusted intake free-text). If the envelope's resolved
+    counterparty email EQUALS that spoofable value, the finalized NDA is about to be
+    emailed to an untrusted address, so we demand a ``confirm_recipient`` that
+    matches it (raising :class:`RecipientConfirmationError` on missing/mismatch
+    BEFORE any DocuSign API call). When the resolved counterparty email is a
+    genuinely different, operator-typed address (an explicit ``signers`` override
+    that diverges from the spoofable value), nothing untrusted is being trusted and
+    the send proceeds unchanged — the operator already vouched for that address by
+    typing it.
+
+    Reuses the Gmail outbox helper verbatim (same matching + error type) so the two
+    outbound channels share one confirmation contract instead of forking the logic.
+    """
+    counterparty_email = _resolved_counterparty_email(resolved_signers)
+    if not counterparty_email:
+        # No routable counterparty recipient (e.g. an Aspora-only override): there is
+        # no spoofable inbound address being emailed, so there is nothing to confirm.
+        return
+    spoofable_email = gmail_integration.matter_reply_recipient(matter)
+    recipient_from_inbound_header = bool(
+        spoofable_email
+        and gmail_matter_outbox.email_addresses_match(counterparty_email, spoofable_email)
+    )
+    if not recipient_from_inbound_header:
+        # The counterparty address the envelope will email is NOT the spoofable
+        # inbound/intake value — it is an operator-typed override. Keep current
+        # behaviour; the operator already chose this exact address.
+        return
+    gmail_matter_outbox.require_confirmed_recipient(
+        counterparty_email,
+        confirm_recipient,
+        transport=gmail_integration,
+        recipient_from_inbound_header=True,
+    )
+
+
+def _resolved_counterparty_email(resolved_signers: list[Any]) -> str:
+    """The routable counterparty signer email from a normalized signer list.
+
+    Prefers the signer explicitly labelled ``role == "counterparty"`` (set by
+    ``_resolve_signers``/``_stamp_override_roles``); falls back to the first
+    non-Aspora signer so an override with blank roles is still covered. Returns the
+    canonicalized address ("" when none / unparseable)."""
+    aspora_role = _ASPORA_SIGNER_ROLE
+    fallback = ""
+    for signer in resolved_signers:
+        email = gmail_integration.recipient_email(getattr(signer, "email", ""))
+        if not email:
+            continue
+        role = str(getattr(signer, "role", "") or "").strip().casefold()
+        if role == _COUNTERPARTY_SIGNER_ROLE:
+            return email
+        if role != aspora_role and not fallback:
+            fallback = email
+    return fallback
 
 
 def _counterparty_signer(matter: dict[str, Any]) -> dict[str, Any] | None:

@@ -2392,6 +2392,9 @@
           <section class="docusign-signers" aria-label="Signers">
             <h3>Signers</h3>
             <div class="docusign-signer-rows" id="docusignSignerRows"></div>
+            <p class="docusign-recipient-confirm-note">
+              Confirm the counterparty email above before sending — DocuSign emails the NDA to it immediately. The prefilled address may come from the inbound message; edit it if it is wrong.
+            </p>
           </section>
 
           <fieldset class="docusign-signing-order" id="docusignSigningOrder">
@@ -2447,6 +2450,9 @@
           <section class="docusign-signers" aria-label="Signers">
             <h3>Signers</h3>
             <div class="docusign-signer-rows" id="generatorDocusignSignerRows"></div>
+            <p class="docusign-recipient-confirm-note">
+              Confirm the counterparty email above before sending — DocuSign emails the NDA to it immediately. The prefilled address may come from the inbound message; edit it if it is wrong.
+            </p>
           </section>
 
           <fieldset class="docusign-signing-order" id="generatorDocusignSigningOrder">
@@ -2489,7 +2495,7 @@
       no divergent untested .js duplicate. Module scripts are deferred, so this
       runs before any user interaction; all consumers call these at runtime.
     -->
-    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260621nda1"></script>
+    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260621recipientconfirm1"></script>
     <script src="/static/js/redline-rendering.js?v=20260619redlineword1"></script>
     <!-- Global session-expiry handling + the shared ok-before-parse JSON guard.
          Must load before app.js (which registers the handler) and before any

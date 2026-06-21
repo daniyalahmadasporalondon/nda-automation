@@ -235,12 +235,40 @@ export function buildSendForSignaturePayload(signers, signingOrder = "sequential
       routing_order: order === "parallel" ? 1 : Number(signer.order) || index + 1,
     })),
     signing_order: order,
+    // Confirm the EXACT counterparty address the operator sees in the composer's
+    // Email field. The counterparty email can be prefilled from an attacker-
+    // controlled inbound Reply-To/From header (or untrusted intake free-text), so
+    // the backend refuses to send the finalized NDA to a spoofable-derived address
+    // unless this confirmation matches the resolved recipient — the same contract
+    // the Gmail send-redline path enforces. By passing the visible, possibly-edited
+    // counterparty email, the operator confirms the destination by sending.
+    confirm_recipient: confirmRecipientFromSigners(signers),
   };
+}
+
+// The counterparty signer's email is the destination that must be confirmed. Pick
+// the row explicitly labelled "counterparty"; fall back to the first non-Aspora
+// signer so a blank-role override is still covered. "" when none — the backend
+// only enforces confirmation when a spoofable-derived recipient is actually being
+// emailed, so a missing value there is harmless (an Aspora-only / operator-typed
+// send is not gated).
+export function confirmRecipientFromSigners(signers) {
+  const rows = Array.isArray(signers) ? signers : [];
+  let fallback = "";
+  for (const row of rows) {
+    const email = emailFromValue(row?.email);
+    if (!email) continue;
+    const role = String(row?.role || "").trim().toLowerCase();
+    if (role === "counterparty") return email;
+    if (role !== "aspora" && !fallback) fallback = email;
+  }
+  return fallback;
 }
 
 export const DocuSignModel = {
   SIGNATURE_STATUSES,
   buildSendForSignaturePayload,
+  confirmRecipientFromSigners,
   connectionView,
   defaultSigners,
   generatorSignatureMatter,
@@ -257,6 +285,7 @@ if (typeof module !== "undefined" && module.exports) {
     DocuSignModel,
     SIGNATURE_STATUSES,
     buildSendForSignaturePayload,
+    confirmRecipientFromSigners,
     connectionView,
     defaultSigners,
     generatorSignatureMatter,
