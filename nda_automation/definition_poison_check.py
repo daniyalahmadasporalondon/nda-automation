@@ -253,6 +253,68 @@ def detect_ci_poison(text: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# CI-poison SEVERITY (fail vs review).
+#
+# The overlay path can only ever ELEVATE a clean PASS to REVIEW; it never FAILs. But
+# a base CI clause check already lands an affirmatively-poisoned definition on REVIEW
+# for unrelated reasons (e.g. "broad definition does not clearly cover enough
+# categories"), so the overlay is a no-op and the genuinely defective definition is
+# presented as merely "needs a look". A reviewer skimming a review-heavy board may
+# wave it through. The AI-path eval fixtures already expect ``fail`` for these poison
+# cases; the deterministic/overlay path under-classifies.
+#
+# This severity function lets the deterministic path reach a FAIL-tier verdict, but
+# ONLY for the unambiguous AFFIRMATIVE-INCLUSION-WITHOUT-CARVE-OUT shape:
+#
+#   * AFFIRMATIVE poison is present (the definition expressly INCLUDES, or refuses to
+#     cease treating as confidential, a standard excluded category), AND
+#   * NO recognized carve-out block survives anywhere in the document.
+#
+# A document that affirmatively poisons the definition but STILL carries a real
+# exclusion block (a self-contradiction worth a human's eyes, not a clear defect)
+# stays REVIEW. A definition that is merely narrow / simply lacks a carve-out without
+# affirmatively pulling public info IN never reaches this function at all (it is not
+# "poisoned" by ``detect_ci_poison``), so it can never be FAILed here -- the
+# conservative, no-over-failing contract the spec requires.
+# ---------------------------------------------------------------------------
+
+# A recognized standard carve-out: a sentence that EXCLUDES (exclusion framing) a
+# named excluded category. This is the healthy "shall not include / does not apply to
+# information that is publicly available ..." block. Its presence anywhere means the
+# document still grants the standard exclusions, so an affirmative-inclusion sentence
+# elsewhere is a self-contradiction (REVIEW), not a clean defect (FAIL).
+def _has_recognized_carveout(text: str) -> bool:
+    for sentence in _sentences(text):
+        if not _CI_TERM.search(sentence) and not _EXCLUDED_CATEGORY.search(sentence):
+            # A carve-out names an excluded category; if neither the protected term
+            # nor a category appears, this sentence cannot be a CI carve-out.
+            continue
+        if _EXCLUSION_FRAMING.search(sentence) and _EXCLUDED_CATEGORY.search(sentence):
+            return True
+    return False
+
+
+def ci_poison_severity(text: str) -> str | None:
+    """Severity of any CI-definition poison: ``"fail"`` | ``"review"`` | ``None``.
+
+    * ``None``  -- no affirmative poison detected (silent; never over-fails a merely
+      narrow definition, which is not poison in the first place).
+    * ``"fail"`` -- AFFIRMATIVE poison AND no recognized carve-out survives anywhere:
+      the definition expressly swallows the exclusions and nothing grants them back.
+    * ``"review"`` -- affirmative poison co-located with a surviving carve-out block
+      (an internal contradiction): kept at REVIEW for human judgment, never FAILed.
+
+    Fail-safe: any error returns ``None`` so the detector can never crash a caller.
+    """
+    try:
+        if detect_ci_poison(text) is None:
+            return None
+        return "review" if _has_recognized_carveout(text) else "fail"
+    except Exception:  # noqa: BLE001 -- fail-safe.
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Over-broad Affiliate / Representative / Group definition poison.
 #
 # The poison shape: a definition of "Affiliate" / "Representative" / "Group" that

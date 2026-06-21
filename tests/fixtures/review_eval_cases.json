@@ -287,6 +287,17 @@
     }
   },
   {
+    "name": "confidential_information_affirmatively_poisoned_definition_fail",
+    "clause_id": "confidential_information",
+    "kind": "deterministic",
+    "label_source": "engineering",
+    "text": "Confidential Information means all business, financial, technical, customer, supplier, pricing, market, proprietary and trade secret information disclosed by either party, and includes information that is publicly available, already known to the Receiving Party, or independently developed by the Receiving Party.",
+    "expected": {
+      "decision": "fail",
+      "reason_code": "poisoned_confidential_information_definition"
+    }
+  },
+  {
     "name": "confidential_information_unqualified_independent_development_review",
     "clause_id": "confidential_information",
     "kind": "deterministic",

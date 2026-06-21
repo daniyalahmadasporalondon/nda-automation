@@ -19,7 +19,13 @@ from .common import (
     _paragraph_matches,
 )
 from .context import attach_structure_context, merge_paragraphs, paragraphs_with_concepts
+from ..definition_poison_check import ci_poison_severity
 from ..review_state import _semantic_review_code, _has_ids, _issue_type, _generic_reason_code, CLAUSE_DECISION_REVIEW
+
+# Reason code for an affirmatively-poisoned CI definition that swallows the standard
+# carve-outs (public / already-known / independently-developed) with NO surviving
+# exclusion block -- a hard FAIL, distinct from the narrow/category-coverage reasons.
+REASON_CODE_POISONED_CI_DEFINITION = "poisoned_confidential_information_definition"
 
 USAGE_RIGHT_ACTION_PATTERN = (
     r"(?:use|using|retain|retaining|disclose|disclosing|exploit|exploiting|"
@@ -96,6 +102,39 @@ def _check_confidential_information(
     explicit_exclusion_paragraphs = exclusion_analysis["explicit_exclusion_paragraphs"]
     independent_development_review_paragraphs = exclusion_analysis["independent_development_review_paragraphs"]
     usage_right_review_paragraphs = exclusion_analysis["usage_right_review_paragraphs"]
+
+    # POISONED-DEFINITION HARD FAIL (highest precedence).
+    #
+    # A definition that affirmatively pulls the standard exclusion categories
+    # (public / already-known / independently-developed) back IN -- and grants no
+    # surviving carve-out anywhere -- is a genuine defect, not a "needs a look". The
+    # other branches below would otherwise land it on REVIEW (e.g. category-coverage
+    # review), letting a reviewer skimming a review-heavy board approve a definition
+    # that has gutted the carve-outs. ``ci_poison_severity`` returns "fail" ONLY for
+    # that affirmative-inclusion-without-carve-out shape; a definition that is merely
+    # narrow, or that still carries a real exclusion block, is NOT failed here. The
+    # call is fail-safe (returns None on any error), so this can never crash the check.
+    if ci_poison_severity(_text) == "fail":
+        result = _check(
+            clause,
+            (
+                "The Confidential Information definition affirmatively INCLUDES "
+                "information the standard carve-outs exist to exclude (publicly "
+                "available / already-known / independently-developed information) and "
+                "grants no surviving exclusion, so genuinely public knowledge is "
+                "contractually treated as a secret."
+            ),
+            definition_paragraphs or paragraphs,
+            what_to_fix=(
+                "Stop the definition from including public, already-known, or "
+                "independently-developed information, and restore the standard "
+                "Confidential Information carve-outs."
+            ),
+        )
+        result["poisoned_definition"] = True
+        result["reason_code"] = REASON_CODE_POISONED_CI_DEFINITION
+        _attach_confidential_information_analysis(result, analysis)
+        return attach_structure_context(result, review_context, context_concepts)
 
     # An unqualified independent-development carve-out alone (no residual-knowledge or
     # reverse-engineering term) is near-universal NDA language: surface for human/counsel
@@ -424,6 +463,10 @@ def _independent_development_qualification_context_before(normalized_text: str, 
 
 
 def reason_code(clause: Mapping[str, Any], decision: str) -> str:
+    if clause.get("poisoned_definition"):
+        # The affirmatively-poisoned CI definition hard-fail (set by the check above)
+        # owns its own reason code, ahead of the generic narrow/coverage reasons.
+        return REASON_CODE_POISONED_CI_DEFINITION
     semantic_code = _semantic_review_code(clause, decision)
     if semantic_code:
         return semantic_code

@@ -4,6 +4,7 @@ import unittest
 from nda_automation.definition_poison_check import (
     REASON_CODE_AFFILIATE_POISON,
     REASON_CODE_CI_POISON,
+    ci_poison_severity,
     detect_definition_poison,
 )
 
@@ -178,6 +179,56 @@ class DefinitionPoisonTests(unittest.TestCase):
             "this Agreement."
         )
         self.assertIsNone(detect_definition_poison(_matter(text)))
+
+    # ---- CI-poison SEVERITY (fail vs review vs silent) ------------------
+    def test_severity_affirmative_inclusion_without_carveout_is_fail(self):
+        # AFFIRMATIVE poison + NO surviving carve-out -> hard FAIL tier.
+        text = (
+            "\"Confidential Information\" means all information disclosed by a "
+            "Party and includes information that is publicly available or already "
+            "known to the Receiving Party or independently developed by the "
+            "Receiving Party."
+        )
+        self.assertEqual(ci_poison_severity(text), "fail")
+
+    def test_severity_obfuscated_negation_poison_is_fail(self):
+        # The negated-form poison (tp07) with no surviving carve-out also FAILs.
+        text = (
+            "\"Confidential Information\" means information disclosed by the "
+            "Disclosing Party. Information shall not cease to be Confidential "
+            "Information by reason of it entering the public domain, becoming "
+            "generally known, or having been independently developed, and no "
+            "exclusions of any kind shall apply."
+        )
+        self.assertEqual(ci_poison_severity(text), "fail")
+
+    def test_severity_proper_carveouts_is_silent(self):
+        # A definition with the standard exclusion block is not poison at all.
+        self.assertIsNone(ci_poison_severity(UTSA_CI_DEFINITION))
+
+    def test_severity_merely_narrow_definition_is_silent(self):
+        # A narrow definition that does NOT affirmatively include public info is not
+        # poison -> severity None (never over-fails).
+        text = (
+            "\"Confidential Information\" means any non-public information "
+            "disclosed by one party to the other that is designated as confidential."
+        )
+        self.assertIsNone(ci_poison_severity(text))
+
+    def test_severity_poison_with_surviving_carveout_stays_review(self):
+        # Affirmative inclusion AND a surviving exclusion block (a self-contradiction)
+        # -> kept at REVIEW for a human, never FAILed. Conservative anti-over-fail.
+        text = (
+            "\"Confidential Information\" means all information disclosed by a "
+            "Party and includes information that is publicly available. However, "
+            "Confidential Information shall not include information that is publicly "
+            "available or independently developed by the Receiving Party."
+        )
+        self.assertEqual(ci_poison_severity(text), "review")
+
+    def test_severity_garbage_returns_none(self):
+        for bad in ("", "asdf \x00 random ;;;; ....", "non-confidential text here"):
+            self.assertIsNone(ci_poison_severity(bad))
 
     # ---- Fail-safe: garbage / empty -> None, no crash --------------------
     def test_empty_text_returns_none(self):
