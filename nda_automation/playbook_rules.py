@@ -675,18 +675,29 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
     # the playbook's single source of truth and the reviewer would lose both the
     # recognition aliases and the law↔forum pairing.
     #
-    # Carry by STABLE option identity, not by the re-derived id: _option_id()
-    # slugifies the mutable display label, so renaming a law (e.g. "Ontario,
-    # Canada" -> "Ontario") changes its derived id and would silently drop its
-    # forum/aliases if we matched on the new id. The approved_options list is
-    # rebuilt in approved_laws order, and the prior normalization built it from
-    # the same approved_laws in the same order, so a renamed law keeps its
-    # POSITION even though its id changes. Key carried extras by position first
-    # (survives a label rename) and fall back to the prior option id (handles
-    # reorders / list-length changes where position no longer aligns).
+    # Carry per-option extras keyed by BOTH the prior id and the prior position,
+    # then resolve ID-FIRST with position only as the rename fallback:
+    #
+    #   * id-match (primary): the id is order-independent, so it pairs each law
+    #     with its OWN forum/aliases correctly under reorder, mid-list insert, and
+    #     mid-list delete (where surviving laws shift slot). This is the safe key.
+    #   * position-match (fallback): only used when the id no longer matches — the
+    #     pure-RENAME case, where _option_id() slugifies the mutable label so a
+    #     renamed law (e.g. "Ontario, Canada" -> "Ontario": ontario_canada ->
+    #     ontario) gets a new id but keeps its slot. The rebuilt list and the prior
+    #     list are both in approved_laws order, so position recovers the rename.
+    #
+    # Position-FIRST would be wrong: deleting/inserting a mid-list law shifts the
+    # surviving laws' positions, so a position-first carry would cross-wire a
+    # neighbour's forum (a wrong court in a signed NDA). id-first avoids that and
+    # still handles the rename via the fallback.
+    #
+    # extras_by_id uses setdefault so that under DUPLICATE labels the FIRST prior
+    # wins deterministically (dedupe collapses duplicates anyway).
     existing_options = rules.get("approved_options")
     extras_by_index: dict[int, dict[str, Any]] = {}
     extras_by_id: dict[str, dict[str, Any]] = {}
+    prior_id_at_index: dict[int, str] = {}
     if isinstance(existing_options, list):
         for position, option in enumerate(existing_options):
             if not isinstance(option, dict):
@@ -702,24 +713,43 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
             forum = option.get("forum_jurisdiction")
             if isinstance(forum, str) and forum.strip():
                 carried["forum_jurisdiction"] = forum
+            if option_id:
+                prior_id_at_index[position] = option_id
             if not carried:
                 continue
             extras_by_index[position] = carried
             if option_id:
                 extras_by_id.setdefault(option_id, carried)
-    rebuilt_options: list[dict[str, Any]] = []
-    for index, law in enumerate(approved_laws):
-        option_id = _option_id(law)
-        rebuilt = {
-            "id": option_id,
+    # Two-pass resolution so each prior's extras are consumed by at most one law:
+    #   Pass 1 (id-match): order-independent; safe under reorder/insert/delete.
+    #   Pass 2 (position fallback for renames): a law whose id no longer matches
+    #     claims its same-slot prior ONLY if that prior was not already id-claimed
+    #     by some surviving law. Without this guard a simultaneous rename+reorder
+    #     could graft a still-present law's forum onto the renamed law (two options
+    #     sharing one forum).
+    rebuilt_options = [
+        {
+            "id": _option_id(law),
             "label": law,
             "value": law,
             "default": law == preferred_law,
         }
-        # Position-stable carry (survives label rename) takes precedence; fall
-        # back to id-match when the positions no longer line up.
-        rebuilt.update(extras_by_index.get(index) or extras_by_id.get(option_id, {}))
-        rebuilt_options.append(rebuilt)
+        for law in approved_laws
+    ]
+    claimed_prior_ids = {
+        option["id"] for option in rebuilt_options if option["id"] in extras_by_id
+    }
+    for index, option in enumerate(rebuilt_options):
+        option_id = option["id"]
+        by_id = extras_by_id.get(option_id)
+        if by_id is not None:
+            option.update(by_id)
+            continue
+        # Rename gap: fall back to the same-slot prior, but only when that prior
+        # is not still owned (by id) by another surviving law.
+        if prior_id_at_index.get(index) in claimed_prior_ids:
+            continue
+        option.update(extras_by_index.get(index, {}))
     rules["approved_options"] = rebuilt_options
 
 

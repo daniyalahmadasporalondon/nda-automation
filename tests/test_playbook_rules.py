@@ -235,6 +235,156 @@ class PlaybookRulesTests(unittest.TestCase):
         self.assertIn("delaware", options)
         self.assertNotIn("forum_jurisdiction", options["delaware"])
 
+    @staticmethod
+    def _governing_law_clause_three_forums():
+        # Three approved laws, each with its OWN distinct forum, so a cross-wire
+        # (one law's forum landing on another) is detectable.
+        return {
+            "id": "governing_law",
+            "type": "required",
+            "approved_laws": ["India", "Delaware", "England and Wales"],
+            "preferred_law": "India",
+            "rules": {
+                "clause_type": "governing_law",
+                "approved_options": [
+                    {
+                        "id": "india",
+                        "label": "India",
+                        "value": "India",
+                        "default": True,
+                        "forum_jurisdiction": "Courts of Mumbai, India",
+                    },
+                    {
+                        "id": "delaware",
+                        "label": "Delaware",
+                        "value": "Delaware",
+                        "default": False,
+                        "forum_jurisdiction": "Courts of Delaware, USA",
+                    },
+                    {
+                        "id": "england_and_wales",
+                        "label": "England and Wales",
+                        "value": "England and Wales",
+                        "default": False,
+                        "forum_jurisdiction": "Courts of England and Wales, London",
+                    },
+                ],
+            },
+        }
+
+    def test_reorder_keeps_each_laws_own_forum(self):
+        # Swapping two laws' positions must keep each law paired with ITS OWN forum.
+        # Position-first carry would cross-wire (India<->England forums swap);
+        # id-first resolves correctly. (Fails on 5def01dd position-first.)
+        clause = self._governing_law_clause_three_forums()
+        clause["approved_laws"] = ["England and Wales", "Delaware", "India"]
+
+        normalized = normalize_clause_policy(clause)
+        options = {opt["id"]: opt for opt in normalized["rules"]["approved_options"]}
+
+        self.assertEqual(
+            options["india"].get("forum_jurisdiction"), "Courts of Mumbai, India"
+        )
+        self.assertEqual(
+            options["delaware"].get("forum_jurisdiction"), "Courts of Delaware, USA"
+        )
+        self.assertEqual(
+            options["england_and_wales"].get("forum_jurisdiction"),
+            "Courts of England and Wales, London",
+        )
+
+    def test_insert_mid_list_gives_new_law_no_stale_forum(self):
+        # Inserting a new law in the MIDDLE shifts the trailing laws' positions.
+        # The new law must carry NO forum; the others keep their OWN forums.
+        # Position-first would graft a shifted neighbour's forum onto the new law
+        # and onto the shifted laws. (Fails on 5def01dd position-first.)
+        clause = self._governing_law_clause_three_forums()
+        clause["approved_laws"] = [
+            "India",
+            "Singapore",
+            "Delaware",
+            "England and Wales",
+        ]
+
+        normalized = normalize_clause_policy(clause)
+        options = {opt["id"]: opt for opt in normalized["rules"]["approved_options"]}
+
+        self.assertIn("singapore", options)
+        self.assertNotIn(
+            "forum_jurisdiction",
+            options["singapore"],
+            "inserted law must not inherit a stale neighbour forum",
+        )
+        self.assertEqual(
+            options["india"].get("forum_jurisdiction"), "Courts of Mumbai, India"
+        )
+        self.assertEqual(
+            options["delaware"].get("forum_jurisdiction"), "Courts of Delaware, USA"
+        )
+        self.assertEqual(
+            options["england_and_wales"].get("forum_jurisdiction"),
+            "Courts of England and Wales, London",
+        )
+
+    def test_delete_mid_list_does_not_cross_wire_forums(self):
+        # Deleting a MID-list law shifts every trailing law up one slot. Each
+        # surviving law must keep its OWN forum -- the P0 the gate flagged:
+        # position-first would write the deleted law's neighbour forum into the
+        # wrong option (a wrong court in a signed NDA). (Fails on 5def01dd.)
+        clause = self._governing_law_clause_three_forums()
+        clause["approved_laws"] = ["India", "England and Wales"]  # drop Delaware
+
+        normalized = normalize_clause_policy(clause)
+        options = {opt["id"]: opt for opt in normalized["rules"]["approved_options"]}
+
+        self.assertNotIn("delaware", options)
+        self.assertEqual(
+            options["india"].get("forum_jurisdiction"), "Courts of Mumbai, India"
+        )
+        self.assertEqual(
+            options["england_and_wales"].get("forum_jurisdiction"),
+            "Courts of England and Wales, London",
+            "deleting a mid-list law must not shift England's forum to a neighbour",
+        )
+
+    def test_rename_plus_reorder_resolves_sanely(self):
+        # A simultaneous RENAME + REORDER: rename "Delaware" -> "Delaware, USA"
+        # (id delaware -> delaware_usa, no id match -> position fallback) while
+        # also moving it. The renamed law keeps its forum and no other law is
+        # cross-wired.
+        clause = self._governing_law_clause_three_forums()
+        # Original order: India(0), Delaware(1), England(2).
+        # New order:      Delaware,USA(0, renamed), India(1), England(2).
+        clause["approved_laws"] = ["Delaware, USA", "India", "England and Wales"]
+
+        normalized = normalize_clause_policy(clause)
+        options = {opt["id"]: opt for opt in normalized["rules"]["approved_options"]}
+
+        # India and England match by id regardless of slot.
+        self.assertEqual(
+            options["india"].get("forum_jurisdiction"), "Courts of Mumbai, India"
+        )
+        self.assertEqual(
+            options["england_and_wales"].get("forum_jurisdiction"),
+            "Courts of England and Wales, London",
+        )
+        # The renamed Delaware (id delaware_usa) no longer id-matches. Its slot-0
+        # prior is India, but India is still present and id-claimed, so the "claimed
+        # prior" guard refuses the position fallback: the renamed law gets NO forum
+        # rather than stealing India's. India's forum stays on India alone.
+        self.assertNotIn(
+            "forum_jurisdiction",
+            options["delaware_usa"],
+            "renamed law must not steal a still-present law's forum via its old slot",
+        )
+        # No two options share India's forum.
+        india_holders = [
+            opt_id
+            for opt_id, opt in options.items()
+            if opt.get("forum_jurisdiction") == "Courts of Mumbai, India"
+        ]
+        self.assertEqual(india_holders, ["india"])
+
     def test_ai_rules_packet_carries_wave_one_judgment_guidance(self):
         packet = playbook_rules_for_ai(load_playbook())
         clauses = {clause["clause_id"]: clause for clause in packet["clauses"]}

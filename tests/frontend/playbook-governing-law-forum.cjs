@@ -120,4 +120,97 @@ const controller = makeController();
   );
 }
 
+// Three approved laws, each with a DISTINCT forum, so a cross-wire is detectable.
+function governingLawClauseThreeForums() {
+  return {
+    id: "governing_law",
+    type: "required",
+    approved_laws: ["India", "Delaware", "England and Wales"],
+    preferred_law: "India",
+    rules: {
+      clause_type: "governing_law",
+      approved_options: [
+        { id: "india", label: "India", value: "India", default: true, forum_jurisdiction: "Courts of Mumbai, India" },
+        { id: "delaware", label: "Delaware", value: "Delaware", default: false, forum_jurisdiction: "Courts of Delaware, USA" },
+        {
+          id: "england_and_wales",
+          label: "England and Wales",
+          value: "England and Wales",
+          default: false,
+          forum_jurisdiction: "Courts of England and Wales, London",
+        },
+      ],
+    },
+  };
+}
+
+// 4) REORDER/swap: each law keeps ITS OWN forum (position-first would swap them).
+{
+  const clause = governingLawClauseThreeForums();
+  clause.approved_laws = ["England and Wales", "Delaware", "India"];
+  controller.syncGoverningLawRules(clause);
+  const options = optionsById(clause);
+  assert.equal(options.india.forum_jurisdiction, "Courts of Mumbai, India", "reorder: India keeps own forum");
+  assert.equal(options.delaware.forum_jurisdiction, "Courts of Delaware, USA", "reorder: Delaware keeps own forum");
+  assert.equal(
+    options.england_and_wales.forum_jurisdiction,
+    "Courts of England and Wales, London",
+    "reorder: England keeps own forum",
+  );
+}
+
+// 5) INSERT mid-list: new law gets NO stale forum; the others keep theirs.
+{
+  const clause = governingLawClauseThreeForums();
+  clause.approved_laws = ["India", "Singapore", "Delaware", "England and Wales"];
+  controller.syncGoverningLawRules(clause);
+  const options = optionsById(clause);
+  assert.ok(options.singapore, "inserted option present");
+  assert.equal(
+    options.singapore.forum_jurisdiction,
+    undefined,
+    "inserted law must not inherit a shifted neighbour's forum",
+  );
+  assert.equal(options.india.forum_jurisdiction, "Courts of Mumbai, India");
+  assert.equal(options.delaware.forum_jurisdiction, "Courts of Delaware, USA");
+  assert.equal(options.england_and_wales.forum_jurisdiction, "Courts of England and Wales, London");
+}
+
+// 6) DELETE mid-list: surviving laws keep their OWN forums (the P0 cross-wire).
+{
+  const clause = governingLawClauseThreeForums();
+  clause.approved_laws = ["India", "England and Wales"]; // drop Delaware
+  controller.syncGoverningLawRules(clause);
+  const options = optionsById(clause);
+  assert.ok(!options.delaware, "deleted option gone");
+  assert.equal(options.india.forum_jurisdiction, "Courts of Mumbai, India");
+  assert.equal(
+    options.england_and_wales.forum_jurisdiction,
+    "Courts of England and Wales, London",
+    "delete-mid must not shift a neighbour's forum onto England",
+  );
+}
+
+// 7) RENAME + REORDER: renamed law does not steal a still-present law's forum.
+{
+  const clause = governingLawClauseThreeForums();
+  // Rename Delaware -> "Delaware, USA" (id delaware -> delaware_usa) AND move it to slot 0.
+  clause.approved_laws = ["Delaware, USA", "India", "England and Wales"];
+  controller.syncGoverningLawRules(clause);
+  const options = optionsById(clause);
+  // delaware_usa's slot-0 prior is India, still present + id-claimed -> no fallback.
+  assert.equal(
+    options.delaware_usa.forum_jurisdiction,
+    undefined,
+    "renamed+reordered law must not steal India's forum via its old slot",
+  );
+  assert.equal(options.india.forum_jurisdiction, "Courts of Mumbai, India");
+  assert.equal(options.england_and_wales.forum_jurisdiction, "Courts of England and Wales, London");
+  // India's forum is held by exactly one option.
+  const indiaHolders = Object.values(options).filter(
+    (opt) => opt.forum_jurisdiction === "Courts of Mumbai, India",
+  );
+  assert.equal(indiaHolders.length, 1, "India's forum must not be duplicated onto two options");
+}
+
 console.log("playbook-governing-law-forum.cjs: all assertions passed");

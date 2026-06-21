@@ -2275,27 +2275,42 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     // terms). Replacing the array would strip those before the POST, and the
     // backend carry-over could not recover what never arrived.
     //
-    // Match priors by STABLE identity, not the re-derived id: optionIdForLaw()
-    // slugifies the mutable label, so renaming a law (e.g. "Ontario, Canada" ->
-    // "Ontario") changes its id and an id-only match would drop its forum/aliases.
-    // The rebuilt list and the loaded option list are both in approved_laws order,
-    // so a renamed law keeps its POSITION even though its id changes. Match by
-    // position first (survives a label rename) and fall back to the prior id
-    // (handles reorders / list-length changes where position no longer aligns).
+    // Resolve priors ID-FIRST, with position only as the rename fallback:
+    //   * id-match (primary): optionIdForLaw() is order-independent, so it pairs
+    //     each law with its OWN forum/aliases correctly under reorder, mid-list
+    //     insert, and mid-list delete (where surviving laws shift slot).
+    //   * position-match (fallback): only used when the id no longer matches --
+    //     the pure-RENAME case, where the slugified label changes (e.g.
+    //     "Ontario, Canada" -> "Ontario") but the law keeps its slot. Both lists
+    //     are in approved_laws order, so position recovers the rename.
+    // Position-FIRST would cross-wire a neighbour's forum on insert/delete (a
+    // wrong court before the POST), so it must NOT be the primary key.
     const existingOptions = Array.isArray(rules.approved_options) ? rules.approved_options : [];
     const existingById = {};
-    existingOptions.forEach((option) => {
+    const priorIdAtIndex = [];
+    existingOptions.forEach((option, position) => {
       if (!option || typeof option !== "object") return;
       const id = String(option.id || optionIdForLaw(option.value || option.label || "")).trim();
+      priorIdAtIndex[position] = id;
       if (id && !(id in existingById)) existingById[id] = option;
     });
     const forumByOptionId = (clause._forumByOptionId && typeof clause._forumByOptionId === "object")
       ? clause._forumByOptionId
       : {};
+    // Two-pass resolution mirroring the backend: id-match is primary (safe under
+    // reorder/insert/delete); the same-slot position prior is the rename fallback,
+    // taken ONLY when that prior id is not still owned by a surviving law -- so a
+    // rename+reorder never grafts a still-present law's option onto the renamed one.
+    const claimedPriorIds = new Set(
+      approved.map((law) => optionIdForLaw(law)).filter((id) => id in existingById),
+    );
     rules.approved_options = approved.map((law, index) => {
       const id = optionIdForLaw(law);
       const byIndex = existingOptions[index];
-      const prior = (byIndex && typeof byIndex === "object") ? byIndex : existingById[id];
+      let prior = existingById[id];
+      if (!prior && !claimedPriorIds.has(priorIdAtIndex[index])) {
+        prior = (byIndex && typeof byIndex === "object") ? byIndex : undefined;
+      }
       const merged = (prior && typeof prior === "object") ? { ...prior } : {};
       merged.id = id;
       merged.label = law;
