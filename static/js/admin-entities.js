@@ -183,9 +183,10 @@ const AdminEntitiesView = (() => {
       const radioGroup = `entity-default-${(radioGroupSeq += 1)}`;
 
       // The entity id is the persistent key. It stays the under-the-hood identifier
-      // (the input is always present so collectEntities reads it back), but it is
-      // only SURFACED + editable when ADDING a new entity. For an existing entity it
-      // is shown minimally as a small de-emphasised caption, never as an editable row.
+      // (the hidden input is always present so collectEntities reads it back), but it
+      // is only SURFACED + editable when ADDING a new entity. For an existing entity
+      // the id is NOT rendered anywhere user-visible (no caption) — it lives only in
+      // the hidden input that save reads.
       field(card, "id").value = String(entity.id || "");
       field(card, "legal_name").value = String(entity.legal_name || "");
       field(card, "short_name").value = String(entity.short_name || "");
@@ -222,26 +223,15 @@ const AdminEntitiesView = (() => {
       return card;
     }
 
-    // Show the entity id minimally. NEW entity: reveal the editable id field (the id
-    // is the permanent key, set once at creation) and hide the caption. EXISTING
-    // entity: hide the editable field, show a small de-emphasised caption with the id.
+    // Surface the entity id ONLY when adding a brand-new entity (it is the permanent
+    // key, set once at creation). For an EXISTING entity the id is never shown — no
+    // caption, no editable field — it lives only in the hidden data-entity-field="id"
+    // input so collectEntities() still carries the key on save. The redesign removed
+    // the de-emphasised "id: <slug>" caption entirely; the id must not render anywhere
+    // user-visible for an existing entity.
     function applyIdSurface(card, isNew) {
       const idField = card.querySelector("[data-entity-new-id-field]");
-      const caption = field(card, "id-caption");
-      const idValue = String(field(card, "id").value || "");
-      if (isNew) {
-        if (idField) idField.hidden = false;
-        if (caption) {
-          caption.hidden = true;
-          caption.textContent = "";
-        }
-      } else {
-        if (idField) idField.hidden = true;
-        if (caption) {
-          caption.hidden = !idValue;
-          caption.textContent = idValue ? `id: ${idValue}` : "";
-        }
-      }
+      if (idField) idField.hidden = !isNew;
     }
 
     function buildAddress(address, radioGroup) {

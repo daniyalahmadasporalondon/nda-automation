@@ -472,7 +472,7 @@ adminAccessController = createAdminAccessController({
 // controller logic / data layer / save+validation+forum-reconcile contract is
 // unchanged — only the host elements moved.
 adminEntitiesController = createAdminEntitiesController({
-  panel: document.querySelector('[data-playbook-surface="entities"]'),
+  panel: document.querySelector('[data-playbook-panel="entities"]'),
   list: document.querySelector("#playbookEntitiesList"),
   message: document.querySelector("#playbookEntitiesMessage"),
   refreshButton: document.querySelector("#playbookEntitiesRefreshButton"),
@@ -890,22 +890,31 @@ adminSectionButtons.forEach((button) => {
   });
 });
 
-// Playbook section switcher: the Playbook editor is the single home for clause
-// rules (Clauses) and the signing-entity / general settings (Entities). The tabs
-// toggle which sibling surface is shown; Entities lazy-loads its registry on first
-// open (mirrors the admin sections' load-on-activate).
-const playbookSectionTabs = document.querySelectorAll("[data-playbook-section]");
-const playbookSurfaces = document.querySelectorAll("[data-playbook-surface]");
+// Playbook surface switcher: the Playbook editor is the single home for the
+// signing-entity registry (Registry > Signing Entities) and the clause rules
+// (Clauses). The OLD top "Clauses | Entities" segmented toggle is gone — the LEFT
+// SIDEBAR nav drives the swap now. The sidebar itself is persistent; only the
+// right-hand main panel swaps between the clause editor ([data-playbook-panel=
+// "clauses"]) and the entities registry ([data-playbook-panel="entities"]).
+// Entities lazy-loads its registry on first open (mirrors the admin sections).
+const playbookShell = document.querySelector(".playbook-shell[data-playbook-surface]");
+const playbookMainPanels = document.querySelectorAll("[data-playbook-panel]");
+const playbookEntitiesNavEntry = document.getElementById("playbookEntitiesNavEntry");
 let entitiesLoadedOnce = false;
 function activatePlaybookSection(sectionName) {
   const section = sectionName === "entities" ? "entities" : "clauses";
-  playbookSectionTabs.forEach((tab) => {
-    const active = tab.dataset.playbookSection === section;
-    tab.classList.toggle("active", active);
-    tab.setAttribute("aria-selected", active ? "true" : "false");
-  });
-  playbookSurfaces.forEach((surface) => {
-    surface.hidden = surface.dataset.playbookSurface !== section;
+  // Track the active surface on the shell so CSS can style the nav active-state.
+  if (playbookShell) playbookShell.dataset.playbookSurface = section;
+  // The Registry nav entry carries the active highlight when entities is showing.
+  if (playbookEntitiesNavEntry) {
+    const entitiesActive = section === "entities";
+    playbookEntitiesNavEntry.classList.toggle("active", entitiesActive);
+    playbookEntitiesNavEntry.classList.toggle("selected", entitiesActive);
+    playbookEntitiesNavEntry.setAttribute("aria-pressed", entitiesActive ? "true" : "false");
+  }
+  // Swap the right-hand main panels (the persistent sidebar never hides).
+  playbookMainPanels.forEach((node) => {
+    node.hidden = node.dataset.playbookPanel !== section;
   });
   if (section === "entities") {
     // Load on first activation, then serve the in-memory working copy.
@@ -915,9 +924,14 @@ function activatePlaybookSection(sectionName) {
     }
   }
 }
-playbookSectionTabs.forEach((tab) => {
-  tab.addEventListener("click", () => activatePlaybookSection(tab.dataset.playbookSection));
-});
+// The Registry nav entry swaps to the entities surface.
+playbookEntitiesNavEntry?.addEventListener("click", () => activatePlaybookSection("entities"));
+// Selecting a clause (or "+ Add Clause") swaps back to the clause editor. The
+// clause rows are re-rendered by playbook-view.js, so delegate on the static list
+// container rather than binding each row. The clause-selection handler inside
+// playbook-view.js still drives WHICH clause is shown; this only flips the surface.
+const playbookListNav = document.getElementById("playbookList");
+playbookListNav?.addEventListener("click", () => activatePlaybookSection("clauses"));
 
 // Onboarding empty-states (e.g. the fresh-user repository panel) route the user
 // to the right tab via a [data-onboarding-goto] attribute. One delegated handler

@@ -8054,14 +8054,70 @@ body.modal-open {
 }
 
 .rail-heading {
-  border-bottom: 1px solid var(--border);
-  padding: 9px 11px;
+  padding: 9px 11px 4px;
 }
 
 .rail-heading h2 {
   font-size: 13px;
   font-weight: 600;
   margin: 0;
+}
+
+/* The right-hand main panel holds the clause editor and the entities registry as
+   swappable siblings; the persistent sidebar (.clause-rail) sits beside it. */
+.playbook-main {
+  min-width: 0;
+}
+
+/* Sidebar nav groups (Registry first, then Clauses). The group label is a small
+   uppercase eyebrow over each group's entries. */
+.rail-group-label {
+  color: var(--ink-soft);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  margin: 0;
+  padding: 9px 11px 2px;
+  text-transform: uppercase;
+}
+
+.rail-registry {
+  display: flex;
+  flex-direction: column;
+}
+
+/* A single-line divider between the Registry group and the Clauses group. */
+.rail-divider {
+  border-top: 1px solid var(--border);
+  margin: 4px 0;
+}
+
+/* The Registry "Signing Entities" nav entry reuses the .playbook-row look so it
+   reads as a sibling of the clause nav items. .playbook-row already styles the
+   strong/small layout and the hover/active states; the secondary line is muted. */
+.playbook-nav-entry {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.playbook-nav-entry small {
+  color: var(--ink-soft);
+  display: block;
+  font-size: 11px;
+  margin-top: 1px;
+}
+
+/* Active highlight when the entities surface is showing (mirrors a selected
+   clause row). The data-playbook-surface marker on the shell is the source of
+   truth; the JS also toggles .active/.selected on the entry. */
+.playbook-shell[data-playbook-surface="entities"] .playbook-nav-entry,
+.playbook-nav-entry.active,
+.playbook-nav-entry.selected {
+  background: rgba(76, 29, 149, 0.08);
+}
+
+.playbook-nav-entry.active strong,
+.playbook-nav-entry.selected strong {
+  font-weight: 750;
 }
 
 .playbook-list {
@@ -11853,52 +11909,23 @@ label.is-hidden {
   color: var(--success, #067647);
 }
 
-/* ---- Playbook section switcher (Clauses | Entities) ---------------------- */
-.playbook-section-switcher {
-  display: inline-flex;
-  gap: 4px;
-  margin-bottom: 12px;
-  padding: 4px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg, 10px);
-  box-shadow: var(--shadow-sm);
-}
-
-.playbook-section-tab {
-  appearance: none;
-  background: transparent;
-  border: 0;
-  border-radius: var(--r-md, 8px);
-  color: var(--ink-soft);
-  cursor: pointer;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 6px 16px;
-  transition: background 0.16s ease, color 0.16s ease;
-}
-
-.playbook-section-tab:hover {
-  color: var(--ink);
-}
-
-.playbook-section-tab.active {
-  background: var(--accent, #4c1d95);
-  color: #fff;
-}
-
-/* The section switcher toggles [hidden] on the sibling surfaces. The Clauses
-   surface (.playbook-shell) sets display:grid, which would otherwise beat the
-   [hidden] attribute's user-agent display:none -- so honour hidden explicitly. */
-[data-playbook-surface][hidden] {
+/* ---- Playbook main-panel swap (clause editor <-> entities registry) ------ */
+/* The sidebar nav drives which main panel shows; the inactive one is [hidden].
+   The clause-detail panel sets display:grid in places, which would otherwise beat
+   the [hidden] attribute's user-agent display:none -- so honour hidden explicitly. */
+[data-playbook-panel][hidden] {
   display: none !important;
 }
 
 /* ---- Entities surface inside the Playbook editor ------------------------- */
 .playbook-entities {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-sm);
   display: grid;
   gap: 16px;
+  padding: 18px 20px;
 }
 
 .playbook-entities-head {
@@ -11955,19 +11982,9 @@ label.is-hidden {
   min-width: 0;
 }
 
-/* The machine entity-id is demoted to a tiny de-emphasised caption UNDER the
-   legal name (the legal name now leads). Hidden entirely for new entities. */
-.entity-card-id {
-  color: var(--ink-muted);
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10.5px;
-  letter-spacing: 0.01em;
-  opacity: 0.72;
-}
-
-.entity-card-id[hidden] {
-  display: none;
-}
+/* The machine entity-id is NEVER surfaced on an existing entity (no caption). It
+   is carried only in the hidden data-entity-field="id" input so save keeps the
+   key. The id is shown as an editable field ONLY when adding a new entity. */
 
 .entity-card-title strong {
   font-size: 16px;
@@ -11985,10 +12002,19 @@ label.is-hidden {
   font-weight: 500;
 }
 
+/* At most 2 fields per row, with breathing room. Legal name (and the new-entity
+   id field) span the full width via .entity-field-wide; the rest pair up. Stacks
+   to 1-per-row on narrow widths so the card never reads as a spreadsheet row. */
 .entity-field-grid {
   display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px 18px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 720px) {
+  .entity-field-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .entity-field {
