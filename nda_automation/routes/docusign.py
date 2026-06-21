@@ -291,6 +291,23 @@ def handle_send_for_signature(handler, path: str) -> None:
         handler._send_json(_already_sent_payload(matter), status=409)
         return
 
+    # P0 (security-critical): an unreviewed/unapproved NDA must NEVER go out for
+    # real signatures. A generated matter is created defer_ai_review=True, so
+    # without this gate POST /api/generate-nda -> send-for-signature would dispatch
+    # a real envelope on a never-reviewed document. Mirror the workflow backstop
+    # (docusign_workflow.matter_cleared_for_signature) so the user gets a clean 403
+    # before any DocuSign call; the workflow re-checks as the authoritative guard.
+    if not docusign_workflow.matter_cleared_for_signature(matter):
+        telemetry.increment("docusign_send_unreviewed_rejected")
+        handler._send_json(
+            {
+                "error": "Review and approve this NDA before sending it for signature.",
+                "needs_review": True,
+            },
+            status=403,
+        )
+        return
+
     signers = payload.get("signers") if isinstance(payload.get("signers"), list) else None
     signing_order = str(payload.get("signing_order") or docusign_integration.DEFAULT_SIGNING_ORDER)
     email_subject = str(payload.get("email_subject") or "")
@@ -317,6 +334,13 @@ def handle_send_for_signature(handler, path: str) -> None:
     except docusign_connection.DocuSignNotConnectedError:
         telemetry.increment("docusign_send_failed")
         handler._send_json(_needs_connect_payload(), status=409)
+        return
+    except docusign_workflow.MatterNotApprovedError as error:
+        # The authoritative review/approval backstop (the route pre-check above
+        # normally catches this first; this guards a state change between the
+        # pre-check and the workflow load). 403: the document is not cleared to send.
+        telemetry.increment("docusign_send_unreviewed_rejected")
+        handler._send_json({"error": str(error), "needs_review": True}, status=403)
         return
     except docusign_workflow.NoSignableDocumentError as error:
         telemetry.increment("docusign_send_failed")

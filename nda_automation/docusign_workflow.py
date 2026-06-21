@@ -109,6 +109,57 @@ class SignerResolutionError(DocuSignWorkflowError):
     pass
 
 
+class MatterNotApprovedError(DocuSignWorkflowError):
+    """The matter has not been reviewed/approved, so it must not be sent to sign.
+
+    Send-for-signature dispatches a REAL e-signature envelope on the matter's
+    document. A generated NDA is created with ``defer_ai_review=True`` (see
+    ``nda_generation_workflow``), so it carries no review and no approval until a
+    human engages it. Sending such a never-reviewed document for real signatures
+    is the security defect this guards: the gate refuses unless the matter is
+    cleared by :func:`matter_cleared_for_signature`.
+    """
+
+
+def matter_cleared_for_signature(matter: dict[str, Any] | None) -> bool:
+    """True when the matter has been reviewed/approved enough to send for signature.
+
+    Cleared when ANY of the canonical sign-off signals is present:
+
+    * an approval — ``status == "approved"`` OR ``approved_at`` (the same
+      predicate ``matter_lifecycle._matter_review_block_resolved`` and the
+      reviewed-DOCX export gate use);
+    * a human review — the ``human_reviewed`` flag (the board's "mark reviewed");
+    * a review that ran and does NOT need human attention — i.e. a stored
+      ``review_result``/``review_state`` exists AND
+      ``matter_view.matter_needs_human_review`` is False.
+
+    A freshly generated (``defer_ai_review=True``) matter has none of these — no
+    review_result, no review_state, no approval — so it is NOT cleared and the
+    send-for-signature gate blocks it. Defensive against a missing/non-dict
+    matter (treated as not cleared).
+    """
+    from . import matter_view  # noqa: PLC0415 — avoid an import cycle at module load.
+
+    if not isinstance(matter, dict):
+        return False
+    if str(matter.get("status") or "").strip().lower() == "approved":
+        return True
+    if matter.get("approved_at"):
+        return True
+    if matter.get("human_reviewed"):
+        return True
+    # A review that actually ran and cleared (no human attention required). The
+    # generated matter has neither review_result nor review_state, so this is
+    # False for it; only a matter that was genuinely reviewed-clean passes here.
+    has_review = isinstance(matter.get("review_result"), dict) or isinstance(
+        matter.get("review_state"), dict
+    )
+    if has_review and not matter_view.matter_needs_human_review(matter):
+        return True
+    return False
+
+
 @dataclass(frozen=True)
 class SendForSignatureResult:
     matter: dict[str, Any]
@@ -152,6 +203,16 @@ def send_for_signature(
     """
     repository = repository or DiskMatterRepository()
     matter = _load_matter(matter, matter_id, owner_user_id, repository)
+
+    # P0 review/approval gate (security-critical): never dispatch a REAL signature
+    # envelope on an unreviewed document. A generated NDA is created
+    # defer_ai_review=True, so POST /api/generate-nda -> send-for-signature would
+    # otherwise send a never-reviewed document for signatures. This is the
+    # authoritative backstop — it runs even if a caller bypasses the route guard.
+    if not matter_cleared_for_signature(matter):
+        raise MatterNotApprovedError(
+            "Review and approve this NDA before sending it for signature."
+        )
 
     document_bytes, document_filename = _resolve_signable_document(
         matter, matter_id, owner_user_id, repository

@@ -44,6 +44,13 @@ def matter_with_reviewed(in_memory_matters):
         repository=in_memory_matters,
         owner_user_id=OWNER,
     )
+    # Mark the matter human-reviewed so it clears the send-for-signature
+    # review/approval gate (matter_cleared_for_signature). The empty review_result
+    # alone reads as "needs human review"; a genuinely sendable matter must have
+    # been reviewed/approved, which is what this fixture represents.
+    in_memory_matters.update_matter_fields(
+        matter_id, {"human_reviewed": True}, owner_user_id=OWNER
+    )
     return in_memory_matters.get_matter(matter_id, owner_user_id=OWNER), matter_id
 
 
@@ -230,6 +237,8 @@ def test_send_without_signable_document_raises(in_memory_matters):
     )
     # Drop the stored source bytes so there is genuinely nothing signable.
     matter_id = matter["id"]
+    # Clear the review/approval gate so the test reaches the no-document path.
+    in_memory_matters.update_matter_fields(matter_id, {"human_reviewed": True}, owner_user_id=OWNER)
     with pytest.raises(docusign_workflow.NoSignableDocumentError):
         docusign_workflow.send_for_signature(
             in_memory_matters.get_matter(matter_id, owner_user_id=OWNER),
@@ -260,6 +269,8 @@ def test_send_without_resolvable_signers_raises(in_memory_matters):
         repository=in_memory_matters,
         owner_user_id=OWNER,
     )
+    # Clear the review/approval gate so the test reaches the signer-resolution path.
+    in_memory_matters.update_matter_fields(matter_id, {"human_reviewed": True}, owner_user_id=OWNER)
     with pytest.raises(docusign_workflow.SignerResolutionError):
         docusign_workflow.send_for_signature(
             in_memory_matters.get_matter(matter_id, owner_user_id=OWNER),
@@ -283,6 +294,78 @@ def test_send_for_missing_matter_raises(in_memory_matters):
         docusign_workflow.send_for_signature(
             None, "matter_missing", OWNER, repository=in_memory_matters, client=FakeDocuSignClient()
         )
+
+
+# --------------------------------------------------------------------------- #
+# P0: review/approval gate on send-for-signature.
+# A generated NDA is created defer_ai_review=True, so generate -> send would
+# otherwise dispatch a real envelope on a never-reviewed document.
+# --------------------------------------------------------------------------- #
+def _generated_unreviewed_matter(in_memory_matters):
+    """A freshly-generated, never-reviewed matter: a signable generated document
+    but NO approval/human-review (exactly what nda_generation_workflow creates)."""
+    from nda_automation.artifact_registry import ROLE_GENERATED  # noqa: PLC0415
+
+    matter = in_memory_matters.create_matter(
+        source_filename="Generated NDA.docx",
+        document_bytes=b"original",
+        extracted_text="text",
+        review_result={},
+        triage={},
+        source_type="generated",
+        board_column="generated",
+        owner_user_id=OWNER,
+        intake_metadata={"reply_to": "cp@acme.com", "sender": "cp@acme.com", "subject": "Gen NDA"},
+    )
+    matter_id = matter["id"]
+    artifact_service.add_artifact(
+        matter_id,
+        source=SOURCE_GENERATED,
+        actor=ACTOR_HUMAN,
+        role=ROLE_GENERATED,
+        document_bytes=PDF_BYTES,
+        repository=in_memory_matters,
+        owner_user_id=OWNER,
+    )
+    return in_memory_matters.get_matter(matter_id, owner_user_id=OWNER), matter_id
+
+
+def test_send_for_signature_blocks_unreviewed_generated_matter(in_memory_matters):
+    """P0 PROOF (non-vacuity): a generated, never-reviewed NDA must NOT be sent.
+
+    The document is signable and DocuSign would accept it, so the ONLY thing
+    refusing the send is the review/approval gate. No envelope is persisted.
+    """
+    matter, matter_id = _generated_unreviewed_matter(in_memory_matters)
+    assert not docusign_workflow.matter_cleared_for_signature(matter)
+    with pytest.raises(docusign_workflow.MatterNotApprovedError):
+        docusign_workflow.send_for_signature(
+            matter, matter_id, OWNER, repository=in_memory_matters, client=FakeDocuSignClient()
+        )
+    # No envelope was ever created on the unreviewed matter.
+    stored = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
+    assert docusign_workflow.SIGNATURE_FIELD not in stored
+
+
+def test_send_for_signature_allows_matter_approved_by_status(in_memory_matters):
+    """The legitimate path: a matter approved via status=="approved" still sends."""
+    matter, matter_id = _generated_unreviewed_matter(in_memory_matters)
+    # Approve it the canonical way (status + approved_at), matching the reviewed-DOCX
+    # export gate and matter_lifecycle._matter_review_block_resolved.
+    in_memory_matters.update_matter_fields(
+        matter_id,
+        {"status": "approved", "approved_at": "2026-06-21T00:00:00+00:00"},
+        owner_user_id=OWNER,
+    )
+    approved = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
+    assert docusign_workflow.matter_cleared_for_signature(approved)
+    result = docusign_workflow.send_for_signature(
+        approved, matter_id, OWNER, repository=in_memory_matters, client=FakeDocuSignClient()
+    )
+    assert result.envelope_id
+    assert result.status == "sent"
+    stored = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
+    assert stored[docusign_workflow.SIGNATURE_FIELD]["envelope_id"] == result.envelope_id
 
 
 # --------------------------------------------------------------------------- #

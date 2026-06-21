@@ -73,6 +73,8 @@ def _make_matter(repo, *, with_reviewed_pdf: bool = True) -> str:
             repository=repo,
             owner_user_id=OWNER,
         )
+    # Cleared for the send-for-signature review/approval gate.
+    repo.update_matter_fields(matter_id, {"human_reviewed": True}, owner_user_id=OWNER)
     return matter_id
 
 
