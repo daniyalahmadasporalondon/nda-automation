@@ -180,127 +180,134 @@ class DefinitionPoisonTests(unittest.TestCase):
         )
         self.assertIsNone(detect_definition_poison(_matter(text)))
 
-    # ---- CI-poison SEVERITY (fail vs review vs silent) ------------------
-    def test_severity_affirmative_inclusion_without_carveout_is_fail(self):
-        # AFFIRMATIVE poison + NO surviving carve-out -> hard FAIL tier.
-        text = (
-            "\"Confidential Information\" means all information disclosed by a "
-            "Party and includes information that is publicly available or already "
-            "known to the Receiving Party or independently developed by the "
-            "Receiving Party."
-        )
-        self.assertEqual(ci_poison_severity(text), "fail")
+    # ---- CI-poison SEVERITY (STRUCTURAL, polarity-correct) --------------
+    #
+    # The severity logic is "innocent until proven guilty": it reaches the FAIL tier
+    # ONLY when affirmative inclusion of an excluded category is present AND there is
+    # GENUINELY ZERO exclusion signal of ANY kind anywhere in the definition. If ANY
+    # plausible carve-out signal is present, it caps at REVIEW, never FAIL. These
+    # tests are STRUCTURAL (one shape per principle), not a connective allowlist --
+    # the over-fail trap was an allowlist that biased toward guilty.
 
-    def test_severity_obfuscated_negation_poison_is_fail(self):
-        # The negated-form poison (tp07) with no surviving carve-out also FAILs.
-        text = (
-            "\"Confidential Information\" means information disclosed by the "
-            "Disclosing Party. Information shall not cease to be Confidential "
-            "Information by reason of it entering the public domain, becoming "
-            "generally known, or having been independently developed, and no "
-            "exclusions of any kind shall apply."
-        )
-        self.assertEqual(ci_poison_severity(text), "fail")
+    # GROUP A: clean inline carve-outs with DIVERSE connectives must NEVER fail. This
+    # is the over-fail trap the gate blocked on; the structural rule is "any exclusion
+    # signal -> not fail", verified across a wide span of lawyer idioms.
+    def test_groupA_clean_inline_carveouts_never_fail(self):
+        carveouts = [
+            "but excluding information that is publicly available",
+            "not including information already in the public domain",
+            "excluding however any information that is publicly known",
+            "with the carve-out that publicly available information is not covered",
+            "subject to the exclusion of information in the public domain",
+            "other than information that is publicly available",
+            "save where such information is in the public domain",
+            "except where the information is publicly available",
+            "unless such information is publicly known at disclosure",
+            "provided however that publicly available information is not covered",
+            "minus any information in the public domain",
+            "barring information that is publicly available",
+            "setting aside information already in the public domain",
+            "save only information that is publicly available",
+            "less any information already known to the Receiving Party",
+            "aside from information already known to the Receiving Party",
+            "apart from information that is publicly available",
+            "to the exclusion of information independently developed",
+            "save and excepting information that is in the public domain",
+            "excepting any information already known to the Receiving Party",
+            "exclusive of any publicly available information",
+            "to the extent not already in the public domain",
+            "but not information that is publicly available",
+        ]
+        for tail in carveouts:
+            text = (
+                "Confidential Information includes all information disclosed, "
+                + tail + "."
+            )
+            self.assertNotEqual(
+                ci_poison_severity(text), "fail",
+                f"clean inline carve-out '{tail}' must NOT be FAILed",
+            )
 
-    def test_severity_proper_carveouts_is_silent(self):
-        # A definition with the standard exclusion block is not poison at all.
-        self.assertIsNone(ci_poison_severity(UTSA_CI_DEFINITION))
+    def test_groupA_em_dash_and_parenthetical_carveouts_never_fail(self):
+        for text in (
+            "Confidential Information includes all disclosed materials -- excluding "
+            "publicly available information -- of the Disclosing Party.",
+            "Confidential Information includes all disclosed materials (other than "
+            "information that is publicly available).",
+        ):
+            self.assertNotEqual(ci_poison_severity(text), "fail", text)
 
-    def test_severity_merely_narrow_definition_is_silent(self):
-        # A narrow definition that does NOT affirmatively include public info is not
-        # poison -> severity None (never over-fails).
-        text = (
-            "\"Confidential Information\" means any non-public information "
-            "disclosed by one party to the other that is designated as confidential."
-        )
-        self.assertIsNone(ci_poison_severity(text))
+    # GROUP B: genuine poison -- affirmative inclusion of an excluded category with NO
+    # exclusion signal anywhere -> FAIL (the rare, high-confidence path).
+    def test_groupB_genuine_poison_no_carveout_anywhere_fails(self):
+        for text in (
+            "Confidential Information includes all information disclosed, including "
+            "information that is publicly available.",
+            "Confidential Information shall include any information that is generally "
+            "known to the public.",
+            "Confidential Information encompasses all materials, including those in "
+            "the public domain.",
+            "Confidential Information shall be deemed to include information "
+            "independently developed by the Receiving Party.",
+            "Confidential Information includes information already known to the "
+            "Receiving Party.",
+            "Confidential Information extends to public knowledge concerning the "
+            "Disclosing Party.",
+        ):
+            self.assertEqual(ci_poison_severity(text), "fail", text)
 
-    def test_severity_poison_with_surviving_carveout_stays_review(self):
-        # Affirmative inclusion AND a surviving exclusion block (a self-contradiction)
-        # -> kept at REVIEW for a human, never FAILed. Conservative anti-over-fail.
-        text = (
-            "\"Confidential Information\" means all information disclosed by a "
-            "Party and includes information that is publicly available. However, "
-            "Confidential Information shall not include information that is publicly "
-            "available or independently developed by the Receiving Party."
-        )
-        self.assertEqual(ci_poison_severity(text), "review")
+    def test_groupB_obfuscated_negation_poison_fails(self):
+        # tp07: a frame that OVERRIDES the carve-outs ("no exclusions shall apply" /
+        # "shall not cease to be Confidential Information") is the INVERSE of a carve-
+        # out and must FAIL even though it carries "no"/"not" negation tokens.
+        for text in (
+            "Information shall not cease to be Confidential Information by reason of "
+            "entering the public domain, and no exclusions of any kind shall apply.",
+            "Such information remains Confidential Information notwithstanding that it "
+            "is publicly available.",
+        ):
+            self.assertEqual(ci_poison_severity(text), "fail", text)
+
+    # GROUP C1: boundary cases -> exact expected severity.
+    def test_groupC1_boundary_severities(self):
+        cases = [
+            # merely-narrow / no public category / UTSA polarity -> None (not poison).
+            ("Confidential Information means any proprietary data disclosed by the "
+             "Disclosing Party.", None),
+            (UTSA_CI_DEFINITION, None),
+            ("Confidential Information means all non-public information disclosed by "
+             "the Disclosing Party.", None),
+            # non-category "public" -> None.
+            ("Confidential Information includes all data shared with any public "
+             "company affiliate of the Disclosing Party.", None),
+            ("Confidential Information includes information disclosed in the public "
+             "interest by the Disclosing Party.", None),
+            # self-contradiction: affirmative inclusion + SEPARATE real carve-out
+            # sentence -> review (never fail).
+            ("Confidential Information includes information that is publicly available."
+             " Confidential Information shall not include information that is publicly "
+             "available through no fault of the Receiving Party.", "review"),
+        ]
+        for text, expected in cases:
+            self.assertEqual(ci_poison_severity(text), expected, text)
+
+    # GROUP C2: a FAKE carve-out word that does not truly carve out the public
+    # category. ACCEPTED tradeoff: this caps at REVIEW (the safe under-fail
+    # direction), never silences (None) and never over-fails for a clean doc.
+    def test_groupC2_fake_carveout_caps_at_review_not_silent(self):
+        for text in (
+            "Confidential Information includes information that is publicly available, "
+            "except for the company logo.",
+            "Confidential Information includes information that is publicly available, "
+            "excluding the parties' names.",
+            "Confidential Information includes publicly available information, other "
+            "than the office address.",
+        ):
+            self.assertEqual(ci_poison_severity(text), "review", text)
 
     def test_severity_garbage_returns_none(self):
         for bad in ("", "asdf \x00 random ;;;; ....", "non-confidential text here"):
             self.assertIsNone(ci_poison_severity(bad))
-
-    # ---- Adversarial-benign: INLINE carve-outs with ORDINARY connectives --
-    # REGRESSION GUARD (over-fail). A clean NDA whose carve-out uses an ordinary
-    # connective ("save for" / "aside from" / "to the exclusion of" / ...) INLINE in
-    # the same sentence as a broad/public-touching inclusion must NOT be FAILed: the
-    # connective is a surviving carve-out. Over-failing a clean NDA is the dangerous
-    # direction; these all FAILed before the carve-out widening.
-    def test_severity_inline_carveout_connectives_never_fail(self):
-        templates = [
-            "save for information that is publicly available or already known",
-            "saving and excepting information that is publicly available",
-            "aside from information already known to the Receiving Party",
-            "apart from information that is publicly available",
-            "to the exclusion of information independently developed",
-            "unless and until it becomes publicly available through no fault",
-            "less any information already known to the Receiving Party",
-            "with the sole exception of information in the public domain",
-            "except for information independently developed",
-            "other than information that is publicly available",
-            "excluding information that is in the public domain",
-            # Inflected "except" forms + the imperative "save and excepting"
-            # (3rd-pass over-fail residue).
-            "excepting information that is publicly available",
-            "excepting any information already known to the Receiving Party",
-            "save and excepting information that is in the public domain",
-        ]
-        for tail in templates:
-            text = (
-                "\"Confidential Information\" means all information disclosed and "
-                "includes information that is publicly available, " + tail + "."
-            )
-            self.assertNotEqual(
-                ci_poison_severity(text), "fail",
-                f"inline carve-out '{tail}' must not be FAILed",
-            )
-
-    def test_severity_excepting_and_save_and_excepting_never_fail(self):
-        # 3rd-pass over-fail residue: the gate flagged these exact clean shapes as
-        # poison FAIL. The inflected "excepting" and the imperative "save and
-        # excepting" must register as surviving inline carve-outs -> NOT fail.
-        for text in (
-            "Confidential Information means all business and technical information "
-            "disclosed, excepting information that is publicly available.",
-            "Confidential Information means all business and technical information "
-            "disclosed, excepting any information already known to the Receiving Party.",
-            "Confidential Information means all business and technical information "
-            "disclosed, save and excepting information that is in the public domain.",
-        ):
-            self.assertNotEqual(ci_poison_severity(text), "fail", text)
-
-    def test_severity_realistic_8category_inline_carveout_not_fail(self):
-        # The exact realistic shape the gate flagged: a broad 8-category definition
-        # with an inline "save for ... publicly available" carve-out.
-        text = (
-            "Confidential Information means all business, financial, technical, "
-            "customer, supplier, pricing, market and trade secret information "
-            "disclosed by either party, including information that may be publicly "
-            "available, save for information that is publicly available through no "
-            "fault of the Receiving Party or was already known to it."
-        )
-        self.assertNotEqual(ci_poison_severity(text), "fail")
-
-    def test_severity_bare_public_non_category_does_not_trigger(self):
-        # PRECISION: a bare "public" that is NOT the excluded category ("public
-        # interest" / "public company" / "publicly traded") must not be read as the
-        # public-information carve-out category -> no poison, never FAIL.
-        text = (
-            "\"Confidential Information\" means all information disclosed and "
-            "includes information disclosed in the public interest or by a public "
-            "company or that is publicly traded on a recognized exchange."
-        )
-        self.assertIsNone(ci_poison_severity(text))
 
     # ---- Fail-safe: garbage / empty -> None, no crash --------------------
     def test_empty_text_returns_none(self):
