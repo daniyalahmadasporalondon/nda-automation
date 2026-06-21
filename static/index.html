@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260620clauseeditor1">
+    <link rel="stylesheet" href="/static/styles.css?v=20260621wave3">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260619onboard1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260619onboard1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
@@ -405,6 +405,42 @@
                   <span class="fmt-sep" aria-hidden="true"></span>
                   <button class="fmt-btn fmt-btn-bold" id="genFormatBold" type="button" aria-label="Bold" title="Bold" aria-pressed="false">B</button>
                   <button class="fmt-btn fmt-btn-italic" id="genFormatItalic" type="button" aria-label="Italic" title="Italic" aria-pressed="false">I</button>
+                  <button class="fmt-btn fmt-btn-underline" id="genFormatUnderline" type="button" aria-label="Underline" title="Underline" aria-pressed="false">U</button>
+                  <button class="fmt-btn fmt-btn-strike" id="genFormatStrike" type="button" aria-label="Strikethrough" title="Strikethrough" aria-pressed="false">S</button>
+                  <button class="fmt-btn fmt-btn-superscript" id="genFormatSuperscript" type="button" aria-label="Superscript" title="Superscript" aria-pressed="false">x<sup>2</sup></button>
+                  <button class="fmt-btn fmt-btn-subscript" id="genFormatSubscript" type="button" aria-label="Subscript" title="Subscript" aria-pressed="false">x<sub>2</sub></button>
+                  <button class="fmt-btn fmt-btn-clear" id="genFormatClear" type="button" aria-label="Clear formatting" title="Clear formatting">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 7V5h13M9 5l-3 14m6-14-1 5"/><path d="m15 15 6 6m0-6-6 6"/></svg>
+                  </button>
+                  <span class="fmt-sep" aria-hidden="true"></span>
+                  <label class="fmt-color" title="Text color">
+                    <span class="sr-only">Text color</span>
+                    <span class="fmt-color-glyph" aria-hidden="true">A</span>
+                    <input type="color" id="genFormatColor" value="#000000" aria-label="Text color">
+                  </label>
+                  <label class="fmt-highlight" title="Highlight color">
+                    <span class="sr-only">Highlight color</span>
+                    <span class="fmt-highlight-glyph" aria-hidden="true">H</span>
+                    <select id="genFormatHighlight" aria-label="Highlight color">
+                      <option value="">No highlight</option>
+                      <option value="yellow">Yellow</option>
+                      <option value="green">Green</option>
+                      <option value="cyan">Cyan</option>
+                      <option value="magenta">Magenta</option>
+                      <option value="blue">Blue</option>
+                      <option value="red">Red</option>
+                      <option value="darkBlue">Dark blue</option>
+                      <option value="darkCyan">Dark cyan</option>
+                      <option value="darkGreen">Dark green</option>
+                      <option value="darkMagenta">Dark magenta</option>
+                      <option value="darkRed">Dark red</option>
+                      <option value="darkYellow">Dark yellow</option>
+                      <option value="darkGray">Dark gray</option>
+                      <option value="lightGray">Light gray</option>
+                      <option value="black">Black</option>
+                      <option value="white">White</option>
+                    </select>
+                  </label>
                   <span class="fmt-sep" aria-hidden="true"></span>
                   <button class="fmt-btn" id="genAlignLeft" type="button" aria-label="Align left" title="Align left" aria-pressed="false">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M4 6h16M4 12h10M4 18h13"/></svg>
@@ -417,6 +453,10 @@
                   </button>
                   <button class="fmt-btn" id="genAlignJustify" type="button" aria-label="Justify" title="Justify" aria-pressed="false">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+                  </button>
+                  <span class="fmt-sep" aria-hidden="true"></span>
+                  <button class="fmt-btn" id="genFindReplaceButton" type="button" aria-label="Find and replace" title="Find &amp; replace (Ctrl/Cmd+F)">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
                   </button>
                 </div>
                 <div class="studio-document-render generator-document-render" id="generatorDocumentRender"></div>
@@ -607,6 +647,11 @@
                 <button class="fmt-btn fmt-btn-italic" id="studioFormatItalic" type="button" aria-label="Italic" title="Italic" aria-pressed="false">I</button>
                 <button class="fmt-btn fmt-btn-underline" id="studioFormatUnderline" type="button" aria-label="Underline" title="Underline" aria-pressed="false">U</button>
                 <button class="fmt-btn fmt-btn-strike" id="studioFormatStrike" type="button" aria-label="Strikethrough" title="Strikethrough" aria-pressed="false">S</button>
+                <button class="fmt-btn fmt-btn-superscript" id="studioFormatSuperscript" type="button" aria-label="Superscript" title="Superscript" aria-pressed="false">x<sup>2</sup></button>
+                <button class="fmt-btn fmt-btn-subscript" id="studioFormatSubscript" type="button" aria-label="Subscript" title="Subscript" aria-pressed="false">x<sub>2</sub></button>
+                <button class="fmt-btn fmt-btn-clear" id="studioFormatClear" type="button" aria-label="Clear formatting" title="Clear formatting">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 7V5h13M9 5l-3 14m6-14-1 5"/><path d="m15 15 6 6m0-6-6 6"/></svg>
+                </button>
                 <span class="fmt-sep" aria-hidden="true"></span>
                 <label class="fmt-color" title="Text color">
                   <span class="sr-only">Text color</span>
@@ -648,6 +693,10 @@
                 </button>
                 <button class="fmt-btn" id="studioAlignJustify" type="button" aria-label="Justify" title="Justify" aria-pressed="false">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+                </button>
+                <span class="fmt-sep" aria-hidden="true"></span>
+                <button class="fmt-btn" id="studioFindReplaceButton" type="button" aria-label="Find and replace" title="Find &amp; replace (Ctrl/Cmd+F)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
                 </button>
               </div>
               <div class="studio-page-wrap">
@@ -872,10 +921,8 @@
                 <strong>Admin Access</strong>
                 <span>Who can administer</span>
               </button>
-              <button class="admin-section-button" type="button" data-admin-section="entities" data-admin-surface="admin" aria-pressed="false">
-                <strong>Entities</strong>
-                <span>Signing-entity registry</span>
-              </button>
+              <!-- Signing-entity registry moved INTO the Playbook editor
+                   (Clauses | Entities switcher); the admin nav entry is gone. -->
               <button class="admin-section-button" type="button" data-admin-section="document" data-admin-surface="guide" aria-pressed="false">
                 <strong>Document</strong>
                 <span>Structure, references, concepts</span>
@@ -891,7 +938,17 @@
             </aside>
 
             <section class="admin-section-panel active" id="adminPlaybookPanel" data-admin-panel="playbook">
-              <section class="playbook-shell">
+              <!-- Top-level switcher: the Playbook is now the single home for BOTH
+                   the clause rules (Clauses) and the signing-entity / general
+                   settings (Entities). The two surfaces are siblings; the switcher
+                   toggles which one is visible. Both are admin-gated by the same
+                   write path the clause editor uses. -->
+              <div class="playbook-section-switcher" role="tablist" aria-label="Playbook sections">
+                <button class="playbook-section-tab active" type="button" role="tab" data-playbook-section="clauses" aria-selected="true">Clauses</button>
+                <button class="playbook-section-tab" type="button" role="tab" data-playbook-section="entities" aria-selected="false">Entities</button>
+              </div>
+
+              <section class="playbook-shell" data-playbook-surface="clauses">
                 <aside class="clause-rail">
                   <div class="rail-heading">
                     <p class="eyebrow">hard clauses</p>
@@ -905,6 +962,26 @@
                 </aside>
 
                 <section class="clause-detail" id="clauseDetail"></section>
+              </section>
+
+              <!-- Entities surface (moved here from the Admin area). Renders the
+                   signing-entity registry via the same controller logic; the
+                   data/save/validation/forum-reconcile contract is unchanged. -->
+              <section class="playbook-entities" data-playbook-surface="entities" hidden>
+                <header class="playbook-entities-head">
+                  <div>
+                    <p class="eyebrow">general settings</p>
+                    <h2>Signing entities</h2>
+                    <p class="playbook-entities-lede">The legal entities Aspora signs NDAs as — their legal name, governing law, court, signatory, and registered addresses.</p>
+                  </div>
+                  <div class="playbook-entities-actions">
+                    <button class="secondary" id="playbookEntitiesRefreshButton" type="button">Refresh</button>
+                    <button class="secondary" id="playbookEntitiesAddButton" type="button">Add entity</button>
+                    <button class="primary" id="playbookEntitiesSaveButton" type="button" disabled>Save registry</button>
+                  </div>
+                </header>
+                <p class="entities-message" id="playbookEntitiesMessage" data-entities="message">Loading signing entities.</p>
+                <div class="entities-list" id="playbookEntitiesList"></div>
               </section>
             </section>
 
@@ -2052,47 +2129,39 @@
               </section>
             </section>
 
-            <section class="admin-section-panel" id="adminEntitiesPanel" data-admin-panel="entities" hidden>
-              <header class="admin-section-head">
-                <div>
-                  <p class="eyebrow">registry</p>
-                  <h1>Signing entities</h1>
-                </div>
-                <div class="admin-section-actions">
-                  <button class="secondary" id="adminEntitiesRefreshButton" type="button">Refresh</button>
-                  <button class="secondary" id="adminEntitiesAddButton" type="button">Add entity</button>
-                  <button class="primary" id="adminEntitiesSaveButton" type="button" disabled>Save registry</button>
-                </div>
-              </header>
-
-              <section class="entities-console" id="adminEntitiesConsole" aria-live="polite">
-                <p class="entities-message" id="adminEntitiesMessage" data-entities="message">Loading signing entities.</p>
-                <div class="entities-list" id="adminEntitiesList"></div>
-              </section>
-            </section>
+            <!-- The signing-entity registry that used to live here moved INTO the
+                 Playbook editor as the "Entities" section (see #adminPlaybookPanel).
+                 The Playbook is now the single home for clause rules + entities. -->
           </section>
         </main>
       </section>
     </div>
 
+    <!-- Human-first entity card. Leads with the LEGAL NAME as the identity heading.
+         The machine entity-id is hidden behind the scenes for existing entities (a
+         small de-emphasised caption only); it is surfaced as an editable field ONLY
+         when adding a brand-new entity (data-entity-new-id-field), because the id is
+         the persistent key and must not change once saved. -->
     <template id="adminEntityCardTemplate">
       <article class="entity-card" data-entity-card>
         <header class="entity-card-head">
           <div class="entity-card-title">
-            <span class="entity-card-id" data-entity-field="id-display"></span>
             <strong data-entity-field="legal_name-display">New entity</strong>
+            <span class="entity-card-id" data-entity-field="id-caption" hidden></span>
           </div>
           <button class="link-button entity-remove" type="button" data-entity-remove>Remove</button>
         </header>
 
         <div class="entity-field-grid">
-          <label class="entity-field">
-            <span>Entity id</span>
-            <input type="text" data-entity-field="id" autocomplete="off" spellcheck="false" placeholder="acme_co">
-          </label>
-          <label class="entity-field">
+          <label class="entity-field entity-field-wide">
             <span>Legal name</span>
             <input type="text" data-entity-field="legal_name" autocomplete="off" placeholder="Acme Co Limited">
+          </label>
+          <!-- Entity id: shown ONLY for a new entity (the controller unhides it).
+               For an existing entity it stays hidden so the legal name leads. -->
+          <label class="entity-field entity-new-id" data-entity-new-id-field hidden>
+            <span>Entity id <small>(permanent key — set once)</small></span>
+            <input type="text" data-entity-field="id" autocomplete="off" spellcheck="false" placeholder="acme_co">
           </label>
           <label class="entity-field">
             <span>Short name</span>
@@ -2132,24 +2201,22 @@
       </article>
     </template>
 
+    <!-- Human-first address row. Leads with the actual address LINES (content first),
+         with Label as a small heading and Country demoted to a compact field beneath.
+         The machine address-id is hidden (kept in the DOM as a hidden input so the
+         data contract is preserved on save). The lines box is compact + auto-grows. -->
     <template id="adminEntityAddressTemplate">
       <div class="entity-address" data-entity-address>
-        <div class="entity-address-grid">
-          <label class="entity-field">
-            <span>Address id</span>
-            <input type="text" data-address-field="id" autocomplete="off" placeholder="registered">
+        <input type="hidden" data-address-field="id">
+        <div class="entity-address-body">
+          <input type="text" class="entity-address-label" data-address-field="label" autocomplete="off" placeholder="Registered office">
+          <label class="entity-address-lines-field">
+            <span class="entity-address-lines-hint">Address lines (one per line)</span>
+            <textarea class="entity-address-lines" data-address-field="lines" rows="2" placeholder="1 Test Street&#10;London"></textarea>
           </label>
-          <label class="entity-field">
-            <span>Label</span>
-            <input type="text" data-address-field="label" autocomplete="off" placeholder="Registered office">
-          </label>
-          <label class="entity-field">
+          <label class="entity-field entity-address-country">
             <span>Country</span>
             <input type="text" data-address-field="country" autocomplete="off" placeholder="United Kingdom">
-          </label>
-          <label class="entity-field entity-field-wide">
-            <span>Address lines (one per line)</span>
-            <textarea data-address-field="lines" rows="3" placeholder="1 Test Street&#10;London"></textarea>
           </label>
         </div>
         <div class="entity-address-actions">
@@ -2489,8 +2556,8 @@
       no divergent untested .js duplicate. Module scripts are deferred, so this
       runs before any user interaction; all consumers call these at runtime.
     -->
-    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260621humanize1"></script>
-    <script src="/static/js/redline-rendering.js?v=20260619redlineword1"></script>
+    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260621wave3final"></script>
+    <script src="/static/js/redline-rendering.js?v=20260621wave3final"></script>
     <!-- Global session-expiry handling + the shared ok-before-parse JSON guard.
          Must load before app.js (which registers the handler) and before any
          classic script that calls window.AuthExpired.parseOkJson at runtime. -->
@@ -2515,9 +2582,9 @@
     <script src="/static/js/admin-personalisation.js?v=20260619selfserve1"></script>
     <script src="/static/js/admin-docusign.js?v=20260617a401"></script>
     <script src="/static/js/admin-access.js?v=20260620integ1"></script>
-    <script src="/static/js/admin-entities.js?v=20260620entities1"></script>
+    <script src="/static/js/admin-entities.js?v=20260621wave3"></script>
     <script src="/static/js/docusign-send.js?v=20260621nda1"></script>
-    <script src="/static/js/contract-structure-view.js?v=20260621humanize1"></script>
+    <script src="/static/js/contract-structure-view.js?v=20260621wave3final"></script>
     <script src="/static/js/review-fill.js?v=20260617occ1"></script>
     <!-- Overview inspector sub-tab: the three presentational component renderers
          (bridged onto window) load before the composer that calls them. -->
@@ -2526,18 +2593,19 @@
     <script src="/static/js/overview/facts.js?v=20260621nda1"></script>
     <script src="/static/js/overview/overview-tab.js?v=20260620integ1"></script>
     <script src="/static/js/playbook-draft-runtime.js?v=20260620integ1"></script>
-    <script src="/static/js/playbook-view.js?v=20260621deploy1"></script>
-    <script src="/static/js/review-workstation-actions.js?v=20260621humanize1"></script>
+    <script src="/static/js/playbook-view.js?v=20260621wave3final"></script>
+    <script src="/static/js/review-workstation-actions.js?v=20260621wave3final"></script>
     <script src="/static/js/review-workstation-source.js?v=20260615cp1"></script>
-    <script src="/static/js/review-workstation-rendering.js?v=20260621nda1"></script>
-    <script src="/static/js/review-workstation-format.js?v=20260617a"></script>
-    <script src="/static/js/review-workstation-viewer.js?v=20260621nda1"></script>
+    <script src="/static/js/review-workstation-rendering.js?v=20260621wave3"></script>
+    <script src="/static/js/review-workstation-format.js?v=20260621wave3"></script>
+    <script src="/static/js/review-workstation-viewer.js?v=20260621wave3"></script>
     <script src="/static/js/viewer-controls.js?v=20260617hyg1"></script>
     <script src="/static/js/pdf-markup.js?v=20260618err1"></script>
     <script src="/static/js/app-state.js?v=20260617ov1"></script>
     <script src="/static/js/dashboard-search.js?v=20260621nda1"></script>
     <script src="/static/js/notifications.js?v=20260620integ2"></script>
-    <script src="/static/js/generator-editor.js?v=20260620integ1"></script>
-    <script src="/static/app.js?v=20260621nda1"></script>
+    <script src="/static/js/generator-editor.js?v=20260621wave3"></script>
+    <script src="/static/js/find-replace.js?v=20260621wave3"></script>
+    <script src="/static/app.js?v=20260621wave3"></script>
   </body>
 </html>

@@ -146,6 +146,38 @@ class TestSlotFill:
         with pytest.raises(gen.NdaGenerationError):
             gen.entity_party_from_bundle(_bundle(option_id="california"), playbook)
 
+    def test_difc_governing_law_uses_playbook_phrase_not_raw_value(self, playbook):
+        # FIX A (P0): generation must render the Playbook's legally-correct PHRASING
+        # (governing_law.law_phrases), not the raw entity law value. DIFC must read
+        # "the laws of the DIFC", NOT the legally-wrong "the laws of DIFC" the old
+        # code wrote by filling [GOVERNING LAW] with entity.governing_law_value.
+        bundle = _bundle(option_id="difc")
+        bundle["jurisdiction"] = "the DIFC Courts"
+        result = _generate(playbook, bundle=bundle)
+        text = extract_docx_text(result.docx_bytes)
+        assert "in accordance with the laws of the DIFC" in text
+        # Base (the bug) would have written the raw value verbatim.
+        assert "in accordance with the laws of DIFC," not in text
+        # Provenance: the EFFECTIVE law stays the raw value; only the rendered
+        # slot carries the phrase (so generation and review agree on the wording).
+        assert result.manifest.governing_law_value == "DIFC"
+        assert result.manifest.slot_fills["[GOVERNING LAW]"] == "the DIFC"
+
+    def test_ontario_governing_law_uses_full_canadian_phrase(self, playbook):
+        # FIX A (P0): "Ontario, Canada" must render the full legally-correct phrase
+        # "the Province of Ontario and the federal laws of Canada applicable
+        # therein", not the bare "Ontario, Canada" the raw-value path wrote.
+        bundle = _bundle(option_id="ontario_canada")
+        bundle["jurisdiction"] = "the courts of Ontario, Canada"
+        result = _generate(playbook, bundle=bundle)
+        text = extract_docx_text(result.docx_bytes)
+        assert (
+            "in accordance with the laws of the Province of Ontario and the "
+            "federal laws of Canada applicable therein" in text
+        )
+        assert "in accordance with the laws of Ontario, Canada," not in text
+        assert result.manifest.governing_law_value == "Ontario, Canada"
+
     def test_counterparty_location_does_not_bleed_into_governing_law(self, playbook):
         # Carry-over risk: a counterparty "incorporated in England" must NOT flip
         # the governing law away from the entity's approved value. Entity law is
@@ -545,6 +577,9 @@ class TestGoverningLawOverride:
     def test_override_to_each_approved_option_renders_governing_law_and_self_checks(self, playbook):
         default_option_id = "india"
 
+        gl_clause = next(c for c in playbook["clauses"] if c["id"] == "governing_law")
+        law_phrases = gl_clause.get("law_phrases", {})
+
         for option in _governing_law_options(playbook):
             result = gen.generate_nda_for_entity(
                 "aspora_technology",
@@ -559,7 +594,10 @@ class TestGoverningLawOverride:
             assert result.manifest.governing_law_option_id == option["id"]
             assert result.manifest.governing_law_value == option["value"]
             assert result.manifest.governing_law_overridden is (option["id"] != default_option_id)
-            assert f"laws of {option['value']}" in text, option["id"]
+            # The rendered clause carries the Playbook's law PHRASE (DIFC->"the DIFC",
+            # Ontario->the full Canadian phrase), not the raw value.
+            expected_phrase = law_phrases.get(option["value"], option["value"])
+            assert f"laws of {expected_phrase}" in text, option["id"]
             assert check.passed, (option["id"], check.native_failures, check.native_reviews)
 
     def test_override_to_each_sampled_forum_option_keeps_signing_entity_forum(self, playbook):
@@ -764,14 +802,14 @@ class TestForumFromEntity:
             for p in Document(BytesIO(result.docx_bytes)).paragraphs
             if "GOVERNING LAW AND JURISDICTION" in p.text
         )
-        assert "the laws of DIFC" in gl_clause
+        assert "the laws of the DIFC" in gl_clause
         assert "the DIFC Courts shall have exclusive jurisdiction" in gl_clause
         # And the generated DIFC draft still passes its own Playbook.
         assert gen.self_check_generated_nda(result.docx_bytes, playbook=playbook).passed
 
     def test_override_renders_signing_entity_court_into_the_document(self, playbook):
         # Override the India-default aspora_technology (Bengaluru) to DIFC: the
-        # DOCUMENT's clause must carry the OVERRIDDEN LAW ("the laws of DIFC") but the
+        # DOCUMENT's clause must carry the OVERRIDDEN LAW ("the laws of the DIFC") but the
         # SIGNING entity's OWN court ("courts in Bengaluru, Karnataka") -- the fixed
         # entity litigates in its own seat. The DIFC entity's court must NOT leak in.
         result = gen.generate_nda_for_entity(
@@ -789,7 +827,7 @@ class TestForumFromEntity:
             for p in Document(BytesIO(result.docx_bytes)).paragraphs
             if "GOVERNING LAW AND JURISDICTION" in p.text
         )
-        assert "the laws of DIFC" in gl_clause
+        assert "the laws of the DIFC" in gl_clause
         assert "courts in Bengaluru, Karnataka shall have exclusive jurisdiction" in gl_clause
         # The DIFC entity's own court must NOT leak into this entity's clause.
         assert "DIFC Courts" not in gl_clause

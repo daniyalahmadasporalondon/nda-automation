@@ -19,6 +19,13 @@ window.generatorEditor = (function () {
     sizeDown: "genFontSizeDown",
     bold: "genFormatBold",
     italic: "genFormatItalic",
+    underline: "genFormatUnderline",
+    strike: "genFormatStrike",
+    color: "genFormatColor",
+    highlight: "genFormatHighlight",
+    superscript: "genFormatSuperscript",
+    subscript: "genFormatSubscript",
+    clear: "genFormatClear",
     undo: "genUndo",
   };
   const ALIGN_BUTTONS = [
@@ -477,6 +484,7 @@ window.generatorEditor = (function () {
       markTouched();
       refreshToolbar();
     });
+    editable.addEventListener("keydown", handleShortcutKeydown);
     editable.addEventListener("keyup", refreshToolbar);
     editable.addEventListener("mouseup", refreshToolbar);
     if (typeof pastePlainText === "function") editable.addEventListener("paste", pastePlainText);
@@ -618,12 +626,16 @@ window.generatorEditor = (function () {
     if (font) out.font = font;
     const size = Number(run && run.size);
     if (Number.isFinite(size) && size > 0) out.size = size;
+    const vertAlign = String(run && run.vertAlign || "").trim().toLowerCase();
+    if (vertAlign === "superscript" || vertAlign === "subscript") out.vertAlign = vertAlign;
     return out;
   }
 
   function hasAnyFormatting(run) {
+    const vertAlign = String(run && run.vertAlign || "").trim().toLowerCase();
     return Boolean(run && (run.bold || run.italic || run.underline
-      || String(run.font || "").trim() || Number(run.size) > 0));
+      || String(run.font || "").trim() || Number(run.size) > 0
+      || vertAlign === "superscript" || vertAlign === "subscript"));
   }
 
   function formatEquals(a, b) {
@@ -633,7 +645,8 @@ window.generatorEditor = (function () {
       && Boolean(x.italic) === Boolean(y.italic)
       && Boolean(x.underline) === Boolean(y.underline)
       && String(x.font || "").trim() === String(y.font || "").trim()
-      && Number(x.size || 0) === Number(y.size || 0);
+      && Number(x.size || 0) === Number(y.size || 0)
+      && String(x.vertAlign || "").trim().toLowerCase() === String(y.vertAlign || "").trim().toLowerCase();
   }
 
   // ---- History / Undo -----------------------------------------------------
@@ -775,6 +788,78 @@ window.generatorEditor = (function () {
     commit(snapshot);
   }
 
+  // Text color: applies an RRGGBB run op over the current selection, reusing the
+  // shared setRunFormatting/normalizeColorValue helpers (same engine the Review
+  // toolbar's applyRunColor uses). Color/highlight are run-scoped only -- a
+  // selection is required; the picker always supplies a value so this only sets.
+  function applyColor(hex) {
+    const para = activeParagraph();
+    const snapshot = captureSelection();
+    if (!para || !snapshot) { setStatusHint("Select text to color"); return; }
+    const next = normalizeColorValue(hex);
+    if (!next) return;
+    pushHistory(para);
+    setRunFormatting(para, snapshot.startOffset, snapshot.endOffset, "color", next);
+    commit(snapshot);
+  }
+
+  // Highlight: applies a Word NAMED highlight (yellow/green/...) run op over the
+  // selection; the empty choice clears it. Mirrors the Review applyRunHighlight.
+  function applyHighlight(name) {
+    const para = activeParagraph();
+    const snapshot = captureSelection();
+    if (!para || !snapshot) { setStatusHint("Select text to highlight"); return; }
+    const value = String(name || "").trim();
+    pushHistory(para);
+    setRunFormatting(para, snapshot.startOffset, snapshot.endOffset, "highlight", value || false);
+    commit(snapshot);
+  }
+
+  // Value-aware toggle (currently vertAlign): if the whole selection already carries
+  // `value`, unset it; else set it. Setting one vertAlign value replaces the other, so
+  // superscript and subscript stay mutually exclusive.
+  function toggleRunValue(property, value) {
+    const para = activeParagraph();
+    const snapshot = captureSelection();
+    if (!para || !snapshot) { setStatusHint("Select text to format"); return; }
+    pushHistory(para);
+    const allHave = runRangeHasFormatting(para, snapshot.startOffset, snapshot.endOffset, property, value);
+    setRunFormatting(para, snapshot.startOffset, snapshot.endOffset, property, allHave ? false : value);
+    commit(snapshot);
+  }
+
+  // Inline run properties cleared by "Clear formatting" over the selection.
+  const CLEAR_RUN_PROPERTIES = [
+    "bold", "italic", "underline", "strike", "font", "size", "color", "highlight", "vertAlign",
+  ];
+
+  // "Clear formatting": strip every inline run property over the selection so the text
+  // returns to the document default. No selection -> hint. One history entry covers it.
+  function clearFormatting() {
+    const para = activeParagraph();
+    const snapshot = captureSelection();
+    if (!para || !snapshot) { setStatusHint("Select text to clear formatting"); return; }
+    pushHistory(para);
+    CLEAR_RUN_PROPERTIES.forEach((property) => {
+      setRunFormatting(para, snapshot.startOffset, snapshot.endOffset, property, false);
+    });
+    commit(snapshot);
+  }
+
+  // Ctrl/Cmd+B/I/U inside an editable: route to the existing bold/italic/underline
+  // toggles (no new format logic) and preventDefault so the browser's own command
+  // doesn't fire.
+  function handleShortcutKeydown(event) {
+    if (!event || event.altKey) return;
+    if (!(event.ctrlKey || event.metaKey)) return;
+    const key = String(event.key || "").toLowerCase();
+    const property = key === "b" ? "bold" : key === "i" ? "italic" : key === "u" ? "underline" : null;
+    if (!property) return;
+    event.preventDefault();
+    toggleRun(property);
+  }
+
+
   function currentSize() {
     const para = activeParagraph();
     if (!para) return null;
@@ -805,8 +890,24 @@ window.generatorEditor = (function () {
     if (bold) bold.onclick = () => toggleRun("bold");
     const italic = document.getElementById(TOOLBAR.italic);
     if (italic) italic.onclick = () => toggleRun("italic");
+    const underline = document.getElementById(TOOLBAR.underline);
+    if (underline) underline.onclick = () => toggleRun("underline");
+    const strike = document.getElementById(TOOLBAR.strike);
+    if (strike) strike.onclick = () => toggleRun("strike");
+    const color = document.getElementById(TOOLBAR.color);
+    if (color) color.oninput = () => applyColor(color.value);
+    const highlight = document.getElementById(TOOLBAR.highlight);
+    if (highlight) highlight.onchange = () => applyHighlight(highlight.value);
+    const superscript = document.getElementById(TOOLBAR.superscript);
+    if (superscript) superscript.onclick = () => toggleRunValue("vertAlign", "superscript");
+    const subscript = document.getElementById(TOOLBAR.subscript);
+    if (subscript) subscript.onclick = () => toggleRunValue("vertAlign", "subscript");
+    const clearBtn = document.getElementById(TOOLBAR.clear);
+    if (clearBtn) clearBtn.onclick = () => clearFormatting();
     const undoBtn = document.getElementById(TOOLBAR.undo);
     if (undoBtn) undoBtn.onclick = () => undo();
+    const findBtn = document.getElementById("genFindReplaceButton");
+    if (findBtn) findBtn.onclick = () => window.findReplace && window.findReplace.open("generator");
     ALIGN_BUTTONS.forEach(([id, alignment]) => {
       const button = document.getElementById(id);
       if (button) button.onclick = () => applyAlignment(alignment);
@@ -826,13 +927,27 @@ window.generatorEditor = (function () {
       button.disabled = !hasActive;
     });
 
-    [[TOOLBAR.bold, "bold"], [TOOLBAR.italic, "italic"]].forEach(([id, property]) => {
+    [[TOOLBAR.bold, "bold"], [TOOLBAR.italic, "italic"], [TOOLBAR.underline, "underline"], [TOOLBAR.strike, "strike"]].forEach(([id, property]) => {
       const button = document.getElementById(id);
       if (!button) return;
       const pressed = Boolean(sel) && runRangeHasFormatting(para, sel.startOffset, sel.endOffset, property, true);
       button.setAttribute("aria-pressed", pressed ? "true" : "false");
       button.disabled = !hasActive;
     });
+
+    [TOOLBAR.color, TOOLBAR.highlight].forEach((id) => {
+      const control = document.getElementById(id);
+      if (control) control.disabled = !hasActive;
+    });
+    [[TOOLBAR.superscript, "superscript"], [TOOLBAR.subscript, "subscript"]].forEach(([id, value]) => {
+      const button = document.getElementById(id);
+      if (!button) return;
+      const pressed = Boolean(sel) && runRangeHasFormatting(para, sel.startOffset, sel.endOffset, "vertAlign", value);
+      button.setAttribute("aria-pressed", pressed ? "true" : "false");
+      button.disabled = !hasActive;
+    });
+    const clearBtn = document.getElementById(TOOLBAR.clear);
+    if (clearBtn) clearBtn.disabled = !hasActive;
 
     const fontSelect = document.getElementById(TOOLBAR.fontSelect);
     if (fontSelect) {
@@ -905,6 +1020,8 @@ window.generatorEditor = (function () {
       if (/^[0-9A-F]{6}$/.test(color)) out.color = color;
       const highlight = String(r.highlight || "").trim();
       if (highlight) out.highlight = highlight;
+      const vertAlign = String(r.vertAlign || "").trim().toLowerCase();
+      if (vertAlign === "superscript" || vertAlign === "subscript") out.vertAlign = vertAlign;
       return out;
     });
     copy[0].text = copy[0].text.replace(/^\s+/, "");
@@ -983,10 +1100,51 @@ window.generatorEditor = (function () {
     return res.blob();
   }
 
+  // ---- Find & Replace integration ----------------------------------------
+  // Apply a programmatic text replacement to a single paragraph, reusing the SAME
+  // run-retile path a keystroke edit uses (retileRuns) so formatting around the
+  // replaced span survives and the change rides the existing clean export. Records
+  // one Undo entry per paragraph so a replace is reversible.
+  function applyFindReplace(paragraph, newText, oldText) {
+    if (!paragraph) return;
+    const before = oldText !== undefined ? String(oldText) : String(paragraph.text || "");
+    if (before === newText) return;
+    pushHistory(paragraph);
+    const retiled = retileRuns(paragraph.runs, before, newText);
+    paragraph.text = newText;
+    if (retiled) paragraph.runs = retiled; else delete paragraph.runs;
+    markTouched();
+  }
+
+  // Register the generator editor with the shared Find & Replace panel so Ctrl/Cmd+F
+  // (or the toolbar button) opens it over THIS editor when the Generator tab is shown.
+  function registerFindReplace() {
+    if (!window.findReplace || typeof window.findReplace.register !== "function") return;
+    window.findReplace.register("generator", {
+      paragraphs,
+      getRenderEl: renderEl,
+      getPanelHost: () => document.getElementById("generatorEditor") || renderEl(),
+      applyReplacement: applyFindReplace,
+      // Re-render once after a batch of replacements so the document reflects them and
+      // export state refreshes (a single render is cheaper than per-occurrence).
+      afterBatch: () => { render(); },
+    });
+  }
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", registerFindReplace);
+    } else {
+      registerFindReplace();
+    }
+  }
+
   return {
     showDraft, load, clear, isActive, edits, undo, render, hasEdits, exportCleanDocx,
+    open: () => window.findReplace && window.findReplace.open("generator"),
     // Test seam: re-tiling logic is pure (old runs + old/new text -> new runs), so it
     // can be verified directly without simulating typing/caret in a headless preview.
     _retileRuns: retileRuns,
+    _applyFindReplace: applyFindReplace,
+    _registerFindReplace: registerFindReplace,
   };
 })();

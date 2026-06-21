@@ -213,14 +213,24 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
     paragraphs: List[Paragraph] = []
     for page_index, geo_lines in enumerate(page_geo_lines, start=1):
         filtered_lines = _filtered_geo_lines(geo_lines, repeated_margins)
-        for paragraph_text in _split_pdf_paragraphs(filtered_lines):
-            paragraphs.append({
+        # Page-wide body font reference for the geometry trust tier: a heading is
+        # only geometrically corroborated when its font is meaningfully larger than
+        # the page's dominant (body) font. Computed once per page from the same
+        # filtered lines the splitter sees, so it is not skewed by margins/headers.
+        page_body_font = _dominant_font_size(_as_geo_lines(filtered_lines))
+        for block in _split_pdf_paragraph_blocks(filtered_lines):
+            paragraph_text = " ".join(item.text for item in block)
+            paragraph: Paragraph = {
                 "id": f"p{len(paragraphs) + 1}",
                 "source_index": len(paragraphs) + 1,
                 "source_part": "pdf",
                 "page_number": page_index,
                 "text": paragraph_text,
-            })
+            }
+            geometry = _pdf_paragraph_geometry(block, page_body_font)
+            if geometry is not None:
+                paragraph["pdf_geometry"] = geometry
+            paragraphs.append(paragraph)
 
     if not paragraphs:
         raise PdfExtractionError("No readable text was found in the PDF. Scanned PDFs need OCR before review.")
@@ -402,7 +412,18 @@ def _normalized_lines(text: str) -> list[str]:
 
 
 def _split_pdf_paragraphs(lines: Any) -> list[str]:
-    """Split a page's lines into clause blocks.
+    """Split a page's lines into clause blocks (text only).
+
+    Thin wrapper over ``_split_pdf_paragraph_blocks`` that flattens each block of
+    ``GeoLine`` back into its joined text, preserving the legacy ``list[str]``
+    contract for existing callers/tests.
+    """
+
+    return [" ".join(item.text for item in block) for block in _split_pdf_paragraph_blocks(lines)]
+
+
+def _split_pdf_paragraph_blocks(lines: Any) -> list[list[GeoLine]]:
+    """Split a page's lines into clause blocks, KEEPING per-line geometry.
 
     Accepts either ``list[GeoLine]`` (geometry-aware path) or a plain
     ``list[str]`` (geometry absent / legacy callers). The cardinal invariant is
@@ -411,6 +432,11 @@ def _split_pdf_paragraphs(lines: Any) -> list[str]:
     boundary the geometry path *removes* is a mid-sentence text split between two
     lines that are vertically adjacent (a single wrapped clause), which by
     definition cannot be two separate clauses.
+
+    Returns each block as its list of ``GeoLine`` so a caller can recover the
+    block's geometry (heading font size, indentation) AND the page-wide body
+    font for the source-backed-PDF trust tier. The text-only ``_split_pdf_paragraphs``
+    flattens these.
     """
 
     geo_lines = _as_geo_lines(lines)
@@ -426,16 +452,52 @@ def _split_pdf_paragraphs(lines: Any) -> list[str]:
     # appeared anywhere else on the page. The split/join decision is now made purely
     # from the LOCAL line pair, so never-merge holds by construction.
 
-    blocks: list[str] = []
+    blocks: list[list[GeoLine]] = []
     current: list[GeoLine] = []
     for geo_line in geo_lines:
         if _starts_new_pdf_paragraph(geo_line, current, line_height, body_font):
-            blocks.append(" ".join(item.text for item in current))
+            blocks.append(current)
             current = []
         current.append(geo_line)
     if current:
-        blocks.append(" ".join(item.text for item in current))
+        blocks.append(current)
     return blocks
+
+
+def _pdf_paragraph_geometry(
+    block: list[GeoLine], page_body_font: Optional[float]
+) -> dict[str, object] | None:
+    """Promote the per-line geometry of a block's HEADING line into metadata.
+
+    The heading line is the block's FIRST line (where a numbered/heading marker
+    sits). We surface its ``font_size`` and ``left_x``, the page-wide body font,
+    and a derived ``heading_font_ratio`` so a downstream consumer (the structure
+    builder's ``pdf_confident`` trust tier) can decide whether a regex heading
+    match is CORROBORATED by geometry — a heading set in a larger font — rather
+    than admitting a phantom (e.g. an address digit) on a bare regex match alone.
+
+    Returns ``None`` when the block carries no usable geometry at all (flat-text
+    fallback path), so a paragraph without geometry simply never becomes
+    ``pdf_confident`` and the source-backed gate stays closed for it.
+    """
+
+    if not block:
+        return None
+    head = block[0]
+    geometry: dict[str, object] = {}
+    if head.font_size is not None:
+        geometry["font_size"] = head.font_size
+    if head.left_x is not None:
+        geometry["left_x"] = head.left_x
+    if head.y is not None:
+        geometry["y"] = head.y
+    if page_body_font is not None and page_body_font > 0:
+        geometry["body_font"] = page_body_font
+        if head.font_size is not None:
+            geometry["heading_font_ratio"] = head.font_size / page_body_font
+    if not geometry:
+        return None
+    return geometry
 
 
 def _as_geo_lines(lines: Any) -> list[GeoLine]:

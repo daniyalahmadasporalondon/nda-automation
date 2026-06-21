@@ -2327,6 +2327,95 @@ class GeometrySplitterTests(unittest.TestCase):
                 )
 
 
+@requires_pypdf
+class PdfSourceBackedTrustTierTests(unittest.TestCase):
+    """PROOF (change #1): the PDF source-backed trust tier.
+
+    A PDF heading set in a LARGER font, matching a heading/numbering regex, becomes
+    a ``pdf_confident`` source-backed section. A PHANTOM (a body-sized address line
+    misread as "Clause 145") matches no enlarged-font corroboration and must stay
+    NON-source-backed, so it never reaches the verifier/section-aware budget.
+    """
+
+    def test_geometry_is_promoted_into_paragraph_metadata(self):
+        data = make_pdf_positioned([
+            ("1. CONFIDENTIALITY", 72, 720, 16),  # 16pt heading
+            ("The receiving party shall keep information confidential.", 72, 700, 11),  # 11pt body
+        ])
+        paragraphs = extract_pdf_paragraphs(data)
+        heading = paragraphs[0]
+        self.assertIn("pdf_geometry", heading)
+        geometry = heading["pdf_geometry"]
+        self.assertAlmostEqual(geometry["font_size"], 16, delta=0.5)
+        self.assertIn("body_font", geometry)
+        self.assertGreater(geometry["heading_font_ratio"], 1.15)
+        self.assertIn("left_x", geometry)
+
+    def test_confident_pdf_heading_becomes_source_backed(self):
+        from nda_automation.ai_assessment_prompt import _section_is_source_backed
+        from nda_automation.contract_structure import build_contract_structure
+
+        # A large-font numbered heading over body-sized prose -> regex + geometry agree.
+        data = make_pdf_positioned([
+            ("1. CONFIDENTIALITY", 72, 720, 16),
+            ("The receiving party shall keep information confidential at all times.", 72, 700, 11),
+            ("2. TERM", 72, 670, 16),
+            ("The obligations survive for five years from disclosure of the information.", 72, 650, 11),
+        ])
+        paragraphs = extract_pdf_paragraphs(data)
+        structure = build_contract_structure(paragraphs)
+        backed = [s for s in structure["sections"] if _section_is_source_backed(s)]
+        self.assertTrue(backed, f"no source-backed section: {[s.get('label') for s in structure['sections']]}")
+        self.assertTrue(all(s["source"]["kind"] == "pdf_confident" for s in backed))
+        self.assertGreaterEqual(structure["stats"]["source_backed_section_count"], 1)
+
+    def test_phantom_body_sized_clause_is_not_source_backed(self):
+        from nda_automation.ai_assessment_prompt import _section_is_source_backed
+        from nda_automation.contract_structure import build_contract_structure
+
+        # A "Clause 145" line set in the SAME font as the surrounding body (an address
+        # digit / mis-read marker). Even if the regex accepts it, there is NO enlarged-
+        # font corroboration, so it must NOT become source-backed.
+        data = make_pdf_positioned([
+            ("Confidential Information means all non-public information disclosed.", 72, 720, 11),
+            ("Clause 145 Main Street is the registered office of the disclosing party.", 72, 700, 11),
+            ("The parties agree to keep such information confidential at all times.", 72, 680, 11),
+        ])
+        paragraphs = extract_pdf_paragraphs(data)
+        structure = build_contract_structure(paragraphs)
+        backed = [s for s in structure["sections"] if _section_is_source_backed(s)]
+        self.assertEqual(backed, [], f"phantom became source-backed: {[s.get('label') for s in backed]}")
+        self.assertEqual(structure["stats"]["source_backed_section_count"], 0)
+
+    def test_pdf_dangling_reference_signal_fires_end_to_end(self):
+        # PROOF (change #2, end-to-end PDF): a PDF whose body says "as set out in
+        # Schedule 2" with NO Schedule 2 section now yields a dangling-ref signal.
+        from nda_automation.contract_structure import build_contract_structure
+        from nda_automation.reference_resolver import (
+            build_reference_integrity_signal,
+            resolve_document_references,
+        )
+
+        data = make_pdf_positioned([
+            ("1. CONFIDENTIALITY", 72, 720, 16),
+            ("The receiving party shall protect the information as set out in Schedule 2.", 72, 700, 11),
+            ("2. TERM", 72, 670, 16),
+            ("The obligations survive for five years from the date of disclosure hereunder.", 72, 650, 11),
+        ])
+        paragraphs = extract_pdf_paragraphs(data)
+        structure = build_contract_structure(paragraphs)
+        resolver = resolve_document_references(paragraphs, structure)
+        signal = build_reference_integrity_signal(resolver, structure)
+
+        self.assertTrue(signal["applicable"], signal.get("skipped_reason"))
+        self.assertEqual(signal["status"], "issues_found")
+        self.assertGreaterEqual(signal["dangling_reference_count"], 1)
+        self.assertTrue(
+            any("2" in issue.get("missing_numbers", []) for issue in signal["issues"]),
+            signal["issues"],
+        )
+
+
 def make_pdf(text):
     return make_pdf_pages([[text]])
 

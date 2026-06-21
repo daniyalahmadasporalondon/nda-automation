@@ -140,13 +140,14 @@ def build_reference_integrity_signal(
     This rolls them up into one additive, human-readable signal -- e.g. "Schedule 3
     is referenced but no Schedule 3 section exists".
 
-    Guards (without these it cries wolf on every PDF / collapsed parse):
-      1. DOCX-with-numbering only -- ``applicable`` is ``False`` for a PDF / plain
-         text parse (``docx_numbered_paragraph_count == 0``); the cross-reference
-         map is only trustworthy when the extractor stamped real numbering.
-      2. Collapse detector -- if there is a single section, or one section owns more
-         than ``COLLAPSE_DOMINANT_SECTION_RATIO`` of the mapped paragraphs, the parse
-         collapsed and the signal disables itself.
+    Guards (without these it cries wolf on a collapsed parse):
+      1. Collapse detector (the trust gate) -- if there is a single section, or one
+         section owns more than ``COLLAPSE_DOMINANT_SECTION_RATIO`` of the mapped
+         paragraphs, the structure parse collapsed (no real boundaries were found),
+         the cross-reference map cannot be trusted, and the signal disables itself.
+         This replaces the old "DOCX-numbered only" guard so PDFs -- which now carry
+         real source-backed structure -- get the dangling-reference signal too,
+         while a PDF whose headings never split out still self-suppresses here.
       3. Ambiguous-alias collisions are reported as UNKNOWN, never a dangling
          violation: a number claimed by two restarted-numbering sections is a
          resolver limitation, not a drafting defect.
@@ -223,11 +224,16 @@ def _integrity_skip_reason(contract_structure: Dict[str, object] | None) -> str:
         return "no_structure"
     stats = contract_structure.get("stats")
     stats = stats if isinstance(stats, dict) else {}
-    numbered = stats.get("docx_numbered_paragraph_count")
-    if not isinstance(numbered, int) or numbered <= 0:
-        # PDF / plain-text parse: no numbering metadata, so cross-reference targets
-        # cannot be trusted. (Guard #1.)
-        return "not_docx_numbered"
+    # Guard #1 (trust gate) is now the COLLAPSE DETECTOR (below), not "DOCX-numbered
+    # only". The cross-reference map is trustworthy whenever the structure parse did
+    # NOT collapse — and PDFs now carry real structure (source-backed ``pdf_confident``
+    # sections from the geometry trust tier). The old ``docx_numbered_paragraph_count
+    # <= 0`` short-circuit self-suppressed the entire dangling-ref signal on every PDF
+    # even when the parse found clean, well-separated sections; the per-reference
+    # ``unresolved`` status was already computed correctly, only the rollup hid it.
+    # The collapse detector (single section, or one section owning >70% of the mapped
+    # paragraphs) still disables the signal on a parse that DID collapse, so a PDF whose
+    # headings were not split out never cries wolf.
 
     sections = contract_structure.get("sections")
     sections = sections if isinstance(sections, list) else []

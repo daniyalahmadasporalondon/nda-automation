@@ -286,10 +286,18 @@ def check_governing_law(
             "law.not_approved",
             f"expected governing law {expected_law!r} is not in Playbook approved_laws {approved}",
         )
-    # The governing-law sentence must name the INTENDED law. Use the deterministic
-    # engine's own verdict on the governing_law clause as the independent oracle,
-    # then additionally assert the *specific* expected jurisdiction is present.
-    if expected_law and expected_law not in text:
+    # The governing-law sentence must name the INTENDED law. The clause renders the
+    # Playbook's legally-correct PHRASING (governing_law.law_phrases), e.g. "DIFC" ->
+    # "the DIFC" and "Ontario, Canada" -> "the Province of Ontario and the federal
+    # laws of Canada applicable therein", so the presence check accepts the phrase
+    # OR the raw value (the phrase falls back to the raw value when none is mapped).
+    expected_phrase = _law_phrase_for_value(expected_law)
+    expected_present = expected_law in text or (
+        bool(expected_phrase) and expected_phrase in text
+    )
+    # Use the deterministic engine's own verdict on the governing_law clause as the
+    # independent oracle, then additionally assert the expected jurisdiction is present.
+    if expected_law and not expected_present:
         # Label distinguishes an override-mismatch from a default-mismatch so a
         # failure is diagnosable (which law the draft was supposed to name).
         check_name = "law.override_mismatch" if (override and override.overridden) else "law.entity_mismatch"
@@ -304,8 +312,31 @@ def check_governing_law(
             continue
         # Only flag if the other law appears in a governing-law context and the
         # expected one does not (avoids false positives from the approved-law menu).
-        if other in text and expected_law not in text:
+        other_phrase = _law_phrase_for_value(other)
+        other_present = other in text or (bool(other_phrase) and other_phrase in text)
+        if other_present and not expected_present:
             report.defect("law.wrong_jurisdiction", f"draft names {other!r} instead of expected {expected_law!r}")
+
+
+def _law_phrase_for_value(law: str) -> str:
+    """The Playbook's legally-correct PHRASING for a governing-law value.
+
+    Mirrors ``checks.common._governing_law_phrase`` (the same map generation and the
+    redline side render): ``governing_law.law_phrases[law]``, falling back to the raw
+    value when absent. Returns "" only for an empty law.
+    """
+    if not law:
+        return ""
+    playbook = load_playbook()
+    for clause in playbook.get("clauses", []):
+        if clause.get("id") == "governing_law":
+            phrases = clause.get("law_phrases") or {}
+            if isinstance(phrases, dict):
+                phrase = str(phrases.get(law, "")).strip()
+                if phrase:
+                    return phrase
+            break
+    return law
 
 
 def _approved_laws() -> tuple[str, ...]:

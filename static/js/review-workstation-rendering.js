@@ -279,8 +279,113 @@ function setStudioSendButtonLabel(label = "Send Redline", title = label) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Review-workspace shimmer skeletons.
+//
+// While a background AI review runs we replace the empty/stale split workspace
+// with GENERIC shimmer skeletons that mirror the layout (a document-pane
+// paragraph stack on the left + a fixed-count clause-row stack in the inspector
+// on the right), PAIRED with truthful duration copy. The skeleton count is
+// deliberately fixed and generic — it never previews the real clause count, so
+// it can never imply "N clauses found" before the review returns. The animation
+// is gated behind prefers-reduced-motion in CSS, not here.
+//
+// HONESTY: the copy ("Reviewing… this can take up to a minute.") pairs with the
+// shimmer so it never implies an instant result on a 30–120s job. If the review
+// pipeline exposes a per-stage/per-clause progress signal we surface it; today
+// it does not (the async backend reports only in_progress / completed / failed),
+// so we use the honest "still analysing" duration copy and never fake a bar.
+//
+// The skeleton is REMOVED the moment real content arrives: setReviewWorkspaceSkeleton(false)
+// runs from exitReviewInFlightUi (poll terminal) before the result is rendered.
+
+// A generic document-pane skeleton: a short fixed stack of paragraph blocks. The
+// count is a neutral constant (NOT the document's real paragraph count).
+function reviewSkeletonDocumentMarkup() {
+  const para = (lines) => `
+    <div class="review-skeleton-para">
+      ${lines.map((cls) => `<div class="skeleton-block skeleton-line ${cls}"></div>`).join("")}
+    </div>`;
+  return `
+    <div class="review-skeleton-doc" aria-hidden="true">
+      ${para(["long", "long", "medium"])}
+      ${para(["long", "medium"])}
+      ${para(["long", "long", "long", "short"])}
+      ${para(["medium", "long"])}
+    </div>`;
+}
+
+// A generic inspector skeleton: a fixed small number of clause-style rows (a
+// verdict pill + two text lines). Fixed count — never the real result count.
+function reviewSkeletonInspectorMarkup() {
+  const row = () => `
+    <div class="review-skeleton-row">
+      <div class="skeleton-block skeleton-pill"></div>
+      <div class="skeleton-row-body">
+        <div class="skeleton-block skeleton-line medium"></div>
+        <div class="skeleton-block skeleton-line long"></div>
+      </div>
+    </div>`;
+  return `
+    <div class="review-skeleton-inspector" aria-hidden="true">
+      ${row()}${row()}${row()}${row()}
+    </div>`;
+}
+
+// Show/hide the review-workspace skeleton. When active, overlay the document
+// pane (inside .studio-page-wrap) with a paragraph-stack skeleton + honest copy,
+// and render clause-row skeletons into the inspector panel. When inactive, the
+// overlays are removed so the real rendered content stands. Idempotent; guarded
+// so a load order / test harness without the DOM is a no-op rather than a throw.
+function setReviewWorkspaceSkeleton(active) {
+  const pageWrap = document.querySelector(".studio-page-wrap");
+  if (pageWrap) {
+    let overlay = pageWrap.querySelector(".review-skeleton");
+    if (active) {
+      if (!overlay) {
+        overlay = document.createElement("div");
+        overlay.className = "review-skeleton";
+        overlay.setAttribute("role", "status");
+        overlay.setAttribute("aria-live", "polite");
+        pageWrap.appendChild(overlay);
+      }
+      overlay.innerHTML = `
+        <div class="review-skeleton-copy">
+          <span class="skeleton-dot" aria-hidden="true"></span>
+          <span>Reviewing… this can take up to a minute.</span>
+        </div>
+        ${reviewSkeletonDocumentMarkup()}`;
+    } else if (overlay) {
+      overlay.remove();
+    }
+  }
+
+  // Inspector skeletons. The Structure sub-view owns its OWN in-progress skeleton
+  // (contract-structure-view.js renders it from the same reviewInProgress signal),
+  // so when Structure is active we re-render the detail pane to let it paint that.
+  // For the Clause sub-view we paint the generic clause-row skeleton here directly.
+  // The Overview pane keeps its persistent facts/roster placeholders. The skeleton
+  // is dropped on the next real renderStudioDetail()/renderStudioResult().
+  if (typeof studioDetailPanel !== "undefined" && studioDetailPanel) {
+    const view = state.reviewInspectorView || "clause";
+    if (active && view === "structure") {
+      if (typeof renderStudioDetail === "function") renderStudioDetail();
+    } else if (active && view === "clause") {
+      studioDetailPanel.innerHTML = reviewSkeletonInspectorMarkup();
+    } else if (!active) {
+      const inspectorSkeleton = studioDetailPanel.querySelector(".review-skeleton-inspector");
+      if (inspectorSkeleton) inspectorSkeleton.remove();
+      // Re-render so the Structure tab drops its in-progress skeleton for the real map.
+      if (view === "structure" && typeof renderStudioDetail === "function") renderStudioDetail();
+    }
+  }
+}
+
 function renderStudioResult(result) {
   const clauses = result.clauses || [];
+  // A finished review supersedes any in-flight skeleton overlay; drop it before
+  // painting the real result so a stale skeleton never lingers over content.
+  if (typeof setReviewWorkspaceSkeleton === "function") setReviewWorkspaceSkeleton(false);
   renderReviewOverlayBanner();
   renderStudioSummary(clauses);
   renderStudioClauseLane();

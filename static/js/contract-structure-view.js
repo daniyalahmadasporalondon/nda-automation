@@ -11,6 +11,17 @@ function createContractStructureController({ state, root }) {
 
   function render() {
     if (!root) return;
+    // LOADING STATE: while a background AI review runs for the selected matter,
+    // the Structure tab would otherwise show stale/empty content (the previous
+    // structure map, or an empty placeholder). Paint a "Building structure map…"
+    // shimmer skeleton instead, PAIRED with honest copy. The skeleton is generic
+    // (a tile grid + a few rows) — it never previews the real section count. It is
+    // replaced by the real map the moment the review completes and render() re-runs.
+    // Guarded so a harness without MatterUtils is a no-op (falls through to normal).
+    if (reviewInProgress()) {
+      root.innerHTML = renderStructureSkeleton();
+      return;
+    }
     const structure = effectiveStructure();
     const allSections = Array.isArray(structure?.sections) ? structure.sections : [];
     // Honor the AI structure-validation demotion (structure_validation.py): a section
@@ -41,7 +52,10 @@ function createContractStructureController({ state, root }) {
       return;
     }
 
+    const byId = sectionsById(sections);
     root.innerHTML = `
+      ${renderReferenceFlags(references)}
+
       <div class="structure-summary" aria-label="Structure map summary">
         ${summaryTile("Sections", demotedCount > 0 ? sections.length : (stats.section_count ?? sections.length))}
         ${summaryTile("Mapped paragraphs", stats.mapped_paragraph_count ?? mappedParagraphCount(sections))}
@@ -53,13 +67,44 @@ function createContractStructureController({ state, root }) {
         ${summaryTile("Tables", stats.table_paragraph_count ?? 0)}
       </div>
 
-      <section class="structure-section-list" aria-label="Detected contract sections">
-        ${sections.map((section) => renderSection(section, sectionsById(sections))).join("")}
+      <section class="structure-section-list structure-section-tree" aria-label="Detected contract sections">
+        ${renderSectionTree(sections, byId)}
       </section>
 
-      ${renderReferences(references)}
+      ${renderReferences(references, byId)}
     `;
     bindStructureRowKeyboard();
+  }
+
+  // True while a background AI review is running for the selected matter. Read via
+  // the shared MatterUtils predicate (review_status === "in_progress") so the
+  // Structure tab's loading state tracks the SAME signal the board badge + review
+  // header use. Resolved lazily off window so an isolated test/load order without
+  // the bridge degrades to "not in progress" (the normal render path) rather than
+  // throwing a ReferenceError.
+  function reviewInProgress() {
+    const utils = typeof window !== "undefined" ? window.MatterUtils : undefined;
+    if (!utils || typeof utils.reviewInProgress !== "function") return false;
+    return Boolean(utils.reviewInProgress(state.selectedMatter));
+  }
+
+  // The "Building structure map…" shimmer skeleton: a generic summary-tile grid
+  // plus a few section-row placeholders, headed by honest in-progress copy. The
+  // shapes are neutral (never the real section/tile counts). The shimmer animation
+  // itself is gated behind prefers-reduced-motion in CSS (.skeleton-block).
+  function renderStructureSkeleton() {
+    const tile = () => '<div class="skeleton-block structure-skeleton-tile"></div>';
+    const tiles = new Array(8).fill(0).map(tile).join("");
+    const rows = new Array(4).fill(0).map(() => '<div class="skeleton-block"></div>').join("");
+    return `
+      <div class="structure-skeleton" role="status" aria-live="polite">
+        <div class="review-skeleton-copy">
+          <span class="skeleton-dot" aria-hidden="true"></span>
+          <span>Building structure map… this runs with the review.</span>
+        </div>
+        <div class="structure-skeleton-summary" aria-hidden="true">${tiles}</div>
+        <div class="structure-skeleton-rows" aria-hidden="true">${rows}</div>
+      </div>`;
   }
 
   // The global delegated [data-para-ref] handler (app.js) covers row CLICKS for free,
@@ -68,7 +113,11 @@ function createContractStructureController({ state, root }) {
   // Rebound per render because render() replaces root.innerHTML wholesale.
   function bindStructureRowKeyboard() {
     if (!root) return;
-    root.querySelectorAll(".structure-row-nav[data-para-ref]").forEach((row) => {
+    // Cover every keyboard-focusable jump target the tab renders: the section rows
+    // (.structure-row-nav) AND the cross-reference source/target links, all of which
+    // carry data-para-ref + role="button". The global click handler already fires for
+    // their clicks; this only adds the matching Enter/Space keyboard activation.
+    root.querySelectorAll('[data-para-ref][role="button"]').forEach((row) => {
       row.addEventListener("keydown", (event) => {
         if (event.key !== "Enter" && event.key !== " " && event.key !== "Spacebar") return;
         event.preventDefault();
@@ -76,6 +125,98 @@ function createContractStructureController({ state, root }) {
         if (paragraphId && typeof jumpToParagraph === "function") jumpToParagraph(paragraphId);
       });
     });
+  }
+
+  // VIEW 1 -- dangling-reference red flags. The #1 human-insight win: the backend
+  // already computes which cross-references point at sections that do not exist
+  // ("Clause 9 references Schedule 3, which doesn't exist") and discards the signal
+  // into a field nothing rendered. Surface it as a coloured callout at the very top.
+  //
+  // Primary source: state.latestReviewResult.reference_integrity, the document-level
+  // roll-up built by reference_resolver.build_reference_integrity_signal and attached
+  // in ai_first_review.py. It is GUARDED (DOCX-with-numbering only, collapse detector)
+  // so it only fires when the cross-reference map is trustworthy -- exactly when we
+  // want a red flag and never the cry-wolf case.
+  //   - applicable && status === "issues_found" -> issues[].summary as RED callouts
+  //     (a genuine drafting defect: a referenced section is missing) and
+  //     ambiguous_issues[].summary as AMBER callouts (target unknown, not a defect).
+  //
+  // Fallback: when reference_integrity is absent (deterministic-only / PDF, or until
+  // the engine fix lands), derive danglers from the resolver itself --
+  // references[].status === "unresolved" -- so the insight still shows. The fallback
+  // is intentionally conservative (only fully-unresolved references, never partials)
+  // to mirror the guarded backend signal and avoid false alarms on collapsed parses.
+  function renderReferenceFlags(references) {
+    const integrity = state.latestReviewResult?.reference_integrity;
+    let redSummaries = [];
+    let amberSummaries = [];
+
+    if (integrity && typeof integrity === "object" && integrity.applicable) {
+      if (String(integrity.status || "") === "issues_found") {
+        redSummaries = collectSummaries(integrity.issues);
+      }
+      amberSummaries = collectSummaries(integrity.ambiguous_issues);
+    } else if (!integrity || typeof integrity !== "object" || !integrity.applicable) {
+      // No trustworthy backend signal -- fall back to the resolver's own danglers.
+      redSummaries = danglingSummariesFromReferences(references);
+    }
+
+    if (!redSummaries.length && !amberSummaries.length) return "";
+
+    const redBlock = redSummaries.length
+      ? `
+        <div class="structure-flag structure-flag-danger" role="alert">
+          <strong>${escapeHtml(redSummaries.length === 1 ? "Dangling reference" : `${redSummaries.length} dangling references`)}</strong>
+          <ul>
+            ${redSummaries.map((summary) => `<li>${escapeHtml(summary)}</li>`).join("")}
+          </ul>
+        </div>
+      `
+      : "";
+    const amberBlock = amberSummaries.length
+      ? `
+        <div class="structure-flag structure-flag-warn" role="status">
+          <strong>${escapeHtml(amberSummaries.length === 1 ? "Ambiguous reference" : `${amberSummaries.length} ambiguous references`)}</strong>
+          <ul>
+            ${amberSummaries.map((summary) => `<li>${escapeHtml(summary)}</li>`).join("")}
+          </ul>
+        </div>
+      `
+      : "";
+    return `
+      <section class="structure-flags" aria-label="Reference integrity flags">
+        ${redBlock}
+        ${amberBlock}
+      </section>
+    `;
+  }
+
+  function collectSummaries(issues) {
+    if (!Array.isArray(issues)) return [];
+    return issues
+      .map((issue) => String(issue?.summary || "").trim())
+      .filter(Boolean);
+  }
+
+  // Fallback danglers from the raw resolver when the guarded integrity signal is
+  // unavailable. Only fully-unresolved references count; we phrase a human summary
+  // mirroring the backend ("X references Y, which doesn't exist in this document").
+  function danglingSummariesFromReferences(references) {
+    if (!Array.isArray(references)) return [];
+    const summaries = [];
+    references.forEach((reference) => {
+      if (String(reference?.status || "") !== "unresolved") return;
+      const referenceText = String(reference?.reference_text || "").trim();
+      const missing = Array.isArray(reference?.unresolved_numbers)
+        ? reference.unresolved_numbers.map((value) => String(value).trim()).filter(Boolean)
+        : [];
+      const subject = referenceText || "A cross-reference";
+      const targetPhrase = missing.length
+        ? `${kindLabel(reference?.kind) || "section"} ${missing.join(", ")}`
+        : "a section";
+      summaries.push(`${subject} points to ${targetPhrase}, which doesn't exist in this document.`);
+    });
+    return summaries;
   }
 
   function effectiveStructure() {
@@ -130,7 +271,82 @@ function createContractStructureController({ state, root }) {
     return section.label || section.heading || section.heading_text || "";
   }
 
-  function renderSection(section, byId) {
+  // VIEW 2 -- visual outline tree. The old view printed a FLAT list and put the
+  // hierarchy in a tiny "Parent: Clause 4" footnote. Build a real nested tree from
+  // each section's parent_id so sub-clauses nest under their parent and whole
+  // subtrees collapse, the way a reader actually thinks about a contract's outline.
+  //
+  // Orphan-rooting: a section whose parent_id is null OR points at an id that is not
+  // in the (post-demotion) section list becomes a root. This is what keeps the tree
+  // honest when the AI structure-validation pass demoted a parent out of the list, or
+  // when the parser produced a dangling parent_id -- we never drop the child, we just
+  // promote it to the top level rather than orphan it into nothing.
+  function renderSectionTree(sections, byId) {
+    const roots = buildSectionForest(sections, byId);
+    if (!roots.length) return "";
+    return `<ul class="structure-tree-list" role="tree">${roots.map((node) => renderTreeNode(node, byId)).join("")}</ul>`;
+  }
+
+  // Group sections into a parent->children forest, preserving document order at each
+  // level. Cycle-safe: a section can never be its own ancestor (a child whose chain
+  // loops back is re-rooted), so a malformed parent_id graph can't infinite-loop.
+  function buildSectionForest(sections, byId) {
+    const childrenByParent = new Map();
+    const roots = [];
+    sections.forEach((section) => {
+      const parentId = section?.parent_id ? String(section.parent_id) : "";
+      const hasRealParent = parentId && byId[parentId] && !isAncestorCycle(section, byId);
+      if (hasRealParent) {
+        if (!childrenByParent.has(parentId)) childrenByParent.set(parentId, []);
+        childrenByParent.get(parentId).push(section);
+      } else {
+        roots.push(section);
+      }
+    });
+    const attach = (section) => ({
+      section,
+      children: (childrenByParent.get(String(section.id || "")) || []).map(attach),
+    });
+    return roots.map(attach);
+  }
+
+  // True when following parent_id from `section` revisits `section` (a cycle) -- such a
+  // node must be re-rooted, not nested, to keep the forest acyclic.
+  function isAncestorCycle(section, byId) {
+    const startId = String(section?.id || "");
+    const seen = new Set([startId]);
+    let current = section?.parent_id ? byId[String(section.parent_id)] : null;
+    while (current) {
+      const currentId = String(current.id || "");
+      if (seen.has(currentId)) return true;
+      seen.add(currentId);
+      current = current.parent_id ? byId[String(current.parent_id)] : null;
+    }
+    return false;
+  }
+
+  function renderTreeNode(node, byId) {
+    const section = node.section;
+    const rowHtml = renderSectionRow(section, byId);
+    if (!node.children.length) {
+      return `<li class="structure-tree-node" role="treeitem">${rowHtml}</li>`;
+    }
+    // A node with children is a collapsible <details> (open by default) so a reviewer
+    // can fold a whole clause's sub-tree away. The summary holds the section row; the
+    // nested <ul> holds the children, recursively.
+    return `
+      <li class="structure-tree-node structure-tree-branch" role="treeitem">
+        <details class="structure-tree-details" open>
+          <summary class="structure-tree-summary">${rowHtml}</summary>
+          <ul class="structure-tree-list" role="group">
+            ${node.children.map((child) => renderTreeNode(child, byId)).join("")}
+          </ul>
+        </details>
+      </li>
+    `;
+  }
+
+  function renderSectionRow(section, byId) {
     const level = Math.max(0, Math.min(5, Number(section.level || 0)));
     const indent = 14 + (level * 16);
     const paragraphs = paragraphRangeLabel(section);
@@ -160,8 +376,15 @@ function createContractStructureController({ state, root }) {
       + ` aria-label="${escapeHtml(`Jump to ${sectionLabel}`)}"`
       : "";
     const navClass = startParagraphId ? " structure-row-nav" : "";
+    // Dim a node the parser only GUESSED at: a non-source-backed section, or one the
+    // parser tagged low/medium confidence. The dim class is the honest visual cue that
+    // separates a real heading (high confidence, source-backed, clickable) from the
+    // parser's best guess (faint, not clickable) -- the tree should never present a
+    // guess with the same authority as a real heading.
+    const isGuess = !sourceBacked || !isHighConfidence(section.confidence);
+    const dimClass = isGuess ? " structure-row-dim" : "";
     return `
-      <article class="structure-row${navClass}" style="--structure-indent: ${indent}px"${navAttrs}>
+      <article class="structure-row${navClass}${dimClass}" style="--structure-indent: ${indent}px"${navAttrs}>
         <span class="structure-level-marker" aria-hidden="true"></span>
         <div class="structure-row-main">
           <div class="structure-row-title">
@@ -173,6 +396,7 @@ function createContractStructureController({ state, root }) {
             <span>${escapeHtml(paragraphs)}</span>
             <span>${escapeHtml(confidenceLabel(section.confidence))}</span>
             ${source ? `<span>${escapeHtml(source)}</span>` : ""}
+            ${isGuess ? `<span class="structure-row-guess">Parser's guess</span>` : ""}
             ${parent}
           </small>
         </div>
@@ -180,32 +404,115 @@ function createContractStructureController({ state, root }) {
     `;
   }
 
-  function renderReferences(references) {
-    if (!references.length) return "";
+  function isHighConfidence(confidence) {
+    return String(confidence || "").toLowerCase() === "high";
+  }
+
+  // VIEW 3 -- clickable cross-reference links, grouped by their source section. The
+  // old view was a flat 12-row dump of reference_text + a comma-joined target string,
+  // none of it clickable and capped at 12 (so later references silently vanished).
+  //
+  // Now every reference renders as "From [source section] -> [target label]", BOTH
+  // ends clickable, jumping the document viewer via the same delegated [data-para-ref]
+  // handler the section rows use. Grouped by source section so a reviewer reads "here
+  // is everything Clause 9 points at" in one place; no row cap, so nothing is hidden.
+  //
+  // Jump targets: the SOURCE side jumps to the source section's first paragraph
+  // (byId[source_section_id].start_paragraph_id). The TARGET side jumps to the target
+  // section's first paragraph -- the resolver target record carries paragraph_ids (its
+  // ordered paragraph list) but not start_paragraph_id, so we use paragraph_ids[0].
+  // A side is only made clickable when it resolves to a real paragraph id (same
+  // accuracy-or-nothing gate as the section rows); otherwise it renders as plain text.
+  function renderReferences(references, byId) {
+    if (!Array.isArray(references) || !references.length) return "";
+    const groups = groupReferencesBySource(references, byId);
+    if (!groups.length) return "";
     return `
-      <section class="structure-references" aria-label="Resolved references">
-        <h2>Resolved references</h2>
-        ${references.slice(0, 12).map((reference) => {
-          const targets = (reference.targets || []).map((target) => target.label).filter(Boolean).join(", ");
-          const unresolved = (reference.unresolved_numbers || []).length
-            ? `Unresolved ${reference.unresolved_numbers.join(", ")}`
-            : "";
-          return `
-            <article class="structure-reference-row">
-              <strong>${escapeHtml(reference.reference_text || "Reference")}</strong>
-              <span>${escapeHtml(targets || unresolved || "No target")}</span>
-              <small>
-                <span>${escapeHtml(paragraphRangeLabel({
-                  start_index: reference.paragraph_index,
-                  end_index: reference.paragraph_index,
-                }))}</span>
-                <span>${escapeHtml(referenceStatusLabel(reference.status))}</span>
-              </small>
-            </article>
-          `;
-        }).join("")}
+      <section class="structure-references" aria-label="Cross-references">
+        <h2>Cross-references</h2>
+        ${groups.map((group) => renderReferenceGroup(group, byId)).join("")}
       </section>
     `;
+  }
+
+  function groupReferencesBySource(references, byId) {
+    const order = [];
+    const groupsBySource = new Map();
+    references.forEach((reference) => {
+      const sourceId = reference?.source_section_id ? String(reference.source_section_id) : "";
+      const key = sourceId || "__document__";
+      if (!groupsBySource.has(key)) {
+        groupsBySource.set(key, { key, sourceId, references: [] });
+        order.push(key);
+      }
+      groupsBySource.get(key).references.push(reference);
+    });
+    return order.map((key) => groupsBySource.get(key));
+  }
+
+  function renderReferenceGroup(group, byId) {
+    const sourceSection = group.sourceId ? (byId || {})[group.sourceId] : null;
+    const sourceLabel = sectionDisplayName(sourceSection) || "Document body";
+    const sourceJumpId = jumpTargetForSection(sourceSection);
+    const sourceHeading = sourceJumpId
+      ? `<span class="structure-xref-from" ${paraRefAttrs(sourceJumpId, `Jump to ${sourceLabel}`)}>${escapeHtml(sourceLabel)}</span>`
+      : `<span class="structure-xref-from structure-xref-plain">${escapeHtml(sourceLabel)}</span>`;
+    return `
+      <article class="structure-xref-group">
+        <div class="structure-xref-source">From ${sourceHeading}</div>
+        <ul class="structure-xref-links">
+          ${group.references.map((reference) => renderReferenceLink(reference, byId)).join("")}
+        </ul>
+      </article>
+    `;
+  }
+
+  function renderReferenceLink(reference, byId) {
+    const referenceText = String(reference?.reference_text || "Reference").trim() || "Reference";
+    const status = referenceStatusLabel(reference?.status);
+    const targets = Array.isArray(reference?.targets) ? reference.targets : [];
+    let targetHtml;
+    if (targets.length) {
+      targetHtml = targets.map((target) => {
+        const label = String(target?.label || target?.heading || "").trim()
+          || sectionDisplayName(target) || "Section";
+        const jumpId = jumpTargetForSection(target);
+        return jumpId
+          ? `<span class="structure-xref-to" ${paraRefAttrs(jumpId, `Jump to ${label}`)}>${escapeHtml(label)}</span>`
+          : `<span class="structure-xref-to structure-xref-plain">${escapeHtml(label)}</span>`;
+      }).join('<span class="structure-xref-sep">, </span>');
+    } else {
+      const missing = Array.isArray(reference?.unresolved_numbers) && reference.unresolved_numbers.length
+        ? `Unresolved ${reference.unresolved_numbers.join(", ")}`
+        : "No target";
+      targetHtml = `<span class="structure-xref-to structure-xref-plain structure-xref-missing">${escapeHtml(missing)}</span>`;
+    }
+    return `
+      <li class="structure-xref-link">
+        <span class="structure-xref-text">${escapeHtml(referenceText)}</span>
+        <span class="structure-xref-arrow" aria-hidden="true">&rarr;</span>
+        ${targetHtml}
+        <small class="structure-xref-status">${escapeHtml(status)}</small>
+      </li>
+    `;
+  }
+
+  // Resolve a section (a structure section OR a resolver target record) to the
+  // paragraph id a jump should land on. Structure sections carry start_paragraph_id;
+  // resolver target records carry an ordered paragraph_ids list -- prefer the explicit
+  // start, fall back to the first paragraph id. Returns "" when neither exists, which
+  // makes the link render as plain (non-clickable) text.
+  function jumpTargetForSection(section) {
+    if (!section || typeof section !== "object") return "";
+    if (section.start_paragraph_id) return String(section.start_paragraph_id);
+    if (Array.isArray(section.paragraph_ids) && section.paragraph_ids.length) {
+      return String(section.paragraph_ids[0]);
+    }
+    return "";
+  }
+
+  function paraRefAttrs(paragraphId, ariaLabel) {
+    return `data-para-ref="${escapeHtml(paragraphId)}" role="button" tabindex="0" aria-label="${escapeHtml(ariaLabel)}"`;
   }
 
   function summaryTile(label, value) {

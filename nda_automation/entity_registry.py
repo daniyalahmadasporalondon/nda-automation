@@ -533,7 +533,7 @@ def validate_registry_against_playbook(
     # Reconcile the two forum sources at jurisdiction-bucket granularity so the
     # review-side detector (playbook forum_jurisdiction) and the generator (registry
     # jurisdiction) cannot silently drift to different jurisdictions.
-    validate_forum_reconciliation(playbook)
+    validate_forum_reconciliation(playbook, entities)
 
 
 def _forum_bucket(value: object) -> str:
@@ -554,7 +554,10 @@ def _forum_bucket(value: object) -> str:
         return ""
 
 
-def validate_forum_reconciliation(playbook: Mapping[str, Any]) -> None:
+def validate_forum_reconciliation(
+    playbook: Mapping[str, Any],
+    entities: list[dict[str, Any]] | None = None,
+) -> None:
     """Reconcile the TWO forum sources so they cannot silently diverge.
 
     There are two forum-bearing sources in the system:
@@ -578,11 +581,20 @@ def validate_forum_reconciliation(playbook: Mapping[str, Any]) -> None:
        ``forum_jurisdiction``.
 
     Raises ``ValueError`` on the first mismatch so the drift-guard / publish gate can
-    surface a clear error. Pure: reads only the passed ``playbook`` plus the module
-    registry.
+    surface a clear error.
+
+    When ``entities`` is supplied, that CANDIDATE list is reconciled against the
+    playbook (the authoring layer passes the entities being saved, so a mismatched
+    law/court pairing is caught BEFORE persistence); otherwise the live registry is
+    reconciled. Previously this always iterated the seed defaults, so an admin could
+    save an entity with a cross-jurisdiction law/court mismatch and slip past this
+    guard -- the candidate entities were never checked.
     """
 
-    validate_registry()
+    if entities is None:
+        entities = _live_entities()
+
+    validate_registry(entities)
 
     options = _playbook_governing_law_options(playbook)
     if not options:
@@ -612,7 +624,7 @@ def validate_forum_reconciliation(playbook: Mapping[str, Any]) -> None:
             )
         option_bucket_by_id[option_id] = bucket
 
-    for entity in SIGNING_ENTITIES:
+    for entity in entities:
         option_id = entity["governing_law"]["playbook_option_id"]
         option_bucket = option_bucket_by_id.get(option_id)
         if option_bucket is None:

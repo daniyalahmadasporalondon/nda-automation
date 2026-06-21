@@ -177,7 +177,7 @@ def _apply_tracked_run_format(
         for op in run_ops
         if isinstance(op, dict)
         and op.get("scope") == "run"
-        and op.get("property") in ("bold", "italic", "font", "size", "underline", "strike", "color", "highlight")
+        and op.get("property") in ("bold", "italic", "font", "size", "underline", "strike", "color", "highlight", "vertAlign")
         and isinstance(op.get("start"), int)
         and isinstance(op.get("end"), int)
         and int(op["start"]) < int(op["end"])
@@ -350,6 +350,8 @@ def _run_format_changed_rpr(
             _set_run_color(new_rpr, str(op.get("to") or ""))
         elif prop == "highlight":
             _set_run_highlight(new_rpr, str(op.get("to") or ""))
+        elif prop == "vertAlign":
+            _set_run_vert_align(new_rpr, str(op.get("to") or ""))
 
     # The from-state record: a clean clone of the ORIGINAL rPr (its own rPrChange
     # stripped) wrapped in <w:rPrChange> so Word can roll the formatting back.
@@ -511,6 +513,25 @@ def _set_run_highlight(run_properties: ET.Element, highlight: str) -> None:
         highlight_element = ET.Element(_w_tag("highlight"))
         _insert_run_property_child(run_properties, highlight_element)
     highlight_element.set(_w_tag("val"), value)
+
+
+def _set_run_vert_align(run_properties: ET.Element, vert_align: str) -> None:
+    """Set or clear the run's vertical alignment as `<w:vertAlign w:val=...>`.
+
+    Word's CT_VerticalAlignRun only accepts ``superscript``/``subscript``/``baseline``;
+    a falsy/unknown value clears the override (drops the element) so toggling sup/sub
+    OFF returns the run to the document baseline. ``baseline`` is treated as "no
+    override" too, since a run with no `<w:vertAlign>` already sits on the baseline."""
+    value = str(vert_align or "").strip().lower()
+    if value not in ("superscript", "subscript"):
+        for node in list(run_properties.findall(_w_tag("vertAlign"))):
+            run_properties.remove(node)
+        return
+    vert_align_element = run_properties.find(_w_tag("vertAlign"))
+    if vert_align_element is None:
+        vert_align_element = ET.Element(_w_tag("vertAlign"))
+        _insert_run_property_child(run_properties, vert_align_element)
+    vert_align_element.set(_w_tag("val"), value)
 
 
 def _set_paragraph_alignment(properties: ET.Element, alignment: str) -> None:
@@ -962,6 +983,9 @@ def _formatted_run(run_model: dict) -> str:
     highlight = str(run_model.get("highlight") or "")
     if highlight:
         _set_run_highlight(run_properties, highlight)
+    vert_align = str(run_model.get("vertAlign") or "")
+    if vert_align:
+        _set_run_vert_align(run_properties, vert_align)
     size = run_model.get("size")
     if size:
         _set_run_font_size(run_properties, size)
@@ -993,6 +1017,7 @@ _RPR_CHILD_ORDER = (
     "szCs",
     "highlight",
     "u",
+    "vertAlign",
     "rPrChange",
 )
 _RPR_CHILD_ORDER_INDEX = {tag: index for index, tag in enumerate(_RPR_CHILD_ORDER)}

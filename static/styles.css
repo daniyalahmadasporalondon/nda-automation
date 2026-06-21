@@ -9782,6 +9782,207 @@ label.is-hidden {
   text-transform: uppercase;
 }
 
+/* View 1 -- dangling/ambiguous reference callouts. */
+.structure-flags {
+  display: grid;
+  gap: 8px;
+}
+
+.structure-flag {
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+.structure-flag strong {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.structure-flag ul {
+  display: grid;
+  gap: 4px;
+  list-style: disc;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.structure-flag li {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.structure-flag-danger {
+  background: var(--danger-weak, rgba(220, 38, 38, 0.08));
+  border-color: var(--danger, #dc2626);
+}
+
+.structure-flag-danger strong,
+.structure-flag-danger li {
+  color: var(--danger-strong, var(--danger, #b91c1c));
+}
+
+.structure-flag-warn {
+  background: var(--warn-weak, rgba(217, 119, 6, 0.08));
+  border-color: var(--warn, #d97706);
+}
+
+.structure-flag-warn strong,
+.structure-flag-warn li {
+  color: var(--warn-strong, var(--warn, #b45309));
+}
+
+/* View 2 -- nested outline tree. */
+.structure-section-tree {
+  background: var(--bg-soft);
+  padding: 4px;
+}
+
+.structure-tree-list {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.structure-tree-list .structure-tree-list {
+  margin-left: 14px;
+  padding-left: 8px;
+  border-left: 1px dashed var(--border);
+}
+
+.structure-tree-node .structure-row {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.structure-tree-details > .structure-tree-summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.structure-tree-details > .structure-tree-summary::-webkit-details-marker {
+  display: none;
+}
+
+.structure-tree-summary .structure-row {
+  position: relative;
+}
+
+.structure-tree-summary .structure-row::after {
+  color: var(--ink-muted);
+  content: "\25BC";
+  font-size: 9px;
+  position: absolute;
+  right: 10px;
+  top: 12px;
+}
+
+.structure-tree-details:not([open]) > .structure-tree-summary .structure-row::after {
+  content: "\25B6";
+}
+
+/* Dim the parser's guesses so a real heading reads with more authority. */
+.structure-row-dim {
+  opacity: 0.6;
+}
+
+.structure-row-dim .structure-level-marker {
+  background: var(--border);
+}
+
+.structure-row-guess {
+  color: var(--ink-muted);
+  font-style: italic;
+  text-transform: none;
+}
+
+/* View 3 -- clickable cross-reference links grouped by source. */
+.structure-xref-group {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+.structure-xref-source {
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.structure-xref-from,
+.structure-xref-to {
+  color: var(--brand);
+  cursor: pointer;
+  font-weight: 750;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.structure-xref-from[role="button"]:hover,
+.structure-xref-to[role="button"]:hover,
+.structure-xref-from[role="button"]:focus-visible,
+.structure-xref-to[role="button"]:focus-visible {
+  color: var(--brand-strong, var(--brand));
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+.structure-xref-plain {
+  color: var(--ink-soft);
+  cursor: default;
+  text-decoration: none;
+}
+
+.structure-xref-missing {
+  color: var(--danger, #b91c1c);
+}
+
+.structure-xref-links {
+  display: grid;
+  gap: 5px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.structure-xref-link {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.structure-xref-text {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.structure-xref-arrow {
+  color: var(--ink-muted);
+  font-weight: 700;
+}
+
+.structure-xref-status {
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 800;
+  margin-left: auto;
+  text-transform: uppercase;
+}
+
 #reviewView #studioDetailPanel .structure-summary {
   grid-template-columns: 1fr;
 }
@@ -11652,6 +11853,80 @@ label.is-hidden {
   color: var(--success, #067647);
 }
 
+/* ---- Playbook section switcher (Clauses | Entities) ---------------------- */
+.playbook-section-switcher {
+  display: inline-flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg, 10px);
+  box-shadow: var(--shadow-sm);
+}
+
+.playbook-section-tab {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-md, 8px);
+  color: var(--ink-soft);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 16px;
+  transition: background 0.16s ease, color 0.16s ease;
+}
+
+.playbook-section-tab:hover {
+  color: var(--ink);
+}
+
+.playbook-section-tab.active {
+  background: var(--accent, #4c1d95);
+  color: #fff;
+}
+
+/* The section switcher toggles [hidden] on the sibling surfaces. The Clauses
+   surface (.playbook-shell) sets display:grid, which would otherwise beat the
+   [hidden] attribute's user-agent display:none -- so honour hidden explicitly. */
+[data-playbook-surface][hidden] {
+  display: none !important;
+}
+
+/* ---- Entities surface inside the Playbook editor ------------------------- */
+.playbook-entities {
+  display: grid;
+  gap: 16px;
+}
+
+.playbook-entities-head {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.playbook-entities-head h2 {
+  font-size: 17px;
+  margin: 2px 0 0;
+}
+
+.playbook-entities-lede {
+  color: var(--ink-soft);
+  font-size: 13px;
+  margin: 4px 0 0;
+  max-width: 60ch;
+}
+
+.playbook-entities-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .entities-list {
   display: grid;
   gap: 16px;
@@ -11680,15 +11955,34 @@ label.is-hidden {
   min-width: 0;
 }
 
+/* The machine entity-id is demoted to a tiny de-emphasised caption UNDER the
+   legal name (the legal name now leads). Hidden entirely for new entities. */
 .entity-card-id {
   color: var(--ink-muted);
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 11px;
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+  opacity: 0.72;
+}
+
+.entity-card-id[hidden] {
+  display: none;
 }
 
 .entity-card-title strong {
-  font-size: 15px;
+  font-size: 16px;
+  font-weight: 650;
   overflow-wrap: anywhere;
+}
+
+/* The editable entity-id field only appears when ADDING a new entity. */
+.entity-new-id[hidden] {
+  display: none;
+}
+
+.entity-new-id > span small {
+  color: var(--ink-muted);
+  font-weight: 500;
 }
 
 .entity-field-grid {
@@ -11760,14 +12054,69 @@ label.is-hidden {
   background: var(--surface-soft, rgba(0, 0, 0, 0.025));
   border-radius: 10px;
   display: grid;
-  gap: 10px;
-  padding: 12px;
+  gap: 8px;
+  padding: 11px 12px;
 }
 
-.entity-address-grid {
+/* Content-first address: the Label reads as a small heading, the LINES are the
+   prominent content, and Country is a compact field demoted beneath. The machine
+   address-id is a hidden input (no row). */
+.entity-address-body {
   display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.entity-address-label {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px dashed transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  padding: 2px 0;
+  width: 100%;
+}
+
+.entity-address-label::placeholder {
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+
+.entity-address-label:hover {
+  border-bottom-color: var(--border);
+}
+
+.entity-address-label:focus {
+  border-bottom-color: var(--accent, #4c1d95);
+  outline: none;
+}
+
+.entity-address-lines-field {
+  display: grid;
+  gap: 3px;
+}
+
+.entity-address-lines-hint {
+  color: var(--ink-muted);
+  font-size: 11px;
+}
+
+.entity-address-lines {
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.15));
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  min-height: 38px;
+  overflow: hidden;
+  padding: 7px 9px;
+  resize: none;
+  width: 100%;
+}
+
+.entity-address-country {
+  max-width: 260px;
 }
 
 .entity-address-actions {
@@ -11930,4 +12279,309 @@ label.is-hidden {
 /* Playbook-level Version History (left rail, global) */
 .playbook-history {
   margin-top: 14px;
+}
+
+/* ===========================================================================
+   Shimmer skeleton placeholders
+   ---------------------------------------------------------------------------
+   Generic, neutral loading placeholders shown while a slow job (an AI review,
+   a structure-map build, a health probe) is in flight. They are deliberately
+   GENERIC in shape — never a faithful preview of the eventual result — so a
+   mismatch between the skeleton and the real content is never jarring.
+
+   HONESTY: the shimmer is purely "we're working" reassurance. It is ALWAYS
+   paired in markup with truthful duration/progress copy (the review can take a
+   minute; we are still analysing) so it can never imply an instant result.
+
+   prefers-reduced-motion: the sliding-highlight @keyframes is GATED behind a
+   no-preference media query. A reduced-motion user gets the SAME skeleton, but
+   static (a flat neutral fill, no animation).
+   =========================================================================== */
+.skeleton-block {
+  position: relative;
+  overflow: hidden;
+  background: var(--bg-soft);
+  border-radius: var(--r-sm);
+  /* A neutral, static fill is the baseline. The animated highlight is layered
+     on ONLY when motion is allowed (see the media query below). */
+}
+
+.skeleton-line {
+  height: 12px;
+  margin: 8px 0;
+  border-radius: var(--r-pill);
+}
+
+.skeleton-line.short { width: 45%; }
+.skeleton-line.medium { width: 70%; }
+.skeleton-line.long { width: 92%; }
+
+/* Animated shimmer highlight — ONLY for users who have not asked for reduced
+   motion. The default (reduced-motion or no support) is the static fill above. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes skeleton-shimmer {
+    0% { background-position: -160% 0; }
+    100% { background-position: 160% 0; }
+  }
+
+  .skeleton-block {
+    background-image: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0) 0%,
+      rgba(255, 255, 255, 0.65) 50%,
+      rgba(255, 255, 255, 0) 100%
+    );
+    background-repeat: no-repeat;
+    background-size: 160% 100%;
+    animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  }
+}
+
+/* The review-workspace document-pane skeleton: a generic stack of paragraph
+   lines that mirrors the SPLIT layout (document on the left) without faking a
+   specific document. Sits over the studio page while a review runs. */
+.review-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 28px 30px;
+}
+
+.review-skeleton-copy {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.review-skeleton-copy .skeleton-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--brand-bright);
+  flex: 0 0 auto;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .review-skeleton-copy .skeleton-dot {
+    animation: skeleton-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes skeleton-pulse {
+    0%, 100% { opacity: 0.35; }
+    50% { opacity: 1; }
+  }
+}
+
+.review-skeleton-doc {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.review-skeleton-para {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+/* The inspector clause-row skeletons (the right pane of the split). A short,
+   FIXED count of generic rows — never tied to the real clause count, so it can
+   never imply "N clauses found" before the review returns. */
+.review-skeleton-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+}
+
+.review-skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-md);
+  background: var(--bg-panel);
+}
+
+.review-skeleton-row .skeleton-pill {
+  width: 54px;
+  height: 20px;
+  border-radius: var(--r-pill);
+  flex: 0 0 auto;
+}
+
+.review-skeleton-row .skeleton-row-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+/* The Structure-tab "Building structure map…" skeleton. */
+.structure-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 4px;
+}
+
+.structure-skeleton-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+  gap: 10px;
+}
+
+.structure-skeleton-tile {
+  height: 54px;
+  border-radius: var(--r-md);
+}
+
+.structure-skeleton-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.structure-skeleton-rows .skeleton-block {
+  height: 46px;
+  border-radius: var(--r-md);
+}
+
+/* The dashboard-health "Checking…" shimmer placeholder — a subtle inline bar
+   that replaces the bare "Checking" word while a probe is in flight. */
+.dashboard-health-detail .skeleton-block.health-skeleton {
+  display: inline-block;
+  width: 72px;
+  height: 10px;
+  border-radius: var(--r-pill);
+  vertical-align: middle;
+}
+
+/* ---- Find & Replace panel --------------------------------------------------
+   A small floating overlay anchored inside whichever editor container is active
+   (Review .studio-page or the Generator #generatorEditor). Positioned top-right so
+   it never covers the start of the document; the host gets position:relative below. */
+#generatorEditor,
+.studio-page {
+  position: relative;
+}
+
+.find-replace-panel {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 320px;
+  max-width: calc(100% - 28px);
+  padding: 10px 12px;
+  background: var(--surface, #ffffff);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: var(--shadow-md);
+}
+
+.find-replace-panel[hidden] {
+  display: none;
+}
+
+.find-replace-panel .fr-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.find-replace-panel .fr-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--bg-softer, #faf8ff);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.find-replace-panel .fr-input:focus {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 2px rgba(79, 27, 179, 0.15);
+}
+
+.find-replace-panel .fr-status {
+  flex: 0 0 auto;
+  min-width: 64px;
+  font-size: 11px;
+  color: var(--ink-soft);
+  text-align: right;
+}
+
+.find-replace-panel .fr-status[data-tone="empty"] {
+  color: #b4263b;
+}
+
+.find-replace-panel .fr-status[data-tone="ok"] {
+  color: #1d7a45;
+}
+
+.find-replace-panel .fr-btn {
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--bg-soft);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.find-replace-panel .fr-btn:hover {
+  background: var(--bg-softer, #faf8ff);
+}
+
+.find-replace-panel .fr-btn-primary {
+  color: #ffffff;
+  background: var(--brand);
+  border-color: var(--brand);
+}
+
+.find-replace-panel .fr-btn-primary:hover {
+  filter: brightness(1.05);
+}
+
+.find-replace-panel .fr-close {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--ink-soft);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.find-replace-panel .fr-close:hover {
+  background: var(--bg-soft);
+  color: var(--ink);
+}
+
+.find-replace-panel .fr-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--ink-soft);
+  user-select: none;
 }

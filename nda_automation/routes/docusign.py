@@ -289,6 +289,23 @@ def handle_send_for_signature(handler, path: str) -> None:
         handler._send_json(_already_sent_payload(matter), status=409)
         return
 
+    # P0 (security-critical): an unreviewed/unapproved NDA must NEVER go out for
+    # real signatures. A generated matter is created defer_ai_review=True, so
+    # without this gate POST /api/generate-nda -> send-for-signature would dispatch
+    # a real envelope on a never-reviewed document. Mirror the workflow backstop
+    # (docusign_workflow.matter_cleared_for_signature) so the user gets a clean 403
+    # before any DocuSign call; the workflow re-checks as the authoritative guard.
+    if not docusign_workflow.matter_cleared_for_signature(matter):
+        telemetry.increment("docusign_send_unreviewed_rejected")
+        handler._send_json(
+            {
+                "error": "Review and approve this NDA before sending it for signature.",
+                "needs_review": True,
+            },
+            status=403,
+        )
+        return
+
     signers = payload.get("signers") if isinstance(payload.get("signers"), list) else None
     signing_order = str(payload.get("signing_order") or docusign_integration.DEFAULT_SIGNING_ORDER)
     email_subject = str(payload.get("email_subject") or "")
@@ -315,6 +332,13 @@ def handle_send_for_signature(handler, path: str) -> None:
     except docusign_connection.DocuSignNotConnectedError:
         telemetry.increment("docusign_send_failed")
         handler._send_json(_needs_connect_payload(), status=409)
+        return
+    except docusign_workflow.MatterNotApprovedError as error:
+        # The authoritative review/approval backstop (the route pre-check above
+        # normally catches this first; this guards a state change between the
+        # pre-check and the workflow load). 403: the document is not cleared to send.
+        telemetry.increment("docusign_send_unreviewed_rejected")
+        handler._send_json({"error": str(error), "needs_review": True}, status=403)
         return
     except docusign_workflow.NoSignableDocumentError as error:
         telemetry.increment("docusign_send_failed")
@@ -618,8 +642,23 @@ def _read_raw_body(handler) -> bytes | None:
         return None
 
 
+def _unsigned_webhook_allowed(handler) -> bool:
+    """Whether an UNSIGNED webhook (no HMAC key configured) may be processed.
+
+    Only two trusted contexts: the server is bound to a loopback interface (the
+    trusted local developer / demo) OR the operator has set the explicit
+    ``NDA_DOCUSIGN_ALLOW_UNSIGNED_WEBHOOK`` opt-in. A public (non-loopback) bind
+    with no key and no opt-in is NEVER allowed — that is the spoofable prod path.
+    """
+    from ..http_auth import _is_loopback_host
+
+    if docusign_connection.allow_unsigned_webhook():
+        return True
+    return _is_loopback_host(_request_host(handler))
+
+
 def _verify_hmac(handler, raw_body: bytes) -> bool:
-    """Verify the Connect HMAC signature (fail-CLOSED when a key is configured).
+    """Verify the Connect HMAC signature (fail-CLOSED; reject unsigned in prod).
 
     DocuSign computes base64(HMAC-SHA256(rawBody, secret)) and sends it in
     ``X-DocuSign-Signature-1``.
@@ -628,20 +667,36 @@ def _verify_hmac(handler, raw_body: bytes) -> bool:
       signature: a missing or mismatched signature returns ``False`` so the caller
       rejects with 401 and touches no matter (anti-spoof, finding #22).
     * When NO key is configured we cannot verify, so the webhook is effectively
-      unauthenticated. We still let the request proceed (so an unconfigured
-      demo/sandbox keeps working) but log a LOUD WARNING every time — silently
-      accepting an unauthenticated state-changing callback is the bug we are
-      fixing. Set the key in production to enforce authentication.
+      unauthenticated. ``/api/docusign/webhook`` is the one PUBLIC, session-less,
+      CSRF-exempt POST, so an unauthenticated caller could otherwise forge a
+      ``completed`` event and flip a matter to executed (P0). We therefore FAIL
+      CLOSED on any non-loopback bind: return ``False`` so the handler rejects the
+      request and never runs the state-changing sync. The unsigned path is allowed
+      ONLY for the trusted local developer — a loopback bind — or behind the
+      explicit ``NDA_DOCUSIGN_ALLOW_UNSIGNED_WEBHOOK`` opt-in, so local/demo
+      testing without a Connect key still works.
 
     Uses the constant-time :func:`hmac.compare_digest` for the comparison.
     """
     key = docusign_connection.connect_hmac_key()
     if not key:
+        if not _unsigned_webhook_allowed(handler):
+            logger.warning(
+                "REJECTED DocuSign Connect webhook: %s is not set and this is not a "
+                "loopback bind nor is %s opted in, so the unauthenticated "
+                "/api/docusign/webhook callback is fail-CLOSED (no matter touched). "
+                "Set %s to the HMAC key configured in DocuSign Connect to enable it.",
+                docusign_connection.CONNECT_HMAC_KEY_ENV,
+                docusign_connection.ALLOW_UNSIGNED_WEBHOOK_ENV,
+                docusign_connection.CONNECT_HMAC_KEY_ENV,
+            )
+            return False
         logger.warning(
-            "DocuSign Connect webhook is UNAUTHENTICATED: %s is not set, so the "
-            "/api/docusign/webhook callback accepts any caller and cannot verify "
-            "that a completion event really came from DocuSign. Set %s (and the "
-            "matching HMAC key in DocuSign Connect) to enforce authentication.",
+            "DocuSign Connect webhook is UNAUTHENTICATED but ALLOWED (loopback or %s "
+            "opt-in): %s is not set, so the /api/docusign/webhook callback accepts "
+            "any caller and cannot verify that a completion event really came from "
+            "DocuSign. This is for local/demo only; set %s in production.",
+            docusign_connection.ALLOW_UNSIGNED_WEBHOOK_ENV,
             docusign_connection.CONNECT_HMAC_KEY_ENV,
             docusign_connection.CONNECT_HMAC_KEY_ENV,
         )

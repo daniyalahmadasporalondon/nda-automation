@@ -1235,16 +1235,17 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     const semanticSignals = chipList(clause.semantic_signals || [], "semantic-signal");
     return `
       <section class="admin-special" data-dynamic-triggers="1">
-        <h3>Trigger Terms</h3>
-        <p class="admin-muted">Words and phrases that surface this clause to the detector and AI packet. At least one search term is required.</p>
-        <label class="admin-field compact"><span>Search Terms</span></label>
-        <div class="admin-chip-row" data-chip-row="search-term">${searchTerms || '<span class="admin-muted">No search terms yet</span>'}</div>
+        <h3>Trigger Keywords</h3>
+        <p class="admin-muted">Words and phrases that flag this clause for review (used by both the automatic check and the AI). At least one is required.</p>
+        <label class="admin-field compact"><span>Trigger Keywords</span></label>
+        <div class="admin-chip-row" data-chip-row="search-term">${searchTerms || '<span class="admin-muted">No trigger keywords yet</span>'}</div>
         <div class="admin-inline-add">
           <input type="text" id="dynamicSearchTermInput" placeholder="e.g. non-compete">
           <button class="secondary" type="button" id="addDynamicSearchTerm">Add</button>
         </div>
-        <label class="admin-field compact"><span>Semantic Signals (optional)</span></label>
-        <div class="admin-chip-row" data-chip-row="semantic-signal">${semanticSignals || '<span class="admin-muted">No semantic signals yet</span>'}</div>
+        <label class="admin-field compact"><span>AI Context Clues (optional)</span></label>
+        <p class="admin-muted">Context hints that guide the AI's understanding of this clause (optional).</p>
+        <div class="admin-chip-row" data-chip-row="semantic-signal">${semanticSignals || '<span class="admin-muted">No AI context clues yet</span>'}</div>
         <div class="admin-inline-add">
           <input type="text" id="dynamicSemanticSignalInput" placeholder="e.g. restraint on competition">
           <button class="secondary" type="button" id="addDynamicSemanticSignal">Add</button>

@@ -348,7 +348,10 @@ class AdminEntityRouteTests(unittest.TestCase):
 
     def test_admin_save_persists(self):
         entities = [dict(e) for e in entity_registry.list_entities()]
-        entities[0]["jurisdiction"] = "courts in Mysuru, Karnataka"
+        # Use a court the forum bucketer recognizes (same india bucket as the
+        # entity's india governing law) -- the save's candidate-forum reconciliation
+        # now validates the entity being saved, so the city must resolve to a bucket.
+        entities[0]["jurisdiction"] = "courts in Mumbai, Maharashtra"
         handler = _FakeHandler(admin=True, body={"entities": entities})
         with patch("nda_automation.routes.common.request_is_admin", return_value=True):
             entity_routes.handle_admin_signing_entities_save(handler)
@@ -356,7 +359,7 @@ class AdminEntityRouteTests(unittest.TestCase):
         self.assertTrue(handler.response["saved"])
         stored = json.loads(self.store_path.read_text())["entities"]
         first = next(e for e in stored if e["id"] == entities[0]["id"])
-        self.assertEqual(first["jurisdiction"], "courts in Mysuru, Karnataka")
+        self.assertEqual(first["jurisdiction"], "courts in Mumbai, Maharashtra")
 
     def test_admin_save_invalid_law_is_400(self):
         entities = [dict(e) for e in entity_registry.list_entities()]
