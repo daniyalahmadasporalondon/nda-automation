@@ -45,8 +45,20 @@ def _isolated_user_store(tmp_path, monkeypatch):
     monkeypatch.setenv("NDA_USERS_PATH", str(tmp_path / "users.json"))
 
 
+class _FakeServer:
+    """Server double exposing ``server_address`` (bind host/port).
+
+    Defaults to a LOOPBACK bind: these route tests model the trusted local-dev
+    context, under which the unsigned DocuSign webhook is permitted. A public bind
+    with no HMAC key fails CLOSED (covered in test_docusign_webhook_harden).
+    """
+
+    def __init__(self, bind_host="127.0.0.1"):
+        self.server_address = (bind_host, 8788)
+
+
 class _FakeHandler:
-    def __init__(self, repo, *, owner=OWNER, payload=None, path="/", raw_body=b"", headers=None):
+    def __init__(self, repo, *, owner=OWNER, payload=None, path="/", raw_body=b"", headers=None, bind_host="127.0.0.1"):
         self.matter_repository = repo
         self.current_user_id = owner
         self.current_user = {"id": owner, "provider": "google", "email": "u@x.com"}
@@ -54,6 +66,7 @@ class _FakeHandler:
         self.path = path
         self.rfile = io.BytesIO(raw_body)
         self.headers = headers or {"Content-Length": str(len(raw_body)), "Host": "app.test"}
+        self.server = _FakeServer(bind_host)
         self.status = 200
         self.response = None
         self.sent_bytes = None
