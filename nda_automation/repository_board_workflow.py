@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import document_rendering, matter_view, workflow
+from . import document_rendering, matter_store, matter_view, workflow
 from .matter_repository import MatterRepository, MatterRepositoryError
 
 BOARD_COLUMNS = {"gmail_demo", "in_review", "reviewed", "sent"}
@@ -137,4 +137,9 @@ def _not_found() -> RepositoryBoardWorkflowError:
 
 
 def _repository_error(error: MatterRepositoryError) -> RepositoryBoardWorkflowError:
-    return RepositoryBoardWorkflowError(str(error), status=500)
+    # The raw MatterStoreError message can name the <id>.json record file, "not
+    # valid JSON", or the lock-timeout seconds. Return leak-free copy to the
+    # client; the raw error stays as the exception cause for server-side logs.
+    return RepositoryBoardWorkflowError(
+        matter_store.friendly_matter_store_message(error), status=500
+    )

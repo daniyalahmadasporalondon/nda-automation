@@ -20,12 +20,48 @@ background CPU burst, invisibly — now it is a logged phase.
 
 from __future__ import annotations
 
+import logging
+import traceback
 from contextlib import contextmanager
 
 from .. import nda_generation, nda_generation_workflow, telemetry
 from .. import generation_timing
 from ..nda_generation import NdaGenerationError
 from .common import request_owner_user_id
+
+logger = logging.getLogger(__name__)
+
+# Leak-free, user-facing copy. The raw NdaGenerationError message (which can name
+# an entity legal_name, a !r repr, the approved-Playbook-option list, the
+# "Aspora (SECOND party) paragraph", the CI exceptions list, an OS path, etc.) is
+# logged server-side but never returned to the client.
+GENERATION_INPUT_MESSAGE = "Please select a valid signing entity and governing law."
+GENERATION_TEMPLATE_MESSAGE = (
+    "NDA generation is temporarily unavailable due to a template issue. Please contact support."
+)
+GENERATION_UNEXPECTED_MESSAGE = (
+    "NDA generation failed due to an unexpected error. Please try again; if it keeps "
+    "failing, contact support."
+)
+
+
+def _client_generation_message(error: NdaGenerationError) -> str:
+    """Map an NdaGenerationError to leak-free client copy by its category.
+
+    free_text errors carry an already-clean, field-scoped message (rephrase
+    guidance), so they pass through. Everything else is replaced with generic
+    copy so no internal detail (repr / path / Playbook option list / template
+    anatomy) reaches the user.
+    """
+    category = getattr(error, "category", NdaGenerationError.CATEGORY_INPUT)
+    if category == NdaGenerationError.CATEGORY_TEMPLATE:
+        return GENERATION_TEMPLATE_MESSAGE
+    # free_text (already clean, field-scoped guidance) and safety (the existing
+    # "failed the safety gate" refusal, which the FE keys on) pass through; only
+    # the leaky entity/govlaw input + template/config faults are rewritten.
+    if category in (NdaGenerationError.CATEGORY_FREE_TEXT, NdaGenerationError.CATEGORY_SAFETY):
+        return str(error)
+    return GENERATION_INPUT_MESSAGE
 
 # Shared contract (owned by ``nda_automation.generation_priority``): a context
 # manager that marks a foreground generation in-flight for its body so the
@@ -88,18 +124,25 @@ def handle_generate_nda(handler) -> None:
     except NdaGenerationError as error:
         # Unknown entity, unapproved governing law, malformed template, an
         # unsupported posture (one-way) — client-correctable input errors — OR the
-        # hard safety gate refusing an off-position draft. All surface as 400 with a
-        # clear message and NEVER return the document; the safety-gate trip gets its
-        # own telemetry signal so a drifting AI is visible in the metrics.
+        # hard safety gate refusing an off-position draft. All surface as 400 and
+        # NEVER return the document; the safety-gate trip gets its own telemetry
+        # signal so a drifting AI is visible in the metrics. The raw message can leak
+        # an entity legal_name, a !r repr, the approved-Playbook-option list, the
+        # template anatomy, or an OS path, so it is LOGGED server-side and the client
+        # gets generic, category-mapped copy instead.
         if str(error).startswith(nda_generation.SAFETY_GATE_MESSAGE):
             telemetry.increment("generate_nda_safety_gate_blocked")
         else:
             telemetry.increment("generate_nda_rejected")
-        handler._send_json({"error": str(error)}, status=400)
+        logger.warning("NDA generation rejected (%s): %s", getattr(error, "category", "input"), error)
+        handler._send_json({"error": _client_generation_message(error)}, status=400)
         return
-    except Exception as error:  # noqa: BLE001 - surface engine failure as 500, don't leak a stack
+    except Exception:  # noqa: BLE001 - surface engine failure as 500, don't leak a stack
+        # Unexpected engine fault. Log the full traceback server-side for diagnosis;
+        # the client gets generic copy with no exception text / stack / path.
         telemetry.increment("generate_nda_failed")
-        handler._send_json({"error": f"NDA generation failed: {error}"}, status=500)
+        logger.error("NDA generation failed unexpectedly:\n%s", traceback.format_exc())
+        handler._send_json({"error": GENERATION_UNEXPECTED_MESSAGE}, status=500)
         return
 
     telemetry.increment("generate_nda_succeeded")

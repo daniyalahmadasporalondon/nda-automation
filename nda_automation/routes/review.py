@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from urllib.parse import quote
 
 from .. import redline_export_service, telemetry
@@ -22,6 +23,8 @@ from ..matter_repository import DiskMatterRepository, MatterRepository
 from ..pdf_text import PdfExtractionError
 from ..review_engine import ActiveReviewEngineError
 from .common import request_owner_user_id
+
+logger = logging.getLogger(__name__)
 
 
 def handle_text_review(handler, *, review_nda_func=review_nda) -> None:
@@ -170,10 +173,12 @@ def handle_review_docx_export(handler) -> None:
         else:
             redline_export = redline_export_service.build_review_export(payload, export_text, title=title)
     except redline_export_service.DocxOpenHealthError as error:
-        handler._send_json({
-            "error": str(error),
-            "details": error.details,
-        }, status=500)
+        # Drop the OOXML internals (error.details, e.g. "document.xml is missing
+        # w:body") from the response — log them server-side and show generic copy.
+        logger.error("Reviewed DOCX failed integrity check: %s | details=%s", error, error.details)
+        handler._send_json(
+            {"error": redline_export_service.DOCX_HEALTH_CLIENT_MESSAGE}, status=500
+        )
         return
     except redline_export_service.MatterSourceTextChangedError as error:
         handler._send_json({"error": str(error)}, status=409)

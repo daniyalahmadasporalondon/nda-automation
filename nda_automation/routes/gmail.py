@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
@@ -22,6 +23,8 @@ from ..matter_lifecycle import (
 )
 from ..matter_repository import DiskMatterRepository
 from .common import request_owner_user_id
+
+logger = logging.getLogger(__name__)
 
 MAX_OUTBOUND_SUBJECT_CHARS = 240
 MAX_OUTBOUND_BODY_CHARS = 10_000
@@ -361,7 +364,9 @@ def handle_gmail_send_redline(handler) -> None:
         handler._send_json({"error": str(error)}, status=404)
         return
     except redline_export_service.DocxOpenHealthError as error:
-        handler._send_json({"error": str(error), "details": error.details}, status=500)
+        # Drop the OOXML internals (error.details) from the response; log them.
+        logger.error("Reviewed DOCX failed integrity check (gmail send): %s | details=%s", error, error.details)
+        handler._send_json({"error": redline_export_service.DOCX_HEALTH_CLIENT_MESSAGE}, status=500)
         return
     except redline_export_service.MatterSourceTextChangedError as error:
         handler._send_json({"error": str(error)}, status=409)
