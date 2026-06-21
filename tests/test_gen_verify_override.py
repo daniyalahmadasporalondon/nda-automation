@@ -23,6 +23,7 @@ from nda_automation.docx_text import extract_docx_text
 
 from tests.gen_verify_harness import (
     VerificationReport,
+    _law_phrase_for_value,
     check_governing_law,
     expectations_from_registry,
     gov_law_override_from_manifest,
@@ -133,7 +134,10 @@ def test_every_approved_override_law_is_clean_through_generation_self_check_and_
 
         assert result.manifest.governing_law_option_id == option["id"]
         assert result.manifest.governing_law_value == option["value"]
-        assert option["value"] in text
+        # The draft renders the Playbook's legally-correct law PHRASE (DIFC->"the
+        # DIFC", Ontario->the full Canadian phrase), not necessarily the raw value.
+        expected_phrase = _law_phrase_for_value(option["value"])
+        assert expected_phrase in text
         assert check.passed, (option["id"], check.native_failures, check.native_reviews)
         assert _findings(report, "law.override_mismatch") == []
         assert _findings(report, "law.entity_mismatch") == []
