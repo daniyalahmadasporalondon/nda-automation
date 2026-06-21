@@ -19,6 +19,65 @@ function setupReviewUndoControls() {
   updateReviewUndoButtonState();
 }
 
+// Apply a programmatic Find & Replace text change to one review paragraph. Reuses the
+// shared formatting-preserving re-tile (findReplace._retileRunsForReplace) so inline
+// run formatting around the replaced span survives, records an Undo entry, and routes
+// the edit through the SAME source-sync + dirty + render hooks a typed edit uses so it
+// rides the existing manual-redline export with no new serializer op.
+function applyReviewFindReplace(paragraph, newText, oldText) {
+  if (!paragraph) return;
+  const before = oldText !== undefined ? String(oldText) : String(paragraph.text || "");
+  if (before === newText) return;
+  // Capture the inline runs BEFORE the retile so Undo can restore the original
+  // bold/italic/per-run-font tiling. A plain paragraph_text undo only restores
+  // text and would leave the runs tiling the post-replace text -> formatting lost.
+  // Mirrors the hadRuns/previousRuns shape pushParagraphFormatHistory uses; runs
+  // are deep-copied so a later mutation can't corrupt the captured undo state.
+  const hadRuns = Object.prototype.hasOwnProperty.call(paragraph, "runs") && Array.isArray(paragraph.runs);
+  pushReviewEditHistoryEntry({
+    paragraphId: paragraph.id,
+    previousText: before,
+    type: "paragraph_text",
+    hadRuns,
+    previousRuns: hadRuns ? paragraph.runs.map((run) => ({ ...run })) : undefined,
+  });
+  if (window.findReplace && typeof window.findReplace._retileRunsForReplace === "function") {
+    const retiled = window.findReplace._retileRunsForReplace(paragraph.runs, before, newText);
+    if (retiled) paragraph.runs = retiled;
+    // When nothing was worth preserving the runs go inert via the join==text guards
+    // (same as a typed edit), so the paragraph renders as clean replaced text.
+  }
+  paragraph.text = newText;
+  paragraph.clauseRedlineWholeParagraph = false; // text changed -> word-level diff
+}
+
+// Re-sync + re-render once after a batch of Find & Replace edits, mirroring the
+// post-edit bookkeeping syncViewerParagraphEdit does (source rebuild, dirty marker,
+// re-render, staleness flag, export button) but only ONCE for the whole batch.
+function afterReviewFindReplaceBatch() {
+  syncReviewSourceFromParagraphs();
+  markRedlineDraftDirty();
+  markSourceEdited("Find & Replace", { preserveSourceDocument: true });
+  renderStudioDocumentHighlights();
+  scheduleViewerReviewRefresh("Document edited");
+  markReviewMayBeStaleFromEdit();
+  updateExportButtonState();
+}
+
+function setupReviewFindReplace() {
+  if (!window.findReplace || typeof window.findReplace.register !== "function") return;
+  window.findReplace.register("review", {
+    paragraphs: () => state.reviewParagraphs || [],
+    getRenderEl: () => studioDocumentRender,
+    getPanelHost: () => studioDocumentRender?.closest(".studio-page") || studioDocumentRender,
+    applyReplacement: applyReviewFindReplace,
+    afterBatch: afterReviewFindReplaceBatch,
+  });
+  // Toolbar trigger (additive button; co-exists with the other editor toolbar work).
+  const button = document.getElementById("studioFindReplaceButton");
+  if (button) button.addEventListener("click", () => window.findReplace.open("review"));
+}
+
 function updateReviewUndoButtonState() {
   if (!studioUndoEditButton) return;
   studioUndoEditButton.disabled = !(state.reviewEditHistory || []).length;
@@ -175,6 +234,16 @@ function undoLastViewerEdit() {
   }
 
   paragraph.text = lastEdit.previousText;
+  // A Find & Replace entry also captured the pre-retile runs (hadRuns); restore
+  // them so inline bold/italic/per-run font survives the undo. A normal typed edit
+  // carries no captured runs and has always relied on the retile-from-text guards,
+  // so leave its runs untouched. Deep-copy to keep the undo state immutable; after
+  // this the runs.join("") === text invariant holds again.
+  if (lastEdit.hadRuns) {
+    paragraph.runs = Array.isArray(lastEdit.previousRuns)
+      ? lastEdit.previousRuns.map((run) => ({ ...run }))
+      : [];
+  }
   syncReviewSourceFromParagraphs();
   markRedlineDraftDirty();
   markSourceEdited("Undid viewer edit", { preserveSourceDocument: true });

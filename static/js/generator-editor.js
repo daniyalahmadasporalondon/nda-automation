@@ -906,6 +906,8 @@ window.generatorEditor = (function () {
     if (clearBtn) clearBtn.onclick = () => clearFormatting();
     const undoBtn = document.getElementById(TOOLBAR.undo);
     if (undoBtn) undoBtn.onclick = () => undo();
+    const findBtn = document.getElementById("genFindReplaceButton");
+    if (findBtn) findBtn.onclick = () => window.findReplace && window.findReplace.open("generator");
     ALIGN_BUTTONS.forEach(([id, alignment]) => {
       const button = document.getElementById(id);
       if (button) button.onclick = () => applyAlignment(alignment);
@@ -1098,10 +1100,51 @@ window.generatorEditor = (function () {
     return res.blob();
   }
 
+  // ---- Find & Replace integration ----------------------------------------
+  // Apply a programmatic text replacement to a single paragraph, reusing the SAME
+  // run-retile path a keystroke edit uses (retileRuns) so formatting around the
+  // replaced span survives and the change rides the existing clean export. Records
+  // one Undo entry per paragraph so a replace is reversible.
+  function applyFindReplace(paragraph, newText, oldText) {
+    if (!paragraph) return;
+    const before = oldText !== undefined ? String(oldText) : String(paragraph.text || "");
+    if (before === newText) return;
+    pushHistory(paragraph);
+    const retiled = retileRuns(paragraph.runs, before, newText);
+    paragraph.text = newText;
+    if (retiled) paragraph.runs = retiled; else delete paragraph.runs;
+    markTouched();
+  }
+
+  // Register the generator editor with the shared Find & Replace panel so Ctrl/Cmd+F
+  // (or the toolbar button) opens it over THIS editor when the Generator tab is shown.
+  function registerFindReplace() {
+    if (!window.findReplace || typeof window.findReplace.register !== "function") return;
+    window.findReplace.register("generator", {
+      paragraphs,
+      getRenderEl: renderEl,
+      getPanelHost: () => document.getElementById("generatorEditor") || renderEl(),
+      applyReplacement: applyFindReplace,
+      // Re-render once after a batch of replacements so the document reflects them and
+      // export state refreshes (a single render is cheaper than per-occurrence).
+      afterBatch: () => { render(); },
+    });
+  }
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", registerFindReplace);
+    } else {
+      registerFindReplace();
+    }
+  }
+
   return {
     showDraft, load, clear, isActive, edits, undo, render, hasEdits, exportCleanDocx,
+    open: () => window.findReplace && window.findReplace.open("generator"),
     // Test seam: re-tiling logic is pure (old runs + old/new text -> new runs), so it
     // can be verified directly without simulating typing/caret in a headless preview.
     _retileRuns: retileRuns,
+    _applyFindReplace: applyFindReplace,
+    _registerFindReplace: registerFindReplace,
   };
 })();

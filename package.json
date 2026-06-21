@@ -17,7 +17,8 @@
     "test:frontend:shimmer": "node tests/frontend/shimmer-skeletons.cjs",
     "test:frontend:format-run-props": "node tests/frontend/format-toolbar-run-props.cjs",
     "test:frontend:generator-format-extras": "node tests/frontend/generator-format-extras.cjs",
-    "test:frontend:editor-format": "node tests/frontend/format-toolbar-run-props.cjs && node tests/frontend/generator-format-extras.cjs"
+    "test:frontend:editor-format": "node tests/frontend/format-toolbar-run-props.cjs && node tests/frontend/generator-format-extras.cjs",
+    "test:frontend:find-replace": "node tests/frontend/find-replace.cjs"
   },
   "devDependencies": {
     "playwright": "^1.52.0",
