@@ -5,6 +5,7 @@
     "test:frontend": "node tests/frontend/review-workstation.cjs",
     "test:frontend:utils": "node tests/frontend/utility-modules.mjs",
     "test:frontend:structure": "node tests/frontend/contract-structure-view.mjs",
+    "test:frontend:humanize": "node tests/frontend/review-workstation-humanize.mjs",
     "test:frontend:corpus": "node tests/frontend/corpus-model.cjs",
     "test:frontend:counterparty": "node tests/frontend/counterparty-confirmation.cjs",
     "test:frontend:docusign": "node tests/frontend/docusign-model.mjs",

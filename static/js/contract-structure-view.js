@@ -540,6 +540,28 @@ function createContractStructureController({ state, root }) {
     return sections.filter((section) => section.source && typeof section.source === "object").length;
   }
 
+  // Plain-English maps for the parser-internal source tokens. The backend emits
+  // raw enums (source_part = header|footer|footnotes|...; source_kind =
+  // paragraph|table_cell|docx_heading|...) that mean nothing to a reviewer. We
+  // surface the human phrase, and humanize (never echo a raw `Source <token>`)
+  // for any token the map does not cover.
+  const SOURCE_PART_LABELS = {
+    header: "From header",
+    footer: "From footer",
+    footnotes: "From footnotes",
+    endnotes: "From endnotes",
+    pdf: "From PDF text",
+  };
+  const SOURCE_KIND_LABELS = {
+    paragraph: "Main body",
+    table_cell: "In a table",
+    supplemental: "Supplemental text",
+    docx: "Word document",
+    pdf: "PDF text",
+    docx_heading: "Word heading",
+    pdf_text: "PDF text",
+  };
+
   function sourceSummary(source) {
     if (!source || typeof source !== "object") return "";
     if (source.numbering?.label) return `Word number ${source.numbering.label}`;
@@ -551,8 +573,29 @@ function createContractStructureController({ state, root }) {
       const table = source.table;
       return `Table ${table.table_index || "?"}, row ${table.row_index || "?"}, cell ${table.cell_index || "?"}`;
     }
-    if (source.source_part) return `Source ${source.source_part}`;
-    return source.source_kind ? `Source ${source.source_kind}` : "";
+    if (source.source_part) {
+      const key = String(source.source_part).toLowerCase();
+      return SOURCE_PART_LABELS[key] || humanizeStructureToken(source.source_part);
+    }
+    if (source.source_kind) {
+      const key = String(source.source_kind).toLowerCase();
+      return SOURCE_KIND_LABELS[key] || humanizeStructureToken(source.source_kind);
+    }
+    return "";
+  }
+
+  // Generic snake/kebab token -> Title Case fallback. Prefers the shared
+  // window.humanizeId when present, so unknown enums read like English ("In a
+  // table") instead of leaking the raw token ("Source table_cell").
+  function humanizeStructureToken(token) {
+    const generic = (typeof window !== "undefined" && typeof window.humanizeId === "function")
+      ? window.humanizeId
+      : null;
+    if (generic) return generic(token);
+    return String(token || "")
+      .replace(/[_-]+/g, " ")
+      .replace(/\b\w/g, (character) => character.toUpperCase())
+      .trim();
   }
 
   function paragraphRangeLabel(section) {
@@ -589,7 +632,12 @@ function createContractStructureController({ state, root }) {
   }
 
   function confidenceLabel(confidence) {
-    return `${confidence || "unknown"} confidence`;
+    const labels = {
+      high: "High confidence",
+      medium: "Medium confidence",
+      low: "Low confidence",
+    };
+    return labels[String(confidence || "").toLowerCase()] || "Confidence unknown";
   }
 
   // Friendly label for a cross-reference's resolution status. The backend
