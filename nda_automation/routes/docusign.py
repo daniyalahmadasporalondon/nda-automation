@@ -267,7 +267,7 @@ def handle_send_for_signature(handler, path: str) -> None:
     """
     matter_id = parse_matter_id(path, suffix="/send-for-signature")
     if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
     payload = handler._read_json_payload()
     if payload is None:
@@ -277,7 +277,7 @@ def handle_send_for_signature(handler, path: str) -> None:
     repository = _repository(handler)
     matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
 
     # #30 (defense-in-depth): refuse a SECOND send when the matter already carries
@@ -352,13 +352,13 @@ def handle_signature_status(handler, path: str, *, send_body: bool = True) -> No
     """GET /api/matters/<id>/signature-status — current envelope status (live sync)."""
     matter_id = parse_matter_id(path, suffix="/signature-status")
     if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
         return
     owner_user_id = request_owner_user_id(handler)
     repository = _repository(handler)
     matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
         return
 
     try:
@@ -419,13 +419,13 @@ def handle_signed_document(handler, path: str, *, send_body: bool = True) -> Non
     """
     matter_id = parse_matter_id(path, suffix="/signed-document")
     if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
         return
     owner_user_id = request_owner_user_id(handler)
     repository = _repository(handler)
     matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
         return
 
     pdf_bytes = _signed_artifact_bytes(matter, matter_id, owner_user_id, repository)
@@ -446,7 +446,7 @@ def handle_signed_document(handler, path: str, *, send_body: bool = True) -> Non
 
     if not pdf_bytes:
         handler._send_json(
-            {"error": "No executed document is available for this matter yet."},
+            {"error": "No executed document is available for this NDA yet."},
             status=404,
             send_body=send_body,
         )

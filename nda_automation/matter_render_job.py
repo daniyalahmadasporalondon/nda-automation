@@ -19,7 +19,7 @@ class MatterRenderJobError(RuntimeError):
         status: int = 400,
         headers: dict[str, str] | None = None,
     ) -> None:
-        super().__init__(str(payload.get("error") or "Matter render job failed."))
+        super().__init__(str(payload.get("error") or "NDA render job failed."))
         self.payload = payload
         self.status = status
         self.headers = headers or {}
@@ -136,7 +136,7 @@ def render_page_image_file(
     if page_manifest.status != document_rendering.READY_STATUS:
         raise MatterRenderJobError(
             {
-                "error": page_manifest.error_message or "Rendered page image is not available for this matter.",
+                "error": page_manifest.error_message or "Rendered page image is not available for this NDA.",
                 "document_render": public_document_render(
                     matter_id or "",
                     rendered,
@@ -173,20 +173,20 @@ def resolve_matter_source(
     repository: MatterRepository | None = None,
 ) -> MatterRenderSource:
     if matter_id is None:
-        raise MatterRenderJobError({"error": "Matter not found."}, status=404)
+        raise MatterRenderJobError({"error": "NDA not found."}, status=404)
     repository = repository or DiskMatterRepository()
     try:
         matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
     except MatterRepositoryError as error:
         raise MatterRenderJobError({"error": str(error)}, status=500) from error
     if matter is None:
-        raise MatterRenderJobError({"error": "Matter not found."}, status=404)
+        raise MatterRenderJobError({"error": "NDA not found."}, status=404)
     try:
         source_bytes = repository.get_source_document_bytes(matter)
     except MatterRepositoryError as error:
         raise MatterRenderJobError({"error": str(error)}, status=500) from error
     if source_bytes is None:
-        raise MatterRenderJobError({"error": "No source document for this matter."}, status=404)
+        raise MatterRenderJobError({"error": "No source document for this NDA."}, status=404)
     source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "")
     return MatterRenderSource(
         matter=matter,

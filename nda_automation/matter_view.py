@@ -217,13 +217,13 @@ def public_matter(
     send_block_reason = ""
     if recipient and _same_email_address(recipient, str(matter.get("gmail_account") or "")):
         send_block_reason = (
-            "Matter appears to be an outbound or self-sent Gmail message; refusing to send a redline "
+            "NDA appears to be an outbound or self-sent Gmail message; refusing to send a redline "
             f"back to {recipient}."
         )
     elif blocks_send:
-        send_block_reason = "Matter needs human review before a redline can be sent."
+        send_block_reason = "NDA needs human review before a redline can be sent."
     elif not recipient:
-        send_block_reason = "Matter does not have a valid reply recipient email address."
+        send_block_reason = "NDA does not have a valid reply recipient email address."
     public = {
         key: value
         for key, value in matter.items()

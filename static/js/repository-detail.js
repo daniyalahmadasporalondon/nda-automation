@@ -39,7 +39,7 @@ const RepositoryDetail = (() => {
     const confirmingSend = pendingSendMatterId === matter.id;
     repositoryMatterPanel.hidden = false;
     repositoryWorkspace?.classList.remove("detail-open");
-    repositoryMatterPanel.setAttribute("aria-label", `Matter inspector for ${fileName}`);
+    repositoryMatterPanel.setAttribute("aria-label", `NDA inspector for ${fileName}`);
     repositoryMatterPanel.innerHTML = `
       <section class="repository-inspector-dialog" aria-labelledby="repositoryInspectorTitle">
         <header class="repository-detail-head">
@@ -50,11 +50,11 @@ const RepositoryDetail = (() => {
               <h2 id="repositoryInspectorTitle">${escapeHtml(fileName)}</h2>
             </div>
           </div>
-          <button class="repository-detail-close" type="button" aria-label="Close matter inspector">x</button>
+          <button class="repository-detail-close" type="button" aria-label="Close NDA inspector">x</button>
         </header>
 
         <div class="repository-inspector-body">
-          <section class="repository-inspector-main" aria-label="Matter review details">
+          <section class="repository-inspector-main" aria-label="NDA review details">
             ${MatterUtils.reviewStale(matter) ? `
             <section class="repository-stale-notice" role="status">
               <span class="repository-stale-badge">Stale</span>
@@ -110,7 +110,7 @@ const RepositoryDetail = (() => {
             })}
           </section>
 
-          <aside class="repository-inspector-side" aria-label="Matter routing and timeline">
+          <aside class="repository-inspector-side" aria-label="NDA routing and timeline">
             <section class="repository-inspector-section">
               <p class="repository-inspector-section-title">Gmail Routing</p>
               <dl class="repository-detail-email">
@@ -133,7 +133,7 @@ const RepositoryDetail = (() => {
             </section>
 
             <section class="repository-inspector-section">
-              <p class="repository-inspector-section-title">Matter Timeline</p>
+              <p class="repository-inspector-section-title">NDA Timeline</p>
               ${renderMatterTimeline(matter)}
             </section>
 
@@ -178,7 +178,7 @@ const RepositoryDetail = (() => {
     if (!repositoryMatterPanel) return;
     repositoryWorkspace?.classList.remove("detail-open");
     repositoryMatterPanel.hidden = true;
-    repositoryMatterPanel.innerHTML = '<div class="repository-detail-empty">Select a matter</div>';
+    repositoryMatterPanel.innerHTML = '<div class="repository-detail-empty">Select an NDA</div>';
   }
 
   function setPanelMessage(repositoryMatterPanel, message) {
@@ -224,7 +224,7 @@ const RepositoryDetail = (() => {
     return `
       <section class="repository-inspector-section repository-drive-section">
         <p class="repository-inspector-section-title">Google Drive</p>
-        <a class="repository-detail-link repository-drive-folder-link" href="${escapeHtml(folderUrl)}" target="_blank" rel="noopener">Open matter folder</a>
+        <a class="repository-detail-link repository-drive-folder-link" href="${escapeHtml(folderUrl)}" target="_blank" rel="noopener">Open NDA folder</a>
       </section>
     `;
   }
@@ -365,7 +365,7 @@ const RepositoryDetail = (() => {
     }
     if (matter.has_redline_draft) {
       events.push({
-        detail: "Custom redline decisions are saved for this matter.",
+        detail: "Custom redline decisions are saved for this NDA.",
         meta: RepositoryModel.formatMatterDateTime(matter.updated_at) || "-",
         title: "Redline draft saved",
       });
@@ -378,7 +378,7 @@ const RepositoryDetail = (() => {
       });
     }
     events.push({
-      detail: matter.next_action || "Review matter and decide next step.",
+      detail: matter.next_action || "Review NDA and decide next step.",
       meta: RepositoryModel.boardColumnLabel(matter.board_column),
       title: "Current next action",
     });

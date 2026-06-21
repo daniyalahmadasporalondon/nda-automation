@@ -459,7 +459,7 @@ def _intake_status(matter: Dict[str, Any]) -> str:
 
 def _next_action_for(status: str, matter: Dict[str, Any]) -> Dict[str, Any]:
     label, owner, blocked = _NEXT_ACTION_BY_STATUS.get(
-        status, ("Review matter", OWNER_HUMAN, False)
+        status, ("Review NDA", OWNER_HUMAN, False)
     )
     return {"label": label, "owner": owner, "blocked": blocked}
 
@@ -474,9 +474,9 @@ _NEXT_ACTION_BY_STATUS: Dict[str, tuple[str, str, bool]] = {
     STATUS_RENDERING: ("Rendering document", OWNER_SYSTEM, False),
     STATUS_AI_REVIEWING: ("AI review in progress", OWNER_SYSTEM, False),
     STATUS_AWAITING_HUMAN: ("Resolve flagged clauses", OWNER_HUMAN, True),
-    STATUS_AUTO_CLEARED: ("Approve matter", OWNER_HUMAN, False),
+    STATUS_AUTO_CLEARED: ("Approve NDA", OWNER_HUMAN, False),
     STATUS_REVIEW_FAILED: ("Re-run review (review failed)", OWNER_HUMAN, True),
-    STATUS_AWAITING_APPROVAL: ("Approve matter", OWNER_HUMAN, False),
+    STATUS_AWAITING_APPROVAL: ("Approve NDA", OWNER_HUMAN, False),
     STATUS_APPROVAL_BLOCKED: ("Resolve approval blockers", OWNER_HUMAN, True),
     STATUS_APPROVED: ("Send redline to counterparty", OWNER_HUMAN, False),
     STATUS_SENDING: ("Sending redline", OWNER_SYSTEM, False),
@@ -489,7 +489,7 @@ _NEXT_ACTION_BY_STATUS: Dict[str, tuple[str, str, bool]] = {
     STATUS_SIGNATURE_VOIDED: ("Re-send for signature", OWNER_HUMAN, False),
     STATUS_COUNTER_RECEIVED: ("Triage counterparty changes", OWNER_HUMAN, False),
     STATUS_RE_REVIEWING: ("Re-reviewing counterparty changes", OWNER_SYSTEM, False),
-    STATUS_FULLY_SIGNED: ("Matter executed", OWNER_HUMAN, False),
+    STATUS_FULLY_SIGNED: ("NDA executed", OWNER_HUMAN, False),
 }
 
 
@@ -608,7 +608,7 @@ def _attention_reason(error: Dict[str, Any]) -> str:
     code = str(error.get("code") or "").strip()
     if code:
         return code
-    return "A processing step failed; this matter needs attention."
+    return "A processing step failed; this NDA needs attention."
 
 
 def _phase_marker(matter: Dict[str, Any]) -> str:

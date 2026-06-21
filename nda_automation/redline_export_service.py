@@ -295,23 +295,23 @@ def _review_result_for_export(
     if isinstance(matter_id, str) and matter_id.strip():
         matter = repository.get_matter(matter_id.strip(), owner_user_id=owner_user_id)
         if matter is None:
-            raise MatterNotFoundError("Matter not found.")
+            raise MatterNotFoundError("NDA not found.")
         review_result = matter.get("review_result")
         if not isinstance(review_result, dict):
-            raise DocxExtractionError("Matter does not have a stored review result.")
+            raise DocxExtractionError("NDA does not have a stored review result.")
         staleness = review_result_staleness(review_result)
         if staleness["stale"]:
             raise StaleMatterReviewError(staleness)
         source_document_bytes = repository.get_source_document_bytes(matter)
         source_filename = str(matter.get("source_filename") or "")
         if source_document_bytes is None:
-            raise DocxExtractionError("Matter source document is missing from storage.")
+            raise DocxExtractionError("NDA source document is missing from storage.")
         _apply_saved_redline_draft(payload, matter)
         submitted_text = _submitted_matter_source_text(payload)
         if _matter_source_text_changed(submitted_text, matter, review_result):
             if not _has_manual_redline_payload(payload):
                 raise MatterSourceTextChangedError(
-                    "Matter source text was edited after the source document was ingested. "
+                    "NDA source text was edited after the source document was ingested. "
                     "Export or send after those viewer edits are represented as manual redlines."
                 )
             review_result = review_nda(submitted_text)

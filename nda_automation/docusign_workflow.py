@@ -289,7 +289,7 @@ def sync_signature_status(
 
     signature = matter.get(SIGNATURE_FIELD)
     if not isinstance(signature, dict) or not signature.get("envelope_id"):
-        raise DocuSignWorkflowError("Matter has no DocuSign envelope to sync.")
+        raise DocuSignWorkflowError("NDA has no DocuSign envelope to sync.")
     envelope_id = str(signature.get("envelope_id") or "")
 
     docusign_client = _client(client, client_factory, owner_user_id)
@@ -465,7 +465,7 @@ def _resolve_signable_document(
         source_bytes = repository.get_source_document_bytes(matter)
         source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "NDA.docx")
         if not source_bytes:
-            raise NoSignableDocumentError("Matter has no finalized NDA document to send for signature.")
+            raise NoSignableDocumentError("This NDA has no finalized document to send for signature.")
         return _as_pdf(source_bytes, source_filename, owner_user_id)
 
     ext = (artifact.ext or "").lower()
@@ -624,7 +624,7 @@ def _resolve_signers(matter: dict[str, Any], override: Any | None) -> list[Any]:
     if not signers:
         raise SignerResolutionError(
             "Could not resolve any signers; provide signers explicitly "
-            "({name, email}) to send this matter for signature."
+            "({name, email}) to send this NDA for signature."
         )
 
     if generated:
@@ -912,7 +912,7 @@ def _load_matter(
         return matter
     loaded = repository.get_matter(matter_id, owner_user_id=owner_user_id)
     if loaded is None:
-        raise MatterNotFoundError("Matter not found.")
+        raise MatterNotFoundError("NDA not found.")
     return loaded
 
 

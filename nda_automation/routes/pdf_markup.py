@@ -63,14 +63,14 @@ def _request_author(handler) -> str:
 def handle_pdf_annotations_list(handler, path: str, *, send_body: bool = True) -> None:
     matter_id = parse_matter_id(path, suffix=_ANNOTATIONS_SUFFIX)
     if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
         return
 
     owner_user_id = request_owner_user_id(handler)
     repository = _repository(handler)
     matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
         return
 
     handler._send_json({"annotations": _stored_annotations(matter)}, send_body=send_body)
@@ -79,7 +79,7 @@ def handle_pdf_annotations_list(handler, path: str, *, send_body: bool = True) -
 def handle_pdf_annotation_create(handler, path: str) -> None:
     matter_id = parse_matter_id(path, suffix=_ANNOTATIONS_SUFFIX)
     if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
 
     payload = handler._read_json_payload()
@@ -90,7 +90,7 @@ def handle_pdf_annotation_create(handler, path: str) -> None:
     repository = _repository(handler)
     matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
 
     try:
@@ -121,7 +121,7 @@ def handle_pdf_annotation_create(handler, path: str) -> None:
         matter_id, {"pdf_annotations": updated_list}, owner_user_id=owner_user_id
     )
     if updated_matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
 
     telemetry.increment("pdf_annotation_added")
@@ -131,7 +131,7 @@ def handle_pdf_annotation_create(handler, path: str) -> None:
 def handle_pdf_annotation_delete(handler, path: str) -> None:
     parsed = parse_annotation_delete_path(path)
     if parsed is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
     matter_id, annotation_id = parsed
 
@@ -139,7 +139,7 @@ def handle_pdf_annotation_delete(handler, path: str) -> None:
     repository = _repository(handler)
     matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
 
     existing = _stored_annotations(matter)
@@ -152,7 +152,7 @@ def handle_pdf_annotation_delete(handler, path: str) -> None:
         matter_id, {"pdf_annotations": remaining}, owner_user_id=owner_user_id
     )
     if updated_matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
 
     telemetry.increment("pdf_annotation_deleted")
@@ -162,7 +162,7 @@ def handle_pdf_annotation_delete(handler, path: str) -> None:
 def handle_marked_up_pdf(handler, path: str, *, send_body: bool = True) -> None:
     matter_id = parse_matter_id(path, suffix="/marked-up-pdf")
     if matter_id is None:
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
         return
 
     telemetry.increment("marked_up_pdf_export_requests")
@@ -171,14 +171,14 @@ def handle_marked_up_pdf(handler, path: str, *, send_body: bool = True) -> None:
     matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
         telemetry.increment("marked_up_pdf_export_failed")
-        handler._send_json({"error": "Matter not found."}, status=404, send_body=send_body)
+        handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
         return
 
     source_filename = str(matter.get("source_filename") or "")
     if not source_filename.lower().endswith(".pdf"):
         telemetry.increment("marked_up_pdf_export_failed")
         handler._send_json(
-            {"error": "Marked-up PDF is available only for PDF matters."},
+            {"error": "Marked-up PDF is available only for PDF NDAs."},
             status=400,
             send_body=send_body,
         )
@@ -188,7 +188,7 @@ def handle_marked_up_pdf(handler, path: str, *, send_body: bool = True) -> None:
     if source_bytes is None:
         telemetry.increment("marked_up_pdf_export_failed")
         handler._send_json(
-            {"error": "Matter source PDF is missing from storage."},
+            {"error": "NDA source PDF is missing from storage."},
             status=400,
             send_body=send_body,
         )

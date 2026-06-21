@@ -555,7 +555,7 @@ assert.equal(ReviewWorkstationModel.gmailSendReadiness({
   blockedLabel: "Needs Review",
   canExport: true,
   hasSendableMatter: true,
-  sendBlockReason: "Matter needs human review before a redline can be sent.",
+  sendBlockReason: "NDA needs human review before a redline can be sent.",
 }).label, "Needs Review");
 assert.deepEqual(ReviewWorkstationModel.gmailSendReadiness({
   canExport: true,
@@ -683,8 +683,8 @@ const matter = {
 };
 assert.equal(needsHumanReview(matter), true);
 assert.equal(MatterUtils.recipientEmail(matter), "sender@example.com");
-assert.equal(gmailSendBlock(matter), "Matter needs human review before a redline can be sent.");
-assert.equal(gmailSendButtonLabel("Matter needs human review before a redline can be sent."), "Needs Review");
+assert.equal(gmailSendBlock(matter), "NDA needs human review before a redline can be sent.");
+assert.equal(gmailSendButtonLabel("NDA needs human review before a redline can be sent."), "Needs Review");
 assert.equal(counterpartyEmail({
   gmail_account: "me@example.com",
   sender: "Me <me@example.com>",

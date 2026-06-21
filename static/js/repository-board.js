@@ -222,11 +222,11 @@ const RepositoryBoard = (() => {
       ? `<span class="repository-review-badge reviewing" aria-busy="true" title="An AI review is running on this NDA in the background.">Reviewing…</span>`
       : aiReviewRan
         ? `<span class="repository-review-badge reviewed" title="An AI review has been run on this NDA.">AI reviewed</span>`
-        : `<span class="repository-review-badge pending" title="No AI review has run on this NDA yet. Open the matter to review it.">Not reviewed</span>`;
+        : `<span class="repository-review-badge pending" title="No AI review has run on this NDA yet. Open the NDA to review it.">Not reviewed</span>`;
     const date = RepositoryModel.formatMatterDate(matter.received_at || matter.created_at);
     const confirmingDelete = Boolean(options.confirmingDelete);
     return `
-      <article class="repository-card ${confirmingDelete ? "deleting" : ""}" role="button" tabindex="0" data-matter-id="${html(matter.id)}" aria-label="Open matter ${html(RepositoryModel.matterSubject(matter))}">
+      <article class="repository-card ${confirmingDelete ? "deleting" : ""}" role="button" tabindex="0" data-matter-id="${html(matter.id)}" aria-label="Open NDA ${html(RepositoryModel.matterSubject(matter))}">
         <span class="repository-card-top">
           <span class="repository-card-badges">
             <span class="repository-source-badge ${html(RepositoryModel.sourceBadgeClass(matter.source_type))}">${html(RepositoryModel.sourceTypeLabel(matter.source_type))}</span>
@@ -235,7 +235,7 @@ const RepositoryBoard = (() => {
           </span>
           <span class="repository-card-top-actions">
             <span>${html(date)}</span>
-            <button class="repository-card-delete" type="button" data-delete-matter-id="${html(matter.id)}" aria-label="Delete matter" title="Delete matter" aria-expanded="${confirmingDelete ? "true" : "false"}">x</button>
+            <button class="repository-card-delete" type="button" data-delete-matter-id="${html(matter.id)}" aria-label="Delete NDA" title="Delete NDA" aria-expanded="${confirmingDelete ? "true" : "false"}">x</button>
           </span>
         </span>
         <strong>${html(RepositoryModel.matterSubject(matter))}</strong>
@@ -254,11 +254,11 @@ const RepositoryBoard = (() => {
   function renderMatterDeleteConfirmation(matter) {
     const matterId = html(matter.id);
     return `
-      <div class="repository-delete-confirmation" role="group" aria-label="Delete matter confirmation" data-delete-confirmation-id="${matterId}">
-        <span>Delete matter and stored document?</span>
+      <div class="repository-delete-confirmation" role="group" aria-label="Delete NDA confirmation" data-delete-confirmation-id="${matterId}">
+        <span>Delete NDA and stored document?</span>
         <span class="repository-delete-confirmation-actions">
-          <button class="secondary repository-delete-cancel" type="button" data-cancel-delete-matter-id="${matterId}" aria-label="Cancel delete matter">Cancel</button>
-          <button class="repository-delete-confirm-button" type="button" data-confirm-delete-matter-id="${matterId}" aria-label="Confirm delete matter">Delete</button>
+          <button class="secondary repository-delete-cancel" type="button" data-cancel-delete-matter-id="${matterId}" aria-label="Cancel delete NDA">Cancel</button>
+          <button class="repository-delete-confirm-button" type="button" data-confirm-delete-matter-id="${matterId}" aria-label="Confirm delete NDA">Delete</button>
         </span>
       </div>
     `;

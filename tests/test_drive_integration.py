@@ -1046,7 +1046,7 @@ class DriveRouteTests(unittest.TestCase):
                     "POST", "/api/drive/upload-matter", {"matter_id": "does_not_exist"}
                 )
         self.assertEqual(status, 400)
-        self.assertEqual(payload["error"], "Matter not found.")
+        self.assertEqual(payload["error"], "NDA not found.")
 
     def test_upload_matter_no_document_returns_400(self):
         with tempfile.TemporaryDirectory() as data_dir:

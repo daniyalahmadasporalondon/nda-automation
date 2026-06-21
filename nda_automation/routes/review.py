@@ -152,7 +152,7 @@ def handle_review_docx_export(handler) -> None:
         and reviewed_text.strip()
         and text.strip() != reviewed_text.strip()
     ):
-        handler._send_json({"error": "Export text must match the latest reviewed text. Reload the matter review before exporting."}, status=409)
+        handler._send_json({"error": "Export text must match the latest reviewed text. Reload the NDA review before exporting."}, status=409)
         return
 
     title = payload.get("title", "NDA Review")
@@ -271,12 +271,12 @@ def handle_reassess_clause(handler, *, reassess_func=reassess_single_clause) -> 
     repository = _review_repository(handler)
     matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
     if matter is None:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
 
     source_text = str(matter.get("extracted_text") or "").strip()
     if not source_text:
-        handler._send_json({"error": "Matter has no extracted text to reassess."}, status=409)
+        handler._send_json({"error": "NDA has no extracted text to reassess."}, status=409)
         return
 
     # edited_text overrides the full source text (the frontend may pass the edited document).

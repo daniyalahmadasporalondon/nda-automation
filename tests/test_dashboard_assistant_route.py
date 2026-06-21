@@ -277,7 +277,7 @@ class DashboardAssistantRouteTests(unittest.TestCase):
 
         self.assertEqual(status, 200, payload)
         self.assertEqual(payload["intent"], "unsupported")
-        self.assertIn("search matters", payload["message"].lower())
+        self.assertIn("search ndas", payload["message"].lower())
         self.assertIn("playbook", payload["message"].lower())
 
     def test_non_string_query_is_a_400(self):

@@ -143,7 +143,7 @@ const AdminDriveView = (() => {
         applyDriveSettings(payload.drive || {});
         setOverall("Saved", "ready");
         setFact("folder-message", folderId
-          ? "NDAs root folder verified and saved. Per-matter subfolders are created inside it."
+          ? "NDAs root folder verified and saved. Per-NDA subfolders are created inside it."
           : "Cleared the root folder. An \"NDAs\" folder is created in My Drive.");
       } catch (error) {
         // The 400 carries the specific reason (folder not found / not a folder / no

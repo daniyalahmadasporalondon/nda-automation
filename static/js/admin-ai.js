@@ -41,7 +41,7 @@ const AdminAiView = (() => {
     }
 
     function renderAdminOnly() {
-      const message = "AI configuration is managed by an administrator. AI review is available on your matters when an admin has turned it on.";
+      const message = "AI configuration is managed by an administrator. AI review is available on your NDAs when an admin has turned it on.";
       setOverall("Admin only", "pending");
       setFact("enabled-copy", message);
       setFact("key-message", message);

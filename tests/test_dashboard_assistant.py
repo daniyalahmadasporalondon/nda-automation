@@ -467,7 +467,7 @@ def test_workflow_requests_return_typed_action_requests_without_side_effects():
         {"matter_id": matter["id"], "recipient": "attacker@example.com"},
     )
     approve = dashboard_assistant.approve_matter_request_response(
-        dashboard_assistant.AssistantContext("Approve matter", repository=repo),
+        dashboard_assistant.AssistantContext("Approve NDA", repository=repo),
         {"matter_id": matter["id"]},
     )
     drive = dashboard_assistant.handle_dashboard_assistant_command("Save this to Drive", repository=repo)
@@ -522,7 +522,7 @@ def test_unsupported_intent_returns_clear_message():
     )
 
     assert response["intent"] == "unsupported"
-    assert "search matters" in response["message"].lower()
+    assert "search ndas" in response["message"].lower()
 
 
 def test_unknown_system_question_does_not_become_document_search_empty_state():

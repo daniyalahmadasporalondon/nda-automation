@@ -186,7 +186,7 @@ async function pollReviewMatter(matterId) {
     method: "GET",
     headers: { "Content-Type": "application/json" },
   });
-  if (!response.ok) throw new Error(`Matter read failed (${response.status})`);
+  if (!response.ok) throw new Error(`NDA read failed (${response.status})`);
   const payload = await response.json();
   return payload?.matter || payload || null;
 }
@@ -406,7 +406,7 @@ function openReviewDownloadMenu() {
         onSelect: exportReviewDocx,
         unavailableReason: matter?.id
           ? "DOCX is not available for this reviewed document yet."
-          : "DOCX is available after the review is saved as a matter.",
+          : "DOCX is available after the review is saved as an NDA.",
       });
   const pdfChoice = staleReview
     ? {
@@ -420,7 +420,7 @@ function openReviewDownloadMenu() {
         onSelect: downloadReviewPdf,
         unavailableReason: matter?.id
           ? "PDF is not available for this reviewed document yet."
-          : "PDF is available after the review is saved as a matter.",
+          : "PDF is available after the review is saved as an NDA.",
       });
   DocumentDownloadMenu.open(studioExportButton, {
     label: "Download reviewed document",
@@ -632,7 +632,7 @@ async function markMatterReviewed({ sourceButton = studioReviewedButton, clauseI
   // post-toggle human_reviewed, so this reads exactly what the button re-renders.
   const sendBlockReason = state.selectedMatter
     ? MatterUtils.gmailSendBlock(state.selectedMatter, state.gmailStatus)
-    : "Matter is unavailable.";
+    : "NDA is unavailable.";
   const sendAllowed = allReviewed && !reviewIsStale() && !sendBlockReason;
   let reviewedMessage;
   if (sendAllowed) {
@@ -664,7 +664,7 @@ async function markMatterReviewed({ sourceButton = studioReviewedButton, clauseI
       body: JSON.stringify({ reviewed: allReviewed }),
     });
     const payload = await response.json();
-    if (!response.ok) throw reviewErrorFromPayload(payload, "Could not mark this matter reviewed");
+    if (!response.ok) throw reviewErrorFromPayload(payload, "Could not mark this NDA reviewed");
     if (payload.matter?.id) {
       const merged = { ...state.selectedMatter, ...payload.matter };
       // The server omits send_block_reason once it clears; drop any stale value
@@ -681,7 +681,7 @@ async function markMatterReviewed({ sourceButton = studioReviewedButton, clauseI
     renderStudioClauseLane();
     renderStudioDetail();
     updateExportButtonState();
-    renderOperationError(error, "Could not mark this matter reviewed.");
+    renderOperationError(error, "Could not mark this NDA reviewed.");
   }
 }
 
@@ -696,7 +696,7 @@ async function markSelectedMatterExecuted() {
   const matterId = matter?.id;
   if (!matterId) return;
   if (matterIsExecuted(matter)) {
-    setFileMeta("This matter is already marked executed.");
+    setFileMeta("This NDA is already marked executed.");
     updateExportButtonState();
     return;
   }
@@ -715,7 +715,7 @@ async function markSelectedMatterExecuted() {
       headers: { "Content-Type": "application/json" },
     });
     const payload = await response.json();
-    if (!response.ok) throw reviewErrorFromPayload(payload, "Could not mark this matter executed");
+    if (!response.ok) throw reviewErrorFromPayload(payload, "Could not mark this NDA executed");
     if (payload.matter?.id) {
       state.selectedMatter = { ...state.selectedMatter, ...payload.matter };
     }
@@ -741,7 +741,7 @@ async function markSelectedMatterExecuted() {
       }
     }
   } catch (error) {
-    renderOperationError(error, "Could not mark this matter executed.");
+    renderOperationError(error, "Could not mark this NDA executed.");
   } finally {
     if (studioMarkExecutedButton) studioMarkExecutedButton.disabled = false;
     updateExportButtonState();

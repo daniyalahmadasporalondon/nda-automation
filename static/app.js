@@ -1226,7 +1226,7 @@ async function downloadGeneratedNda(generated, { sourceButton } = {}) {
             onSelect: (choice) => downloadUrl(choice.url, choice.filename || "generated-nda.pdf"),
             unavailableReason: generated.matterId
               ? "PDF is not available for this generated NDA yet."
-              : "PDF is available after the NDA is saved as a matter.",
+              : "PDF is available after the NDA is saved.",
           }),
         ],
       }],
@@ -1693,11 +1693,11 @@ async function confirmDashboardAssistantAction(action = {}) {
     adminIntegrationsController.load();
     authSessionController.load();
     const imported = Number(payload?.result?.imported_count ?? payload?.result?.created_count ?? 0);
-    return { statusText: `Gmail sync complete. Imported ${imported} ${imported === 1 ? "matter" : "matters"}.` };
+    return { statusText: `Gmail sync complete. Imported ${imported} ${imported === 1 ? "NDA" : "NDAs"}.` };
   }
   if (actionName === "refresh_review" || actionName === "run_review") {
     const matterId = assistantActionMatterId(params, matter);
-    if (!matterId) throw new Error("Matter not found.");
+    if (!matterId) throw new Error("NDA not found.");
     // The AI review now runs ASYNCHRONOUSLY: POST /review-refresh returns 202 in
     // milliseconds and a worker does the heavy review. So there is NO long
     // synchronous wait to bound anymore — drop the 180s timeout. We open the matter
@@ -1728,7 +1728,7 @@ async function confirmDashboardAssistantAction(action = {}) {
     activateTab("review");
 
     const status = String(payload?.review_status || "");
-    const title = refreshedMatter?.matter?.document_title || refreshedMatter?.document_title || matter.title || "matter";
+    const title = refreshedMatter?.matter?.document_title || refreshedMatter?.document_title || matter.title || "NDA";
     if (status === "in_progress") {
       // Background review scheduled (or already pending): start polling so the tab
       // updates when it finishes.
@@ -1744,7 +1744,7 @@ async function confirmDashboardAssistantAction(action = {}) {
   }
   if (actionName === "approve_matter") {
     const matterId = assistantActionMatterId(params, matter);
-    if (!matterId) throw new Error("Matter not found.");
+    if (!matterId) throw new Error("NDA not found.");
     const payload = await postAssistantActionJson(
       `/api/matters/${encodeURIComponent(matterId)}/approve`,
       null,
@@ -1758,16 +1758,16 @@ async function confirmDashboardAssistantAction(action = {}) {
     await repositoryController.loadMatters();
     renderDashboardInboxTable();
     activateTab("repository");
-    return { statusText: `Approved ${matter.title || "matter"}.` };
+    return { statusText: `Approved ${matter.title || "NDA"}.` };
   }
   if (actionName === "send_redline") {
     const matterId = assistantActionMatterId(params, matter);
-    if (!matterId) throw new Error("Matter not found.");
+    if (!matterId) throw new Error("NDA not found.");
     const selectedMatter = await assistantMatterFromState(matterId);
     const recipient = MatterUtils.recipientEmail(selectedMatter);
     const sendBlockReason = MatterUtils.gmailSendBlock(selectedMatter, state.gmailStatus);
     if (sendBlockReason) throw new Error(sendBlockReason);
-    if (!recipient) throw new Error("Matter does not have a valid reply recipient email address.");
+    if (!recipient) throw new Error("NDA does not have a valid reply recipient email address.");
     const sendPayload = {
       matter_id: matterId,
       confirm_send: true,
@@ -1851,7 +1851,7 @@ async function assistantMatterFromState(matterId) {
   matter = Array.isArray(state.matters)
     ? state.matters.find((candidate) => String(candidate?.id) === String(matterId))
     : null;
-  if (!matter) throw new Error("Matter not found.");
+  if (!matter) throw new Error("NDA not found.");
   return matter;
 }
 

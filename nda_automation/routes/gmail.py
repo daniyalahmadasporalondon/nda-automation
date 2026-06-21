@@ -317,7 +317,7 @@ def handle_gmail_send_redline(handler) -> None:
 
     matter_id = payload.get("matter_id")
     if not isinstance(matter_id, str) or not matter_id.strip():
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
     if payload.get("confirm_send") is not True:
         handler._send_json({"error": "Confirm send is required before emailing a redline."}, status=400)
@@ -346,7 +346,7 @@ def handle_gmail_send_redline(handler) -> None:
             body=outbound_body,
         )
     except MatterNotFoundError:
-        handler._send_json({"error": "Matter not found."}, status=404)
+        handler._send_json({"error": "NDA not found."}, status=404)
         return
     except MatterDeliveryError as error:
         handler._send_json({"error": str(error)}, status=400)

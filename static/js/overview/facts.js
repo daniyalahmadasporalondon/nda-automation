@@ -170,7 +170,7 @@ function normalizeFacts(facts) {
 function renderFacts(facts) {
   const items = [["Received", formatReceivedDate(facts.receivedDate)]];
   return `
-    <section class="ov-facts" aria-label="Matter facts">
+    <section class="ov-facts" aria-label="NDA facts">
       ${items.map(([label, value]) => renderFact(label, value)).join("")}
     </section>`;
 }

@@ -46,7 +46,7 @@ export function createRepositoryApi({ fetchImpl = globalThis.fetch, reviewErrorF
     const payload = await jsonRequest(
       `/api/matters/${encodeURIComponent(matterId)}`,
       {},
-      "Matter could not load",
+      "NDA could not load",
     );
     return payload.matter;
   }
@@ -55,7 +55,7 @@ export function createRepositoryApi({ fetchImpl = globalThis.fetch, reviewErrorF
     return jsonRequest(
       `/api/matters/${encodeURIComponent(matterId)}`,
       { method: "DELETE" },
-      "Matter could not be deleted",
+      "NDA could not be deleted",
     );
   }
 
@@ -100,7 +100,7 @@ export function createRepositoryApi({ fetchImpl = globalThis.fetch, reviewErrorF
       const payload = await jsonRequest(
         `/api/matters/${encodeURIComponent(matterId)}/review`,
         {},
-        "Matter review details could not load",
+        "NDA review details could not load",
       );
       return buildReviewMatter(payload);
     }
@@ -116,7 +116,7 @@ export function createRepositoryApi({ fetchImpl = globalThis.fetch, reviewErrorF
     const { status, payload } = await jsonRequestWithStatus(
       `/api/matters/${encodeURIComponent(matterId)}/review-refresh`,
       { method: "POST" },
-      "Matter review details could not load",
+      "NDA review details could not load",
     );
     const inProgress = status === 202
       || String(payload.review_status || payload.matter?.review_status || "") === "in_progress";
@@ -163,9 +163,9 @@ export function createRepositoryApi({ fetchImpl = globalThis.fetch, reviewErrorF
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ board_column: boardColumn }),
       },
-      "Matter could not move",
+      "NDA could not move",
     );
-    if (!payload.matter?.id) throw new Error("Matter could not move");
+    if (!payload.matter?.id) throw new Error("NDA could not move");
     return payload.matter;
   }
 

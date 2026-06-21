@@ -630,7 +630,7 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
     clause["requirement"] = f"Governing law must be {approved_label}."
     clause["preferred_position"] = (
         "The governing law is one of the approved jurisdictions, preferably "
-        f"{preferred_law} unless the matter context supports another approved option."
+        f"{preferred_law} unless the NDA context supports another approved option."
     )
     clause["check_trigger"] = (
         "The governing law is missing, unclear, or names a jurisdiction outside "
@@ -647,7 +647,7 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
         return
     rules["acceptable_position"] = (
         "The governing law is one of the approved jurisdictions in the playbook, "
-        f"with {preferred_law} as the preferred option unless matter context supports another approved jurisdiction."
+        f"with {preferred_law} as the preferred option unless NDA context supports another approved jurisdiction."
     )
     _set_condition_description(
         rules.get("pass_conditions"),

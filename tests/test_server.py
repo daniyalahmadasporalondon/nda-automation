@@ -1311,23 +1311,23 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(list_status, 200)
         self.assertEqual(list_payload["matters"], [])
         self.assertEqual(detail_status, 404)
-        self.assertEqual(detail_payload["error"], "Matter not found.")
+        self.assertEqual(detail_payload["error"], "NDA not found.")
         self.assertEqual(review_status, 404)
-        self.assertEqual(review_payload["error"], "Matter not found.")
+        self.assertEqual(review_payload["error"], "NDA not found.")
         self.assertEqual(render_status_status, 404)
-        self.assertEqual(render_status_payload["error"], "Matter not found.")
+        self.assertEqual(render_status_payload["error"], "NDA not found.")
         self.assertEqual(render_page_status, 404)
-        self.assertEqual(render_page_payload["error"], "Matter not found.")
+        self.assertEqual(render_page_payload["error"], "NDA not found.")
         self.assertEqual(stage_status, 404)
-        self.assertEqual(stage_payload["error"], "Matter not found.")
+        self.assertEqual(stage_payload["error"], "NDA not found.")
         self.assertEqual(export_status, 404)
-        self.assertEqual(export_payload["error"], "Matter not found.")
+        self.assertEqual(export_payload["error"], "NDA not found.")
         self.assertEqual(backup_status, 200)
         self.assertEqual(backup_payload["matter_count"], 0)
         self.assertEqual(reset_status, 200)
         self.assertEqual(reset_payload["removed"], 0)
         self.assertEqual(delete_status, 404)
-        self.assertEqual(delete_payload["error"], "Matter not found.")
+        self.assertEqual(delete_payload["error"], "NDA not found.")
         self.assertEqual(alice_list_status, 200)
         self.assertEqual([item["id"] for item in alice_list_payload["matters"]], [matter_id])
 
@@ -1566,7 +1566,7 @@ class ServerTests(unittest.TestCase):
 
         checks = {check["id"]: check for check in deployment["checks"]}
         self.assertTrue(checks["data_dir"]["ok"])
-        self.assertEqual(checks["data_dir"]["message"], "Local deployment may use local matter data storage.")
+        self.assertEqual(checks["data_dir"]["message"], "Local deployment may use local NDA data storage.")
 
     def test_local_deployment_status_message_matches_ok_auth_check(self):
         with patch.dict(os.environ, {
@@ -3970,11 +3970,11 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(delete_payload["deleted"]["id"], matter["id"])
         self.assertNotIn("stored_filename", delete_payload["deleted"])
         self.assertEqual(fetch_status, 404)
-        self.assertEqual(fetch_payload["error"], "Matter not found.")
+        self.assertEqual(fetch_payload["error"], "NDA not found.")
         self.assertEqual(list_status, 200)
         self.assertEqual(list_payload["matters"], [])
         self.assertEqual(missing_delete_status, 404)
-        self.assertEqual(missing_delete_payload["error"], "Matter not found.")
+        self.assertEqual(missing_delete_payload["error"], "NDA not found.")
         self.assertFalse(stored_path_exists)
 
     def test_matter_delete_purges_render_cache(self):
@@ -8294,7 +8294,7 @@ class ServerTests(unittest.TestCase):
                 self.assertFalse(before["human_reviewed"])
                 self.assertEqual(
                     before["send_block_reason"],
-                    "Matter needs human review before a redline can be sent.",
+                    "NDA needs human review before a redline can be sent.",
                 )
 
                 status, payload = self.request("POST", f"/api/matters/{mid}/reviewed", body={"reviewed": True})
@@ -8302,7 +8302,7 @@ class ServerTests(unittest.TestCase):
                 self.assertTrue(payload["matter"]["human_reviewed"])
                 self.assertEqual(
                     payload["matter"]["send_block_reason"],
-                    "Matter does not have a valid reply recipient email address.",
+                    "NDA does not have a valid reply recipient email address.",
                 )
                 matter_store.update_redline_draft(
                     mid,
@@ -8321,7 +8321,7 @@ class ServerTests(unittest.TestCase):
                 self.assertNotIn("redline_draft", matter_store.get_matter(mid))
                 self.assertEqual(
                     after["send_block_reason"],
-                    "Matter needs human review before a redline can be sent.",
+                    "NDA needs human review before a redline can be sent.",
                 )
 
     def test_gmail_message_body_prefers_plain_text_in_multipart_alternative(self):
@@ -8557,11 +8557,11 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(reviewed_payload["matter"]["board_column"], "reviewed")
         self.assertEqual(reviewed_payload["matter"]["status"], "active")
         self.assertEqual(legacy_status, 400)
-        self.assertEqual(legacy_payload["error"], "Unsupported matter stage.")
+        self.assertEqual(legacy_payload["error"], "Unsupported NDA stage.")
         self.assertEqual(invalid_status, 400)
-        self.assertEqual(invalid_payload["error"], "Unsupported matter stage.")
+        self.assertEqual(invalid_payload["error"], "Unsupported NDA stage.")
         self.assertEqual(missing_status, 404)
-        self.assertEqual(missing_payload["error"], "Matter not found.")
+        self.assertEqual(missing_payload["error"], "NDA not found.")
 
     def test_matter_upload_rejects_gmail_inbound_source(self):
         source_docx = make_docx([
@@ -8585,7 +8585,7 @@ class ServerTests(unittest.TestCase):
                 matters = matter_store.list_matters()
 
         self.assertEqual(status, 400)
-        self.assertEqual(payload["error"], "Unsupported matter source.")
+        self.assertEqual(payload["error"], "Unsupported NDA source.")
         self.assertEqual(matters, [])
 
     def test_matter_upload_strips_forged_gmail_metadata(self):
@@ -8706,7 +8706,7 @@ class ServerTests(unittest.TestCase):
                 )
 
         self.assertEqual(status, 400)
-        self.assertEqual(payload["error"], "Unsupported matter source.")
+        self.assertEqual(payload["error"], "Unsupported NDA source.")
 
     def test_matter_export_uses_preserved_original_docx(self):
         source_docx = make_docx([
@@ -8761,7 +8761,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(export_status, 409)
         self.assertEqual(
             export_payload["error"],
-            "Matter source text was edited after the source document was ingested. "
+            "NDA source text was edited after the source document was ingested. "
             "Export or send after those viewer edits are represented as manual redlines.",
         )
 
@@ -8794,7 +8794,7 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(create_status, 201)
         self.assertEqual(export_status, 409)
-        self.assertEqual(export_payload["error"], "Export text must match the latest reviewed text. Reload the matter review before exporting.")
+        self.assertEqual(export_payload["error"], "Export text must match the latest reviewed text. Reload the NDA review before exporting.")
 
     def test_matter_export_rejects_source_text_change_without_manual_redlines(self):
         source_docx = make_docx([
@@ -8822,7 +8822,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(export_status, 409)
         self.assertEqual(
             export_payload["error"],
-            "Matter source text was edited after the source document was ingested. "
+            "NDA source text was edited after the source document was ingested. "
             "Export or send after those viewer edits are represented as manual redlines.",
         )
 
@@ -9011,7 +9011,7 @@ class ServerTests(unittest.TestCase):
                 )
 
         self.assertEqual(export_status, 400)
-        self.assertEqual(export_payload["error"], "Matter source document is missing from storage.")
+        self.assertEqual(export_payload["error"], "NDA source document is missing from storage.")
 
     def test_matter_redline_draft_save_and_reset_updates_public_matter(self):
         source_docx = make_docx([
@@ -9334,7 +9334,7 @@ class ServerTests(unittest.TestCase):
                     )
 
         self.assertEqual(status, 400)
-        self.assertEqual(payload["error"], "Matter does not have a valid reply recipient email address.")
+        self.assertEqual(payload["error"], "NDA does not have a valid reply recipient email address.")
         validate_ready.assert_not_called()
         build_matter_redline.assert_not_called()
 
@@ -9954,7 +9954,7 @@ class ServerTests(unittest.TestCase):
                 stored_matter = matter_store.get_matter(matter_id)
 
         self.assertEqual(send_status, 409)
-        self.assertEqual(send_payload["error"], "Matter needs human review before a redline can be sent.")
+        self.assertEqual(send_payload["error"], "NDA needs human review before a redline can be sent.")
         send_redline_email.assert_not_called()
         self.assertEqual(stored_matter["triage_status"], "needs_redline")
 
@@ -10055,7 +10055,7 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(reviewed_status, 200)
         self.assertEqual(send_status, 409)
-        self.assertIn("Matter source text was edited", send_payload["error"])
+        self.assertIn("NDA source text was edited", send_payload["error"])
         send_redline_email.assert_not_called()
 
     def test_corrupt_matter_store_does_not_reset_repository(self):
@@ -10244,7 +10244,7 @@ class ServerTests(unittest.TestCase):
                 )
 
         self.assertEqual(status, 404)
-        self.assertEqual(payload["error"], "Matter not found.")
+        self.assertEqual(payload["error"], "NDA not found.")
 
     def test_review_docx_export_strips_lone_surrogates(self):
         status, payload, _headers = self.request_with_headers(
@@ -10565,7 +10565,7 @@ class ServerTests(unittest.TestCase):
         )
 
         self.assertEqual(status, 409)
-        self.assertEqual(payload["error"], "Export text must match the latest reviewed text. Reload the matter review before exporting.")
+        self.assertEqual(payload["error"], "Export text must match the latest reviewed text. Reload the NDA review before exporting.")
 
     def test_review_docx_export_reports_playbook_template_error(self):
         with patch.object(server_module.redline_export_service, "review_nda", side_effect=PlaybookTemplateError("bad template")):
