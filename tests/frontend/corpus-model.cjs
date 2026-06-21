@@ -114,6 +114,46 @@ test("railSteps returns the 7 ordered steps with filled flags", () => {
   assert.deepEqual(filled, ["received", "legal_review", "signed"]);
 });
 
+// --- humanization: lifecycle fallback + artifact display name ---------------
+test("lifecycleLabel maps known stages and humanises an unmapped token (no raw token)", () => {
+  assert.equal(CorpusModel.lifecycleLabel("ai_redline"), "AI redline");
+  assert.equal(CorpusModel.lifecycleLabel("legal_review"), "Legal review");
+  // An unmapped stage token is humanised, NOT echoed raw.
+  assert.equal(CorpusModel.lifecycleLabel("some_new_stage"), "Some new stage");
+  assert.notEqual(CorpusModel.lifecycleLabel("some_new_stage"), "some_new_stage");
+});
+
+test("artifactDisplayName maps role -> friendly noun (never the raw role token)", () => {
+  assert.equal(CorpusModel.artifactDisplayName({ filename: "acme.docx" }), "acme.docx");
+  assert.equal(CorpusModel.artifactDisplayName({ role: "original" }), "Original document");
+  assert.equal(CorpusModel.artifactDisplayName({ role: "redline" }), "AI redline");
+  assert.equal(CorpusModel.artifactDisplayName({ role: "reviewed" }), "Reviewed document");
+  assert.equal(CorpusModel.artifactDisplayName({ role: "signed" }), "Signed copy");
+  assert.equal(CorpusModel.artifactDisplayName({ role: "counter" }), "Counterparty version");
+  assert.equal(CorpusModel.artifactDisplayName({ role: "generated" }), "Generated NDA");
+  // No filename + no role -> generic noun, never blank/raw.
+  assert.equal(CorpusModel.artifactDisplayName({}), "Document");
+  assert.equal(CorpusModel.artifactDisplayName(null), "Document");
+});
+
+test("renderArtifacts shows the friendly role noun (no raw role token) when no filename", () => {
+  const list = stubNode();
+  const matter = {
+    matter_id: "h1", counterparty: "Co", title: "NDA", status: "reviewed", source: "app", in_app: true,
+    artifacts: [
+      { role: "redline" }, // no filename -> must render "AI redline", not "redline"
+      { role: "reviewed" },
+    ],
+  };
+  CorpusRender.renderGroups(list, { groups: [{ counterparty: "x", matters: [matter] }] }, {}, () => true, "counterparty");
+  const html = list.innerHTML;
+  assert.ok(html.includes("AI redline"), "friendly redline noun rendered");
+  assert.ok(html.includes("Reviewed document"), "friendly reviewed noun rendered");
+  // Non-vacuity: the raw role token must NOT appear as the artifact name.
+  assert.ok(!/corpus-artifact-name">redline</.test(html), "raw 'redline' role token leaked as a name");
+  assert.ok(!/corpus-artifact-name">reviewed</.test(html), "raw 'reviewed' role token leaked as a name");
+});
+
 // --- rich facets read defensively + degrade --------------------------------
 test("matterFacetValue reads matter.facets[key] then top-level, else undefined", () => {
   assert.equal(CorpusModel.matterFacetValue({ facets: { governing_law: "India" } }, "governing_law"), "India");

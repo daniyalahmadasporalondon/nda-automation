@@ -49,6 +49,19 @@ const CorpusModel = (() => {
     both: "In app + Drive",
   };
 
+  // role -> friendly artifact noun, used as the artifact name fallback when the
+  // backend supplies no filename. Keeps the raw role token (e.g. "redline",
+  // "reviewed") out of the corpus artifact list. Display-only — the artifact.role
+  // value and the stage/lifecycle keys are untouched.
+  const ROLE_DISPLAY_NAMES = {
+    original: "Original document",
+    redline: "AI redline",
+    reviewed: "Reviewed document",
+    signed: "Signed copy",
+    counter: "Counterparty version",
+    generated: "Generated NDA",
+  };
+
   // Rich, parallel-effort facets. Read defensively from payload.facets[key] (for
   // the option list + counts) and matter.facets[key] (for filtering). Absent today
   // on origin/main; the rail degrades gracefully when they are missing.
@@ -176,7 +189,15 @@ const CorpusModel = (() => {
   }
 
   function lifecycleLabel(stage) {
-    return LIFECYCLE_LABELS[stage] || String(stage || "");
+    return LIFECYCLE_LABELS[stage] || humaniseFacetValue(stage);
+  }
+
+  // The artifact's display name: the backend filename when present, else a friendly
+  // noun for the role (never the raw role token), else a generic "Document".
+  function artifactDisplayName(artifact) {
+    if (!artifact || typeof artifact !== "object") return "Document";
+    if (artifact.filename) return String(artifact.filename);
+    return ROLE_DISPLAY_NAMES[artifact.role] || humaniseFacetValue(artifact.role) || "Document";
   }
 
   function sourceLabel(source) {
@@ -353,6 +374,7 @@ const CorpusModel = (() => {
     MULTI_FACET_KEYS,
     ROLE_STAGE_LABELS,
     artifactCountLabel,
+    artifactDisplayName,
     artifactStageLabel,
     counterpartyName,
     duplicateDocument,
@@ -938,7 +960,7 @@ const CorpusRender = (() => {
       <li class="corpus-artifact">
         <span class="corpus-artifact-seq" aria-hidden="true">${seq ? html(String(seq)) : "•"}</span>
         <span class="corpus-artifact-main">
-          <span class="corpus-artifact-name">${html(artifact.filename || artifact.role || "Document")}</span>
+          <span class="corpus-artifact-name">${html(CorpusModel.artifactDisplayName(artifact))}</span>
           <span class="corpus-artifact-sub">
             ${stagePill}
             ${artifact.actor ? `<span class="corpus-artifact-actor">${html(artifact.actor)}</span>` : ""}
