@@ -198,10 +198,10 @@ class AIReviewTests(unittest.TestCase):
         result = review_nda(_pass_sample_text(), ai_reviewer=_confirming_reviewer)
 
         self.assertEqual(result["ai_review"]["status"], "completed")
-        self.assertEqual(result["ai_review"]["record_count"], 4)
+        self.assertEqual(result["ai_review"]["record_count"], 5)
         self.assertEqual(result["overall_status"], "meets_requirements")
         reviewed = [clause for clause in result["clauses"] if clause.get("ai_review_analysis")]
-        self.assertEqual(len(reviewed), 4)
+        self.assertEqual(len(reviewed), 5)
         self.assertTrue(all(clause["ai_review_analysis"]["status"] == "confirmed" for clause in reviewed))
 
     def test_in_memory_reviewer_crosses_the_seam(self):
@@ -226,14 +226,14 @@ class AIReviewTests(unittest.TestCase):
         result = review_nda(_pass_sample_text(), ai_reviewer=reviewer)
 
         # The reviewer received real, blind packets through the seam.
-        self.assertEqual(len(reviewer.packets), 4)
+        self.assertEqual(len(reviewer.packets), 5)
         for packet in reviewer.packets:
             self.assertEqual(packet["task"], "semantic_clause_crosscheck")
             self.assertNotIn("deterministic_result", packet)
             self.assertTrue(packet["paragraphs"])
         # The verdicts flowed through the arbiter to confirmed decisions.
         reviewed = [clause for clause in result["clauses"] if clause.get("ai_review_analysis")]
-        self.assertEqual(len(reviewed), 4)
+        self.assertEqual(len(reviewed), 5)
         self.assertTrue(all(clause["ai_review_analysis"]["status"] == "confirmed" for clause in reviewed))
 
     def test_in_memory_reviewer_scripts_per_clause_disagreement(self):
@@ -270,7 +270,7 @@ class AIReviewTests(unittest.TestCase):
 
         review_nda(_pass_sample_text(), ai_reviewer=capturing_reviewer)
 
-        self.assertEqual(len(captured_packets), 4)
+        self.assertEqual(len(captured_packets), 5)
         for packet in captured_packets:
             self.assertEqual(packet["task"], "semantic_clause_crosscheck")
             # Python's conclusion must never reach the semantic reviewer.
@@ -294,7 +294,7 @@ class AIReviewTests(unittest.TestCase):
         governing_law = next(clause for clause in result["clauses"] if clause["id"] == "governing_law")
 
         self.assertEqual(result["ai_review"]["status"], "completed")
-        self.assertEqual(result["ai_review"]["record_count"], 4)
+        self.assertEqual(result["ai_review"]["record_count"], 5)
         self.assertTrue(all(record["status"] == "error" for record in result["ai_review"]["records"]))
         self.assertEqual(result["overall_status"], "meets_requirements")
         self.assertEqual(governing_law["decision"], "pass")

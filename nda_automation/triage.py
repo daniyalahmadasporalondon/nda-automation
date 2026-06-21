@@ -2,7 +2,24 @@ from __future__ import annotations
 
 from .review_state import clause_fails, clause_needs_review, review_state_from_result
 
-LEGAL_REVIEW_CLAUSE_IDS = {"non_circumvention"}
+
+def _clause_is_prohibited(clause: dict) -> bool:
+    """A FAILED prohibited clause forces legal review.
+
+    Keyed off the playbook clause ``type`` / ``rules.clause_type == "prohibited"``
+    (carried through onto each review-result clause) rather than a hardcoded id
+    set, so a second prohibited clause added to the playbook also forces
+    RED/legal review without a code change. ``non_circumvention`` is currently
+    the only prohibited clause, so today's behavior is unchanged.
+    """
+    if not isinstance(clause, dict):
+        return False
+    if str(clause.get("type") or "").strip().lower() == "prohibited":
+        return True
+    rules = clause.get("rules")
+    if isinstance(rules, dict) and str(rules.get("clause_type") or "").strip().lower() == "prohibited":
+        return True
+    return False
 
 
 def triage_review_result(review_result: dict) -> dict:
@@ -50,7 +67,7 @@ def triage_review_result(review_result: dict) -> dict:
     # already raised one, so the matter shows an outstanding item rather than zero.
     effective_review_count = review_count or (1 if forced_human_review else 0)
 
-    if effective_review_count or any(str(clause.get("id") or "") in LEGAL_REVIEW_CLAUSE_IDS for clause in failed_clauses):
+    if effective_review_count or any(_clause_is_prohibited(clause) for clause in failed_clauses):
         triage_status = "legal_review"
         next_action = "Needs human review" if effective_review_count and not failed_count else "Needs legal review"
     else:

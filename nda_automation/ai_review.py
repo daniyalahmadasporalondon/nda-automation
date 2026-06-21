@@ -62,12 +62,18 @@ STORED_KEY_MIGRATION_MESSAGE = (
     "runs through OpenRouter. Replace it with an "
     "OpenRouter API key (it starts with \"sk-or-\") from openrouter.ai to re-enable AI review."
 )
+# LAST-RESORT FALLBACK ONLY. The targetable AI-review clause set is derived from
+# the LIVE playbook clause ids at review time (see apply_ai_review /
+# _targeted_clause_ids), so a clause added to playbook.json is reviewed without a
+# code change. This frozen set is used only when the live playbook ids cannot be
+# resolved (e.g. an early status probe). It is intentionally NOT the gate.
 AI_REVIEW_CLAUSE_IDS = {
     "mutuality",
     "confidential_information",
     "governing_law",
     "term_and_survival",
     "non_circumvention",
+    "signatures",
 }
 @runtime_checkable
 class AIReviewer(Protocol):
@@ -255,13 +261,18 @@ def apply_ai_review(
 
     updated_results = [deepcopy(result) for result in clause_results]
     records: List[Dict[str, object]] = []
+    # Derive the targetable set from the LIVE playbook clause ids so a clause
+    # added to the playbook is AI-reviewable without a code change. The frozen
+    # AI_REVIEW_CLAUSE_IDS is only a last-resort fallback (see _targeted_clause_ids).
+    live_clause_ids = {str(clause_id).strip() for clause_id in clauses_by_id if str(clause_id).strip()}
     if target_clause_ids is None:
-        targeted_clause_ids = _targeted_clause_ids(settings)
+        targeted_clause_ids = _targeted_clause_ids(settings, live_clause_ids)
     else:
+        allowed_ids = live_clause_ids or set(AI_REVIEW_CLAUSE_IDS)
         targeted_clause_ids = {
             str(clause_id).strip()
             for clause_id in target_clause_ids
-            if str(clause_id).strip() in AI_REVIEW_CLAUSE_IDS
+            if str(clause_id).strip() in allowed_ids
         }
     threshold = _confidence_threshold(settings)
     for clause in updated_results:
@@ -472,6 +483,27 @@ def build_ai_draft_fix_packet(
     }
 
 
+def _live_playbook_clause_ids() -> set[str]:
+    """Best-effort live playbook clause ids for status/probe contexts.
+
+    Imported lazily because checker imports ai_review at module load (a top-level
+    import here would be circular). Any failure falls back to an empty set, which
+    makes _targeted_clause_ids use the hardcoded last-resort set.
+    """
+    try:
+        from .checker import load_playbook
+
+        playbook = load_playbook()
+        clauses = playbook.get("clauses", []) if isinstance(playbook, dict) else []
+        return {
+            str(clause.get("id") or "").strip()
+            for clause in clauses
+            if isinstance(clause, dict) and str(clause.get("id") or "").strip()
+        }
+    except Exception:
+        return set()
+
+
 def ai_review_status() -> Dict[str, object]:
     settings = _ai_review_settings()
     stored = app_settings.ai_settings()
@@ -488,7 +520,7 @@ def ai_review_status() -> Dict[str, object]:
         "api_key_configured": bool(_configured_api_key(provider)),
         "api_key_source": api_key_source,
         "stored_key_migration": stored_ai_key_migration(),
-        "target_clause_ids": sorted(_targeted_clause_ids(settings)),
+        "target_clause_ids": sorted(_targeted_clause_ids(settings, _live_playbook_clause_ids())),
     }
 
 
@@ -1170,14 +1202,30 @@ def _normalize_quote_text(value: str) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().lower()
 
 
-def _targeted_clause_ids(settings: Dict[str, object]) -> set[str]:
+def _targeted_clause_ids(
+    settings: Dict[str, object],
+    live_clause_ids: Iterable[str] | None = None,
+) -> set[str]:
+    """Resolve the set of clause ids the AI overlay may review.
+
+    The targetable set is derived from the LIVE playbook clause ids
+    (``live_clause_ids``) so a clause added to the playbook is reviewable
+    without a code change. The ``NDA_AI_REVIEW_CLAUSES`` env var is honored
+    only as a SUBSET FILTER of those live ids -- a stale or unknown id in the
+    env var is dropped rather than overriding the playbook. When the live ids
+    are unavailable (e.g. status probe without a loaded playbook) we fall back
+    to the historical hardcoded set as a last resort.
+    """
+    live_ids = {str(clause_id).strip() for clause_id in (live_clause_ids or ()) if str(clause_id).strip()}
+    if not live_ids:
+        live_ids = set(AI_REVIEW_CLAUSE_IDS)
     raw_clause_ids = str(settings.get("clause_ids") or "").strip()
     if not raw_clause_ids:
-        return set(AI_REVIEW_CLAUSE_IDS)
+        return set(live_ids)
     return {
         value.strip()
         for value in raw_clause_ids.split(",")
-        if value.strip() in AI_REVIEW_CLAUSE_IDS
+        if value.strip() in live_ids
     }
 
 
