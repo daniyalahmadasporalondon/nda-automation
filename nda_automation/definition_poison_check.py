@@ -101,10 +101,13 @@ _CI_TERM = re.compile(
     re.IGNORECASE,
 )
 
-# Sentence reads like it is DEFINING the term (not merely using it).
+# Sentence reads like it is DEFINING the term (not merely using it). Kept in sync
+# with ``_INCLUSION_VERB`` so any inclusion-polarity verb also reads as definitional
+# (e.g. "extends to", "is deemed to include", "also means").
 _CI_DEFINITION = re.compile(
     r"\b(?:means|shall\s+mean|is\s+defined\s+as|refers?\s+to|includes?|"
-    r"shall\s+include|including|encompass(?:es|ing)?|comprises?|covers?)\b",
+    r"shall\s+include|including|deemed\s+to\s+include|encompass(?:es|ing)?|"
+    r"comprises?|covers?|extends?\s+to|also\s+means)\b",
     re.IGNORECASE,
 )
 
@@ -122,9 +125,17 @@ _INCLUSION_VERB = re.compile(
 # "public" inside "non-public" (a standard, narrow CI scope in a huge fraction of
 # real NDAs) does NOT register as the excluded category. "non-public" is handled as
 # a negation by ``_is_safe_polarity`` below.
+#
+# PRECISION: "public" must carry an availability/knowledge/domain qualifier
+# ("publicly available", "public domain", "public knowledge", "publicly known",
+# "public information/data") to count as the excluded category. A bare "public"
+# (e.g. "public interest", "public company", "publicly traded") is NOT the category
+# and must not trigger the poison path -- over-failing a clean NDA is the dangerous
+# direction.
 _EXCLUDED_CATEGORY = re.compile(
-    r"\bpublic(?:ly)?\b(?:\s+(?:available|known|disclosed|domain))?|"
-    r"\bpublic\s+domain\b|"
+    r"\bpublicly\s+(?:available|known|disclosed|accessible)\b|"
+    r"\bpublic\s+(?:domain|knowledge|information|record|records|data)\b|"
+    r"\bin\s+the\s+public\s+domain\b|"
     r"(?:generally|widely|already|publicly)\s+known|"
     r"(?:already|previously|lawfully|rightfully)\s+(?:in\s+(?:its|the\s+receiving\s+party.?s)\s+possession|"
     r"known|possessed)|"
@@ -133,21 +144,21 @@ _EXCLUDED_CATEGORY = re.compile(
     re.IGNORECASE,
 )
 
-# Exclusion FRAMING -- the polarity flip that means the sentence is (correctly)
-# carving these categories OUT, not pulling them in. Its presence makes the
-# sentence safe regardless of the included categories named.
-#
-# NOTE: a bare "cease to be" / "no longer" is NOT exclusion framing -- the
-# OBFUSCATED poison "shall NOT cease to be Confidential Information by reason of
-# entering the public domain" (tp07) uses exactly that phrasing to ACHIEVE the
-# poison. We only treat a POSITIVE "ceases to be / no longer ... confidential"
-# (handled by ``_obfuscated_negation_poison``) -- not the negated form -- and we
-# do NOT list it here, so it can never suppress the real finding.
-_EXCLUSION_FRAMING = re.compile(
-    r"shall\s+not\s+include|does\s+not\s+include|do\s+not\s+include|not\s+include|"
-    r"\bexclud(?:e|es|ing|ed)\b|\bexception(?:s)?\b|\bother\s+than\b|\bexcept\b|"
-    r"shall\s+not\s+apply|do(?:es)?\s+not\s+apply|obligations?\s+[^.;:]{0,40}?not\s+apply|"
-    r"not\s+(?:be\s+)?(?:deemed|considered|treated|regarded)\s+(?:as\s+)?confidential",
+# A NEGATED inclusion verb -- "does not include", "shall not include", "not
+# including", "no longer includes" -- means the sentence is CARVING the category OUT,
+# not pulling it in. This is the ONLY suppression baked into affirmative-inclusion
+# detection: it distinguishes "includes publicly available" (poison polarity) from
+# "does not include publicly available" (carve-out polarity). Broader carve-out
+# CONNECTIVES ("save", "except", "other than", ...) are handled structurally by the
+# whole-text exclusion-signal scan in ``_has_any_exclusion_signal`` -- NOT by a finite
+# allowlist here -- so the polarity is "innocent until a negated inclusion is shown",
+# never "guilty unless a vocabulary word appears".
+_NEGATED_INCLUSION = re.compile(
+    r"\b(?:do(?:es)?|shall|will|would|may|must|can|could)\s+not\s+"
+    r"(?:be\s+)?(?:deemed\s+to\s+)?includ|"
+    r"\bnot\s+includ(?:e|es|ing|ed)\b|"
+    r"\bno\s+longer\s+(?:be\s+)?includ|"
+    r"\bnever\s+includ",
     re.IGNORECASE,
 )
 
@@ -169,13 +180,18 @@ _SAFE_POLARITY = re.compile(
 
 
 def _ci_sentence_is_poison(sentence: str) -> bool:
-    """True iff this sentence is a CI definition that INCLUDES an excluded category.
+    """True iff this sentence AFFIRMATIVELY INCLUDES an excluded category.
 
-    Precision gates (all must hold):
+    This is the AFFIRMATIVE-INCLUSION signal ONLY -- the polarity-correct question
+    "does the definition pull a normally-excluded category IN?". It deliberately does
+    NOT consult the carve-out vocabulary: whether a carve-out exists ANYWHERE is a
+    separate, generous whole-text question answered by ``_has_any_exclusion_signal``,
+    and it controls fail-vs-review (never silence). Here we only require:
+
       * the sentence names the protected term AND reads like a definition;
-      * an INCLUSION verb is present (so the category is pulled IN, not used);
+      * an INCLUSION verb is present that is NOT negated ("includes" -- not "does not
+        include" / "not including"); a negated inclusion is a carve-out, not poison;
       * it names a standard exclusion category (public / already-known / etc.);
-      * NO exclusion framing is present ("shall not include", "shall not apply"...);
       * NO safe/UTSA polarity is present ("non-public", "not generally known",
         "independent economic value").
     """
@@ -187,9 +203,9 @@ def _ci_sentence_is_poison(sentence: str) -> bool:
         return False
     if not _EXCLUDED_CATEGORY.search(sentence):
         return False
-    # Polarity guards: exclusion framing, or UTSA/narrowing polarity, means the
-    # sentence is doing the NORMAL thing (carving out / secrecy test / narrow scope).
-    if _EXCLUSION_FRAMING.search(sentence):
+    # A NEGATED inclusion ("does not include publicly available") is a carve-out, not
+    # affirmative inclusion -- the only suppression at the affirmative-inclusion layer.
+    if _NEGATED_INCLUSION.search(sentence):
         return False
     if _SAFE_POLARITY.search(sentence):
         return False
@@ -250,6 +266,125 @@ def detect_ci_poison(text: str) -> dict | None:
             ),
         }
     return None
+
+
+# ---------------------------------------------------------------------------
+# CI-poison SEVERITY (fail vs review).
+#
+# The overlay path can only ever ELEVATE a clean PASS to REVIEW; it never FAILs. But
+# a base CI clause check already lands an affirmatively-poisoned definition on REVIEW
+# for unrelated reasons (e.g. "broad definition does not clearly cover enough
+# categories"), so the overlay is a no-op and the genuinely defective definition is
+# presented as merely "needs a look". A reviewer skimming a review-heavy board may
+# wave it through. The AI-path eval fixtures already expect ``fail`` for these poison
+# cases; the deterministic/overlay path under-classifies.
+#
+# This severity function lets the deterministic path reach a FAIL-tier verdict, but
+# ONLY for the unambiguous AFFIRMATIVE-INCLUSION-WITHOUT-CARVE-OUT shape:
+#
+#   * AFFIRMATIVE poison is present (the definition expressly INCLUDES, or refuses to
+#     cease treating as confidential, a standard excluded category), AND
+#   * NO recognized carve-out block survives anywhere in the document.
+#
+# A document that affirmatively poisons the definition but STILL carries a real
+# exclusion block (a self-contradiction worth a human's eyes, not a clear defect)
+# stays REVIEW. A definition that is merely narrow / simply lacks a carve-out without
+# affirmatively pulling public info IN never reaches this function at all (it is not
+# "poisoned" by ``detect_ci_poison``), so it can never be FAILed here -- the
+# conservative, no-over-failing contract the spec requires.
+# ---------------------------------------------------------------------------
+
+# ANY-exclusion-signal scan (the polarity-correct, generous gate).
+#
+# The ``fail`` tier is reserved for affirmative inclusion of an excluded category with
+# GENUINELY ZERO exclusion signal anywhere in the definition. Rather than prove a
+# carve-out via a finite allowlist of connectives (whack-a-mole, biased toward
+# guilty), we scan BROADLY for any plausible exclusion signal and, if ANY is present,
+# cap at ``review`` -- never ``fail``. Over-failing a clean NDA is far worse than
+# under-failing a poison that the base CI check already REVIEWs, so this list is meant
+# to be wide and is backed by a catch-all (a negation token near an excluded
+# category). A "fake" carve-out word that does not truly carve out the public category
+# will therefore cap at ``review`` instead of ``fail`` -- the SAFE direction.
+_EXCLUSION_SIGNAL = re.compile(
+    r"\bexclud\w*|"                       # exclude / excludes / excluding / excluded / exclusive
+    r"\bexcept\w*|\bexcepting\b|"         # except / except for/that / excepting / excepted / exception(s)
+    r"\bsave\b|"                          # save / save for / save where / save that / save only / save and excepting
+    r"\bnot\s+includ\w*|"                 # not include / not including
+    r"\bother\s+than\b|"
+    r"\bunless\b|"
+    r"\bprovided\b|"                      # provided that / provided however that
+    r"\bminus\b|"
+    r"\bless\s+any\b|"
+    r"\bbarring\b|"
+    r"\bsetting\s+aside\b|"
+    r"\baside\s+from\b|\bapart\s+from\b|"
+    r"\bto\s+the\s+exclusion\s+of\b|"
+    r"\bwith\s+the\s+carve[-\s]?out\b|\bcarve[-\s]?out\b|"
+    r"\bsubject\s+to\b|"
+    r"\bexclusive\s+of\b|"
+    r"\bto\s+the\s+extent\s+not\b|"
+    r"\bbut\s+not\b|"
+    r"--|—|–|"                  # em-dash / en-dash carve-out
+    r"\(",                                 # parenthetical carve-out
+    re.IGNORECASE,
+)
+
+# Catch-all: a negation token within ~60 chars (either side) of an excluded-category
+# mention. Generous net for carve-out phrasings the vocabulary above misses
+# ("...shall not be Confidential Information", "no longer protected", ...).
+_NEGATION_TOKEN = re.compile(r"\b(?:not|no|never|excl)\w*", re.IGNORECASE)
+
+
+def _has_any_exclusion_signal(text: str) -> bool:
+    """True iff ANY plausible exclusion/carve-out signal appears in the definition.
+
+    Polarity-correct and intentionally GENEROUS: presence of any signal caps the
+    verdict at ``review`` (never ``fail``). Two layers:
+      1. a broad vocabulary OR (``_EXCLUSION_SIGNAL``), plus
+      2. a catch-all: a negation token within ~60 chars of an excluded category.
+    """
+    if _EXCLUSION_SIGNAL.search(text or ""):
+        return True
+    # Catch-all proximity check: negation token near an excluded-category mention.
+    for cat in _EXCLUDED_CATEGORY.finditer(text or ""):
+        window = (text or "")[max(0, cat.start() - 60): cat.end() + 60]
+        if _NEGATION_TOKEN.search(window):
+            return True
+    return False
+
+
+def ci_poison_severity(text: str) -> str | None:
+    """Severity of any CI-definition poison: ``"fail"`` | ``"review"`` | ``None``.
+
+    Polarity-correct decision (biased HARD toward NOT failing):
+
+    * ``None``  -- NO affirmative inclusion of an excluded category. A merely-narrow
+      definition, or a pure carve-out block, is not poison and is never failed.
+    * ``"fail"`` -- affirmative inclusion of an excluded category AND GENUINELY ZERO
+      exclusion signal of any kind anywhere in the definition (the rare, high-
+      confidence path: "Confidential Information includes publicly available info"
+      with no exclusion anywhere).
+    * ``"review"`` -- affirmative inclusion BUT some plausible exclusion signal is
+      present anywhere (an inline carve-out, a separate carve-out block, or even a
+      "fake" carve-out word): capped at REVIEW for a human, NEVER failed.
+
+    Fail-safe: any error returns ``None`` so the detector can never crash a caller.
+    """
+    try:
+        if detect_ci_poison(text) is None:
+            return None
+        # The OBFUSCATED-NEGATION poison (tp07) is a frame that explicitly OVERRIDES
+        # the carve-outs ("no exclusions of any kind shall apply" / "shall not cease
+        # to be Confidential Information"). That frame is the INVERSE of a carve-out,
+        # so the generous exclusion-signal scan (which would see its "no exclusions"
+        # negation tokens) must NOT demote it: it is a high-confidence FAIL on its own.
+        if _obfuscated_negation_poison(text):
+            return "fail"
+        # Plain affirmative inclusion: FAIL only when GENUINELY ZERO exclusion signal
+        # exists anywhere; any plausible carve-out signal caps at REVIEW.
+        return "review" if _has_any_exclusion_signal(text) else "fail"
+    except Exception:  # noqa: BLE001 -- fail-safe.
+        return None
 
 
 # ---------------------------------------------------------------------------
