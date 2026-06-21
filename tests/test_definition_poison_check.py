@@ -249,6 +249,11 @@ class DefinitionPoisonTests(unittest.TestCase):
             "except for information independently developed",
             "other than information that is publicly available",
             "excluding information that is in the public domain",
+            # Inflected "except" forms + the imperative "save and excepting"
+            # (3rd-pass over-fail residue).
+            "excepting information that is publicly available",
+            "excepting any information already known to the Receiving Party",
+            "save and excepting information that is in the public domain",
         ]
         for tail in templates:
             text = (
@@ -259,6 +264,20 @@ class DefinitionPoisonTests(unittest.TestCase):
                 ci_poison_severity(text), "fail",
                 f"inline carve-out '{tail}' must not be FAILed",
             )
+
+    def test_severity_excepting_and_save_and_excepting_never_fail(self):
+        # 3rd-pass over-fail residue: the gate flagged these exact clean shapes as
+        # poison FAIL. The inflected "excepting" and the imperative "save and
+        # excepting" must register as surviving inline carve-outs -> NOT fail.
+        for text in (
+            "Confidential Information means all business and technical information "
+            "disclosed, excepting information that is publicly available.",
+            "Confidential Information means all business and technical information "
+            "disclosed, excepting any information already known to the Receiving Party.",
+            "Confidential Information means all business and technical information "
+            "disclosed, save and excepting information that is in the public domain.",
+        ):
+            self.assertNotEqual(ci_poison_severity(text), "fail", text)
 
     def test_severity_realistic_8category_inline_carveout_not_fail(self):
         # The exact realistic shape the gate flagged: a broad 8-category definition

@@ -159,11 +159,16 @@ _EXCLUDED_CATEGORY = re.compile(
 # "to the exclusion of" instead of "shall not include" is NOT.
 _EXCLUSION_FRAMING = re.compile(
     r"shall\s+not\s+include|does\s+not\s+include|do\s+not\s+include|not\s+include|"
-    r"\bexclud(?:e|es|ing|ed)\b|\bexception(?:s)?\b|\bother\s+than\b|\bexcept(?:\s+(?:for|that))?\b|"
+    r"\bexclud(?:e|es|ing|ed)\b|\bexception(?:s)?\b|\bother\s+than\b|"
+    # "except", "except for/that", and the inflected "excepting"/"excepted" -- all
+    # ordinary inline carve-out framing.
+    r"\bexcept(?:ing|ed|\s+(?:for|that))?\b|"
     r"shall\s+not\s+apply|do(?:es)?\s+not\s+apply|obligations?\s+[^.;:]{0,40}?not\s+apply|"
     r"not\s+(?:be\s+)?(?:deemed|considered|treated|regarded)\s+(?:as\s+)?confidential|"
-    # Ordinary carve-out connectives (generously recognized, incl. inline use).
-    r"\bsave\s+for\b|\bsaving(?:\s+and\s+excepting)?\b|\baside\s+from\b|\bapart\s+from\b|"
+    # Ordinary carve-out connectives (generously recognized, incl. inline use). Both
+    # the gerund "saving and excepting" and the imperative "save and excepting" forms.
+    r"\bsave\s+for\b|\bsave\s+and\s+excepting\b|\bsaving(?:\s+and\s+excepting)?\b|"
+    r"\baside\s+from\b|\bapart\s+from\b|"
     r"\bto\s+the\s+exclusion\s+of\b|\bunless(?:\s+and\s+until)?\b|\bless\s+any\b|"
     r"\bwith\s+the\s+(?:sole\s+)?exception\s+of\b",
     re.IGNORECASE,
