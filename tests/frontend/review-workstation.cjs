@@ -3493,7 +3493,7 @@ async function testRepositoryMatterImportAndFreshReview(page) {
   await assertTextContains(page.locator(".repository-card").first(), deleteStem);
   const deleteCard = page.locator(".repository-card").filter({ hasText: deleteStem });
   await deleteCard.getByRole("button", { name: "Delete NDA" }).click();
-  await assertTextContains(deleteCard, "Delete matter and stored document?");
+  await assertTextContains(deleteCard, "Delete NDA and stored document?");
   assert.equal(await page.locator(".repository-card").filter({ hasText: deleteStem }).count(), 1);
   assert.equal(await page.locator('[data-repository-count="in_review"]').innerText(), "2");
   await deleteCard.getByRole("button", { name: "Cancel delete NDA" }).click();
@@ -4884,7 +4884,7 @@ async function testManualUploadModal(page) {
   await waitForRepositoryCount(page, "in_review", "1");
   const uploadedCard = page.locator('[data-repository-list="in_review"] .repository-card').filter({ hasText: stem });
   await uploadedCard.getByRole("button", { name: "Delete NDA" }).click();
-  await assertTextContains(uploadedCard, "Delete matter and stored document?");
+  await assertTextContains(uploadedCard, "Delete NDA and stored document?");
   await uploadedCard.getByRole("button", { name: "Confirm delete NDA" }).click();
   await page.waitForFunction(
     (uploadedStem) => !document.querySelector('[data-repository-list="in_review"]')?.innerText.includes(uploadedStem),
@@ -5247,7 +5247,7 @@ async function testRepositorySaveToDriveSuccess(page) {
   );
   assert.equal(await folderLink.getAttribute("target"), "_blank");
   assert.equal(await folderLink.getAttribute("rel"), "noopener");
-  await assertTextContains(folderLink, "Open matter folder");
+  await assertTextContains(folderLink, "Open NDA folder");
 
   // Compact per-file list: filename -> drive_file_url for each synced artifact.
   const fileLinks = panel.locator(".repository-detail-message a.repository-drive-file-link");

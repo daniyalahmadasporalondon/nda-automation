@@ -210,10 +210,10 @@ test("renderDetailPanel still renders all sections PLUS Signatures", () => {
   assert.match(captured, /Metadata Details/);
   assert.match(captured, /Gmail Routing/);
   assert.match(captured, /Review Checks/);
-  assert.match(captured, /Matter Timeline/);
+  assert.match(captured, /NDA Timeline/);
   assert.match(captured, /Signatures/);
   // The new section sits before the timeline in the side column.
-  assert.ok(captured.indexOf("Signatures") < captured.indexOf("Matter Timeline"));
+  assert.ok(captured.indexOf("Signatures") < captured.indexOf("NDA Timeline"));
 });
 
 process.stdout.write(`\n${passed} passed\n`);
