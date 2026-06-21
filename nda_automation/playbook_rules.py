@@ -322,6 +322,33 @@ CLAUSE_TEXT_LIST_FIELDS = {
     "taxonomy_groups",
 }
 
+# Per-clause check-driving cue lists that, historically, fed ONLY the deterministic
+# detector and never reached the per-clause AI packet -- so editing one of them changed
+# the deterministic check but NOT the live AI review (the AI is the authoritative
+# reviewer). Surface each, neutralized + per-item/list capped, as a detection cue
+# alongside ``search_terms`` so an admin's edit genuinely round-trips to the AI.
+#
+# Scope deliberately excludes:
+#  * ``search_terms`` / ``semantic_signals`` -- already in the packet.
+#  * ``taxonomy_groups`` -- a corpus-facet grouping, not a detection cue the model reads.
+#  * ``approved_laws`` / ``law_phrases`` / governing-law structured fields -- already
+#    reach the model via the DERIVED requirement/preferred_position text and the binding
+#    policy block; surfacing them raw would duplicate, not add reach.
+#  * ``indefinite_non_survival_objects`` / ``allowed_exclusions`` -- consumed only as
+#    structured policy inputs, not literal-term detection cues in the checkers.
+AI_PACKET_CUE_LIST_FIELDS: tuple[str, ...] = (
+    "definition_categories",
+    "exclusion_context_terms",
+    "indefinite_terms",
+    "independent_development_qualification_terms",
+    "independent_development_terms",
+    "longer_survival_carve_out_terms",
+    "one_way_terms",
+    "problematic_exclusion_terms",
+    "role_reciprocity_terms",
+    "role_terms",
+)
+
 PLAYBOOK_POLICY_SCHEMA: dict[str, object] = {
     "version": PLAYBOOK_POLICY_SCHEMA_VERSION,
     "top_level": {
@@ -456,6 +483,28 @@ _DERIVED_READONLY_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
+def derived_policy_fields(clause: Mapping[str, Any] | str) -> tuple[str, ...]:
+    """Field names on ``clause`` that are SERVER-DERIVED (read-only in the editor).
+
+    For ``governing_law`` / ``term_and_survival`` the ``preferred_position`` and
+    ``check_trigger`` are recomputed by the normalizers from the structured source
+    (``approved_laws`` / ``max_term_years``), overwriting any admin edit. The FE needs a
+    programmatic way to know which (clause, field) pairs are derived so it can grey those
+    inputs out with an explanation rather than letting an edit silently get discarded.
+
+    Accepts either a clause mapping or a bare clause id; returns the derived field names
+    for that clause (empty for clauses with no derived fields). This is the single source
+    of truth that both the binding ``_DERIVED_READONLY_FIELDS`` re-derivation and the
+    playbook GET payload's ``derived: true`` markers read from, so the two never drift.
+    """
+
+    if isinstance(clause, Mapping):
+        clause_id = str(clause.get("id") or "")
+    else:
+        clause_id = str(clause or "")
+    return _DERIVED_READONLY_FIELDS.get(clause_id, ())
+
+
 def _derived_readonly_overrides(
     normalized: Mapping[str, Any], raw_clause: dict[str, Any]
 ) -> dict[str, str]:
@@ -529,6 +578,15 @@ def clause_rules_for_ai(clause: Mapping[str, Any]) -> dict[str, Any]:
     rationale = _authored(normalized.get("rationale"), AUTHORED_LONG_TEXT_MAX_CHARS).strip()
     if rationale:
         packet_clause["rationale"] = rationale
+    # Check-driving cue lists that used to feed ONLY the deterministic detector. Surface
+    # each (neutralized + per-item/list capped, the SAME treatment search_terms gets) so
+    # an admin's edit to e.g. confidential_information.definition_categories or
+    # mutuality.one_way_terms genuinely round-trips to the live AI reviewer. Only emit a
+    # field when it carries entries, so the packet is not padded with empty keys.
+    for cue_field in AI_PACKET_CUE_LIST_FIELDS:
+        cues = _authored_term_list(normalized.get(cue_field))
+        if cues:
+            packet_clause[cue_field] = cues
     # prohibited_position_patterns used to reach the model only as a hardcoded
     # label->description gloss in the binding policy block; surface the AUTHORED entries
     # (label + gloss/humanized fallback + neutralized pattern text) here so editing a
