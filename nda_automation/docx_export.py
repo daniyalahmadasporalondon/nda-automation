@@ -20,6 +20,7 @@ from .docx_text import DocxExtractionError, validate_docx_archive, validate_docx
 from .docx_comments import (
     COMMENTS_EXTENDED_CONTENT_TYPE,
     COMMENTS_EXTENDED_RELATIONSHIP_TYPE,
+    EXPORT_COMMENT_AUTHOR,
     _apply_comment_anchor,
     _comments_extended_xml_for_assigned,
     _comments_xml_with_appended_comments,
@@ -1165,7 +1166,9 @@ def _prepared_review_comments(review_result: ReviewResult) -> List[dict]:
         if not paragraph_id:
             continue
         prepared.append({
-            "author": str(comment.get("author") or "Reviewer").strip() or "Reviewer",
+            # SECURITY: force the fixed non-PII export author; never propagate a
+            # client-supplied or actor-derived comment["author"] into the document.
+            "author": EXPORT_COMMENT_AUTHOR,
             "clause_id": str(comment.get("clause_id") or "").strip(),
             "clause_name": str(comment.get("clause_name") or "").strip(),
             "created_at": str(comment.get("created_at") or "").strip(),

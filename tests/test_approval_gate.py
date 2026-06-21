@@ -398,6 +398,137 @@ class ModifyExportCoverageTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+# SECURITY: reviewer PII must NOT leak into the exported reviewed-DOCX/PDF.
+# The authenticated reviewer's email (decision.actor) — and any client-supplied
+# comment author — must never become the w:author of an exported comment, since
+# reviewed artifacts are downloadable and may be forwarded to the counterparty.
+# --------------------------------------------------------------------------- #
+class ReviewerAuthorPiiLeakTests(unittest.TestCase):
+    REVIEWER_EMAIL = "reviewer@aspora.com"
+
+    def _build_reviewed_docx_with_comment_author(self, actor):
+        """Build a full reviewed-DOCX where a comment decision carries ``actor`` and
+        return (docx_bytes, comments_xml_text)."""
+        from nda_automation import docx_package_renderer, export_service
+        from nda_automation.checker import review_nda
+        from nda_automation.docx_text import extract_docx_paragraphs
+        from tests.test_docx_export import make_source_docx
+
+        source_paragraphs = [
+            "Intro paragraph that stays unchanged.",
+            "This Agreement shall be governed by the laws of California.",
+            "The confidentiality obligations survive for three years.",
+        ]
+        source_docx = make_source_docx(list(source_paragraphs))
+        extracted = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(p["text"]) for p in extracted)
+        review_result = review_nda(source_text, paragraphs=extracted)
+        review_result["extracted_text"] = source_text
+
+        matter = {
+            "id": "m-pii",
+            "review_result": review_result,
+            "reviewer_decisions": {
+                "governing_law": {
+                    "action": "comment",
+                    "comment": "Counsel should confirm this clause.",
+                    "actor": actor,
+                    "decided_at": "t",
+                },
+            },
+        }
+        payload = approval.reviewed_docx_payload(matter)
+        self.assertEqual(len(payload["review_comments"]), 1)
+
+        rendered_result = deepcopy(review_result)
+        export_service.apply_review_comments(rendered_result, payload.get("review_comments"))
+        result = docx_package_renderer.render_source_redline_package(
+            source_docx,
+            rendered_result,
+            expected_source_text=source_text,
+            expected_redline_edits=rendered_result.get("redline_edits", []),
+        )
+        comments_xml = ""
+        with ZipFile(BytesIO(result.data)) as archive:
+            for name in archive.namelist():
+                if name == "word/comments.xml":
+                    comments_xml = archive.read(name).decode("utf-8")
+        return result.data, comments_xml
+
+    def test_reviewer_email_actor_never_lands_in_exported_docx(self):
+        import re
+
+        docx_bytes, comments_xml = self._build_reviewed_docx_with_comment_author(
+            self.REVIEWER_EMAIL
+        )
+        # The comment is present...
+        self.assertIn("Counsel should confirm this clause.", comments_xml)
+        # ...but attributed to the fixed non-PII author, with NO email anywhere.
+        author = re.search(r'w:author="([^"]*)"', comments_xml)
+        self.assertIsNotNone(author, "exported comment must carry a w:author")
+        self.assertEqual(author.group(1), "Reviewer")
+        self.assertNotIn(self.REVIEWER_EMAIL, comments_xml)
+        # Defense in depth: the email must not appear in ANY part of the .docx.
+        with ZipFile(BytesIO(docx_bytes)) as archive:
+            for name in archive.namelist():
+                self.assertNotIn(
+                    self.REVIEWER_EMAIL,
+                    archive.read(name).decode("utf-8", errors="ignore"),
+                    f"reviewer email leaked into docx part {name}",
+                )
+
+    def test_client_supplied_comment_author_is_ignored_on_export(self):
+        # A direct API caller could inject an arbitrary author; the export must force
+        # the server-side fixed author regardless of what the caller passes.
+        from nda_automation import docx_export, export_service
+
+        injected = export_service.clean_review_comments(
+            [
+                {
+                    "id": "c1",
+                    "clause_id": "governing_law",
+                    "paragraph_id": "p1",
+                    "text": "injected",
+                    "author": "attacker@evil.com",
+                }
+            ]
+        )
+        # The cleaner drops the client-supplied author outright.
+        self.assertNotIn("author", injected[0])
+        prepared = docx_export._prepared_review_comments(
+            {
+                "review_comments": [
+                    {
+                        "clause_id": "governing_law",
+                        "paragraph_id": "p1",
+                        "text": "injected",
+                        "author": "attacker@evil.com",
+                    }
+                ],
+                "clauses": [],
+            }
+        )
+        self.assertEqual(prepared[0]["author"], "Reviewer")
+
+    def test_reviewed_docx_payload_drops_actor_author(self):
+        matter = {
+            "id": "m1",
+            "review_result": {"clauses": [], "redline_edits": []},
+            "reviewer_decisions": {
+                "governing_law": {
+                    "action": "comment",
+                    "comment": "Please review.",
+                    "actor": self.REVIEWER_EMAIL,
+                    "decided_at": "t",
+                },
+            },
+        }
+        payload = approval.reviewed_docx_payload(matter)
+        self.assertEqual(len(payload["review_comments"]), 1)
+        self.assertNotIn("author", payload["review_comments"][0])
+
+
+# --------------------------------------------------------------------------- #
 # HTTP endpoints
 # --------------------------------------------------------------------------- #
 class ApprovalEndpointTests(unittest.TestCase):

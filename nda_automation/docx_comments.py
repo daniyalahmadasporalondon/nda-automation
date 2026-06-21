@@ -31,6 +31,15 @@ W15_NS = "http://schemas.microsoft.com/office/word/2012/wordml"
 ET.register_namespace("w14", W14_NS)
 ET.register_namespace("w15", W15_NS)
 
+# SECURITY: every comment written into an EXPORTED document is attributed to this
+# fixed, non-PII display author -- never the authenticated reviewer's email or any
+# upstream/client-supplied ``author``. Reviewed-DOCX/PDF artifacts are downloadable
+# and may be forwarded to a counterparty; stamping the internal approver's email as
+# ``w:author`` would leak their PII. The actor is still recorded internally
+# (timeline/audit); only the document-facing author is anonymized here, at the single
+# point where ``w:author``/``w:initials`` are written (see ``_word_comment``).
+EXPORT_COMMENT_AUTHOR = "Reviewer"
+
 COMMENTS_EXTENDED_CONTENT_TYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml"
 )
@@ -184,11 +193,15 @@ def _word_comment(comment_id: str, para_id: str, comment: dict) -> ET.Element:
     created_at = str(comment.get("created_at") or "").strip()
     if not created_at:
         created_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    # SECURITY: force the fixed, non-PII export author here -- the single point where
+    # ``w:author``/``w:initials`` are written. ``comment["author"]`` may carry the
+    # authenticated reviewer's email (decision.actor) or a client-supplied value; it is
+    # deliberately ignored so no internal PII can reach a forwarded reviewed-DOCX/PDF.
     element = ET.Element(_w_tag("comment"), {
         _w_tag("id"): comment_id,
-        _w_tag("author"): str(comment.get("author") or "Reviewer")[:255],
+        _w_tag("author"): EXPORT_COMMENT_AUTHOR,
         _w_tag("date"): created_at,
-        _w_tag("initials"): _comment_initials(str(comment.get("author") or "Reviewer")),
+        _w_tag("initials"): _comment_initials(EXPORT_COMMENT_AUTHOR),
     })
     paragraph_texts = _comment_paragraph_texts(comment) or [""]
     for paragraph_text in paragraph_texts:

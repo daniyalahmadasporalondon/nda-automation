@@ -320,11 +320,16 @@ def reviewed_docx_payload(matter: dict[str, Any]) -> dict[str, Any]:
 
         comment = str(decision.get("comment") or "").strip()
         if comment:
+            # SECURITY: do NOT carry decision.actor (the authenticated reviewer's
+            # email) into the exported-comment author -- that PII would land in the
+            # downloadable reviewed-DOCX/PDF if forwarded to a counterparty. The actor
+            # is still recorded internally via the decision/timeline; the exported
+            # document author is forced to a fixed non-PII label at the export
+            # write-site (docx_comments.EXPORT_COMMENT_AUTHOR).
             review_comments.append({
                 "id": f"decision-{clause_id}",
                 "clause_id": clause_id,
                 "text": comment,
-                "author": str(decision.get("actor") or "reviewer"),
                 "scope": "clause",
             })
 

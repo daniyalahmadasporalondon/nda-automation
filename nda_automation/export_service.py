@@ -109,7 +109,10 @@ def clean_review_comments(review_comments: object) -> list[dict]:
             "id": str(comment.get("id") or f"comment-{clause_id or paragraph_id}").strip()[:160],
             "text": text,
         }
-        for key in ("clause_id", "clause_name", "paragraph_id", "parent_id", "author", "created_at", "scope", "selected_text"):
+        # SECURITY: "author" is deliberately NOT carried through. A direct API caller
+        # could otherwise inject an arbitrary w:author into the exported document; the
+        # export write-site forces a fixed non-PII author (docx_comments.EXPORT_COMMENT_AUTHOR).
+        for key in ("clause_id", "clause_name", "paragraph_id", "parent_id", "created_at", "scope", "selected_text"):
             value = str(comment.get(key) or "").strip()
             if value:
                 clean_comment[key] = value[:1000 if key == "selected_text" else 240]
