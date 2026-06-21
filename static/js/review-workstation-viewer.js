@@ -28,10 +28,18 @@ function applyReviewFindReplace(paragraph, newText, oldText) {
   if (!paragraph) return;
   const before = oldText !== undefined ? String(oldText) : String(paragraph.text || "");
   if (before === newText) return;
+  // Capture the inline runs BEFORE the retile so Undo can restore the original
+  // bold/italic/per-run-font tiling. A plain paragraph_text undo only restores
+  // text and would leave the runs tiling the post-replace text -> formatting lost.
+  // Mirrors the hadRuns/previousRuns shape pushParagraphFormatHistory uses; runs
+  // are deep-copied so a later mutation can't corrupt the captured undo state.
+  const hadRuns = Object.prototype.hasOwnProperty.call(paragraph, "runs") && Array.isArray(paragraph.runs);
   pushReviewEditHistoryEntry({
     paragraphId: paragraph.id,
     previousText: before,
     type: "paragraph_text",
+    hadRuns,
+    previousRuns: hadRuns ? paragraph.runs.map((run) => ({ ...run })) : undefined,
   });
   if (window.findReplace && typeof window.findReplace._retileRunsForReplace === "function") {
     const retiled = window.findReplace._retileRunsForReplace(paragraph.runs, before, newText);
@@ -226,6 +234,16 @@ function undoLastViewerEdit() {
   }
 
   paragraph.text = lastEdit.previousText;
+  // A Find & Replace entry also captured the pre-retile runs (hadRuns); restore
+  // them so inline bold/italic/per-run font survives the undo. A normal typed edit
+  // carries no captured runs and has always relied on the retile-from-text guards,
+  // so leave its runs untouched. Deep-copy to keep the undo state immutable; after
+  // this the runs.join("") === text invariant holds again.
+  if (lastEdit.hadRuns) {
+    paragraph.runs = Array.isArray(lastEdit.previousRuns)
+      ? lastEdit.previousRuns.map((run) => ({ ...run }))
+      : [];
+  }
   syncReviewSourceFromParagraphs();
   markRedlineDraftDirty();
   markSourceEdited("Undid viewer edit", { preserveSourceDocument: true });
