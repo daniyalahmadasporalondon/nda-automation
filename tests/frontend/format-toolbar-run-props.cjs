@@ -33,6 +33,9 @@ const PAGE_HTML = `<!doctype html><html><body>
     <button id="studioFormatItalic" type="button" aria-pressed="false">I</button>
     <button id="studioFormatUnderline" type="button" aria-pressed="false">U</button>
     <button id="studioFormatStrike" type="button" aria-pressed="false">S</button>
+    <button id="studioFormatSuperscript" type="button" aria-pressed="false">x2</button>
+    <button id="studioFormatSubscript" type="button" aria-pressed="false">x2</button>
+    <button id="studioFormatClear" type="button">clear</button>
     <input type="color" id="studioFormatColor" value="#000000">
     <select id="studioFormatHighlight">
       <option value="">No highlight</option>
@@ -121,6 +124,83 @@ async function main() {
     await page.selectOption("#studioFormatHighlight", "");
     runs = await activeRuns(page);
     assert.ok(runs && runs.every((r) => !("highlight" in r)), `highlight clear failed, got ${JSON.stringify(runs)}`);
+
+    // ---- Superscript / Subscript (vertAlign) toggle ---------------------------
+    // Superscript -> run carries vertAlign:"superscript".
+    await page.click("#studioFormatSuperscript");
+    runs = await activeRuns(page);
+    assert.ok(runs && runs.every((r) => r.vertAlign === "superscript"), `superscript not set, got ${JSON.stringify(runs)}`);
+    assert.equal(
+      await page.getAttribute("#studioFormatSuperscript", "aria-pressed"),
+      "true",
+      "superscript button not pressed",
+    );
+    // Subscript over the same selection REPLACES superscript (mutually exclusive).
+    await page.click("#studioFormatSubscript");
+    runs = await activeRuns(page);
+    assert.ok(runs && runs.every((r) => r.vertAlign === "subscript"), `subscript did not replace superscript, got ${JSON.stringify(runs)}`);
+    assert.equal(
+      await page.getAttribute("#studioFormatSuperscript", "aria-pressed"),
+      "false",
+      "superscript should no longer be pressed after subscript",
+    );
+    // Toggling subscript again -> unset (vertAlign removed).
+    await page.click("#studioFormatSubscript");
+    runs = await activeRuns(page);
+    assert.ok(runs && runs.every((r) => !("vertAlign" in r)), `subscript toggle-off failed, got ${JSON.stringify(runs)}`);
+
+    // ---- Clear formatting -----------------------------------------------------
+    // Stack several run props, then Clear strips them all over the selection.
+    await page.click("#studioFormatBold");
+    await page.click("#studioFormatItalic");
+    await page.click("#studioFormatSuperscript");
+    await page.evaluate(() => {
+      const input = document.getElementById("studioFormatColor");
+      input.value = "#112233";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    runs = await activeRuns(page);
+    assert.ok(
+      runs && runs.every((r) => r.bold && r.italic && r.vertAlign === "superscript" && r.color === "112233"),
+      `pre-clear formatting not set, got ${JSON.stringify(runs)}`,
+    );
+    await page.click("#studioFormatClear");
+    runs = await activeRuns(page);
+    // Every run is now plain text only (no formatting keys), but the TEXT survives.
+    assert.ok(
+      runs && runs.every((r) => Object.keys(r).filter((k) => k !== "text").length === 0),
+      `clear formatting left props behind, got ${JSON.stringify(runs)}`,
+    );
+    assert.equal(
+      runs.map((r) => r.text).join(""),
+      PARAGRAPH_TEXT,
+      "clear formatting must not alter the text",
+    );
+
+    // ---- Ctrl/Cmd+B / +I / +U keyboard shortcuts -----------------------------
+    // A keydown of Ctrl+B on the editable routes to the existing bold toggle. The
+    // module binds the keydown in bindFormatToolbar's editable loop; dispatch a
+    // synthetic event and assert the run model flipped.
+    const ctrlB = await page.evaluate(() => {
+      const editable = document.querySelector('[data-editable-paragraph-id="p1"]');
+      editable.dispatchEvent(new KeyboardEvent("keydown", { key: "b", ctrlKey: true, bubbles: true, cancelable: true }));
+      return (window.state.reviewParagraphs[0].runs || []).every((r) => r.bold === true);
+    });
+    assert.ok(ctrlB, "Ctrl+B keydown did not set bold on the runs");
+    // Ctrl+I toggles italic on (bold retained).
+    const ctrlI = await page.evaluate(() => {
+      const editable = document.querySelector('[data-editable-paragraph-id="p1"]');
+      editable.dispatchEvent(new KeyboardEvent("keydown", { key: "i", ctrlKey: true, bubbles: true, cancelable: true }));
+      return (window.state.reviewParagraphs[0].runs || []).every((r) => r.italic === true && r.bold === true);
+    });
+    assert.ok(ctrlI, "Ctrl+I keydown did not set italic on the runs");
+    // Ctrl+B again toggles bold OFF (italic retained) — proves it routes to the toggle.
+    const ctrlBoff = await page.evaluate(() => {
+      const editable = document.querySelector('[data-editable-paragraph-id="p1"]');
+      editable.dispatchEvent(new KeyboardEvent("keydown", { key: "b", ctrlKey: true, bubbles: true, cancelable: true }));
+      return (window.state.reviewParagraphs[0].runs || []).every((r) => !("bold" in r) && r.italic === true);
+    });
+    assert.ok(ctrlBoff, "Ctrl+B keydown did not toggle bold back off");
 
     // ---- CSS-injection defence (run color/highlight rendering) ----------------
     // inlineRunStyle / highlightCssColor interpolate untrusted run color/highlight

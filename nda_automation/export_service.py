@@ -178,6 +178,10 @@ MAX_FORMAT_OPS = 200
 MAX_FONT_NAME_CHARS = 120
 MAX_REPLACEMENT_RUNS = 2000
 _FORMAT_OP_SCOPES = {"paragraph", "run"}
+# Properties are matched case-insensitively (the payload is lowercased before the
+# membership test), so ``vertalign`` here matches the frontend's ``vertAlign`` op;
+# it is canonicalised back to camelCase on emit so the redline_xml applier (which
+# checks ``"vertAlign"``) recognises it.
 _FORMAT_OP_PROPERTIES = {
     "alignment",
     "font",
@@ -188,6 +192,7 @@ _FORMAT_OP_PROPERTIES = {
     "strike",
     "color",
     "highlight",
+    "vertalign",
 }
 _FORMAT_OP_PARAGRAPH_PROPERTIES = {"alignment", "font", "size"}
 _FORMAT_OP_RUN_PROPERTIES = {
@@ -199,7 +204,12 @@ _FORMAT_OP_RUN_PROPERTIES = {
     "strike",
     "color",
     "highlight",
+    "vertalign",
 }
+# Lowercased-property -> canonical camelCase emitted on the cleaned op. Only props
+# whose canonical token isn't already all-lowercase need an entry.
+_FORMAT_OP_PROPERTY_CANONICAL = {"vertalign": "vertAlign"}
+_FORMAT_OP_VERT_ALIGNS = {"superscript", "subscript"}
 _FORMAT_OP_ALIGNMENTS = {"left", "center", "right", "justify"}
 _FORMAT_OP_HIGHLIGHTS = {
     "black": "black",
@@ -249,7 +259,10 @@ def _clean_format_ops(format_ops: object, original_text: str) -> list[dict]:
         if scope == "run" and prop not in _FORMAT_OP_RUN_PROPERTIES:
             continue
 
-        clean_op: dict = {"scope": scope, "property": prop}
+        # Emit the canonical property token (e.g. vertalign -> vertAlign) so the
+        # downstream redline_xml applier, which matches camelCase, recognises it.
+        canonical_prop = _FORMAT_OP_PROPERTY_CANONICAL.get(prop, prop)
+        clean_op: dict = {"scope": scope, "property": canonical_prop}
         if prop == "alignment":
             to_value = _clean_alignment_value(op.get("to"))
             if to_value is None:
@@ -274,6 +287,13 @@ def _clean_format_ops(format_ops: object, original_text: str) -> list[dict]:
             clean_op["from"] = _clean_highlight_value(op.get("from"))
             if not clean_op["to"]:
                 continue
+        elif prop == "vertalign":
+            to_value = str(op.get("to") or "").strip().lower()
+            if to_value not in _FORMAT_OP_VERT_ALIGNS:
+                continue
+            clean_op["to"] = to_value
+            from_value = str(op.get("from") or "").strip().lower()
+            clean_op["from"] = from_value if from_value in _FORMAT_OP_VERT_ALIGNS else ""
         else:
             # Boolean run toggles.
             clean_op["to"] = bool(op.get("to"))
@@ -330,6 +350,9 @@ def _clean_replacement_runs(replacement_runs: object, replacement_text: str) -> 
         highlight = _clean_highlight_value(run.get("highlight"))
         if highlight:
             clean_run["highlight"] = highlight
+        vert_align = str(run.get("vertAlign") or "").strip().lower()
+        if vert_align in _FORMAT_OP_VERT_ALIGNS:
+            clean_run["vertAlign"] = vert_align
         cleaned.append(clean_run)
 
     if "".join(run["text"] for run in cleaned) != replacement_text:
