@@ -376,6 +376,7 @@ class ContractStructureTests(unittest.TestCase):
             "label": "Section II.A",
             "heading": "Permitted Disclosures",
             "level": 2,
+            "role": "operative",
             "paragraph_ids": ["p6", "p7"],
             "start_index": 6,
             "end_index": 7,
