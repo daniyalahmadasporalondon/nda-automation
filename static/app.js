@@ -271,6 +271,11 @@ const notificationsController = createNotificationsController({
 // instead of a cryptic JSON parse error. Kept to a single line so this file stays
 // merge-friendly with other in-flight branches.
 globalThis.AuthExpired?.register?.({ notify: notificationsController.notify });
+// Bridge the shared success-toast onto window so modules that aren't handed the
+// controller directly (e.g. playbook-view.js's nested Entities & Courts save) can
+// flash a transient green success toast through the ONE notification center,
+// rather than instantiating a second toaster. Guarded at every call site.
+window.notifySuccess = (title, subtitle) => notificationsController.notifySuccess(title, subtitle);
 const manualUploadController = createManualUploadController({
   modalNode: manualUploadModal,
   closeButton: manualUploadModalClose,
@@ -482,6 +487,10 @@ adminEntitiesController = createAdminEntitiesController({
   saveButton: document.querySelector("#playbookEntitiesSaveButton"),
   cardTemplate: document.querySelector("#adminEntityCardTemplate"),
   addressTemplate: document.querySelector("#adminEntityAddressTemplate"),
+  // Fire the transient green SUCCESS toast on a finished registry save (this
+  // replaced the lingering inline green "Registry saved." text). Reuses the one
+  // in-app notification toaster — same machinery as the generate/inbound toasts.
+  notifySuccess: (title, subtitle) => notificationsController.notifySuccess(title, subtitle),
 });
 // SELF-SERVE: every authenticated user (admin or not) edits their OWN
 // signature here, through /api/me/personalisation-settings (no `endpoint` =

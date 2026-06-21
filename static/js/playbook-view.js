@@ -2041,9 +2041,16 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
           throw new Error(detail);
         }
         const payload = await response.json();
+        // SUCCESS feedback is a transient green toast (sibling of the Signing
+        // Entities registry save), not lingering inline green text. applyPayload()
+        // -> render() already settles the inline message to neutral.
         applyPayload(payload);
-        setMessage("Saved.", "ok");
+        if (typeof window !== "undefined" && typeof window.notifySuccess === "function") {
+          window.notifySuccess("Entities & courts saved", "Governing law and forum updated");
+        }
       } catch (error) {
+        // A save FAILURE stays visible as a persistent inline error (never a
+        // transient toast that would vanish before it is read).
         if (saveButton) saveButton.disabled = false;
         setMessage(error.message || "Entities & courts could not be saved", "error");
       }

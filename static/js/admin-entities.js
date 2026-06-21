@@ -48,6 +48,11 @@ const AdminEntitiesView = (() => {
     saveButton,
     cardTemplate,
     addressTemplate,
+    // Optional transient SUCCESS-toast sink. Injected by app.js as
+    // notificationsController.notifySuccess so a finished save flashes a green
+    // toast through the ONE in-app notification center (no second toaster).
+    // Absent in the Node test harness -> the call is guarded.
+    notifySuccess,
   }) {
     // The in-memory working copy. `entities` is an array of plain objects the
     // user edits; `lawOptions` is [{id,label}] sourced from the playbook.
@@ -55,6 +60,11 @@ const AdminEntitiesView = (() => {
     let playbookAvailable = false;
     let dirty = false;
     let loaded = false;
+    // True only while a POST is in flight ("Saving registry..."). The Save button
+    // is greyed out during this window and in the not-loaded/read-only case; at
+    // every other rest it is a ready PURPLE CTA (a no-pending-changes click is a
+    // harmless no-op re-save), so a finished save never leaves it disabled-grey.
+    let saving = false;
 
     refreshButton?.addEventListener("click", () => {
       load();
@@ -75,12 +85,23 @@ const AdminEntitiesView = (() => {
 
     function setDirty(value) {
       dirty = value;
-      if (saveButton) saveButton.disabled = !value;
+      syncSaveButton();
+    }
+
+    // SINGLE source of truth for the Save button's enabled/disabled state. The
+    // button reads as a ready PURPLE CTA whenever the registry is loaded + editable
+    // (whether or not there are pending edits). It is greyed out ONLY while a save
+    // is in flight, or when the registry is not loaded (read-only / error state).
+    // This is what lets the button return to regular purple after a successful save
+    // instead of going disabled-grey via the old dirty-gate.
+    function syncSaveButton() {
+      if (!saveButton) return;
+      saveButton.disabled = saving || !loaded;
     }
 
     function setControlsDisabled(disabled) {
       if (addButton) addButton.disabled = disabled;
-      if (saveButton) saveButton.disabled = disabled || !dirty;
+      syncSaveButton();
     }
 
     // DISPLAY-ONLY friendly name for a governing-law option id. Prefers the
@@ -142,8 +163,11 @@ const AdminEntitiesView = (() => {
     }
 
     function renderError(text) {
+      // A LOAD failure leaves nothing editable: drop out of the loaded state so the
+      // Save button greys out via the shared gate, and keep the error visible.
+      loaded = false;
       if (addButton) addButton.disabled = true;
-      if (saveButton) saveButton.disabled = true;
+      syncSaveButton();
       setMessage(text, "error");
     }
 
@@ -158,7 +182,10 @@ const AdminEntitiesView = (() => {
       if (addButton) addButton.disabled = false;
       setDirty(false);
       if (payload.saved) {
-        setMessage("Registry saved.", "ok");
+        // SUCCESS feedback is now a transient green toast (fired from save()), not
+        // lingering inline green text. Settle the inline message back to the neutral
+        // resting state (the entity count) so nothing green lingers under the heading.
+        setMessage(`${entities.length} signing ${entities.length === 1 ? "entity" : "entities"}.`);
       } else if (!playbookAvailable) {
         setMessage(
           "Playbook unavailable: governing-law options could not be loaded. Saving is still possible but law validation is skipped.",
@@ -429,8 +456,11 @@ const AdminEntitiesView = (() => {
     }
 
     async function save() {
-      if (!loaded) return;
+      if (!loaded || saving) return;
       const entities = collectEntities();
+      // In-flight: grey out the Save button (and Add) for the "Saving registry..."
+      // moment only. saving=true is the single condition syncSaveButton() reads.
+      saving = true;
       setControlsDisabled(true);
       setMessage("Saving registry...");
       try {
@@ -440,9 +470,24 @@ const AdminEntitiesView = (() => {
           body: JSON.stringify({ entities }),
         });
         const payload = await parseOk(response, "Registry could not be saved");
+        // Save persisted: clear the in-flight flag BEFORE applyWorkspace so the Save
+        // button settles back to its ready PURPLE state (not disabled-grey), then
+        // flash a transient green success toast through the shared notification
+        // center. The inline message settles to the neutral entity count.
+        saving = false;
         applyWorkspace(payload);
+        const saved = Array.isArray(payload.entities) ? payload.entities.length : entities.length;
+        if (typeof notifySuccess === "function") {
+          notifySuccess(
+            "Registry saved",
+            `${saved} signing ${saved === 1 ? "entity" : "entities"} saved`,
+          );
+        }
       } catch (error) {
-        // Re-enable controls so the admin can fix and retry; surface the reason.
+        // A save FAILURE stays visible: re-enable controls so the admin can fix and
+        // retry, and surface the reason as a PERSISTENT inline error (never a
+        // transient toast that would vanish before it is read).
+        saving = false;
         setControlsDisabled(false);
         setMessage(error.message || "Registry could not be saved", "error");
       }
