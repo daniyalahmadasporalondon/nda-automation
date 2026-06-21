@@ -508,8 +508,8 @@ def outbound_email_template_response(context: AssistantContext) -> dict[str, Any
             ],
         },
         "citations": [
-            {"source": "code", "title": "nda_automation/gmail_matter_outbox.py"},
-            {"source": "code", "title": "nda_automation/routes/send_document.py"},
+            {"source": "code", "title": "Outbound email"},
+            {"source": "code", "title": "Document sending"},
         ],
     }
 
@@ -1626,8 +1626,8 @@ def _trusted_how_it_works_knowledge() -> dict[str, dict[str, Any]]:
             ],
             "security": "NDA reads are owner-scoped. Refresh, approval, export, and send use existing guarded NDA routes.",
             "citations": [
-                {"source": "code", "title": "nda_automation/routes/matters.py"},
-                {"source": "code", "title": "nda_automation/review_engine.py"},
+                {"source": "code", "title": "Matter workflow"},
+                {"source": "code", "title": "Review Engine"},
             ],
         },
         "generation": {
@@ -1642,7 +1642,7 @@ def _trusted_how_it_works_knowledge() -> dict[str, dict[str, Any]]:
                 "Persist the generated matter/artifact only through /api/generate-nda.",
             ],
             "security": "The assistant can prefill draft context, but generation still goes through the existing generation route and safety gate.",
-            "citations": [{"source": "code", "title": "nda_automation/routes/generation.py"}],
+            "citations": [{"source": "code", "title": "NDA generation"}],
         },
         "playbook": {
             "text": (
@@ -1656,7 +1656,7 @@ def _trusted_how_it_works_knowledge() -> dict[str, dict[str, Any]]:
                 "Staleness checks detect when an NDA was reviewed against an older snapshot.",
             ],
             "security": "Playbook explanations come from trusted Playbook runtime data, not counterparty NDA text.",
-            "citations": [{"source": "code", "title": "nda_automation/playbook_runtime.py"}],
+            "citations": [{"source": "code", "title": "Playbook Engine"}],
         },
         "gmail": {
             "text": (
@@ -1670,7 +1670,7 @@ def _trusted_how_it_works_knowledge() -> dict[str, dict[str, Any]]:
                 "The route re-checks review freshness and send blockers before emailing.",
             ],
             "security": "The model cannot set the send recipient; the route enforces recipient confirmation and Gmail readiness.",
-            "citations": [{"source": "code", "title": "nda_automation/routes/gmail.py"}],
+            "citations": [{"source": "code", "title": "Gmail intake"}],
         },
         "assistant": {
             "text": (
@@ -1684,7 +1684,7 @@ def _trusted_how_it_works_knowledge() -> dict[str, dict[str, Any]]:
                 "Execute only after the user confirms, through existing app endpoints.",
             ],
             "security": "Untrusted NDA text is neutralized for display/search and never becomes an instruction or authority source.",
-            "citations": [{"source": "code", "title": "nda_automation/dashboard_assistant.py"}],
+            "citations": [{"source": "code", "title": "Assistant"}],
         },
     }
 

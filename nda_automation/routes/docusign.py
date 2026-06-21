@@ -95,8 +95,7 @@ def handle_docusign_status(handler, *, send_body: bool = True) -> None:
     if not status.get("configured"):
         status["needs_config"] = True
         status["config_message"] = (
-            "DocuSign OAuth is not configured. Set NDA_DOCUSIGN_CLIENT_ID and "
-            "NDA_DOCUSIGN_CLIENT_SECRET (and NDA_DOCUSIGN_OAUTH_REDIRECT_URI), then restart."
+            "DocuSign isn't configured yet. Contact your administrator."
         )
     handler._send_json(status, send_body=send_body)
 
@@ -149,8 +148,7 @@ def handle_docusign_connect(handler) -> None:
         handler._send_json(
             {
                 "error": (
-                    "DocuSign OAuth is not configured. Set NDA_DOCUSIGN_CLIENT_ID and "
-                    "NDA_DOCUSIGN_CLIENT_SECRET, then restart the app."
+                    "DocuSign isn't configured yet. Contact your administrator."
                 ),
                 "needs_config": True,
             },
