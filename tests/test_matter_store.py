@@ -1224,5 +1224,71 @@ class ListMattersCacheTests(unittest.TestCase):
                 self.assertNotEqual(second[0].get("review_result"), {"poisoned": True})
 
 
+@unittest.skipUnless(os.name == "posix", "POSIX file-mode semantics required")
+class MatterStoreAtRestPermissionsTests(unittest.TestCase):
+    """At-rest leak guard: matter records + uploaded NDA bytes carry extracted
+    text and counterparty PII and MUST NOT be world/group readable.
+
+    Non-vacuity: on base c27c47c1 the same writes land 0o644 (these asserts fail);
+    after the fix the temp is created 0o600 via os.open, so the surviving file is
+    0o600 and its parent dir 0o700 regardless of the inherited process umask.
+    """
+
+    def matter_store_patches(self, data_dir: str):
+        root = Path(data_dir)
+        return (
+            patch.object(matter_store, "DATA_DIR", root),
+            patch.object(matter_store, "MATTERS_PATH", root / "matters.json"),
+            patch.object(matter_store, "UPLOADS_DIR", root / "uploads"),
+        )
+
+    def test_matter_record_and_upload_are_owner_only(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            root = Path(data_dir)
+            patches = self.matter_store_patches(data_dir)
+            # Force a PERMISSIVE umask for the duration so the test proves the
+            # writers' explicit 0o600 — not an ambient umask — is what protects
+            # the bytes. (server.main()'s 0o077 is a separate belt; here we make
+            # sure the file-level fix stands on its own.)
+            previous_umask = os.umask(0o022)
+            try:
+                with patches[0], patches[1], patches[2]:
+                    repo = DiskMatterRepository()
+                    matter = repo.create_matter(**_create_kwargs())
+
+                    record_paths = list((root / "matters").glob("*.json"))
+                    self.assertEqual(len(record_paths), 1, "exactly one record file expected")
+                    record_mode = record_paths[0].stat().st_mode & 0o777
+                    self.assertEqual(
+                        record_mode,
+                        0o600,
+                        f"matter record world/group-readable: {oct(record_mode)}",
+                    )
+
+                    upload_path = root / "uploads" / matter["stored_filename"]
+                    self.assertTrue(upload_path.is_file(), "uploaded source document expected")
+                    upload_mode = upload_path.stat().st_mode & 0o777
+                    self.assertEqual(
+                        upload_mode,
+                        0o600,
+                        f"uploaded NDA bytes world/group-readable: {oct(upload_mode)}",
+                    )
+
+                    records_dir_mode = (root / "matters").stat().st_mode & 0o777
+                    self.assertEqual(
+                        records_dir_mode,
+                        0o700,
+                        f"matters dir world/group-accessible: {oct(records_dir_mode)}",
+                    )
+                    uploads_dir_mode = (root / "uploads").stat().st_mode & 0o777
+                    self.assertEqual(
+                        uploads_dir_mode,
+                        0o700,
+                        f"uploads dir world/group-accessible: {oct(uploads_dir_mode)}",
+                    )
+            finally:
+                os.umask(previous_umask)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -551,7 +551,13 @@ def locked_token_file(token_path: Path):
 def write_token_json_unlocked(token_path: Path, token_json: str) -> None:
     temporary_path = token_path.with_name(f".{token_path.name}.tmp")
     try:
-        with temporary_path.open("w", encoding="utf-8") as handle:
+        # Create the temp with 0o600 from the outset (os.open honours the mode at
+        # creation) so the token bytes are NEVER world-readable, not even in the
+        # brief window between write and the post-replace chmod. The chmod below is
+        # kept as a belt-and-braces backstop for a pre-existing token file replaced
+        # in place.
+        fd = os.open(temporary_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(token_json)
             handle.flush()
             os.fsync(handle.fileno())

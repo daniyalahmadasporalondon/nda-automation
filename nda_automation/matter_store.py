@@ -840,7 +840,7 @@ def put_artifact_document(stored_filename: str, document_bytes: bytes) -> str:
     ``stored_filename`` — so this is only used for generated/derived artifacts.
     """
     safe_name = _safe_artifact_stored_filename(stored_filename)
-    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    _ensure_private_dir(UPLOADS_DIR)
     _write_bytes_atomic(UPLOADS_DIR / safe_name, document_bytes)
     return safe_name
 
@@ -1102,7 +1102,7 @@ def _locked_store():
             "holding the lock. Please retry."
         )
     try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        _ensure_private_dir(DATA_DIR)
         with (DATA_DIR / "matters.lock").open("a+", encoding="utf-8") as lock_file:
             # --- cross-process flock with bounded retry ---
             # Use LOCK_EX|LOCK_NB so we never sleep inside a kernel call; instead
@@ -1321,11 +1321,11 @@ def _delete_matter_record(matter: dict[str, Any] | str) -> None:
 
 def _ensure_matter_records_from_legacy() -> None:
     if not MATTERS_PATH.is_file():
-        _matter_records_dir().mkdir(parents=True, exist_ok=True)
+        _ensure_private_dir(_matter_records_dir())
         return
 
     legacy_matters = _load_legacy_matters()
-    _matter_records_dir().mkdir(parents=True, exist_ok=True)
+    _ensure_private_dir(_matter_records_dir())
     for matter in legacy_matters:
         if isinstance(matter, dict):
             _write_matter_record(matter)
@@ -1350,7 +1350,7 @@ def _clean_matter_record_id(value: object) -> str:
 
 
 def _write_json_atomic(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_private_dir(path.parent)
     # A PER-CALL-UNIQUE temp name. A FIXED ``.tmp`` suffix is unsafe when two
     # writers target the SAME path concurrently (e.g. artifact byte-staging, which
     # runs OUTSIDE the store lock): both open the same tmp file, the first
@@ -1359,7 +1359,13 @@ def _write_json_atomic(path: Path, payload: Any) -> None:
     # private; the final ``replace`` onto ``path`` is still atomic.
     temporary_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        with temporary_path.open("w", encoding="utf-8") as handle:
+        # Matter records carry extracted NDA text + counterparty PII; they must not
+        # be world-readable. Create the temp 0o600 (os.open honours the mode at
+        # creation) so the bytes are private from the first write, independent of
+        # the process umask. This mirrors the secret-store writers in user_store /
+        # operational_settings_repository.
+        fd = os.open(temporary_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2)
             handle.write("\n")
             handle.flush()
@@ -1369,6 +1375,22 @@ def _write_json_atomic(path: Path, payload: Any) -> None:
         temporary_path.unlink(missing_ok=True)
         raise
     _fsync_directory(path.parent)
+
+
+def _ensure_private_dir(path: Path) -> None:
+    """Create ``path`` (and parents) and constrain it to owner-only (0o700).
+
+    ``mkdir(mode=...)`` is masked by the umask and is a no-op on an already
+    existing dir, so an explicit best-effort ``chmod`` is the only way to
+    guarantee the data dirs (matters records, uploads) are not group/other
+    readable — important on hosts where the dir predates this fix or the process
+    umask is permissive. Best-effort: a chmod failure must not break a write.
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
 
 
 def _fsync_directory(path: Path) -> None:
@@ -1454,7 +1476,7 @@ def _archive_pruned_matters(pruned_matters: list[dict[str, Any]]) -> bool:
     archived_records = 0
     archived_sources = 0
     try:
-        archive_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_private_dir(archive_dir)
         for matter in pruned_matters:
             matter_id = str(matter.get("id") or "")
             cleaned_matter_id = _clean_matter_record_id(matter_id)
@@ -1514,14 +1536,18 @@ def _archive_pruned_source_document(matter: dict[str, Any], archive_dir: Path) -
 
 
 def _write_bytes_atomic(path: Path, payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_private_dir(path.parent)
     # Per-call-unique temp name — see _write_json_atomic. Artifact byte-staging
     # (put_artifact_document) runs outside the store lock, so two concurrent
     # same-role registrations can target the same path; a fixed ``.tmp`` would let
     # one writer's ``replace`` vanish the other's tmp mid-flight (FileNotFoundError).
     temporary_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        with temporary_path.open("wb") as handle:
+        # Uploaded NDA bytes (PDF/DOCX source documents) must not be world-readable.
+        # Create the temp 0o600 (os.open honours the mode at creation) so the bytes
+        # are private from the first write, independent of the process umask.
+        fd = os.open(temporary_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())

@@ -85,7 +85,11 @@ def _write_json_atomically(value: object, path: Path, *, replace_file=os.replace
     data = json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
     temporary_path = path.with_name(f".{path.name}.tmp")
     try:
-        with temporary_path.open("wb") as handle:
+        # Create the temp 0o600 (os.open honours the mode at creation) so the entity
+        # registry is owner-only from the first write, independent of the process
+        # umask. Mirrors the secret-store writers.
+        fd = os.open(temporary_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())

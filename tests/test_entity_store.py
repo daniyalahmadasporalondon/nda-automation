@@ -370,5 +370,25 @@ class AdminEntityRouteTests(unittest.TestCase):
         self.assertEqual(handler.status, 400)
 
 
+@unittest.skipUnless(__import__("os").name == "posix", "POSIX file-mode semantics required")
+class EntityStoreAtRestPermissionsTests(unittest.TestCase):
+    def test_entities_file_is_owner_only(self):
+        import os
+
+        store_path = _tmp_store()
+        previous_umask = os.umask(0o022)
+        try:
+            entity_store.save_entities(
+                entity_registry.DEFAULT_SIGNING_ENTITIES, store_path=store_path
+            )
+            self.assertTrue(store_path.exists())
+            mode = store_path.stat().st_mode & 0o777
+            self.assertEqual(
+                mode, 0o600, f"entities.json world/group-readable: {oct(mode)}"
+            )
+        finally:
+            os.umask(previous_umask)
+
+
 if __name__ == "__main__":
     unittest.main()

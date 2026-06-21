@@ -296,3 +296,22 @@ def test_write_token_atomically_preserves_existing_token_on_replace_failure(tmp_
     assert token_path.read_text(encoding="utf-8") == '{"token": "new"}'
     assert not temporary_path.exists()
     assert lock_path.exists()
+
+
+def test_write_token_json_unlocked_is_owner_only_with_no_world_readable_window(tmp_path):
+    """The token bytes are 0o600 and the temp is created 0o600 (no transient
+    0o644 window), proven under a permissive umask so the os.open mode — not the
+    ambient umask — is what protects the file."""
+    if os.name != "posix":
+        import pytest
+
+        pytest.skip("POSIX file-mode semantics required")
+
+    token_path = tmp_path / "token.json"
+    previous_umask = os.umask(0o022)
+    try:
+        google_connection.write_token_json_unlocked(token_path, '{"token": "x"}')
+        mode = token_path.stat().st_mode & 0o777
+        assert mode == 0o600, f"token world/group-readable: {oct(mode)}"
+    finally:
+        os.umask(previous_umask)

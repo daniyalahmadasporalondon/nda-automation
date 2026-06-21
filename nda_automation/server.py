@@ -814,6 +814,14 @@ def _log_background_error(message: str, error: Exception) -> None:
 
 
 def main() -> None:
+    # Restrictive process umask FIRST, before any file or directory is created.
+    # The app persists matter records (extracted NDA text + counterparty PII),
+    # uploaded NDA bytes, the entity registry, and app settings. With the default
+    # inherited 022 umask these land world-readable (0644). 0o077 strips group +
+    # other bits so every newly created file/dir is owner-only, closing the broad
+    # at-rest leak surface in one place (and the token-writer's transient window).
+    # Single-process owner-only container — no group access is relied upon.
+    os.umask(0o077)
     parser = argparse.ArgumentParser(description="Run the nda-automation local app.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8787, type=int)
