@@ -159,6 +159,41 @@ async function main() {
     await page.waitForSelector("#dynamicSearchTermInput", { state: "visible" });
     await page.waitForSelector("#dynamicSemanticSignalInput", { state: "visible" });
 
+    // --- HUMANIZED DISPLAY STRINGS (humanize build) -----------------------------
+    // The clause-editor eyebrow no longer leaks the raw id ("clause mutuality");
+    // it reads "Playbook clause", with the id discoverable only in a title tooltip.
+    const eyebrow = await page.$eval("#playbookEditor .eyebrow", (el) => ({
+      text: el.textContent.trim(),
+      title: el.getAttribute("title") || "",
+    }));
+    assert.equal(eyebrow.text, "Playbook clause", "clause eyebrow must read 'Playbook clause', not the raw id");
+    assert.ok(
+      !/^clause\s/i.test(eyebrow.text),
+      `clause eyebrow must not render "clause <id>"; got ${JSON.stringify(eyebrow.text)}`
+    );
+    assert.ok(
+      eyebrow.title.includes("mutuality"),
+      "the raw clause id should still be discoverable in the eyebrow title tooltip"
+    );
+
+    // The decision-condition issue_type dropdown shows humanized OPTION LABELS while
+    // its option VALUES stay the machine keys (so the posted payload is unchanged).
+    const issueOptions = await page.$$eval(
+      '[data-condition-field="fail_conditions"][data-condition-index="0"] [data-condition-issue] option',
+      (opts) => opts.map((o) => ({ value: o.value, label: o.textContent.trim() }))
+    );
+    const pbw = issueOptions.find((o) => o.value === "present_but_wrong");
+    assert.ok(pbw, "fail-condition issue dropdown must offer the present_but_wrong option (value preserved)");
+    assert.equal(
+      pbw.label,
+      "Present but non-compliant",
+      `issue_type option must render the friendly label, not the raw key; got ${JSON.stringify(pbw.label)}`
+    );
+    assert.ok(
+      !issueOptions.some((o) => o.label === o.value && /_/.test(o.label)),
+      `no issue_type option may display a raw snake_case key; got ${JSON.stringify(issueOptions)}`
+    );
+
     await page.fill("#dynamicSearchTermInput", MUT_SEARCH_TERM);
     await page.click("#addDynamicSearchTerm");
     await page.waitForFunction(
