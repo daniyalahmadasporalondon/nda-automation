@@ -1090,6 +1090,12 @@ function clauseNameForId(clauseId) {
 }
 
 function humanizeClauseId(clauseId) {
+  // Prefer the shared humanizer (preserves acronyms: `ip_assignment` ->
+  // "IP Assignment"). Fall back to the local title-case if the bridge global is
+  // not yet available, so a name-less clause never renders the raw id.
+  if (typeof window !== "undefined" && typeof window.humanizeId === "function") {
+    return window.humanizeId(clauseId) || "Clause";
+  }
   return String(clauseId || "Clause")
     .replace(/[_-]+/g, " ")
     .replace(/\b\w/g, (character) => character.toUpperCase());

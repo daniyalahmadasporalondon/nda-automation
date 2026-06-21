@@ -202,9 +202,15 @@ const RepositoryDetail = (() => {
       <ul>
         ${clauses.slice(0, 6).map((clause) => {
           const status = clauseStatus(clause);
+          // Route the clause label through the shared clauseDisplayName so a
+          // name-less clause humanizes its id (`ip_assignment` -> "IP Assignment")
+          // instead of leaking the raw snake_case id to the reviewer.
+          const clauseLabel = typeof clauseDisplayName === "function"
+            ? clauseDisplayName(clause)
+            : (clause.name || clause.id || "Clause");
           return `
             <li>
-              <strong>${escapeHtml(clause.name || clause.id || "Clause")}</strong>
+              <strong>${escapeHtml(clauseLabel)}</strong>
               <span>${escapeHtml(status.needsReview ? "Needs review" : clause.issue_label || clause.reason || "Needs review")}</span>
             </li>
           `;

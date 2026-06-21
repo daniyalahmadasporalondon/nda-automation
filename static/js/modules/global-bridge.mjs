@@ -13,7 +13,18 @@
 // (inside render functions and event handlers), never at classic-script load
 // time, so the slightly-later availability is safe. (The one load-time consumer,
 // createSendDocumentController, stays a classic script for exactly this reason.)
-import { clauseStatus, clausePasses, clauseDisplayName, clauseIsDynamic } from "./clause-status.mjs";
+// Versioned specifier so a returning browser re-fetches clause-status.mjs when
+// its bytes change (its clauseDisplayName now humanizes a name-less clause id).
+// Bump this token in lockstep with the clause-status.mjs bytes.
+import { clauseStatus, clausePasses, clauseDisplayName, clauseIsDynamic } from "./clause-status.mjs?v=20260621humanize1";
+// Versioned specifier so a returning browser re-fetches humanize.mjs when its
+// bytes change (a bare relative import resolves to a query-less URL the browser
+// caches independently of this file's ?v=). global-bridge.mjs is the SOLE
+// importer of this module (every FE consumer reads window.humanizeId /
+// window.friendlyModelName via this bridge, never re-importing), so versioning
+// the specifier here cannot create a duplicate module instance. Keep this token
+// in lockstep with the humanize.mjs bytes.
+import { humanizeId, friendlyModelName } from "./humanize.mjs?v=20260621humanize1";
 import { escapeHtml, joinClasses, mergeClauses } from "./html-utils.mjs";
 import {
   fullReplacementOperations,
@@ -73,6 +84,10 @@ Object.assign(window, {
   clausePasses,
   clauseDisplayName,
   clauseIsDynamic,
+  // Shared humanizers: keep raw snake_case ids and raw AI model ids off the
+  // screens legal users read. Called only inside render functions at runtime.
+  humanizeId,
+  friendlyModelName,
   escapeHtml,
   joinClasses,
   mergeClauses,

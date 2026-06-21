@@ -4,7 +4,8 @@ import path from "node:path";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 
-import { clausePasses, clauseStatus } from "../../static/js/modules/clause-status.mjs";
+import { clauseDisplayName, clausePasses, clauseStatus } from "../../static/js/modules/clause-status.mjs";
+import { friendlyModelName, humanizeId } from "../../static/js/modules/humanize.mjs";
 import { escapeHtml, joinClasses, mergeClauses } from "../../static/js/modules/html-utils.mjs";
 import {
   fullReplacementOperations,
@@ -2463,3 +2464,75 @@ assert.equal(single[0].isCurrent, true);
 // The internal ordering index is not leaked on the returned nodes.
 assert.ok(!("_index" in single[0]));
 assert.ok(!("_index" in lineage[0]));
+
+// ---------------------------------------------------------------------------
+// HUMANIZERS: keep machine strings (raw snake_case ids, raw AI model ids) off
+// the screens legal users read.
+// ---------------------------------------------------------------------------
+
+// humanizeId: snake_case / kebab-case -> human Title Case.
+assert.equal(humanizeId("ip_assignment"), "IP Assignment");
+assert.equal(humanizeId("difc_governing_law"), "DIFC Governing Law");
+assert.equal(humanizeId("non_circumvention"), "Non Circumvention");
+assert.equal(humanizeId("term_and_survival"), "Term And Survival");
+assert.equal(humanizeId("cover-page"), "Cover Page");
+assert.equal(humanizeId("mutuality"), "Mutuality");
+// Acronyms stay UPPER-CASED — never mangled to "Ip"/"Difc"/"Nda".
+assert.equal(humanizeId("ip"), "IP");
+assert.equal(humanizeId("nda_request"), "NDA Request");
+assert.equal(humanizeId("us_export_controls"), "US Export Controls");
+assert.equal(humanizeId("eu_data_transfer"), "EU Data Transfer");
+assert.equal(humanizeId("uk_jurisdiction"), "UK Jurisdiction");
+assert.equal(humanizeId("llc_party"), "LLC Party");
+assert.equal(humanizeId("url_field"), "URL Field");
+// NON-VACUITY: the acronym path is real — a naive title-case would yield "Ip".
+assert.ok(!humanizeId("ip_assignment").includes("Ip "), "humanizeId must not mangle IP to Ip");
+assert.ok(!humanizeId("difc_governing_law").startsWith("Difc"), "humanizeId must not mangle DIFC to Difc");
+// Graceful on empty / nullish -> "".
+assert.equal(humanizeId(""), "");
+assert.equal(humanizeId("   "), "");
+assert.equal(humanizeId(null), "");
+assert.equal(humanizeId(undefined), "");
+// Tolerates collapsed separators and surrounding whitespace.
+assert.equal(humanizeId("  ip__assignment  "), "IP Assignment");
+
+// friendlyModelName: each REAL model id maps to the correct version (NEVER
+// downgraded), an unmapped id resolves to the safe generic, and the RAW id is
+// never returned.
+assert.equal(friendlyModelName("anthropic/claude-opus-4.8-fast"), "Claude Opus 4.8");
+assert.equal(friendlyModelName("anthropic/claude-opus-4.8"), "Claude Opus 4.8");
+assert.equal(friendlyModelName("deepseek/deepseek-v4-pro"), "DeepSeek V4 Pro");
+assert.equal(friendlyModelName("deepseek/deepseek-v4-flash"), "DeepSeek V4 Flash");
+// Unmapped / unknown / empty -> safe generic, never the raw id.
+assert.equal(friendlyModelName("openai/gpt-5"), "AI model");
+assert.equal(friendlyModelName("some/unknown-model"), "AI model");
+assert.equal(friendlyModelName(""), "AI model");
+assert.equal(friendlyModelName(null), "AI model");
+assert.equal(friendlyModelName(undefined), "AI model");
+// HARD INVARIANT: friendlyModelName NEVER leaks the raw id (no "/" provider
+// prefix ever survives to the user-facing string).
+for (const rawId of [
+  "anthropic/claude-opus-4.8-fast",
+  "anthropic/claude-opus-4.8",
+  "deepseek/deepseek-v4-pro",
+  "deepseek/deepseek-v4-flash",
+  "openai/gpt-5",
+  "vendor/secret-internal-model-id",
+]) {
+  const friendly = friendlyModelName(rawId);
+  assert.ok(!friendly.includes("/"), `friendlyModelName leaked a raw id: ${friendly}`);
+  assert.notEqual(friendly, rawId, `friendlyModelName returned the raw id verbatim: ${rawId}`);
+}
+// Version is PRESERVED, not downgraded: the "-fast" variant still reads 4.8.
+assert.ok(friendlyModelName("anthropic/claude-opus-4.8-fast").includes("4.8"));
+
+// clauseDisplayName now HUMANIZES the id fallback (the leak-site fix): a clause
+// with no curated name renders "IP Assignment", not the raw "ip_assignment".
+assert.equal(clauseDisplayName({ id: "ip_assignment" }), "IP Assignment");
+assert.equal(clauseDisplayName({ id: "difc_governing_law" }), "DIFC Governing Law");
+assert.equal(clauseDisplayName({ id: "non_circumvention" }), "Non Circumvention");
+// A curated name still wins over the id (no humanization applied).
+assert.equal(clauseDisplayName({ id: "ip_assignment", name: "IP & Inventions" }), "IP & Inventions");
+// No id at all -> the generic "Clause", never "undefined".
+assert.equal(clauseDisplayName({}), "Clause");
+assert.equal(clauseDisplayName(null), "Clause");

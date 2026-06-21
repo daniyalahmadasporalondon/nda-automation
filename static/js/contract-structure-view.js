@@ -278,7 +278,15 @@ function createContractStructureController({ state, root }) {
       schedule: "Schedule",
       section: "Section",
     };
-    return labels[kind] || "Section";
+    if (labels[kind]) return labels[kind];
+    // A novel/unknown kind (a raw snake_case backend token) is humanized rather
+    // than flattened to "Section" or leaked verbatim — `cover_page` -> "Cover Page".
+    // Falls back to "Section" only when there is no kind at all.
+    const humanizer = typeof window !== "undefined" && typeof window.humanizeId === "function"
+      ? window.humanizeId
+      : null;
+    const humanized = humanizer ? humanizer(kind) : "";
+    return humanized || "Section";
   }
 
   function confidenceLabel(confidence) {

@@ -1,3 +1,8 @@
+// Versioned specifier kept IDENTICAL to the one in global-bridge.mjs so both
+// importers resolve the same URL -> a single humanize.mjs module instance, and a
+// returning browser re-fetches it when its bytes change. Bump both in lockstep.
+import { humanizeId } from "./humanize.mjs?v=20260621humanize1";
+
 export function clauseStatus(clause) {
   const rawStatus = clause?.status || "idle";
   const reviewState = clause?.review_state && typeof clause.review_state === "object" ? clause.review_state : {};
@@ -105,8 +110,11 @@ export function clauseDisplayName(clause) {
   if (!clause || typeof clause !== "object") return "Clause";
   const name = String(clause.name || clause.title || clause.label || "").trim();
   if (name) return name;
+  // No curated name -> humanize the raw id rather than leaking the machine
+  // string (`ip_assignment` -> "IP Assignment"). The id stays the data key; only
+  // this DISPLAY label is humanized.
   const id = String(clause.id || "").trim();
-  return id || "Clause";
+  return id ? humanizeId(id) : "Clause";
 }
 
 // True for a data-defined Playbook clause (engine === "dynamic"). Native clauses
