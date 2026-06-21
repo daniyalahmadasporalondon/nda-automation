@@ -270,9 +270,11 @@ class GenerateNdaRouteTests(unittest.TestCase):
                 # The entity's real registry address id (the FE echoes the picked
                 # address as {id,label,lines}; generation selects it from the registry).
                 "address": {"id": "registered", "label": "Registered office", "lines": ["..."]},
-                # aspora default is India; the FE picked England (overridden).
-                "governing_law": {"playbook_option_id": "england_and_wales", "label": "England and Wales"},
-                "governing_law_overridden": True,
+                # LAW + COURT LOCKED TO ENTITY: the FE echoes the entity's OWN coupled
+                # law (aspora default is India); there is no override path, so this is
+                # a non-divergent no-op.
+                "governing_law": {"playbook_option_id": "india", "label": "India"},
+                "governing_law_overridden": False,
             },
         }
         with tempfile.TemporaryDirectory() as data_dir:
@@ -285,14 +287,13 @@ class GenerateNdaRouteTests(unittest.TestCase):
         self.assertEqual(m["term_years"], 3)  # parsed from "3 years"
         # The FE-chosen address id is honoured + recorded for provenance.
         self.assertEqual(m["entity_address_id"], "registered")
-        # The FE-chosen governing law was applied + flagged with full provenance.
-        self.assertEqual(m["governing_law_value"], "England and Wales")
-        self.assertEqual(m["governing_law_option_id"], "england_and_wales")
-        self.assertTrue(m["governing_law_overridden"])
+        # The governing law is the entity's OWN (locked), with full provenance.
+        self.assertEqual(m["governing_law_value"], "India")
+        self.assertEqual(m["governing_law_option_id"], "india")
+        self.assertFalse(m["governing_law_overridden"])
         self.assertEqual(m["entity_default_governing_law_value"], "India")
-        # ENTITY-FORUM (corrected): the forum is the SIGNING entity's OWN court.
-        # aspora_technology is seated in Bengaluru, so overriding only the LAW to
-        # England keeps its own Bengaluru court as the forum.
+        # ENTITY-FORUM: the forum is the SIGNING entity's OWN court. aspora_technology
+        # is seated in Bengaluru.
         self.assertEqual(m["forum"], "courts in Bengaluru, Karnataka")
         self.assertTrue(payload["self_check"]["passed"], payload["self_check"])
         self.assertEqual(payload["download_url"], f"/api/matters/{payload['matter_id']}/source")
@@ -449,24 +450,63 @@ class GenerateNdaRouteTests(unittest.TestCase):
                 )
         self.assertEqual(status, 201, payload)
 
-    def test_governing_law_override_to_approved_law_is_applied(self):
+    def test_governing_law_uses_entity_own_law_and_court(self):
+        # LAW + COURT LOCKED TO ENTITY: with no override the draft must carry the
+        # entity's own law (aspora_technology -> India) and its own court, and the
+        # manifest must report governing_law_overridden=False.
         with tempfile.TemporaryDirectory() as data_dir:
             p = self.matter_store_patches(data_dir)
             with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()):
                 status, payload, _ = self.generate(
                     {
-                        # aspora default is India; override to England.
                         "signing_entity_id": "aspora_technology",
                         "intake": {"counterparty_name": "Acme Corp Ltd"},
-                        "governing_law_override": "england_and_wales",
                     },
                     headers=self.basic_auth_headers(),
                 )
         self.assertEqual(status, 201, payload)
-        self.assertEqual(payload["manifest"]["governing_law_value"], "England and Wales")
-        self.assertTrue(payload["manifest"]["governing_law_overridden"])
+        self.assertEqual(payload["manifest"]["governing_law_value"], "India")
+        self.assertFalse(payload["manifest"]["governing_law_overridden"])
         self.assertEqual(payload["manifest"]["entity_default_governing_law_value"], "India")
+        # The court is the entity's OWN registry forum (Bengaluru), written verbatim.
+        self.assertIn("Bengaluru", payload["manifest"]["slot_fills"]["[FORUM]"])
         self.assertTrue(payload["self_check"]["passed"], payload["self_check"])
+
+    def test_governing_law_override_to_different_law_is_rejected(self):
+        # LAW + COURT LOCKED TO ENTITY: a request that tries to override the law to a
+        # DIFFERENT approved option (aspora_technology India -> England) is REJECTED
+        # with a 400 -- never silently honoured, never silently reconstructed.
+        with patch.dict(os.environ, self.auth_env()):
+            status, payload, _ = self.generate(
+                {
+                    "signing_entity_id": "aspora_technology",
+                    "intake": {"counterparty_name": "Acme Corp Ltd"},
+                    "governing_law_override": "england_and_wales",
+                },
+                headers=self.basic_auth_headers(),
+            )
+        self.assertEqual(status, 400, payload)
+        self.assertEqual(
+            payload["error"], "Please select a valid signing entity and governing law."
+        )
+
+    def test_governing_law_override_equal_to_entity_law_is_noop(self):
+        # An override that EQUALS the entity's own option is a harmless no-op (the FE
+        # echoes the entity's coupled law back through the same field).
+        with tempfile.TemporaryDirectory() as data_dir:
+            p = self.matter_store_patches(data_dir)
+            with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()):
+                status, payload, _ = self.generate(
+                    {
+                        "signing_entity_id": "aspora_technology",
+                        "intake": {"counterparty_name": "Acme Corp Ltd"},
+                        "governing_law_override": "india",
+                    },
+                    headers=self.basic_auth_headers(),
+                )
+        self.assertEqual(status, 201, payload)
+        self.assertEqual(payload["manifest"]["governing_law_value"], "India")
+        self.assertFalse(payload["manifest"]["governing_law_overridden"])
 
     def test_unapproved_governing_law_override_is_rejected(self):
         with patch.dict(os.environ, self.auth_env()):
@@ -552,12 +592,12 @@ class GenerateNdaRouteTests(unittest.TestCase):
             document_xml = zf.read("word/document.xml").decode("utf-8")
         return re.sub(r"<[^>]+>", " ", document_xml)
 
-    def test_route_override_survives_to_rendered_docx_via_nested_fe_shape(self):
-        # aspora default is India; the FE nests an override to Delaware. The override
-        # LAW must win on the manifest AND the rendered DOCX governing-law clause,
-        # while the FORUM stays the signing entity's OWN court (Bengaluru) -- proving
-        # the override travels the real route, not a bypass, AND that law/forum are
-        # correctly decoupled.
+    def test_route_nested_divergent_override_is_rejected_400(self):
+        # LAW + COURT LOCKED TO ENTITY: aspora default is India; the FE nests a
+        # DIVERGENT override to Delaware. The route parses the nested override and the
+        # engine REJECTS it -- the route maps the refusal to 400 and NEVER returns a
+        # document. (The override path was removed; a divergent override is refused,
+        # never applied.)
         fe_payload = {
             "counterparty": {"name": "Wayne Enterprises Ltd"},
             "project_purpose": "evaluating a partnership",
@@ -574,32 +614,18 @@ class GenerateNdaRouteTests(unittest.TestCase):
             p = self.matter_store_patches(data_dir)
             with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()):
                 status, payload, _ = self.generate(fe_payload, headers=self.basic_auth_headers())
-                self.assertEqual(status, 201, payload)
-                manifest = payload["manifest"]
-                # Signal 1: manifest carries the chosen option + full provenance.
-                self.assertEqual(manifest["governing_law_option_id"], "delaware")
-                self.assertEqual(manifest["governing_law_value"], "Delaware")
-                self.assertTrue(manifest["governing_law_overridden"])
-                self.assertEqual(manifest["entity_default_governing_law_value"], "India")
-                # ENTITY-FORUM (corrected): the override changes the LAW only; the
-                # forum stays the SIGNING entity's OWN court. aspora_technology is
-                # seated in Bengaluru, so the forum is its own Bengaluru court --
-                # NOT Delaware's (the overridden option's) court.
-                self.assertEqual(manifest["forum"], "courts in Bengaluru, Karnataka")
-                self.assertNotIn("Delaware", manifest["forum"])
-                # Signal 2: the rendered DOCX's GOVERNING-LAW CLAUSE names the override
-                # law. "the laws of India" legitimately remains in Aspora's
-                # incorporation recital (incorporation jurisdiction != governing law),
-                # so we assert against the governing-law clause specifically.
-                prose = self._generated_docx_text(payload["download_url"], self.basic_auth_headers())
-                self.assertIn("governed by and construed in accordance with the laws of Delaware", prose)
-                self.assertNotIn("governed by and construed in accordance with the laws of India", prose)
+                self.assertEqual(status, 400, payload)
+                self.assertIn("error", payload)
+                self.assertNotIn("download_url", payload)
+                self.assertNotIn("matter_id", payload)
 
-    def test_route_reads_nested_override_not_top_level_only(self):
-        # Differential / anti-false-green: the override carried ONLY at the FE's nested
-        # path applies (proving the route reads the nested path); the same payload
-        # WITHOUT that nesting falls back to the entity default. A top-level-only parser
-        # (the original bug) would fail the first half.
+    def test_route_reads_nested_override_then_locks_it(self):
+        # Differential / anti-false-green: the route READS the override at the FE's
+        # nested path (proving it is not top-level-only) and then the entity lock
+        # REJECTS a divergent nested override with 400; the same payload WITHOUT that
+        # nesting uses the entity default and succeeds (201). A top-level-only parser
+        # (the original bug) would silently DROP the nested override and 201 the first
+        # half -- so the 400 differential proves the nested path is read.
         base = {
             "counterparty": {"name": "Stark Industries Ltd"},
             "project_purpose": "a pilot",
@@ -624,11 +650,14 @@ class GenerateNdaRouteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             p = self.matter_store_patches(data_dir)
             with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()):
-                status, applied, _ = self.generate(nested_override, headers=self.basic_auth_headers())
-                self.assertEqual(status, 201, applied)
-                self.assertEqual(applied["manifest"]["governing_law_option_id"], "delaware")
-                self.assertTrue(applied["manifest"]["governing_law_overridden"])
+                # The nested divergent override is READ and then REJECTED (proves the
+                # route reads the nested path -- a top-level-only parser would drop it
+                # and 201 the entity default instead).
+                status, rejected, _ = self.generate(nested_override, headers=self.basic_auth_headers())
+                self.assertEqual(status, 400, rejected)
+                self.assertIn("error", rejected)
 
+                # No nesting -> entity default -> succeeds.
                 status, defaulted, _ = self.generate(no_nesting, headers=self.basic_auth_headers())
                 self.assertEqual(status, 201, defaulted)
                 self.assertEqual(defaulted["manifest"]["governing_law_value"], "India")

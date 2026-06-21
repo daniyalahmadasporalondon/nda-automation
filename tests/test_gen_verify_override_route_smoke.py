@@ -11,10 +11,14 @@ broken (the same blind spot that made the generator's own test green).
 So this smoke drives the ROUTE PARSER: it feeds the EXACT shape
 static/js/modules/draft-intake.mjs:buildDraftPayload emits (override nested under
 signing_entity.governing_law.playbook_option_id) through the real
-routing workflow intake parser — the function the HTTP handler uses — then
-runs the rendered NDA through the full adversarial gate. For each sampled entity
-overridden to a DIFFERENT approved law, it asserts the parser carried the nested
-override AND the rendered NDA names it, the forum tracks it, and the gate is CLEAR.
+routing workflow intake parser — the function the HTTP handler uses.
+
+LAW + COURT ARE NOW LOCKED TO THE SIGNING ENTITY: the parser still carries the
+nested override (so a future top-level-only refactor still fails loudly), but
+generation now REJECTS a DIVERGENT override outright. For each sampled entity
+overridden to a DIFFERENT approved law, this asserts the parser carries the nested
+override AND that ``generate_nda_for_entity`` raises ``NdaGenerationError`` -- the
+override path was removed, so a divergent override is refused, never applied.
 """
 from __future__ import annotations
 
@@ -24,15 +28,6 @@ import pytest
 from nda_automation import nda_generation as gen
 from nda_automation import nda_generation_workflow
 from nda_automation.checker import load_playbook
-from nda_automation.docx_text import extract_docx_text
-
-from tests.gen_verify_harness import (
-    expectations_from_registry,
-    gov_law_override_from_manifest,
-    template_authoritative_sentences,
-    verify_generated_draft,
-)
-from tests.gen_verify_runner import _crosscheck_manifest, _template_bytes
 
 PLAYBOOK = load_playbook()
 
@@ -85,61 +80,30 @@ def _fe_payload(entity_id: str, override_option_id: str) -> dict:
 
 
 @pytest.mark.parametrize("entity_id,laws", list(_OVERRIDE_TARGET.items()))
-def test_route_override_smoke_through_full_gate(entity_id, laws):
+def test_route_override_is_carried_then_rejected_by_the_entity_lock(entity_id, laws):
     default_option, override_option = laws
-    override_value = _law_value(override_option)
-    default_value = _law_value(default_option)
 
     payload = _fe_payload(entity_id, override_option)
 
     # Drive the REAL workflow parser used by the route (where the nesting bug lived).
     parsed_entity_id, intake, governing_law_override, _address_id, _email = nda_generation_workflow.intake_from_payload(payload)
 
-    # The parser must have CARRIED the nested override (not dropped it).
+    # The parser must STILL CARRY the nested override (not drop it) -- the nesting
+    # regression guard survives the entity lock.
     assert parsed_entity_id == entity_id
     assert governing_law_override == override_option, (
         f"route parser dropped the nested override: got {governing_law_override!r}, "
         f"expected {override_option!r} from signing_entity.governing_law.playbook_option_id"
     )
+    assert override_option != default_option
 
-    # Render via the same engine call the route uses, with the parsed override.
-    result = gen.generate_nda_for_entity(
-        parsed_entity_id, intake, playbook=PLAYBOOK,
-        governing_law_override=governing_law_override, use_ai=False,
-    )
-    manifest = result.manifest
-    text = extract_docx_text(result.docx_bytes)
-
-    # End-to-end provenance from the FE-shaped payload.
-    assert manifest.governing_law_overridden is True
-    assert manifest.governing_law_value == override_value
-    assert manifest.entity_default_governing_law_value == default_value
-    assert override_value != default_value
-    # The rendered clause NAMES the override law (not the entity default).
-    assert override_value in text, f"rendered NDA does not name the override law {override_value!r}"
-    # Forum tracks the override.
-    assert manifest.forum and override_value.split(",")[0].split(" and ")[0] not in ("",), manifest.forum
-
-    expect = expectations_from_registry()[entity_id]
-    override = gov_law_override_from_manifest(manifest, expect)
-    report = verify_generated_draft(
-        label=f"route-override {entity_id}->{override_option}",
-        docx_bytes=result.docx_bytes,
-        entity=expect,
-        variant="mutual",
-        authoritative_sentences=template_authoritative_sentences(_template_bytes()),
-        gov_law_override=override,
-    )
-    _crosscheck_manifest(manifest, expect, text, report)
-
-    law_defects = [
-        (f.check, f.detail)
-        for f in report.findings
-        if f.severity == "DEFECT"
-        and f.check.startswith(("law.", "manifest.governing", "manifest.override"))
-    ]
-    assert not law_defects, law_defects
-    assert report.clear, [(f.check, f.detail) for f in report.findings if f.severity == "DEFECT"]
+    # LAW LOCKED TO ENTITY: generation now REJECTS the divergent override outright
+    # rather than applying it. The override path was removed.
+    with pytest.raises(gen.NdaGenerationError):
+        gen.generate_nda_for_entity(
+            parsed_entity_id, intake, playbook=PLAYBOOK,
+            governing_law_override=governing_law_override, use_ai=False,
+        )
 
 
 def test_route_drops_nothing_regression_guard():

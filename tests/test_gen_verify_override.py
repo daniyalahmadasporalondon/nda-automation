@@ -1,15 +1,16 @@
-"""Override-awareness tests for the gen-verify governing-law check.
+"""Locked-governing-law tests for the gen-verify governing-law check.
 
-The product allows a user to OVERRIDE an entity's default governing law with a
-different one, constrained to the Playbook-approved options. The gate must
-validate the draft against the CHOSEN law, not mechanically flag "law != entity
-default" as drift. These tests drive the real generator (which renders the chosen
-law into the clause) and a manifest carrying the override fields generation is
-adding, then assert the gate behaves correctly.
+LAW + COURT ARE LOCKED TO THE SIGNING ENTITY: the override path has been removed
+from generation. The gate validates the draft against the entity's OWN law, and
+the ``overridden`` flag survives only as a TRIPWIRE -- a manifest that reports an
+override (``overridden == True`` OR ``effective_law != entity_default_law``) is a
+DEFECT ``law.override_present`` (the lock was bypassed upstream). These tests drive
+the real generator (which now rejects a divergent override) and synthetic
+manifests, then assert the gate behaves correctly.
 
 The manifest contract (coordinated with generation):
-  governing_law_value: str            # the EFFECTIVE (chosen) law in the clause
-  governing_law_overridden: bool      # True iff chosen != entity default
+  governing_law_value: str            # the EFFECTIVE law in the clause
+  governing_law_overridden: bool      # always False under the lock; tripwire if True
   entity_default_governing_law_value: str  # the entity's default (optional)
 """
 from __future__ import annotations
@@ -88,10 +89,13 @@ def _findings(report: VerificationReport, check: str) -> list:
 
 
 # --------------------------------------------------------------------------- #
-# 1. Override to a DIFFERENT approved law -> no mismatch DEFECT
+# 1. A manifest reporting an override (law diverged from the entity default) is a
+#    DEFECT -- the override path was removed, so this means the lock was bypassed.
 # --------------------------------------------------------------------------- #
-def test_override_to_different_approved_law_is_clean():
-    # aspora defaults to India; override to England and Wales (both approved).
+def test_manifest_reporting_an_override_is_flagged_as_override_present():
+    # Synthesise the bypassed state: a draft rendered with England (a non-default
+    # law for aspora_technology) plus a manifest that reports the override. Under
+    # the lock this must raise law.override_present.
     override_value = _law_value("england_and_wales")
     result = _generate_with_law("aspora_technology", "england_and_wales")
 
@@ -105,88 +109,102 @@ def test_override_to_different_approved_law_is_clean():
     override = gov_law_override_from_manifest(manifest, expect)
     assert override is not None and override.overridden and override.effective_law == override_value
 
-    report = VerificationReport(label="override-clean")
+    report = VerificationReport(label="override-present")
     check_governing_law(text, expect, report, override=override)
-    # No mismatch of any kind, and no not-approved defect.
-    assert _findings(report, "law.override_mismatch") == []
-    assert _findings(report, "law.entity_mismatch") == []
-    assert _findings(report, "law.override_not_approved") == []
-    assert _findings(report, "law.not_approved") == []
-    assert report.clear, [(f.check, f.detail) for f in report.findings]
+    # The TRIPWIRE fires: a manifest reporting an override is a defect now.
+    assert _findings(report, "law.override_present"), [(f.check, f.detail) for f in report.findings]
 
 
-def test_every_approved_override_law_is_clean_through_generation_self_check_and_gate():
+def test_only_the_entitys_own_law_generates_and_passes_the_gate():
+    # Under the lock, generation REJECTS a divergent override and only the entity's
+    # OWN option (india for aspora_technology) succeeds. The successful draft names
+    # the entity's law, reports overridden=False, and passes the gate cleanly.
     expect = expectations_from_registry()["aspora_technology"]
 
     for option in _approved_options():
-        result = gen.generate_nda_for_entity(
-            "aspora_technology",
-            _intake(),
-            playbook=PLAYBOOK,
-            governing_law_override=option["id"],
-            use_ai=False,
-        )
-        text = extract_docx_text(result.docx_bytes)
-        check = gen.self_check_generated_nda(result.docx_bytes, playbook=PLAYBOOK)
-        override = gov_law_override_from_manifest(result.manifest, expect)
-        report = VerificationReport(label=f"approved-law-carryover {option['id']}")
-        check_governing_law(text, expect, report, override=override)
+        if option["id"] == "india":
+            result = gen.generate_nda_for_entity(
+                "aspora_technology",
+                _intake(),
+                playbook=PLAYBOOK,
+                governing_law_override=option["id"],  # == default: harmless no-op
+                use_ai=False,
+            )
+            text = extract_docx_text(result.docx_bytes)
+            check = gen.self_check_generated_nda(result.docx_bytes, playbook=PLAYBOOK)
+            override = gov_law_override_from_manifest(result.manifest, expect)
+            report = VerificationReport(label=f"entity-own-law {option['id']}")
+            check_governing_law(text, expect, report, override=override)
 
-        assert result.manifest.governing_law_option_id == option["id"]
-        assert result.manifest.governing_law_value == option["value"]
-        # The draft renders the Playbook's legally-correct law PHRASE (DIFC->"the
-        # DIFC", Ontario->the full Canadian phrase), not necessarily the raw value.
-        expected_phrase = _law_phrase_for_value(option["value"])
-        assert expected_phrase in text
-        assert check.passed, (option["id"], check.native_failures, check.native_reviews)
-        assert _findings(report, "law.override_mismatch") == []
-        assert _findings(report, "law.entity_mismatch") == []
-        assert _findings(report, "law.override_not_approved") == []
-        assert _findings(report, "law.not_approved") == []
-        assert report.clear, [(f.check, f.detail) for f in report.findings]
+            assert result.manifest.governing_law_option_id == "india"
+            assert result.manifest.governing_law_value == option["value"]
+            assert result.manifest.governing_law_overridden is False
+            expected_phrase = _law_phrase_for_value(option["value"])
+            assert expected_phrase in text
+            assert check.passed, (option["id"], check.native_failures, check.native_reviews)
+            assert _findings(report, "law.override_present") == []
+            assert _findings(report, "law.entity_mismatch") == []
+            assert _findings(report, "law.not_approved") == []
+            assert report.clear, [(f.check, f.detail) for f in report.findings]
+        else:
+            # A divergent override is rejected outright by generation.
+            try:
+                gen.generate_nda_for_entity(
+                    "aspora_technology",
+                    _intake(),
+                    playbook=PLAYBOOK,
+                    governing_law_override=option["id"],
+                    use_ai=False,
+                )
+            except gen.NdaGenerationError:
+                continue
+            raise AssertionError(
+                f"override to {option['id']!r} should have been rejected by the entity lock"
+            )
 
 
 # --------------------------------------------------------------------------- #
-# 2. Override claimed, but the draft still names the entity default -> DEFECT
+# 2. The effective law diverging from the entity default (even with the flag
+#    unset) trips the tripwire -- the law must equal the entity's own.
 # --------------------------------------------------------------------------- #
-def test_override_but_draft_names_default_is_flagged():
-    # Manifest CLAIMS an England override, but the generated draft was actually
-    # rendered with India (the entity default) -- a real generator bug.
-    result = _generate_with_law("aspora_technology", "india")  # draft says India
+def test_effective_law_diverging_from_entity_default_is_flagged():
+    # A manifest whose effective law (England) differs from the entity default
+    # (India) is a bypassed lock even if the overridden flag is not set.
+    result = _generate_with_law("aspora_technology", "england_and_wales")
 
     text = extract_docx_text(result.docx_bytes)
     expect = expectations_from_registry()["aspora_technology"]
     manifest = _FakeManifest(
-        governing_law_value=_law_value("england_and_wales"),  # claims England
-        governing_law_overridden=True,
+        governing_law_value=_law_value("england_and_wales"),  # diverges from India
+        governing_law_overridden=False,  # flag unset, but the law still diverges
         entity_default_governing_law_value=expect.governing_law,
     )
     override = gov_law_override_from_manifest(manifest, expect)
-    report = VerificationReport(label="override-mismatch")
+    report = VerificationReport(label="effective-diverges")
     check_governing_law(text, expect, report, override=override)
-    # The chosen (override) law is absent from the draft -> override_mismatch DEFECT.
-    assert _findings(report, "law.override_mismatch"), [(f.check, f.detail) for f in report.findings]
+    # The effective law != entity default -> law.override_present DEFECT.
+    assert _findings(report, "law.override_present"), [(f.check, f.detail) for f in report.findings]
 
 
 # --------------------------------------------------------------------------- #
-# 3. Override to a NON-approved law -> DEFECT (defense in depth)
+# 3. The entity-default law that is NOT a Playbook-approved position -> DEFECT.
 # --------------------------------------------------------------------------- #
-def test_override_to_non_approved_law_is_flagged():
-    # The FE constrains overrides to the live Playbook-approved options, but the gate must still
-    # catch an out-of-band override to an unapproved law. We don't render it; we
-    # only feed the manifest claim, since the assertion is on the manifest intent.
+def test_entity_law_not_approved_is_flagged():
+    # The gate still catches an entity whose own (and effective) law is not in the
+    # Playbook-approved set. Build an expectation whose governing law is unapproved.
     expect = expectations_from_registry()["aspora_technology"]
+    from dataclasses import replace
+
+    bad_expect = replace(expect, governing_law="Laws of Narnia")
     manifest = _FakeManifest(
-        governing_law_value="Laws of Narnia",  # not one of the 4
-        governing_law_overridden=True,
-        entity_default_governing_law_value=expect.governing_law,
+        governing_law_value="Laws of Narnia",
+        governing_law_overridden=False,
+        entity_default_governing_law_value="Laws of Narnia",
     )
-    override = gov_law_override_from_manifest(manifest, expect)
-    report = VerificationReport(label="override-unapproved")
-    # Use the entity's own draft text (India) -- irrelevant; the not-approved check
-    # fires on the override value regardless of prose.
-    check_governing_law("This Agreement is governed by the laws of India.", expect, report, override=override)
-    assert _findings(report, "law.override_not_approved"), [(f.check, f.detail) for f in report.findings]
+    override = gov_law_override_from_manifest(manifest, bad_expect)
+    report = VerificationReport(label="entity-law-unapproved")
+    check_governing_law("This Agreement is governed by the Laws of Narnia.", bad_expect, report, override=override)
+    assert _findings(report, "law.not_approved"), [(f.check, f.detail) for f in report.findings]
 
 
 # --------------------------------------------------------------------------- #
