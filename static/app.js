@@ -1991,7 +1991,20 @@ function renderDashboardHealth(kind, { tone, detail }) {
     detailNode.dataset.dashboardHealthDetail = "";
     item.appendChild(detailNode);
   }
-  detailNode.textContent = detailText;
+  // While the probe is in flight (tone === "checking") show a subtle shimmer
+  // placeholder instead of the bare "Checking" word — a quiet "we're working"
+  // signal. The accessible name still carries the textual status (set above), and
+  // the moment a real tone arrives the placeholder is replaced by the status text.
+  // The shimmer animation is gated behind prefers-reduced-motion in CSS.
+  if (effectiveTone === "checking") {
+    detailNode.textContent = "";
+    const placeholder = document.createElement("span");
+    placeholder.className = "skeleton-block health-skeleton";
+    placeholder.setAttribute("aria-hidden", "true");
+    detailNode.appendChild(placeholder);
+  } else {
+    detailNode.textContent = detailText;
+  }
 }
 
 function defaultDashboardHealthDetail(kind, tone) {

@@ -11,6 +11,17 @@ function createContractStructureController({ state, root }) {
 
   function render() {
     if (!root) return;
+    // LOADING STATE: while a background AI review runs for the selected matter,
+    // the Structure tab would otherwise show stale/empty content (the previous
+    // structure map, or an empty placeholder). Paint a "Building structure map…"
+    // shimmer skeleton instead, PAIRED with honest copy. The skeleton is generic
+    // (a tile grid + a few rows) — it never previews the real section count. It is
+    // replaced by the real map the moment the review completes and render() re-runs.
+    // Guarded so a harness without MatterUtils is a no-op (falls through to normal).
+    if (reviewInProgress()) {
+      root.innerHTML = renderStructureSkeleton();
+      return;
+    }
     const structure = effectiveStructure();
     const allSections = Array.isArray(structure?.sections) ? structure.sections : [];
     // Honor the AI structure-validation demotion (structure_validation.py): a section
@@ -60,6 +71,37 @@ function createContractStructureController({ state, root }) {
       ${renderReferences(references)}
     `;
     bindStructureRowKeyboard();
+  }
+
+  // True while a background AI review is running for the selected matter. Read via
+  // the shared MatterUtils predicate (review_status === "in_progress") so the
+  // Structure tab's loading state tracks the SAME signal the board badge + review
+  // header use. Resolved lazily off window so an isolated test/load order without
+  // the bridge degrades to "not in progress" (the normal render path) rather than
+  // throwing a ReferenceError.
+  function reviewInProgress() {
+    const utils = typeof window !== "undefined" ? window.MatterUtils : undefined;
+    if (!utils || typeof utils.reviewInProgress !== "function") return false;
+    return Boolean(utils.reviewInProgress(state.selectedMatter));
+  }
+
+  // The "Building structure map…" shimmer skeleton: a generic summary-tile grid
+  // plus a few section-row placeholders, headed by honest in-progress copy. The
+  // shapes are neutral (never the real section/tile counts). The shimmer animation
+  // itself is gated behind prefers-reduced-motion in CSS (.skeleton-block).
+  function renderStructureSkeleton() {
+    const tile = () => '<div class="skeleton-block structure-skeleton-tile"></div>';
+    const tiles = new Array(8).fill(0).map(tile).join("");
+    const rows = new Array(4).fill(0).map(() => '<div class="skeleton-block"></div>').join("");
+    return `
+      <div class="structure-skeleton" role="status" aria-live="polite">
+        <div class="review-skeleton-copy">
+          <span class="skeleton-dot" aria-hidden="true"></span>
+          <span>Building structure map… this runs with the review.</span>
+        </div>
+        <div class="structure-skeleton-summary" aria-hidden="true">${tiles}</div>
+        <div class="structure-skeleton-rows" aria-hidden="true">${rows}</div>
+      </div>`;
   }
 
   // The global delegated [data-para-ref] handler (app.js) covers row CLICKS for free,

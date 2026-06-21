@@ -11931,3 +11931,184 @@ label.is-hidden {
 .playbook-history {
   margin-top: 14px;
 }
+
+/* ===========================================================================
+   Shimmer skeleton placeholders
+   ---------------------------------------------------------------------------
+   Generic, neutral loading placeholders shown while a slow job (an AI review,
+   a structure-map build, a health probe) is in flight. They are deliberately
+   GENERIC in shape — never a faithful preview of the eventual result — so a
+   mismatch between the skeleton and the real content is never jarring.
+
+   HONESTY: the shimmer is purely "we're working" reassurance. It is ALWAYS
+   paired in markup with truthful duration/progress copy (the review can take a
+   minute; we are still analysing) so it can never imply an instant result.
+
+   prefers-reduced-motion: the sliding-highlight @keyframes is GATED behind a
+   no-preference media query. A reduced-motion user gets the SAME skeleton, but
+   static (a flat neutral fill, no animation).
+   =========================================================================== */
+.skeleton-block {
+  position: relative;
+  overflow: hidden;
+  background: var(--bg-soft);
+  border-radius: var(--r-sm);
+  /* A neutral, static fill is the baseline. The animated highlight is layered
+     on ONLY when motion is allowed (see the media query below). */
+}
+
+.skeleton-line {
+  height: 12px;
+  margin: 8px 0;
+  border-radius: var(--r-pill);
+}
+
+.skeleton-line.short { width: 45%; }
+.skeleton-line.medium { width: 70%; }
+.skeleton-line.long { width: 92%; }
+
+/* Animated shimmer highlight — ONLY for users who have not asked for reduced
+   motion. The default (reduced-motion or no support) is the static fill above. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes skeleton-shimmer {
+    0% { background-position: -160% 0; }
+    100% { background-position: 160% 0; }
+  }
+
+  .skeleton-block {
+    background-image: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0) 0%,
+      rgba(255, 255, 255, 0.65) 50%,
+      rgba(255, 255, 255, 0) 100%
+    );
+    background-repeat: no-repeat;
+    background-size: 160% 100%;
+    animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  }
+}
+
+/* The review-workspace document-pane skeleton: a generic stack of paragraph
+   lines that mirrors the SPLIT layout (document on the left) without faking a
+   specific document. Sits over the studio page while a review runs. */
+.review-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 28px 30px;
+}
+
+.review-skeleton-copy {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.review-skeleton-copy .skeleton-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--brand-bright);
+  flex: 0 0 auto;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .review-skeleton-copy .skeleton-dot {
+    animation: skeleton-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes skeleton-pulse {
+    0%, 100% { opacity: 0.35; }
+    50% { opacity: 1; }
+  }
+}
+
+.review-skeleton-doc {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.review-skeleton-para {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+/* The inspector clause-row skeletons (the right pane of the split). A short,
+   FIXED count of generic rows — never tied to the real clause count, so it can
+   never imply "N clauses found" before the review returns. */
+.review-skeleton-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+}
+
+.review-skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-md);
+  background: var(--bg-panel);
+}
+
+.review-skeleton-row .skeleton-pill {
+  width: 54px;
+  height: 20px;
+  border-radius: var(--r-pill);
+  flex: 0 0 auto;
+}
+
+.review-skeleton-row .skeleton-row-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+/* The Structure-tab "Building structure map…" skeleton. */
+.structure-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 4px;
+}
+
+.structure-skeleton-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+  gap: 10px;
+}
+
+.structure-skeleton-tile {
+  height: 54px;
+  border-radius: var(--r-md);
+}
+
+.structure-skeleton-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.structure-skeleton-rows .skeleton-block {
+  height: 46px;
+  border-radius: var(--r-md);
+}
+
+/* The dashboard-health "Checking…" shimmer placeholder — a subtle inline bar
+   that replaces the bare "Checking" word while a probe is in flight. */
+.dashboard-health-detail .skeleton-block.health-skeleton {
+  display: inline-block;
+  width: 72px;
+  height: 10px;
+  border-radius: var(--r-pill);
+  vertical-align: middle;
+}
