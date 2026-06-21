@@ -9782,6 +9782,207 @@ label.is-hidden {
   text-transform: uppercase;
 }
 
+/* View 1 -- dangling/ambiguous reference callouts. */
+.structure-flags {
+  display: grid;
+  gap: 8px;
+}
+
+.structure-flag {
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+.structure-flag strong {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.structure-flag ul {
+  display: grid;
+  gap: 4px;
+  list-style: disc;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.structure-flag li {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.structure-flag-danger {
+  background: var(--danger-weak, rgba(220, 38, 38, 0.08));
+  border-color: var(--danger, #dc2626);
+}
+
+.structure-flag-danger strong,
+.structure-flag-danger li {
+  color: var(--danger-strong, var(--danger, #b91c1c));
+}
+
+.structure-flag-warn {
+  background: var(--warn-weak, rgba(217, 119, 6, 0.08));
+  border-color: var(--warn, #d97706);
+}
+
+.structure-flag-warn strong,
+.structure-flag-warn li {
+  color: var(--warn-strong, var(--warn, #b45309));
+}
+
+/* View 2 -- nested outline tree. */
+.structure-section-tree {
+  background: var(--bg-soft);
+  padding: 4px;
+}
+
+.structure-tree-list {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.structure-tree-list .structure-tree-list {
+  margin-left: 14px;
+  padding-left: 8px;
+  border-left: 1px dashed var(--border);
+}
+
+.structure-tree-node .structure-row {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.structure-tree-details > .structure-tree-summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.structure-tree-details > .structure-tree-summary::-webkit-details-marker {
+  display: none;
+}
+
+.structure-tree-summary .structure-row {
+  position: relative;
+}
+
+.structure-tree-summary .structure-row::after {
+  color: var(--ink-muted);
+  content: "\25BC";
+  font-size: 9px;
+  position: absolute;
+  right: 10px;
+  top: 12px;
+}
+
+.structure-tree-details:not([open]) > .structure-tree-summary .structure-row::after {
+  content: "\25B6";
+}
+
+/* Dim the parser's guesses so a real heading reads with more authority. */
+.structure-row-dim {
+  opacity: 0.6;
+}
+
+.structure-row-dim .structure-level-marker {
+  background: var(--border);
+}
+
+.structure-row-guess {
+  color: var(--ink-muted);
+  font-style: italic;
+  text-transform: none;
+}
+
+/* View 3 -- clickable cross-reference links grouped by source. */
+.structure-xref-group {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+.structure-xref-source {
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.structure-xref-from,
+.structure-xref-to {
+  color: var(--brand);
+  cursor: pointer;
+  font-weight: 750;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.structure-xref-from[role="button"]:hover,
+.structure-xref-to[role="button"]:hover,
+.structure-xref-from[role="button"]:focus-visible,
+.structure-xref-to[role="button"]:focus-visible {
+  color: var(--brand-strong, var(--brand));
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+.structure-xref-plain {
+  color: var(--ink-soft);
+  cursor: default;
+  text-decoration: none;
+}
+
+.structure-xref-missing {
+  color: var(--danger, #b91c1c);
+}
+
+.structure-xref-links {
+  display: grid;
+  gap: 5px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.structure-xref-link {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.structure-xref-text {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.structure-xref-arrow {
+  color: var(--ink-muted);
+  font-weight: 700;
+}
+
+.structure-xref-status {
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 800;
+  margin-left: auto;
+  text-transform: uppercase;
+}
+
 #reviewView #studioDetailPanel .structure-summary {
   grid-template-columns: 1fr;
 }
