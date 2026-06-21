@@ -545,6 +545,9 @@ def generated_matter(in_memory_matters, monkeypatch):
     result, _artifact = nda_generation.generate_and_save_nda(
         "aspora_technology", intake, matter_id, repository=in_memory_matters, owner_user_id=OWNER
     )
+    # Cleared for the send-for-signature review/approval gate: these tests exercise
+    # anchor/signer behavior on a SENT envelope, so the matter must be reviewed.
+    in_memory_matters.update_matter_fields(matter_id, {"human_reviewed": True}, owner_user_id=OWNER)
     return in_memory_matters.get_matter(matter_id, owner_user_id=OWNER), matter_id, result
 
 
@@ -718,6 +721,9 @@ def placeholder_generated_matter(in_memory_matters):
     nda_generation.generate_and_save_nda(
         "aspora_technology", intake, matter_id, repository=in_memory_matters, owner_user_id=OWNER
     )
+    # Cleared for the send-for-signature review/approval gate (tests exercise the
+    # SENT envelope's signer/anchor behavior, not the gate).
+    in_memory_matters.update_matter_fields(matter_id, {"human_reviewed": True}, owner_user_id=OWNER)
     return in_memory_matters.get_matter(matter_id, owner_user_id=OWNER), matter_id
 
 
