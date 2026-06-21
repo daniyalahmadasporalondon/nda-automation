@@ -211,6 +211,14 @@ def _handle_playbook_publish_post(handler) -> None:
     )
 
 
+def _handle_playbook_suggest_wording_post(handler, path: str) -> None:
+    playbook_routes.handle_playbook_suggest_wording(
+        handler,
+        path,
+        playbook_path=PLAYBOOK_PATH,
+    )
+
+
 _GET_EXACT_ROUTES = {
     "/": _handle_index_get,
     "/api/deployment/status": admin_routes.handle_deployment_status,
@@ -450,6 +458,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             handler = _POST_EXACT_ROUTES.get(path)
             if handler is not None:
                 handler(self)
+                return
+            if path.startswith("/api/playbook/clause/") and path.endswith("/suggest-wording"):
+                _handle_playbook_suggest_wording_post(self, path)
                 return
             if path.startswith("/api/matters/") and path.endswith("/stage"):
                 matter_routes.handle_matter_stage_update(self, path)
