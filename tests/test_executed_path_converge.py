@@ -94,6 +94,7 @@ def _drive_to_completed(repo, matter_id) -> tuple[FakeDocuSignClient, str]:
         OWNER,
         repository=repo,
         client=fake,
+        confirm_recipient="cp@acme.com",
     )
     return fake, send.envelope_id
 
@@ -279,7 +280,8 @@ def test_declined_branch_intact_not_executed(in_memory_matters):
     matter_id = _make_matter(repo)
     fake = FakeDocuSignClient()
     send = docusign_workflow.send_for_signature(
-        repo.get_matter(matter_id, owner_user_id=OWNER), matter_id, OWNER, repository=repo, client=fake
+        repo.get_matter(matter_id, owner_user_id=OWNER), matter_id, OWNER, repository=repo, client=fake,
+        confirm_recipient="cp@acme.com",
     )
     fake.decline_envelope(send.envelope_id, "cp@acme.com")
 
@@ -298,7 +300,8 @@ def test_voided_branch_intact_resendable(in_memory_matters):
     matter_id = _make_matter(repo)
     fake = FakeDocuSignClient()
     send = docusign_workflow.send_for_signature(
-        repo.get_matter(matter_id, owner_user_id=OWNER), matter_id, OWNER, repository=repo, client=fake
+        repo.get_matter(matter_id, owner_user_id=OWNER), matter_id, OWNER, repository=repo, client=fake,
+        confirm_recipient="cp@acme.com",
     )
     fake.void_envelope(send.envelope_id, "reissue")
 
@@ -317,14 +320,16 @@ def test_resend_after_void_still_clears_the_stale_flag(in_memory_matters):
     matter_id = _make_matter(repo)
     fake = FakeDocuSignClient()
     send = docusign_workflow.send_for_signature(
-        repo.get_matter(matter_id, owner_user_id=OWNER), matter_id, OWNER, repository=repo, client=fake
+        repo.get_matter(matter_id, owner_user_id=OWNER), matter_id, OWNER, repository=repo, client=fake,
+        confirm_recipient="cp@acme.com",
     )
     fake.void_envelope(send.envelope_id, "reissue")
     docusign_workflow.sync_signature_status(None, matter_id, OWNER, repository=repo, client=fake)
     assert repo.get_matter(matter_id, owner_user_id=OWNER).get("signature_voided") is True
 
     resend = docusign_workflow.send_for_signature(
-        repo.get_matter(matter_id, owner_user_id=OWNER), matter_id, OWNER, repository=repo, client=fake
+        repo.get_matter(matter_id, owner_user_id=OWNER), matter_id, OWNER, repository=repo, client=fake,
+        confirm_recipient="cp@acme.com",
     )
     assert resend.envelope_id != send.envelope_id
     stored = repo.get_matter(matter_id, owner_user_id=OWNER)

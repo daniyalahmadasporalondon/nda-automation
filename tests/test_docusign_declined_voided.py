@@ -58,7 +58,8 @@ def sent_matter(in_memory_matters):
     matter = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
     fake = FakeDocuSignClient()
     send = docusign_workflow.send_for_signature(
-        matter, matter_id, OWNER, repository=in_memory_matters, client=fake
+        matter, matter_id, OWNER, repository=in_memory_matters, client=fake,
+        confirm_recipient="cp@acme.com",
     )
     stored = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
     # Precondition: it really is in the awaiting-counterparty limbo before we sync.
@@ -200,7 +201,8 @@ def test_resend_after_void_clears_voided_pin(sent_matter, in_memory_matters):
 
     # 2) Re-send: a fresh envelope goes out.
     resend = docusign_workflow.send_for_signature(
-        stored, matter_id, OWNER, repository=in_memory_matters, client=fake
+        stored, matter_id, OWNER, repository=in_memory_matters, client=fake,
+        confirm_recipient="cp@acme.com",
     )
     assert resend.envelope_id and resend.envelope_id != envelope_id
 
@@ -234,7 +236,8 @@ def test_resend_after_decline_clears_declined_pin(sent_matter, in_memory_matters
 
     # 2) Re-send: a fresh envelope is genuinely awaiting signature again.
     resend = docusign_workflow.send_for_signature(
-        stored, matter_id, OWNER, repository=in_memory_matters, client=fake
+        stored, matter_id, OWNER, repository=in_memory_matters, client=fake,
+        confirm_recipient="cp@acme.com",
     )
     assert resend.envelope_id and resend.envelope_id != envelope_id
 

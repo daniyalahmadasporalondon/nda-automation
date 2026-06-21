@@ -92,7 +92,11 @@ class _SendHandler:
         self.response = None
 
     def _read_json_payload(self):
-        return {}
+        # The counterparty is derived from the inbound reply_to (cp@acme.com), which
+        # is spoofable, so the send-for-signature gate requires confirmation of the
+        # resolved recipient. These tests exercise the WEBHOOK, not the gate, so the
+        # setup send confirms the known recipient.
+        return {"confirm_recipient": "cp@acme.com"}
 
     def _send_json(self, payload, *, status=200, send_body=True, headers=None):
         self.status = status

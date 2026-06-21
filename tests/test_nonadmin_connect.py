@@ -284,7 +284,14 @@ def test_nonadmin_docusign_send_for_signature_completes(repo, monkeypatch):
     monkeypatch.setattr(docusign_integration, "get_client", lambda *, owner_user_id="": client)
 
     matter_id = _reviewed_matter(repo, owner=USER_A)
-    handler = _FakeHandler(repo, owner=USER_A, payload={}, path=f"/api/matters/{matter_id}/send-for-signature")
+    # The counterparty is derived from the inbound reply_to (cp@cp.com, spoofable),
+    # so the send requires confirmation of the resolved recipient.
+    handler = _FakeHandler(
+        repo,
+        owner=USER_A,
+        payload={"confirm_recipient": "cp@cp.com"},
+        path=f"/api/matters/{matter_id}/send-for-signature",
+    )
     docusign_routes.handle_send_for_signature(handler, handler.path)
 
     assert handler.status == 201, handler.response

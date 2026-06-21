@@ -325,7 +325,7 @@ def test_resolve_owner_unchanged_when_google_configured(monkeypatch):
 # --------------------------------------------------------------------------
 def test_send_for_signature_success(repo, connected, fake_client):
     matter_id = _matter_with_reviewed(repo)
-    handler = _FakeHandler(repo, payload={})
+    handler = _FakeHandler(repo, payload={"confirm_recipient": "cp@acme.com"})
     docusign_routes.handle_send_for_signature(handler, f"/api/matters/{matter_id}/send-for-signature")
     assert handler.status == 201
     assert handler.response["envelope_id"]
@@ -333,9 +333,100 @@ def test_send_for_signature_success(repo, connected, fake_client):
     assert "matter" in handler.response
 
 
+def test_send_for_signature_unconfirmed_attacker_recipient_is_400_no_envelope(
+    repo, connected, fake_client
+):
+    """P0: a matter whose inbound reply_to is attacker-controlled, sent WITHOUT a
+    matching confirm_recipient, is refused with 400 and creates NO envelope — so the
+    finalized NDA is never emailed to the spoofed address.
+
+    The matter's reply_to is attacker@evil.com (written verbatim from the inbound
+    Reply-To header). Before this fix the same request created a real envelope and
+    DocuSign dispatched the NDA to attacker@evil.com.
+    """
+    matter = repo.create_matter(
+        source_filename="acme-nda.docx",
+        document_bytes=b"original",
+        extracted_text="text",
+        review_result={},
+        triage={},
+        owner_user_id=OWNER,
+        # Attacker-controlled inbound Reply-To.
+        intake_metadata={"reply_to": "attacker@evil.com", "subject": "Acme NDA"},
+    )
+    matter_id = matter["id"]
+    artifact_service.add_artifact(
+        matter_id,
+        source=SOURCE_GENERATED,
+        actor=ACTOR_HUMAN,
+        role=ROLE_REVIEWED,
+        document_bytes=PDF_BYTES,
+        repository=repo,
+        owner_user_id=OWNER,
+    )
+    handler = _FakeHandler(repo, payload={})
+    docusign_routes.handle_send_for_signature(
+        handler, f"/api/matters/{matter_id}/send-for-signature"
+    )
+    assert handler.status == 400
+    # No envelope was created on the provider.
+    assert fake_client._counter == 0
+    assert fake_client._envelopes == {}
+    # The matter is unchanged: no signature block, not flipped to awaiting.
+    stored = repo.get_matter(matter_id, owner_user_id=OWNER)
+    assert docusign_routes.docusign_workflow.SIGNATURE_FIELD not in stored
+    assert stored.get("awaiting_signature") in (None, False)
+
+
+def test_send_for_signature_spoofed_confirm_mismatch_is_400_no_envelope(
+    repo, connected, fake_client
+):
+    """A confirm_recipient that does not match the resolved (attacker) recipient is
+    still refused — the operator cannot be tricked into confirming a different
+    address than the one the NDA actually goes to."""
+    matter = repo.create_matter(
+        source_filename="acme-nda.docx",
+        document_bytes=b"original",
+        extracted_text="text",
+        review_result={},
+        triage={},
+        owner_user_id=OWNER,
+        intake_metadata={"reply_to": "attacker@evil.com", "subject": "Acme NDA"},
+    )
+    matter_id = matter["id"]
+    artifact_service.add_artifact(
+        matter_id,
+        source=SOURCE_GENERATED,
+        actor=ACTOR_HUMAN,
+        role=ROLE_REVIEWED,
+        document_bytes=PDF_BYTES,
+        repository=repo,
+        owner_user_id=OWNER,
+    )
+    handler = _FakeHandler(repo, payload={"confirm_recipient": "trusted@acme.com"})
+    docusign_routes.handle_send_for_signature(
+        handler, f"/api/matters/{matter_id}/send-for-signature"
+    )
+    assert handler.status == 400
+    assert fake_client._counter == 0
+
+
+def test_send_for_signature_matching_confirm_proceeds(repo, connected, fake_client):
+    """A confirm_recipient matching the resolved recipient lets the send through
+    (the gate blocks only spoofed/unconfirmed sends, not legitimate ones)."""
+    matter_id = _matter_with_reviewed(repo)
+    handler = _FakeHandler(repo, payload={"confirm_recipient": "cp@acme.com"})
+    docusign_routes.handle_send_for_signature(
+        handler, f"/api/matters/{matter_id}/send-for-signature"
+    )
+    assert handler.status == 201
+    assert handler.response["envelope_id"]
+    assert fake_client._counter == 1
+
+
 def test_send_for_signature_owner_mismatch_is_404_noop(repo, connected, fake_client):
     matter_id = _matter_with_reviewed(repo, owner=OTHER)
-    handler = _FakeHandler(repo, owner=OWNER, payload={})
+    handler = _FakeHandler(repo, owner=OWNER, payload={"confirm_recipient": "cp@acme.com"})
     docusign_routes.handle_send_for_signature(handler, f"/api/matters/{matter_id}/send-for-signature")
     assert handler.status == 404
     # No envelope was created on the other tenant's matter.
@@ -353,7 +444,7 @@ def test_send_for_signature_not_connected_is_409(repo, monkeypatch):
             docusign_connection.DocuSignNotConnectedError("nope")
         ),
     )
-    handler = _FakeHandler(repo, payload={})
+    handler = _FakeHandler(repo, payload={"confirm_recipient": "cp@acme.com"})
     docusign_routes.handle_send_for_signature(handler, f"/api/matters/{matter_id}/send-for-signature")
     assert handler.status == 409
     assert handler.response["needs_connect"] is True
@@ -372,7 +463,7 @@ def test_send_for_signature_dead_grant_is_409_needs_reconnect(repo, monkeypatch)
             )
         ),
     )
-    handler = _FakeHandler(repo, payload={})
+    handler = _FakeHandler(repo, payload={"confirm_recipient": "cp@acme.com"})
     docusign_routes.handle_send_for_signature(handler, f"/api/matters/{matter_id}/send-for-signature")
     assert handler.status == 409
     assert handler.response["needs_reconnect"] is True
@@ -411,14 +502,14 @@ def test_send_for_signature_duplicate_on_active_envelope_is_409(repo, connected,
     not allowed to create a duplicate envelope to the counterparty."""
     matter_id = _matter_with_reviewed(repo)
     # First send creates the envelope.
-    first = _FakeHandler(repo, payload={})
+    first = _FakeHandler(repo, payload={"confirm_recipient": "cp@acme.com"})
     docusign_routes.handle_send_for_signature(first, f"/api/matters/{matter_id}/send-for-signature")
     assert first.status == 201
     first_envelope = first.response["envelope_id"]
     assert first_envelope
 
     # Second send must be rejected WITHOUT minting a new envelope.
-    second = _FakeHandler(repo, payload={})
+    second = _FakeHandler(repo, payload={"confirm_recipient": "cp@acme.com"})
     docusign_routes.handle_send_for_signature(second, f"/api/matters/{matter_id}/send-for-signature")
     assert second.status == 409
     assert second.response["already_sent"] is True
@@ -431,7 +522,7 @@ def test_send_for_signature_resend_allowed_after_terminal_envelope(repo, connect
     """#30: a terminal envelope (voided) is NOT active — a legitimate resend is
     allowed (does not 409)."""
     matter_id = _matter_with_reviewed(repo)
-    first = _FakeHandler(repo, payload={})
+    first = _FakeHandler(repo, payload={"confirm_recipient": "cp@acme.com"})
     docusign_routes.handle_send_for_signature(first, f"/api/matters/{matter_id}/send-for-signature")
     assert first.status == 201
 
@@ -442,7 +533,7 @@ def test_send_for_signature_resend_allowed_after_terminal_envelope(repo, connect
     signature["status"] = "voided"
     repo.update_matter_fields(matter_id, {field: signature}, owner_user_id=OWNER)
 
-    resend = _FakeHandler(repo, payload={})
+    resend = _FakeHandler(repo, payload={"confirm_recipient": "cp@acme.com"})
     docusign_routes.handle_send_for_signature(resend, f"/api/matters/{matter_id}/send-for-signature")
     assert resend.status == 201
 
@@ -452,7 +543,7 @@ def test_send_for_signature_resend_allowed_after_terminal_envelope(repo, connect
 # --------------------------------------------------------------------------
 def test_signature_status_after_send(repo, connected, fake_client):
     matter_id = _matter_with_reviewed(repo)
-    send_handler = _FakeHandler(repo, payload={})
+    send_handler = _FakeHandler(repo, payload={"confirm_recipient": "cp@acme.com"})
     docusign_routes.handle_send_for_signature(send_handler, f"/api/matters/{matter_id}/send-for-signature")
 
     status_handler = _FakeHandler(repo)
@@ -463,7 +554,7 @@ def test_signature_status_after_send(repo, connected, fake_client):
 
 def test_signed_document_download_after_completion(repo, connected, fake_client):
     matter_id = _matter_with_reviewed(repo)
-    send_handler = _FakeHandler(repo, payload={})
+    send_handler = _FakeHandler(repo, payload={"confirm_recipient": "cp@acme.com"})
     docusign_routes.handle_send_for_signature(send_handler, f"/api/matters/{matter_id}/send-for-signature")
     envelope_id = repo.get_matter(matter_id, owner_user_id=OWNER)[
         docusign_routes.docusign_workflow.SIGNATURE_FIELD
@@ -478,7 +569,7 @@ def test_signed_document_download_after_completion(repo, connected, fake_client)
 
 def test_signed_document_404_before_completion(repo, connected, fake_client):
     matter_id = _matter_with_reviewed(repo)
-    send_handler = _FakeHandler(repo, payload={})
+    send_handler = _FakeHandler(repo, payload={"confirm_recipient": "cp@acme.com"})
     docusign_routes.handle_send_for_signature(send_handler, f"/api/matters/{matter_id}/send-for-signature")
     handler = _FakeHandler(repo)
     docusign_routes.handle_signed_document(handler, f"/api/matters/{matter_id}/signed-document")
@@ -497,7 +588,7 @@ def _webhook_body(envelope_id, status="completed"):
 def test_webhook_completes_matter_and_captures_signed(repo, connected, fake_client, monkeypatch):
     monkeypatch.delenv(docusign_connection.CONNECT_HMAC_KEY_ENV, raising=False)
     matter_id = _matter_with_reviewed(repo)
-    send_handler = _FakeHandler(repo, payload={})
+    send_handler = _FakeHandler(repo, payload={"confirm_recipient": "cp@acme.com"})
     docusign_routes.handle_send_for_signature(send_handler, f"/api/matters/{matter_id}/send-for-signature")
     envelope_id = repo.get_matter(matter_id, owner_user_id=OWNER)[
         docusign_routes.docusign_workflow.SIGNATURE_FIELD
@@ -535,7 +626,7 @@ def test_webhook_rejects_bad_hmac_when_key_configured(repo, monkeypatch):
 def test_webhook_accepts_valid_hmac(repo, connected, fake_client, monkeypatch):
     monkeypatch.setenv(docusign_connection.CONNECT_HMAC_KEY_ENV, "the-secret")
     matter_id = _matter_with_reviewed(repo)
-    send_handler = _FakeHandler(repo, payload={})
+    send_handler = _FakeHandler(repo, payload={"confirm_recipient": "cp@acme.com"})
     docusign_routes.handle_send_for_signature(send_handler, f"/api/matters/{matter_id}/send-for-signature")
     envelope_id = repo.get_matter(matter_id, owner_user_id=OWNER)[
         docusign_routes.docusign_workflow.SIGNATURE_FIELD

@@ -201,7 +201,7 @@ def test_poll_path_archives_with_session_google_token_owner(drive_env, in_memory
     matter/request owner. The signed PDF reaches Drive."""
     matter, matter_id = _make_matter(in_memory_matters, MATTER_OWNER)
     fake = FakeDocuSignClient(auto_complete=True)
-    docusign_workflow.send_for_signature(matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake)
+    docusign_workflow.send_for_signature(matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake, confirm_recipient="cp@acme.com")
 
     result = docusign_workflow.sync_signature_status(
         None,
@@ -229,7 +229,7 @@ def test_poll_path_wrong_owner_would_have_skipped(drive_env, in_memory_matters):
     drive_env.connected = {GOOGLE_OWNER}  # only the Google id has a token
     matter, matter_id = _make_matter(in_memory_matters, MATTER_OWNER)
     fake = FakeDocuSignClient(auto_complete=True)
-    docusign_workflow.send_for_signature(matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake)
+    docusign_workflow.send_for_signature(matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake, confirm_recipient="cp@acme.com")
 
     docusign_workflow.sync_signature_status(
         None, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake,
@@ -250,7 +250,7 @@ def test_webhook_path_resolves_token_owner_from_matter(drive_env, in_memory_matt
     drive_env.connected = {MATTER_OWNER}  # the matter owner has a per-user token
     matter, matter_id = _make_matter(in_memory_matters, MATTER_OWNER)
     fake = FakeDocuSignClient(auto_complete=True)
-    docusign_workflow.send_for_signature(matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake)
+    docusign_workflow.send_for_signature(matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake, confirm_recipient="cp@acme.com")
 
     # No drive_token_owner_user_id passed (the webhook call shape).
     result = docusign_workflow.sync_signature_status(
@@ -268,7 +268,7 @@ def test_webhook_path_falls_back_to_server_global_token(drive_env, in_memory_mat
     drive_env.connected = {""}  # only the server-global token exists
     matter, matter_id = _make_matter(in_memory_matters, MATTER_OWNER)
     fake = FakeDocuSignClient(auto_complete=True)
-    docusign_workflow.send_for_signature(matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake)
+    docusign_workflow.send_for_signature(matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake, confirm_recipient="cp@acme.com")
 
     result = docusign_workflow.sync_signature_status(
         None, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake
@@ -286,7 +286,7 @@ def test_no_login_empty_owner_archives_via_server_global(drive_env, in_memory_ma
     drive_env.connected = {""}
     matter, matter_id = _make_matter(in_memory_matters, "")
     fake = FakeDocuSignClient(auto_complete=True)
-    docusign_workflow.send_for_signature(matter, matter_id, "", repository=in_memory_matters, client=fake)
+    docusign_workflow.send_for_signature(matter, matter_id, "", repository=in_memory_matters, client=fake, confirm_recipient="cp@acme.com")
 
     result = docusign_workflow.sync_signature_status(
         None, matter_id, "", repository=in_memory_matters, client=fake
@@ -305,7 +305,7 @@ def test_resync_overwrites_matter_summary_with_signed_facets(drive_env, in_memor
     hit (the #11 bug)."""
     matter, matter_id = _make_matter(in_memory_matters, MATTER_OWNER)
     fake = FakeDocuSignClient()
-    send = docusign_workflow.send_for_signature(matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake)
+    send = docusign_workflow.send_for_signature(matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake, confirm_recipient="cp@acme.com")
 
     # First archive while still awaiting signature (not signed yet).
     drive_integration.archive_executed_matter(
@@ -345,7 +345,7 @@ def test_drive_outage_does_not_break_executed_and_is_logged(in_memory_matters, m
     silent)."""
     matter, matter_id = _make_matter(in_memory_matters, MATTER_OWNER)
     fake = FakeDocuSignClient(auto_complete=True)
-    docusign_workflow.send_for_signature(matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake)
+    docusign_workflow.send_for_signature(matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake, confirm_recipient="cp@acme.com")
 
     monkeypatch.setattr(drive_integration, "drive_connected", lambda owner_user_id="": True)
     monkeypatch.setattr(app_settings, "drive_auto_intake_enabled", lambda: True)
@@ -376,7 +376,7 @@ def test_archive_skip_when_not_connected_is_logged(drive_env, in_memory_matters,
     drive_env.connected = set()  # nobody has a token
     matter, matter_id = _make_matter(in_memory_matters, MATTER_OWNER)
     fake = FakeDocuSignClient(auto_complete=True)
-    docusign_workflow.send_for_signature(matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake)
+    docusign_workflow.send_for_signature(matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake, confirm_recipient="cp@acme.com")
 
     with caplog.at_level(logging.INFO, logger="nda_automation.drive_integration"):
         result = docusign_workflow.sync_signature_status(
@@ -469,7 +469,8 @@ def test_archive_failure_records_drive_archive_failed_and_surfaces(
     matter, matter_id = _make_matter(in_memory_matters, MATTER_OWNER)
     fake = FakeDocuSignClient(auto_complete=True)
     docusign_workflow.send_for_signature(
-        matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake
+        matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake,
+        confirm_recipient="cp@acme.com",
     )
 
     monkeypatch.setattr(drive_integration, "drive_connected", lambda owner_user_id="": True)
@@ -509,7 +510,8 @@ def test_archive_success_records_drive_archive_ok_no_warning(drive_env, in_memor
     matter, matter_id = _make_matter(in_memory_matters, MATTER_OWNER)
     fake = FakeDocuSignClient(auto_complete=True)
     docusign_workflow.send_for_signature(
-        matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake
+        matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake,
+        confirm_recipient="cp@acme.com",
     )
 
     docusign_workflow.sync_signature_status(
@@ -535,7 +537,8 @@ def test_archive_skip_when_not_connected_records_no_drive_archive_block(
     matter, matter_id = _make_matter(in_memory_matters, MATTER_OWNER)
     fake = FakeDocuSignClient(auto_complete=True)
     docusign_workflow.send_for_signature(
-        matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake
+        matter, matter_id, MATTER_OWNER, repository=in_memory_matters, client=fake,
+        confirm_recipient="cp@acme.com",
     )
 
     result = docusign_workflow.sync_signature_status(

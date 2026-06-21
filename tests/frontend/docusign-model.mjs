@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import {
   DocuSignModel,
   buildSendForSignaturePayload,
+  confirmRecipientFromSigners,
   connectionView,
   defaultSigners,
   generatorSignatureMatter,
@@ -255,6 +256,10 @@ test("buildSendForSignaturePayload: matches the REST contract body shape, carryi
       { name: "Jane", email: "jane@aspora.com", role: "aspora", routing_order: 2 },
     ],
     signing_order: "sequential",
+    // The counterparty email the operator sees + (possibly) edits is sent back as
+    // the confirmation the backend matches against the resolved recipient — the
+    // same anti-spoof contract the Gmail send-redline path enforces.
+    confirm_recipient: "cp@acme.com",
   });
 });
 
@@ -341,7 +346,51 @@ test("generator send: matter view -> defaultSigners derives counterparty + Aspor
       { name: "Jane Aspora", email: "jane@aspora.com", role: "aspora", routing_order: 2 },
     ],
     signing_order: "sequential",
+    confirm_recipient: "legal@beta.io",
   });
+});
+
+// --- Recipient confirmation (P0 anti-exfiltration) ---------------------------
+// The counterparty signer email can be prefilled from an attacker-controlled
+// inbound Reply-To/From header (or untrusted intake free-text), so the send body
+// carries the visible counterparty address as confirm_recipient and the backend
+// refuses any send to a spoofable-derived recipient that is not confirmed.
+test("buildSendForSignaturePayload: confirm_recipient is the counterparty signer email", () => {
+  const payload = buildSendForSignaturePayload(
+    [
+      { role: "aspora", name: "Jane", email: "jane@aspora.com", order: 1 },
+      { role: "counterparty", name: "Acme", email: "cp@acme.com", order: 2 },
+    ],
+    "sequential",
+  );
+  // The confirmation is the COUNTERPARTY address regardless of row order — that is
+  // the spoofable destination the backend gates on, not the Aspora party.
+  assert.equal(payload.confirm_recipient, "cp@acme.com");
+});
+
+test("confirmRecipientFromSigners: picks the counterparty row", () => {
+  assert.equal(
+    confirmRecipientFromSigners([
+      { role: "aspora", email: "jane@aspora.com" },
+      { role: "counterparty", email: "cp@acme.com" },
+    ]),
+    "cp@acme.com",
+  );
+});
+
+test("confirmRecipientFromSigners: falls back to the first non-Aspora signer for blank roles", () => {
+  assert.equal(
+    confirmRecipientFromSigners([
+      { role: "aspora", email: "jane@aspora.com" },
+      { role: "", email: "someone@elsewhere.com" },
+    ]),
+    "someone@elsewhere.com",
+  );
+});
+
+test("confirmRecipientFromSigners: '' when only an Aspora signer is present", () => {
+  assert.equal(confirmRecipientFromSigners([{ role: "aspora", email: "jane@aspora.com" }]), "");
+  assert.equal(confirmRecipientFromSigners([]), "");
 });
 
 test("DocuSignModel namespace re-exports the same functions", () => {

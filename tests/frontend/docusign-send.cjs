@@ -292,6 +292,29 @@ async function submit(form) {
     assert.ok(statusNode.classList.contains("error"));
   });
 
+  // --- P0: the send body confirms the visible counterparty recipient ----------
+  await test("send-for-signature POSTs confirm_recipient = the visible counterparty email", async () => {
+    // The signerRowsStub surfaces the counterparty email cp@acme.com in the
+    // composer's (editable) Email field — the address the operator sees + confirms
+    // by sending. The controller must carry it back as confirm_recipient so the
+    // backend can refuse a send to a spoofable-derived recipient that was not
+    // confirmed.
+    let captured = null;
+    const matterRef = { current: { id: "m-confirm", recipient_email: "cp@acme.com", counterparty_name: "Acme Corp" } };
+    const fetchImpl = async (url, options) => {
+      captured = JSON.parse(options.body);
+      return { ok: true, status: 201, json: async () => ({ envelope_id: "env-c", status: "sent" }) };
+    };
+    const { form } = buildController({ fetchImpl, matterRef });
+    await submit(form);
+    assert.ok(captured, "a send fired");
+    assert.equal(
+      captured.confirm_recipient,
+      "cp@acme.com",
+      "the POST body confirms the exact counterparty address shown in the composer",
+    );
+  });
+
   process.stdout.write(`\n${passed} passed\n`);
 })().catch((error) => {
   process.stderr.write(`\nFAILED: ${error && error.stack ? error.stack : error}\n`);
