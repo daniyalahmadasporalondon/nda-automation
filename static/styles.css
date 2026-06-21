@@ -13164,3 +13164,345 @@ label.is-hidden {
   border-radius: var(--pb-r-panel, 8px);
   border-color: var(--border);
 }
+
+/* ===========================================================================
+   Aspora Design Language — Admin Settings Console
+   Scoped to the admin SURFACE only (`#clausesView[data-admin-surface="admin"]`),
+   i.e. the AI Runtime / Health / Gmail / Personalisation / Drive / DocuSign /
+   Admin Access sections — NOT the playbook clause editor (own surface, already
+   Aspora-styled) and NOT the guide docs. This mirrors the clause-editor tokens
+   (Inter typography, flat radii, brand purple, hairline borders, subtle
+   shadows, hover-destructive) so the two tabs read as one product.
+   RESTYLE ONLY: every selector targets existing behaviour-bearing markup; no
+   handler, id, toggle wiring, input name, or data attribute is changed. The ID
+   prefix gives these rules higher specificity than the global admin defaults,
+   so source order is incidental and no `!important` is needed.
+   =========================================================================== */
+#clausesView[data-admin-surface="admin"] {
+  /* Aspora tokens — match the clause editor's --pb-* vocabulary. */
+  --adm-font: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --adm-surface: #ffffff;
+  --adm-ink: #170a33;
+  --adm-muted: #5d5470;
+  --adm-faint: #8e869e;
+  --adm-brand: #4f1bb3;
+  --adm-brand-hover: #3d1293;
+  --adm-line: #e6e1f0;
+  --adm-chip-bg: #f5f0ff;
+  --adm-chip-border: rgba(79, 27, 179, 0.12);
+  --adm-success: #10b981;
+  --adm-r-card: 12px;
+  --adm-r-panel: 8px;
+  --adm-r-input: 6px;
+  --adm-r-tag: 4px;
+  --adm-shadow-card: 0 4px 20px rgba(22, 8, 51, 0.015);
+  --adm-shadow-seg: 0 1px 3px rgba(22, 8, 51, 0.08);
+
+  font-family: var(--adm-font);
+  -webkit-font-smoothing: antialiased;
+  color: var(--adm-ink);
+}
+
+/* Propagate Inter to every typographic + form element in the surface. */
+#clausesView[data-admin-surface="admin"] .admin-section-panel,
+#clausesView[data-admin-surface="admin"] .admin-section-panel h1,
+#clausesView[data-admin-surface="admin"] .admin-section-panel h2,
+#clausesView[data-admin-surface="admin"] .admin-section-panel h3,
+#clausesView[data-admin-surface="admin"] .admin-section-panel h4,
+#clausesView[data-admin-surface="admin"] .admin-section-panel p,
+#clausesView[data-admin-surface="admin"] .admin-section-panel label,
+#clausesView[data-admin-surface="admin"] .admin-section-panel .eyebrow,
+#clausesView[data-admin-surface="admin"] .admin-section-panel input,
+#clausesView[data-admin-surface="admin"] .admin-section-panel textarea,
+#clausesView[data-admin-surface="admin"] .admin-section-panel select,
+#clausesView[data-admin-surface="admin"] .admin-section-panel button,
+#clausesView[data-admin-surface="admin"] .admin-nav,
+#clausesView[data-admin-surface="admin"] .admin-nav button,
+#clausesView[data-admin-surface="admin"] .admin-nav h2 {
+  font-family: var(--adm-font);
+}
+
+/* ---- Left nav (mirror the clause-nav active-accent treatment) ---- */
+#clausesView[data-admin-surface="admin"] .admin-nav {
+  background: var(--adm-surface);
+  border: 1px solid var(--adm-line);
+  border-radius: var(--adm-r-panel);
+  box-shadow: var(--adm-shadow-card);
+}
+
+#clausesView[data-admin-surface="admin"] .admin-section-button strong {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--adm-ink);
+}
+
+#clausesView[data-admin-surface="admin"] .admin-section-button span {
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--adm-muted);
+}
+
+#clausesView[data-admin-surface="admin"] .admin-section-button:hover,
+#clausesView[data-admin-surface="admin"] .admin-section-button.active {
+  background: var(--adm-chip-bg);
+  border-left-color: var(--adm-brand);
+}
+
+#clausesView[data-admin-surface="admin"] .admin-section-button.active strong {
+  color: var(--adm-brand);
+}
+
+/* ---- Panel shell + card hierarchy ---- */
+#clausesView[data-admin-surface="admin"] .admin-section-panel {
+  background: var(--adm-surface);
+  border: 1px solid var(--adm-line);
+  border-radius: var(--adm-r-card);
+  box-shadow: var(--adm-shadow-card);
+}
+
+/* ---- Section header: eyebrow + Inter title scale ---- */
+#clausesView[data-admin-surface="admin"] .admin-section-head {
+  border-bottom: 1px solid var(--adm-line);
+}
+
+#clausesView[data-admin-surface="admin"] .admin-section-head .eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--adm-faint);
+  margin: 0 0 6px;
+}
+
+#clausesView[data-admin-surface="admin"] .admin-section-head h1 {
+  font-size: 1.65rem;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.02em;
+  color: var(--adm-ink);
+}
+
+/* ---- Outer integration cards (flat white, hairline, 12px) ---- */
+#clausesView[data-admin-surface="admin"] .integration-card {
+  background: var(--adm-surface);
+  border: 1px solid var(--adm-line);
+  border-radius: var(--adm-r-card);
+  box-shadow: var(--adm-shadow-card);
+  padding: 1.25rem 1.5rem;
+}
+
+#clausesView[data-admin-surface="admin"] .integration-card-head h2 {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--adm-ink);
+}
+
+#clausesView[data-admin-surface="admin"] .integration-card-head .eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--adm-faint);
+  margin: 0 0 6px;
+}
+
+/* ---- Status pill ---- */
+#clausesView[data-admin-surface="admin"] .integration-status {
+  border-radius: var(--adm-r-tag);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  background: var(--adm-chip-bg);
+  border: 1px solid var(--adm-chip-border);
+  color: var(--adm-brand);
+}
+#clausesView[data-admin-surface="admin"] .integration-status.ready {
+  background: var(--green-bg);
+  border-color: var(--green-border);
+  color: var(--green-ink);
+}
+#clausesView[data-admin-surface="admin"] .integration-status.blocked {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  color: var(--red-ink);
+}
+#clausesView[data-admin-surface="admin"] .integration-status.pending {
+  background: var(--amber-bg);
+  border-color: var(--amber-border);
+  color: var(--amber-ink);
+}
+
+/* ---- Inner panels: toggle rows, forms, fact cards (8px hairline) ---- */
+#clausesView[data-admin-surface="admin"] .integration-toggle-row,
+#clausesView[data-admin-surface="admin"] .ai-key-form,
+#clausesView[data-admin-surface="admin"] .runtime-settings-form,
+#clausesView[data-admin-surface="admin"] .personalisation-form,
+#clausesView[data-admin-surface="admin"] .integration-facts div,
+#clausesView[data-admin-surface="admin"] .health-alerts,
+#clausesView[data-admin-surface="admin"] .admin-access-row {
+  background: #fcfbfe;
+  border: 1px solid var(--adm-line);
+  border-radius: var(--adm-r-panel);
+}
+
+#clausesView[data-admin-surface="admin"] .integration-toggle-row strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--adm-ink);
+}
+#clausesView[data-admin-surface="admin"] .integration-toggle-row span {
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--adm-muted);
+}
+
+/* ---- Uppercase muted field labels (11px/600/0.05em) ---- */
+#clausesView[data-admin-surface="admin"] .ai-key-form label,
+#clausesView[data-admin-surface="admin"] .runtime-field label,
+#clausesView[data-admin-surface="admin"] .personalisation-field span,
+#clausesView[data-admin-surface="admin"] .integration-facts dt,
+#clausesView[data-admin-surface="admin"] .integration-subsection h3 {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--adm-muted);
+}
+
+/* ---- Read-only value cards (label + value) ---- */
+#clausesView[data-admin-surface="admin"] .integration-facts dd {
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--adm-ink);
+}
+
+/* ---- Inputs / selects / textareas: flat 6px white + brand focus ring ---- */
+#clausesView[data-admin-surface="admin"] .ai-key-row input,
+#clausesView[data-admin-surface="admin"] .runtime-field select,
+#clausesView[data-admin-surface="admin"] .personalisation-field input,
+#clausesView[data-admin-surface="admin"] .personalisation-field textarea,
+#clausesView[data-admin-surface="admin"] .integration-search-form textarea,
+#clausesView[data-admin-surface="admin"] .integration-input-row > input,
+#clausesView[data-admin-surface="admin"] .admin-access-add-form input {
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--adm-ink);
+  background: var(--adm-surface);
+  border: 1px solid var(--adm-line);
+  border-radius: var(--adm-r-input);
+}
+
+#clausesView[data-admin-surface="admin"] .ai-key-row input:focus,
+#clausesView[data-admin-surface="admin"] .runtime-field select:focus,
+#clausesView[data-admin-surface="admin"] .personalisation-field input:focus,
+#clausesView[data-admin-surface="admin"] .personalisation-field textarea:focus,
+#clausesView[data-admin-surface="admin"] .integration-search-form textarea:focus,
+#clausesView[data-admin-surface="admin"] .integration-input-row > input:focus,
+#clausesView[data-admin-surface="admin"] .admin-access-add-form input:focus {
+  border-color: var(--adm-brand);
+  box-shadow: 0 0 0 3px rgba(79, 27, 179, 0.08);
+  outline: none;
+}
+
+/* ---- Buttons: Aspora system (primary brand / secondary hairline / hover) ---- */
+#clausesView[data-admin-surface="admin"] button.primary,
+#clausesView[data-admin-surface="admin"] button.secondary,
+#clausesView[data-admin-surface="admin"] .integration-frequency-control button {
+  border-radius: var(--adm-r-input);
+  font-weight: 700;
+  font-size: 0.825rem;
+  letter-spacing: -0.01em;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+#clausesView[data-admin-surface="admin"] button.primary {
+  background: var(--adm-brand);
+  color: #fff;
+  border: 1px solid var(--adm-brand);
+}
+#clausesView[data-admin-surface="admin"] button.primary:hover:not(:disabled) {
+  background: var(--adm-brand-hover);
+  border-color: var(--adm-brand-hover);
+}
+
+#clausesView[data-admin-surface="admin"] button.secondary {
+  background: var(--adm-surface);
+  color: var(--adm-ink);
+  border: 1px solid var(--adm-line);
+}
+#clausesView[data-admin-surface="admin"] button.secondary:hover:not(:disabled) {
+  background: #f8f6fc;
+  border-color: var(--adm-brand);
+  color: var(--adm-brand);
+}
+
+/* Segmented frequency control: brand on the selected option. */
+#clausesView[data-admin-surface="admin"] .integration-frequency-control button {
+  background: #fcfbfe;
+  border: 1px solid var(--adm-line);
+  color: var(--adm-muted);
+}
+#clausesView[data-admin-surface="admin"] .integration-frequency-control button.active,
+#clausesView[data-admin-surface="admin"] .integration-frequency-control button[aria-pressed="true"] {
+  background: var(--adm-brand);
+  border-color: var(--adm-brand);
+  color: #fff;
+}
+
+/* ---- AI-review / integration toggle: keep functional, brand on the .on state ---- */
+#clausesView[data-admin-surface="admin"] .integration-switch.on {
+  background: var(--adm-brand);
+  border-color: var(--adm-brand);
+}
+#clausesView[data-admin-surface="admin"] .integration-switch.on:hover:not(:disabled) {
+  background: var(--adm-brand-hover);
+}
+#clausesView[data-admin-surface="admin"] .integration-switch:focus-visible {
+  box-shadow: 0 0 0 3px rgba(79, 27, 179, 0.16);
+  outline: none;
+}
+
+/* ---- Chips / badges at 4px with the chip palette ---- */
+#clausesView[data-admin-surface="admin"] .admin-access-badge {
+  background: var(--adm-chip-bg);
+  border: 1px solid var(--adm-chip-border);
+  border-radius: var(--adm-r-tag);
+  color: var(--adm-brand);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+/* ---- Hover-triggered destructive (transparent/grey -> red on hover) ---- */
+#clausesView[data-admin-surface="admin"] .admin-access-remove,
+#clausesView[data-admin-surface="admin"] button.admin-remove-button {
+  background: transparent;
+  border: 1px solid var(--adm-line);
+  color: var(--adm-muted);
+  border-radius: var(--adm-r-input);
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+#clausesView[data-admin-surface="admin"] .admin-access-remove:hover:not(:disabled),
+#clausesView[data-admin-surface="admin"] button.admin-remove-button:hover:not(:disabled) {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  color: var(--red-ink);
+}
+
+/* ---- Subsection help / body text ---- */
+#clausesView[data-admin-surface="admin"] .integration-subsection-help,
+#clausesView[data-admin-surface="admin"] .integration-frequency-copy,
+#clausesView[data-admin-surface="admin"] .admin-access-message,
+#clausesView[data-admin-surface="admin"] .ai-key-form p,
+#clausesView[data-admin-surface="admin"] .runtime-settings-form p,
+#clausesView[data-admin-surface="admin"] .personalisation-actions p {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--adm-muted);
+}
