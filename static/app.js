@@ -328,9 +328,11 @@ const draftIntakeController = createDraftIntakeController({
   termHintNode: document.querySelector("#draftIntakeTermHint"),
   termUnitNode: document.querySelector("#draftIntakeTermUnit"),
   projectPurposeInput: document.querySelector("#draftIntakeProjectPurpose"),
-  governingLawSelect: document.querySelector("#draftIntakeGoverningLaw"),
+  // LAW + COURT LOCKED TO ENTITY: read-only display nodes (a <p>), not an editable
+  // picker. The law and court are derived from the picked signing entity.
+  governingLawNode: document.querySelector("#draftIntakeGoverningLaw"),
+  forumNode: document.querySelector("#draftIntakeForum"),
   lawStatusNode: document.querySelector("#draftIntakeLawStatus"),
-  lawResetButton: document.querySelector("#draftIntakeLawResetButton"),
   statusNode: document.querySelector("#draftIntakeStatus"),
   clearButton: document.querySelector("#draftIntakeClearButton"),
   newNdaButton: document.querySelector("#draftIntakeNewNdaButton"),

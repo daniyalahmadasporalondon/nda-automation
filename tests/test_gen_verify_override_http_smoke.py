@@ -1,18 +1,17 @@
-"""FULL-HTTP governing-law override smoke through POST /api/generate-nda.
+"""FULL-HTTP governing-law lock smoke through POST /api/generate-nda.
 
 This is the most faithful route-level smoke: it POSTs the REAL draft-ui
-buildDraftPayload shape (override nested under
+buildDraftPayload shape (governing law nested under
 signing_entity.governing_law.playbook_option_id) to the actual /api/generate-nda
 HTTP handler on a threaded test server, then FETCHES the generated .docx over the
-returned download_url (the matter-source route) and runs the rendered NDA through
-the full gen-verify gate. This exercises the entire FE -> endpoint -> parser ->
-engine -> persistence -> download round-trip — the exact path the nesting bug lived
-on, where an internal-API smoke is blind.
+returned download_url (the matter-source route). This exercises the entire FE ->
+endpoint -> parser -> engine -> persistence -> download round-trip.
 
-For each sampled entity overridden to a DIFFERENT approved law it asserts the
-fetched NDA NAMES the override law, the gate is CLEAR, and the manifest provenance
-is right. It also confirms a NON-override request still renders the entity default,
-so the parser fix did not break the default path.
+LAW + COURT ARE LOCKED TO THE SIGNING ENTITY: there is no override path. A request
+that posts a DIVERGENT override (a law different from the signing entity's own) is
+REJECTED with HTTP 400 -- never applied, never returns a document. A NON-override
+request (the entity's own law) still renders the entity default + its own court, so
+the parser fix did not break the default path.
 """
 from __future__ import annotations
 
@@ -35,9 +34,6 @@ from nda_automation.server import NdaAutomationHandler
 
 from tests.gen_verify_harness import (
     EntityExpectation,
-    VerificationReport,
-    check_governing_law,
-    check_structural,
     expectations_from_registry,
 )
 
@@ -192,45 +188,27 @@ class OverrideHttpSmoke(unittest.TestCase):
     def _expect(self, entity_id) -> EntityExpectation:
         return expectations_from_registry()[entity_id]
 
-    def test_override_renders_through_full_http_round_trip(self):
+    def test_divergent_override_is_rejected_400_through_full_http_round_trip(self):
+        # LAW LOCKED TO ENTITY: a POST carrying a DIVERGENT override (a law different
+        # from the signing entity's own) is REJECTED with HTTP 400 and NEVER returns a
+        # document. This exercises the full FE -> endpoint -> parser -> engine path:
+        # the parser carries the nested override, the engine refuses it, the route
+        # maps the refusal to 400.
         for entity_id, (default_opt, override_opt) in _OVERRIDE_TARGET.items():
             with self.subTest(entity_id=entity_id, override=override_opt):
+                self.assertNotEqual(default_opt, override_opt)
                 with tempfile.TemporaryDirectory() as data_dir:
                     p = self._store_patches(data_dir)
                     with p[0], p[1], p[2], patch.dict(os.environ, self._env()):
-                        payload, docx = self._generate_and_fetch(
-                            _fe_payload(entity_id, override_opt, overridden=True)
+                        status, payload = self._request(
+                            "POST", "/api/generate-nda",
+                            _fe_payload(entity_id, override_opt, overridden=True),
+                            headers=self._auth(),
                         )
-                    override_value = _law_value(override_opt)
-                    default_value = _law_value(default_opt)
-                    override_phrase = _law_phrase(override_opt)
-                    text = extract_docx_text(docx)
-
-                    # Manifest provenance from the FE-shaped payload, via the route.
-                    m = payload["manifest"]
-                    self.assertTrue(m["governing_law_overridden"], m)
-                    self.assertEqual(m["governing_law_value"], override_value)
-                    self.assertEqual(m["entity_default_governing_law_value"], default_value)
-                    # The FETCHED, rendered NDA NAMES the override law (as its legally
-                    # correct PHRASE). (This is the parser-fix differential: FAILS on the
-                    # buggy tip where the nested override is dropped, PASSES once read.)
-                    self.assertIn(override_phrase, text, f"{entity_id}: override law not rendered")
-
-                    # Independent gate on the fetched bytes: governing-law correct,
-                    # structural complete, no false entity-mismatch.
-                    expect = self._expect(entity_id)
-                    report = VerificationReport(label=f"http-override {entity_id}->{override_opt}")
-                    check_structural(text, report)
-                    from tests.gen_verify_harness import GovLawOverride
-
-                    check_governing_law(
-                        text, expect, report,
-                        override=GovLawOverride(
-                            effective_law=override_value, overridden=True, entity_default_law=default_value
-                        ),
-                    )
-                    defects = [(f.check, f.detail) for f in report.findings if f.severity == "DEFECT"]
-                    self.assertEqual(defects, [], defects)
+                    self.assertEqual(status, 400, payload)
+                    # The refusal returns an error and NO document/download_url.
+                    self.assertIn("error", payload)
+                    self.assertNotIn("download_url", payload)
 
     def test_non_override_renders_entity_default(self):
         # A NON-override request (signing_entity.governing_law == entity default)
@@ -251,33 +229,25 @@ class OverrideHttpSmoke(unittest.TestCase):
                     self.assertEqual(m["governing_law_value"], default_value)
                     self.assertIn(default_value, text, f"{entity_id}: default law not rendered")
 
-    def test_override_forum_follows_the_chosen_option(self):
-        """Override decouples LAW from FORUM: the forum is the SIGNING entity's OWN court.
+    def test_entity_own_law_renders_its_own_court(self):
+        """LAW + COURT LOCKED TO ENTITY: the entity's OWN law renders its OWN court.
 
-        An override to e.g. DIFC yields DIFC LAW, but the FORUM stays the signing
-        entity's own court (the fixed entity litigates in its own seat). Through the
-        full HTTP round-trip the manifest forum and the rendered clause must both be
-        the SIGNING ENTITY's own (default-seat) court -- NEVER another entity's court
-        pulled from the overridden option -- while the override LAW appears in the
-        rendered prose and the default law does not leak into the clause.
+        With the override path removed, a request naming the signing entity's OWN law
+        renders that law AND its own court (exclusive-jurisdiction wording) through the
+        full HTTP round-trip. (A divergent override is rejected -- see
+        ``test_divergent_override_is_rejected_400_through_full_http_round_trip`` -- so
+        the only path that renders a document is the entity's own law.)
         """
-        for entity_id, (default_opt, override_opt) in _OVERRIDE_TARGET.items():
-            with self.subTest(entity_id=entity_id, override=override_opt):
+        for entity_id, (default_opt, _override_opt) in _OVERRIDE_TARGET.items():
+            with self.subTest(entity_id=entity_id):
                 with tempfile.TemporaryDirectory() as data_dir:
                     p = self._store_patches(data_dir)
                     with p[0], p[1], p[2], patch.dict(os.environ, self._env()):
                         payload, docx = self._generate_and_fetch(
-                            _fe_payload(entity_id, override_opt, overridden=True)
+                            _fe_payload(entity_id, default_opt, overridden=False)
                         )
                     text = extract_docx_text(docx)
-                    # The forum is the SIGNING entity's OWN court (its default seat),
-                    # not the overridden option's court.
                     expected_forum = _OPTION_FORUM[default_opt]
-                    override_forum = _OPTION_FORUM[override_opt]
-                    override_value = _law_value(override_opt)
-                    default_value = _law_value(default_opt)
-                    # The clause renders the legally-correct PHRASE, not the raw value.
-                    override_phrase = _law_phrase(override_opt)
                     default_phrase = _law_phrase(default_opt)
                     # Forum provenance is the entity's own court on the manifest.
                     self.assertEqual(
@@ -285,13 +255,9 @@ class OverrideHttpSmoke(unittest.TestCase):
                         f"{entity_id}: forum is not the signing entity's own court (got "
                         f"{payload['manifest']['forum']!r}, expected {expected_forum!r})",
                     )
-                    # It must NOT have followed the override to another entity's court.
-                    self.assertNotEqual(
-                        payload["manifest"]["forum"], override_forum,
-                        f"{entity_id}: forum wrongly followed the override option",
-                    )
+                    self.assertFalse(payload["manifest"]["governing_law_overridden"], payload["manifest"])
                     # The entity's own court IS rendered into the governing-law clause
-                    # with exclusive-jurisdiction wording.
+                    # with exclusive-jurisdiction wording, alongside its own law.
                     gov_line = next(
                         (
                             line
@@ -304,32 +270,10 @@ class OverrideHttpSmoke(unittest.TestCase):
                         f"{expected_forum} shall have exclusive jurisdiction", gov_line,
                         f"{entity_id}: signing entity's own forum not rendered in the clause",
                     )
-                    # The override LAW still tracks into the prose; default does not leak.
-                    self.assertIn(override_phrase, text, f"{entity_id}: override law not in prose")
-                    if override_value != default_value:
-                        # Scope the leak check to the GOVERNING LAW clause sentence.
-                        # The whole document legitimately contains "the laws of
-                        # <country>" in each party's INCORPORATION recital (e.g. an
-                        # India-incorporated entity reads "incorporated under the laws
-                        # of India"), which is not the governing law and must not be
-                        # mistaken for a default-law leak.
-                        gov_clause = next(
-                            (
-                                line
-                                for line in text.splitlines()
-                                if line.startswith("GOVERNING LAW AND JURISDICTION:")
-                            ),
-                            "",
-                        )
-                        self.assertIn(
-                            f"the laws of {override_phrase}", gov_clause,
-                            f"{entity_id}: override law not in the governing-law clause",
-                        )
-                        self.assertNotIn(
-                            f"the laws of {default_phrase}", gov_clause,
-                            f"{entity_id}: default law {default_value!r} leaked into the "
-                            "overridden draft's governing-law clause",
-                        )
+                    self.assertIn(
+                        f"the laws of {default_phrase}", gov_line,
+                        f"{entity_id}: entity's own law not in the governing-law clause",
+                    )
 
 
 if __name__ == "__main__":

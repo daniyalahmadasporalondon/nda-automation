@@ -1335,24 +1335,27 @@ assert.equal(usPick.entityId, "vance_money");
 assert.equal(usPick.governingLawId, "delaware");
 assert.equal(effectiveGoverningLaw(usPick).label, "Delaware");
 
-// The escape hatch: override the governing law independently of the entity.
-const overridden = setGoverningLawOverride(usPick, "difc");
-assert.equal(overridden.governingLawId, "difc");
-assert.equal(overridden.governingLawOverridden, true);
-assert.equal(effectiveGoverningLaw(overridden).label, "DIFC");
-// The entity itself is untouched by a law override.
-assert.equal(overridden.entityId, "vance_money");
+// LAW + COURT LOCKED TO ENTITY: there is no override escape hatch. The
+// setGoverningLawOverride / clearGoverningLawOverride helpers are now stable
+// no-ops that always KEEP the law coupled to the picked entity's own law — any
+// attempt to set a divergent law is ignored.
+const attemptedOverride = setGoverningLawOverride(usPick, "difc");
+assert.equal(attemptedOverride.governingLawId, "delaware", "the law stays the entity's own (Vance Money = Delaware)");
+assert.equal(attemptedOverride.governingLawOverridden, false, "the override flag is never set");
+assert.equal(effectiveGoverningLaw(attemptedOverride).label, "Delaware");
+assert.equal(attemptedOverride.entityId, "vance_money");
 
-// Once overridden, re-picking an entity preserves the user's chosen law (the
-// whole point of an independent override) but still moves the address bundle.
-const repickAfterOverride = applyEntitySelection(overridden, "real_transfer");
-assert.equal(repickAfterOverride.entityId, "real_transfer");
-assert.equal(repickAfterOverride.addressId, "corporate");
-assert.equal(repickAfterOverride.governingLawId, "difc", "override survives an entity re-pick");
-assert.equal(repickAfterOverride.governingLawOverridden, true);
+// Re-picking an entity always moves the WHOLE bundle (law + court + address)
+// together — the law always follows the new entity.
+const repick = applyEntitySelection(attemptedOverride, "real_transfer");
+assert.equal(repick.entityId, "real_transfer");
+assert.equal(repick.addressId, "corporate");
+assert.equal(repick.governingLawId, "england_and_wales", "law follows the entity on re-pick");
+assert.equal(repick.governingLawOverridden, false);
+assert.equal(effectiveGoverningLaw(repick).label, "England and Wales");
 
-// Clearing the override re-couples the law to the current entity's law.
-const recoupled = clearGoverningLawOverride(repickAfterOverride);
+// clearGoverningLawOverride is also a coupling no-op: it re-couples to the entity.
+const recoupled = clearGoverningLawOverride(repick);
 assert.equal(recoupled.governingLawOverridden, false);
 assert.equal(recoupled.governingLawId, "england_and_wales");
 assert.equal(effectiveGoverningLaw(recoupled).label, "England and Wales");
@@ -1441,25 +1444,24 @@ assert.equal(fullPayload.business_description, "cross-border payments", "trimmed
 assert.equal(fullPayload.counterparty_jurisdiction, "Delaware, USA");
 assert.equal(fullPayload.counterparty_registered_office, "1 Market St, San Francisco, CA");
 
-// An overridden law is flagged in the payload so generation/review can see the
-// coupling was deliberately broken.
-const overriddenPayload = buildDraftPayload(setGoverningLawOverride(validIntake, "delaware"));
-assert.equal(overriddenPayload.signing_entity.governing_law.playbook_option_id, "delaware");
-assert.equal(overriddenPayload.signing_entity.governing_law_overridden, true);
+// LAW IS LOCKED TO THE ENTITY: the payload always carries the entity's OWN law
+// and governing_law_overridden is always false — there is no coupling to break.
+const lockedPayload = buildDraftPayload(setGoverningLawOverride(validIntake, "delaware"));
+assert.equal(lockedPayload.signing_entity.governing_law.playbook_option_id, "india", "payload keeps the entity's own law");
+assert.equal(lockedPayload.signing_entity.governing_law_overridden, false, "the override flag is never set in the payload");
 
 // --- Governing-law clause carries the FORUM (preview clause 13). The generated
 // NDA names BOTH the governing law AND the court ("...the laws of [LAW], and
-// [FORUM] shall have exclusive jurisdiction ..."), so the intake module resolves
-// the forum from the SAME entity registry the backend uses — never a duplicated
-// FORUM_BY_OPTION_ID list. The forum is the entity's `jurisdiction` field, and on
-// an OVERRIDE it tracks the OVERRIDDEN law (mirroring
-// nda_generation._forum_for_option_id: the registry entity that defaults to the
-// chosen option). ---
+// [FORUM] shall have exclusive jurisdiction ..."). LAW + COURT ARE LOCKED TO THE
+// ENTITY: the forum is read DIRECTLY off the picked entity's own `jurisdiction`
+// field — never reconstructed by scanning other entities, never tracking an
+// override (there is none). This mirrors nda_generation.entity_party_from_bundle,
+// which writes entity.forum. ---
 const forumApi = createDraftIntake();
 assert.equal(typeof forumApi.effectiveForum, "function", "the bound intake API exposes the forum resolver");
-assert.equal(typeof forumApi.forumForOptionId, "function", "the bound intake API exposes the per-option forum resolver");
+assert.equal(forumApi.forumForOptionId, undefined, "the per-option forum reconstruction helper is removed (court comes from the entity)");
 
-// No-override: the forum is the picked entity's own registry court.
+// The forum is always the picked entity's own registry court.
 const difcPick = applyEntitySelection(createInitialIntake(), "vance_techlabs");
 assert.equal(forumApi.effectiveForum(difcPick), "the DIFC Courts", "DIFC entity forum is its registry court");
 const aspPick = applyEntitySelection(createInitialIntake(), "aspora_technology");
@@ -1469,16 +1471,10 @@ assert.equal(forumApi.effectiveForum(aspPick), "courts in Bengaluru, Karnataka",
 const aspFinPick = applyEntitySelection(createInitialIntake(), "aspora_financial_services");
 assert.equal(forumApi.effectiveForum(aspFinPick), "courts in Gandhinagar, Gujarat", "the other India entity has a different city court");
 
-// OVERRIDE: the forum tracks the OVERRIDDEN law — taken from whichever entity
-// defaults to the chosen option, NOT the picked entity's own court.
-const aspOverrideToDifc = setGoverningLawOverride(aspPick, "difc");
-assert.equal(forumApi.effectiveForum(aspOverrideToDifc), "the DIFC Courts", "override forum follows the overridden law, not the entity");
-assert.equal(forumApi.forumForOptionId("delaware"), "courts in Delaware, USA", "per-option forum resolves from the defaulting entity");
-assert.equal(forumApi.forumForOptionId("england_and_wales"), "courts in England and Wales", "first-by-registry-order entity wins for a shared option");
-// An option no registry entity defaults to has no resolvable court -> null (the
-// preview shows a placeholder, mirroring the backend's _require_court_forum
-// refusal rather than inventing a venue).
-assert.equal(forumApi.forumForOptionId("mars"), null, "an unknown option resolves no forum");
+// Attempting an "override" never changes the forum — it stays the entity's OWN
+// court (the override helper is a no-op under the lock).
+const aspAfterAttempt = setGoverningLawOverride(aspPick, "difc");
+assert.equal(forumApi.effectiveForum(aspAfterAttempt), "courts in Bengaluru, Karnataka", "the court stays the signing entity's own, never an overridden law's");
 // Every embedded-mirror entity carries a non-empty `jurisdiction` (the forum the
 // preview renders); a missing one would silently blank the courts sentence.
 for (const entity of SIGNING_ENTITIES) {

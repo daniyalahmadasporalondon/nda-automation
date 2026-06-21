@@ -508,112 +508,140 @@ class TestClauseAlignment:
 
 
 # --------------------------------------------------------------------------- #
-# Governing-law override (user picks a different, still-approved, law)
+# Governing law + court are LOCKED to the signing entity (no override path)
 # --------------------------------------------------------------------------- #
 
 
-class TestGoverningLawOverride:
-    """The product lets the user override the entity-default governing law with
-    another Playbook-approved option. The draft must use the override and the
-    manifest must record the provenance gen-verify reads."""
+class TestGoverningLawLockedToEntity:
+    """LAW+COURT LOCKED TO ENTITY. The governing law is the signing entity's OWN
+    registry option and the forum is the entity's OWN registry ``jurisdiction``.
+    There is no override path: the user picks WHICH entity, and the law + court
+    follow from it. An override that EQUALS the entity default is a harmless no-op;
+    an override to a DIFFERENT option is REJECTED with NdaGenerationError. The
+    manifest always records the entity default with ``overridden = False`` so
+    gen-verify validates the entity's own law + court."""
 
-    def test_override_to_another_approved_law_is_applied(self, playbook):
-        # entity_party_from_bundle with an override option id picks the override law.
-        india_bundle = _bundle(option_id="india")
-        entity = gen.entity_party_from_bundle(
-            india_bundle, playbook, governing_law_option_id="england_and_wales"
-        )
+    def test_entity_own_law_and_forum_are_used(self, playbook):
+        # entity_party_from_bundle uses the bundle's OWN option + OWN jurisdiction.
+        # Build a bundle whose own option is england_and_wales; its own jurisdiction
+        # ("Courts of England and Wales") is the forum.
+        ew_bundle = _bundle(option_id="england_and_wales")
+        entity = gen.entity_party_from_bundle(ew_bundle, playbook)
         assert entity.governing_law_value == "England and Wales"
         # FORUM = the SIGNING entity's OWN registry jurisdiction (where that fixed
-        # entity actually litigates), regardless of the law override. This bundle's
-        # own jurisdiction is "Courts of England and Wales", so that is the forum --
-        # NOT some other entity's court derived from the overridden option.
+        # entity actually litigates). This bundle's own jurisdiction is
+        # "Courts of England and Wales", so that is the forum.
         assert entity.forum == "Courts of England and Wales"
 
-    def test_unapproved_override_is_rejected(self, playbook):
+    def test_entity_with_unapproved_own_option_is_rejected(self, playbook):
+        # A bundle whose OWN governing-law option is not a Playbook-approved option
+        # is rejected -- the entity-default-not-approved guard still exists.
         with pytest.raises(gen.NdaGenerationError):
-            gen.entity_party_from_bundle(_bundle(), playbook, governing_law_option_id="new_york")
+            gen.entity_party_from_bundle(_bundle(option_id="new_york"), playbook)
 
-    def test_generate_for_entity_override_sets_manifest_provenance(self, playbook):
-        # aspora_technology's registry default is India; override to England.
+    def test_generate_for_entity_override_to_different_law_is_rejected(self, playbook):
+        # aspora_technology's registry default is India. An override to a DIFFERENT
+        # option (england_and_wales) is now REJECTED -- the law is fixed by the
+        # signing entity and cannot be overridden.
+        with pytest.raises(gen.NdaGenerationError):
+            gen.generate_nda_for_entity(
+                "aspora_technology",
+                _intake(),
+                playbook=playbook,
+                governing_law_override="england_and_wales",
+            )
+        # The NO-override path keeps the entity's own law + own Bengaluru court, and
+        # records full provenance with overridden=False for gen-verify to read.
         result = gen.generate_nda_for_entity(
-            "aspora_technology", _intake(), playbook=playbook, governing_law_override="england_and_wales"
+            "aspora_technology", _intake(), playbook=playbook
         )
         m = result.manifest
-        assert m.governing_law_value == "England and Wales"
-        assert m.governing_law_option_id == "england_and_wales"
-        assert m.governing_law_overridden is True
+        assert m.governing_law_value == "India"
+        assert m.governing_law_option_id == "india"
+        assert m.governing_law_overridden is False
         assert m.entity_default_governing_law_value == "India"
-        # FORUM = the SIGNING entity's OWN court. aspora_technology is seated in
-        # Bengaluru, so overriding only the LAW to England leaves the forum as the
-        # entity's own Bengaluru court (it litigates in its own seat). The law and
-        # the forum are intentionally decoupled here.
         assert m.forum == "courts in Bengaluru, Karnataka"
-        # ENTITY-FORUM: the effective law AND its forum are BOTH rendered into the
-        # "Governing law and jurisdiction" clause now (the forum is no longer
-        # provenance-only). The clause carries the overridden LAW and the entity's
-        # own court.
         text = extract_docx_text(result.docx_bytes)
-        assert "the laws of England and Wales" in text
+        assert "the laws of India" in text
         assert "courts in Bengaluru, Karnataka shall have exclusive jurisdiction" in text
-        # The governing-law CLAUSE names the overridden law. (Note: "the laws of
-        # India" still appears in the counterparty's incorporation recital, which is
-        # unrelated to the governing law.)
         from io import BytesIO
 
         gl_clause = next(
             p.text for p in Document(BytesIO(result.docx_bytes)).paragraphs
             if "GOVERNING LAW AND JURISDICTION" in p.text
         )
-        assert "the laws of England and Wales" in gl_clause
-        # And the override draft still passes its own Playbook.
+        assert "the laws of India" in gl_clause
+        # The locked draft still passes its own Playbook.
         assert gen.self_check_generated_nda(result.docx_bytes, playbook=playbook).passed
         # Full provenance round-trips through to_dict for gen-verify to read.
         d = m.to_dict()
-        assert d["governing_law_option_id"] == "england_and_wales"
-        assert d["governing_law_overridden"] is True
+        assert d["governing_law_option_id"] == "india"
+        assert d["governing_law_overridden"] is False
         assert d["entity_default_governing_law_value"] == "India"
 
-    def test_override_to_each_approved_option_renders_governing_law_and_self_checks(self, playbook):
-        default_option_id = "india"
-
+    def test_only_aspora_technologys_own_option_succeeds(self, playbook):
+        # aspora_technology defaults to "india". Its OWN option succeeds and renders
+        # the Playbook law phrase; EVERY OTHER approved option is rejected as an
+        # override (the law is locked to the entity).
         gl_clause = next(c for c in playbook["clauses"] if c["id"] == "governing_law")
         law_phrases = gl_clause.get("law_phrases", {})
 
         for option in _governing_law_options(playbook):
+            if option["id"] == "india":
+                result = gen.generate_nda_for_entity(
+                    "aspora_technology",
+                    _intake(),
+                    playbook=playbook,
+                    governing_law_override=option["id"],  # == default: harmless no-op
+                    use_ai=False,
+                )
+                text = extract_docx_text(result.docx_bytes)
+                check = gen.self_check_generated_nda(result.docx_bytes, playbook=playbook)
+                assert result.manifest.governing_law_option_id == "india"
+                assert result.manifest.governing_law_value == option["value"]
+                assert result.manifest.governing_law_overridden is False
+                expected_phrase = law_phrases.get(option["value"], option["value"])
+                assert f"laws of {expected_phrase}" in text, option["id"]
+                assert check.passed, (option["id"], check.native_failures, check.native_reviews)
+            else:
+                with pytest.raises(gen.NdaGenerationError):
+                    gen.generate_nda_for_entity(
+                        "aspora_technology",
+                        _intake(),
+                        playbook=playbook,
+                        governing_law_override=option["id"],
+                        use_ai=False,
+                    )
+
+    def test_each_option_renders_through_its_native_entity(self, playbook):
+        # The locked design: each approved law is reached by picking the ENTITY that
+        # natively defaults to it (so the law is always the entity's OWN law). Each
+        # such entity generates cleanly, renders its Playbook law phrase, and keeps
+        # its OWN court. This is the replacement for the old "loop overrides over one
+        # entity" coverage.
+        gl_clause = next(c for c in playbook["clauses"] if c["id"] == "governing_law")
+        law_phrases = gl_clause.get("law_phrases", {})
+        # option id -> an entity whose registry default IS that option.
+        native_entity = {
+            "india": "aspora_technology",
+            "delaware": "vance_money",
+            "england_and_wales": "real_transfer",
+            "difc": "vance_techlabs",
+            "ontario_canada": "nesse_technologies",
+        }
+        for option in _governing_law_options(playbook):
+            entity_id = native_entity[option["id"]]
             result = gen.generate_nda_for_entity(
-                "aspora_technology",
-                _intake(),
-                playbook=playbook,
-                governing_law_override=option["id"],
-                use_ai=False,
+                entity_id, _intake(), playbook=playbook, use_ai=False
             )
             text = extract_docx_text(result.docx_bytes)
             check = gen.self_check_generated_nda(result.docx_bytes, playbook=playbook)
-
             assert result.manifest.governing_law_option_id == option["id"]
             assert result.manifest.governing_law_value == option["value"]
-            assert result.manifest.governing_law_overridden is (option["id"] != default_option_id)
-            # The rendered clause carries the Playbook's law PHRASE (DIFC->"the DIFC",
-            # Ontario->the full Canadian phrase), not the raw value.
+            assert result.manifest.governing_law_overridden is False
             expected_phrase = law_phrases.get(option["value"], option["value"])
             assert f"laws of {expected_phrase}" in text, option["id"]
             assert check.passed, (option["id"], check.native_failures, check.native_reviews)
-
-    def test_override_to_each_sampled_forum_option_keeps_signing_entity_forum(self, playbook):
-        # ENTITY-FORUM (corrected): the forum is the SIGNING entity's OWN court,
-        # regardless of which law the user overrides to. aspora_technology is seated
-        # in Bengaluru, so EVERY override keeps "courts in Bengaluru, Karnataka" --
-        # the override changes only the governing LAW, never which court the fixed
-        # entity litigates in. (Previously this pulled another entity's court for the
-        # overridden option, which wrote the WRONG city into the NDA.)
-        for option_id in ("india", "delaware", "england_and_wales", "difc"):
-            result = gen.generate_nda_for_entity(
-                "aspora_technology", _intake(), playbook=playbook, governing_law_override=option_id
-            )
-            assert result.manifest.governing_law_option_id == option_id
-            assert result.manifest.forum == "courts in Bengaluru, Karnataka", option_id
-            assert gen.self_check_generated_nda(result.docx_bytes, playbook=playbook).passed
 
     def test_no_override_keeps_entity_default_and_flag_false(self, playbook):
         result = gen.generate_nda_for_entity("aspora_technology", _intake(), playbook=playbook)
@@ -630,25 +658,22 @@ class TestGoverningLawOverride:
         assert result.manifest.governing_law_value == "India"
 
 
-class TestOverrideWritesSigningEntityCity:
-    """FIX 1: a governing-law override must write the SIGNING entity's OWN court,
-    never another entity's city pulled from the overridden option. The two India
-    entities (Bengaluru vs Gandhinagar) are the load-bearing case: the old override
-    path pulled the FIRST india entity's court, so overriding aspora_financial_
-    services (Gandhinagar) toward india could write Bengaluru into a signed NDA."""
+class TestEntityForumIsLocked:
+    """The forum written into the NDA is the SIGNING entity's OWN court, sourced
+    DIRECTLY from its registry ``jurisdiction``. The two India entities (Bengaluru
+    vs Gandhinagar) are the load-bearing case: each keeps its OWN distinct city and
+    the law cannot be overridden to pull another entity's court into a signed NDA."""
 
-    def test_gandhinagar_entity_override_keeps_its_own_city(self, playbook):
-        # aspora_financial_services is seated in Gandhinagar. Override its law to a
-        # DIFFERENT option (delaware) -> the forum stays its OWN Gandhinagar court,
-        # not Delaware's and not the other India entity's Bengaluru.
+    def test_gandhinagar_entity_keeps_its_own_city(self, playbook):
+        # aspora_financial_services is seated in Gandhinagar. With the law locked to
+        # the entity, its forum is its OWN Gandhinagar court -- never Bengaluru.
         result = gen.generate_nda_for_entity(
             "aspora_financial_services",
             _intake(),
             playbook=playbook,
-            governing_law_override="delaware",
             use_ai=False,
         )
-        assert result.manifest.governing_law_value == "Delaware"
+        assert result.manifest.governing_law_value == "India"
         assert result.manifest.forum == "courts in Gandhinagar, Gujarat"
         assert "Bengaluru" not in result.manifest.forum
 
@@ -662,40 +687,49 @@ class TestOverrideWritesSigningEntityCity:
         assert "courts in Gandhinagar, Gujarat shall have exclusive jurisdiction" in gl_clause
         assert "Bengaluru" not in gl_clause
 
-    def test_two_india_entities_never_share_a_forum_under_override(self, playbook):
-        # Both India entities, each overridden to the same other law -> each keeps
-        # its OWN distinct city. They must never collapse to one shared court.
+    def test_attempt_to_override_gandhinagar_entity_is_rejected(self, playbook):
+        # An attempt to override aspora_financial_services' law to a DIFFERENT option
+        # (delaware) is rejected -- the law (and therefore the entity's court) is
+        # locked. This closes the old leak where an override pulled another entity's
+        # city into the NDA.
+        with pytest.raises(gen.NdaGenerationError):
+            gen.generate_nda_for_entity(
+                "aspora_financial_services",
+                _intake(),
+                playbook=playbook,
+                governing_law_override="delaware",
+                use_ai=False,
+            )
+
+    def test_two_india_entities_never_share_a_forum(self, playbook):
+        # Both India entities generate (no override) -> each keeps its OWN distinct
+        # city. They must never collapse to one shared court.
         tech = gen.generate_nda_for_entity(
-            "aspora_technology", _intake(), playbook=playbook,
-            governing_law_override="england_and_wales", use_ai=False,
+            "aspora_technology", _intake(), playbook=playbook, use_ai=False,
         )
         fin = gen.generate_nda_for_entity(
-            "aspora_financial_services", _intake(), playbook=playbook,
-            governing_law_override="england_and_wales", use_ai=False,
+            "aspora_financial_services", _intake(), playbook=playbook, use_ai=False,
         )
         assert tech.manifest.forum == "courts in Bengaluru, Karnataka"
         assert fin.manifest.forum == "courts in Gandhinagar, Gujarat"
         assert tech.manifest.forum != fin.manifest.forum
 
-    def test_require_court_forum_rejects_wrong_jurisdiction_fallback(self, playbook, monkeypatch):
-        # The gate validates the RIGHT court for the FALLBACK path: a signing entity
-        # with no forum of its own, whose option-derived fallback resolves a court in
-        # a DIFFERENT jurisdiction bucket than the option, must be refused.
-        monkeypatch.setattr(
-            gen, "_forum_for_option_id",
-            lambda option_id, playbook: "courts in England and Wales",
-        )
+    def test_forumless_entity_is_hard_refused(self, playbook):
+        # The forum is read DIRECTLY off the signing entity. An entity with no forum
+        # of its own is a registry-config error: _require_court_forum hard-refuses
+        # rather than synthesising a court. (The old option-forum fallback that this
+        # used to exercise was removed by the law+court-to-entity lock.)
         forumless = _bundle(option_id="india")
         forumless["jurisdiction"] = ""
         with pytest.raises(gen.NdaGenerationError) as ctx:
-            gen.entity_party_from_bundle(
-                forumless, playbook, governing_law_option_id="delaware"
-            )
-        assert "jurisdiction" in str(ctx.value).lower()
+            gen.entity_party_from_bundle(forumless, playbook)
+        msg = str(ctx.value).lower()
+        assert "court" in msg or "venue" in msg
 
 
 # --------------------------------------------------------------------------- #
-# Forum is Playbook-sourced (the law -> court pairing is data, not a hardcode)
+# Forum is sourced from the signing entity (the law -> court pairing is the
+# entity's own registry jurisdiction, not a per-jurisdiction Playbook hardcode)
 # --------------------------------------------------------------------------- #
 
 
@@ -704,9 +738,8 @@ class TestForumFromEntity:
     SIGNING entity (its registry ``jurisdiction``), NOT a per-jurisdiction Playbook
     ``court_name`` (that field was removed -- a per-jurisdiction value cannot express
     that two India entities sit in different cities, Bengaluru vs Gandhinagar). The
-    forum is the SIGNING entity's own court regardless of any law override; the
-    option's forum is consulted ONLY as a fallback when the signing entity carries
-    no forum of its own, and even then the gate refuses if no court resolves."""
+    forum is the SIGNING entity's own court; there is no law-override path and no
+    option-forum fallback -- an entity with no forum of its own is hard-refused."""
 
     @staticmethod
     def _empty_registry(monkeypatch):
@@ -714,15 +747,11 @@ class TestForumFromEntity:
 
         monkeypatch.setattr(entity_registry, "list_entities", lambda: [])
 
-    def test_override_keeps_the_signing_entitys_own_forum(self, playbook):
-        # Override a bundle (own jurisdiction "Courts of England and Wales") to DIFC
-        # -> the forum stays the SIGNING entity's own court, NOT the DIFC entity's
-        # court. The override changes only the governing LAW.
-        ew_bundle = _bundle(option_id="india")  # own jurisdiction: Courts of England and Wales
-        entity = gen.entity_party_from_bundle(
-            ew_bundle, playbook, governing_law_option_id="difc"
-        )
-        assert entity.governing_law_value == "DIFC"
+    def test_entity_own_jurisdiction_is_the_forum(self, playbook):
+        # The forum is the SIGNING entity's own registry jurisdiction, read directly.
+        ew_bundle = _bundle(option_id="england_and_wales")  # own jurisdiction: Courts of England and Wales
+        entity = gen.entity_party_from_bundle(ew_bundle, playbook)
+        assert entity.governing_law_value == "England and Wales"
         assert entity.forum == "Courts of England and Wales"
 
     def test_two_india_entities_carry_different_city_forums(self):
@@ -738,53 +767,23 @@ class TestForumFromEntity:
         assert fin["jurisdiction"] == "courts in Gandhinagar, Gujarat"
         assert tech["jurisdiction"] != fin["jurisdiction"]
 
-    def test_no_court_resolving_refuses_to_emit_a_venue(self, playbook, monkeypatch):
-        # Registry empty AND the Playbook option carries NO court at all (no
-        # court_name AND no authored forum_jurisdiction) -> the gate must refuse
-        # generation rather than write the bare law name as the forum.
-        #
-        # FEATURE 1 changed the fallback: an authored forum_jurisdiction is now a
-        # legitimate Playbook-sourced court (so a user-authored law renders its
-        # authored court). To still exercise the "no court anywhere" refusal, strip
-        # the option's forum_jurisdiction as well as emptying the registry. The
-        # publish lint guarantees a live option always carries a forum, so this is a
-        # purely defensive-gate test.
-        import copy
-
-        no_forum = copy.deepcopy(playbook)
-        for option in next(
-            c for c in no_forum["clauses"] if c["id"] == "governing_law"
-        )["rules"]["approved_options"]:
-            option.pop("forum_jurisdiction", None)
-        self._empty_registry(monkeypatch)
-        # The signing entity must ALSO carry no forum of its own, otherwise the
-        # entity-forum (which is authoritative regardless of override) would resolve
-        # and there would be no refusal. With the entity forum-less the resolver
-        # falls through to the (now court-less) option and the gate refuses.
+    def test_no_court_resolving_refuses_to_emit_a_venue(self, playbook):
+        # The forum is read DIRECTLY off the signing entity. A forum-less entity
+        # bundle -> the gate (_require_court_forum) refuses generation rather than
+        # write the bare law name as the forum. (The old option-forum fallback this
+        # used to strip was removed by the law+court-to-entity lock, so there is no
+        # fallback to consult: a forum-less entity is an outright refusal.)
         forumless = _bundle(option_id="india")
         forumless["jurisdiction"] = ""
         with pytest.raises(gen.NdaGenerationError):
-            gen.entity_party_from_bundle(
-                forumless, no_forum, governing_law_option_id="difc"
-            )
+            gen.entity_party_from_bundle(forumless, playbook)
 
-    def test_authored_forum_resolves_when_registry_is_empty(self, playbook, monkeypatch):
-        # FEATURE 1: with the registry empty AND the SIGNING entity carrying no forum
-        # of its own, an option's authored forum_jurisdiction is the court written
-        # into the NDA (rather than a refusal), so a Playbook-authored law works even
-        # before any signing entity defaults to it. (When the signing entity DOES
-        # carry its own forum, that own forum wins regardless of the override -- see
-        # test_override_keeps_the_signing_entitys_own_forum -- so we strip it here to
-        # exercise the option-forum fallback path FEATURE 1 added.)
-        self._empty_registry(monkeypatch)
-        forumless = _bundle(option_id="india")
-        forumless["jurisdiction"] = ""
-        entity = gen.entity_party_from_bundle(
-            forumless, playbook, governing_law_option_id="difc"
-        )
-        # DIFC's authored forum_jurisdiction in the live Playbook.
-        assert entity.forum == "Dubai International Financial Centre"
-        assert entity.governing_law_value == "DIFC"
+    # NOTE: the former ``test_authored_forum_resolves_when_registry_is_empty`` was
+    # removed by the law+court-to-entity lock. It relied on the option-forum
+    # fallback (an option's authored ``forum_jurisdiction`` becoming the court when
+    # the registry was empty); that fallback was intentionally deleted -- the forum
+    # is now sourced ONLY from the signing entity's own ``jurisdiction`` -- so the
+    # behavior it covered no longer exists.
 
     def test_difc_entity_renders_its_court_into_the_generated_document(self, playbook):
         # End-to-end: a DIFC signing entity's governing-law clause names BOTH the
@@ -807,30 +806,19 @@ class TestForumFromEntity:
         # And the generated DIFC draft still passes its own Playbook.
         assert gen.self_check_generated_nda(result.docx_bytes, playbook=playbook).passed
 
-    def test_override_renders_signing_entity_court_into_the_document(self, playbook):
-        # Override the India-default aspora_technology (Bengaluru) to DIFC: the
-        # DOCUMENT's clause must carry the OVERRIDDEN LAW ("the laws of the DIFC") but the
-        # SIGNING entity's OWN court ("courts in Bengaluru, Karnataka") -- the fixed
-        # entity litigates in its own seat. The DIFC entity's court must NOT leak in.
-        result = gen.generate_nda_for_entity(
-            "aspora_technology",
-            _intake(),
-            playbook=playbook,
-            governing_law_override="difc",
-            use_ai=False,
-        )
-        assert result.manifest.forum == "courts in Bengaluru, Karnataka"
-        from io import BytesIO
-
-        gl_clause = next(
-            p.text
-            for p in Document(BytesIO(result.docx_bytes)).paragraphs
-            if "GOVERNING LAW AND JURISDICTION" in p.text
-        )
-        assert "the laws of the DIFC" in gl_clause
-        assert "courts in Bengaluru, Karnataka shall have exclusive jurisdiction" in gl_clause
-        # The DIFC entity's own court must NOT leak into this entity's clause.
-        assert "DIFC Courts" not in gl_clause
+    def test_override_to_a_different_law_is_rejected(self, playbook):
+        # Attempting to override the India-default aspora_technology (Bengaluru) to
+        # DIFC is now REJECTED: the law (and therefore the entity's court) is locked
+        # to the signing entity. The old override path could pull the DIFC law onto a
+        # Bengaluru-seated entity; that path is gone.
+        with pytest.raises(gen.NdaGenerationError):
+            gen.generate_nda_for_entity(
+                "aspora_technology",
+                _intake(),
+                playbook=playbook,
+                governing_law_override="difc",
+                use_ai=False,
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -1560,19 +1548,27 @@ class TestForumIsAlwaysACourt:
 
     Regression for #34: ``forum = _forum_for_option_id(option_id) or
     governing_law_value`` wrote the LAW NAME ("DIFC"/"Delaware") into the
-    forum/submission clause when nothing else resolved. The primary forum is now the
-    SIGNING entity's own court; the option fallback (``_forum_for_option_id``) is
-    consulted only when the signing entity has none, and the forum must still be a
-    court or generation refuses.
+    forum/submission clause when nothing else resolved. The forum is now sourced
+    ONLY from the SIGNING entity's own registry ``jurisdiction`` (the option-forum
+    fallback ``_forum_for_option_id`` was removed by the law+court-to-entity lock),
+    and the forum must still be a court or generation refuses.
     """
 
-    def test_every_approved_option_resolves_to_a_court_not_the_law_name(self, playbook):
+    def test_every_native_entity_resolves_to_a_court_not_the_law_name(self, playbook):
+        # Each approved option is reached via the entity that natively defaults to
+        # it; that entity's own court must be a real court, never the bare law name.
+        from nda_automation import entity_registry
+
         approved = gen._approved_governing_law_options(playbook)
-        for option_id, law_value in approved.items():
-            forum = gen._forum_for_option_id(option_id, playbook)
-            assert forum, f"{option_id} resolved no forum"
-            assert forum.strip() != law_value.strip(), (
-                f"{option_id} forum is the bare law name {law_value!r}, not a court"
+        for bundle in entity_registry.list_entities():
+            opt = str((bundle.get("governing_law") or {}).get("playbook_option_id") or "").strip()
+            if opt not in approved:
+                continue
+            entity = gen.entity_party_from_bundle(bundle, playbook)
+            law_value = approved[opt]
+            assert entity.forum, f"{bundle.get('id')} resolved no forum"
+            assert entity.forum.strip() != law_value.strip(), (
+                f"{bundle.get('id')} forum is the bare law name {law_value!r}, not a court"
             )
 
     def test_every_approved_option_has_a_registry_entity_with_a_court(self, playbook):
@@ -1609,86 +1605,40 @@ class TestForumIsAlwaysACourt:
                 f"{option_id} lost its forum_jurisdiction (detector depends on it)"
             )
 
-    def test_generation_refuses_when_no_court_resolves(self, monkeypatch, playbook):
-        # Simulate the #34 gap on the FALLBACK path: the signing entity carries no
-        # forum of its own AND _forum_for_option_id returns "". Generation must
-        # REFUSE (raise) rather than write the law name as the forum.
-        monkeypatch.setattr(gen, "_forum_for_option_id", lambda option_id, playbook: "")
+    def test_generation_refuses_when_no_court_resolves(self, playbook):
+        # The signing entity carries no forum of its own -> generation must REFUSE
+        # (raise) rather than write the law name as the forum. (The old option-forum
+        # fallback this used to monkeypatch was removed by the law+court-to-entity
+        # lock; a forum-less entity is now an outright refusal.)
         forumless = _bundle(option_id="india")
         forumless["jurisdiction"] = ""
         with pytest.raises(gen.NdaGenerationError) as excinfo:
-            gen.entity_party_from_bundle(
-                forumless,
-                playbook,
-                governing_law_option_id="england_and_wales",
-            )
-        assert "court" in str(excinfo.value).lower()
+            gen.entity_party_from_bundle(forumless, playbook)
+        assert "court" in str(excinfo.value).lower() or "venue" in str(excinfo.value).lower()
 
-    def test_generation_refuses_when_forum_echoes_the_law_name(self, monkeypatch, playbook):
-        # A FALLBACK value that merely echoes the law name is non-court -> refuse.
+    def test_generation_refuses_when_forum_echoes_the_law_name(self, playbook):
+        # An entity whose own forum merely echoes the law name is non-court -> refuse.
         law_value = gen._approved_governing_law_options(playbook)["delaware"]
-        monkeypatch.setattr(gen, "_forum_for_option_id", lambda option_id, playbook: law_value)
-        forumless = _bundle(option_id="india")
-        forumless["jurisdiction"] = ""
+        echo = _bundle(option_id="delaware")
+        echo["jurisdiction"] = law_value
         with pytest.raises(gen.NdaGenerationError):
-            gen.entity_party_from_bundle(
-                forumless,
-                playbook,
-                governing_law_option_id="delaware",
-            )
+            gen.entity_party_from_bundle(echo, playbook)
 
     def test_forum_is_the_signing_entitys_own_court(self, playbook):
-        # ENTITY-FORUM (corrected): the forum is the SIGNING entity's OWN court,
-        # regardless of any override -- never another entity's court pulled from the
-        # overridden option, and never the bare law name.
+        # ENTITY-FORUM: the forum is the SIGNING entity's OWN court, sourced directly
+        # from its registry jurisdiction -- never the bare law name. This bundle's own
+        # jurisdiction is "Courts of England and Wales".
         entity = gen.entity_party_from_bundle(
-            _bundle(option_id="india"),  # own jurisdiction: Courts of England and Wales
+            _bundle(option_id="england_and_wales"),  # own jurisdiction: Courts of England and Wales
             playbook,
-            governing_law_option_id="difc",
         )
         assert entity.forum == "Courts of England and Wales"
-        assert entity.forum != gen._approved_governing_law_options(playbook)["difc"]
+        assert entity.forum != gen._approved_governing_law_options(playbook)["england_and_wales"]
 
-    def test_authored_playbook_forum_resolves_when_no_registry_entity_defaults(
-        self, playbook
-    ):
-        # FEATURE 1: a governing law a user AUTHORS in the Playbook editor has no
-        # signing entity defaulting to it yet, so the registry path resolves no
-        # court. _forum_for_option_id must fall back to the court/forum the user
-        # authored ON THE PLAYBOOK OPTION (forum_jurisdiction), so a generated NDA
-        # under that new law uses the AUTHORED court rather than hard-refusing.
-        import copy
-
-        authored = copy.deepcopy(playbook)
-        gov = next(c for c in authored["clauses"] if c["id"] == "governing_law")
-        gov["approved_laws"].append("Singapore")
-        gov["law_phrases"]["Singapore"] = "the laws of Singapore"
-        gov["rules"]["approved_options"].append(
-            {
-                "id": "singapore",
-                "label": "Singapore",
-                "value": "Singapore",
-                "default": False,
-                "forum_jurisdiction": "the courts of Singapore",
-            }
-        )
-
-        # No registry entity defaults to "singapore", so the resolved forum is the
-        # authored playbook forum_jurisdiction.
-        forum = gen._forum_for_option_id("singapore", authored)
-        assert forum == "the courts of Singapore"
-
-        # And it survives the court gate (distinct from the bare law name) and is
-        # written into a generated party. The signing entity must carry no forum of
-        # its own here, otherwise that own forum (authoritative regardless of the
-        # override) would win over the authored option forum; we strip it to drive
-        # the FEATURE 1 fallback path being asserted.
-        forumless = _bundle(option_id="india")
-        forumless["jurisdiction"] = ""
-        entity = gen.entity_party_from_bundle(
-            forumless,
-            authored,
-            governing_law_option_id="singapore",
-        )
-        assert entity.forum == "the courts of Singapore"
-        assert entity.governing_law_value == "Singapore"
+    # NOTE: the former ``test_authored_playbook_forum_resolves_when_no_registry_
+    # entity_defaults`` was removed by the law+court-to-entity lock. It exercised the
+    # option-forum fallback (``_forum_for_option_id`` resolving a Playbook option's
+    # authored ``forum_jurisdiction`` when no registry entity defaulted to it); that
+    # function and fallback were deleted -- the forum is now sourced ONLY from the
+    # signing entity's own registry ``jurisdiction`` -- so the behavior no longer
+    # exists.

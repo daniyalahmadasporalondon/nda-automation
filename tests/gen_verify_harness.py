@@ -195,20 +195,20 @@ def check_entity(text: str, expect: EntityExpectation, report: VerificationRepor
 
 @dataclass
 class GovLawOverride:
-    """The resolved governing-law intent for one draft, override-aware.
+    """The resolved governing-law intent for one draft.
 
-    The product lets a user OVERRIDE the entity's default governing law with a
-    different one -- but only ever to one of the same Playbook-approved options,
-    so the law is always approved,
-    override or not. This record carries what the *clause* should actually say
-    (``effective_law``) versus what the entity would default to
-    (``entity_default_law``), so the gate validates the draft against the chosen
-    law rather than mechanically flagging "law != entity default" as drift.
+    LAW + COURT ARE LOCKED TO THE ENTITY: the governing law is FIXED by the
+    signing entity and the override path has been removed from generation. This
+    record therefore always reports ``effective_law == entity_default_law`` and
+    ``overridden == False`` for any draft a current generator produces. The
+    ``overridden`` flag is retained only as a TRIPWIRE: if a manifest ever reports
+    ``overridden == True``, the lock was bypassed and :func:`check_governing_law`
+    raises a defect.
 
     Built from the generator's manifest (the authoritative record of what it
     intended) via :func:`gov_law_override_from_manifest`. When the manifest does
-    not carry the override fields (pre-override generators), the resolver returns
-    ``None`` and the gate keeps its original entity-default behaviour.
+    not carry the governing-law fields the resolver returns ``None`` and the gate
+    keeps its plain entity-default behaviour.
     """
 
     effective_law: str
@@ -254,32 +254,34 @@ def check_governing_law(
     report: VerificationReport,
     override: "GovLawOverride | None" = None,
 ) -> None:
-    """The governing-law value in the draft must match the INTENDED law (entity
-    default, or a user-chosen override) AND be one of the Playbook-approved laws.
+    """The governing-law value in the draft must match the entity's OWN law AND be
+    one of the Playbook-approved laws.
 
-    ``override`` (from the generator's manifest) makes the check override-aware:
-
-    * overridden -> the clause must name the OVERRIDE law; we do NOT flag a
-      mismatch against the entity default (the difference is intentional). The
-      override law must still be one of the approved positions (defence in depth
-      -- the FE constrains the override to the Playbook list, but the gate verifies it anyway).
-    * not overridden (or no manifest override info) -> the clause must name the
-      entity default, exactly as before.
+    LAW IS LOCKED TO THE ENTITY: there is no override path. The clause must name
+    the signing entity's registry default law, which must be a Playbook-approved
+    position. ``override`` (resolved from the generator's manifest) is consulted
+    only as a TRIPWIRE -- under the lock the manifest must report
+    ``overridden == False`` and ``effective_law == entity default``; a manifest
+    that reports an override means the lock was bypassed and is a defect.
     """
     approved = _approved_laws()
-    # The law the draft is REQUIRED to name. Default to the entity's registry law;
-    # when the manifest reports an override, the effective (chosen) law is intended.
+    # The law the draft is REQUIRED to name is the entity's own registry law.
     expected_law = expect.governing_law
     if override is not None:
-        expected_law = override.effective_law
-        if override.overridden:
-            # An override must stay within the approved set (defence in depth).
-            if override.effective_law not in approved:
-                report.defect(
-                    "law.override_not_approved",
-                    f"override governing law {override.effective_law!r} is not in Playbook "
-                    f"approved_laws {approved} (override must stay within approved positions)",
-                )
+        # Defensive tripwire: generation can no longer override the law, so a
+        # manifest reporting an override (or an effective law that diverges from
+        # the entity default) means the entity-lock was bypassed upstream.
+        if override.overridden or (
+            override.entity_default_law
+            and override.effective_law
+            and override.effective_law != override.entity_default_law
+        ):
+            report.defect(
+                "law.override_present",
+                "governing law is locked to the signing entity but the manifest reports an "
+                f"override (effective {override.effective_law!r}, entity default "
+                f"{override.entity_default_law!r}); the override path has been removed",
+            )
 
     if expected_law not in approved:
         report.defect(
@@ -298,13 +300,9 @@ def check_governing_law(
     # Use the deterministic engine's own verdict on the governing_law clause as the
     # independent oracle, then additionally assert the expected jurisdiction is present.
     if expected_law and not expected_present:
-        # Label distinguishes an override-mismatch from a default-mismatch so a
-        # failure is diagnosable (which law the draft was supposed to name).
-        check_name = "law.override_mismatch" if (override and override.overridden) else "law.entity_mismatch"
         report.defect(
-            check_name,
-            f"governing-law value {expected_law!r} for entity {expect.key!r} not found in draft"
-            + (" (user-chosen override)" if (override and override.overridden) else ""),
+            "law.entity_mismatch",
+            f"governing-law value {expected_law!r} for entity {expect.key!r} not found in draft",
         )
     # Guard against a draft that names a DIFFERENT approved law than intended.
     for other in approved:

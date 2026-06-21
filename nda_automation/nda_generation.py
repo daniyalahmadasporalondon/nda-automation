@@ -47,7 +47,6 @@ from docx.document import Document as DocxDocument
 from . import telemetry
 from .checks.common import _governing_law_phrase, _year_count_label
 from .playbook_runtime import ActivePlaybookBundle
-from .untrusted_text import neutralize_untrusted_text
 
 # The tracked template asset (the company's Generic NDA). Resolved relative to
 # this module so it works from any worktree / install location.
@@ -63,10 +62,6 @@ NDA_TYPE_ONE_WAY = "one_way"
 CLAUSE_TERM = "term_and_survival"
 CLAUSE_CONFIDENTIAL = "confidential_information"
 CLAUSE_GOVERNING_LAW = "governing_law"
-
-# Length cap on the AUTHORED Playbook forum string before it renders into a signed
-# NDA. A court/venue label is short; this bounds a smuggled blob.
-AUTHORED_LONG_TEXT_MAX_CHARS = 2000
 
 # Kill-switch for the generation prose-polish AI. The AI clause adapter only
 # rephrases already-on-position clause text (it never changes which position a
@@ -500,7 +495,6 @@ def entity_party_from_bundle(
     bundle: Mapping[str, Any],
     playbook: Mapping[str, Any],
     *,
-    governing_law_option_id: str = "",
     address_id: str = "",
 ) -> EntityParty:
     """Build an :class:`EntityParty` from an ``entity_registry`` bundle.
@@ -511,20 +505,21 @@ def entity_party_from_bundle(
     ``governing_law.rules.approved_options[].id``. A bundle whose option is not
     approved is rejected — generation never emits an off-position governing law.
 
-    ``governing_law_option_id`` overrides the entity's default law with another
-    Playbook-approved option (the product lets the user pick a different — still
-    approved — governing law). An unapproved override is rejected. The forum is
-    ALWAYS the SIGNING entity's own registry ``jurisdiction`` (where that fixed
-    entity actually litigates), regardless of any law override; the option's
-    registry/Playbook forum is consulted only as a fallback when the signing entity
-    carries no forum of its own. This prevents an override from pulling another
-    entity's court (e.g. the WRONG India city) into a signed NDA.
+    LAW + COURT ARE LOCKED TO THE ENTITY. The governing law is the entity's own
+    registry option and the forum is the entity's OWN registry ``jurisdiction``
+    (where that fixed Aspora company actually litigates). There is no
+    governing-law override path — the user picks WHICH entity and the law + court
+    follow from it. The court is taken DIRECTLY from this entity's ``jurisdiction``;
+    it is never reconstructed by scanning other entities for one that defaults to
+    the same law (that old fallback could pull the WRONG India city into a signed
+    NDA). An entity with no forum of its own is a registry-config error and is
+    hard-refused by :func:`_require_court_forum`, not papered over.
 
     ``address_id`` selects which registry address fills the entity's registered
     office (the product lets the user pick a non-default office). A blank id falls
-    back to the default-flagged address; an unknown id is rejected (same guard shape
-    as the governing-law override). The chosen id is carried on the returned
-    :class:`EntityParty` so the manifest can record it for provenance.
+    back to the default-flagged address; an unknown id is rejected. The chosen id is
+    carried on the returned :class:`EntityParty` so the manifest can record it for
+    provenance.
     """
 
     legal_name = str(bundle.get("legal_name") or "").strip()
@@ -534,49 +529,32 @@ def entity_party_from_bundle(
         )
 
     approved = _approved_governing_law_options(playbook)
-    default_option_id = str((bundle.get("governing_law") or {}).get("playbook_option_id") or "").strip()
-    if default_option_id not in approved:
+    option_id = str((bundle.get("governing_law") or {}).get("playbook_option_id") or "").strip()
+    if option_id not in approved:
         raise NdaGenerationError(
-            f"Entity governing-law option {default_option_id!r} is not an approved Playbook option "
+            f"Entity governing-law option {option_id!r} is not an approved Playbook option "
             f"(approved: {sorted(approved)})."
         )
-
-    override_id = str(governing_law_option_id or "").strip()
-    if override_id and override_id not in approved:
-        raise NdaGenerationError(
-            f"Governing-law override {override_id!r} is not an approved Playbook option "
-            f"(approved: {sorted(approved)})."
-        )
-    option_id = override_id or default_option_id
     governing_law_value = approved[option_id]
 
     address, chosen_address_id = select_bundle_address(bundle, address_id)
     signatory = bundle.get("signatory") or {}
     # ENTITY-FORUM: the entity's OWN registry forum (its ``jurisdiction`` field) is
-    # the SOURCE OF TRUTH for the court written into the clause, regardless of any
-    # governing-law override. The SIGNING entity is a fixed Aspora company seated in
-    # a fixed city (e.g. aspora_financial_services -> "courts in Gandhinagar,
-    # Gujarat"); its disputes are heard by ITS OWN competent courts, not the courts
-    # of whichever other entity happens to default to the overridden law. Reading the
-    # forum off some other entity that defaults to the chosen option (the old
-    # override path) wrote the WRONG city into a signed NDA -- two India entities sit
-    # in different cities (Bengaluru vs Gandhinagar), so overriding one to ``india``
-    # would have pulled the other's court. We therefore use the signing entity's own
-    # ``jurisdiction`` first (matching the non-override path), and fall back to the
-    # option's playbook/registry forum ONLY when the signing entity carries none.
-    entity_forum = str(bundle.get("jurisdiction") or "").strip()
-    if entity_forum:
-        forum = entity_forum
-        forum_from_entity = True
-    else:
-        forum = _forum_for_option_id(option_id, playbook)
-        forum_from_entity = False
+    # the SOLE SOURCE OF TRUTH for the court written into the clause. The SIGNING
+    # entity is a fixed Aspora company seated in a fixed city (e.g.
+    # aspora_financial_services -> "courts in Gandhinagar, Gujarat"); its disputes
+    # are heard by ITS OWN competent courts. The court is read DIRECTLY off this
+    # entity, never reconstructed by scanning other registry entities for one that
+    # defaults to the same law -- that reconstruction could write the WRONG city
+    # (two India entities sit in different cities). An entity carrying no forum is a
+    # registry-config error: ``_require_court_forum`` hard-refuses rather than
+    # synthesising a court.
     forum = _require_court_forum(
-        forum,
+        str(bundle.get("jurisdiction") or "").strip(),
         option_id,
         governing_law_value,
         playbook=playbook,
-        forum_from_entity=forum_from_entity,
+        forum_from_entity=True,
     )
 
     return EntityParty(
@@ -593,63 +571,6 @@ def entity_party_from_bundle(
         entity_id=str(bundle.get("id") or "").strip(),
         registered_office_address_id=chosen_address_id,
     )
-
-
-def _forum_for_option_id(option_id: str, playbook: Mapping[str, Any]) -> str:
-    """FALLBACK forum for a governing-law option when the SIGNING entity has none.
-
-    The primary, authoritative forum is the SIGNING entity's own registry
-    ``jurisdiction`` (resolved by the caller). This resolver is only consulted when
-    that signing entity carries no forum of its own, to derive *a* court for the
-    option. Resolution order:
-
-    1. The registry: pick the ``jurisdiction`` of whichever entity defaults to this
-       option (e.g. england_and_wales -> "courts in England and Wales"). Note this
-       is a DIFFERENT entity than the (forum-less) signer, so the caller's
-       :func:`_require_court_forum` gate additionally proves the resulting court
-       sits in the option's own jurisdiction bucket before it is written.
-    2. The Playbook itself, via :func:`governing_law_forum.court_name_for_law`: a
-       defensive last resort. The per-option ``court_name`` was REMOVED from the
-       Playbook (it cannot express the per-entity city), so this now resolves "" for
-       every live option -- the gate turns that into a hard refusal.
-
-    Returns "" only for an option id we have no court for at all, which the caller
-    (:func:`_require_court_forum`) turns into a hard refusal rather than writing a
-    non-court venue into a signed NDA."""
-
-    try:
-        from . import entity_registry  # noqa: PLC0415
-
-        for bundle in entity_registry.list_entities():
-            bundle_option = str((bundle.get("governing_law") or {}).get("playbook_option_id") or "").strip()
-            if bundle_option == option_id:
-                forum = str(bundle.get("jurisdiction") or "").strip()
-                if forum:
-                    return forum
-    except Exception:  # noqa: BLE001 - registry absent/!importable -> fall to Playbook court
-        pass
-    from . import governing_law_forum  # noqa: PLC0415
-
-    # The per-entity registry jurisdiction is the city-level source of truth and is
-    # now the ONLY place a court is authored (courts are edited per signing entity,
-    # not per playbook law). When NO registry entity defaults to this option -- e.g.
-    # a law a user just AUTHORED in the Playbook editor that has no signing entity
-    # yet -- there is no court to write, so this returns "" and the caller
-    # (:func:`_require_court_forum`) HARD-REFUSES generation. That is intentional and
-    # safe: you cannot generate an NDA under a law that no signing entity is set up to
-    # use. The legacy per-option forum_jurisdiction / court_name fields are still read
-    # below for backward compatibility with any pre-restructure playbook that retains
-    # them, but they are no longer authored or required.
-    pairing = governing_law_forum.canonical_forum_for_law(dict(playbook), option_id)
-    if pairing is None:
-        return ""
-    forum = str(pairing.get("court_name") or pairing.get("forum_jurisdiction") or "").strip()
-    # The AUTHORED Playbook forum_jurisdiction is attacker-controllable (a user can
-    # type any value on the approved option, or smuggle one via a direct-API publish)
-    # and from here it renders VERBATIM into a generated -> signed NDA. Neutralize it
-    # so injected control characters / role-marker phrases cannot land in the executed
-    # document. (The ENTITY-registry forum is bracket-guarded on the entities branch.)
-    return neutralize_untrusted_text(forum, max_chars=AUTHORED_LONG_TEXT_MAX_CHARS).strip()
 
 
 def _forum_jurisdiction_bucket(value: object) -> str:
@@ -959,19 +880,31 @@ def generate_nda_for_entity(
     approved = _approved_governing_law_options(playbook)
     default_option_id = str((bundle.get("governing_law") or {}).get("playbook_option_id") or "").strip()
     entity_default_law = approved.get(default_option_id, "")
+    # LAW+COURT LOCKED TO ENTITY. The governing law and forum are FIXED by the
+    # signing entity (its registry ``governing_law.playbook_option_id`` + its own
+    # ``jurisdiction`` court). There is no longer an override path: the user picks
+    # WHICH entity, and the law + court follow from it. We still accept a
+    # ``governing_law_override`` that EQUALS the entity's own option (a harmless
+    # no-op the frontend may echo back from the entity's coupled law block), but a
+    # request that tries to override the law to a DIFFERENT option is REJECTED with
+    # a 400 -- never silently honoured, never silently ignored. This closes the old
+    # divergence where an override could pull another entity's court into a signed
+    # NDA.
     override_id = str(governing_law_override or "").strip()
-    overridden = bool(override_id) and override_id != default_option_id
-    effective_option_id = override_id or default_option_id
+    if override_id and override_id != default_option_id:
+        raise NdaGenerationError(
+            "Governing law is fixed by the signing entity and cannot be overridden "
+            f"(entity option {default_option_id!r}, requested {override_id!r}).",
+            category=NdaGenerationError.CATEGORY_INPUT,
+        )
 
-    entity = entity_party_from_bundle(
-        bundle, playbook, governing_law_option_id=override_id, address_id=address_id
-    )
+    entity = entity_party_from_bundle(bundle, playbook, address_id=address_id)
     result = generate_nda(entity, intake, playbook=playbook, clause_adapter=clause_adapter)
-    # Record governing-law provenance on the manifest (the effective law value +
-    # forum are already on the manifest; these let gen-verify validate against the
-    # INTENDED option rather than the entity default).
-    result.manifest.governing_law_option_id = effective_option_id
-    result.manifest.governing_law_overridden = overridden
+    # Record governing-law provenance on the manifest. With the law locked to the
+    # entity the effective option is ALWAYS the entity default and ``overridden`` is
+    # always False; gen-verify validates the entity's own law + court.
+    result.manifest.governing_law_option_id = default_option_id
+    result.manifest.governing_law_overridden = False
     result.manifest.entity_default_governing_law_value = entity_default_law
     return result
 

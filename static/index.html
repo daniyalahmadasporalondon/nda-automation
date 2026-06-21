@@ -290,18 +290,18 @@
               </fieldset>
 
               <fieldset class="draft-fieldset">
-                <legend>Governing law</legend>
+                <legend>Governing law &amp; court</legend>
                 <div class="upload-field-grid">
-                  <label class="upload-field" for="draftIntakeGoverningLaw">
+                  <div class="upload-field">
                     <span>Governing law</span>
-                    <select id="draftIntakeGoverningLaw"></select>
-                  </label>
-                  <div class="upload-field draft-law-note">
-                    <span>Coupling</span>
-                    <p class="draft-law-status" id="draftIntakeLawStatus" aria-live="polite">Defaults to the entity's law.</p>
-                    <button class="link-button" id="draftIntakeLawResetButton" type="button" hidden>Reset to entity law</button>
+                    <p class="draft-law-value" id="draftIntakeGoverningLaw" data-readonly="true" aria-live="polite">—</p>
+                  </div>
+                  <div class="upload-field">
+                    <span>Court</span>
+                    <p class="draft-law-value" id="draftIntakeForum" data-readonly="true" aria-live="polite">—</p>
                   </div>
                 </div>
+                <p class="draft-law-status" id="draftIntakeLawStatus" aria-live="polite">Fixed by the signing entity. Pick an entity to set its law and court.</p>
               </fieldset>
 
               <footer class="upload-actions">
@@ -2598,7 +2598,7 @@
       no divergent untested .js duplicate. Module scripts are deferred, so this
       runs before any user interaction; all consumers call these at runtime.
     -->
-    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260621wave3final"></script>
+    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260621locklaw1"></script>
     <script src="/static/js/redline-rendering.js?v=20260621wave3final"></script>
     <!-- Global session-expiry handling + the shared ok-before-parse JSON guard.
          Must load before app.js (which registers the handler) and before any
@@ -2615,7 +2615,7 @@
     <script src="/static/js/corpus.js?v=20260621hum1"></script>
     <script src="/static/js/manual-upload.js?v=20260617hyg1"></script>
     <script src="/static/js/send-document.js?v=20260606i"></script>
-    <script src="/static/js/draft-intake.js?v=20260619genpostgen1"></script>
+    <script src="/static/js/draft-intake.js?v=20260621locklaw1"></script>
     <script src="/static/js/auth-session.js?v=20260618depstatus1"></script>
     <script src="/static/js/admin-ai.js?v=20260621nda1"></script>
     <script src="/static/js/admin-health.js?v=20260619a"></script>
@@ -2648,6 +2648,6 @@
     <script src="/static/js/notifications.js?v=20260620integ2"></script>
     <script src="/static/js/generator-editor.js?v=20260621wave3"></script>
     <script src="/static/js/find-replace.js?v=20260621wave3"></script>
-    <script src="/static/app.js?v=20260621entux1"></script>
+    <script src="/static/app.js?v=20260621locklaw1"></script>
   </body>
 </html>
