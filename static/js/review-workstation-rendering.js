@@ -1796,7 +1796,7 @@ function renderStudioDetail() {
   const concurrenceBanner = glConflict
     ? `<div class="studio-detail-block gl-concurrence-fail gl-concurrence-note">
         <small>Entity concurrence note</small>
-        <p>The document's governing law (<strong>${escapeHtml(glConflict.docLaw)}</strong>) does not match the selected entity <strong>${escapeHtml(glConflict.entityName)}</strong>, which is governed by <strong>${escapeHtml(glConflict.entityLaw)}</strong>. This is an advisory check against the picked entity — the clause verdict above reflects the engine's review.</p>
+        <p>The document's governing law (<strong>${escapeHtml(glConflict.docLaw)}</strong>) does not match the selected entity <strong>${escapeHtml(glConflict.entityName)}</strong>, which is governed by <strong>${escapeHtml(glConflict.entityLaw)}</strong>. This is an advisory check against the picked entity — the clause verdict above reflects the AI review.</p>
       </div>`
     : "";
   // On a govlaw conflict, surface the one-click remediation picker: one button
@@ -2220,15 +2220,34 @@ function renderReasoningTrailBlock(clause) {
   `;
 }
 
+// Plain-English labels for the backend grounding.status enum (evidence_grounding.py
+// emits grounded | ungrounded | not_recorded). Surface the reviewer phrase, never the
+// raw token.
+function groundingStatusLabel(status) {
+  const labels = {
+    grounded: "Backed by evidence in the document",
+    ungrounded: "No matching evidence found",
+    not_recorded: "Evidence check not recorded",
+  };
+  const key = String(status || "").trim().toLowerCase().replace(/\s+/g, "_");
+  return labels[key]
+    || (typeof window !== "undefined" && typeof window.humanizeId === "function"
+      ? window.humanizeId(status)
+      : String(status || "").replace(/_/g, " "));
+}
+
 function renderGroundingAuditBlock(clause) {
   const grounding = clause?.grounding && typeof clause.grounding === "object" ? clause.grounding : {};
   const evidenceCount = Array.isArray(clause?.structured_evidence) ? clause.structured_evidence.length : 0;
-  const status = String(grounding.status || "").trim() || (evidenceCount ? "grounded" : "not recorded");
+  const status = String(grounding.status || "").trim() || (evidenceCount ? "grounded" : "not_recorded");
   const paragraphIds = Array.isArray(clause?.matched_paragraph_ids) ? clause.matched_paragraph_ids : [];
+  // Run each opaque paragraph id (e.g. "p15") through the shared display labeller so
+  // the reviewer reads "Paragraph 15", not the internal token.
+  const paragraphLabels = paragraphIds.map((id) => escapeHtml(paragraphDisplayLabel(id)));
   return `
     <div class="grounding-audit-block">
-      <span class="detail-field-label">Grounding</span>
-      <p>Status: ${escapeHtml(status.replace(/_/g, " "))}. Evidence records: ${escapeHtml(evidenceCount)}.${paragraphIds.length ? ` Paragraphs: ${paragraphIds.map((id) => escapeHtml(id)).join(", ")}.` : ""}</p>
+      <span class="detail-field-label">Evidence check</span>
+      <p>Status: ${escapeHtml(groundingStatusLabel(status))}. Evidence records: ${escapeHtml(evidenceCount)}.${paragraphLabels.length ? ` Paragraphs: ${paragraphLabels.join(", ")}.` : ""}</p>
     </div>
   `;
 }
@@ -2638,7 +2657,8 @@ function proposedChangeActionLabel(action) {
     case "needs_human_choice":
       return "Needs human choice";
     default:
-      return action ? action.replace(/_/g, " ") : "Review change";
+      // Unknown/new action code: a safe generic phrase, never the raw token.
+      return "Proposed change";
   }
 }
 
@@ -2669,7 +2689,8 @@ function proposedChangeSafetyLabel(status) {
     case "needs_human_choice":
       return "Needs human choice";
     default:
-      return String(status || "").replace(/_/g, " ");
+      // Unknown/new safety code: a safe generic phrase, never the raw token.
+      return "Reviewer approval needed";
   }
 }
 
@@ -4240,16 +4261,32 @@ function sourceFidelityRoundCssNumber(value) {
   return Number(value.toFixed(2)).toString();
 }
 
+// The Structure tab deliberately SUPPRESSES the raw Word style id (e.g. "Heading2",
+// "ListParagraph") as meaningless to a reviewer (contract-structure-view.js
+// sourceSummary). Mirror that here: only surface the handful of style ids that carry
+// a reviewer-meaningful meaning, mapped to plain English; hide every other style id
+// (the badge simply does not render) rather than leaking the parser-internal token.
+function sourceFidelityStyleLabel(styleName) {
+  const name = String(styleName || "").trim();
+  if (!name) return "";
+  if (/^heading\s*[1-9]$/i.test(name)) return "Heading";
+  const normalized = name.toLowerCase().replace(/\s+/g, "");
+  if (normalized === "title") return "Title";
+  if (normalized === "listparagraph") return "List item";
+  return "";
+}
+
 function renderSourceFidelityParagraphBlock(block) {
   const paragraphId = String(block?.id || "").trim();
   const text = String(block?.text || "").trim();
   const style = block?.style && typeof block.style === "object" ? block.style : {};
   const styleName = String(block?.style_name || style.style_name || "").trim();
-  const classes = ["source-fidelity-paragraph", styleName ? "has-style" : ""].filter(Boolean).join(" ");
+  const styleLabel = sourceFidelityStyleLabel(styleName);
+  const classes = ["source-fidelity-paragraph", styleLabel ? "has-style" : ""].filter(Boolean).join(" ");
   const body = sourceFidelityParagraphBody(block);
   return `
     <p class="${classes}" ${paragraphId ? `data-paragraph-id="${escapeHtml(paragraphId)}"` : ""}>
-      ${styleName ? `<span class="source-fidelity-style">${escapeHtml(styleName)}</span>` : ""}
+      ${styleLabel ? `<span class="source-fidelity-style">${escapeHtml(styleLabel)}</span>` : ""}
       ${body || escapeHtml(text)}
     </p>
   `;

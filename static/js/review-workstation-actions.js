@@ -1644,10 +1644,10 @@ function staleReviewMessage(refresh, fallback = "Review is stale — refresh bef
     return "Playbook changed — refresh before sending.";
   }
   if (reasons.includes("review_engine_version_changed")) {
-    return "Review engine changed — refresh before sending.";
+    return "The review rules were updated — refresh before sending.";
   }
   if (reasons.includes("missing_playbook_runtime")) {
-    return "Review predates runtime tracking — refresh before sending.";
+    return "This review predates the current rules — refresh before sending.";
   }
   return fallback;
 }
@@ -1883,7 +1883,20 @@ function approveBlockReasonLabel(reason) {
   if (code === "stale_playbook") {
     return "The review is stale — refresh it against the active Playbook.";
   }
-  return code;
+  // The backend (approval.py) also emits "unresolved_clause:<clause-id>" — a clause
+  // whose verdict still needs a reviewer decision. Name the clause in plain English
+  // rather than echoing the prefixed code.
+  if (code.startsWith("unresolved_clause:")) {
+    const clauseId = code.slice("unresolved_clause:".length).trim();
+    const clauseName = clauseId
+      ? (typeof clauseNameForId === "function" ? clauseNameForId(clauseId) : humanizeClauseId(clauseId))
+      : "";
+    return clauseName
+      ? `Resolve the ${clauseName} clause before approving.`
+      : "Resolve the flagged clause before approving.";
+  }
+  // Unknown/new code: a safe generic instruction, never the raw token.
+  return "Approval is blocked — resolve the listed issue and try again.";
 }
 
 // Invoked by the Overview footer's Approve button (window.approveSelectedReview).

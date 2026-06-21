@@ -29,3 +29,19 @@ const SOURCE_SCROLL_MIN_CHARS_PER_LINE = 24;
 const SOURCE_SCROLL_AVG_CHAR_WIDTH_EM = 0.55;
 const SOURCE_SCROLL_CONTEXT_RATIO = 0.32;
 const RENDERED_SCROLL_CONTEXT_RATIO = 0.24;
+
+// Shared, generic snake_case / kebab-case -> Title Case humanizer for opaque enum
+// tokens that have no curated map (e.g. a brand-new source_kind the backend adds
+// before the UI catches up). Callers prefer their own curated maps and fall back to
+// this only for unknown tokens, so a reviewer reads "Some New Kind" rather than the
+// raw "some_new_kind". Exposed on window so every view can reuse one implementation.
+// Defined idempotently so a re-load never clobbers a live reference.
+if (typeof window !== "undefined" && typeof window.humanizeId !== "function") {
+  window.humanizeId = function humanizeId(token) {
+    return String(token == null ? "" : token)
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/\b\w/g, (character) => character.toUpperCase());
+  };
+}

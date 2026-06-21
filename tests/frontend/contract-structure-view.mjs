@@ -49,11 +49,12 @@ function makeRoot() {
   };
 }
 
-function loadController() {
+function loadController(extraGlobals = {}) {
   const sandbox = {
     escapeHtml,
     jumpToParagraph() {},
     console,
+    ...extraGlobals,
   };
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(CONTROLLER_PATH, "utf8"), sandbox, { filename: "contract-structure-view.js" });
@@ -62,12 +63,45 @@ function loadController() {
 
 const createController = loadController();
 
-function renderWith(latestReviewResult) {
+function renderWith(latestReviewResult, controllerFactory = createController) {
   const root = makeRoot();
   const state = { latestReviewResult };
-  const controller = createController({ state, root });
+  const controller = controllerFactory({ state, root });
   controller.render();
   return root.innerHTML;
+}
+
+// Render a single source-backed section and return the rendered markup. Used by the
+// source/confidence humanization tests below: a section's source.* tokens and
+// confidence string surface inside the row's <small> metadata.
+function renderSingleSection(overrides, controllerFactory = createController) {
+  return renderWith(
+    {
+      contract_structure: {
+        sections: [
+          {
+            id: "section-1",
+            kind: "clause",
+            label: "Clause 1",
+            heading: "Confidentiality",
+            number: "1",
+            level: 0,
+            confidence: "high",
+            parent_id: null,
+            start_paragraph_id: "p-1",
+            paragraph_ids: ["p-1"],
+            start_index: 1,
+            end_index: 1,
+            source: { source_kind: "docx" },
+            ...overrides,
+          },
+        ],
+        stats: { section_count: 1, source_backed_section_count: 1 },
+      },
+      reference_resolver: { references: [] },
+    },
+    controllerFactory,
+  );
 }
 
 // A small but real structure: Clause 9 (with a child 9.1), Schedule 1, plus a
@@ -309,6 +343,63 @@ test("unresolved target renders as plain non-clickable 'No target' / Unresolved"
   });
   assert.match(html, /structure-xref-missing/, "missing-target styling");
   assert.ok(html.includes("Unresolved 3"), "names the unresolved number");
+});
+
+// --- VIEW 4: humanized source + confidence labels (no raw enum leakage) ----------
+
+test("source_kind=table_cell renders 'In a table' (NOT the raw 'Source table_cell')", () => {
+  const html = renderSingleSection({ source: { source_kind: "table_cell" } });
+  assert.ok(html.includes("In a table"), "table_cell maps to the friendly phrase");
+  assert.doesNotMatch(html, /Source table_cell/, "raw 'Source table_cell' must not leak");
+});
+
+test("source_kind curated map covers the documented kinds", () => {
+  const cases = [
+    ["paragraph", "Main body"],
+    ["supplemental", "Supplemental text"],
+    ["docx_heading", "Word heading"],
+    ["pdf_text", "PDF text"],
+  ];
+  cases.forEach(([kind, label]) => {
+    const html = renderSingleSection({ source: { source_kind: kind } });
+    assert.ok(html.includes(label), `${kind} -> ${label}`);
+    assert.doesNotMatch(html, new RegExp(`Source ${kind}`), `no raw 'Source ${kind}'`);
+  });
+});
+
+test("source_part curated map renders 'From header' etc.", () => {
+  const html = renderSingleSection({ source: { source_part: "header" } });
+  assert.ok(html.includes("From header"), "header -> 'From header'");
+  assert.doesNotMatch(html, /Source header/, "raw 'Source header' must not leak");
+});
+
+test("unknown source_kind is HUMANIZED, never echoed as 'Source <token>'", () => {
+  const html = renderSingleSection({ source: { source_kind: "brand_new_kind" } });
+  assert.ok(html.includes("Brand New Kind"), "unknown token Title-Cased");
+  assert.doesNotMatch(html, /Source brand_new_kind/, "raw 'Source <token>' must not leak");
+});
+
+test("unknown source_kind reuses window.humanizeId when present", () => {
+  // Prove the generic-fallback path delegates to the shared window.humanizeId.
+  const sandboxWindow = {
+    humanizeId: (token) => `HID:${token}`,
+  };
+  const controllerFactory = loadController({ window: sandboxWindow });
+  const html = renderSingleSection({ source: { source_kind: "weird_kind" } }, controllerFactory);
+  assert.ok(html.includes("HID:weird_kind"), "delegates unknown tokens to window.humanizeId");
+});
+
+test("confidenceLabel maps high/medium/low and drops the awkward 'unknown confidence'", () => {
+  const high = renderSingleSection({ confidence: "high" });
+  assert.ok(high.includes("High confidence"), "high -> 'High confidence'");
+  const medium = renderSingleSection({ confidence: "medium" });
+  assert.ok(medium.includes("Medium confidence"), "medium -> 'Medium confidence'");
+  const low = renderSingleSection({ confidence: "low" });
+  assert.ok(low.includes("Low confidence"), "low -> 'Low confidence'");
+  // A missing/garbage confidence reads "Confidence unknown", never "unknown confidence".
+  const blank = renderSingleSection({ confidence: "" });
+  assert.ok(blank.includes("Confidence unknown"), "blank -> 'Confidence unknown'");
+  assert.doesNotMatch(blank, /unknown confidence/, "the awkward 'unknown confidence' is gone");
 });
 
 console.log(`\ncontract-structure-view: ${passed} assertions passed`);
