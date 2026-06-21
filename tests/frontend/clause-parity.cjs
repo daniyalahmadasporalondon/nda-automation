@@ -153,9 +153,9 @@ async function main() {
     // ===================================================================
     await selectClause(page, "mutuality");
 
-    // Policy panel now carries an EDITABLE trigger-term chip editor for the native
-    // clause (these were previously read-only display chips only).
-    await page.click('[data-playbook-panel-tab="policy"]');
+    // The consolidated editor carries an EDITABLE trigger-term chip editor for the
+    // native clause inline (these were previously read-only display chips only).
+    // There are no sub-tabs -- everything is on one scrolling screen.
     await page.waitForSelector("#dynamicSearchTermInput", { state: "visible" });
     await page.waitForSelector("#dynamicSemanticSignalInput", { state: "visible" });
 
@@ -178,8 +178,8 @@ async function main() {
       MUT_SEMANTIC_SIGNAL
     );
 
-    // Decision panel: the structured condition editor is LIVE for the native clause.
-    await page.click('[data-playbook-panel-tab="decision"]');
+    // The structured condition editor is LIVE for the native clause and visible
+    // inline (no decision sub-tab anymore).
     const failDesc =
       '[data-condition-field="fail_conditions"][data-condition-index="0"] [data-condition-description]';
     await page.waitForSelector(failDesc, { state: "visible" });
@@ -262,7 +262,6 @@ async function main() {
     // ===================================================================
     // governing_law: preferred-position is derived (read-only); jurisdiction list editable.
     await selectClause(page, "governing_law");
-    await page.click('[data-playbook-panel-tab="policy"]');
     await page.waitForSelector('[data-derived-standard="1"]', { state: "visible" });
     // The derived standard box exposes NO editable preferred_position/check_trigger field.
     const govEditableStandard = await page.$$eval(
@@ -279,7 +278,6 @@ async function main() {
 
     // term_and_survival: derived standard read-only; max_term_years editable.
     await selectClause(page, "term_and_survival");
-    await page.click('[data-playbook-panel-tab="policy"]');
     await page.waitForSelector('[data-derived-standard="1"]', { state: "visible" });
     const termEditableStandard = await page.$$eval(
       '#playbookEditor [name="preferred_position"], #playbookEditor [name="check_trigger"]',
@@ -301,7 +299,6 @@ async function main() {
     // 4. NEGATIVE: stripping every search term off a native clause => invalid
     // ===================================================================
     await selectClause(page, "confidential_information");
-    await page.click('[data-playbook-panel-tab="policy"]');
     await page.waitForSelector('[data-chip-row="search-term"] .admin-chip', { state: "visible" });
     let removeChips = await page.$$('[data-chip-row="search-term"] [data-remove-chip]');
     while (removeChips.length) {

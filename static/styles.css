@@ -8220,7 +8220,8 @@ label.is-hidden {
   padding: 18px;
 }
 
-.playbook-editor-tabbed {
+.playbook-editor-tabbed,
+.playbook-editor-consolidated {
   gap: 14px;
   --playbook-boundary: #d8cdee;
   --playbook-boundary-strong: #c7b9e4;
@@ -8290,18 +8291,23 @@ label.is-hidden {
   margin: 0;
 }
 
-.playbook-editor-tabbed .admin-head {
+.playbook-editor-tabbed .admin-head,
+.playbook-editor-consolidated .admin-head {
   border-bottom-color: var(--playbook-boundary);
 }
 
 .playbook-editor-tabbed .admin-field input,
-.playbook-editor-tabbed .admin-field textarea {
+.playbook-editor-tabbed .admin-field textarea,
+.playbook-editor-consolidated .admin-field input,
+.playbook-editor-consolidated .admin-field textarea {
   background: #fff;
   border-color: var(--playbook-boundary-strong);
 }
 
 .playbook-editor-tabbed .admin-field input:focus,
-.playbook-editor-tabbed .admin-field textarea:focus {
+.playbook-editor-tabbed .admin-field textarea:focus,
+.playbook-editor-consolidated .admin-field input:focus,
+.playbook-editor-consolidated .admin-field textarea:focus {
   border-color: var(--playbook-boundary-strong);
   box-shadow: 0 0 0 2px rgba(199, 185, 228, 0.32);
   outline: none;
@@ -11777,4 +11783,151 @@ label.is-hidden {
   display: flex;
   font-size: 12px;
   gap: 6px;
+}
+
+
+/* ---- Consolidated clause editor (build/consolidated-clause-editor) ------- */
+.playbook-editor-consolidated {
+  display: grid;
+}
+
+.playbook-clause-section {
+  display: grid;
+  gap: 14px;
+  padding: 14px 0;
+  border-top: 1px solid var(--playbook-boundary);
+}
+
+.playbook-clause-section:first-of-type {
+  border-top: none;
+}
+
+.playbook-clause-diff pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Salvaged Decision-Logic one-liner notes, drift warning, AI-drafted hint */
+.admin-note {
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 0;
+  padding: 8px 10px;
+}
+
+.playbook-adjudication-note {
+  background: #f1ecfb;
+  border: 1px solid var(--playbook-boundary, #d8cdee);
+  color: #5a4b86;
+}
+
+.playbook-drift-warning {
+  background: #fff6e6;
+  border: 1px solid #f1d39a;
+  color: #8a5a00;
+}
+
+.playbook-ai-drafted-hint {
+  background: #eef6ff;
+  border: 1px solid #bcd9f5;
+  color: #2b5f93;
+  font-weight: 700;
+}
+
+/* Check-driving list editors + read-only derived boxes */
+.playbook-check-lists {
+  display: grid;
+  gap: 14px;
+}
+
+.playbook-check-list .admin-chip-row {
+  margin: 6px 0;
+}
+
+[data-derived-standard] textarea[readonly],
+[data-derived-field] {
+  background: #f2f0f6;
+  color: #6c6580;
+  cursor: not-allowed;
+}
+
+/* AI wording diff preview */
+.playbook-ai-wording-head {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.playbook-ai-wording-status {
+  color: var(--playbook-muted, #8f87a1);
+  font-size: 12px;
+  min-height: 16px;
+}
+
+.playbook-ai-wording-warnings {
+  background: #fdecec;
+  border: 1px solid #f3b9b9;
+  border-radius: 8px;
+  color: #8a2020;
+  font-size: 12px;
+  margin: 8px 0;
+  padding: 8px 10px;
+}
+
+.playbook-ai-wording-cards {
+  display: grid;
+  gap: 12px;
+}
+
+.playbook-ai-wording-card {
+  border: 1px solid var(--playbook-boundary-strong, #c7b9e4);
+  border-radius: 10px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.playbook-ai-wording-card h4 {
+  font-size: 13px;
+  font-weight: 800;
+  margin: 0;
+}
+
+.playbook-ai-wording-cols {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr 1fr;
+}
+
+@media (max-width: 720px) {
+  .playbook-ai-wording-cols {
+    grid-template-columns: 1fr;
+  }
+}
+
+.playbook-ai-wording-old pre {
+  background: #faf4f4;
+  border: 1px solid #ecd6d6;
+  border-radius: 8px;
+  font-size: 12px;
+  margin: 4px 0 0;
+  padding: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.playbook-ai-wording-new textarea {
+  width: 100%;
+}
+
+.playbook-ai-wording-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Playbook-level Version History (left rail, global) */
+.playbook-history {
+  margin-top: 14px;
 }
