@@ -11853,6 +11853,80 @@ label.is-hidden {
   color: var(--success, #067647);
 }
 
+/* ---- Playbook section switcher (Clauses | Entities) ---------------------- */
+.playbook-section-switcher {
+  display: inline-flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg, 10px);
+  box-shadow: var(--shadow-sm);
+}
+
+.playbook-section-tab {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-md, 8px);
+  color: var(--ink-soft);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 16px;
+  transition: background 0.16s ease, color 0.16s ease;
+}
+
+.playbook-section-tab:hover {
+  color: var(--ink);
+}
+
+.playbook-section-tab.active {
+  background: var(--accent, #4c1d95);
+  color: #fff;
+}
+
+/* The section switcher toggles [hidden] on the sibling surfaces. The Clauses
+   surface (.playbook-shell) sets display:grid, which would otherwise beat the
+   [hidden] attribute's user-agent display:none -- so honour hidden explicitly. */
+[data-playbook-surface][hidden] {
+  display: none !important;
+}
+
+/* ---- Entities surface inside the Playbook editor ------------------------- */
+.playbook-entities {
+  display: grid;
+  gap: 16px;
+}
+
+.playbook-entities-head {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.playbook-entities-head h2 {
+  font-size: 17px;
+  margin: 2px 0 0;
+}
+
+.playbook-entities-lede {
+  color: var(--ink-soft);
+  font-size: 13px;
+  margin: 4px 0 0;
+  max-width: 60ch;
+}
+
+.playbook-entities-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .entities-list {
   display: grid;
   gap: 16px;
@@ -11881,15 +11955,34 @@ label.is-hidden {
   min-width: 0;
 }
 
+/* The machine entity-id is demoted to a tiny de-emphasised caption UNDER the
+   legal name (the legal name now leads). Hidden entirely for new entities. */
 .entity-card-id {
   color: var(--ink-muted);
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 11px;
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+  opacity: 0.72;
+}
+
+.entity-card-id[hidden] {
+  display: none;
 }
 
 .entity-card-title strong {
-  font-size: 15px;
+  font-size: 16px;
+  font-weight: 650;
   overflow-wrap: anywhere;
+}
+
+/* The editable entity-id field only appears when ADDING a new entity. */
+.entity-new-id[hidden] {
+  display: none;
+}
+
+.entity-new-id > span small {
+  color: var(--ink-muted);
+  font-weight: 500;
 }
 
 .entity-field-grid {
@@ -11961,14 +12054,69 @@ label.is-hidden {
   background: var(--surface-soft, rgba(0, 0, 0, 0.025));
   border-radius: 10px;
   display: grid;
-  gap: 10px;
-  padding: 12px;
+  gap: 8px;
+  padding: 11px 12px;
 }
 
-.entity-address-grid {
+/* Content-first address: the Label reads as a small heading, the LINES are the
+   prominent content, and Country is a compact field demoted beneath. The machine
+   address-id is a hidden input (no row). */
+.entity-address-body {
   display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.entity-address-label {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px dashed transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  padding: 2px 0;
+  width: 100%;
+}
+
+.entity-address-label::placeholder {
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+
+.entity-address-label:hover {
+  border-bottom-color: var(--border);
+}
+
+.entity-address-label:focus {
+  border-bottom-color: var(--accent, #4c1d95);
+  outline: none;
+}
+
+.entity-address-lines-field {
+  display: grid;
+  gap: 3px;
+}
+
+.entity-address-lines-hint {
+  color: var(--ink-muted);
+  font-size: 11px;
+}
+
+.entity-address-lines {
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.15));
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  min-height: 38px;
+  overflow: hidden;
+  padding: 7px 9px;
+  resize: none;
+  width: 100%;
+}
+
+.entity-address-country {
+  max-width: 260px;
 }
 
 .entity-address-actions {

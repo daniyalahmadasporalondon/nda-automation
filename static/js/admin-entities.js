@@ -146,13 +146,33 @@ const AdminEntitiesView = (() => {
       entities.forEach((entity) => {
         list.appendChild(buildCard(entity));
       });
+      // autoGrow at build time can see scrollHeight 0 (the textarea was not yet
+      // attached/laid out), so re-size every lines box once the cards are in the
+      // DOM, on the next frame when layout is settled.
+      growAllAddressLines();
     }
 
-    function buildCard(entity) {
+    function growAllAddressLines() {
+      if (!list) return;
+      const run = () => {
+        list.querySelectorAll('[data-address-field="lines"]').forEach((area) => autoGrow(area));
+      };
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(run);
+      } else {
+        run();
+      }
+    }
+
+    function buildCard(entity, { isNew = false } = {}) {
       const fragment = cardTemplate.content.cloneNode(true);
       const card = fragment.querySelector("[data-entity-card]");
       const radioGroup = `entity-default-${(radioGroupSeq += 1)}`;
 
+      // The entity id is the persistent key. It stays the under-the-hood identifier
+      // (the input is always present so collectEntities reads it back), but it is
+      // only SURFACED + editable when ADDING a new entity. For an existing entity it
+      // is shown minimally as a small de-emphasised caption, never as an editable row.
       field(card, "id").value = String(entity.id || "");
       field(card, "legal_name").value = String(entity.legal_name || "");
       field(card, "short_name").value = String(entity.short_name || "");
@@ -162,9 +182,13 @@ const AdminEntitiesView = (() => {
       );
       field(card, "signatory_name").value = String(entity.signatory?.name || "");
       field(card, "signatory_title").value = String(entity.signatory?.title || "");
-      field(card, "id-display").textContent = String(entity.id || "new");
       field(card, "legal_name-display").textContent =
         String(entity.legal_name || "New entity");
+
+      // Mark whether this card represents an already-persisted entity, so Remove can
+      // confirm before deleting one (a new, unsaved card removes silently).
+      card.dataset.entityNew = isNew ? "true" : "false";
+      applyIdSurface(card, isNew);
 
       const lawSelect = field(card, "governing_law");
       const currentLaw = String(entity.governing_law?.playbook_option_id || "");
@@ -185,6 +209,28 @@ const AdminEntitiesView = (() => {
       return card;
     }
 
+    // Show the entity id minimally. NEW entity: reveal the editable id field (the id
+    // is the permanent key, set once at creation) and hide the caption. EXISTING
+    // entity: hide the editable field, show a small de-emphasised caption with the id.
+    function applyIdSurface(card, isNew) {
+      const idField = card.querySelector("[data-entity-new-id-field]");
+      const caption = field(card, "id-caption");
+      const idValue = String(field(card, "id").value || "");
+      if (isNew) {
+        if (idField) idField.hidden = false;
+        if (caption) {
+          caption.hidden = true;
+          caption.textContent = "";
+        }
+      } else {
+        if (idField) idField.hidden = true;
+        if (caption) {
+          caption.hidden = !idValue;
+          caption.textContent = idValue ? `id: ${idValue}` : "";
+        }
+      }
+    }
+
     function buildAddress(address, radioGroup) {
       const fragment = addressTemplate.content.cloneNode(true);
       const row = fragment.querySelector("[data-entity-address]");
@@ -192,11 +238,23 @@ const AdminEntitiesView = (() => {
       addrField(row, "label").value = String(address.label || "");
       addrField(row, "country").value = String(address.country || "");
       const lines = Array.isArray(address.lines) ? address.lines : [];
-      addrField(row, "lines").value = lines.join("\n");
+      const linesArea = addrField(row, "lines");
+      linesArea.value = lines.join("\n");
+      autoGrow(linesArea);
+      linesArea.addEventListener("input", () => autoGrow(linesArea));
       const defaultRadio = addrField(row, "default");
       defaultRadio.name = radioGroup;
       defaultRadio.checked = Boolean(address.default);
       return row;
+    }
+
+    // Grow a textarea to fit its content (with a small floor) so addresses stay
+    // compact when short but never clip when long -- replaces the giant fixed box.
+    function autoGrow(textarea) {
+      if (!textarea || typeof textarea.scrollHeight !== "number") return;
+      textarea.style.height = "auto";
+      const next = Math.max(textarea.scrollHeight, 38);
+      textarea.style.height = `${next}px`;
     }
 
     function populateLawSelect(select, currentId) {
@@ -253,11 +311,21 @@ const AdminEntitiesView = (() => {
         field(card, "legal_name-display").textContent =
           event.target.value || "New entity";
       });
-      field(card, "id").addEventListener("input", (event) => {
-        field(card, "id-display").textContent = event.target.value || "new";
-      });
 
       card.querySelector("[data-entity-remove]")?.addEventListener("click", () => {
+        // Confirm before deleting an already-persisted entity (the old behaviour
+        // removed it instantly with no undo). A new, unsaved card removes silently.
+        const isNew = card.dataset.entityNew === "true";
+        if (!isNew) {
+          const label =
+            field(card, "legal_name").value.trim() ||
+            field(card, "id").value.trim() ||
+            "this entity";
+          const confirmFn = typeof window !== "undefined" && typeof window.confirm === "function" ? window.confirm : null;
+          if (confirmFn && !confirmFn(`Remove ${label}? This is saved only when you click Save registry.`)) {
+            return;
+          }
+        }
         card.remove();
         setDirty(true);
         renumberMessageCount();
@@ -299,19 +367,24 @@ const AdminEntitiesView = (() => {
 
     function addEntity() {
       if (!list || !loaded) return;
-      const card = buildCard({
-        id: "",
-        legal_name: "",
-        short_name: "",
-        addresses: [{ id: "registered", label: "Registered office", lines: [], country: "", default: true }],
-        governing_law: { playbook_option_id: lawOptions[0]?.id || "" },
-        jurisdiction: "",
-        incorporation_jurisdiction: "",
-        signatory: { name: "[Authorised Signatory]", title: "[Title]" },
-      });
+      const card = buildCard(
+        {
+          id: "",
+          legal_name: "",
+          short_name: "",
+          addresses: [{ id: "registered", label: "Registered office", lines: [], country: "", default: true }],
+          governing_law: { playbook_option_id: lawOptions[0]?.id || "" },
+          jurisdiction: "",
+          incorporation_jurisdiction: "",
+          signatory: { name: "[Authorised Signatory]", title: "[Title]" },
+        },
+        { isNew: true },
+      );
       list.appendChild(card);
       setDirty(true);
-      card.querySelector('[data-entity-field="id"]')?.focus();
+      // Focus the legal name (the identity heading the redesign leads with); the
+      // permanent entity-id field is revealed just below for the new entity.
+      card.querySelector('[data-entity-field="legal_name"]')?.focus();
     }
 
     // Read the DOM back into the wire shape the backend expects.

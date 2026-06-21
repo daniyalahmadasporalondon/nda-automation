@@ -12,6 +12,7 @@
     "test:frontend:admin": "node tests/frontend/admin-integrations.cjs",
     "test:frontend:admin-access": "node tests/frontend/admin-access.cjs",
     "test:frontend:add-clause": "node tests/frontend/add-clause.cjs",
+    "test:frontend:entities-in-playbook": "node tests/frontend/entities-in-playbook.cjs",
     "test:frontend:clause-parity": "node tests/frontend/clause-parity.cjs",
     "test:frontend:notifications": "node tests/frontend/notifications-review-failure.cjs",
     "test:frontend:shimmer": "node tests/frontend/shimmer-skeletons.cjs",

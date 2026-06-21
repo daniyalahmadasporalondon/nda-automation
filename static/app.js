@@ -467,13 +467,17 @@ adminAccessController = createAdminAccessController({
   persistedList: document.querySelector("#adminAccessPersisted"),
   reviewErrorFromPayload,
 });
+// The signing-entity registry now lives INSIDE the Playbook editor as its
+// "Entities" section (Clauses | Entities switcher), not in the Admin area. The
+// controller logic / data layer / save+validation+forum-reconcile contract is
+// unchanged — only the host elements moved.
 adminEntitiesController = createAdminEntitiesController({
-  panel: document.querySelector("#adminEntitiesPanel"),
-  list: document.querySelector("#adminEntitiesList"),
-  message: document.querySelector("#adminEntitiesMessage"),
-  refreshButton: document.querySelector("#adminEntitiesRefreshButton"),
-  addButton: document.querySelector("#adminEntitiesAddButton"),
-  saveButton: document.querySelector("#adminEntitiesSaveButton"),
+  panel: document.querySelector('[data-playbook-surface="entities"]'),
+  list: document.querySelector("#playbookEntitiesList"),
+  message: document.querySelector("#playbookEntitiesMessage"),
+  refreshButton: document.querySelector("#playbookEntitiesRefreshButton"),
+  addButton: document.querySelector("#playbookEntitiesAddButton"),
+  saveButton: document.querySelector("#playbookEntitiesSaveButton"),
   cardTemplate: document.querySelector("#adminEntityCardTemplate"),
   addressTemplate: document.querySelector("#adminEntityAddressTemplate"),
 });
@@ -884,6 +888,35 @@ adminSectionButtons.forEach((button) => {
     if (button.dataset.adminSurface) activateAdminSurface(button.dataset.adminSurface);
     activateAdminSection(button.dataset.adminSection);
   });
+});
+
+// Playbook section switcher: the Playbook editor is the single home for clause
+// rules (Clauses) and the signing-entity / general settings (Entities). The tabs
+// toggle which sibling surface is shown; Entities lazy-loads its registry on first
+// open (mirrors the admin sections' load-on-activate).
+const playbookSectionTabs = document.querySelectorAll("[data-playbook-section]");
+const playbookSurfaces = document.querySelectorAll("[data-playbook-surface]");
+let entitiesLoadedOnce = false;
+function activatePlaybookSection(sectionName) {
+  const section = sectionName === "entities" ? "entities" : "clauses";
+  playbookSectionTabs.forEach((tab) => {
+    const active = tab.dataset.playbookSection === section;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  playbookSurfaces.forEach((surface) => {
+    surface.hidden = surface.dataset.playbookSurface !== section;
+  });
+  if (section === "entities") {
+    // Load on first activation, then serve the in-memory working copy.
+    if (!entitiesLoadedOnce) {
+      entitiesLoadedOnce = true;
+      adminEntitiesController.load();
+    }
+  }
+}
+playbookSectionTabs.forEach((tab) => {
+  tab.addEventListener("click", () => activatePlaybookSection(tab.dataset.playbookSection));
 });
 
 // Onboarding empty-states (e.g. the fresh-user repository panel) route the user
@@ -1454,6 +1487,9 @@ function activateTab(tabName) {
   if (tabName === "playbook") {
     activateAdminSurface("playbook");
     activateAdminSection("playbook");
+    // Default to the Clauses surface each time the Playbook is opened; the user
+    // can switch to Entities via the in-editor section switcher.
+    activatePlaybookSection("clauses");
   }
   if (tabName === "admin") {
     activateAdminSurface("admin");
@@ -2159,9 +2195,8 @@ function activateAdminSection(sectionName) {
   if (sectionName === "access") {
     adminAccessController.load();
   }
-  if (sectionName === "entities") {
-    adminEntitiesController.load();
-  }
+  // The "entities" admin section was removed: the signing-entity registry now
+  // lives in the Playbook editor's Entities surface (activatePlaybookSection).
   if (sectionName === "personalisation") {
     adminPersonalisationController.load();
     // The admin global-default panel loads too; it self-hides for non-admins.
