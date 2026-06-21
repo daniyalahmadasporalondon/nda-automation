@@ -45,7 +45,7 @@ from docx import Document
 from docx.document import Document as DocxDocument
 
 from . import telemetry
-from .checks.common import _year_count_label
+from .checks.common import _governing_law_phrase, _year_count_label
 from .playbook_runtime import ActivePlaybookBundle
 from .untrusted_text import neutralize_untrusted_text
 
@@ -781,7 +781,7 @@ def generate_nda(
     # the user's wording; nothing is filled and no document is produced.
     _validate_intake_free_text(intake)
 
-    _fill_variable_slots(document, entity, intake, agreement_date, manifest)
+    _fill_variable_slots(document, entity, intake, playbook, agreement_date, manifest)
 
     # When the AI clause adapter is active, adapt the three clauses CONCURRENTLY
     # rather than back-to-back. Each adaptation is independent and individually
@@ -1214,6 +1214,7 @@ def _fill_variable_slots(
     document: DocxDocument,
     entity: EntityParty,
     intake: CounterpartyIntake,
+    playbook: Mapping[str, Any],
     agreement_date: _dt.date,
     manifest: GenerationManifest,
 ) -> None:
@@ -1275,10 +1276,21 @@ def _fill_variable_slots(
     # Bengaluru, Karnataka shall have exclusive jurisdiction...". The forum was
     # already gate-validated as a real court in entity_party_from_bundle
     # (_require_court_forum), so it is never the bare law name.
+    # [GOVERNING LAW] must carry the Playbook's legally-correct PHRASING, not the
+    # raw law value: the template renders it as "...laws of [GOVERNING LAW]...", so
+    # "DIFC" must become "the DIFC" and "Ontario, Canada" the full
+    # "the Province of Ontario and the federal laws of Canada applicable therein".
+    # We route through the SAME ``_governing_law_phrase`` helper the redline/review
+    # side uses (checks.common), so generation and review can never diverge; it
+    # falls back to the raw value when the law has no phrase entry.
+    governing_law_clause = _playbook_clause(playbook, CLAUSE_GOVERNING_LAW)
+    governing_law_text = _governing_law_phrase(
+        dict(governing_law_clause), entity.governing_law_value
+    )
     global_fills = {
         "[•] day of [•], [YEAR]": f"{day} day of {month}, {year}",
         "[BUSINESS DESCRIPTION]": intake.business_description,
-        "[GOVERNING LAW]": entity.governing_law_value,
+        "[GOVERNING LAW]": governing_law_text,
         "[FORUM]": entity.forum,
     }
     for paragraph in document.paragraphs:
@@ -1308,7 +1320,7 @@ def _fill_variable_slots(
             "[REGISTERED OFFICE ADDRESS] (first party)": intake.registered_office,
             "[REGISTERED OFFICE ADDRESS] (second party)": entity.registered_office,
             "[BUSINESS DESCRIPTION]": intake.business_description,
-            "[GOVERNING LAW]": entity.governing_law_value,
+            "[GOVERNING LAW]": governing_law_text,
             "[FORUM]": entity.forum,
             # Empty -> the signature block renders a blank fill-line for signing.
             "[AUTHORISED SIGNATORY]": entity.signatory_name or "(blank fill-line)",

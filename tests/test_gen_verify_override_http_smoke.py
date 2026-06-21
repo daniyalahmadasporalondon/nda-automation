@@ -75,6 +75,22 @@ def _law_value(option_id: str) -> str:
     raise KeyError(option_id)
 
 
+def _law_phrase(option_id: str) -> str:
+    """The Playbook's legally-correct PHRASING for an option's law value.
+
+    The clause renders ``governing_law.law_phrases[value]`` (DIFC -> "the DIFC"),
+    falling back to the raw value when no phrase is mapped -- so prose assertions
+    must look for the phrase, not the bare value.
+    """
+    value = _law_value(option_id)
+    for clause in PLAYBOOK.get("clauses", []):
+        if clause.get("id") == "governing_law":
+            phrases = clause.get("law_phrases") or {}
+            phrase = str(phrases.get(value, "")).strip()
+            return phrase or value
+    return value
+
+
 # ENTITY-FORUM (corrected): the forum is the SIGNING entity's OWN court, regardless
 # of any governing-law override. Each sampled entity below is seated such that its
 # own court equals its DEFAULT option's representative court here -- so an override
@@ -187,6 +203,7 @@ class OverrideHttpSmoke(unittest.TestCase):
                         )
                     override_value = _law_value(override_opt)
                     default_value = _law_value(default_opt)
+                    override_phrase = _law_phrase(override_opt)
                     text = extract_docx_text(docx)
 
                     # Manifest provenance from the FE-shaped payload, via the route.
@@ -194,10 +211,10 @@ class OverrideHttpSmoke(unittest.TestCase):
                     self.assertTrue(m["governing_law_overridden"], m)
                     self.assertEqual(m["governing_law_value"], override_value)
                     self.assertEqual(m["entity_default_governing_law_value"], default_value)
-                    # The FETCHED, rendered NDA NAMES the override law. (This is the
-                    # parser-fix differential: FAILS on the buggy tip where the nested
-                    # override is dropped, PASSES once the parser reads it.)
-                    self.assertIn(override_value, text, f"{entity_id}: override law not rendered")
+                    # The FETCHED, rendered NDA NAMES the override law (as its legally
+                    # correct PHRASE). (This is the parser-fix differential: FAILS on the
+                    # buggy tip where the nested override is dropped, PASSES once read.)
+                    self.assertIn(override_phrase, text, f"{entity_id}: override law not rendered")
 
                     # Independent gate on the fetched bytes: governing-law correct,
                     # structural complete, no false entity-mismatch.
@@ -259,6 +276,9 @@ class OverrideHttpSmoke(unittest.TestCase):
                     override_forum = _OPTION_FORUM[override_opt]
                     override_value = _law_value(override_opt)
                     default_value = _law_value(default_opt)
+                    # The clause renders the legally-correct PHRASE, not the raw value.
+                    override_phrase = _law_phrase(override_opt)
+                    default_phrase = _law_phrase(default_opt)
                     # Forum provenance is the entity's own court on the manifest.
                     self.assertEqual(
                         payload["manifest"]["forum"], expected_forum,
@@ -285,7 +305,7 @@ class OverrideHttpSmoke(unittest.TestCase):
                         f"{entity_id}: signing entity's own forum not rendered in the clause",
                     )
                     # The override LAW still tracks into the prose; default does not leak.
-                    self.assertIn(override_value, text, f"{entity_id}: override law not in prose")
+                    self.assertIn(override_phrase, text, f"{entity_id}: override law not in prose")
                     if override_value != default_value:
                         # Scope the leak check to the GOVERNING LAW clause sentence.
                         # The whole document legitimately contains "the laws of
@@ -302,11 +322,11 @@ class OverrideHttpSmoke(unittest.TestCase):
                             "",
                         )
                         self.assertIn(
-                            f"the laws of {override_value}", gov_clause,
+                            f"the laws of {override_phrase}", gov_clause,
                             f"{entity_id}: override law not in the governing-law clause",
                         )
                         self.assertNotIn(
-                            f"the laws of {default_value}", gov_clause,
+                            f"the laws of {default_phrase}", gov_clause,
                             f"{entity_id}: default law {default_value!r} leaked into the "
                             "overridden draft's governing-law clause",
                         )
