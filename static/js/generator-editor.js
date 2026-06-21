@@ -19,6 +19,10 @@ window.generatorEditor = (function () {
     sizeDown: "genFontSizeDown",
     bold: "genFormatBold",
     italic: "genFormatItalic",
+    underline: "genFormatUnderline",
+    strike: "genFormatStrike",
+    color: "genFormatColor",
+    highlight: "genFormatHighlight",
     undo: "genUndo",
   };
   const ALIGN_BUTTONS = [
@@ -775,6 +779,33 @@ window.generatorEditor = (function () {
     commit(snapshot);
   }
 
+  // Text color: applies an RRGGBB run op over the current selection, reusing the
+  // shared setRunFormatting/normalizeColorValue helpers (same engine the Review
+  // toolbar's applyRunColor uses). Color/highlight are run-scoped only -- a
+  // selection is required; the picker always supplies a value so this only sets.
+  function applyColor(hex) {
+    const para = activeParagraph();
+    const snapshot = captureSelection();
+    if (!para || !snapshot) { setStatusHint("Select text to color"); return; }
+    const next = normalizeColorValue(hex);
+    if (!next) return;
+    pushHistory(para);
+    setRunFormatting(para, snapshot.startOffset, snapshot.endOffset, "color", next);
+    commit(snapshot);
+  }
+
+  // Highlight: applies a Word NAMED highlight (yellow/green/...) run op over the
+  // selection; the empty choice clears it. Mirrors the Review applyRunHighlight.
+  function applyHighlight(name) {
+    const para = activeParagraph();
+    const snapshot = captureSelection();
+    if (!para || !snapshot) { setStatusHint("Select text to highlight"); return; }
+    const value = String(name || "").trim();
+    pushHistory(para);
+    setRunFormatting(para, snapshot.startOffset, snapshot.endOffset, "highlight", value || false);
+    commit(snapshot);
+  }
+
   function currentSize() {
     const para = activeParagraph();
     if (!para) return null;
@@ -805,6 +836,14 @@ window.generatorEditor = (function () {
     if (bold) bold.onclick = () => toggleRun("bold");
     const italic = document.getElementById(TOOLBAR.italic);
     if (italic) italic.onclick = () => toggleRun("italic");
+    const underline = document.getElementById(TOOLBAR.underline);
+    if (underline) underline.onclick = () => toggleRun("underline");
+    const strike = document.getElementById(TOOLBAR.strike);
+    if (strike) strike.onclick = () => toggleRun("strike");
+    const color = document.getElementById(TOOLBAR.color);
+    if (color) color.oninput = () => applyColor(color.value);
+    const highlight = document.getElementById(TOOLBAR.highlight);
+    if (highlight) highlight.onchange = () => applyHighlight(highlight.value);
     const undoBtn = document.getElementById(TOOLBAR.undo);
     if (undoBtn) undoBtn.onclick = () => undo();
     ALIGN_BUTTONS.forEach(([id, alignment]) => {
@@ -826,12 +865,17 @@ window.generatorEditor = (function () {
       button.disabled = !hasActive;
     });
 
-    [[TOOLBAR.bold, "bold"], [TOOLBAR.italic, "italic"]].forEach(([id, property]) => {
+    [[TOOLBAR.bold, "bold"], [TOOLBAR.italic, "italic"], [TOOLBAR.underline, "underline"], [TOOLBAR.strike, "strike"]].forEach(([id, property]) => {
       const button = document.getElementById(id);
       if (!button) return;
       const pressed = Boolean(sel) && runRangeHasFormatting(para, sel.startOffset, sel.endOffset, property, true);
       button.setAttribute("aria-pressed", pressed ? "true" : "false");
       button.disabled = !hasActive;
+    });
+
+    [TOOLBAR.color, TOOLBAR.highlight].forEach((id) => {
+      const control = document.getElementById(id);
+      if (control) control.disabled = !hasActive;
     });
 
     const fontSelect = document.getElementById(TOOLBAR.fontSelect);
