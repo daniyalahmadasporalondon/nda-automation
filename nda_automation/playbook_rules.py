@@ -671,13 +671,24 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
     # pairs each governing law with its expected court/forum and is what lets the
     # AI reviewer verify that the named forum matches the chosen law. Normalization
     # rebuilds the option list from approved_laws, so carry these fields over
-    # (matched by id) instead of dropping them — otherwise the packet's options
-    # would diverge from the playbook's single source of truth and the reviewer
-    # would lose both the recognition aliases and the law↔forum pairing.
+    # instead of dropping them — otherwise the packet's options would diverge from
+    # the playbook's single source of truth and the reviewer would lose both the
+    # recognition aliases and the law↔forum pairing.
+    #
+    # Carry by STABLE option identity, not by the re-derived id: _option_id()
+    # slugifies the mutable display label, so renaming a law (e.g. "Ontario,
+    # Canada" -> "Ontario") changes its derived id and would silently drop its
+    # forum/aliases if we matched on the new id. The approved_options list is
+    # rebuilt in approved_laws order, and the prior normalization built it from
+    # the same approved_laws in the same order, so a renamed law keeps its
+    # POSITION even though its id changes. Key carried extras by position first
+    # (survives a label rename) and fall back to the prior option id (handles
+    # reorders / list-length changes where position no longer aligns).
     existing_options = rules.get("approved_options")
+    extras_by_index: dict[int, dict[str, Any]] = {}
     extras_by_id: dict[str, dict[str, Any]] = {}
     if isinstance(existing_options, list):
-        for option in existing_options:
+        for position, option in enumerate(existing_options):
             if not isinstance(option, dict):
                 continue
             option_id = _text(option.get("id")) or _option_id(_text(option.get("value")) or _text(option.get("label")))
@@ -691,10 +702,13 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
             forum = option.get("forum_jurisdiction")
             if isinstance(forum, str) and forum.strip():
                 carried["forum_jurisdiction"] = forum
-            if option_id and carried:
-                extras_by_id[option_id] = carried
+            if not carried:
+                continue
+            extras_by_index[position] = carried
+            if option_id:
+                extras_by_id.setdefault(option_id, carried)
     rebuilt_options: list[dict[str, Any]] = []
-    for law in approved_laws:
+    for index, law in enumerate(approved_laws):
         option_id = _option_id(law)
         rebuilt = {
             "id": option_id,
@@ -702,7 +716,9 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
             "value": law,
             "default": law == preferred_law,
         }
-        rebuilt.update(extras_by_id.get(option_id, {}))
+        # Position-stable carry (survives label rename) takes precedence; fall
+        # back to id-match when the positions no longer line up.
+        rebuilt.update(extras_by_index.get(index) or extras_by_id.get(option_id, {}))
         rebuilt_options.append(rebuilt)
     rules["approved_options"] = rebuilt_options
 

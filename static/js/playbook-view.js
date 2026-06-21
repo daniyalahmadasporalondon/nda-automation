@@ -2268,25 +2268,34 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     clause.law_phrases = lawPhrases;
     const rules = clause.rules || {};
     // Rebuild the option list by MERGING the {id,label,value,default} the editor
-    // controls onto the EXISTING loaded option objects (matched by derived id),
-    // never replacing them outright. The backend authors per-option fields the
-    // FE has no control for -- forum_jurisdiction (the law<->court pairing the AI
-    // forum check + generation read), aliases, entity_prefixes (the governing-law
-    // checker's recognition terms). Replacing the array would strip those before
-    // the POST, and the backend carry-over could not recover what never arrived.
+    // controls onto the EXISTING loaded option objects, never replacing them
+    // outright. The backend authors per-option fields the FE has no control for --
+    // forum_jurisdiction (the law<->court pairing the AI forum check + generation
+    // read), aliases, entity_prefixes (the governing-law checker's recognition
+    // terms). Replacing the array would strip those before the POST, and the
+    // backend carry-over could not recover what never arrived.
+    //
+    // Match priors by STABLE identity, not the re-derived id: optionIdForLaw()
+    // slugifies the mutable label, so renaming a law (e.g. "Ontario, Canada" ->
+    // "Ontario") changes its id and an id-only match would drop its forum/aliases.
+    // The rebuilt list and the loaded option list are both in approved_laws order,
+    // so a renamed law keeps its POSITION even though its id changes. Match by
+    // position first (survives a label rename) and fall back to the prior id
+    // (handles reorders / list-length changes where position no longer aligns).
     const existingOptions = Array.isArray(rules.approved_options) ? rules.approved_options : [];
     const existingById = {};
     existingOptions.forEach((option) => {
       if (!option || typeof option !== "object") return;
       const id = String(option.id || optionIdForLaw(option.value || option.label || "")).trim();
-      if (id) existingById[id] = option;
+      if (id && !(id in existingById)) existingById[id] = option;
     });
     const forumByOptionId = (clause._forumByOptionId && typeof clause._forumByOptionId === "object")
       ? clause._forumByOptionId
       : {};
-    rules.approved_options = approved.map((law) => {
+    rules.approved_options = approved.map((law, index) => {
       const id = optionIdForLaw(law);
-      const prior = existingById[id];
+      const byIndex = existingOptions[index];
+      const prior = (byIndex && typeof byIndex === "object") ? byIndex : existingById[id];
       const merged = (prior && typeof prior === "object") ? { ...prior } : {};
       merged.id = id;
       merged.label = law;
@@ -2353,5 +2362,16 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       .replace(/^_+|_+$/g, "");
   }
 
-  return { loadPlaybook, renderClauseDetail, renderPlaybookList };
+  return {
+    loadPlaybook,
+    renderClauseDetail,
+    renderPlaybookList,
+    // Exposed for unit tests: the pure governing-law option normalizer. It mutates
+    // only the passed clause object (no DOM), so it is safe to call directly.
+    syncGoverningLawRules,
+  };
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { createPlaybookController };
 }

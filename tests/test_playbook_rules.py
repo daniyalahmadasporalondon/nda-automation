@@ -11,6 +11,7 @@ from nda_automation.playbook_rules import (
     PlaybookRulesError,
     clause_rules_for_ai,
     derived_policy_fields,
+    normalize_clause_policy,
     normalize_playbook_policy,
     playbook_rules_for_ai,
     validate_playbook_rules,
@@ -143,6 +144,96 @@ class PlaybookRulesTests(unittest.TestCase):
             if expected:
                 with self.subTest(option=option["id"]):
                     self.assertEqual(option.get("forum_jurisdiction"), expected)
+
+    @staticmethod
+    def _governing_law_clause_with_forum():
+        # A governing_law clause whose authored approved_options carry per-option
+        # extras (forum_jurisdiction / aliases) keyed by the id derived from the
+        # ORIGINAL label. "Ontario, Canada" slugifies to "ontario_canada".
+        return {
+            "id": "governing_law",
+            "type": "required",
+            "approved_laws": ["Ontario, Canada", "India"],
+            "preferred_law": "India",
+            "rules": {
+                "clause_type": "governing_law",
+                "approved_options": [
+                    {
+                        "id": "ontario_canada",
+                        "label": "Ontario, Canada",
+                        "value": "Ontario, Canada",
+                        "default": False,
+                        "forum_jurisdiction": "Courts of Ontario, Toronto",
+                        "aliases": ["Province of Ontario"],
+                    },
+                    {
+                        "id": "india",
+                        "label": "India",
+                        "value": "India",
+                        "default": True,
+                        "forum_jurisdiction": "Courts of Mumbai, India",
+                    },
+                ],
+                "pass_conditions": [{"id": "approved_governing_law"}],
+                "fail_conditions": [{"id": "unapproved_governing_law"}],
+            },
+        }
+
+    def test_renaming_a_law_label_preserves_its_forum_jurisdiction(self):
+        # Renaming "Ontario, Canada" -> "Ontario" changes the derived option id
+        # (ontario_canada -> ontario). The forum_jurisdiction / aliases must SURVIVE
+        # normalization by stable (positional) identity, not be dropped because the
+        # re-derived id no longer matches the prior id. (Dropped on base d4e7e261.)
+        clause = self._governing_law_clause_with_forum()
+        clause["approved_laws"] = ["Ontario", "India"]
+
+        normalized = normalize_clause_policy(clause)
+        options = {opt["id"]: opt for opt in normalized["rules"]["approved_options"]}
+
+        self.assertIn("ontario", options)
+        self.assertNotIn("ontario_canada", options)
+        self.assertEqual(
+            options["ontario"].get("forum_jurisdiction"),
+            "Courts of Ontario, Toronto",
+        )
+        self.assertEqual(options["ontario"].get("aliases"), ["Province of Ontario"])
+        # The unrenamed option keeps its forum too.
+        self.assertEqual(
+            options["india"].get("forum_jurisdiction"),
+            "Courts of Mumbai, India",
+        )
+
+    def test_normal_edit_does_not_lose_any_option_forum(self):
+        # A plain re-normalization (no rename) must preserve every option's forum.
+        clause = self._governing_law_clause_with_forum()
+        normalized = normalize_clause_policy(clause)
+        forums = {
+            opt["id"]: opt.get("forum_jurisdiction")
+            for opt in normalized["rules"]["approved_options"]
+        }
+        self.assertEqual(forums["ontario_canada"], "Courts of Ontario, Toronto")
+        self.assertEqual(forums["india"], "Courts of Mumbai, India")
+
+    def test_adding_a_law_preserves_prior_forums_and_leaves_new_one_without(self):
+        # Appending a brand-new law must not disturb the existing options' forums;
+        # the new option simply carries no forum (publish lint enforces that it has
+        # one, exercised separately by the lint/publish gate tests).
+        clause = self._governing_law_clause_with_forum()
+        clause["approved_laws"] = ["Ontario, Canada", "India", "Delaware"]
+
+        normalized = normalize_clause_policy(clause)
+        options = {opt["id"]: opt for opt in normalized["rules"]["approved_options"]}
+
+        self.assertEqual(
+            options["ontario_canada"].get("forum_jurisdiction"),
+            "Courts of Ontario, Toronto",
+        )
+        self.assertEqual(
+            options["india"].get("forum_jurisdiction"),
+            "Courts of Mumbai, India",
+        )
+        self.assertIn("delaware", options)
+        self.assertNotIn("forum_jurisdiction", options["delaware"])
 
     def test_ai_rules_packet_carries_wave_one_judgment_guidance(self):
         packet = playbook_rules_for_ai(load_playbook())
