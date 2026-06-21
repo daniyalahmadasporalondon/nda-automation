@@ -683,7 +683,16 @@ def _structure_summary(
     Surfaces the printed section list (id + label + heading + number + level) so the
     model has the document's own table of contents alongside the per-paragraph
     ``section`` tags. ``available`` tells the model whether structure was supplied at
-    all (so it does not over-read an empty outline as "no sections found")."""
+    all (so it does not over-read an empty outline as "no sections found").
+
+    Each outline entry also carries the section's ``parent_id`` (hierarchy) and the
+    ``paragraph_ids`` it owns, and the summary surfaces a document-level
+    ``references`` block (``alias_to_section_id`` map + ``ambiguous_alias_keys``).
+    Together these hand the model the same cross-reference resolution map the prompt
+    already instructs it to use -- so a body that says "subject to the exclusions in
+    Section 4" can be bound to its real ``section_id`` (or recognised as ambiguous /
+    unresolvable) instead of guessing. These are linkage fields drawn from the
+    already-built ``reference_index``; they do not duplicate the section text."""
     if not isinstance(contract_structure, Mapping):
         return {"available": False, "section_count": 0, "sections": []}
     sections = contract_structure.get("sections")
@@ -702,12 +711,48 @@ def _structure_summary(
                 "heading": str(section.get("heading") or ""),
                 "kind": str(section.get("kind") or ""),
                 "level": int(section.get("level")) if isinstance(section.get("level"), int) else None,
+                "parent_id": section.get("parent_id") if isinstance(section.get("parent_id"), str) else None,
+                "paragraph_ids": [
+                    paragraph_id
+                    for paragraph_id in (section.get("paragraph_ids", []) or [])
+                    if isinstance(paragraph_id, str) and paragraph_id
+                ],
             })
     return {
         "available": True,
         "section_count": len(outline),
         "labelled_paragraph_count": len(paragraph_structure),
         "sections": outline,
+        "references": _reference_summary(contract_structure.get("reference_index")),
+    }
+
+
+def _reference_summary(reference_index: Any) -> dict[str, Any]:
+    """The compact cross-reference resolution map for the packet.
+
+    Pulls the document-level ``alias_to_section_id`` map (so a printed reference like
+    "Section 4" resolves to its ``section_id``) and ``ambiguous_alias_keys`` (so the
+    model treats an alias claimed by more than one section as unresolvable rather than
+    binding to one occurrence) out of the already-built ``reference_index``. Returns a
+    structurally-stable empty shape when no reference index is available, so the model
+    can read "no resolvable cross-references" without ambiguity."""
+    if not isinstance(reference_index, Mapping):
+        return {"alias_to_section_id": {}, "ambiguous_alias_keys": []}
+    alias_map = reference_index.get("alias_to_section_id")
+    alias_to_section_id: dict[str, str] = {}
+    if isinstance(alias_map, Mapping):
+        for key, section_id in alias_map.items():
+            if isinstance(key, str) and key and isinstance(section_id, str) and section_id:
+                alias_to_section_id[key] = section_id
+    ambiguous = reference_index.get("ambiguous_alias_keys")
+    ambiguous_alias_keys = (
+        [str(key) for key in ambiguous if isinstance(key, str) and key]
+        if isinstance(ambiguous, Sequence) and not isinstance(ambiguous, (str, bytes))
+        else []
+    )
+    return {
+        "alias_to_section_id": alias_to_section_id,
+        "ambiguous_alias_keys": ambiguous_alias_keys,
     }
 
 
