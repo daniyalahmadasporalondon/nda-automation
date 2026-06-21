@@ -522,7 +522,7 @@ def test_unsupported_intent_returns_clear_message():
     )
 
     assert response["intent"] == "unsupported"
-    assert "search matters" in response["message"].lower()
+    assert "search ndas" in response["message"].lower()
 
 
 def test_unknown_system_question_does_not_become_document_search_empty_state():

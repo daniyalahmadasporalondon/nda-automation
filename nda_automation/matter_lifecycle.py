@@ -31,7 +31,7 @@ class MatterNotFoundError(MatterLifecycleError):
 
 class MatterApprovalBlockedError(MatterLifecycleError):
     def __init__(self, blocks: list[dict[str, Any]], resolution: dict[str, Any]) -> None:
-        super().__init__("Matter cannot be approved yet.")
+        super().__init__("NDA cannot be approved yet.")
         self.blocks = blocks
         self.resolution = resolution
 

@@ -1566,7 +1566,7 @@ class ServerTests(unittest.TestCase):
 
         checks = {check["id"]: check for check in deployment["checks"]}
         self.assertTrue(checks["data_dir"]["ok"])
-        self.assertEqual(checks["data_dir"]["message"], "Local deployment may use local matter data storage.")
+        self.assertEqual(checks["data_dir"]["message"], "Local deployment may use local NDA data storage.")
 
     def test_local_deployment_status_message_matches_ok_auth_check(self):
         with patch.dict(os.environ, {
@@ -10055,7 +10055,7 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(reviewed_status, 200)
         self.assertEqual(send_status, 409)
-        self.assertIn("Matter source text was edited", send_payload["error"])
+        self.assertIn("NDA source text was edited", send_payload["error"])
         send_redline_email.assert_not_called()
 
     def test_corrupt_matter_store_does_not_reset_repository(self):

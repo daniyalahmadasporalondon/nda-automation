@@ -133,7 +133,7 @@ class RepositoryBoardWorkflow:
 
 
 def _not_found() -> RepositoryBoardWorkflowError:
-    return RepositoryBoardWorkflowError("Matter not found.", status=404)
+    return RepositoryBoardWorkflowError("NDA not found.", status=404)
 
 
 def _repository_error(error: MatterRepositoryError) -> RepositoryBoardWorkflowError:

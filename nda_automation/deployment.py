@@ -525,12 +525,12 @@ def _deployment_auth_message(auth_required: bool, auth_configured: bool) -> str:
 
 def _deployment_data_dir_check(host: str, data_dir_configured: bool, data_dir_ephemeral: bool) -> dict[str, object]:
     if data_dir_configured and not data_dir_ephemeral:
-        return {"ok": True, "message": "Matter data uses configured durable storage."}
+        return {"ok": True, "message": "NDA data uses configured durable storage."}
     if _is_loopback_host(host):
-        return {"ok": True, "message": "Local deployment may use local matter data storage."}
+        return {"ok": True, "message": "Local deployment may use local NDA data storage."}
     if _env_flag_enabled("NDA_ALLOW_EPHEMERAL_DATA"):
-        return {"ok": True, "message": "Ephemeral matter data is explicitly allowed."}
-    return {"ok": False, "message": "Matter data is not on configured durable storage."}
+        return {"ok": True, "message": "Ephemeral NDA data is explicitly allowed."}
+    return {"ok": False, "message": "NDA data is not on configured durable storage."}
 
 
 def _deployment_data_dir_persistence_check(host: str, data_dir_persisted: str) -> dict[str, object]:
@@ -712,7 +712,7 @@ def _deployment_users_path_check(host: str, users_path_configured: bool, users_p
     if users_path_configured:
         return {"ok": True, "message": "User/session storage uses a configured path."}
     if _is_loopback_host(host):
-        return {"ok": True, "message": "Local users default to local matter data storage."}
+        return {"ok": True, "message": "Local users default to local NDA data storage."}
     return {"ok": True, "message": "User/session storage defaults to NDA_DATA_DIR/users.json."}
 
 

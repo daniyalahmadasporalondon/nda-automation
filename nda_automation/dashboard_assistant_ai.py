@@ -221,7 +221,7 @@ def dashboard_assistant_tool_registry(context: Any) -> dict[str, DashboardAssist
             name="explain_review_finding",
             domain="review",
             description=(
-                "Explain one owner-scoped matter review finding: verdict, evidence, Playbook position, and why it was flagged. "
+                "Explain one owner-scoped NDA review finding: verdict, evidence, Playbook position, and why it was flagged. "
                 "No side effects."
             ),
             parameters=_strict_schema(
