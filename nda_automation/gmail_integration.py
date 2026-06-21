@@ -409,7 +409,11 @@ def _global_gmail_sync_status(settings: dict[str, Any]) -> dict[str, Any]:
 def _default_inbound_query() -> str:
     # Only the structural envelope. The keyword terms are no longer a fetch gate;
     # they live on as the deterministic content-scoring/ranking vocabulary.
-    return GMAIL_INBOUND_BASE_QUERY
+    # The admin-editable override (app_settings.gmail.inbound_base_query) is the
+    # source of truth when set; when empty the reader falls back to the
+    # GMAIL_INBOUND_BASE_QUERY constant above. A corrupt stored value normalizes
+    # to "" upstream, so this never returns a broken query.
+    return app_settings.gmail_inbound_base_query()
 
 
 def gmail_role_setup_error(role: str, owner_user_id: str = "") -> str:

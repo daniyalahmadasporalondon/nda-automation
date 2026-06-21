@@ -1006,8 +1006,25 @@ def _ai_review_settings() -> Dict[str, object]:
         "model": _configured_model(provider, stored),
         "timeout_seconds": _env_int(AI_REVIEW_ENV_TIMEOUT, DEFAULT_AI_TIMEOUT_SECONDS),
         "confidence_threshold": _env_float(AI_REVIEW_ENV_THRESHOLD, DEFAULT_AI_REVIEW_THRESHOLD),
-        "clause_ids": os.environ.get(AI_REVIEW_ENV_CLAUSES, ""),
+        "clause_ids": _configured_clause_ids(),
     }
+
+
+def _configured_clause_ids() -> str:
+    """The clause-id override fed to ``_targeted_clause_ids`` (comma string).
+
+    Resolution: the admin-stored ``review_runtime.ai_review_clause_ids`` override
+    wins when non-empty; otherwise the ``NDA_AI_REVIEW_CLAUSES`` env var. Either
+    way the result is a comma-joined string the way ``_targeted_clause_ids``
+    expects, and an empty result means "no override = full live set". Because
+    ``_targeted_clause_ids`` SUBSET-filters whatever this returns against the live
+    playbook ids, a stale/unknown stored id is dropped at review time -- no drift,
+    and the default (full set) is preserved.
+    """
+    stored = app_settings.ai_review_clause_ids()
+    if stored:
+        return ",".join(stored)
+    return os.environ.get(AI_REVIEW_ENV_CLAUSES, "")
 
 
 def _configured_provider(stored: Dict[str, object]) -> str:
