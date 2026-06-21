@@ -1,3 +1,4 @@
+import copy
 import unittest
 from unittest.mock import patch
 
@@ -256,6 +257,36 @@ class ForumReconciliationTests(unittest.TestCase):
                         option["forum_jurisdiction"] = "Province of Ontario, Canada"
         with self.assertRaises(ValueError):
             er.validate_registry_against_playbook(playbook)
+
+    def test_candidate_entity_law_court_mismatch_is_caught(self):
+        # FIX B (P1): validate_forum_reconciliation must reconcile the CANDIDATE
+        # entities threaded through validate_registry_against_playbook -- not the
+        # seed SIGNING_ENTITIES. Previously it iterated the (consistent) seed, so an
+        # admin could save an entity whose law and court are in DIFFERENT
+        # jurisdiction buckets and slip past the guard. Build a structurally-valid
+        # India-law entity but point its court at England (cross-bucket mismatch).
+        playbook = load_playbook()
+        india = next(
+            e
+            for e in er.DEFAULT_SIGNING_ENTITIES
+            if e["governing_law"]["playbook_option_id"] == "india"
+        )
+        rogue = copy.deepcopy(india)
+        rogue["id"] = "rogue_india_england_court"
+        rogue["jurisdiction"] = "Courts of England and Wales"
+
+        # AFTER the fix: the candidate list is reconciled -> the mismatch is caught.
+        with self.assertRaises(ValueError) as ctx:
+            er.validate_registry_against_playbook(playbook, [rogue])
+        message = str(ctx.exception)
+        self.assertIn("Forum drift", message)
+        self.assertIn("rogue_india_england_court", message)
+
+        # Non-vacuity / base behaviour: the OLD code iterated only the seed entities
+        # (all internally consistent), so the rogue candidate was never seen and the
+        # guard passed. Reconciling the seed alone still passes here -- proving the
+        # rogue was only caught because the candidate list is now threaded through.
+        er.validate_forum_reconciliation(playbook, er.DEFAULT_SIGNING_ENTITIES)
 
 
 class SigningEntitiesPayloadTests(unittest.TestCase):
