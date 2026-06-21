@@ -198,6 +198,123 @@ const DashboardSearchView = (() => {
       return String(answer || "").trim();
     }
 
+    // --- Display-string humanizers ------------------------------------------
+    // Curated label maps for the known enums an assistant/citation payload can
+    // carry, plus a generic snake_case/id fallback (reusing window.humanizeId when
+    // the shared helper is present). The goal: a regular user never sees a raw
+    // token like "gmail_inbound", "system_question", or "sends_email".
+
+    function humanizeFallback(value) {
+      const raw = String(value == null ? "" : value).trim();
+      if (!raw) return "";
+      if (typeof window.humanizeId === "function") {
+        const out = String(window.humanizeId(raw) || "").trim();
+        if (out) return out;
+      }
+      // Generic fallback: split on separators and Title-Case the first word.
+      const words = raw.replace(/[_\-/]+/g, " ").replace(/\s+/g, " ").trim();
+      if (!words) return "";
+      return words.charAt(0).toUpperCase() + words.slice(1);
+    }
+
+    // Workflow phase / board column → friendly label. Mirrors
+    // RepositoryModel.boardColumnLabel intent; kept local so this classic script
+    // has no hard dependency on the model module's load order or globals.
+    const WORKFLOW_PHASE_LABELS = {
+      gmail_inbound: "Inbox",
+      gmail_demo: "Inbox",
+      generated: "Generated",
+      manual_upload: "Upload",
+      in_review: "In review",
+      reviewed: "Reviewed",
+      sent: "Sent",
+      redline_ready: "Reviewed",
+      signed_closed: "Sent",
+      awaiting_approval: "Awaiting approval",
+      sent_awaiting_counterparty: "Sent",
+      fully_signed: "Signed",
+    };
+    function humanizeWorkflowPhase(value) {
+      const raw = String(value == null ? "" : value).trim();
+      if (!raw) return "";
+      return WORKFLOW_PHASE_LABELS[raw] || humanizeFallback(raw);
+    }
+
+    // Assistant search-hit kind ("type"/"source") → friendly label.
+    const HIT_KIND_LABELS = {
+      clause: "Clause",
+      matter: "NDA",
+      nda: "NDA",
+      document: "Document",
+      playbook: "Playbook",
+      gmail_inbound: "Inbox",
+      gmail_demo: "Inbox",
+      manual_upload: "Upload",
+      generated: "Generated",
+      corpus: "Corpus",
+      review_finding: "Review finding",
+      finding: "Finding",
+    };
+    function humanizeHitKind(value) {
+      const raw = String(value == null ? "" : value).trim();
+      if (!raw) return "Match";
+      return HIT_KIND_LABELS[raw] || humanizeFallback(raw);
+    }
+
+    // Assistant capability domain → friendly label.
+    const CAPABILITY_DOMAIN_LABELS = {
+      assistant: "Assistant",
+      search: "Search",
+      review: "Review",
+      generation: "Generation",
+      generator: "Generator",
+      gmail: "Gmail",
+      drive: "Drive",
+      playbook: "Playbook",
+      repository: "Repository",
+      admin: "Admin",
+      corpus: "Corpus",
+      signing: "Signing",
+    };
+    function humanizeCapabilityDomain(value) {
+      const raw = String(value == null ? "" : value).trim();
+      if (!raw) return "Assistant";
+      return CAPABILITY_DOMAIN_LABELS[raw] || humanizeFallback(raw);
+    }
+
+    // Action side-effect tokens → human phrases. Tokens we don't recognise are
+    // dropped (return null) UNLESS they already read as a human phrase (contain a
+    // space and no snake_case/path separators) — we never print a raw token like
+    // "sends_email" to the user.
+    const SIDE_EFFECT_LABELS = {
+      sends_email: "Sends an email",
+      send_email: "Sends an email",
+      sends_redline: "Sends a redline",
+      imports_gmail: "Imports Gmail messages",
+      syncs_gmail: "Syncs Gmail",
+      runs_review: "Runs an AI review",
+      approves_matter: "Approves the NDA",
+      approves_nda: "Approves the NDA",
+      exports_document: "Exports a document",
+      deletes_document: "Deletes a document",
+      modifies_settings: "Changes settings",
+      writes_drive: "Writes to Drive",
+    };
+    function humanizeSideEffects(values) {
+      if (!Array.isArray(values)) return [];
+      return values
+        .map((value) => {
+          const raw = String(value == null ? "" : value).trim();
+          if (!raw) return null;
+          if (SIDE_EFFECT_LABELS[raw]) return SIDE_EFFECT_LABELS[raw];
+          // Already a human phrase (has spaces, isn't a token/path)? Keep as-is.
+          if (/\s/.test(raw) && !/[_/]/.test(raw)) return raw;
+          // An unknown bare token (e.g. "sends_email"): humanize rather than leak.
+          return humanizeFallback(raw);
+        })
+        .filter(Boolean);
+    }
+
     function citationFacts(citations) {
       if (!Array.isArray(citations)) return [];
       return citations
@@ -205,7 +322,7 @@ const DashboardSearchView = (() => {
         .map((citation) => {
           const title = String(citation.title || citation.subject || citation.matter_id || "NDA").trim();
           const bits = [];
-          if (citation.workflow_phase) bits.push(String(citation.workflow_phase).replace(/_/g, " "));
+          if (citation.workflow_phase) bits.push(humanizeWorkflowPhase(citation.workflow_phase));
           if (citation.last_outbound_at) bits.push(String(citation.last_outbound_at).slice(0, 10));
           return bits.length ? `${title} · ${bits.join(" · ")}` : title;
         });
@@ -350,11 +467,11 @@ const DashboardSearchView = (() => {
       const capabilities = Array.isArray(answer.capabilities) ? answer.capabilities : [];
       const domains = Array.isArray(answer.domains) ? answer.domains : [];
       if (domains.length) {
-        facts.push(`Covers: ${domains.map((domain) => String(domain).replace(/_/g, " ")).join(", ")}`);
+        facts.push(`Covers: ${domains.map((domain) => humanizeCapabilityDomain(domain)).join(", ")}`);
       }
       capabilities.slice(0, 4).forEach((capability) => {
         if (!capability || typeof capability !== "object") return;
-        const domain = String(capability.domain || "assistant").replace(/_/g, " ");
+        const domain = humanizeCapabilityDomain(capability.domain || "assistant");
         const description = String(capability.description || capability.name || "").trim();
         if (description) facts.push(`${domain}: ${description}`);
       });
@@ -555,16 +672,16 @@ const DashboardSearchView = (() => {
     function assistantActionFacts(payload, hasSideEffects) {
       const action = String(payload.action || "");
       const humanSummary = String(payload.human_summary || "").trim();
-      const route = payload.route && typeof payload.route === "object" ? payload.route : {};
       const matter = payload.matter && typeof payload.matter === "object" ? payload.matter : {};
-      const routeText = route.method && route.url
-        ? `Route: ${String(route.method).toUpperCase()} ${route.url}`
-        : "";
+      // NOTE: payload.route (internal REST method+url) is deliberately NOT surfaced
+      // here — the "Will happen:" human-summary line already explains the action in
+      // plain English, and printing "Route: POST /api/..." leaks an implementation
+      // detail to regular users. The route stays available on the action payload for
+      // the actual call; it is simply never rendered.
       const exactFacts = [
         humanSummary ? `Will happen: ${humanSummary}` : "",
         matter.title ? `NDA: ${matter.title}` : "",
         matter.resolved_recipient ? `Recipient: ${matter.resolved_recipient}` : "",
-        routeText,
       ].filter(Boolean);
       if (exactFacts.length) {
         exactFacts.push("Will not happen: the assistant response itself performs no side effect.");
@@ -598,7 +715,7 @@ const DashboardSearchView = (() => {
       if (Array.isArray(answer.hits)) {
         answer.hits.slice(0, 5).forEach((hit) => {
           if (!hit || typeof hit !== "object") return;
-          const label = String(hit.type || hit.source || "hit").replace(/_/g, " ");
+          const label = humanizeHitKind(hit.type || hit.source);
           const title = String(hit.title || hit.clause_name || "Result").trim();
           const snippet = String(hit.snippet || "").trim();
           facts.push(snippet ? `${label}: ${title} - ${snippet}` : `${label}: ${title}`);
@@ -1114,15 +1231,18 @@ const DashboardSearchView = (() => {
       if (typeof window.confirm !== "function") return true;
       const payload = action.payload || {};
       const matter = payload.matter && typeof payload.matter === "object" ? payload.matter : {};
-      const route = payload.route && typeof payload.route === "object" ? payload.route : {};
       const lines = [
         action.humanSummary || payload.humanSummary || action.description || "Confirm this assistant action.",
       ];
       if (matter.title) lines.push(`NDA: ${matter.title}`);
       if (matter.resolved_recipient) lines.push(`Recipient: ${matter.resolved_recipient}`);
-      if (route.method && route.url) lines.push(`Route: ${String(route.method).toUpperCase()} ${route.url}`);
-      if (Array.isArray(payload.sideEffects) && payload.sideEffects.length) {
-        lines.push(`Effect: ${payload.sideEffects.join(", ")}`);
+      // payload.route (internal "POST /api/..." method+url) is intentionally not
+      // shown — the human summary above already says what will happen in plain
+      // English. Side effects are rendered only when they read as human phrases;
+      // raw tokens like "sends_email" are mapped or dropped, never printed verbatim.
+      const effectPhrases = humanizeSideEffects(payload.sideEffects);
+      if (effectPhrases.length) {
+        lines.push(`Effect: ${effectPhrases.join(", ")}`);
       }
       lines.push("Continue?");
       return window.confirm(lines.join("\n"));
