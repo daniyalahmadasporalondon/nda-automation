@@ -128,9 +128,11 @@ def test_docusign_connect_unconfigured_hides_env_vars(monkeypatch):
     assert handler.status == 409
     body = handler.response["error"]
     _assert_no_leak(body)
-    assert body == "DocuSign isn't set up yet. Ask an administrator to connect it."
-    # The admin integrations panel keeps the operator hint (config_message),
-    # proving we only suppressed it on the user-facing connect flow.
+    assert body == "DocuSign isn't configured yet. Contact your administrator."
+    # The admin integrations panel ALSO stays scrubbed of env-var names: the
+    # wave-3 leak-cleanup (test_ui_detail_leak_cleanup.py) made both the connect
+    # error and the status config_message non-admin-safe, so neither surface
+    # names NDA_DOCUSIGN_* env vars.
     admin = _FakeHandler()
     monkeypatch.setattr(
         docusign_integration,
@@ -138,7 +140,8 @@ def test_docusign_connect_unconfigured_hides_env_vars(monkeypatch):
         lambda *, owner_user_id="": {"configured": False, "connected": False},
     )
     docusign_routes.handle_docusign_status(admin)
-    assert "NDA_DOCUSIGN_CLIENT_ID" in admin.response["config_message"]
+    assert "NDA_DOCUSIGN_CLIENT_ID" not in admin.response["config_message"]
+    _assert_no_leak(admin.response["config_message"])
 
 
 # --------------------------------------------------------------------------- #

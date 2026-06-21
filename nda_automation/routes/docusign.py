@@ -49,11 +49,6 @@ SEND_FAILED_MESSAGE = (
     "We couldn't send this NDA for signature. Please check the signer details and "
     "try again, or contact support."
 )
-# Send-flow copy for an unconfigured DocuSign integration. Unlike the admin
-# integrations panel (which surfaces the env-var hint so an operator can fix it),
-# the send flow must not leak NDA_DOCUSIGN_CLIENT_ID/SECRET or "restart the app".
-SEND_NOT_CONFIGURED_MESSAGE = "DocuSign isn't set up yet. Ask an administrator to connect it."
-
 DOCUSIGN_CONNECT_START_URL = "/api/docusign/connect"
 # DocuSign Connect HMAC signature header. DocuSign sends one header per configured
 # HMAC key, numbered from 1; we verify against the first.
@@ -163,7 +158,9 @@ def handle_docusign_connect(handler) -> None:
         # (handle_docusign_status.config_message); don't leak it here.
         handler._send_json(
             {
-                "error": SEND_NOT_CONFIGURED_MESSAGE,
+                "error": (
+                    "DocuSign isn't configured yet. Contact your administrator."
+                ),
                 "needs_config": True,
             },
             status=409,
