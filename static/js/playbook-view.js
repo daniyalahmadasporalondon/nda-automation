@@ -2288,8 +2288,10 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     const existingOptions = Array.isArray(rules.approved_options) ? rules.approved_options : [];
     const existingById = {};
     const priorIdAtIndex = [];
+    let priorCount = 0;
     existingOptions.forEach((option, position) => {
       if (!option || typeof option !== "object") return;
+      priorCount += 1;
       const id = String(option.id || optionIdForLaw(option.value || option.label || "")).trim();
       priorIdAtIndex[position] = id;
       if (id && !(id in existingById)) existingById[id] = option;
@@ -2297,18 +2299,23 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     const forumByOptionId = (clause._forumByOptionId && typeof clause._forumByOptionId === "object")
       ? clause._forumByOptionId
       : {};
-    // Two-pass resolution mirroring the backend: id-match is primary (safe under
-    // reorder/insert/delete); the same-slot position prior is the rename fallback,
-    // taken ONLY when that prior id is not still owned by a surviving law -- so a
-    // rename+reorder never grafts a still-present law's option onto the renamed one.
+    // Two-pass resolution mirroring the backend: id-match is primary (existingById
+    // keys ALL priors, so a survivor matching a forum-less prior carries nothing,
+    // never grafting a deleted neighbour's court). The same-slot position prior is
+    // the PURE-RENAME fallback, taken ONLY when the option count is unchanged
+    // (sameCardinality) AND that prior id is not still owned by a surviving law.
+    // The same-cardinality gate is essential: after a delete/insert the slots
+    // shift, so a slot id-mismatch is a shifted-in neighbour, not a rename --
+    // taking its prior would graft a wrong court.
     const claimedPriorIds = new Set(
       approved.map((law) => optionIdForLaw(law)).filter((id) => id in existingById),
     );
+    const sameCardinality = approved.length === priorCount;
     rules.approved_options = approved.map((law, index) => {
       const id = optionIdForLaw(law);
       const byIndex = existingOptions[index];
       let prior = existingById[id];
-      if (!prior && !claimedPriorIds.has(priorIdAtIndex[index])) {
+      if (!prior && sameCardinality && !claimedPriorIds.has(priorIdAtIndex[index])) {
         prior = (byIndex && typeof byIndex === "object") ? byIndex : undefined;
       }
       const merged = (prior && typeof prior === "object") ? { ...prior } : {};

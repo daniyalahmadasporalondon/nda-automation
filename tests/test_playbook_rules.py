@@ -385,6 +385,78 @@ class PlaybookRulesTests(unittest.TestCase):
         ]
         self.assertEqual(india_holders, ["india"])
 
+    @staticmethod
+    def _clause_forum_then_forumless():
+        # A forum-BEARING law ("India") sitting BEFORE a forum-LESS survivor
+        # ("NewLaw"). Deleting India shifts NewLaw up into India's old slot; a
+        # position graft would write India's Mumbai court onto NewLaw (a wrong
+        # court that bypasses the publish lint and reaches generation).
+        return {
+            "id": "governing_law",
+            "type": "required",
+            "approved_laws": ["India", "NewLaw"],
+            "preferred_law": "India",
+            "rules": {
+                "clause_type": "governing_law",
+                "approved_options": [
+                    {
+                        "id": "india",
+                        "label": "India",
+                        "value": "India",
+                        "default": True,
+                        "forum_jurisdiction": "Courts of Mumbai, India",
+                    },
+                    {
+                        "id": "newlaw",
+                        "label": "NewLaw",
+                        "value": "NewLaw",
+                        "default": False,
+                        # No forum_jurisdiction authored.
+                    },
+                ],
+            },
+        }
+
+    def test_delete_forum_bearing_law_before_forumless_survivor_no_graft(self):
+        # Delete India (forum-bearing) -> NewLaw shifts into India's old slot. NewLaw
+        # id-matches its own forum-less prior, so it must keep NO forum, NOT inherit
+        # India's Mumbai court. (Backend grafted this on 886a09f3 because the
+        # id-match set excluded forum-less priors; FE was already correct.)
+        clause = self._clause_forum_then_forumless()
+        clause["approved_laws"] = ["NewLaw"]  # drop India
+
+        normalized = normalize_clause_policy(clause)
+        options = {opt["id"]: opt for opt in normalized["rules"]["approved_options"]}
+
+        self.assertNotIn("india", options)
+        self.assertIn("newlaw", options)
+        self.assertNotIn(
+            "forum_jurisdiction",
+            options["newlaw"],
+            "forum-less survivor must not inherit the deleted neighbour's court",
+        )
+
+    def test_delete_forum_bearing_law_with_simultaneous_rename_no_graft(self):
+        # Same delete, but the surviving forum-less law is ALSO renamed
+        # ("NewLaw" -> "New Law plc": id newlaw -> new_law_plc). The option count
+        # dropped 2 -> 1, so the same-cardinality gate disables the position
+        # fallback entirely: a slot id-mismatch after a delete is a shifted-in
+        # law, not a rename. The renamed law therefore gets NO forum and never
+        # inherits the deleted India's Mumbai court.
+        clause = self._clause_forum_then_forumless()
+        clause["approved_laws"] = ["New Law plc"]  # drop India AND rename NewLaw
+
+        normalized = normalize_clause_policy(clause)
+        options = {opt["id"]: opt for opt in normalized["rules"]["approved_options"]}
+
+        self.assertNotIn("india", options)
+        self.assertIn("new_law_plc", options)
+        self.assertNotIn(
+            "forum_jurisdiction",
+            options["new_law_plc"],
+            "renamed forum-less survivor must not inherit the deleted law's court",
+        )
+
     def test_ai_rules_packet_carries_wave_one_judgment_guidance(self):
         packet = playbook_rules_for_ai(load_playbook())
         clauses = {clause["clause_id"]: clause for clause in packet["clauses"]}

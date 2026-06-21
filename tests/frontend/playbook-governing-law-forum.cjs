@@ -213,4 +213,55 @@ function governingLawClauseThreeForums() {
   assert.equal(indiaHolders.length, 1, "India's forum must not be duplicated onto two options");
 }
 
+// A forum-BEARING law before a forum-LESS survivor. Deleting the bearing law must
+// not graft its court onto the survivor. The BACKEND grafted this on 886a09f3; the
+// FE was already correct -- these lock the FE side AND document the shared (no-graft)
+// contract the backend now matches (see test_playbook_rules.py mirrors). The
+// expected output below is IDENTICAL on FE and BE: survivor has no forum_jurisdiction.
+function governingLawClauseForumThenForumless() {
+  return {
+    id: "governing_law",
+    type: "required",
+    approved_laws: ["India", "NewLaw"],
+    preferred_law: "India",
+    rules: {
+      clause_type: "governing_law",
+      approved_options: [
+        { id: "india", label: "India", value: "India", default: true, forum_jurisdiction: "Courts of Mumbai, India" },
+        { id: "newlaw", label: "NewLaw", value: "NewLaw", default: false }, // no forum authored
+      ],
+    },
+  };
+}
+
+// 8) DELETE a forum-bearing law before a forum-less survivor -> survivor keeps NONE.
+{
+  const clause = governingLawClauseForumThenForumless();
+  clause.approved_laws = ["NewLaw"]; // drop India
+  controller.syncGoverningLawRules(clause);
+  const options = optionsById(clause);
+  assert.ok(!options.india, "deleted forum-bearing law gone");
+  assert.ok(options.newlaw, "survivor present");
+  assert.equal(
+    options.newlaw.forum_jurisdiction,
+    undefined,
+    "forum-less survivor must not inherit the deleted neighbour's court (FE==BE)",
+  );
+}
+
+// 9) Same delete WITH a simultaneous rename of the survivor -> still NO graft.
+{
+  const clause = governingLawClauseForumThenForumless();
+  clause.approved_laws = ["New Law plc"]; // drop India AND rename NewLaw -> new_law_plc
+  controller.syncGoverningLawRules(clause);
+  const options = optionsById(clause);
+  assert.ok(!options.india, "deleted forum-bearing law gone");
+  assert.ok(options.new_law_plc, "renamed survivor present");
+  assert.equal(
+    options.new_law_plc.forum_jurisdiction,
+    undefined,
+    "renamed forum-less survivor must not inherit the deleted law's court (FE==BE)",
+  );
+}
+
 console.log("playbook-governing-law-forum.cjs: all assertions passed");

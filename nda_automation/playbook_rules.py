@@ -694,15 +694,27 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
     #
     # extras_by_id uses setdefault so that under DUPLICATE labels the FIRST prior
     # wins deterministically (dedupe collapses duplicates anyway).
+    # Track EVERY prior option's id (whether or not it carries extras), so that an
+    # id-match against a forum-LESS prior still counts as a match. Otherwise a
+    # survivor whose slug matches a forum-less prior would miss the id-match and
+    # fall to the position graft, picking up a deleted neighbour's forum (a wrong
+    # court that bypasses the publish lint). extras_by_id / extras_by_index hold
+    # only the priors that actually carry extras (forum/aliases/entity_prefixes).
     existing_options = rules.get("approved_options")
     extras_by_index: dict[int, dict[str, Any]] = {}
     extras_by_id: dict[str, dict[str, Any]] = {}
     prior_id_at_index: dict[int, str] = {}
+    all_prior_ids: set[str] = set()
+    prior_count = 0
     if isinstance(existing_options, list):
         for position, option in enumerate(existing_options):
             if not isinstance(option, dict):
                 continue
+            prior_count += 1
             option_id = _text(option.get("id")) or _option_id(_text(option.get("value")) or _text(option.get("label")))
+            if option_id:
+                prior_id_at_index[position] = option_id
+                all_prior_ids.add(option_id)
             carried: dict[str, Any] = {
                 key: option[key]
                 for key in ("aliases", "entity_prefixes")
@@ -713,20 +725,25 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
             forum = option.get("forum_jurisdiction")
             if isinstance(forum, str) and forum.strip():
                 carried["forum_jurisdiction"] = forum
-            if option_id:
-                prior_id_at_index[position] = option_id
             if not carried:
                 continue
             extras_by_index[position] = carried
             if option_id:
                 extras_by_id.setdefault(option_id, carried)
-    # Two-pass resolution so each prior's extras are consumed by at most one law:
-    #   Pass 1 (id-match): order-independent; safe under reorder/insert/delete.
-    #   Pass 2 (position fallback for renames): a law whose id no longer matches
-    #     claims its same-slot prior ONLY if that prior was not already id-claimed
-    #     by some surviving law. Without this guard a simultaneous rename+reorder
-    #     could graft a still-present law's forum onto the renamed law (two options
-    #     sharing one forum).
+    # Two-pass resolution so each prior is consumed by at most one law:
+    #   Pass 1 (id-match): order-independent; safe under reorder/insert/delete. A
+    #     match against a forum-less prior carries nothing (correct — no graft).
+    #     The id-existence check ranges over ALL priors (all_prior_ids), not just
+    #     the extras-holders, so a survivor that legitimately id-matches a forum-
+    #     less prior never falls through to a position graft.
+    #   Pass 2 (position fallback for a PURE RENAME): a law whose id matches NO
+    #     prior claims its same-slot prior, but ONLY when the option count is
+    #     unchanged (same_cardinality) AND that prior id is not still owned by a
+    #     surviving law. The same-cardinality gate is essential: when a law was
+    #     deleted (or inserted), the slots shift, so an id-mismatch at a slot is a
+    #     SHIFTED-IN neighbour, not a rename — taking its prior would graft a wrong
+    #     court. Only when no law was added/removed is a slot id-mismatch a genuine
+    #     in-place rename. This mirrors the FE twin.
     rebuilt_options = [
         {
             "id": _option_id(law),
@@ -736,17 +753,21 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
         }
         for law in approved_laws
     ]
+    same_cardinality = len(rebuilt_options) == prior_count
     claimed_prior_ids = {
-        option["id"] for option in rebuilt_options if option["id"] in extras_by_id
+        option["id"] for option in rebuilt_options if option["id"] in all_prior_ids
     }
     for index, option in enumerate(rebuilt_options):
         option_id = option["id"]
-        by_id = extras_by_id.get(option_id)
-        if by_id is not None:
-            option.update(by_id)
+        if option_id in all_prior_ids:
+            # Genuine id-match: carry this prior's extras (possibly none). Never
+            # fall through to a position graft when the id itself still exists.
+            option.update(extras_by_id.get(option_id, {}))
             continue
-        # Rename gap: fall back to the same-slot prior, but only when that prior
-        # is not still owned (by id) by another surviving law.
+        # Rename gap (id matches no prior): only a same-cardinality, unclaimed-slot
+        # prior is a genuine in-place rename; otherwise leave the law forum-less.
+        if not same_cardinality:
+            continue
         if prior_id_at_index.get(index) in claimed_prior_ids:
             continue
         option.update(extras_by_index.get(index, {}))
