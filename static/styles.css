@@ -12611,3 +12611,118 @@ label.is-hidden {
   color: var(--ink-soft);
   user-select: none;
 }
+
+/* ---------------------------------------------------------------------------
+   Reusable READ-ONLY DISPLAY treatment (Aspora design language)
+   One clean block for derived/locked values: full text, auto-height, NO
+   clipping, full width, muted fill + hairline border, NO resize handle, and a
+   subtle "locked" marker. Used for (a) the Entities & Courts read-only entity
+   name + the Entities-tab law/court displays, and (b) the derived Standard /
+   Check-Trigger fields that were previously cramped textareas.
+   --------------------------------------------------------------------------- */
+.readonly-display {
+  position: relative;
+  background: var(--bg-soft, #f6f3fb);
+  border: 1px solid var(--border, #e6e1f0);
+  border-radius: 6px;
+  color: var(--ink, #170a33);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  min-height: 34px;
+  padding: 8px 28px 8px 10px;
+  width: 100%;
+  /* Full text, never clipped: wrap long content and grow to fit. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  box-sizing: border-box;
+}
+
+/* The subtle "derived / locked" marker — a small lock glyph, top-right, muted. */
+.readonly-display::after {
+  content: "\1F512"; /* lock */
+  position: absolute;
+  top: 7px;
+  right: 9px;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.4;
+  filter: grayscale(1);
+}
+
+.readonly-display-multiline {
+  min-height: 56px;
+}
+
+/* A plain field label that is not a wrapping <label> (so a read-only display can
+   sit under it without implying it is editable). Matches .admin-field > span. */
+.admin-field-label,
+.entity-field-label {
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+.admin-special .admin-field-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+/* The Entities-tab read-only law/court hint. */
+.entity-readonly-hint {
+  color: var(--ink-soft);
+  font-size: 11px;
+  margin: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Entities & Courts table (Playbook -> Governing Law)
+   --------------------------------------------------------------------------- */
+.admin-entity-court-rows {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-entity-court-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1.3fr);
+  gap: 10px;
+  align-items: end;
+}
+
+@media (max-width: 720px) {
+  .admin-entity-court-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.admin-entity-court-row .admin-field {
+  min-width: 0;
+}
+
+.admin-entity-courts-actions {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.admin-entity-courts-message {
+  color: var(--ink-soft);
+  font-size: 12px;
+  margin: 0;
+  margin-right: auto;
+}
+
+.admin-entity-courts-message.is-error {
+  color: var(--warning, #b54708);
+}
+
+.admin-entity-courts-message.is-ok {
+  color: var(--brand, #4f1bb3);
+}
+
+[data-entity-courts-status].is-error {
+  color: var(--warning, #b54708);
+}

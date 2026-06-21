@@ -3,9 +3,26 @@
 // incorporation, signatory). Mirrors admin-access.js -- a GET probe on load (a
 // 403 = "not an admin", rendered as a calm read-only state), an in-memory
 // working copy edited card-by-card, and a publish-style Save that POSTs the full
-// replacement registry. Governing law is a dropdown JOINED to the playbook's
-// approved governing-law options, so an entity can only point at an approved law.
+// replacement registry.
+//
+// GOVERNING-LAW/COURT RESTRUCTURE: an entity's governing law + court are now
+// EDITED in the Playbook editor's "Entities & Courts" table (one source of
+// truth), and shown READ-ONLY here. The card still carries hidden law/court
+// inputs so collectEntities() round-trips both unchanged on every save.
 const AdminEntitiesView = (() => {
+  // Shared single-entity law/court wire-shape builder. Reused by BOTH this
+  // console's collectEntities AND the Playbook "Entities & Courts" table, so the
+  // two editors can never drift on the {governing_law, jurisdiction} contract.
+  function entityLawCourtWire(lawId, lawLabel, jurisdiction) {
+    return {
+      governing_law: {
+        playbook_option_id: String(lawId == null ? "" : lawId),
+        label: String(lawLabel == null ? lawId || "" : lawLabel),
+      },
+      jurisdiction: String(jurisdiction == null ? "" : jurisdiction).trim(),
+    };
+  }
+
   function esc(value) {
     if (typeof window !== "undefined" && typeof window.escapeHtml === "function") {
       return window.escapeHtml(value);
@@ -204,9 +221,17 @@ const AdminEntitiesView = (() => {
       card.dataset.entityNew = isNew ? "true" : "false";
       applyIdSurface(card, isNew);
 
-      const lawSelect = field(card, "governing_law");
+      // Governing law + court are READ-ONLY here (edited in the Playbook table).
+      // The hidden inputs carry the values for round-trip; the display shows the
+      // human label / court text.
       const currentLaw = String(entity.governing_law?.playbook_option_id || "");
-      populateLawSelect(lawSelect, currentLaw);
+      field(card, "governing_law").value = currentLaw;
+      const lawDisplay = field(card, "governing_law-display");
+      if (lawDisplay) lawDisplay.textContent = currentLaw ? humanizeLawId(currentLaw) : "—";
+      const courtDisplay = field(card, "jurisdiction-display");
+      if (courtDisplay) {
+        courtDisplay.textContent = String(entity.jurisdiction || "").trim() || "—";
+      }
       updateLawWarning(card, currentLaw);
 
       const addressList = field(card, "address-list");
@@ -260,31 +285,6 @@ const AdminEntitiesView = (() => {
       textarea.style.height = `${next}px`;
     }
 
-    function populateLawSelect(select, currentId) {
-      select.innerHTML = "";
-      const options = lawOptions.slice();
-      // If the entity points at a law not in the playbook (an orphan), keep the
-      // stale id selectable so the admin can SEE it (and the warning) rather than
-      // it silently snapping to another law.
-      if (currentId && !options.some((o) => o.id === currentId)) {
-        options.unshift({ id: currentId, label: `${humanizeLawId(currentId)} (no longer in the playbook)` });
-      }
-      if (!options.length) {
-        const opt = document.createElement("option");
-        opt.value = "";
-        opt.textContent = "No playbook law options";
-        select.appendChild(opt);
-        return;
-      }
-      options.forEach((option) => {
-        const opt = document.createElement("option");
-        opt.value = option.id;
-        opt.textContent = option.label || option.id;
-        if (option.id === currentId) opt.selected = true;
-        select.appendChild(opt);
-      });
-    }
-
     // ORPHAN GUARD (frontend): show an inline warning when the selected law is not
     // a current playbook option. The backend enforces this too (the save is
     // rejected); this is the early, in-editor signal.
@@ -306,10 +306,8 @@ const AdminEntitiesView = (() => {
       card.addEventListener("input", () => setDirty(true));
       card.addEventListener("change", () => setDirty(true));
 
-      const lawSelect = field(card, "governing_law");
-      lawSelect.addEventListener("change", () => {
-        updateLawWarning(card, lawSelect.value);
-      });
+      // Governing law + court are read-only here (edited in the Playbook table),
+      // so there is no law-select change to wire.
       field(card, "legal_name").addEventListener("input", (event) => {
         field(card, "legal_name-display").textContent =
           event.target.value || "New entity";
@@ -397,6 +395,11 @@ const AdminEntitiesView = (() => {
         const lawId = field(card, "governing_law").value;
         const lawLabel =
           lawOptions.find((o) => o.id === lawId)?.label || lawId;
+        const lawCourt = entityLawCourtWire(
+          lawId,
+          lawLabel,
+          field(card, "jurisdiction").value,
+        );
         const addresses = Array.from(
           field(card, "address-list").querySelectorAll("[data-entity-address]"),
         ).map((row) => ({
@@ -413,9 +416,9 @@ const AdminEntitiesView = (() => {
           id: field(card, "id").value.trim(),
           legal_name: field(card, "legal_name").value.trim(),
           short_name: field(card, "short_name").value.trim(),
-          jurisdiction: field(card, "jurisdiction").value.trim(),
+          jurisdiction: lawCourt.jurisdiction,
           incorporation_jurisdiction: field(card, "incorporation_jurisdiction").value.trim(),
-          governing_law: { playbook_option_id: lawId, label: lawLabel },
+          governing_law: lawCourt.governing_law,
           signatory: {
             name: field(card, "signatory_name").value.trim(),
             title: field(card, "signatory_title").value.trim(),
@@ -455,7 +458,7 @@ const AdminEntitiesView = (() => {
     return { load };
   }
 
-  return { createController };
+  return { createController, entityLawCourtWire };
 })();
 
 function createAdminEntitiesController(options) {
@@ -464,5 +467,9 @@ function createAdminEntitiesController(options) {
 
 // CommonJS export for the Node test harness (a no-op in the browser).
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { AdminEntitiesView, createAdminEntitiesController };
+  module.exports = {
+    AdminEntitiesView,
+    createAdminEntitiesController,
+    entityLawCourtWire: AdminEntitiesView.entityLawCourtWire,
+  };
 }

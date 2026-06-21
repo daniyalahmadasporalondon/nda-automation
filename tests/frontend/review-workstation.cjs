@@ -827,9 +827,20 @@ async function testPlaybookAdminEditor(page) {
   await assertTextContains(page.locator("#clauseDetail"), "Permitted Perpetual / Longer Survival Carve-outs");
   // The indefinite-terms list is now an editable check-driving list editor.
   await assertTextContains(page.locator("#clauseDetail"), "Perpetual / Indefinite Trigger Terms");
-  // term_and_survival's Standard Position is server-derived -> read-only boxes.
+  // term_and_survival's Standard Position is server-derived -> read-only DISPLAY
+  // blocks (full text, no clipping), with the value carried in a hidden input.
   await assertTextContains(page.locator("#clauseDetail"), "Standard Position (derived)");
-  assert.equal(await page.locator('[data-derived-field="check_trigger"]').getAttribute("readonly"), "");
+  // The derived value lives in a hidden input (not user-editable) and is shown in
+  // a read-only display block alongside it.
+  assert.equal(
+    await page.locator('input[type="hidden"][data-derived-field="check_trigger"]').count(),
+    1,
+    "the derived check_trigger value must be carried in a hidden (non-editable) input",
+  );
+  assert.ok(
+    (await page.locator('[data-derived-standard="1"] .readonly-display').count()) >= 2,
+    "the derived Standard/Check-Trigger fields must render as read-only display blocks",
+  );
   await assertTextContains(page.locator("#clauseDetail"), "Auto-derived from the approved list");
   assert.equal(await page.getByText("Checker Logic Visibility", { exact: false }).count(), 0);
   assert.equal(await page.locator("#clauseDetail").getByText("term_survival_analysis", { exact: false }).count(), 0);
