@@ -140,10 +140,20 @@ class StaleMatterReviewError(DocxExportError):
 
 
 def build_review_export(
-    payload: dict, fallback_text: str, *, title: str = "NDA Review", repository: MatterRepository | None = None
+    payload: dict,
+    fallback_text: str,
+    *,
+    title: str = "NDA Review",
+    repository: MatterRepository | None = None,
+    owner_user_id: str = "",
 ) -> RedlineExport:
     return _build_redline_export(
-        payload, fallback_text, title=title, persist=True, repository=repository or DiskMatterRepository()
+        payload,
+        fallback_text,
+        title=title,
+        persist=True,
+        repository=repository or DiskMatterRepository(),
+        owner_user_id=owner_user_id,
     )
 
 
@@ -255,7 +265,7 @@ def _build_redline_export(
         return RedlineExport(
             data=report_bytes,
             filename=download_filename,
-            saved_path=export_service.persist_export(report_bytes, download_filename) if (persist and not bool(payload.get("clean"))) else None,
+            saved_path=export_service.persist_export(report_bytes, download_filename, owner_user_id) if (persist and not bool(payload.get("clean"))) else None,
             headers=reconstructed.headers,
         )
     if source_document_bytes is not None and source_filename.lower().endswith(".docx"):
@@ -284,7 +294,7 @@ def _build_redline_export(
     return RedlineExport(
         data=report_bytes,
         filename=download_filename,
-        saved_path=export_service.persist_export(report_bytes, download_filename) if (persist and not clean) else None,
+        saved_path=export_service.persist_export(report_bytes, download_filename, owner_user_id) if (persist and not clean) else None,
     )
 
 

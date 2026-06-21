@@ -98,6 +98,7 @@ from .routes import playbook as playbook_routes
 from .routes import review as review_routes
 from .routes import send_document as send_document_routes
 from .routes.common import parse_matter_id as _route_parse_matter_id
+from .routes.common import request_owner_user_id
 
 try:
     import fcntl
@@ -420,7 +421,16 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 return
             requested_name = unquote(path.removeprefix("/exports/"))
             requested = (export_service.EXPORTS_DIR / requested_name).resolve()
-            if requested.parent != export_service.EXPORTS_DIR.resolve() or not requested.is_file():
+            # Owner-scoped + fail-closed: a saved export lives at
+            # EXPORTS_DIR/<owner-token>/<uuid>.docx. Recompute the token from the
+            # *requesting* session and only stream the file when it lives directly
+            # inside that owner's bucket. A guessed/forged path for another tenant
+            # (or a path-traversal attempt) resolves to a different parent and 404s,
+            # mirroring how matter downloads 404 cross-owner. The download filename
+            # is supplied by the client (POST Content-Disposition), so serving the
+            # opaque UUID name here carries no human-readable counterparty name.
+            owner_user_id = request_owner_user_id(self)
+            if not export_service.export_path_is_owned_by(requested, owner_user_id):
                 self._send_json({"error": "Not found"}, status=404, send_body=send_body)
                 return
             self._send_download_file(requested, requested.name, DOCX_MIME, send_body=send_body)

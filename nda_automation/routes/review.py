@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from urllib.parse import quote
-
-from .. import redline_export_service, telemetry
+from .. import export_service, redline_export_service, telemetry
 from ..ai_first_review import ReassessClauseError, reassess_single_clause
 from ..checker import (
     AIDraftValidationError,
@@ -168,7 +166,9 @@ def handle_review_docx_export(handler) -> None:
                 owner_user_id=request_owner_user_id(handler),
             )
         else:
-            redline_export = redline_export_service.build_review_export(payload, export_text, title=title)
+            redline_export = redline_export_service.build_review_export(
+                payload, export_text, title=title, owner_user_id=request_owner_user_id(handler)
+            )
     except redline_export_service.DocxOpenHealthError as error:
         handler._send_json({
             "error": str(error),
@@ -219,9 +219,9 @@ def handle_review_docx_export(handler) -> None:
     if redline_export.headers:
         headers.update(redline_export.headers)
     if redline_export.saved_path is not None:
-        headers.update({
-            "X-Export-URL": f"/exports/{quote(redline_export.saved_path.name)}",
-        })
+        saved_url = export_service.export_url(redline_export.saved_path)
+        if saved_url is not None:
+            headers.update({"X-Export-URL": saved_url})
     handler._send_download(
         redline_export.data,
         redline_export.filename,

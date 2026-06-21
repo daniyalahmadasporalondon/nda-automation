@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 from uuid import uuid4
 
 from . import redline_edit_contract, telemetry
@@ -16,6 +18,19 @@ from .redline_actions import (
 ROOT = Path(__file__).resolve().parent.parent
 EXPORTS_DIR = Path(os.environ["NDA_EXPORTS_DIR"]).expanduser() if os.environ.get("NDA_EXPORTS_DIR") else None
 MAX_SAVED_EXPORTS = 25
+# Per-owner subdirectory name for saved exports. A persisted export lives at
+# ``EXPORTS_DIR/<owner-token>/<uuid>.docx`` so that (a) the filename carries no
+# human-readable, guessable counterparty name and (b) the ``/exports/`` route can
+# fail closed by recomputing the owner token from the *requesting* session and
+# 404ing when it does not match the path. The token is a keyed-by-nothing SHA-256
+# of the owner user id (truncated) — not a secret, just an opaque, stable folder
+# name that is infeasible to guess without already knowing the owner id.
+EXPORT_OWNER_TOKEN_LEN = 32
+# Ownerless exports (e.g. the legacy single-tenant/no-session path where
+# request_owner_user_id() is "") share one bucket. Cross-owner access is still
+# prevented because an authenticated tenant resolves to their own non-empty token,
+# which never equals this anonymous bucket.
+ANONYMOUS_EXPORT_OWNER_TOKEN = "anonymous"
 MAX_REVIEW_COMMENTS = 100
 MAX_REVIEW_COMMENT_TEXT_CHARS = 2000
 
@@ -473,14 +488,76 @@ def _copy_jsonish_dict(value: dict) -> dict:
     return copied
 
 
-def persist_export(data: bytes, filename: str) -> Path | None:
+def export_owner_token(owner_user_id: str) -> str:
+    """Opaque, stable per-owner subdirectory name for saved exports.
+
+    An authenticated tenant always resolves to a non-empty SHA-256-derived token
+    that is infeasible to guess without already knowing the owner user id, so it
+    can never collide with another tenant's bucket or with the anonymous bucket.
+    """
+    owner = str(owner_user_id or "").strip()
+    if not owner:
+        return ANONYMOUS_EXPORT_OWNER_TOKEN
+    digest = hashlib.sha256(owner.encode("utf-8")).hexdigest()
+    return digest[:EXPORT_OWNER_TOKEN_LEN]
+
+
+def owner_export_dir(owner_user_id: str) -> Path | None:
     if EXPORTS_DIR is None:
         return None
-    safe_name = os.path.basename(filename) or "nda-review-report.docx"
+    return (EXPORTS_DIR / export_owner_token(owner_user_id)).resolve()
+
+
+def export_url(saved_path: Path) -> str | None:
+    """The ``/exports/<owner-token>/<uuid>.docx`` URL for a persisted export.
+
+    Built from the path relative to EXPORTS_DIR so the owner-token subdirectory is
+    carried through; the download route uses that subdirectory to enforce
+    ownership. Returns None if EXPORTS_DIR is unset or the path escapes it.
+    """
+    if EXPORTS_DIR is None:
+        return None
+    try:
+        relative = saved_path.resolve().relative_to(EXPORTS_DIR.resolve())
+    except (OSError, ValueError):
+        return None
+    return "/exports/" + "/".join(quote(part) for part in relative.parts)
+
+
+def export_path_is_owned_by(path: Path, owner_user_id: str) -> bool:
+    """True iff ``path`` is a saved export inside ``owner_user_id``'s bucket.
+
+    The ``/exports/`` route fails closed on this predicate: it recomputes the
+    owner token from the *requesting* session and only streams the file when the
+    resolved path lives directly inside that owner's subdirectory of EXPORTS_DIR.
+    A guessed/forged path for another tenant resolves to a different parent and is
+    rejected (404). Path-traversal is also covered: ``..`` segments resolve the
+    parent away from the owner bucket.
+    """
+    owner_dir = owner_export_dir(owner_user_id)
+    if owner_dir is None:
+        return False
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    return resolved.parent == owner_dir and resolved.is_file()
+
+
+def persist_export(data: bytes, filename: str, owner_user_id: str = "") -> Path | None:
+    # ``filename`` is retained only for the caller's Content-Disposition; it is no
+    # longer used to name the saved file. Saved exports are stored under an opaque
+    # per-owner subdirectory with a random UUID name so the URL is unguessable AND
+    # owner-scoped (the ``/exports/`` route enforces ownership on download).
+    if EXPORTS_DIR is None:
+        return None
+    owner_dir = owner_export_dir(owner_user_id)
+    if owner_dir is None:
+        return None
     tmp_path: Path | None = None
     try:
-        EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-        export_path = _collision_safe_export_path(safe_name)
+        owner_dir.mkdir(parents=True, exist_ok=True)
+        export_path = _collision_safe_export_path(owner_dir)
         # Write to a temp file and atomically rename so a crash or full disk
         # never leaves a truncated, valid-looking .docx in the exports dir.
         descriptor, tmp_name = tempfile.mkstemp(dir=str(export_path.parent), prefix=".tmp-export-", suffix=".docx")
@@ -492,7 +569,7 @@ def persist_export(data: bytes, filename: str) -> Path | None:
         os.replace(tmp_path, export_path)
         tmp_path = None
         fsync_parent_directory(export_path)
-        prune_saved_exports(export_path)
+        prune_saved_exports(export_path, owner_dir)
         return export_path
     except OSError as error:
         telemetry.increment("export_copy_failures")
@@ -506,37 +583,32 @@ def persist_export(data: bytes, filename: str) -> Path | None:
                 pass
 
 
-def _collision_safe_export_path(safe_name: str) -> Path:
+def _collision_safe_export_path(owner_dir: Path) -> Path:
     if EXPORTS_DIR is None:
         raise OSError("Export directory is not configured.")
-    export_path = (EXPORTS_DIR / safe_name).resolve()
-    exports_dir = EXPORTS_DIR.resolve()
-    if export_path.parent != exports_dir:
-        export_path = (EXPORTS_DIR / "nda-review-report.docx").resolve()
-    if not export_path.exists():
-        return export_path
-
-    suffix = export_path.suffix or ".docx"
-    stem = export_path.stem or "nda-review-report"
+    owner_dir = owner_dir.resolve()
     for _attempt in range(100):
-        candidate = (EXPORTS_DIR / f"{stem}-{uuid4().hex[:12]}{suffix}").resolve()
-        if candidate.parent == exports_dir and not candidate.exists():
+        candidate = (owner_dir / f"{uuid4().hex}.docx").resolve()
+        if candidate.parent == owner_dir and not candidate.exists():
             return candidate
-    return (EXPORTS_DIR / f"{stem}-{uuid4().hex}{suffix}").resolve()
+    return (owner_dir / f"{uuid4().hex}-{uuid4().hex}.docx").resolve()
 
 
-def prune_saved_exports(protected_path: Path) -> None:
+def prune_saved_exports(protected_path: Path, owner_dir: Path) -> None:
     if EXPORTS_DIR is None:
         return
+    owner_dir = owner_dir.resolve()
     saved_exports = [
         path
-        for path in EXPORTS_DIR.glob("*.docx")
+        for path in owner_dir.glob("*.docx")
         # In-flight atomic writes land as ``.tmp-export-*.docx`` temp files (pathlib's
         # glob matches leading-dot names, unlike the shell). Excluding them keeps a
         # concurrent export's half-written temp from counting toward the cap or being
         # unlinked mid-write.
         if path.is_file() and not path.name.startswith(".tmp-export-")
     ]
+    # The cap is per owner: one tenant's exports never evict another's, and the
+    # eviction scan only walks that owner's own bucket.
     if len(saved_exports) <= MAX_SAVED_EXPORTS:
         return
 
