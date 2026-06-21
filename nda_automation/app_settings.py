@@ -87,6 +87,15 @@ DEFAULT_GMAIL_INBOUND_SEARCH_TERMS = [
 # overrides only the NDA/NOT_NDA/UNCERTAIN criteria, never the fixed security
 # preamble or output contract.
 MAX_GMAIL_INTAKE_PLAYBOOK_LENGTH = 8000
+# The default inbound import (Gmail fetch) query override. Empty is the sentinel
+# for "use the built-in gmail_integration.GMAIL_INBOUND_BASE_QUERY constant"
+# (mirrors the intake_playbook empty-sentinel pattern). A stored, non-empty value
+# is the single source of truth and wins over the constant. The length cap is
+# generous (a Gmail search expression with the full NDA keyword group can be
+# long); the FULL Gmail-query syntax cannot be validated server-side, so we only
+# reject the obviously-unsafe shape (empty / control chars / over-length) on the
+# honest write path and treat a corrupt stored blob as "use the default" on read.
+MAX_GMAIL_INBOUND_BASE_QUERY_LENGTH = 1000
 # Upper clamp on the admin-configurable per-poll import limit. This deliberately
 # mirrors gmail_integration._MAX_GMAIL_IMPORT_LIMIT_CLAMP: the quota audit chose 40
 # to keep even the heaviest poll inside Gmail's ~6,000 units/minute budget, so the
@@ -113,6 +122,9 @@ DEFAULT_GMAIL_SETTINGS = {
     # Per-poll NEW-work import limit. 0 (unset) => fall back to the env default.
     "import_limit": GMAIL_IMPORT_LIMIT_UNSET,
     "intake_playbook": "",
+    # Default inbound import (Gmail fetch) query override. "" => use the built-in
+    # gmail_integration.GMAIL_INBOUND_BASE_QUERY constant.
+    "inbound_base_query": "",
     "last_sync_at": "",
     "last_sync_imported_count": 0,
     "last_sync_skipped_count": 0,
@@ -158,7 +170,19 @@ _ADMIN_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _ADMIN_EMAIL_FORBIDDEN_CHARS = frozenset('<>"\'')
 DEFAULT_REVIEW_RUNTIME_SETTINGS = {
     "active_review_engine": None,
+    # Stored override for the clause ids the AI overlay may review. The empty list
+    # is the sentinel for "no override = the FULL live playbook set" (the default
+    # behaviour). A non-empty list is a SUBSET the consumer further intersects with
+    # the live playbook ids (ai_review._targeted_clause_ids), so a stored id later
+    # removed from the playbook is silently dropped at review time and NO drift is
+    # possible.
+    "ai_review_clause_ids": [],
 }
+# Upper cap on the number of stored AI-review clause ids -- a defensive bound so a
+# corrupt/abusive blob can never balloon the settings file. The live playbook is
+# far smaller than this; the cap only ever trims pathological input.
+MAX_AI_REVIEW_CLAUSE_IDS = 200
+MAX_AI_REVIEW_CLAUSE_ID_LENGTH = 120
 DEFAULT_PERSONALISATION_SETTINGS = {
     "sign_off": "Best,",
     "signature": "Aspora Legal",
@@ -206,6 +230,17 @@ def ai_settings() -> dict[str, Any]:
 
 def review_runtime_settings() -> dict[str, Any]:
     return _repository().read_section("review_runtime", review_runtime_settings_from_payload)
+
+
+def ai_review_clause_ids() -> list[str]:
+    """The stored AI-review clause-id override (the empty list = no override).
+
+    The empty list is the sentinel for "review the FULL live playbook set"; a
+    non-empty list is a subset the AI overlay further intersects with the live
+    playbook ids, so a stale stored id is dropped at review time rather than
+    drifting from the playbook.
+    """
+    return review_runtime_settings()["ai_review_clause_ids"]
 
 
 def personalisation_settings() -> dict[str, Any]:
@@ -417,6 +452,35 @@ def update_gmail_settings(updates: dict[str, Any]) -> dict[str, Any]:
     return _repository().update_section("gmail", gmail_settings_from_payload, cleaned)
 
 
+def reset_gmail_inbound_search_terms() -> dict[str, Any]:
+    """Restore the inbound search-term vocabulary to the built-in default.
+
+    Writes ``DEFAULT_GMAIL_INBOUND_SEARCH_TERMS`` directly through a merged write
+    so every other Gmail field is preserved. Used by the explicit reset endpoint;
+    a blank user submission is never a silent reset (the update path rejects it).
+    """
+    return _repository().update_section_with(
+        "gmail",
+        gmail_settings_from_payload,
+        lambda current: {**current, "inbound_search_terms": list(DEFAULT_GMAIL_INBOUND_SEARCH_TERMS)},
+    )
+
+
+def reset_gmail_inbound_base_query() -> dict[str, Any]:
+    """Restore the default inbound import query to the built-in constant.
+
+    Writes the empty-string sentinel directly (so ``gmail_inbound_base_query()``
+    falls back to ``gmail_integration.GMAIL_INBOUND_BASE_QUERY``). This bypasses
+    the merge-drop gate (which refuses an empty value on the normal update path)
+    because reset is an EXPLICIT, admin-gated action -- not a blank field.
+    """
+    return _repository().update_section_with(
+        "gmail",
+        gmail_settings_from_payload,
+        lambda current: {**current, "inbound_base_query": ""},
+    )
+
+
 def update_drive_settings(updates: dict[str, Any]) -> dict[str, Any]:
     cleaned = {
         key: _clean_drive_setting(key, value)
@@ -454,6 +518,25 @@ def gmail_intake_playbook() -> str:
     from .gmail_intake_classifier import DEFAULT_INTAKE_PLAYBOOK
 
     return gmail_settings().get("intake_playbook") or DEFAULT_INTAKE_PLAYBOOK
+
+
+def gmail_inbound_base_query() -> str:
+    """The effective default inbound import (Gmail fetch) query.
+
+    Returns the stored ``inbound_base_query`` override when set, or the built-in
+    ``gmail_integration.GMAIL_INBOUND_BASE_QUERY`` constant when the setting is
+    empty (the empty-string sentinel means "use the built-in default").
+    ``gmail_integration`` is imported LAZILY inside the function -- it imports this
+    module at load time, so a top-level import here would be circular (mirrors how
+    ``gmail_import_limit`` reaches ``gmail_integration``).
+    """
+    stored = str(gmail_settings().get("inbound_base_query") or "").strip()
+    if stored:
+        return stored
+
+    from . import gmail_integration
+
+    return str(getattr(gmail_integration, "GMAIL_INBOUND_BASE_QUERY", ""))
 
 
 def gmail_sync_interval_seconds(frequency: object | None = None) -> int:
@@ -589,6 +672,7 @@ def gmail_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "sync_frequency": sync_frequency,
         "import_limit": gmail_import_limit_from_payload(payload.get("import_limit")),
         "intake_playbook": _clamp_intake_playbook(payload.get("intake_playbook")),
+        "inbound_base_query": gmail_inbound_base_query_from_payload(payload.get("inbound_base_query")),
         "last_sync_at": str(payload.get("last_sync_at") or DEFAULT_GMAIL_SETTINGS["last_sync_at"]),
         "last_sync_imported_count": _nonnegative_int(
             payload.get("last_sync_imported_count"),
@@ -631,7 +715,38 @@ def review_runtime_settings_from_payload(payload: dict[str, Any]) -> dict[str, A
     )
     return {
         "active_review_engine": active_review_engine,
+        "ai_review_clause_ids": ai_review_clause_ids_from_payload(payload.get("ai_review_clause_ids")),
     }
+
+
+def ai_review_clause_ids_from_payload(value: object) -> list[str]:
+    """Normalize the stored AI-review clause-id override list.
+
+    Runs on BOTH read and merged-write. A non-list (incl. ``None``/missing)
+    collapses to ``[]`` (the "no override" sentinel = full live set). Each item is
+    coerced to a stripped string; blanks, non-strings, oversized ids, and
+    duplicates are dropped; the list is capped at ``MAX_AI_REVIEW_CLAUSE_IDS``.
+    Membership against the LIVE playbook is NOT enforced here -- that is the
+    honest write-time validation in the route; at read/consume time an unknown id
+    is harmlessly intersected away by ai_review._targeted_clause_ids.
+    """
+    if not isinstance(value, list):
+        return []
+    ids: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        clause_id = item.strip()
+        if not clause_id or len(clause_id) > MAX_AI_REVIEW_CLAUSE_ID_LENGTH:
+            continue
+        if clause_id in seen:
+            continue
+        seen.add(clause_id)
+        ids.append(clause_id)
+        if len(ids) >= MAX_AI_REVIEW_CLAUSE_IDS:
+            break
+    return ids
 
 
 def personalisation_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -748,10 +863,18 @@ def _valid_review_runtime_setting(key: str, value: Any) -> bool:
     if key == "active_review_engine":
         normalized = _normalized_runtime_value(value)
         return value is None or normalized in SUPPORTED_ACTIVE_REVIEW_ENGINES or normalized in {"deterministic", "rules"}
+    if key == "ai_review_clause_ids":
+        # A list of strings only (the empty list resets to the full live set).
+        # Membership against the live playbook is the route's honest validation;
+        # here we only gate the shape so a malformed value is dropped from the
+        # merge rather than corrupting the section.
+        return isinstance(value, list)
     return False
 
 
-def _clean_review_runtime_setting(key: str, value: Any) -> str | None:
+def _clean_review_runtime_setting(key: str, value: Any) -> Any:
+    if key == "ai_review_clause_ids":
+        return ai_review_clause_ids_from_payload(value)
     if value is None:
         return None
     normalized = _normalized_runtime_value(value)
@@ -790,6 +913,15 @@ def _valid_gmail_setting(key: str, value: Any) -> bool:
     if key == "intake_playbook":
         # Accept empty (reset-to-default) up to the clamp length.
         return isinstance(value, str) and len(value) <= MAX_GMAIL_INTAKE_PLAYBOOK_LENGTH
+    if key == "inbound_base_query":
+        # The honest write boundary: only a clean, non-empty, in-length query is
+        # mergeable. An empty/control-char/oversized value normalizes to "" via
+        # gmail_inbound_base_query_from_payload, so this drops it from the merge --
+        # the route returns a 400 for those cases BEFORE we ever get here (a blank
+        # field is never a silent reset; reset is the explicit endpoint). The
+        # explicit reset endpoint writes "" directly through update_section_with,
+        # not through this merge gate.
+        return bool(gmail_inbound_base_query_from_payload(value))
     return False
 
 
@@ -802,6 +934,26 @@ def _clamp_intake_playbook(value: object) -> str:
     """
     text = str(value or "").strip()
     return text[:MAX_GMAIL_INTAKE_PLAYBOOK_LENGTH]
+
+
+def gmail_inbound_base_query_from_payload(value: object) -> str:
+    """Coerce + clamp a stored default-inbound-query override (READ-TIME defence).
+
+    This runs on BOTH read and merged-write. It is the corrupt-blob defence: a
+    non-string, control-char-bearing, or over-length stored value collapses to ""
+    (the sentinel for "use the built-in constant"), so a damaged settings file can
+    never wedge the Gmail fetch with a broken query. The HONEST write boundary
+    (the route + ``_valid_gmail_setting``) rejects an empty/control-char/oversized
+    submission with a 400 instead -- a blank field is NOT a silent reset there.
+    """
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if not text or len(text) > MAX_GMAIL_INBOUND_BASE_QUERY_LENGTH:
+        return ""
+    if any(character in text for character in "\r\n\t") or any(ord(character) < 32 for character in text):
+        return ""
+    return text
 
 
 def _valid_drive_setting(key: str, value: Any) -> bool:
