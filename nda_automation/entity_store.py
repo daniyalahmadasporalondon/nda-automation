@@ -171,6 +171,114 @@ def save_entities(
         return [deepcopy(entity) for entity in snapshot]
 
 
+# The exact placeholder strings the seed ships for an unassigned signer. Only a
+# value equal to one of these (or empty) is treated as "not yet filled" and is
+# therefore eligible to be filled by the one-time migration below. A real,
+# admin-entered value (anything else) is NEVER overwritten.
+_SIGNATORY_PLACEHOLDERS: frozenset[str] = frozenset(
+    {"", "[Authorised Signatory]", "[Title]"}
+)
+
+
+def _is_placeholder_signatory(value: object) -> bool:
+    """True when ``value`` is empty or the exact placeholder (safe to fill)."""
+    return str(value or "").strip() in _SIGNATORY_PLACEHOLDERS
+
+
+# One-time DATA migration: the signatory names live HERE, as data carried by the
+# fill itself -- NOT as code-seed defaults. The seed
+# (DEFAULT_SIGNING_ENTITIES) stays generic ([Authorised Signatory]/[Title]) so the
+# signatories remain ordinary, editable registry values. This mapping seeds the
+# initial real signers into the PERSISTENT registry once; thereafter an admin
+# owns them via the Entities console. Because the fill only ever touches a literal
+# placeholder/empty value, editing one of these in the UI and saving a real value
+# makes it permanent -- a later migration run sees a non-placeholder and leaves it.
+_SIGNATORY_FILL_BY_ID: dict[str, dict[str, str]] = {
+    "aspora_technology": {"name": "Parth Pramendra Garg", "title": "Authorised Signatory"},
+    "aspora_financial_services": {"name": "Rahul Bakshi", "title": "Authorised Signatory"},
+    "vance_money": {"name": "Rahul Bakshi", "title": "Director"},
+}
+
+
+def migrate_signatory_fills(
+    *,
+    fills: dict[str, dict[str, str]] | None = None,
+    store_path: Path | None = None,
+) -> int:
+    """One-time, idempotent fill of named entities' signatories in the persisted store.
+
+    For each ``(entity_id -> {name, title})`` in the migration mapping
+    (:data:`_SIGNATORY_FILL_BY_ID` by default), set the matching PERSISTED
+    entity's ``signatory.name`` / ``.title`` ONLY IF the current value is still
+    the exact placeholder (``[Authorised Signatory]`` / ``[Title]``) or empty.
+    The names live in the mapping (data), not in the code-seed defaults, so the
+    seed stays generic and the filled values are ordinary editable registry data.
+
+    Safety / editability contract:
+
+    * It ONLY replaces a placeholder/empty value. A real, admin-entered signatory
+      (any non-placeholder string) is left untouched -- so once an admin edits a
+      signatory in the Entities console and saves, a later migration run sees a
+      non-placeholder and NEVER reverts it.
+    * Field-level: a real name with a placeholder title fills only the title.
+    * Idempotent: once filled, a second run finds no placeholder for that field
+      and changes nothing (returns 0).
+    * No persisted store yet (first run) or an empty operator state: nothing to
+      migrate (load_entities seeds the generic defaults on first read).
+    * Entities not named in the mapping are never touched (they stay placeholder).
+    * Fail-safe: any error is swallowed and 0 returned; this must never crash boot.
+
+    Returns the number of entities whose signatory was filled (0 when every named
+    entity already carries a real value / the store is absent / unreadable).
+    """
+    if store_path is None:
+        store_path = ENTITY_STORE_PATH
+    if fills is None:
+        fills = _SIGNATORY_FILL_BY_ID
+    try:
+        with locked_entity_store(store_path):
+            stored = _read_stored_entities(store_path)
+            if not stored:
+                # No persisted store (first run) or an empty operator state:
+                # nothing to migrate. load_entities() seeds the generic defaults.
+                return 0
+
+            changed = 0
+            for entity in stored:
+                if not isinstance(entity, dict):
+                    continue
+                target = fills.get(str(entity.get("id") or ""))
+                if not target:
+                    # Not in the migration mapping -> leave untouched (stays
+                    # whatever it is, e.g. the generic placeholder).
+                    continue
+                signatory = entity.get("signatory")
+                if not isinstance(signatory, dict):
+                    signatory = {}
+                entity_changed = False
+                for key in ("name", "title"):
+                    fill_value = str(target.get(key) or "").strip()
+                    if not fill_value:
+                        continue
+                    # Fill ONLY when the persisted value is still the placeholder
+                    # or empty; a real admin value is never overwritten.
+                    if _is_placeholder_signatory(signatory.get(key)):
+                        if signatory.get(key) != fill_value:
+                            signatory[key] = fill_value
+                            entity_changed = True
+                if entity_changed:
+                    entity["signatory"] = signatory
+                    changed += 1
+
+            if changed:
+                _write_snapshot(
+                    stored, store_path=store_path, actor="system", source="migration"
+                )
+            return changed
+    except Exception:  # noqa: BLE001 - migration is best-effort; never crash boot.
+        return 0
+
+
 def _write_snapshot(
     entities: list[dict[str, Any]],
     *,
@@ -195,4 +303,5 @@ __all__ = [
     "locked_entity_store",
     "load_entities",
     "save_entities",
+    "migrate_signatory_fills",
 ]

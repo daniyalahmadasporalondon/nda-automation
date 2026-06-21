@@ -833,6 +833,7 @@ def main() -> None:
         parser.error(str(error))
 
     _record_data_dir_boot_sentinel()
+    _migrate_entity_signatory_fills()
     _validate_entity_registry_against_playbook()
 
     server = ThreadingHTTPServer((args.host, args.port), NdaAutomationHandler)
@@ -887,6 +888,34 @@ def _run_startup_inbound_review_recovery() -> None:
             _recover_unreviewed_inbound_matters(owner_user_id=owner_user_id)
     else:
         _recover_unreviewed_inbound_matters()
+
+
+def _migrate_entity_signatory_fills() -> None:
+    """One-time fill of named entities' signatories in the persisted registry at boot.
+
+    The seed (``DEFAULT_SIGNING_ENTITIES``) ships GENERIC
+    ``[Authorised Signatory]`` / ``[Title]`` placeholders so signatories stay
+    ordinary, editable registry data rather than hardcoded code defaults. The real
+    initial signers live as DATA in the migration mapping
+    (``entity_store._SIGNATORY_FILL_BY_ID``). This boot step applies that mapping
+    to the LIVE persistent registry ONCE: for each named entity whose signatory is
+    still the exact placeholder or empty, it sets the mapped name/title -- and ONLY
+    then. A real, admin-entered signatory is never overwritten (so editing one in
+    the Entities console and saving makes it permanent; a later run leaves it), the
+    fill is field-level and idempotent, and entities not in the mapping are
+    untouched. Fail-safe: a store/disk error is swallowed so it can never crash
+    boot. Runs BEFORE the drift check so the filled values are what gets validated.
+    """
+
+    try:
+        from . import entity_store  # noqa: PLC0415 - deferred; mirrors entity_registry.
+
+        filled = entity_store.migrate_signatory_fills()
+        if filled:
+            noun = "entity" if filled == 1 else "entities"
+            print(f"Entity signatory migration: filled {filled} {noun}.")
+    except Exception as error:  # pragma: no cover - defensive: never crash boot.
+        _log_background_error("Entity signatory migration failed", error)
 
 
 def _validate_entity_registry_against_playbook() -> None:
