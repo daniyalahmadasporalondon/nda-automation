@@ -3,6 +3,12 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     max_term_years: 5,
   };
 
+  // Monoline vector affordances (Aspora Design Language, Principle 5 — no emoji).
+  // stroke=currentColor so each icon inherits its control's text colour. The icons
+  // are decorative (the click handler lives on the button), so they are aria-hidden.
+  const ICON_REMOVE = '<svg class="pb-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
+  const ICON_ADD = '<svg class="pb-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg>';
+
   // DISPLAY-ONLY label maps. These translate machine field/issue keys into the
   // friendly wording the author already sees elsewhere in this editor. They are
   // never written back into a value, key, or data-attribute -- the raw key always
@@ -127,7 +133,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     playbookList.innerHTML = `
       ${rows}
       <div class="playbook-add-clause">
-        <button class="secondary" type="button" id="addPlaybookClause">+ Add Clause</button>
+        <button class="secondary" type="button" id="addPlaybookClause">${ICON_ADD} Add Clause</button>
       </div>
     `;
 
@@ -1295,7 +1301,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     return (values || [])
       .map((item) => `
         <button class="admin-chip removable" type="button" data-remove-chip="${escapeHtml(kind)}" data-chip-value="${escapeHtml(item)}">
-          ${escapeHtml(item)} <span aria-hidden="true">x</span>
+          ${escapeHtml(item)} ${ICON_REMOVE}
         </button>
       `)
       .join("");
@@ -1442,7 +1448,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         const chips = names
           .map((name) => `
             <button class="admin-chip removable" type="button" data-remove-list-item="${escapeHtml(config.field)}" data-list-value="${escapeHtml(name)}">
-              ${escapeHtml(name)} <span aria-hidden="true">x</span>
+              ${escapeHtml(name)} ${ICON_REMOVE}
             </button>
           `)
           .join("");
@@ -1780,7 +1786,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
           <div class="admin-condition" data-condition-field="${escapeHtml(field)}" data-condition-index="${index}">
             <div class="admin-condition-head">
               <input type="text" data-condition-id="1" value="${escapeHtml(condition.id || "")}" placeholder="Short identifier (e.g. fail-1)">
-              <button class="admin-chip removable" type="button" data-remove-condition="1" title="Remove condition"><span aria-hidden="true">x</span></button>
+              <button class="admin-chip removable" type="button" data-remove-condition="1" title="Remove condition">${ICON_REMOVE}</button>
             </div>
             <textarea data-condition-description="1" rows="2" placeholder="What the AI should judge for this ${escapeHtml(label.toLowerCase())} outcome.">${escapeHtml(condition.description || "")}</textarea>
             <div class="admin-condition-meta">
@@ -1797,7 +1803,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       <div class="admin-condition-group" data-condition-group="${escapeHtml(field)}">
         <div class="admin-condition-group-head">
           <h4>${escapeHtml(label)} conditions</h4>
-          <button class="secondary" type="button" data-add-condition="${escapeHtml(field)}">+ Add ${escapeHtml(label.toLowerCase())} condition</button>
+          <button class="secondary" type="button" data-add-condition="${escapeHtml(field)}">${ICON_ADD} Add ${escapeHtml(label.toLowerCase())} condition</button>
         </div>
         ${rows || `<p class="admin-muted">No ${escapeHtml(label.toLowerCase())} conditions yet.</p>`}
       </div>
@@ -1808,7 +1814,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     const carveOuts = (clause.longer_survival_carve_out_terms || [])
       .map((item) => `
         <button class="admin-chip removable" type="button" data-remove-survival-carveout="${escapeHtml(item)}">
-          ${escapeHtml(item)} <span aria-hidden="true">x</span>
+          ${escapeHtml(item)} ${ICON_REMOVE}
         </button>
       `)
       .join("");
