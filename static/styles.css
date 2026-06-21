@@ -13167,18 +13167,23 @@ label.is-hidden {
 
 /* ===========================================================================
    Aspora Design Language — Admin Settings Console
-   Scoped to the admin SURFACE only (`#clausesView[data-admin-surface="admin"]`),
-   i.e. the AI Runtime / Health / Gmail / Personalisation / Drive / DocuSign /
-   Admin Access sections — NOT the playbook clause editor (own surface, already
-   Aspora-styled) and NOT the guide docs. This mirrors the clause-editor tokens
-   (Inter typography, flat radii, brand purple, hairline borders, subtle
-   shadows, hover-destructive) so the two tabs read as one product.
+   Scoped to the admin + guide SURFACES of the admin console
+   (`#clausesView[data-admin-surface="admin"]` and `="guide"`), i.e. every
+   left-nav sub-section EXCEPT the live "Playbook" clause editor which has its
+   own already-Aspora surface. Covered: AI Runtime / Health / Gmail /
+   Personalisation / Drive / DocuSign / Admin Access (admin surface) plus
+   Document / Checkers / AI Review methodology (guide surface). The admin
+   Playbook sub-section header is brought in line separately below so its title
+   matches the Inter clause editor it frames. This mirrors the clause-editor
+   tokens (Inter typography, flat radii, brand purple, hairline borders, subtle
+   shadows, hover-destructive) so every admin sub-section reads as one product.
    RESTYLE ONLY: every selector targets existing behaviour-bearing markup; no
    handler, id, toggle wiring, input name, or data attribute is changed. The ID
    prefix gives these rules higher specificity than the global admin defaults,
    so source order is incidental and no `!important` is needed.
    =========================================================================== */
-#clausesView[data-admin-surface="admin"] {
+#clausesView[data-admin-surface="admin"],
+#clausesView[data-admin-surface="guide"] {
   /* Aspora tokens — match the clause editor's --pb-* vocabulary. */
   --adm-font: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --adm-surface: #ffffff;
@@ -13203,58 +13208,60 @@ label.is-hidden {
   color: var(--adm-ink);
 }
 
-/* Propagate Inter to every typographic + form element in the surface. */
+/* Propagate Inter to every element in the admin + guide panels and their nav.
+   A blanket descendant rule guarantees no sub-section (engine-card flows,
+   explainability/logic cards, fact lists, etc.) is left on the body default. */
 #clausesView[data-admin-surface="admin"] .admin-section-panel,
-#clausesView[data-admin-surface="admin"] .admin-section-panel h1,
-#clausesView[data-admin-surface="admin"] .admin-section-panel h2,
-#clausesView[data-admin-surface="admin"] .admin-section-panel h3,
-#clausesView[data-admin-surface="admin"] .admin-section-panel h4,
-#clausesView[data-admin-surface="admin"] .admin-section-panel p,
-#clausesView[data-admin-surface="admin"] .admin-section-panel label,
-#clausesView[data-admin-surface="admin"] .admin-section-panel .eyebrow,
-#clausesView[data-admin-surface="admin"] .admin-section-panel input,
-#clausesView[data-admin-surface="admin"] .admin-section-panel textarea,
-#clausesView[data-admin-surface="admin"] .admin-section-panel select,
-#clausesView[data-admin-surface="admin"] .admin-section-panel button,
+#clausesView[data-admin-surface="admin"] .admin-section-panel *,
+#clausesView[data-admin-surface="guide"] .admin-section-panel,
+#clausesView[data-admin-surface="guide"] .admin-section-panel *,
 #clausesView[data-admin-surface="admin"] .admin-nav,
-#clausesView[data-admin-surface="admin"] .admin-nav button,
-#clausesView[data-admin-surface="admin"] .admin-nav h2 {
+#clausesView[data-admin-surface="admin"] .admin-nav *,
+#clausesView[data-admin-surface="guide"] .admin-nav,
+#clausesView[data-admin-surface="guide"] .admin-nav * {
   font-family: var(--adm-font);
 }
 
 /* ---- Left nav (mirror the clause-nav active-accent treatment) ---- */
-#clausesView[data-admin-surface="admin"] .admin-nav {
+#clausesView[data-admin-surface="admin"] .admin-nav,
+#clausesView[data-admin-surface="guide"] .admin-nav {
   background: var(--adm-surface);
   border: 1px solid var(--adm-line);
   border-radius: var(--adm-r-panel);
   box-shadow: var(--adm-shadow-card);
 }
 
-#clausesView[data-admin-surface="admin"] .admin-section-button strong {
+#clausesView[data-admin-surface="admin"] .admin-section-button strong,
+#clausesView[data-admin-surface="guide"] .admin-section-button strong {
   font-size: 12px;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--adm-ink);
 }
 
-#clausesView[data-admin-surface="admin"] .admin-section-button span {
+#clausesView[data-admin-surface="admin"] .admin-section-button span,
+#clausesView[data-admin-surface="guide"] .admin-section-button span {
   font-size: 11px;
   line-height: 1.3;
   color: var(--adm-muted);
 }
 
 #clausesView[data-admin-surface="admin"] .admin-section-button:hover,
-#clausesView[data-admin-surface="admin"] .admin-section-button.active {
+#clausesView[data-admin-surface="admin"] .admin-section-button.active,
+#clausesView[data-admin-surface="guide"] .admin-section-button:hover,
+#clausesView[data-admin-surface="guide"] .admin-section-button.active {
   background: var(--adm-chip-bg);
   border-left-color: var(--adm-brand);
 }
 
-#clausesView[data-admin-surface="admin"] .admin-section-button.active strong {
+#clausesView[data-admin-surface="admin"] .admin-section-button.active strong,
+#clausesView[data-admin-surface="guide"] .admin-section-button.active strong {
   color: var(--adm-brand);
 }
 
 /* ---- Panel shell + card hierarchy ---- */
-#clausesView[data-admin-surface="admin"] .admin-section-panel {
+#clausesView[data-admin-surface="admin"] .admin-section-panel,
+#clausesView[data-admin-surface="guide"] .admin-section-panel {
   background: var(--adm-surface);
   border: 1px solid var(--adm-line);
   border-radius: var(--adm-r-card);
@@ -13262,11 +13269,13 @@ label.is-hidden {
 }
 
 /* ---- Section header: eyebrow + Inter title scale ---- */
-#clausesView[data-admin-surface="admin"] .admin-section-head {
+#clausesView[data-admin-surface="admin"] .admin-section-head,
+#clausesView[data-admin-surface="guide"] .admin-section-head {
   border-bottom: 1px solid var(--adm-line);
 }
 
-#clausesView[data-admin-surface="admin"] .admin-section-head .eyebrow {
+#clausesView[data-admin-surface="admin"] .admin-section-head .eyebrow,
+#clausesView[data-admin-surface="guide"] .admin-section-head .eyebrow {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.07em;
@@ -13275,7 +13284,8 @@ label.is-hidden {
   margin: 0 0 6px;
 }
 
-#clausesView[data-admin-surface="admin"] .admin-section-head h1 {
+#clausesView[data-admin-surface="admin"] .admin-section-head h1,
+#clausesView[data-admin-surface="guide"] .admin-section-head h1 {
   font-size: 1.65rem;
   font-weight: 600;
   line-height: 1.35;
@@ -13334,17 +13344,26 @@ label.is-hidden {
   color: var(--amber-ink);
 }
 
-/* ---- Inner panels: toggle rows, forms, fact cards (8px hairline) ---- */
+/* ---- Inner structural panels: toggle rows, forms, alerts (8px hairline) ---- */
 #clausesView[data-admin-surface="admin"] .integration-toggle-row,
 #clausesView[data-admin-surface="admin"] .ai-key-form,
 #clausesView[data-admin-surface="admin"] .runtime-settings-form,
 #clausesView[data-admin-surface="admin"] .personalisation-form,
-#clausesView[data-admin-surface="admin"] .integration-facts div,
-#clausesView[data-admin-surface="admin"] .health-alerts,
-#clausesView[data-admin-surface="admin"] .admin-access-row {
+#clausesView[data-admin-surface="admin"] .health-alerts {
   background: #fcfbfe;
   border: 1px solid var(--adm-line);
   border-radius: var(--adm-r-panel);
+}
+
+/* ---- Parameter / value cards + list rows: flat 6px data-grid look.
+   Per the brief these read like a Vercel/Linear key-value grid, not bubbly
+   pills — so the read-only value cards and access rows pin to the 6px input
+   radius rather than the 8px panel radius. ---- */
+#clausesView[data-admin-surface="admin"] .integration-facts div,
+#clausesView[data-admin-surface="admin"] .admin-access-row {
+  background: #fcfbfe;
+  border: 1px solid var(--adm-line);
+  border-radius: var(--adm-r-input);
 }
 
 #clausesView[data-admin-surface="admin"] .integration-toggle-row strong {
@@ -13407,6 +13426,22 @@ label.is-hidden {
   border-color: var(--adm-brand);
   box-shadow: 0 0 0 3px rgba(79, 27, 179, 0.08);
   outline: none;
+}
+
+/* ---- Strict flat 6px on EVERY form control across both admin surfaces.
+   Vercel/Linear data-grid look: no pill-rounded inputs/selects/buttons. This
+   catches any control the named rules below miss (plain buttons, input-row
+   buttons, drive-picker controls, access form, etc.). Big panels/cards keep
+   their 8px/12px radii — only the controls flatten. ---- */
+#clausesView[data-admin-surface="admin"] input,
+#clausesView[data-admin-surface="admin"] select,
+#clausesView[data-admin-surface="admin"] textarea,
+#clausesView[data-admin-surface="admin"] button:not(.integration-switch),
+#clausesView[data-admin-surface="guide"] input,
+#clausesView[data-admin-surface="guide"] select,
+#clausesView[data-admin-surface="guide"] textarea,
+#clausesView[data-admin-surface="guide"] button:not(.integration-switch) {
+  border-radius: var(--adm-r-input);
 }
 
 /* ---- Buttons: Aspora system (primary brand / secondary hairline / hover) ---- */
@@ -13505,4 +13540,129 @@ label.is-hidden {
   font-weight: 400;
   line-height: 1.5;
   color: var(--adm-muted);
+}
+
+/* ===========================================================================
+   GUIDE surface — Document / Checkers / AI Review methodology panels
+   These render in engine-* and admin-explainability-* containers (NOT the
+   integration-card system), so they need their own Aspora token mapping.
+   Same vocabulary: white/hairline panels, brand-purple ordinal badges and
+   chips, uppercase muted labels, Inter scale. Read-only reference content —
+   no controls — so this is purely typographic + surface alignment.
+   =========================================================================== */
+
+/* Numbered pipeline cards + backend-module cards + checker-grid cards. */
+#clausesView[data-admin-surface="guide"] .engine-card,
+#clausesView[data-admin-surface="guide"] .engine-module-grid article,
+#clausesView[data-admin-surface="guide"] .engine-checker-grid article,
+#clausesView[data-admin-surface="guide"] .engine-resolver-panel,
+#clausesView[data-admin-surface="guide"] .admin-explainability-card,
+#clausesView[data-admin-surface="guide"] .admin-logic-list {
+  background: var(--adm-surface);
+  border: 1px solid var(--adm-line);
+  border-radius: var(--adm-r-panel);
+}
+
+/* Ordinal step badge -> flat brand chip. */
+#clausesView[data-admin-surface="guide"] .engine-card span,
+#clausesView[data-admin-surface="guide"] .admin-reading-order li > span {
+  background: var(--adm-chip-bg);
+  border: 1px solid var(--adm-chip-border);
+  border-radius: var(--adm-r-tag);
+  color: var(--adm-brand);
+  font-weight: 600;
+}
+
+/* Card titles in the Inter sub-heading scale. */
+#clausesView[data-admin-surface="guide"] .engine-card h2,
+#clausesView[data-admin-surface="guide"] .engine-module-grid article h2,
+#clausesView[data-admin-surface="guide"] .engine-resolver-panel h2,
+#clausesView[data-admin-surface="guide"] .engine-checker-grid h3,
+#clausesView[data-admin-surface="guide"] .admin-explainability-card h3 {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--adm-ink);
+}
+
+/* Resolver/checker panel header eyebrow + its trailing "Auditable outputs" pill. */
+#clausesView[data-admin-surface="guide"] .engine-resolver-panel .eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--adm-faint);
+  margin: 0 0 6px;
+}
+#clausesView[data-admin-surface="guide"] .engine-resolver-panel > header > span {
+  background: var(--adm-chip-bg);
+  border: 1px solid var(--adm-chip-border);
+  border-radius: var(--adm-r-tag);
+  color: var(--adm-brand);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+/* Uppercase muted definition-term labels across all guide fact lists. */
+#clausesView[data-admin-surface="guide"] .engine-fact-list dt,
+#clausesView[data-admin-surface="guide"] .engine-checker-grid dt,
+#clausesView[data-admin-surface="guide"] .admin-logic-list dt {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--adm-muted);
+}
+
+/* Definition-value + body text in the guide ink/muted scale. */
+#clausesView[data-admin-surface="guide"] .engine-fact-list dd,
+#clausesView[data-admin-surface="guide"] .engine-checker-grid dd,
+#clausesView[data-admin-surface="guide"] .admin-logic-list dd,
+#clausesView[data-admin-surface="guide"] .engine-card p,
+#clausesView[data-admin-surface="guide"] .admin-reading-order p {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--adm-muted);
+}
+
+#clausesView[data-admin-surface="guide"] .admin-reading-order strong {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--adm-ink);
+}
+
+/* ===========================================================================
+   PLAYBOOK sub-section header — the admin "Playbook" panel frames the Inter
+   clause editor (.playbook-editor-consolidated) but its own surrounding header
+   + rail still rendered in the body default. Bring just the chrome (title,
+   eyebrow, rail group labels) onto Inter so the framed editor and its frame
+   read as one. Scoped to #adminPlaybookPanel — never leaks to the real Playbook
+   tab's editor (already Inter) or other tabs.
+   =========================================================================== */
+#adminPlaybookPanel,
+#adminPlaybookPanel h1,
+#adminPlaybookPanel h2,
+#adminPlaybookPanel .eyebrow,
+#adminPlaybookPanel .rail-heading h2,
+#adminPlaybookPanel .rail-group-label {
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+#adminPlaybookPanel .admin-section-head h1 {
+  font-size: 1.65rem;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.02em;
+  color: #170a33;
+}
+
+#adminPlaybookPanel .admin-section-head .eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #8e869e;
+  margin: 0 0 6px;
 }
