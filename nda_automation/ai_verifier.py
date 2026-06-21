@@ -758,11 +758,18 @@ def _summary(
     records: List[Dict[str, object]],
     changed: int = 0,
     verifier_kind: str = "",
+    active_kind: str | None = None,
 ) -> Dict[str, object]:
+    # ``active_kind`` makes the resolved verifier OBSERVABLE on the review result: a
+    # NO-OP second pass is reported as ``"noop"`` rather than being silently assumed
+    # to have run. Default it from verifier_kind when the caller does not pass one.
+    if active_kind is None:
+        active_kind = "ai" if verifier_kind == "ai" else "noop" if verifier_kind in {"noop", ""} else verifier_kind
     return {
         "version": AI_VERIFIER_VERSION,
         "status": status,
         "verifier_kind": verifier_kind,
+        "active_kind": active_kind,
         "verified_count": len(records),
         "changed_count": changed,
         "records": records,
@@ -1000,15 +1007,68 @@ def _parse_batch_response(payload: Dict[str, object], model: str) -> Dict[str, o
     return verdicts_by_id
 
 
-def verifier_enabled() -> bool:
-    """True when the AI-backed verifier is explicitly enabled via env.
+_TRUTHY = {"1", "true", "yes", "on"}
+_FALSY = {"0", "false", "no", "off"}
 
-    Only the provider-backed pass exists, and it is gated here: when this is False
-    (or the key is missing) the verifier pass is an additive no-op that changes no
-    verdict. There is no offline/deterministic fallback. Verification stays
-    free-by-default, so a deploy opts in deliberately.
+
+def _verifier_env_override() -> bool | None:
+    """Tri-state read of ``NDA_AI_VERIFIER``.
+
+    ``True``/``False`` when the operator set an explicit truthy/falsy value (the
+    kill-switch: ``NDA_AI_VERIFIER=false`` ALWAYS forces the verifier off); ``None``
+    when the flag is unset/blank, which hands the decision to the default policy.
     """
-    return str(os.environ.get(VERIFIER_ENV_ENABLED, "")).strip().lower() in {"1", "true", "yes", "on"}
+    raw = str(os.environ.get(VERIFIER_ENV_ENABLED, "")).strip().lower()
+    if raw in _TRUTHY:
+        return True
+    if raw in _FALSY:
+        return False
+    return None
+
+
+def _active_engine_is_ai_first() -> bool:
+    """True when the AI-first engine is the active review engine.
+
+    Lazy import: ``review_engine`` -> ``ai_assessor`` -> ``ai_first_review`` ->
+    ``ai_verifier`` is a real import chain, so importing review_engine at module top
+    would be circular. Fails safe to False (verifier stays off) if the lookup throws.
+    """
+    try:
+        from . import review_engine
+
+        return review_engine.active_review_engine() == review_engine.REVIEW_ENGINE_AI_FIRST
+    except Exception:  # noqa: BLE001 - engine lookup must never break review
+        return False
+
+
+def verifier_enabled() -> bool:
+    """True when the AI-backed verifier should run.
+
+    Tri-state policy:
+
+    * Explicit ``NDA_AI_VERIFIER=true`` -> on.
+    * Explicit ``NDA_AI_VERIFIER=false`` (or any falsy value) -> OFF. This is the
+      kill-switch and ALWAYS wins, even when the AI-first engine is active and keyed.
+    * UNSET -> default ON when (a) the AI-first engine is the active review engine
+      AND (b) an OpenRouter key is present; otherwise OFF.
+
+    The default-on case is the polarity fix: the adversarial verifier (which corrects
+    the "shall not be restricted from dealing" negation trap) used to be dormant
+    unless an operator explicitly flipped the flag, so it never ran in a default
+    AI-first deploy. It is now armed by default there. It stays a no-op when AI review
+    is disabled / the engine is deterministic / no key is configured, so this never
+    starts spending tokens on its own -- only when the AI-first engine is genuinely
+    active and keyed.
+
+    Only the provider-backed pass exists; when this is False (or, downstream, the key
+    is missing) the verifier pass is an additive no-op that changes no verdict. There
+    is no offline/deterministic fallback.
+    """
+    override = _verifier_env_override()
+    if override is not None:
+        return override
+    # Unset: default ON only when the AI-first engine is active AND keyed.
+    return _active_engine_is_ai_first() and bool(_verifier_api_key())
 
 
 def verifier_status() -> Dict[str, object]:
@@ -1023,10 +1083,23 @@ def verifier_status() -> Dict[str, object]:
     model = str(os.environ.get(VERIFIER_ENV_MODEL, "")).strip() or DEFAULT_VERIFIER_MODEL
     api_key_source = _verifier_api_key_source()
     api_key_configured = bool(api_key_source)
+    override = _verifier_env_override()
+    ai_first_active = _active_engine_is_ai_first()
     active_kind = "ai" if enabled and api_key_configured else "noop"
     fallback_reason = ""
     if active_kind == "noop":
-        fallback_reason = "disabled" if not enabled else "missing_openrouter_api_key"
+        # Pinpoint WHY the second pass is inert so a "silently assumed on" verifier is
+        # observable. Order matters: an explicit kill-switch wins; then a missing key
+        # (default-on would have run but is unkeyed); then a non-AI-first engine; else
+        # the flag is simply off.
+        if override is False:
+            fallback_reason = "killswitch"
+        elif not api_key_configured:
+            fallback_reason = "missing_openrouter_api_key"
+        elif not ai_first_active:
+            fallback_reason = "engine_not_ai_first"
+        else:
+            fallback_reason = "disabled"
     return {
         "version": AI_VERIFIER_VERSION,
         "enabled": enabled,
@@ -1035,6 +1108,8 @@ def verifier_status() -> Dict[str, object]:
         "default_model": DEFAULT_VERIFIER_MODEL,
         "api_key_configured": api_key_configured,
         "api_key_source": api_key_source,
+        "default_on_when_ai_first": ai_first_active and api_key_configured,
+        "env_override": override,
         "fallback_reason": fallback_reason,
     }
 
