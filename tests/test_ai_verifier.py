@@ -870,6 +870,110 @@ class ResolveVerifierTests(unittest.TestCase):
             clauses, source_text="x", verifier=_scripted(VERIFIER_VERDICT_AFFIRM)
         )
         self.assertEqual(summary["verifier_kind"], "injected")
+        # active_kind is surfaced on every summary so a no-op pass is observable.
+        self.assertEqual(summary["active_kind"], "injected")
+
+
+class VerifierDefaultOnTests(unittest.TestCase):
+    """The polarity-fix: an UNSET NDA_AI_VERIFIER must arm the real verifier when the
+    AI-first engine is active AND a key is present, while NDA_AI_VERIFIER=false stays a
+    hard kill-switch and a disabled AI review fires no verifier call."""
+
+    AI_FIRST_ENGINE = "ai_first"
+    DETERMINISTIC_ENGINE = "deterministic"
+
+    def _engine_env(self, engine):
+        # conftest pins NDA_ACTIVE_REVIEW_ENGINE=ai_first; override per test.
+        return {"NDA_ACTIVE_REVIEW_ENGINE": engine}
+
+    def test_unset_with_ai_first_and_key_defaults_to_real_verifier(self):
+        # The bug: an UNSET flag left the verifier dormant. Now: AI-first active + keyed
+        # + unset -> the REAL OpenRouter verifier resolves (NOT noop).
+        with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: "", **self._engine_env(self.AI_FIRST_ENGINE)}, clear=False):
+            with patch.object(ai_verifier, "_verifier_api_key", return_value="sk-test"):
+                self.assertTrue(verifier_enabled())
+                resolved = resolve_verifier()
+                self.assertIsInstance(resolved, OpenRouterVerifier)
+                self.assertIsNot(resolved, noop_verifier)
+
+    def test_unset_with_ai_first_but_no_key_stays_noop(self):
+        # No key -> the default-on policy does NOT fire (never starts unkeyed AI calls).
+        with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: "", **self._engine_env(self.AI_FIRST_ENGINE)}, clear=False):
+            with patch.object(ai_verifier, "_verifier_api_key", return_value=""):
+                self.assertFalse(verifier_enabled())
+                self.assertIs(resolve_verifier(), noop_verifier)
+
+    def test_unset_with_deterministic_engine_stays_noop_even_if_keyed(self):
+        # The default-on only arms under the AI-first engine. A deterministic active
+        # engine keeps the verifier dormant on an unset flag (no AI overlay there).
+        with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: "", **self._engine_env(self.DETERMINISTIC_ENGINE)}, clear=False):
+            with patch.object(ai_verifier, "_verifier_api_key", return_value="sk-test"):
+                self.assertFalse(verifier_enabled())
+                self.assertIs(resolve_verifier(), noop_verifier)
+
+    def test_explicit_false_is_a_killswitch_even_when_ai_first_and_keyed(self):
+        # The kill-switch must survive the new default: =false forces noop regardless.
+        with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: "false", **self._engine_env(self.AI_FIRST_ENGINE)}, clear=False):
+            with patch.object(ai_verifier, "_verifier_api_key", return_value="sk-test"):
+                self.assertFalse(verifier_enabled())
+                self.assertIs(resolve_verifier(), noop_verifier)
+                status = verifier_status()
+                self.assertEqual(status["active_kind"], "noop")
+                self.assertEqual(status["fallback_reason"], "killswitch")
+
+    def test_status_default_on_when_ai_first_and_keyed_unset(self):
+        with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: "", **self._engine_env(self.AI_FIRST_ENGINE)}, clear=False):
+            with patch.object(ai_verifier, "_verifier_api_key", return_value="sk-test"):
+                with patch.object(ai_verifier, "_verifier_api_key_source", return_value="environment"):
+                    status = verifier_status()
+            self.assertEqual(status["active_kind"], "ai")
+            self.assertTrue(status["enabled"])
+            self.assertTrue(status["default_on_when_ai_first"])
+            self.assertIsNone(status["env_override"])
+
+    def test_status_unset_keyed_deterministic_reports_engine_reason(self):
+        with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: "", **self._engine_env(self.DETERMINISTIC_ENGINE)}, clear=False):
+            with patch.object(ai_verifier, "_verifier_api_key", return_value="sk-test"):
+                with patch.object(ai_verifier, "_verifier_api_key_source", return_value="environment"):
+                    status = verifier_status()
+            self.assertEqual(status["active_kind"], "noop")
+            self.assertEqual(status["fallback_reason"], "engine_not_ai_first")
+
+    def test_ai_first_unset_keyed_corrects_known_polarity_case(self):
+        # NON-VACUITY: the very case the fix exists for. AI-first active, keyed, flag
+        # UNSET -> the resolved (real) verifier, fed a REFUTE for the freedom-to-deal
+        # carve-out the AI wrongly failed, routes the clause to review. The verifier is
+        # injected here ONLY to script the network verdict deterministically; the point
+        # under test is that resolve_verifier() ABOVE returns the real pass (proven in
+        # test_unset_with_ai_first_and_key_defaults_to_real_verifier), so this no longer
+        # lies dormant on an unset flag.
+        source = "\n\n".join([
+            "Each party may disclose Confidential Information and both act as Disclosing and Receiving Party.",
+            "Each party shall not be restricted from dealing with introduced contacts.",
+        ])
+        clauses = [
+            _clause(
+                "non_circumvention",
+                "fail",
+                clause_type="prohibited",
+                confidence=0.70,
+                matched_text="Each party shall not be restricted from dealing with introduced contacts.",
+                evidence=["Each party shall not be restricted from dealing with introduced contacts."],
+            )
+        ]
+        with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: "", **self._engine_env(self.AI_FIRST_ENGINE)}, clear=False):
+            with patch.object(ai_verifier, "_verifier_api_key", return_value="sk-test"):
+                # Sanity: the resolver is armed (real verifier) on the unset flag.
+                self.assertIsInstance(resolve_verifier(), OpenRouterVerifier)
+                # Drive the scripted REFUTE across the same seam the real pass uses.
+                updated, summary = apply_ai_verifier(
+                    clauses,
+                    source_text=source,
+                    verifier=_scripted(VERIFIER_VERDICT_REFUTE, confidence=0.95),
+                )
+        self.assertEqual(updated[0]["decision"], "review")
+        self.assertEqual(updated[0]["ai_verifier"]["verdict"], "refute")
+        self.assertEqual(summary["status"], "completed")
 
 
 class AIFirstPathIntegrationTests(unittest.TestCase):
