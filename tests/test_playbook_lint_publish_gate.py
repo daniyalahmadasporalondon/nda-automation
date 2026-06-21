@@ -277,23 +277,11 @@ class PlaybookLintPublishGateTests(unittest.TestCase):
     # at the same 400 / {"error"} publish gate.
     # ------------------------------------------------------------------
 
-    def test_publish_rejected_on_non_court_forum(self) -> None:
-        # PROOF (P2): a non-court forum ("the moon") was accepted on base and could
-        # reach a signed NDA; now the publish gate rejects it via the REAL lint.
-        candidate = deepcopy(self.active_playbook)
-        gl = next(c for c in candidate["clauses"] if c["id"] == "governing_law")
-        gl["rules"]["approved_options"][0]["forum_jurisdiction"] = "the moon"
-
-        with self.assertRaises(playbook_authoring.PlaybookAuthoringError) as ctx:
-            self._publish(candidate)
-        error = ctx.exception
-        self.assertEqual(error.status, 400)
-        self.assertIn("not a valid court/venue", error.payload["error"])
-        # No-op: disk unchanged.
-        self.assertEqual(
-            json.loads(self.playbook_path.read_text(encoding="utf-8")),
-            self.active_playbook,
-        )
+    # NOTE: the per-law "non-court forum" publish rejection was REMOVED in the
+    # per-entity governing-law/court restructure. Courts are authored per signing
+    # entity now (not per playbook law), so the publish gate no longer screens a
+    # per-option forum_jurisdiction; entity-court shape/reconciliation + the
+    # generation gate cover correctness instead.
 
     def test_publish_rejected_on_contradictory_conditions(self) -> None:
         # PROOF (P2): the same state described as both pass and fail is rejected.

@@ -24,7 +24,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .forum_shape import forum_shape_problem as _forum_shape_problem
 from .playbook_rules import (
     CLAUSE_ENGINE_DYNAMIC,
     NATIVE_CLAUSE_IDS,
@@ -42,7 +41,6 @@ __all__ = [
     "VALID_REDLINE_ACTIONS",
     "REDLINE_ACTIONS_NEEDING_TEMPLATE",
     "check_option_id_collision",
-    "check_governing_law_forum_present",
     "check_trigger_terms_present",
     "check_clause_id_uniqueness",
     "check_native_clause_inventory",
@@ -709,81 +707,14 @@ def check_option_id_collision(clause: Mapping[str, Any]) -> list[LintViolation]:
 
 
 # ---------------------------------------------------------------------------
-# Check 7: governing_law_forum_present
+# Governing-law clause id (shared by the law-alias-collision check below).
 # ---------------------------------------------------------------------------
 
 _GOVERNING_LAW_CLAUSE_ID = "governing_law"
 
 
-def check_governing_law_forum_present(clause: Mapping[str, Any]) -> list[LintViolation]:
-    """Every governing-law approved option must name a non-empty court/forum.
-
-    The ``forum_jurisdiction`` string pairs each approved governing law with the
-    venue whose courts have authority. It is the single source the AI law<->forum
-    recognition check (``law_forum_check``) reads to flag a law/forum mismatch, and
-    the value generation falls back to when no signing-entity registers a court for
-    the option. An approved law with NO authored forum means: the review engine
-    cannot recognise/verify that law's forum, and a generated NDA under that law
-    has no court to write -- so publishing a governing law with an empty forum is a
-    self-contradiction the gate must reject (you can't publish a law with no court).
-
-    Only applies to the ``governing_law`` clause; every other clause is a no-op.
-    """
-
-    if _clause_id(clause) != _GOVERNING_LAW_CLAUSE_ID:
-        return []
-
-    rules = _rules(clause)
-    raw_options = rules.get("approved_options")
-    if not isinstance(raw_options, Sequence) or isinstance(raw_options, (str, bytes)):
-        # The approved_options shape itself is enforced by the rules validator /
-        # approved_options_present; nothing to forum-check here.
-        return []
-
-    violations: list[LintViolation] = []
-    for index, option in enumerate(raw_options):
-        if not isinstance(option, Mapping):
-            continue
-        label = (
-            _text(option.get("label"))
-            or _text(option.get("value"))
-            or _text(option.get("id"))
-            or f"<approved_options[{index}]>"
-        )
-        forum = _text(option.get("forum_jurisdiction"))
-        if not forum:
-            violations.append(
-                LintViolation(
-                    _GOVERNING_LAW_CLAUSE_ID,
-                    "governing_law_forum_present",
-                    f"approved governing law '{label}' has no forum_jurisdiction "
-                    "(court/forum); a governing law cannot be published without a "
-                    "court -- the review forum check and generation have nothing to "
-                    "pair the law with",
-                )
-            )
-            continue
-        # Court-SHAPE: the forum_jurisdiction must look like a real court/venue.
-        # The same screen the generation gate uses, so a non-court venue ("the
-        # moon", "arbitration in Narnia"), a template placeholder, an injected
-        # control phrase, or an oversized string is rejected at PUBLISH -- before it
-        # can ever reach a signed NDA -- rather than only at generation time.
-        problem = _forum_shape_problem(forum)
-        if problem is not None:
-            violations.append(
-                LintViolation(
-                    _GOVERNING_LAW_CLAUSE_ID,
-                    "governing_law_forum_present",
-                    f"approved governing law '{label}' has forum_jurisdiction "
-                    f"'{forum}' which is not a valid court/venue: {problem}. A "
-                    "non-court venue cannot be published into the law/forum pairing",
-                )
-            )
-    return violations
-
-
 # ---------------------------------------------------------------------------
-# Check 8: trigger_terms_present
+# Check 7: trigger_terms_present
 # ---------------------------------------------------------------------------
 
 
@@ -1113,7 +1044,6 @@ CHECKS: dict[str, CheckFn] = {
     "approved_options_present": check_approved_options_present,
     "referential_integrity": check_referential_integrity,
     "option_id_collision": check_option_id_collision,
-    "governing_law_forum_present": check_governing_law_forum_present,
     "trigger_terms_present": check_trigger_terms_present,
     "condition_contradiction": check_condition_contradiction,
     "law_alias_collision": check_law_alias_collision,
