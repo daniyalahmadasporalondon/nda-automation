@@ -328,6 +328,21 @@ def _review_result_for_export(
             review_result["extracted_text"] = submitted_text
         else:
             review_result = deepcopy(review_result)
+            # Deferred-review matters store the engine result verbatim, and neither
+            # the deterministic checker nor the active-engine review sets
+            # extracted_text -- only the (now test-only) eager create path's
+            # attach_document_source does. So for every real matter (manual upload +
+            # inbound both create defer_ai_review=True), review_result has NO
+            # extracted_text here, the renderer below is handed expected_source_text=""
+            # and verify_export_content_coverage short-circuits to [] -- the length /
+            # accepted-paragraph-SEQUENCE / structural-count checks ALL skip, so a
+            # redline that dropped/reordered/duplicated source clauses ships unverified.
+            # The matter ALWAYS carries the authoritative source text (matter[
+            # "extracted_text"], the SAME extracted_text_from_paragraphs value the
+            # eager path stores on the review_result and the redline is built against),
+            # so stamp it on so the coverage gate actually runs. setdefault never
+            # overwrites the eager path's already-present value.
+            review_result.setdefault("extracted_text", str(matter.get("extracted_text") or ""))
         return review_result, source_document_bytes, source_filename
 
     filename = payload.get("filename", "")
