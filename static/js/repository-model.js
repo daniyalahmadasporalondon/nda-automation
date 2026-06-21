@@ -19,24 +19,41 @@ const RepositoryModel = (() => {
     signed_closed: "sent",
   };
 
+  // Generic snake_case -> Title Case fallback for an unmapped enum token, so a raw
+  // internal code (e.g. "send_document") never leaks into the UI. Prefers the shared
+  // window.humanizeId when the page provides it; otherwise applies the same rule
+  // locally (display-only — the underlying value is never touched).
+  function humanizeToken(token) {
+    if (typeof window !== "undefined" && typeof window.humanizeId === "function") {
+      return window.humanizeId(token);
+    }
+    const str = String(token == null ? "" : token).trim();
+    if (!str) return "";
+    return str
+      .replace(/[_-]+/g, " ")
+      .replace(/\b\w/g, (character) => character.toUpperCase());
+  }
+
   function triageLabel(status) {
     const labels = {
-      ready_to_sign: "Ready",
-      needs_redline: "Redline",
-      legal_review: "Legal",
-      intake_error: "Error",
+      ready_to_sign: "Ready to sign",
+      needs_redline: "Needs redline",
+      legal_review: "Legal review",
+      intake_error: "Intake error",
+      sent: "Sent",
     };
-    return labels[status] || "Review";
+    return labels[status] || "Needs review";
   }
 
   function sourceTypeLabel(sourceType) {
     const labels = {
-      gmail_demo: "Gmail Demo",
+      gmail_demo: "Inbox",
       gmail_inbound: "Mail",
       manual_upload: "Manual Upload",
       generated: "Generated",
+      send_document: "Sent NDA",
     };
-    return labels[sourceType] || sourceType || "Source";
+    return labels[sourceType] || humanizeToken(sourceType) || "Document";
   }
 
   function sourceBadgeClass(sourceType) {
