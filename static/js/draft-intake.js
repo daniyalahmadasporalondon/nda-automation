@@ -33,9 +33,12 @@ function createDraftIntakeController({
   termHintNode,
   termUnitNode,
   projectPurposeInput,
-  governingLawSelect,
+  // LAW + COURT LOCKED TO ENTITY: these are read-only display nodes (a <p>), NOT
+  // an editable picker. They show the law + court derived from the picked signing
+  // entity; there is no override control.
+  governingLawNode,
+  forumNode,
   lawStatusNode,
-  lawResetButton,
   statusNode,
   clearButton,
   // "Start a new NDA": resets the intake form AND clears the document editor so the
@@ -184,26 +187,8 @@ function createDraftIntakeController({
     flashField("signing_entity");
   });
 
-  governingLawSelect?.addEventListener("change", () => {
-    api();
-    const entity = intakeApi.selectedEntity(intake);
-    const entityLawId = entity ? intakeApi.lawOptionId(entity.governing_law) : null;
-    if (entity && governingLawSelect.value === entityLawId) {
-      // Choosing the entity's own law re-couples rather than counting as an
-      // override, so re-picking the entity later won't be treated as drift.
-      intake = intakeApi.clearGoverningLawOverride(intake);
-    } else {
-      intake = intakeApi.setGoverningLawOverride(intake, governingLawSelect.value);
-    }
-    renderLawStatus();
-    renderSidePanel();
-    flashField("governing_law");
-  });
-
-  lawResetButton?.addEventListener("click", () => {
-    intake = api().clearGoverningLawOverride(intake);
-    renderGoverningLaw();
-  });
+  // LAW + COURT LOCKED TO ENTITY: no governing-law change listener and no reset
+  // button — the law + court are read-only and follow the picked signing entity.
 
   ndaTypeSelect?.addEventListener("change", () => {
     intake = { ...intake, ndaType: ndaTypeSelect.value };
@@ -383,7 +368,6 @@ function createDraftIntakeController({
     api();
     populateEntityOptions();
     populateNdaTypeOptions();
-    populateGoverningLawOptions();
     // loadRegistry() may have refreshed maxTermYears from the live playbook feed;
     // seed the stepper to the default term, re-clamped against the live cap.
     setTermYears(currentTermYears());
@@ -413,17 +397,6 @@ function createDraftIntakeController({
       ndaTypeSelect.appendChild(option);
     }
     ndaTypeSelect.value = intake.ndaType;
-  }
-
-  function populateGoverningLawOptions() {
-    if (!governingLawSelect) return;
-    governingLawSelect.innerHTML = "";
-    for (const law of intakeApi.governingLawOptions()) {
-      const option = document.createElement("option");
-      option.value = law.id;
-      option.textContent = law.label;
-      governingLawSelect.appendChild(option);
-    }
   }
 
   function renderEntityBundle() {
@@ -469,28 +442,25 @@ function createDraftIntakeController({
     addressSelect.value = intake.addressId || (intakeApi.defaultAddressFor(entity)?.id ?? "");
   }
 
+  // LAW + COURT LOCKED TO ENTITY: render the law and court as read-only text,
+  // derived entirely from the picked signing entity (never editable).
   function renderGoverningLaw() {
-    if (governingLawSelect) {
-      const law = intakeApi.effectiveGoverningLaw(intake);
-      if (law) governingLawSelect.value = law.id;
-    }
-    renderLawStatus();
+    const entity = intakeApi.selectedEntity(intake);
+    const law = intakeApi.effectiveGoverningLaw(intake);
+    const forum = intakeApi.effectiveForum(intake);
+    if (governingLawNode) governingLawNode.textContent = law ? law.label : "—";
+    if (forumNode) forumNode.textContent = forum || "—";
+    renderLawStatus(entity);
     renderSidePanel();
   }
 
-  function renderLawStatus() {
-    const entity = intakeApi.selectedEntity(intake);
-    if (lawResetButton) lawResetButton.hidden = !intake.governingLawOverridden;
+  function renderLawStatus(entity = intakeApi.selectedEntity(intake)) {
     if (!lawStatusNode) return;
     if (!entity) {
-      lawStatusNode.textContent = "Defaults to the entity's law once an entity is picked.";
+      lawStatusNode.textContent = "Fixed by the signing entity. Pick an entity to set its law and court.";
       return;
     }
-    if (intake.governingLawOverridden) {
-      lawStatusNode.textContent = `Overridden — independent of ${intakeApi.entityLabel(entity)}.`;
-    } else {
-      lawStatusNode.textContent = `Coupled to ${intakeApi.entityLabel(entity)}.`;
-    }
+    lawStatusNode.textContent = `Fixed by ${intakeApi.entityLabel(entity)} — its governing law and court apply.`;
   }
 
   // Briefly pulses the preview span(s) for `fieldKey` so the user sees the exact

@@ -273,17 +273,17 @@ export function createInitialIntake() {
     entityId: null,
     addressId: null,
     governingLawId: null,
-    // Tracks whether the user has overridden the law away from the entity's
-    // default, so re-picking an entity can restore the coupled law unless the
-    // user has deliberately taken the escape hatch.
+    // LAW IS LOCKED TO THE ENTITY: the law always follows the picked entity, so
+    // this flag is always false. Retained for payload/state shape stability — the
+    // override escape hatch has been removed from the UI and the backend.
     governingLawOverridden: false,
   };
 }
 
 // Picks a signing entity and pre-fills the coupled bundle: address defaults to
-// the entity's default address, and governing law defaults to the entity's law
-// UNLESS the user has already taken the override escape hatch — then their
-// chosen law is preserved (the whole point of an independent override).
+// the entity's default address, and the governing law is ALWAYS set to the
+// entity's own law. LAW IS LOCKED TO THE ENTITY — picking an entity is the only
+// way to set the law + court, and they always follow the entity.
 export function applyEntitySelection(intake, entityId, entities = SIGNING_ENTITIES) {
   const entity = findEntity(entityId, entities);
   if (!entity) {
@@ -292,19 +292,28 @@ export function applyEntitySelection(intake, entityId, entities = SIGNING_ENTITI
   const next = { ...intake, entityId: entity.id };
   const defaultAddress = defaultAddressFor(entity);
   next.addressId = defaultAddress ? defaultAddress.id : null;
-  if (!intake.governingLawOverridden) {
-    next.governingLawId = lawOptionId(entity.governing_law);
-  }
+  next.governingLawId = lawOptionId(entity.governing_law);
+  next.governingLawOverridden = false;
   return next;
 }
 
-// The escape hatch: override the governing law independently of the entity.
-// Marks the override so a later entity re-pick won't silently stomp the choice.
-export function setGoverningLawOverride(intake, lawId) {
-  return { ...intake, governingLawId: lawId || null, governingLawOverridden: true };
+// LAW + COURT LOCKED TO ENTITY: there is no override path. The governing law is
+// fixed by the picked signing entity; the user picks WHICH entity and the law +
+// court follow from it. These two helpers are retained as stable no-ops so the
+// (now read-only) law field always stays coupled to the entity's own law — they
+// never set `governingLawOverridden`, so `applyEntitySelection` always re-couples
+// the law to the entity. Any attempt to set a divergent law is ignored.
+export function setGoverningLawOverride(intake, entities = SIGNING_ENTITIES) {
+  const entity = findEntity(intake.entityId, entities);
+  return {
+    ...intake,
+    governingLawOverridden: false,
+    governingLawId: lawOptionId(entity?.governing_law),
+  };
 }
 
-// Drops the override and re-couples the law to the picked entity's law.
+// Re-couples the law to the picked entity's law (the only behaviour now — the law
+// is always coupled to the entity).
 export function clearGoverningLawOverride(intake, entities = SIGNING_ENTITIES) {
   const entity = findEntity(intake.entityId, entities);
   return {
@@ -324,57 +333,31 @@ export function selectAddress(intake, addressId, entities = SIGNING_ENTITIES) {
   return { ...intake, addressId };
 }
 
-// The governing law currently in effect for an intake: the explicit choice if
-// any, else the picked entity's law. Returns the {id,label} object so callers
-// (and the payload) carry a coupled, labelled value — never a bare id that
-// could be mis-paired with a label elsewhere.
+// The governing law in effect for an intake. LAW IS LOCKED TO THE ENTITY: it is
+// ALWAYS the picked signing entity's own law (there is no override). Returns the
+// {id,label} object so callers (and the payload) carry a coupled, labelled value —
+// never a bare id that could be mis-paired with a label elsewhere.
 export function effectiveGoverningLaw(intake, entities = SIGNING_ENTITIES, lawOptions = null) {
   const entity = findEntity(intake.entityId, entities);
-  const lawId = intake.governingLawId || lawOptionId(entity?.governing_law);
+  const lawId = lawOptionId(entity?.governing_law);
   if (!lawId) return null;
   const fromOptions = governingLawOptions(entities, lawOptions).find((law) => law.id === lawId);
   if (fromOptions) return fromOptions;
-  // An overridden law id should still resolve to its entity label when it is the
-  // entity's own law; otherwise surface the id as its own label.
-  if (lawOptionId(entity?.governing_law) === lawId) {
-    return { id: lawId, label: entity.governing_law.label || lawId };
-  }
-  return { id: lawId, label: lawId };
+  return { id: lawId, label: entity?.governing_law?.label || lawId };
 }
 
-// The court/venue (forum) for a governing-law OPTION, derived from the entity
-// registry — the SAME resolution the backend uses
-// (nda_generation._forum_for_option_id): the first entity (by registry order)
-// that DEFAULTS to this option, and that entity's `jurisdiction` field. This is
-// how an OVERRIDE's forum tracks the overridden law rather than the picked
-// entity's own court. Returns null when no registry entity defaults to the option
-// (so no court can be resolved) — the preview then shows a placeholder rather than
-// inventing a venue, matching the backend's _require_court_forum refusal.
-export function forumForOptionId(optionId, entities = SIGNING_ENTITIES) {
-  if (!optionId) return null;
-  for (const entity of entities || []) {
-    if (lawOptionId(entity?.governing_law) === optionId) {
-      const forum = String(entity?.jurisdiction || "").trim();
-      if (forum) return forum;
-    }
-  }
-  return null;
-}
-
-// The forum that goes into the live preview for the current intake. With NO
-// override it is the picked entity's own registry court; with an override it is
-// the overridden option's court (the registry entity that defaults to it), so the
-// preview never pairs one jurisdiction's law with another's forum — exactly as the
-// generated document does (nda_generation.entity_party_from_bundle).
+// The court/venue (forum) for the current intake's signing entity. LAW + COURT
+// ARE LOCKED TO THE ENTITY: the court is read DIRECTLY off the picked entity's own
+// `jurisdiction` field — exactly what the generated document writes
+// (nda_generation.entity_party_from_bundle uses `entity.forum`). It is NEVER
+// reconstructed by scanning other registry entities for one that defaults to the
+// same law (that old override path could pair one entity's law with another's
+// court). Returns null when no entity is picked or the entity carries no court.
 export function effectiveForum(intake, entities = SIGNING_ENTITIES) {
   const entity = findEntity(intake.entityId, entities);
   if (!entity) return null;
-  if (!intake.governingLawOverridden) {
-    const own = String(entity?.jurisdiction || "").trim();
-    if (own) return own;
-    return forumForOptionId(lawOptionId(entity.governing_law), entities);
-  }
-  return forumForOptionId(intake.governingLawId, entities);
+  const own = String(entity?.jurisdiction || "").trim();
+  return own || null;
 }
 
 export function selectedEntity(intake, entities = SIGNING_ENTITIES) {
@@ -448,14 +431,14 @@ export function buildDraftPayload(intake = {}, entities = SIGNING_ENTITIES, lawO
             : null,
           // governing_law carries the playbook_option_id join key (entity-model's
           // contract) so downstream generation pulls the matching approved clause.
+          // LAW IS LOCKED TO THE ENTITY: this is always the entity's own law.
           governing_law: law
             ? { playbook_option_id: law.id, label: law.label }
             : null,
-          // True when the law no longer matches the entity's own law — a signal
-          // for generation/review that the coupling was deliberately broken.
-          governing_law_overridden: Boolean(
-            law && entity.governing_law && law.id !== lawOptionId(entity.governing_law),
-          ),
+          // Always false — the law is fixed by the signing entity, there is no
+          // override. The backend rejects (400) any request that tries to override
+          // the law to a different option, so we never signal a coupling break.
+          governing_law_overridden: false,
         }
       : null,
   };
@@ -486,14 +469,13 @@ export function createDraftIntake({ entities = SIGNING_ENTITIES, lawOptions = nu
     hasMultipleAddresses,
     formatAddressLines,
     applyEntitySelection: (intake, id) => applyEntitySelection(intake, id, entities),
-    setGoverningLawOverride,
+    setGoverningLawOverride: (intake) => setGoverningLawOverride(intake, entities),
     clearGoverningLawOverride: (intake) => clearGoverningLawOverride(intake, entities),
     selectAddress: (intake, id) => selectAddress(intake, id, entities),
     effectiveGoverningLaw: (intake) => effectiveGoverningLaw(intake, entities, lawOptions),
     // The court/venue rendered into the preview's governing-law clause, sourced
     // from the bound registry (never a duplicated FE list).
     effectiveForum: (intake) => effectiveForum(intake, entities),
-    forumForOptionId: (optionId) => forumForOptionId(optionId, entities),
     validateDraftIntake: (intake) => validateDraftIntake(intake, entities, lawOptions),
     buildDraftPayload: (intake) => buildDraftPayload(intake, entities, lawOptions),
   };
