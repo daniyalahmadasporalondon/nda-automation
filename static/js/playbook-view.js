@@ -3,6 +3,51 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     max_term_years: 5,
   };
 
+  // DISPLAY-ONLY label maps. These translate machine field/issue keys into the
+  // friendly wording the author already sees elsewhere in this editor. They are
+  // never written back into a value, key, or data-attribute -- the raw key always
+  // remains the stored/posted value. Unknown keys fall back to window.humanizeId.
+  const FIELD_LABELS = {
+    requirement: "Requirement",
+    preferred_position: "Preferred Standard Position",
+    acceptable_language: "Approved Language",
+    redline_template: "Suggested Redline",
+    check_trigger: "Check Trigger Position",
+    standard_exclusions_template: "Standard Exclusions Language",
+  };
+  function fieldLabel(field) {
+    const key = String(field == null ? "" : field);
+    if (Object.prototype.hasOwnProperty.call(FIELD_LABELS, key)) return FIELD_LABELS[key];
+    const fallback = typeof window !== "undefined" && typeof window.humanizeId === "function"
+      ? window.humanizeId
+      : (value) => String(value || "");
+    return fallback(key);
+  }
+
+  // Friendly label for a (possibly dotted) draft-diff field path, e.g.
+  // "rules.pass_conditions" -> "Pass Conditions". The leaf segment is run through
+  // the same curated label dict / humanizer; display-only.
+  function diffFieldLabel(field) {
+    const path = String(field == null ? "" : field);
+    const leaf = path.includes(".") ? path.slice(path.lastIndexOf(".") + 1) : path;
+    return fieldLabel(leaf);
+  }
+
+  const ISSUE_TYPE_LABELS = {
+    none: "No issue",
+    present_but_wrong: "Present but non-compliant",
+    missing: "Missing / absent",
+    unclear: "Ambiguous — needs review",
+  };
+  function issueTypeLabel(issueType) {
+    const key = String(issueType == null ? "" : issueType);
+    if (Object.prototype.hasOwnProperty.call(ISSUE_TYPE_LABELS, key)) return ISSUE_TYPE_LABELS[key];
+    const fallback = typeof window !== "undefined" && typeof window.humanizeId === "function"
+      ? window.humanizeId
+      : (value) => String(value || "");
+    return fallback(key);
+  }
+
   // Last server validation result ({ valid, errors }) or null when not yet run /
   // invalidated by an edit. Drives the validation region and gates Publish.
   let lastValidation = null;
@@ -206,7 +251,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       <form class="playbook-editor playbook-editor-consolidated" id="playbookEditor">
         <div class="admin-head">
           <div>
-            <p class="eyebrow">clause ${escapeHtml(clause.id)}</p>
+            <p class="eyebrow" title="Playbook clause id: ${escapeHtml(clause.id)}">Playbook clause</p>
             <h2>Edit Clause: ${escapeHtml(clause.name)}</h2>
           </div>
           <span class="policy-chip ${escapeHtml(clause.type)}">${escapeHtml(stanceLabel(clause))}</span>
@@ -217,7 +262,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         <section class="playbook-clause-section" data-clause-section="policy">
           <div class="playbook-subpanel-head">
             <h3>Policy</h3>
-            <p>Define the ${escapeHtml(clause.name)} rule the review engine should apply.</p>
+            <p>Define the ${escapeHtml(clause.name)} rule the AI review should apply.</p>
           </div>
           ${clauseAdjudicationNote(clause)}
           <div class="admin-grid">
@@ -291,7 +336,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       return '<p class="admin-note playbook-adjudication-note" data-adjudication-note="governing_law">AI gives a blind second opinion: it independently re-checks governing law and the backend compares the two verdicts.</p>';
     }
     if (clause.id === "non_circumvention") {
-      return '<p class="admin-note playbook-adjudication-note" data-adjudication-note="non_circumvention">AI-adjudicated (not a rule-based checker): the AI judges this clause from the requirement and prohibited positions below.</p>';
+      return '<p class="admin-note playbook-adjudication-note" data-adjudication-note="non_circumvention">AI-adjudicated: the AI judges this clause from the requirement and prohibited positions below.</p>';
     }
     return "";
   }
@@ -574,7 +619,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       const items = view.errors
         .map((error) => {
           const where = error.clause_id
-            ? `<span class="playbook-validation-where">${escapeHtml(clauseNameForId(error.clause_id))}${error.field ? ` &middot; ${escapeHtml(error.field)}` : ""}</span>`
+            ? `<span class="playbook-validation-where">${escapeHtml(clauseNameForId(error.clause_id))}${error.field ? ` &middot; ${escapeHtml(fieldLabel(error.field))}` : ""}</span>`
             : "";
           return `<li>${where}<span>${escapeHtml(error.message)}</span></li>`;
         })
@@ -597,7 +642,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     const items = lastValidation.errors
       .map((error) => {
         const where = error.clause_id
-          ? `<span class="playbook-validation-where">${escapeHtml(clauseNameForId(error.clause_id))}${error.field ? ` &middot; ${escapeHtml(error.field)}` : ""}</span>`
+          ? `<span class="playbook-validation-where">${escapeHtml(clauseNameForId(error.clause_id))}${error.field ? ` &middot; ${escapeHtml(fieldLabel(error.field))}` : ""}</span>`
           : "";
         return `<li>${where}<span>${escapeHtml(error.message)}</span></li>`;
       })
@@ -1114,7 +1159,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     ];
     return fields
       .filter((field) => stableJson(valueAt(clause, field)) !== stableJson(valueAt(saved, field)))
-      .map((field) => `${field}:\n- ${formatDiffValue(valueAt(saved, field))}\n+ ${formatDiffValue(valueAt(clause, field))}`)
+      .map((field) => `${diffFieldLabel(field)}:\n- ${formatDiffValue(valueAt(saved, field))}\n+ ${formatDiffValue(valueAt(clause, field))}`)
       .join("\n\n");
   }
 
@@ -1196,7 +1241,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     if (derived.has("preferred_position") || derived.has("check_trigger")) {
       const leverNote = lever
         ? `For this clause the preferred position and check trigger are generated from ${escapeHtml(lever)} on every review. They cannot be edited as free text here -- change the live lever instead.`
-        : "These fields are auto-derived by the review engine. Edit the live lever to change them.";
+        : "These fields are auto-derived by the AI review. Edit the live lever to change them.";
       return `
         <section class="admin-special" data-derived-standard="1">
           <h3>Standard Position (derived)</h3>
@@ -1297,7 +1342,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         field: "definition_categories",
         kind: "string",
         title: "Required Definition Categories",
-        help: "Categories the Confidential Information definition should cover. Drives the breadth check.",
+        help: "Categories the Confidential Information definition should cover. We flag the clause if the definition is too narrow.",
         placeholder: "e.g. technical information",
         empty: "No required categories configured",
       },
@@ -1314,7 +1359,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       field: "prohibited_position_patterns",
       kind: "named_pattern",
       title: "Prohibited Position Names",
-      help: "The off-position families this clause bans (names only). The matching pattern is derived automatically.",
+      help: "The kinds of clauses this position bans (by name). We work out how to detect each one automatically.",
       placeholder: "e.g. non_compete",
       empty: "No prohibited positions configured",
     }],
@@ -1410,7 +1455,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
           `)
           .join("");
         const nameOnly = config.kind === "named_pattern"
-          ? '<small class="admin-muted">Names only - the matching pattern is derived automatically.</small>'
+          ? '<small class="admin-muted">Names only - detection is handled automatically.</small>'
           : "";
         return `
           <section class="admin-special playbook-check-list" data-check-list="${escapeHtml(config.field)}">
@@ -1577,7 +1622,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         const applyDisabled = validationOk ? "" : "disabled";
         return `
           <article class="playbook-ai-wording-card" data-ai-wording-field="${escapeHtml(field)}">
-            <h4>${escapeHtml(field)}</h4>
+            <h4>${escapeHtml(fieldLabel(field))}</h4>
             <div class="playbook-ai-wording-cols">
               <div class="playbook-ai-wording-old"><span class="admin-muted">Current</span><pre>${escapeHtml(String(value.old || ""))}</pre></div>
               <div class="playbook-ai-wording-new"><span class="admin-muted">AI suggestion</span><textarea data-ai-wording-text="${escapeHtml(field)}" rows="4" readonly>${escapeHtml(String(value.new || ""))}</textarea></div>
@@ -1636,7 +1681,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     clause._aiDraftedFields[field] = true;
     renderClauseDetail();
     const status = clauseDetail.querySelector("[data-ai-wording-status]");
-    if (status) status.textContent = `Applied AI wording to ${field}. AI-drafted - review before publishing.`;
+    if (status) status.textContent = `Applied AI wording to ${fieldLabel(field)}. AI-drafted - review before publishing.`;
   }
 
   function redlinePanelControls(clause) {
@@ -1654,7 +1699,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     return html || `
       <section class="admin-special">
         <h3>No Editable Redline Settings</h3>
-        <p class="admin-muted">This clause uses generated redline behavior from the review engine.</p>
+        <p class="admin-muted">This clause uses generated redline behavior from the AI review.</p>
       </section>
     `;
   }
@@ -1681,7 +1726,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     return `
       <section class="admin-special" data-dynamic-redline="1">
         <h3>Redline Action</h3>
-        <p class="admin-muted">What the review engine does to a flagged paragraph for this clause.</p>
+        <p class="admin-muted">What the AI review does to a flagged paragraph for this clause.</p>
         <label class="admin-field compact">
           <span>Redline Action</span>
           <select name="fallback_redline_action" id="dynamicRedlineAction">${options}</select>
@@ -1734,7 +1779,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     const rows = list
       .map((condition, index) => {
         const issueOptions = ISSUE_TYPES_BY_LIST[field]
-          .map((value) => `<option value="${escapeHtml(value)}" ${String(condition.issue_type || "") === value ? "selected" : ""}>${escapeHtml(value)}</option>`)
+          .map((value) => `<option value="${escapeHtml(value)}" ${String(condition.issue_type || "") === value ? "selected" : ""}>${escapeHtml(issueTypeLabel(value))}</option>`)
           .join("");
         const redlineOptions = DYNAMIC_REDLINE_ACTIONS
           .map((opt) => `<option value="${escapeHtml(opt.value)}" ${String(condition.redline_action || "no_change") === opt.value ? "selected" : ""}>${escapeHtml(opt.label)}</option>`)
@@ -1742,7 +1787,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         return `
           <div class="admin-condition" data-condition-field="${escapeHtml(field)}" data-condition-index="${index}">
             <div class="admin-condition-head">
-              <input type="text" data-condition-id="1" value="${escapeHtml(condition.id || "")}" placeholder="condition id (e.g. ${escapeHtml(field)}_1)">
+              <input type="text" data-condition-id="1" value="${escapeHtml(condition.id || "")}" placeholder="Short identifier (e.g. fail-1)">
               <button class="admin-chip removable" type="button" data-remove-condition="1" title="Remove condition"><span aria-hidden="true">x</span></button>
             </div>
             <textarea data-condition-description="1" rows="2" placeholder="What the AI should judge for this ${escapeHtml(label.toLowerCase())} outcome.">${escapeHtml(condition.description || "")}</textarea>
@@ -1831,7 +1876,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     return `
       <section class="admin-special">
         <h3>Approved Governing Laws</h3>
-        <p class="admin-muted">These jurisdictions drive the AI assessment options, deterministic approved-law check, the law&lt;-&gt;forum recognition the review engine uses, and insertable Governing Law redline choices. The court / forum names the venue that must pair with each law and is required to publish.</p>
+        <p class="admin-muted">The governing laws we accept. The AI review uses this list to decide whether a document's chosen law is approved, to pair each law with its court / forum, and to offer Governing Law redline options. The court / forum names the venue that must go with each law, and is required to publish.</p>
         <div class="admin-policy-options">${rows}</div>
         <div class="admin-inline-add">
           <input id="governingLawInput" type="text" placeholder="Add approved jurisdiction">

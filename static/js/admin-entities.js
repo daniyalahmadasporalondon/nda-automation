@@ -66,6 +66,19 @@ const AdminEntitiesView = (() => {
       if (saveButton) saveButton.disabled = disabled || !dirty;
     }
 
+    // DISPLAY-ONLY friendly name for a governing-law option id. Prefers the
+    // playbook's own label when the id is known; otherwise humanises the raw id
+    // (e.g. "england_and_wales" -> "England And Wales"). Never used as a value.
+    function humanizeLawId(lawId) {
+      const id = String(lawId == null ? "" : lawId);
+      const known = lawOptions.find((option) => option.id === id);
+      if (known && known.label) return known.label;
+      if (typeof window !== "undefined" && typeof window.humanizeId === "function") {
+        return window.humanizeId(id);
+      }
+      return id;
+    }
+
     async function load() {
       if (!panel) return;
       setMessage("Loading signing entities.");
@@ -264,7 +277,7 @@ const AdminEntitiesView = (() => {
       // stale id selectable so the admin can SEE it (and the warning) rather than
       // it silently snapping to another law.
       if (currentId && !options.some((o) => o.id === currentId)) {
-        options.unshift({ id: currentId, label: `${currentId} (not in playbook)` });
+        options.unshift({ id: currentId, label: `${humanizeLawId(currentId)} (no longer in the playbook)` });
       }
       if (!options.length) {
         const opt = document.createElement("option");
@@ -291,7 +304,7 @@ const AdminEntitiesView = (() => {
       const known = lawOptions.some((o) => o.id === lawId);
       if (lawId && !known && playbookAvailable) {
         warning.hidden = false;
-        warning.textContent = `Governing law "${lawId}" is not an approved playbook option. Pick an approved law before saving.`;
+        warning.textContent = `Governing law "${humanizeLawId(lawId)}" is not an approved playbook option. Pick an approved law before saving.`;
       } else {
         warning.hidden = true;
         warning.textContent = "";

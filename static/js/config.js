@@ -29,3 +29,18 @@ const SOURCE_SCROLL_MIN_CHARS_PER_LINE = 24;
 const SOURCE_SCROLL_AVG_CHAR_WIDTH_EM = 0.55;
 const SOURCE_SCROLL_CONTEXT_RATIO = 0.32;
 const RENDERED_SCROLL_CONTEXT_RATIO = 0.24;
+
+// Generic, display-only humaniser for snake/kebab machine ids (e.g.
+// "england_and_wales" -> "England And Wales"). DISPLAY STRINGS ONLY: never feed
+// the result back into a value, key, or data-attribute. Curated maps (per-field
+// label dictionaries) take precedence for known keys; this is the fallback.
+function humanizeId(value) {
+  return String(value == null ? "" : value)
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+if (typeof window !== "undefined") {
+  window.humanizeId = window.humanizeId || humanizeId;
+}
