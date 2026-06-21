@@ -259,6 +259,90 @@ class ExtractionTests(unittest.TestCase):
         self.assertIsNone(lfc.detect_mismatch(text, "england_and_wales", {}))
 
 
+class GenericForumDetectorTests(unittest.TestCase):
+    """The GENERIC law<->forum detector: a forum OUTSIDE the 4 hardcoded foreign
+    buckets (California / Texas / Hong Kong / Paris / Zurich / ...) must now FLAG
+    instead of silently passing. A forum that MATCHES the law's jurisdiction, or is
+    a SUB-REGION of it, must stay SILENT. An unknown/garbage forum token must never
+    guess-flag.
+    """
+
+    _BODY = (
+        "MUTUAL NON-DISCLOSURE AGREEMENT\n\n"
+        "4. Governing Law. This Agreement shall be governed by and construed in "
+        "accordance with the laws of England and Wales.\n\n"
+        "5. Jurisdiction and Venue. {forum}\n"
+    )
+
+    # (label, forum_sentence) for forums the 4 hardcoded buckets MISS entirely.
+    _FOREIGN_FORUMS = [
+        ("california", "The parties submit to the exclusive jurisdiction of the courts of California for any dispute."),
+        ("texas", "The parties submit to the exclusive jurisdiction of the courts of Texas for any dispute."),
+        ("hong_kong", "The parties submit to the exclusive jurisdiction of the courts of Hong Kong for any dispute."),
+        ("paris", "The parties submit to the exclusive jurisdiction of the courts of Paris, France for any dispute."),
+        ("zurich", "Any dispute shall be finally resolved by arbitration seated in Zurich, Switzerland."),
+    ]
+
+    def test_foreign_forum_outside_buckets_now_flags(self) -> None:
+        for name, forum in self._FOREIGN_FORUMS:
+            with self.subTest(forum=name):
+                text = self._BODY.format(forum=forum)
+                finding = lfc.detect_mismatch(text, "england_and_wales", {})
+                self.assertIsNotNone(finding, f"{name}: expected a mismatch finding")
+                assert finding is not None
+                self.assertEqual(finding["reason_code"], lfc.REASON_CODE)
+                self.assertEqual(finding["law_jurisdiction"], "england_and_wales")
+                self.assertIn("England and Wales", finding["reason"])
+
+    def test_matching_jurisdiction_forum_is_silent(self) -> None:
+        # England law + London / England courts -> same family -> NOT flagged.
+        for forum in (
+            "The parties submit to the exclusive jurisdiction of the courts of London, England for any dispute.",
+            "The parties submit to the exclusive jurisdiction of the English courts for any dispute.",
+            "The parties submit to the exclusive jurisdiction of the courts of England and Wales for any dispute.",
+        ):
+            with self.subTest(forum=forum[:40]):
+                text = self._BODY.format(forum=forum)
+                self.assertIsNone(lfc.detect_mismatch(text, "england_and_wales", {}))
+
+    def test_subregion_of_law_jurisdiction_is_silent(self) -> None:
+        # India law + an Indian metro/state forum -> same India family -> silent.
+        text = (
+            "Governing Law. This Agreement shall be governed by the laws of India.\n"
+            "Jurisdiction. The parties submit to the exclusive jurisdiction of the "
+            "courts of Bengaluru for any dispute.\n"
+        )
+        self.assertIsNone(lfc.detect_mismatch(text, "india", {}))
+
+    def test_us_law_us_state_forum_is_within_family(self) -> None:
+        # Delaware (US) law + California courts -> both "us" family, and California
+        # is NOT one of the hardcoded foreign-forum buckets, so the GENERIC layer
+        # collapses it onto the same US family -> silent (sub-region of the law's
+        # jurisdiction). (Note: New York IS a distinct hardcoded bucket and is
+        # intentionally treated as a separate forum by the precision layer.)
+        text = (
+            "Governing Law. This Agreement shall be governed by the laws of the State "
+            "of Delaware.\n"
+            "Jurisdiction. The parties submit to the exclusive jurisdiction of the "
+            "courts of California for any dispute.\n"
+        )
+        self.assertIsNone(lfc.detect_mismatch(text, "delaware", {}))
+
+    def test_unknown_forum_token_does_not_guess_flag(self) -> None:
+        # A forum naming a jurisdiction the family map does not know stays SILENT
+        # (no guess-flag): only RECOGNISABLE foreign families flag.
+        text = self._BODY.format(
+            forum="The parties submit to the jurisdiction of the courts of Wakanda for any dispute."
+        )
+        self.assertIsNone(lfc.detect_mismatch(text, "england_and_wales", {}))
+
+    def test_extract_forum_families_maps_tokens(self) -> None:
+        text = self._BODY.format(
+            forum="The parties submit to the exclusive jurisdiction of the courts of California for any dispute."
+        )
+        self.assertEqual(lfc.extract_forum_families(text), {"us"})
+
+
 class AuthoredForumDerivationTests(unittest.TestCase):
     """FEATURE 1: a governing law authored in the Playbook editor (with its own
     forum_jurisdiction) becomes a recognized law+forum bucket once the buckets are
