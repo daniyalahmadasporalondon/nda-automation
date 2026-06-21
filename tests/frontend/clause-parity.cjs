@@ -149,9 +149,48 @@ async function main() {
     await page.waitForSelector("#playbookList .playbook-row");
 
     // ===================================================================
+    // 0. SIDEBAR NAV: the old top "Clauses | Entities" toggle is GONE; the left
+    //    sidebar carries a Registry group (Signing Entities) ABOVE the Clauses
+    //    group, and the Clauses heading reads "Clauses" (not "Hard Clauses").
+    // ===================================================================
+    assert.equal(
+      await page.$$eval(".playbook-section-switcher", (els) => els.length),
+      0,
+      "the top Clauses | Entities segmented toggle must be removed"
+    );
+    await page.waitForSelector("#playbookEntitiesNavEntry[data-playbook-nav='entities']");
+    // Registry group label must come BEFORE the Clauses group label in the rail.
+    const railLabels = await page.$$eval(
+      ".clause-rail .rail-group-label",
+      (els) => els.map((el) => (el.textContent || "").trim().toLowerCase())
+    );
+    assert.ok(
+      railLabels.indexOf("registry") !== -1 &&
+        railLabels.indexOf("clauses") !== -1 &&
+        railLabels.indexOf("registry") < railLabels.indexOf("clauses"),
+      `Registry must appear above Clauses in the sidebar; got ${JSON.stringify(railLabels)}`
+    );
+    const railText = await page.$eval(".clause-rail", (el) => el.textContent || "");
+    assert.ok(
+      !/hard clauses/i.test(railText),
+      "the sidebar must say 'Clauses', not 'Hard Clauses'"
+    );
+
+    // ===================================================================
     // 1. mutuality (NATIVE): trigger-term chip editor + condition editor LIVE
     // ===================================================================
     await selectClause(page, "mutuality");
+    // Selecting a clause keeps the clause editor panel visible (entities hidden).
+    assert.equal(
+      await page.$eval('[data-playbook-panel="clauses"]', (el) => el.hidden),
+      false,
+      "the clause editor panel must be visible after selecting a clause"
+    );
+    assert.equal(
+      await page.$eval('[data-playbook-panel="entities"]', (el) => el.hidden),
+      true,
+      "the entities panel must be hidden while editing a clause"
+    );
 
     // The consolidated editor carries an EDITABLE trigger-term chip editor for the
     // native clause inline (these were previously read-only display chips only).
