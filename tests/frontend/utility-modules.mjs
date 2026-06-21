@@ -5,7 +5,14 @@ import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 
 import { clauseDisplayName, clausePasses, clauseStatus } from "../../static/js/modules/clause-status.mjs";
-import { friendlyModelName, humanizeId } from "../../static/js/modules/humanize.mjs";
+import {
+  friendlyModelName,
+  humanizeId,
+  humanizeClauseId,
+  humanizeAuditAction,
+  humanizeSettingKey,
+  humanizeCounterKey,
+} from "../../static/js/modules/humanize.mjs";
 import { escapeHtml, joinClasses, mergeClauses } from "../../static/js/modules/html-utils.mjs";
 import {
   fullReplacementOperations,
@@ -2521,6 +2528,43 @@ for (const rawId of [
 }
 // Version is PRESERVED, not downgraded: the "-fast" variant still reads 4.8.
 assert.ok(friendlyModelName("anthropic/claude-opus-4.8-fast").includes("4.8"));
+
+// humanizeClauseId: the admin "Target clauses" fact rendered raw clause ids.
+// The curated map carries the playbook-exact names, including the two that the
+// generic humanizer mangles (hyphen + lowercase "and").
+assert.equal(humanizeClauseId("confidential_information"), "Confidential Information");
+assert.equal(humanizeClauseId("governing_law"), "Governing Law");
+assert.equal(humanizeClauseId("mutuality"), "Mutuality");
+assert.equal(humanizeClauseId("non_circumvention"), "Non-Circumvention");
+assert.equal(humanizeClauseId("signatures"), "Signatures");
+assert.equal(humanizeClauseId("term_and_survival"), "Term and Survival");
+// An unmapped clause id falls back to the generic Title Case humanizer.
+assert.equal(humanizeClauseId("some_future_clause"), "Some Future Clause");
+assert.equal(humanizeClauseId(""), "");
+assert.equal(humanizeClauseId(null), "");
+
+// humanizeAuditAction: the admin "Last settings change" fact rendered the raw
+// audit action key (`admin_added`). Map known actions; humanize the rest.
+assert.equal(humanizeAuditAction("admin_added"), "Admin added");
+assert.equal(humanizeAuditAction("admin_removed"), "Admin removed");
+assert.equal(humanizeAuditAction("settings_update"), "Settings updated");
+assert.equal(humanizeAuditAction("personalisation_settings_update"), "Personalisation settings updated");
+assert.equal(humanizeAuditAction("drive_settings_update"), "Drive settings updated");
+assert.equal(humanizeAuditAction("some_new_action"), "Some New Action");
+assert.equal(humanizeAuditAction(""), "");
+
+// humanizeSettingKey: the same fact rendered raw dotted setting keys
+// (`admins.email`). Render a readable "Group · Field" with acronyms preserved.
+assert.equal(humanizeSettingKey("admins.email"), "Admins · Email");
+assert.equal(humanizeSettingKey("ai_review.api_key"), "AI Review · API Key");
+assert.equal(humanizeSettingKey("review_runtime.active_review_engine"), "Review Runtime · Active Review Engine");
+assert.equal(humanizeSettingKey(""), "");
+
+// humanizeCounterKey: the admin Health "Other operational failures" fact
+// rendered raw telemetry counter keys; DOCX/CSRF stay upper-cased.
+assert.equal(humanizeCounterKey("docx_export_content_failures"), "DOCX Export Content Failures");
+assert.equal(humanizeCounterKey("csrf_rejections"), "CSRF Rejections");
+assert.equal(humanizeCounterKey("gmail_sync_failures"), "Gmail Sync Failures");
 
 // clauseDisplayName now HUMANIZES the id fallback (the leak-site fix): a clause
 // with no curated name renders "IP Assignment", not the raw "ip_assignment".

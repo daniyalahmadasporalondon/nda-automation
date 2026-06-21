@@ -16,7 +16,7 @@
 // Versioned specifier so a returning browser re-fetches clause-status.mjs when
 // its bytes change (its clauseDisplayName now humanizes a name-less clause id).
 // Bump this token in lockstep with the clause-status.mjs bytes.
-import { clauseStatus, clausePasses, clauseDisplayName, clauseIsDynamic } from "./clause-status.mjs?v=20260621humanize1";
+import { clauseStatus, clausePasses, clauseDisplayName, clauseIsDynamic } from "./clause-status.mjs?v=20260621humanize2";
 // Versioned specifier so a returning browser re-fetches humanize.mjs when its
 // bytes change (a bare relative import resolves to a query-less URL the browser
 // caches independently of this file's ?v=). global-bridge.mjs is the SOLE
@@ -24,7 +24,14 @@ import { clauseStatus, clausePasses, clauseDisplayName, clauseIsDynamic } from "
 // window.friendlyModelName via this bridge, never re-importing), so versioning
 // the specifier here cannot create a duplicate module instance. Keep this token
 // in lockstep with the humanize.mjs bytes.
-import { humanizeId, friendlyModelName } from "./humanize.mjs?v=20260621humanize1";
+import {
+  humanizeId,
+  friendlyModelName,
+  humanizeClauseId,
+  humanizeAuditAction,
+  humanizeSettingKey,
+  humanizeCounterKey,
+} from "./humanize.mjs?v=20260621humanize2";
 import { escapeHtml, joinClasses, mergeClauses } from "./html-utils.mjs";
 import {
   fullReplacementOperations,
@@ -88,6 +95,13 @@ Object.assign(window, {
   // screens legal users read. Called only inside render functions at runtime.
   humanizeId,
   friendlyModelName,
+  // Admin-panel humanizers: clause-id list, settings-audit action/setting keys,
+  // and telemetry counter keys all leaked raw to the admin screens. These keep
+  // the DISPLAY strings human; the underlying ids/keys stay untouched.
+  humanizeClauseId,
+  humanizeAuditAction,
+  humanizeSettingKey,
+  humanizeCounterKey,
   escapeHtml,
   joinClasses,
   mergeClauses,
