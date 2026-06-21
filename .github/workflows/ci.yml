@@ -112,3 +112,6 @@ jobs:
 
       - name: Run review-failure notification test
         run: npm run test:frontend:notifications
+
+      - name: Run shimmer-skeleton loading-state test
+        run: npm run test:frontend:shimmer
