@@ -35,6 +35,18 @@ OPERATIVE_SENTENCE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Deterministic section-role cues. ADDITIVE: ``role`` is a label surfaced to the
+# reviewer so a recital can be weighed differently from an operative clause; it never
+# changes any decision logic. Ordering of the checks in ``_section_role`` is the
+# precedence (signature > definitions > recital > operative > body).
+RECITAL_CUE_RE = re.compile(r"\b(?:whereas|recital|background|in\s+consideration\s+of)\b", re.IGNORECASE)
+DEFINITIONS_HEADING_RE = re.compile(r"\b(?:definitions?|interpretation|defined\s+terms?)\b", re.IGNORECASE)
+SIGNATURE_CUE_RE = re.compile(
+    r"\b(?:in\s+witness\s+whereof|signed\s+by|signature|for\s+and\s+on\s+behalf|"
+    r"authorised\s+signatory|authorized\s+signatory|duly\s+authori[sz]ed|executed\s+as)\b",
+    re.IGNORECASE,
+)
+
 EXPLICIT_HEADING_RE = re.compile(
     r"^\s*(?P<kind>clause|article|section|schedule|annex|annexure|appendix)\s+"
     rf"(?P<number>{EXPLICIT_NUMBER_PATTERN})(?P<separator>\s*[:.\-\u2013\u2014]\s*|\s+)"
@@ -167,9 +179,63 @@ def _detect_section_candidates(paragraphs: List[Paragraph]) -> List[_SectionCand
         candidate = _candidate_for_paragraph(position, paragraph, candidates)
         if candidate is None or position in seen_positions:
             continue
+        # PDF source-backed trust tier: a heading the regex detectors accepted on a
+        # PDF paragraph becomes source-backed ONLY when its captured geometry (a
+        # larger heading font) corroborates the regex. A bare regex match with no
+        # geometric corroboration (e.g. an address digit "145 Main Street" misread as
+        # a clause) is left WITHOUT a ``source`` mapping, so the source-backed gate
+        # stays closed for it and the phantom never reaches the verifier/budget.
+        _apply_pdf_confidence(candidate, paragraph)
         candidates.append(candidate)
         seen_positions.add(position)
     return candidates
+
+
+# A heading font must exceed the page body font by this factor to corroborate a PDF
+# regex heading match. Mirrors pdf_text._HEADING_FONT_FACTOR so the geometry trust
+# tier agrees with the splitter's own heading-font cue.
+_PDF_HEADING_FONT_FACTOR = 1.15
+
+
+def _apply_pdf_confidence(candidate: _SectionCandidate, paragraph: Paragraph) -> None:
+    """Mark a PDF regex heading as source-backed IFF geometry corroborates it.
+
+    The DISTINCT PDF trust tier. The keystone guard: a section is promoted to
+    ``source={"kind": "pdf_confident", ...}`` ONLY when BOTH hold:
+
+      * REGEX — the heading was already accepted by one of the structural detectors
+        (this function only runs on an accepted ``candidate``), i.e. it is an
+        explicit/numbered/uppercase heading, NOT arbitrary prose; AND
+      * GEOMETRY — the captured per-paragraph ``pdf_geometry`` shows the heading line
+        set in a font MEANINGFULLY LARGER than the page's dominant body font
+        (``heading_font_ratio >= _PDF_HEADING_FONT_FACTOR``).
+
+    A bare regex match with no geometry corroboration (no ``pdf_geometry``, no body
+    font, or a body-sized heading font) is left WITHOUT a ``source``, so it is NOT
+    source-backed — this is precisely what keeps a phantom heading (an address line,
+    a body-sized "Clause 145" misread) out of the trusted structural features. The
+    geometry is derived from the document's own typography, never from the untrusted
+    text, so it is not a new injection surface.
+    """
+    geometry = paragraph.get("pdf_geometry")
+    if not isinstance(geometry, dict):
+        return
+    ratio = geometry.get("heading_font_ratio")
+    if not isinstance(ratio, (int, float)) or ratio < _PDF_HEADING_FONT_FACTOR:
+        return
+    source: Dict[str, object] = {"kind": "pdf_confident"}
+    font_size = geometry.get("font_size")
+    if isinstance(font_size, (int, float)):
+        source["font_size"] = font_size
+    body_font = geometry.get("body_font")
+    if isinstance(body_font, (int, float)):
+        source["body_font"] = body_font
+    source["heading_font_ratio"] = float(ratio)
+    if isinstance(paragraph.get("source_part"), str):
+        source["source_part"] = paragraph["source_part"]
+    if isinstance(paragraph.get("source_index"), int):
+        source["source_index"] = paragraph["source_index"]
+    candidate.source = source
 
 
 def _candidate_for_paragraph(
@@ -393,6 +459,7 @@ def _section_dict(
         "heading": heading,
         "number": number,
         "level": level,
+        "role": _section_role(kind, number, heading, paragraphs),
         "paragraph_ids": paragraph_ids,
         "start_paragraph_id": _paragraph_id(first_paragraph),
         "end_paragraph_id": _paragraph_id(last_paragraph),
@@ -405,6 +472,42 @@ def _section_dict(
     if source:
         section["source"] = source
     return section
+
+
+def _section_role(
+    kind: str,
+    number: str | None,
+    heading: str,
+    paragraphs: List[Paragraph],
+) -> str:
+    """Classify a section into a deterministic, ADDITIVE role label.
+
+    Roles (precedence order):
+      * ``signature``   -- a signature-block cue (``IN WITNESS WHEREOF``, ``Signed by``,
+                           ``for and on behalf``, an authorised-signatory line).
+      * ``definitions`` -- the heading matches a definitions/interpretation cue.
+      * ``recital``     -- a ``preamble`` section, or one carrying a WHEREAS/recital cue.
+      * ``operative``   -- a numbered clause whose body carries an operative verb
+                           (via the shared ``OPERATIVE_SENTENCE_RE``).
+      * ``body``        -- everything else.
+
+    Purely a hint for the reviewer (weigh a recital differently from an operative
+    clause). It is derived from the deterministic structure + the section's own text,
+    never alters any verdict, and is computed best-effort (any cue miss falls back to
+    ``body``)."""
+    heading_text = str(heading or "")
+    body_text = " ".join(str(paragraph.get("text", "")) for paragraph in paragraphs)
+    combined = f"{heading_text} {body_text}"
+
+    if SIGNATURE_CUE_RE.search(combined):
+        return "signature"
+    if DEFINITIONS_HEADING_RE.search(heading_text):
+        return "definitions"
+    if kind == "preamble" or RECITAL_CUE_RE.search(combined):
+        return "recital"
+    if number and OPERATIVE_SENTENCE_RE.search(body_text):
+        return "operative"
+    return "body"
 
 
 def _find_parent_id(sections: List[Dict[str, object]], candidate: _SectionCandidate) -> str | None:
@@ -524,6 +627,7 @@ def _resolver_section_record(section: Dict[str, object]) -> Dict[str, object]:
         "label": str(section.get("label") or ""),
         "heading": str(section.get("heading") or ""),
         "level": int(section.get("level", 0)) if isinstance(section.get("level"), int) else 0,
+        "role": str(section.get("role") or "body"),
         "paragraph_ids": [
             paragraph_id
             for paragraph_id in section.get("paragraph_ids", [])
