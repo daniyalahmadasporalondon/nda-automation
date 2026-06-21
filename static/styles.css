@@ -11687,6 +11687,13 @@ label.is-hidden {
   color: #fff;
 }
 
+/* The section switcher toggles [hidden] on the sibling surfaces. The Clauses
+   surface (.playbook-shell) sets display:grid, which would otherwise beat the
+   [hidden] attribute's user-agent display:none -- so honour hidden explicitly. */
+[data-playbook-surface][hidden] {
+  display: none !important;
+}
+
 /* ---- Entities surface inside the Playbook editor ------------------------- */
 .playbook-entities {
   display: grid;

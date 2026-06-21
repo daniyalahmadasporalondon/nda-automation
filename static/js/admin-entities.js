@@ -146,6 +146,22 @@ const AdminEntitiesView = (() => {
       entities.forEach((entity) => {
         list.appendChild(buildCard(entity));
       });
+      // autoGrow at build time can see scrollHeight 0 (the textarea was not yet
+      // attached/laid out), so re-size every lines box once the cards are in the
+      // DOM, on the next frame when layout is settled.
+      growAllAddressLines();
+    }
+
+    function growAllAddressLines() {
+      if (!list) return;
+      const run = () => {
+        list.querySelectorAll('[data-address-field="lines"]').forEach((area) => autoGrow(area));
+      };
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(run);
+      } else {
+        run();
+      }
     }
 
     function buildCard(entity, { isNew = false } = {}) {

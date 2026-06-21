@@ -104,6 +104,13 @@ async function main() {
     // --- 2. Switch to Entities -> the registry loads ----------------------------
     await page.click('[data-playbook-section="entities"]');
     await page.waitForSelector('[data-playbook-surface="entities"]:not([hidden])');
+    // The Clauses surface must be genuinely hidden (display:none), not merely
+    // [hidden]-attributed — .playbook-shell sets display:grid which would beat it.
+    const clausesDisplay = await page.$eval(
+      '[data-playbook-surface="clauses"]',
+      (el) => getComputedStyle(el).display
+    );
+    assert.equal(clausesDisplay, "none", "Clauses surface must be hidden when Entities is active");
     await page.waitForSelector("#playbookEntitiesList .entity-card");
     const cardCount = await page.$$eval("#playbookEntitiesList .entity-card", (c) => c.length);
     assert.ok(cardCount >= 1, "the seeded signing entities should render in the Playbook");
@@ -167,7 +174,11 @@ async function main() {
     await page.fill(`${newCard} [data-entity-field="legal_name"]`, "Test Co Limited");
     await page.fill(`${newCard} [data-entity-field="short_name"]`, "Test Co");
     await page.fill(`${newCard} [data-entity-field="jurisdiction"]`, "courts in England and Wales");
+    // incorporation_jurisdiction is a required field (pre-existing validation rule).
+    await page.fill(`${newCard} [data-entity-field="incorporation_jurisdiction"]`, "England and Wales");
     await page.fill(`${newCard} .entity-address [data-address-field="lines"]`, "1 Test Street\nLondon");
+    // The new entity's governing law defaults to the first approved playbook option;
+    // align the court text is not required, but make the law explicit to be safe.
 
     // --- 5. Save registry -> POST carries the correct {entities:[...]} payload ---
     const saveReq = page.waitForRequest(
