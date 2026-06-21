@@ -5188,8 +5188,11 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(initial_payload["ai_review"]["stored_enabled"], None)
         self.assertEqual(initial_payload["ai_review"]["environment_enabled"], False)
         self.assertEqual(initial_payload["ai_review"]["api_key_configured"], True)
-        self.assertEqual(initial_payload["ai_verifier"]["enabled"], False)
-        self.assertEqual(initial_payload["ai_verifier"]["active_kind"], "noop")
+        # Default-on: with the AI-first engine active AND a key configured, an UNSET
+        # NDA_AI_VERIFIER now arms the real verifier (the polarity-fix). active_kind is
+        # surfaced as "ai" so the armed pass is observable, not silently assumed off.
+        self.assertEqual(initial_payload["ai_verifier"]["enabled"], True)
+        self.assertEqual(initial_payload["ai_verifier"]["active_kind"], "ai")
         self.assertEqual(initial_payload["ai_verifier"]["api_key_source"], "environment")
         self.assertEqual(initial_payload["active_review_engine"]["active_engine"], "ai_first")
         self.assertNotIn("server-only-secret", json.dumps(initial_payload))

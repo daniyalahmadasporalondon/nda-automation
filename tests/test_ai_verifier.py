@@ -880,7 +880,6 @@ class VerifierDefaultOnTests(unittest.TestCase):
     hard kill-switch and a disabled AI review fires no verifier call."""
 
     AI_FIRST_ENGINE = "ai_first"
-    DETERMINISTIC_ENGINE = "deterministic"
 
     def _engine_env(self, engine):
         # conftest pins NDA_ACTIVE_REVIEW_ENGINE=ai_first; override per test.
@@ -903,13 +902,25 @@ class VerifierDefaultOnTests(unittest.TestCase):
                 self.assertFalse(verifier_enabled())
                 self.assertIs(resolve_verifier(), noop_verifier)
 
-    def test_unset_with_deterministic_engine_stays_noop_even_if_keyed(self):
-        # The default-on only arms under the AI-first engine. A deterministic active
-        # engine keeps the verifier dormant on an unset flag (no AI overlay there).
-        with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: "", **self._engine_env(self.DETERMINISTIC_ENGINE)}, clear=False):
+    def test_unset_falls_back_to_noop_when_engine_lookup_is_not_ai_first(self):
+        # The default-on is GATED on the AI-first engine. The global config always
+        # resolves to ai_first today (deterministic is only reachable via force_engine
+        # at generation call sites), so the gate is exercised here by patching the
+        # engine lookup to a non-ai-first value -- proving the gate, not just the key.
+        with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: "", **self._engine_env(self.AI_FIRST_ENGINE)}, clear=False):
             with patch.object(ai_verifier, "_verifier_api_key", return_value="sk-test"):
-                self.assertFalse(verifier_enabled())
-                self.assertIs(resolve_verifier(), noop_verifier)
+                with patch.object(ai_verifier, "_active_engine_is_ai_first", return_value=False):
+                    self.assertFalse(verifier_enabled())
+                    self.assertIs(resolve_verifier(), noop_verifier)
+
+    def test_engine_lookup_failure_fails_safe_to_off(self):
+        # If active_review_engine() ever throws, the gate must fail safe (verifier off),
+        # never fail open into unexpected AI calls.
+        with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: ""}, clear=False):
+            with patch.object(ai_verifier, "_verifier_api_key", return_value="sk-test"):
+                with patch("nda_automation.review_engine.active_review_engine", side_effect=RuntimeError("boom")):
+                    self.assertFalse(ai_verifier._active_engine_is_ai_first())
+                    self.assertFalse(verifier_enabled())
 
     def test_explicit_false_is_a_killswitch_even_when_ai_first_and_keyed(self):
         # The kill-switch must survive the new default: =false forces noop regardless.
@@ -931,11 +942,12 @@ class VerifierDefaultOnTests(unittest.TestCase):
             self.assertTrue(status["default_on_when_ai_first"])
             self.assertIsNone(status["env_override"])
 
-    def test_status_unset_keyed_deterministic_reports_engine_reason(self):
-        with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: "", **self._engine_env(self.DETERMINISTIC_ENGINE)}, clear=False):
+    def test_status_unset_keyed_non_ai_first_reports_engine_reason(self):
+        with patch.dict(os.environ, {VERIFIER_ENV_ENABLED: ""}, clear=False):
             with patch.object(ai_verifier, "_verifier_api_key", return_value="sk-test"):
                 with patch.object(ai_verifier, "_verifier_api_key_source", return_value="environment"):
-                    status = verifier_status()
+                    with patch.object(ai_verifier, "_active_engine_is_ai_first", return_value=False):
+                        status = verifier_status()
             self.assertEqual(status["active_kind"], "noop")
             self.assertEqual(status["fallback_reason"], "engine_not_ai_first")
 
