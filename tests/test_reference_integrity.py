@@ -90,9 +90,12 @@ class ReferenceIntegritySignalTests(unittest.TestCase):
         self.assertEqual(signal["dangling_reference_count"], 0)
         self.assertEqual(signal["issues"], [])
 
-    def test_suppressed_on_pdf_or_plain_text_parse(self):
-        # A PDF / plain-text parse carries no numbering metadata, so cross-reference
-        # targets cannot be trusted -- guard #1 disables the signal.
+    def test_dangling_reference_fires_on_pdf_or_plain_text_parse(self):
+        # PROOF (change #2): a PDF / plain-text parse with NO Word numbering metadata
+        # (docx_numbered_paragraph_count == 0) but cleanly SEPARATED sections now gets
+        # the dangling-reference signal. Guard #1 is the COLLAPSE DETECTOR, not
+        # "DOCX-numbered only": "Schedule 3" is referenced but no Schedule 3 exists, and
+        # the parse did NOT collapse (3 well-separated sections), so the signal fires.
         paragraphs = split_document_paragraphs("\n\n".join([
             "Section 1 Definitions",
             "Confidential Information means non-public information.",
@@ -102,16 +105,18 @@ class ReferenceIntegritySignalTests(unittest.TestCase):
             "The obligations in Section 2 survive termination.",
         ]))
         structure = build_contract_structure(paragraphs)
+        # No Word numbering metadata at all -- the OLD guard would have suppressed this.
         self.assertEqual(structure["stats"]["docx_numbered_paragraph_count"], 0)
         resolver = resolve_document_references(paragraphs, structure)
 
         signal = build_reference_integrity_signal(resolver, structure)
 
-        self.assertFalse(signal["applicable"])
-        self.assertEqual(signal["skipped_reason"], "not_docx_numbered")
-        self.assertEqual(signal["status"], "ok")
-        self.assertEqual(signal["dangling_reference_count"], 0)
-        self.assertEqual(signal["issues"], [])
+        self.assertTrue(signal["applicable"])
+        self.assertEqual(signal["skipped_reason"], "")
+        self.assertEqual(signal["status"], "issues_found")
+        self.assertEqual(signal["dangling_reference_count"], 1)
+        self.assertEqual(signal["issues"][0]["kind"], "schedule")
+        self.assertIn("3", signal["issues"][0]["missing_numbers"])
 
     def test_suppressed_on_collapsed_single_section_parse(self):
         # A parse that collapsed to a single section cannot validate references --

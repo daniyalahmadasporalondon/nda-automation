@@ -634,7 +634,7 @@ def _paragraph_record(
 
 # Section-record keys surfaced to the model per paragraph. Each is a structural
 # label, not document body text, so none of these widens the injection surface.
-_PARAGRAPH_SECTION_FIELDS = ("section_id", "number", "label", "kind", "heading", "level")
+_PARAGRAPH_SECTION_FIELDS = ("section_id", "number", "label", "kind", "heading", "level", "role")
 
 
 def _paragraph_structure_lookup(
@@ -667,6 +667,7 @@ def _paragraph_structure_lookup(
             "kind": str(section.get("kind") or ""),
             "heading": str(section.get("heading") or ""),
             "level": int(section.get("level")) if isinstance(section.get("level"), int) else None,
+            "role": str(section.get("role") or "body"),
         }
         for paragraph_id in section.get("paragraph_ids", []) or []:
             if isinstance(paragraph_id, str) and paragraph_id:
@@ -717,6 +718,9 @@ def _structure_summary(
                     for paragraph_id in (section.get("paragraph_ids", []) or [])
                     if isinstance(paragraph_id, str) and paragraph_id
                 ],
+                # Deterministic role hint (recital/operative/definitions/signature/body)
+                # so the model can weigh a recital differently from an operative clause.
+                "role": str(section.get("role") or "body"),
             })
     return {
         "available": True,
