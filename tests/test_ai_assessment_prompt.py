@@ -275,6 +275,62 @@ class AIAssessmentPromptTests(unittest.TestCase):
         self.assertIn("1", numbers)
         self.assertIn("2", numbers)
 
+    def test_packet_structure_carries_cross_reference_resolution_map(self):
+        # A body that says "Section 4" must reach the model already resolved: the
+        # structure block now carries the alias->section map (from reference_index)
+        # plus each section's parent/paragraph linkage. Proves NON-VACUITY by also
+        # building the summary against a bare structure and asserting those resolution
+        # fields are ABSENT there (i.e. the helper, not the fixture, supplies them).
+        from nda_automation.contract_structure import build_contract_structure
+        from nda_automation.review_document import split_document_paragraphs
+
+        source = "\n\n".join([
+            "1. Confidentiality. Subject to the exclusions in Section 4, keep it secret.",
+            "2. Term. Two years.",
+            "3. Governing Law. Laws of California apply.",
+            "4. Exclusions. Public information is excluded.",
+        ])
+        paragraphs = split_document_paragraphs(source)
+        structure = build_contract_structure(paragraphs)
+        packet = build_ai_assessment_packet(
+            source, playbook=load_playbook(), paragraphs=paragraphs, contract_structure=structure
+        )
+
+        summary = packet["structure"]
+
+        # Document-level cross-reference resolution map: "Section 4" -> its section_id.
+        references = summary["references"]
+        alias_map = references["alias_to_section_id"]
+        self.assertIn("number:4", alias_map)
+        self.assertEqual(alias_map["number:4"], "section-4")
+        self.assertEqual(references["ambiguous_alias_keys"], [])
+
+        # Per-section hierarchy + paragraph linkage now present on every outline entry.
+        by_id = {section["section_id"]: section for section in summary["sections"]}
+        self.assertIn("section-4", by_id)
+        self.assertIn("parent_id", by_id["section-4"])
+        self.assertIn("paragraph_ids", by_id["section-1"])
+        self.assertTrue(by_id["section-1"]["paragraph_ids"])  # non-empty linkage
+
+        # NON-VACUITY: the linkage/reference fields are added by _structure_summary, not
+        # inherited from any prior packet shape. A summary built with no reference_index
+        # exposes an empty map -- so "Section 4" is ONLY resolvable because the helper
+        # surfaced the real index above.
+        from nda_automation.ai_assessment_prompt import _structure_summary
+
+        bare = _structure_summary({"sections": []}, {})
+        self.assertEqual(bare["references"], {"alias_to_section_id": {}, "ambiguous_alias_keys": []})
+        self.assertNotIn("number:4", bare["references"]["alias_to_section_id"])
+
+    def test_structure_summary_unavailable_when_no_structure(self):
+        # The references block (and the linkage fields) are gated on the existing
+        # `available` path: with no structure at all, none are emitted.
+        from nda_automation.ai_assessment_prompt import _structure_summary
+
+        summary = _structure_summary(None, {})
+        self.assertFalse(summary["available"])
+        self.assertNotIn("references", summary)
+
     def test_packet_without_structure_omits_section_fields(self):
         # Backward compatible: with no structure supplied, paragraph records carry no
         # `section` key and the summary reports unavailable.
