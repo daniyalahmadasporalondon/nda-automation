@@ -239,13 +239,23 @@ const AdminAiView = (() => {
         setFact("last-settings-change", "None");
         return;
       }
+      const humanizeSetting = typeof window !== "undefined" && typeof window.humanizeSettingKey === "function"
+        ? window.humanizeSettingKey
+        : (value) => String(value);
+      const humanizeAction = typeof window !== "undefined" && typeof window.humanizeAuditAction === "function"
+        ? window.humanizeAuditAction
+        : (value) => String(value);
       const changedSettings = Array.isArray(latest.changes)
         ? latest.changes
             .map((change) => change.setting)
             .filter((setting) => setting && !String(setting).includes("fallback"))
+            .map((setting) => humanizeSetting(setting))
             .join(", ")
         : "";
-      setFact("last-settings-change", changedSettings ? `${latest.action}: ${changedSettings}` : latest.action || "settings_update");
+      // Was `${rawAction}: ${rawDottedSettingKeys}` (e.g. "admin_added: admins.email").
+      // Render a human phrase: "Admin added (Admins · Email)".
+      const actionLabel = humanizeAction(latest.action) || humanizeAction("settings_update");
+      setFact("last-settings-change", changedSettings ? `${actionLabel} (${changedSettings})` : actionLabel);
     }
 
     function renderToggle(enabled) {
@@ -291,7 +301,13 @@ const AdminAiView = (() => {
 
     function targetClausesLabel(values) {
       if (!Array.isArray(values) || !values.length) return "None";
-      return values.join(", ");
+      // The backend sends raw clause ids (`non_circumvention`); humanize each for
+      // display via the shared clause humanizer (playbook-exact names, generic
+      // Title Case fallback). The ids themselves stay the data key.
+      const humanize = typeof window !== "undefined" && typeof window.humanizeClauseId === "function"
+        ? window.humanizeClauseId
+        : (value) => String(value);
+      return values.map((value) => humanize(value)).filter(Boolean).join(", ");
     }
 
     function verifierKindLabel(status = {}) {

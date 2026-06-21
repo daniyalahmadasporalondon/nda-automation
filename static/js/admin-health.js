@@ -184,7 +184,13 @@ const AdminHealthView = (() => {
     function otherFailuresLabel(other) {
       const flagged = Object.entries(other).filter(([, value]) => Number(value) > 0);
       if (!flagged.length) return "None";
-      return flagged.map(([key, value]) => `${key} ${value}`).join(", ");
+      // Humanize the raw counter key (`docx_export_content_failures` ->
+      // "DOCX Export Content Failures") for this user-facing fact. The collapsible
+      // "Raw counters" debug section below keeps the literal keys deliberately.
+      const humanize = typeof window !== "undefined" && typeof window.humanizeCounterKey === "function"
+        ? window.humanizeCounterKey
+        : (value) => String(value);
+      return flagged.map(([key, value]) => `${humanize(key)} ${value}`).join(", ");
     }
 
     function caveatLabel(telemetry, health) {

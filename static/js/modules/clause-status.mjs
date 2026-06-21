@@ -1,7 +1,7 @@
 // Versioned specifier kept IDENTICAL to the one in global-bridge.mjs so both
 // importers resolve the same URL -> a single humanize.mjs module instance, and a
 // returning browser re-fetches it when its bytes change. Bump both in lockstep.
-import { humanizeId } from "./humanize.mjs?v=20260621humanize1";
+import { humanizeId } from "./humanize.mjs?v=20260621humanize2";
 
 export function clauseStatus(clause) {
   const rawStatus = clause?.status || "idle";
