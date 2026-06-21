@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import ssl
@@ -23,6 +24,14 @@ from .review_state import (
     CLAUSE_DECISION_PASS,
     CLAUSE_DECISION_REVIEW,
 )
+
+LOGGER = logging.getLogger(__name__)
+
+# Client-safe message for any OpenRouter transport/HTTP failure. The raw provider
+# error body (which can name the model slug, provider, and quota state the app
+# hides from non-admins) is logged server-side ONLY and never folded into the
+# exception that reaches the route layer.
+AI_UNAVAILABLE_MESSAGE = "AI review is temporarily unavailable."
 
 AI_REVIEW_VERSION = 1
 DEFAULT_OPENROUTER_MODEL = "anthropic/claude-opus-4.8-fast"
@@ -140,6 +149,21 @@ class AIReviewError(RuntimeError):
     pass
 
 
+def _ai_unavailable_message(status_code: int) -> str:
+    """Map an upstream HTTP status to a coarse, non-leaky client message.
+
+    Returns only a category (rate-limited / misconfigured / outage) — never the
+    provider error body, model slug, provider name, or quota figures.
+    """
+    if status_code in (401, 403):
+        return "AI review is temporarily unavailable (service misconfigured)."
+    if status_code == 429:
+        return "AI review is temporarily unavailable (rate limited)."
+    if status_code >= 500:
+        return "AI review is temporarily unavailable (upstream outage)."
+    return AI_UNAVAILABLE_MESSAGE
+
+
 class OpenRouterAIReviewer:
     def __init__(
         self,
@@ -170,10 +194,17 @@ class OpenRouterAIReviewer:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds, context=_trusted_https_context()) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
-            message = error.read().decode("utf-8", errors="replace")[:500]
-            raise AIReviewError(f"OpenRouter API returned HTTP {error.code}: {message}") from error
+            body = error.read().decode("utf-8", errors="replace")[:500]
+            LOGGER.warning(
+                "OpenRouter review call failed: HTTP %s (model=%s) body=%s",
+                error.code,
+                self.model,
+                body,
+            )
+            raise AIReviewError(_ai_unavailable_message(error.code)) from error
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
-            raise AIReviewError(f"OpenRouter API request failed: {error}") from error
+            LOGGER.warning("OpenRouter review request failed (model=%s): %s", self.model, error)
+            raise AIReviewError(AI_UNAVAILABLE_MESSAGE) from error
 
         record_openrouter_usage(payload, feature="review", model=self.model)
         response_text = _openrouter_response_text(payload)

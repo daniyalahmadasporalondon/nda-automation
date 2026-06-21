@@ -122,7 +122,12 @@ def review_nda_with_active_engine(
     except AIAssessorError as error:
         telemetry.increment("active_review_ai_first_failed")
         telemetry.increment("active_review_ai_first_fail_closed")
-        raise ActiveReviewEngineError(f"AI-first review failed: {error}") from error
+        # The assessor already produced a client-safe, generic message (the raw
+        # provider error body / model slug was logged server-side, never folded into
+        # the exception). Forward it verbatim — adding a wrapper prefix here would
+        # only obscure that stable message, and re-interpolating arbitrary text would
+        # risk re-leaking. The 502 surfaced at routes/review.py echoes this string.
+        raise ActiveReviewEngineError(str(error)) from error
 
     telemetry.increment("active_review_ai_first_completed")
     ai_first_status = _ai_first_status(result)

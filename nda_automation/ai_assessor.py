@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import urllib.error
@@ -23,10 +24,12 @@ from .ai_first_review import build_ai_first_review_result
 from .clause_localization import build_clause_localization
 from .contract_structure import build_contract_structure
 from .ai_review import (
+    AI_UNAVAILABLE_MESSAGE,
     DEFAULT_AI_TIMEOUT_SECONDS,
     DEFAULT_OPENROUTER_MODEL,
     OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
     _ai_review_settings,
+    _ai_unavailable_message,
     _configured_api_key,
     _sanitize_model_name,
     _trusted_https_context,
@@ -36,6 +39,8 @@ from .openrouter_usage import record_openrouter_usage
 from .phase_observability import REVIEW_PHASE_EVENT, PhaseTimer
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
 from .review_state import REVIEW_STATE_CHECK, REVIEW_STATE_REVIEW
+
+LOGGER = logging.getLogger(__name__)
 
 AI_ASSESSOR_VERSION = 1
 AI_FIRST_ASSESSOR_MODE = "ai_first_assessor"
@@ -86,10 +91,17 @@ class OpenRouterAIAssessmentReviewer:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds, context=_trusted_https_context()) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
-            message = error.read().decode("utf-8", errors="replace")[:500]
-            raise AIAssessorError(f"OpenRouter API returned HTTP {error.code}: {message}") from error
+            body = error.read().decode("utf-8", errors="replace")[:500]
+            LOGGER.warning(
+                "OpenRouter assessor call failed: HTTP %s (model=%s) body=%s",
+                error.code,
+                self.model,
+                body,
+            )
+            raise AIAssessorError(_ai_unavailable_message(error.code)) from error
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
-            raise AIAssessorError(f"OpenRouter API request failed: {error}") from error
+            LOGGER.warning("OpenRouter assessor request failed (model=%s): %s", self.model, error)
+            raise AIAssessorError(AI_UNAVAILABLE_MESSAGE) from error
         record_openrouter_usage(payload, feature="assessor", model=self.model)
         parsed = _parse_provider_response_text(_openrouter_response_text(payload), provider="OpenRouter")
         self.last_success_provider = "openrouter"
@@ -293,8 +305,16 @@ def assess_nda_with_ai(
     try:
         with timer.phase("assessor"):
             raw_response = configured_reviewer(packet)
+    except AIAssessorError:
+        # The reviewer already produced a client-safe (generic) message and logged
+        # the raw detail server-side. Re-raise unchanged so we neither double-prefix
+        # nor re-expose anything.
+        raise
     except Exception as error:
-        raise AIAssessorError(f"AI-first assessment failed: {error}") from error
+        # Any other transport/runtime failure: log the detail server-side, surface a
+        # generic message so absolute paths / internal field names never reach the client.
+        LOGGER.warning("AI-first assessment failed: %s", error)
+        raise AIAssessorError(AI_UNAVAILABLE_MESSAGE) from error
 
     raw_assessments = _validate_ai_assessment_response(
         raw_response,
