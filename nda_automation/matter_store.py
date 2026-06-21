@@ -143,7 +143,33 @@ MATTER_UPDATE_FIELDS = {
 
 
 class MatterStoreError(RuntimeError):
-    pass
+    """A persistence-layer failure.
+
+    The raised message is intentionally diagnostic (it can name the
+    ``<matter_id>.json`` record file, "not valid JSON", or the lock-timeout
+    seconds) and is logged server-side. It must NEVER be shown verbatim to a
+    user: route handlers translate it through :func:`friendly_matter_store_message`
+    into generic, leak-free copy. ``lock_timeout`` distinguishes the transient
+    "store is busy, retry" case from a genuine load failure.
+    """
+
+    def __init__(self, *args: Any, lock_timeout: bool = False) -> None:
+        super().__init__(*args)
+        self.lock_timeout = lock_timeout
+
+
+# Generic, leak-free copy shown to users in place of a raw MatterStoreError
+# message. The raw message stays server-side (in the exception / logs) for
+# diagnosis; these strings carry no filename, JSON jargon, or lock seconds.
+MATTER_STORE_BUSY_MESSAGE = "The system is busy. Please retry in a moment."
+MATTER_STORE_UNAVAILABLE_MESSAGE = "We couldn't load this NDA right now. Please refresh and try again."
+
+
+def friendly_matter_store_message(error: "MatterStoreError") -> str:
+    """Map a :class:`MatterStoreError` to user-safe copy (never leaks internals)."""
+    if getattr(error, "lock_timeout", False):
+        return MATTER_STORE_BUSY_MESSAGE
+    return MATTER_STORE_UNAVAILABLE_MESSAGE
 
 
 def list_matters(owner_user_id: str = "") -> list[dict[str, Any]]:
@@ -1099,7 +1125,8 @@ def _locked_store():
         raise MatterStoreError(
             "Matter store could not be locked within the timeout "
             f"({_LOCK_TIMEOUT_SECONDS}s). A long-running operation may be "
-            "holding the lock. Please retry."
+            "holding the lock. Please retry.",
+            lock_timeout=True,
         )
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)

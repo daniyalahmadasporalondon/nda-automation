@@ -221,7 +221,33 @@ def detect_prohibited_position(text: str) -> str:
 
 
 class NdaGenerationError(ValueError):
-    """Raised when generation inputs are invalid or the template is malformed."""
+    """Raised when generation inputs are invalid or the template is malformed.
+
+    The raised message is intentionally diagnostic (it can name an entity
+    ``legal_name``, a ``!r`` repr of an option id, the approved-Playbook-option
+    list, the "Aspora (SECOND party) paragraph", the CI exceptions list, etc.)
+    and is logged server-side. It must NEVER be shown verbatim to a user: the
+    generate route maps it to leak-free copy by ``category``.
+
+    ``category`` classifies the failure so the route can pick the right copy:
+      * ``"input"`` (default) — a client-correctable input error (unknown entity,
+        unapproved governing law, missing legal_name, unsupported posture).
+      * ``"template"`` — a template / Playbook / forum-config fault the user
+        cannot fix (missing template paragraph, missing Playbook clause, no
+        registered court/venue). These point the user at support.
+      * ``"free_text"`` — a free-text field rejection whose message is already
+        clean and field-scoped (see :class:`FreeTextValidationError`).
+      * ``"safety"`` — the hard safety gate refused an off-position draft.
+    """
+
+    CATEGORY_INPUT = "input"
+    CATEGORY_TEMPLATE = "template"
+    CATEGORY_FREE_TEXT = "free_text"
+    CATEGORY_SAFETY = "safety"
+
+    def __init__(self, *args: object, category: str = CATEGORY_INPUT) -> None:
+        super().__init__(*args)
+        self.category = category
 
 
 class FreeTextValidationError(NdaGenerationError):
@@ -233,10 +259,13 @@ class FreeTextValidationError(NdaGenerationError):
     told their wording was rejected and why, instead of having it silently rewritten.
     Carries the flagged ``field_name``, ``family`` (the raw label) and ``kind``
     (``"injection"`` | ``"position"``) for telemetry / audit.
+
+    Its ``category`` is ``"free_text"``: the message is already user-safe (no repr,
+    path, or internal label), so the route passes it through unchanged.
     """
 
     def __init__(self, message: str, *, field_name: str = "", family: str = "", kind: str = "") -> None:
-        super().__init__(message)
+        super().__init__(message, category=NdaGenerationError.CATEGORY_FREE_TEXT)
         self.field_name = field_name
         self.family = family
         self.kind = kind
@@ -337,10 +366,13 @@ def validate_intake_identity_fields(intake: "CounterpartyIntake") -> None:
         value = str(getattr(intake, attr, "") or "")
         if "[" in value or "]" in value:
             bad = "[" if "[" in value else "]"
+            # Clean, field-scoped, actionable copy (no repr/path/internal label):
+            # mark it free_text so the route passes it through unchanged.
             raise NdaGenerationError(
                 f"The {label} ({attr}) contains a square bracket '{bad}', which conflicts "
                 f"with the NDA template's fill markers (e.g. [GOVERNING LAW]). Remove the "
-                f"bracketed text from {attr} and try again."
+                f"bracketed text from {attr} and try again.",
+                category=NdaGenerationError.CATEGORY_FREE_TEXT,
             )
 
 
@@ -497,7 +529,9 @@ def entity_party_from_bundle(
 
     legal_name = str(bundle.get("legal_name") or "").strip()
     if not legal_name:
-        raise NdaGenerationError("Entity bundle is missing legal_name.")
+        raise NdaGenerationError(
+            "Entity bundle is missing legal_name.", category=NdaGenerationError.CATEGORY_TEMPLATE
+        )
 
     approved = _approved_governing_law_options(playbook)
     default_option_id = str((bundle.get("governing_law") or {}).get("playbook_option_id") or "").strip()
@@ -666,7 +700,8 @@ def _require_court_forum(
             f"{option_id!r} (law {governing_law_value!r}). Writing the law name as the "
             "forum would put a non-court jurisdiction into a signed NDA. Register a "
             "forum for this option (entity registry jurisdiction or the Playbook "
-            "approved option's court_name)."
+            "approved option's court_name).",
+            category=NdaGenerationError.CATEGORY_TEMPLATE,
         )
     # Court-SHAPE gate: even a resolved, non-empty forum must look like a real
     # court/venue. A template placeholder ("{{forum}}", "[Court]"), an injected
@@ -680,7 +715,8 @@ def _require_court_forum(
         raise NdaGenerationError(
             f"Refusing to generate: the forum/venue {forum!r} for governing-law option "
             f"{option_id!r} (law {governing_law_value!r}) is not a valid court/venue -- "
-            f"{problem}. A non-court venue must not reach a signed NDA."
+            f"{problem}. A non-court venue must not reach a signed NDA.",
+            category=NdaGenerationError.CATEGORY_TEMPLATE,
         )
 
     # Wrong-jurisdiction guard for the FALLBACK path only. The signing entity's own
@@ -698,7 +734,8 @@ def _require_court_forum(
                 f"jurisdiction '{forum_bucket}', which does not match governing-law "
                 f"option {option_id!r} (jurisdiction '{option_bucket}'). Writing a "
                 "court from a different jurisdiction than the governing law into a "
-                "signed NDA is a forum/law mismatch."
+                "signed NDA is a forum/law mismatch.",
+                category=NdaGenerationError.CATEGORY_TEMPLATE,
             )
     return forum
 
@@ -1040,7 +1077,8 @@ def assert_generated_nda_is_on_position(result: "GenerationResult", playbook: Ma
         raise NdaGenerationError(
             f"{SAFETY_GATE_MESSAGE}: failed its own Playbook ("
             + ", ".join(problems or ["unknown failure"])
-            + ")."
+            + ").",
+            category=NdaGenerationError.CATEGORY_SAFETY,
         )
 
     text = extract_docx_text(result.docx_bytes)
@@ -1055,7 +1093,8 @@ def assert_generated_nda_is_on_position(result: "GenerationResult", playbook: Ma
             if label == "perpetual_confidentiality" and _is_permitted_long_survival(sentence):
                 continue
             raise NdaGenerationError(
-                f"{SAFETY_GATE_MESSAGE}: carries a prohibited position ({label})."
+                f"{SAFETY_GATE_MESSAGE}: carries a prohibited position ({label}).",
+                category=NdaGenerationError.CATEGORY_SAFETY,
             )
 
 
@@ -1263,9 +1302,15 @@ def _fill_variable_slots(
             second_party_done = True
 
     if not first_party_done:
-        raise NdaGenerationError("Template is missing the Company (FIRST party) paragraph.")
+        raise NdaGenerationError(
+            "Template is missing the Company (FIRST party) paragraph.",
+            category=NdaGenerationError.CATEGORY_TEMPLATE,
+        )
     if not second_party_done:
-        raise NdaGenerationError("Template is missing the Aspora (SECOND party) paragraph.")
+        raise NdaGenerationError(
+            "Template is missing the Aspora (SECOND party) paragraph.",
+            category=NdaGenerationError.CATEGORY_TEMPLATE,
+        )
 
     # Single-occurrence slots, filled across body paragraphs.
     #
@@ -1342,12 +1387,17 @@ def _fill_signature_table(document: DocxDocument, entity: EntityParty, intake: C
     """
 
     if not document.tables:
-        raise NdaGenerationError("Template is missing the signature table.")
+        raise NdaGenerationError(
+            "Template is missing the signature table.", category=NdaGenerationError.CATEGORY_TEMPLATE
+        )
 
     table = document.tables[0]
     cells = table.rows[0].cells
     if len(cells) < 2:
-        raise NdaGenerationError("Signature table does not have two party blocks.")
+        raise NdaGenerationError(
+            "Signature table does not have two party blocks.",
+            category=NdaGenerationError.CATEGORY_TEMPLATE,
+        )
 
     # The two party signature boxes sit SIDE BY SIDE (counterparty left, Aspora
     # right). The template packs them as two adjacent columns with no gap between;
@@ -1662,7 +1712,10 @@ def _align_mutuality(
                 "mutuality: inserted reciprocal-obligation statement (Playbook position)"
             )
             return
-    raise NdaGenerationError("Template is missing the Disclosing/Receiving role-definition recital.")
+    raise NdaGenerationError(
+        "Template is missing the Disclosing/Receiving role-definition recital.",
+        category=NdaGenerationError.CATEGORY_TEMPLATE,
+    )
 
 
 def _align_confidential_information(
@@ -1699,7 +1752,10 @@ def _align_confidential_information(
             anchor_index = index
             break
     if anchor_index is None:
-        raise NdaGenerationError("Template is missing the CI exceptions list (prior-possession item).")
+        raise NdaGenerationError(
+            "Template is missing the CI exceptions list (prior-possession item).",
+            category=NdaGenerationError.CATEGORY_TEMPLATE,
+        )
 
     anchor = document.paragraphs[anchor_index]
     # The prior-possession item ends "...written records." We turn its trailing
@@ -1759,7 +1815,10 @@ def _align_term_and_survival(
                 f"term_and_survival: term fixed at {term_years}y (<= Playbook max) + survival carve-out injected"
             )
             return
-    raise NdaGenerationError("Template is missing the TERM OF THE AGREEMENT clause.")
+    raise NdaGenerationError(
+        "Template is missing the TERM OF THE AGREEMENT clause.",
+        category=NdaGenerationError.CATEGORY_TEMPLATE,
+    )
 
 
 # Blank-template fallbacks: used ONLY when the Playbook clause carries no template
@@ -1898,7 +1957,9 @@ def _playbook_clause(playbook: Mapping[str, Any], clause_id: str) -> Mapping[str
     for clause in playbook.get("clauses", []):
         if clause.get("id") == clause_id:
             return clause
-    raise NdaGenerationError(f"Playbook is missing the {clause_id!r} clause.")
+    raise NdaGenerationError(
+        f"Playbook is missing the {clause_id!r} clause.", category=NdaGenerationError.CATEGORY_TEMPLATE
+    )
 
 
 def _approved_governing_law_options(playbook: Mapping[str, Any]) -> dict[str, str]:
@@ -1913,7 +1974,10 @@ def _approved_governing_law_options(playbook: Mapping[str, Any]) -> dict[str, st
         if option_id and value:
             resolved[option_id] = value
     if not resolved:
-        raise NdaGenerationError("Playbook governing_law clause has no approved_options.")
+        raise NdaGenerationError(
+            "Playbook governing_law clause has no approved_options.",
+            category=NdaGenerationError.CATEGORY_TEMPLATE,
+        )
     return resolved
 
 
@@ -1941,7 +2005,9 @@ def _resolve_term_years(requested: int, playbook: Mapping[str, Any]) -> int:
 def _load_template(template_path: Path | str) -> DocxDocument:
     path = Path(template_path)
     if not path.exists():
-        raise NdaGenerationError(f"Template not found at {path}.")
+        raise NdaGenerationError(
+            f"Template not found at {path}.", category=NdaGenerationError.CATEGORY_TEMPLATE
+        )
     return Document(str(path))
 
 
@@ -2068,7 +2134,8 @@ def _assert_no_unfilled_placeholders(document: DocxDocument, allowed: set[str]) 
                 leftover.add(token)
     if leftover:
         raise NdaGenerationError(
-            "Generated NDA still contains unfilled placeholders: " + ", ".join(sorted(leftover))
+            "Generated NDA still contains unfilled placeholders: " + ", ".join(sorted(leftover)),
+            category=NdaGenerationError.CATEGORY_TEMPLATE,
         )
 
 
@@ -2130,9 +2197,12 @@ def select_bundle_address(bundle: Mapping[str, Any], address_id: str = "") -> tu
         known = sorted(str(a.get("id") or "").strip() for a in addresses if a.get("id"))
         raise NdaGenerationError(
             f"Address id {wanted!r} is not an address on entity bundle "
-            f"{str(bundle.get('id') or '')!r} (known: {known})."
+            f"{str(bundle.get('id') or '')!r} (known: {known}).",
+            category=NdaGenerationError.CATEGORY_TEMPLATE,
         )
     chosen = _default_address_entry(bundle)
     if chosen is None:
-        raise NdaGenerationError("Entity bundle has no addresses.")
+        raise NdaGenerationError(
+            "Entity bundle has no addresses.", category=NdaGenerationError.CATEGORY_TEMPLATE
+        )
     return _format_address(chosen), str(chosen.get("id") or "").strip()

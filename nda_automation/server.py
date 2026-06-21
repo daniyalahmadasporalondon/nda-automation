@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import math
 import mimetypes
 import os
@@ -103,6 +104,8 @@ try:
     import fcntl
 except ImportError:  # pragma: no cover - Windows fallback for local dev portability.
     fcntl = None
+
+logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
@@ -441,7 +444,10 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 return
             try:
                 docusign_routes.handle_docusign_webhook(self)
-            except (matter_store.MatterStoreError, app_settings.AppSettingsError) as error:
+            except matter_store.MatterStoreError as error:
+                logger.warning("DocuSign webhook persistence failed: %s", error)
+                self._send_json({"error": matter_store.friendly_matter_store_message(error)}, status=500)
+            except app_settings.AppSettingsError as error:
                 self._send_json({"error": str(error)}, status=500)
             return
         if not self._authorize_csrf("POST"):
@@ -507,7 +513,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         except EvidenceProvenanceError:
             self._send_json({"error": "Clause evidence provenance drift detected."}, status=500)
         except matter_store.MatterStoreError as error:
-            self._send_json({"error": str(error)}, status=500)
+            logger.warning("Matter store failure (POST %s): %s", path, error)
+            self._send_json({"error": matter_store.friendly_matter_store_message(error)}, status=500)
         except app_settings.AppSettingsError as error:
             self._send_json({"error": str(error)}, status=500)
 
@@ -532,7 +539,8 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 return
             self._send_json({"error": "Not found"}, status=404)
         except matter_store.MatterStoreError as error:
-            self._send_json({"error": str(error)}, status=500)
+            logger.warning("Matter store failure (DELETE %s): %s", path, error)
+            self._send_json({"error": matter_store.friendly_matter_store_message(error)}, status=500)
         except app_settings.AppSettingsError as error:
             self._send_json({"error": str(error)}, status=500)
 

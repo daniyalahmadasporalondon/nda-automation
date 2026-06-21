@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import logging
 import re
 from pathlib import Path
 
@@ -37,6 +38,8 @@ from ..review_engine import (
 from ..review_staleness import review_result_is_stale, review_result_staleness
 from ..review_state import review_was_ai_executed
 from .common import parse_matter_id, request_owner_user_id
+
+logger = logging.getLogger(__name__)
 
 HTTP_MATTER_SOURCE_COLUMNS = {"manual_upload": "in_review"}
 MANUAL_UPLOAD_BOARD_COLUMNS = {"gmail_demo", "in_review", "reviewed", "sent"}
@@ -214,7 +217,10 @@ def _matter_for_review_response(handler, matter_id: str | None, *, send_body: bo
     try:
         matter = repository.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
     except MatterRepositoryError as error:
-        handler._send_json({"error": str(error)}, status=500, send_body=send_body)
+        logger.warning("Matter load failed (review response): %s", error)
+        handler._send_json(
+            {"error": matter_store.friendly_matter_store_message(error)}, status=500, send_body=send_body
+        )
         return None
     if matter is None:
         handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
@@ -438,7 +444,10 @@ def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:
     try:
         matter = repository.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
     except MatterRepositoryError as error:
-        handler._send_json({"error": str(error)}, status=500, send_body=send_body)
+        logger.warning("Matter load failed (source stream): %s", error)
+        handler._send_json(
+            {"error": matter_store.friendly_matter_store_message(error)}, status=500, send_body=send_body
+        )
         return
     if matter is None:
         handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
@@ -447,7 +456,10 @@ def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:
     try:
         source_bytes = repository.get_source_document_bytes(matter)
     except MatterRepositoryError as error:
-        handler._send_json({"error": str(error)}, status=500, send_body=send_body)
+        logger.warning("Source bytes load failed: %s", error)
+        handler._send_json(
+            {"error": matter_store.friendly_matter_store_message(error)}, status=500, send_body=send_body
+        )
         return
     if source_bytes is None:
         handler._send_json({"error": "No source document for this NDA."}, status=404, send_body=send_body)
@@ -750,7 +762,8 @@ def handle_matter_counterparty_confirm(handler, path: str) -> None:
             owner_user_id=request_owner_user_id(handler),
         )
     except matter_store.MatterStoreError as error:
-        handler._send_json({"error": str(error)}, status=500)
+        logger.warning("Counterparty confirm persistence failed: %s", error)
+        handler._send_json({"error": matter_store.friendly_matter_store_message(error)}, status=500)
         return
     if matter is None:
         handler._send_json({"error": "NDA not found."}, status=404)
@@ -783,7 +796,8 @@ def handle_matter_summary(handler, path: str) -> None:
     try:
         matter = repository.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
     except MatterRepositoryError as error:
-        handler._send_json({"error": str(error)}, status=500)
+        logger.warning("Matter load failed (summary): %s", error)
+        handler._send_json({"error": matter_store.friendly_matter_store_message(error)}, status=500)
         return
     if matter is None:
         handler._send_json({"error": "NDA not found."}, status=404)

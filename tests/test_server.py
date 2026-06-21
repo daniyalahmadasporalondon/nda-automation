@@ -10067,7 +10067,12 @@ class ServerTests(unittest.TestCase):
                 status, payload = self.request("GET", "/api/matters")
 
         self.assertEqual(status, 500)
-        self.assertEqual(payload["error"], "Matter store is not valid JSON.")
+        # Humanized: never leak the "not valid JSON" store-format jargon; the
+        # client gets generic copy (the raw cause is logged server-side).
+        self.assertEqual(
+            payload["error"], "We couldn't load this NDA right now. Please refresh and try again."
+        )
+        self.assertNotIn("JSON", payload["error"])
 
     def test_text_review_reports_playbook_template_error(self):
         with patch.object(server_module, "review_nda_with_active_engine", side_effect=PlaybookTemplateError("bad template")):
@@ -10547,8 +10552,14 @@ class ServerTests(unittest.TestCase):
                 saved_files = list(server_module.Path(exports_dir).iterdir())
 
         self.assertEqual(status, 500)
-        self.assertEqual(payload["error"], "The exported Word document failed its open-health check.")
-        self.assertEqual(payload["details"], ["Missing DOCX parts: _rels/.rels."])
+        # Humanized: the OOXML internals (error.details) are dropped from the body
+        # (logged server-side); the client gets generic integrity-check copy.
+        self.assertEqual(
+            payload["error"],
+            "The reviewed Word document failed an integrity check and was not produced. "
+            "Please contact support.",
+        )
+        self.assertNotIn("details", payload)
         self.assertNotEqual(headers.get("Content-Type"), DOCX_MIME)
         self.assertEqual(saved_files, [])
         mocked_print.assert_called_once_with("DOCX export health check failed: 1 issue(s)")

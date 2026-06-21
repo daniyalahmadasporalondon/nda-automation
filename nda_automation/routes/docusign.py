@@ -42,6 +42,18 @@ from .common import parse_matter_id, request_owner_user_id
 
 logger = logging.getLogger(__name__)
 
+# Generic, leak-free copy for a failed send-for-signature. The raw provider
+# error (errorCode such as ANCHOR_TAB_STRING_NOT_FOUND, "HTTP 400") is logged
+# server-side but must never reach the user-facing send status line.
+SEND_FAILED_MESSAGE = (
+    "We couldn't send this NDA for signature. Please check the signer details and "
+    "try again, or contact support."
+)
+# Send-flow copy for an unconfigured DocuSign integration. Unlike the admin
+# integrations panel (which surfaces the env-var hint so an operator can fix it),
+# the send flow must not leak NDA_DOCUSIGN_CLIENT_ID/SECRET or "restart the app".
+SEND_NOT_CONFIGURED_MESSAGE = "DocuSign isn't set up yet. Ask an administrator to connect it."
+
 DOCUSIGN_CONNECT_START_URL = "/api/docusign/connect"
 # DocuSign Connect HMAC signature header. DocuSign sends one header per configured
 # HMAC key, numbered from 1; we verify against the first.
@@ -145,11 +157,13 @@ def handle_docusign_connect(handler) -> None:
         handler._send_json({"error": "Sign in before connecting DocuSign."}, status=403)
         return
     if not docusign_connection.oauth_configured():
+        # This is the user-facing connect/send flow (the composer's "connect"
+        # button posts here). The env-var hint (NDA_DOCUSIGN_CLIENT_ID/SECRET,
+        # "restart the app") belongs only on the admin integrations panel
+        # (handle_docusign_status.config_message); don't leak it here.
         handler._send_json(
             {
-                "error": (
-                    "DocuSign isn't configured yet. Contact your administrator."
-                ),
+                "error": SEND_NOT_CONFIGURED_MESSAGE,
                 "needs_config": True,
             },
             status=409,
@@ -349,12 +363,18 @@ def handle_send_for_signature(handler, path: str) -> None:
         handler._send_json({"error": str(error)}, status=400)
         return
     except docusign_integration.DocuSignError as error:
+        # DocuSignError folds DocuSign's raw provider errorCode into its message
+        # (e.g. ANCHOR_TAB_STRING_NOT_FOUND, "HTTP 400"). That detail is already
+        # logged at the integration layer (_log_docusign_failure); never echo it to
+        # the client. Show generic, actionable copy instead.
+        logger.warning("DocuSign send failed (provider error): %s", error)
         telemetry.increment("docusign_send_failed")
-        handler._send_json({"error": str(error)}, status=502)
+        handler._send_json({"error": SEND_FAILED_MESSAGE}, status=502)
         return
     except docusign_workflow.DocuSignWorkflowError as error:
+        logger.warning("DocuSign send failed (workflow error): %s", error)
         telemetry.increment("docusign_send_failed")
-        handler._send_json({"error": str(error)}, status=502)
+        handler._send_json({"error": SEND_FAILED_MESSAGE}, status=502)
         return
 
     telemetry.increment("docusign_send_succeeded")

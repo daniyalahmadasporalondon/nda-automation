@@ -360,7 +360,13 @@ class GenerateNdaRouteTests(unittest.TestCase):
                 headers=self.basic_auth_headers(),
             )
         self.assertEqual(status, 400)
-        self.assertIn("one_way", payload["error"])
+        # Humanized: an unsupported posture is a client-correctable input error,
+        # surfaced with generic, leak-free copy (the raw "nda_type 'one_way' ..."
+        # message with its !r repr is logged server-side, not returned).
+        self.assertEqual(
+            payload["error"], "Please select a valid signing entity and governing law."
+        )
+        self.assertNotIn("one_way", payload["error"])
 
     def test_bracketed_counterparty_name_is_rejected_with_a_clear_field_error(self):
         # A counterparty name carrying a square bracket (which collides with the
@@ -473,7 +479,14 @@ class GenerateNdaRouteTests(unittest.TestCase):
                 headers=self.basic_auth_headers(),
             )
         self.assertEqual(status, 400)
-        self.assertIn("override", payload["error"].lower())
+        # Humanized: an unapproved governing-law override is a client-correctable
+        # input error. The raw message leaked the !r repr + the approved-option
+        # list; the client now gets generic copy (raw is logged server-side).
+        self.assertEqual(
+            payload["error"], "Please select a valid signing entity and governing law."
+        )
+        self.assertNotIn("new_york", payload["error"])
+        self.assertNotIn("approved", payload["error"].lower())
 
     def test_off_position_draft_is_blocked_by_the_safety_gate_before_save(self):
         # DEFECT-2 regression: the hard safety gate must run on the ACTUAL endpoint

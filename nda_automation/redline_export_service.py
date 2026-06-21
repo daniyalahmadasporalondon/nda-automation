@@ -52,6 +52,16 @@ class RedlineExport:
     content_type: str | None = None
 
 
+# Generic, leak-free copy shown to users when the reviewed Word document fails its
+# open-health / coverage integrity check. The raw ``details`` (OOXML internals such
+# as "document.xml is missing w:body") are logged server-side but MUST NOT reach the
+# client response body.
+DOCX_HEALTH_CLIENT_MESSAGE = (
+    "The reviewed Word document failed an integrity check and was not produced. "
+    "Please contact support."
+)
+
+
 class DocxOpenHealthError(DocxExportError):
     def __init__(self, message: str, details: list[str]):
         super().__init__(message)

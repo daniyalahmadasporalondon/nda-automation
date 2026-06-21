@@ -107,7 +107,7 @@ function renderStudioEmpty() {
   studioResultMark.textContent = "-";
   studioResultMark.className = "";
   studioOverallTitle.textContent = "Awaiting review";
-  studioResultMeta.textContent = "No hard-clause review has run yet.";
+  studioResultMeta.textContent = "No clause review has run yet.";
   resetReviewEditHistory();
   if (state.reviewInspectorView === "overview") {
     // The Overview controller renders its own "No review yet" empty state when no

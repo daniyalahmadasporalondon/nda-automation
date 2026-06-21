@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from urllib.parse import unquote
 
 from .. import (
@@ -18,6 +19,8 @@ from ..matter_repository import DiskMatterRepository, MatterRepository
 from ..pdf_text import PdfExtractionError
 from ..checker import ParagraphAlignmentError
 from .common import parse_matter_id, request_owner_user_id
+
+logger = logging.getLogger(__name__)
 
 
 def _repository(handler) -> MatterRepository:
@@ -163,7 +166,11 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
         handler._send_json({"error": str(error)}, status=404, send_body=send_body)
         return
     except redline_export_service.DocxOpenHealthError as error:
-        handler._send_json({"error": str(error), "details": error.details}, status=500, send_body=send_body)
+        # Drop the OOXML internals (error.details) from the response; log them.
+        logger.error("Reviewed DOCX failed integrity check (approval): %s | details=%s", error, error.details)
+        handler._send_json(
+            {"error": redline_export_service.DOCX_HEALTH_CLIENT_MESSAGE}, status=500, send_body=send_body
+        )
         return
     except redline_export_service.PdfSourceRedlineUnavailableError as error:
         handler._send_json(error.payload, status=error.status, send_body=send_body)
@@ -262,7 +269,11 @@ def handle_matter_reviewed_pdf(handler, path: str, *, send_body: bool = True) ->
         handler._send_json({"error": str(error)}, status=404, send_body=send_body)
         return
     except redline_export_service.DocxOpenHealthError as error:
-        handler._send_json({"error": str(error), "details": error.details}, status=500, send_body=send_body)
+        # Drop the OOXML internals (error.details) from the response; log them.
+        logger.error("Reviewed DOCX failed integrity check (approval): %s | details=%s", error, error.details)
+        handler._send_json(
+            {"error": redline_export_service.DOCX_HEALTH_CLIENT_MESSAGE}, status=500, send_body=send_body
+        )
         return
     except redline_export_service.PdfSourceRedlineUnavailableError as error:
         handler._send_json(error.payload, status=error.status, send_body=send_body)
