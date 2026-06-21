@@ -23,6 +23,11 @@ const ROOT = path.resolve(__dirname, "../..");
 const INDEX_HTML = fs.readFileSync(path.join(ROOT, "static/index.html"), "utf8");
 const FORMAT_SRC = fs.readFileSync(path.join(ROOT, "static/js/review-workstation-format.js"), "utf8");
 const REDLINE_SRC = fs.readFileSync(path.join(ROOT, "static/js/redline-rendering.js"), "utf8");
+// The editor borrows the editable-text offset helpers (editableSelectionText-
+// Offset / editableParagraphText / ...) from the Review viewer module's global
+// scope; load it so the generator's selection capture resolves the same way the
+// app does.
+const VIEWER_SRC = fs.readFileSync(path.join(ROOT, "static/js/review-workstation-viewer.js"), "utf8");
 const EDITOR_SRC = fs.readFileSync(path.join(ROOT, "static/js/generator-editor.js"), "utf8");
 
 // ---- Source-level guards (no browser) --------------------------------------
@@ -76,13 +81,17 @@ async function selectWholeParagraph(page) {
     const editable = render.querySelector("[data-editable-paragraph-id]");
     if (!editable) throw new Error("no editable paragraph rendered");
     const id = editable.dataset.editableParagraphId;
-    // Mirror the focus handler the editor wires on the editable element.
-    editable.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    // Fire the editor's wired `focus` handler so it records the active paragraph
+    // id and re-enables the toolbar controls.
+    editable.focus();
+    editable.dispatchEvent(new FocusEvent("focus", { bubbles: false }));
     const range = document.createRange();
     range.selectNodeContents(editable);
     const selection = window.getSelection();
     selection.removeAllRanges();
     selection.addRange(range);
+    // keyup mirrors the editor's selection-change refresh path.
+    editable.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
     return id;
   });
 }
@@ -121,6 +130,7 @@ async function main() {
     // The real shared run-format helpers (setRunFormatting / normalizeColorValue /
     // runRangeHasFormatting / normalizeRun) -- reused, not reimplemented.
     await page.addScriptTag({ content: FORMAT_SRC });
+    await page.addScriptTag({ content: VIEWER_SRC });
     await page.addScriptTag({ content: EDITOR_SRC });
 
     // Inject the REAL generator toolbar markup so bindToolbar binds real elements.
@@ -143,7 +153,7 @@ async function main() {
 
     // --- Underline ---
     await selectWholeParagraph(page);
-    await page.click("#genFormatUnderline");
+    await page.evaluate(() => document.getElementById("genFormatUnderline").click());
     let runs = await activeRuns(page);
     if (!(runs && runs.length && runs.every((r) => r.underline))) {
       failures.push(`underline not applied to run model: ${JSON.stringify(runs)}`);
@@ -151,7 +161,7 @@ async function main() {
 
     // --- Strikethrough ---
     await selectWholeParagraph(page);
-    await page.click("#genFormatStrike");
+    await page.evaluate(() => document.getElementById("genFormatStrike").click());
     runs = await activeRuns(page);
     if (!(runs && runs.length && runs.every((r) => r.strike))) {
       failures.push(`strike not applied to run model: ${JSON.stringify(runs)}`);
