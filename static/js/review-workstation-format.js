@@ -172,6 +172,8 @@ function normalizeRun(run) {
   if (color) out.color = color;
   const highlight = String(run?.highlight || "").trim();
   if (highlight) out.highlight = highlight;
+  const vertAlign = String(run?.vertAlign || "").trim().toLowerCase();
+  if (vertAlign === "superscript" || vertAlign === "subscript") out.vertAlign = vertAlign;
   return out;
 }
 
@@ -183,7 +185,8 @@ function runFormattingMatches(a, b) {
     && String(a?.font || "").trim() === String(b?.font || "").trim()
     && Number(a?.size || 0) === Number(b?.size || 0)
     && normalizeColorValue(a?.color) === normalizeColorValue(b?.color)
-    && String(a?.highlight || "").trim() === String(b?.highlight || "").trim();
+    && String(a?.highlight || "").trim() === String(b?.highlight || "").trim()
+    && String(a?.vertAlign || "").trim().toLowerCase() === String(b?.vertAlign || "").trim().toLowerCase();
 }
 
 // A run-model text color is a 6-hex-digit RRGGBB string (no leading #), upper-cased.
@@ -213,6 +216,8 @@ function runRangeHasFormatting(paragraph, start, end, property, value) {
       if (normalizeColorValue(run?.color) !== normalizeColorValue(value)) return false;
     } else if (property === "highlight") {
       if (String(run?.highlight || "").trim() !== String(value || "").trim()) return false;
+    } else if (property === "vertAlign") {
+      if (String(run?.vertAlign || "").trim().toLowerCase() !== String(value || "").trim().toLowerCase()) return false;
     } else if (!run?.[property]) {
       return false;
     }
@@ -230,6 +235,20 @@ function activeFormatParagraph() {
     .find((paragraph) => String(paragraph.id) === String(id)) || null;
 }
 
+// Ctrl/Cmd+B/I/U keyboard shortcuts inside an editable paragraph: route to the
+// EXISTING run-format toggles (no new format logic) and preventDefault so the browser
+// doesn't run its own (often markup-injecting) bold/italic/underline command. Only the
+// bare modifier+letter fires; chords with Alt are left to the browser.
+function handleFormatShortcutKeydown(event) {
+  if (!event || event.altKey) return;
+  if (!(event.ctrlKey || event.metaKey)) return;
+  const key = String(event.key || "").toLowerCase();
+  const property = key === "b" ? "bold" : key === "i" ? "italic" : key === "u" ? "underline" : null;
+  if (!property) return;
+  event.preventDefault();
+  toggleRunFormatting(property);
+}
+
 // Re-binds on every document render (the editable nodes are replaced each time).
 // Wires the focus tracker, the four alignment buttons, and the font select, then
 // refreshes the toolbar's pressed/selected state for the active paragraph.
@@ -241,6 +260,7 @@ function bindFormatToolbar() {
         state.activeFormatParagraphId = editable.dataset.editableParagraphId || null;
         refreshFormatToolbarState();
       });
+      editable.addEventListener("keydown", handleFormatShortcutKeydown);
     });
   }
 
@@ -258,6 +278,12 @@ function bindFormatToolbar() {
   if (underlineButton) underlineButton.onclick = () => toggleRunFormatting("underline");
   const strikeButton = formatStrikeButtonElement();
   if (strikeButton) strikeButton.onclick = () => toggleRunFormatting("strike");
+  const superscriptButton = document.getElementById("studioFormatSuperscript");
+  if (superscriptButton) superscriptButton.onclick = () => toggleRunValueFormatting("vertAlign", "superscript");
+  const subscriptButton = document.getElementById("studioFormatSubscript");
+  if (subscriptButton) subscriptButton.onclick = () => toggleRunValueFormatting("vertAlign", "subscript");
+  const clearButton = document.getElementById("studioFormatClear");
+  if (clearButton) clearButton.onclick = () => clearRunFormatting();
 
   const colorInput = formatColorInputElement();
   if (colorInput) colorInput.oninput = () => applyRunColor(colorInput.value);
@@ -372,6 +398,54 @@ function toggleRunFormatting(property) {
   pushParagraphFormatHistory(paragraph);
   const allHave = runRangeHasFormatting(paragraph, startOffset, endOffset, property, true);
   setRunFormatting(paragraph, startOffset, endOffset, property, !allHave);
+  commitParagraphFormatChange();
+}
+
+// Toggles a run-scope VALUE property (currently only "vertAlign") across the active
+// paragraph's selection. Like toggleRunFormatting but value-aware: if every covered
+// char already carries `value` (e.g. "superscript"), it is unset; otherwise it is
+// set to `value` — which inherently REPLACES the opposite (setting superscript over a
+// subscript run overwrites it), so sup excludes sub and vice-versa for free.
+function toggleRunValueFormatting(property, value) {
+  const paragraph = activeFormatParagraph();
+  if (!paragraph) return;
+  const selection = selectionForActiveParagraph();
+  if (!selection) {
+    setFileMeta("Select text to format");
+    return;
+  }
+  const { startOffset, endOffset } = selection;
+  pushParagraphFormatHistory(paragraph);
+  const allHave = runRangeHasFormatting(paragraph, startOffset, endOffset, property, value);
+  setRunFormatting(paragraph, startOffset, endOffset, property, allHave ? false : value);
+  commitParagraphFormatChange();
+}
+
+// Run-scope inline properties cleared by "Clear formatting". Boolean toggles and
+// value props (font/size/color/highlight/vertAlign) are all reset to false/unset,
+// which setRunFormatting interprets as "delete the property" — leaving the run with
+// only its text. Paragraph-level overrides (alignment/font/fontSize) are intentionally
+// NOT touched here: Clear targets the SELECTION's inline runs, not the whole paragraph.
+const CLEAR_RUN_PROPERTIES = [
+  "bold", "italic", "underline", "strike", "font", "size", "color", "highlight", "vertAlign",
+];
+
+// "Clear formatting": strips every inline run property over the current selection so
+// the covered text returns to the document default. No selection -> hint (mirrors the
+// other run toggles). One history entry covers the whole clear so Undo restores it.
+function clearRunFormatting() {
+  const paragraph = activeFormatParagraph();
+  if (!paragraph) return;
+  const selection = selectionForActiveParagraph();
+  if (!selection) {
+    setFileMeta("Select text to clear formatting");
+    return;
+  }
+  const { startOffset, endOffset } = selection;
+  pushParagraphFormatHistory(paragraph);
+  CLEAR_RUN_PROPERTIES.forEach((property) => {
+    setRunFormatting(paragraph, startOffset, endOffset, property, false);
+  });
   commitParagraphFormatChange();
 }
 
@@ -592,6 +666,22 @@ function refreshFormatToolbarState() {
     button.setAttribute("aria-pressed", pressed ? "true" : "false");
     button.disabled = !hasActive;
   });
+
+  // Superscript / Subscript press-state: pressed when the whole selection already
+  // carries that vertAlign value (the two are mutually exclusive).
+  [
+    ["studioFormatSuperscript", "superscript"],
+    ["studioFormatSubscript", "subscript"],
+  ].forEach(([buttonId, value]) => {
+    const button = document.getElementById(buttonId);
+    if (!button) return;
+    const pressed = Boolean(selection)
+      && runRangeHasFormatting(paragraph, selection.startOffset, selection.endOffset, "vertAlign", value);
+    button.setAttribute("aria-pressed", pressed ? "true" : "false");
+    button.disabled = !hasActive;
+  });
+  const clearButton = document.getElementById("studioFormatClear");
+  if (clearButton) clearButton.disabled = !hasActive;
 
   // Text color: reflect a uniform selection color in the picker; disable with no
   // active paragraph. Highlight: reflect a uniform selection highlight name.

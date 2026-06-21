@@ -19,6 +19,9 @@ window.generatorEditor = (function () {
     sizeDown: "genFontSizeDown",
     bold: "genFormatBold",
     italic: "genFormatItalic",
+    superscript: "genFormatSuperscript",
+    subscript: "genFormatSubscript",
+    clear: "genFormatClear",
     undo: "genUndo",
   };
   const ALIGN_BUTTONS = [
@@ -477,6 +480,7 @@ window.generatorEditor = (function () {
       markTouched();
       refreshToolbar();
     });
+    editable.addEventListener("keydown", handleShortcutKeydown);
     editable.addEventListener("keyup", refreshToolbar);
     editable.addEventListener("mouseup", refreshToolbar);
     if (typeof pastePlainText === "function") editable.addEventListener("paste", pastePlainText);
@@ -618,12 +622,16 @@ window.generatorEditor = (function () {
     if (font) out.font = font;
     const size = Number(run && run.size);
     if (Number.isFinite(size) && size > 0) out.size = size;
+    const vertAlign = String(run && run.vertAlign || "").trim().toLowerCase();
+    if (vertAlign === "superscript" || vertAlign === "subscript") out.vertAlign = vertAlign;
     return out;
   }
 
   function hasAnyFormatting(run) {
+    const vertAlign = String(run && run.vertAlign || "").trim().toLowerCase();
     return Boolean(run && (run.bold || run.italic || run.underline
-      || String(run.font || "").trim() || Number(run.size) > 0));
+      || String(run.font || "").trim() || Number(run.size) > 0
+      || vertAlign === "superscript" || vertAlign === "subscript"));
   }
 
   function formatEquals(a, b) {
@@ -633,7 +641,8 @@ window.generatorEditor = (function () {
       && Boolean(x.italic) === Boolean(y.italic)
       && Boolean(x.underline) === Boolean(y.underline)
       && String(x.font || "").trim() === String(y.font || "").trim()
-      && Number(x.size || 0) === Number(y.size || 0);
+      && Number(x.size || 0) === Number(y.size || 0)
+      && String(x.vertAlign || "").trim().toLowerCase() === String(y.vertAlign || "").trim().toLowerCase();
   }
 
   // ---- History / Undo -----------------------------------------------------
@@ -775,6 +784,50 @@ window.generatorEditor = (function () {
     commit(snapshot);
   }
 
+  // Value-aware toggle (currently vertAlign): if the whole selection already carries
+  // `value`, unset it; else set it. Setting one vertAlign value replaces the other, so
+  // superscript and subscript stay mutually exclusive.
+  function toggleRunValue(property, value) {
+    const para = activeParagraph();
+    const snapshot = captureSelection();
+    if (!para || !snapshot) { setStatusHint("Select text to format"); return; }
+    pushHistory(para);
+    const allHave = runRangeHasFormatting(para, snapshot.startOffset, snapshot.endOffset, property, value);
+    setRunFormatting(para, snapshot.startOffset, snapshot.endOffset, property, allHave ? false : value);
+    commit(snapshot);
+  }
+
+  // Inline run properties cleared by "Clear formatting" over the selection.
+  const CLEAR_RUN_PROPERTIES = [
+    "bold", "italic", "underline", "strike", "font", "size", "color", "highlight", "vertAlign",
+  ];
+
+  // "Clear formatting": strip every inline run property over the selection so the text
+  // returns to the document default. No selection -> hint. One history entry covers it.
+  function clearFormatting() {
+    const para = activeParagraph();
+    const snapshot = captureSelection();
+    if (!para || !snapshot) { setStatusHint("Select text to clear formatting"); return; }
+    pushHistory(para);
+    CLEAR_RUN_PROPERTIES.forEach((property) => {
+      setRunFormatting(para, snapshot.startOffset, snapshot.endOffset, property, false);
+    });
+    commit(snapshot);
+  }
+
+  // Ctrl/Cmd+B/I/U inside an editable: route to the existing bold/italic/underline
+  // toggles (no new format logic) and preventDefault so the browser's own command
+  // doesn't fire.
+  function handleShortcutKeydown(event) {
+    if (!event || event.altKey) return;
+    if (!(event.ctrlKey || event.metaKey)) return;
+    const key = String(event.key || "").toLowerCase();
+    const property = key === "b" ? "bold" : key === "i" ? "italic" : key === "u" ? "underline" : null;
+    if (!property) return;
+    event.preventDefault();
+    toggleRun(property);
+  }
+
   function currentSize() {
     const para = activeParagraph();
     if (!para) return null;
@@ -805,6 +858,12 @@ window.generatorEditor = (function () {
     if (bold) bold.onclick = () => toggleRun("bold");
     const italic = document.getElementById(TOOLBAR.italic);
     if (italic) italic.onclick = () => toggleRun("italic");
+    const superscript = document.getElementById(TOOLBAR.superscript);
+    if (superscript) superscript.onclick = () => toggleRunValue("vertAlign", "superscript");
+    const subscript = document.getElementById(TOOLBAR.subscript);
+    if (subscript) subscript.onclick = () => toggleRunValue("vertAlign", "subscript");
+    const clearBtn = document.getElementById(TOOLBAR.clear);
+    if (clearBtn) clearBtn.onclick = () => clearFormatting();
     const undoBtn = document.getElementById(TOOLBAR.undo);
     if (undoBtn) undoBtn.onclick = () => undo();
     ALIGN_BUTTONS.forEach(([id, alignment]) => {
@@ -833,6 +892,16 @@ window.generatorEditor = (function () {
       button.setAttribute("aria-pressed", pressed ? "true" : "false");
       button.disabled = !hasActive;
     });
+
+    [[TOOLBAR.superscript, "superscript"], [TOOLBAR.subscript, "subscript"]].forEach(([id, value]) => {
+      const button = document.getElementById(id);
+      if (!button) return;
+      const pressed = Boolean(sel) && runRangeHasFormatting(para, sel.startOffset, sel.endOffset, "vertAlign", value);
+      button.setAttribute("aria-pressed", pressed ? "true" : "false");
+      button.disabled = !hasActive;
+    });
+    const clearBtn = document.getElementById(TOOLBAR.clear);
+    if (clearBtn) clearBtn.disabled = !hasActive;
 
     const fontSelect = document.getElementById(TOOLBAR.fontSelect);
     if (fontSelect) {
@@ -905,6 +974,8 @@ window.generatorEditor = (function () {
       if (/^[0-9A-F]{6}$/.test(color)) out.color = color;
       const highlight = String(r.highlight || "").trim();
       if (highlight) out.highlight = highlight;
+      const vertAlign = String(r.vertAlign || "").trim().toLowerCase();
+      if (vertAlign === "superscript" || vertAlign === "subscript") out.vertAlign = vertAlign;
       return out;
     });
     copy[0].text = copy[0].text.replace(/^\s+/, "");
