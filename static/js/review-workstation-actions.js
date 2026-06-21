@@ -78,6 +78,11 @@ function enterReviewInFlightUi() {
     studioRefreshReviewButton.setAttribute("aria-busy", "true");
   }
   setFileMeta(REVIEW_REFRESH_PROGRESS_MESSAGE);
+  // Show the shimmer skeleton placeholders (document-pane paragraph stack +
+  // inspector clause rows) PAIRED with the honest duration copy, replacing the
+  // empty/stale split workspace while the background review runs. Guarded so a
+  // load order without the rendering module is a no-op.
+  if (typeof setReviewWorkspaceSkeleton === "function") setReviewWorkspaceSkeleton(true);
   // Approve / Send / Download must not act on a matter whose review is mid-flight.
   updateExportButtonState();
 }
@@ -89,6 +94,11 @@ function exitReviewInFlightUi() {
     studioRefreshReviewButton.classList.remove("is-refreshing");
     studioRefreshReviewButton.removeAttribute("aria-busy");
   }
+  // Tear down the shimmer skeleton overlays. The terminal poll path then renders
+  // the real result (applyCompletedReview -> renderResult) or the failure state,
+  // so the skeleton never lingers over arrived content. renderStudioResult also
+  // clears it defensively, so a double-clear is a harmless no-op.
+  if (typeof setReviewWorkspaceSkeleton === "function") setReviewWorkspaceSkeleton(false);
 }
 
 // Begin polling the background review for `matterId`. Single in-flight: starting a
