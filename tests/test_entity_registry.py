@@ -195,10 +195,12 @@ class GoverningLawMappingTests(unittest.TestCase):
 
 
 class ForumReconciliationTests(unittest.TestCase):
-    """FIX 3: the playbook's per-option ``forum_jurisdiction`` (review-side
-    detector) and the entity registry's per-entity ``jurisdiction`` (what
-    generation writes) must not silently drift to different jurisdiction buckets,
-    and the playbook forum must be present and resolve to a known bucket."""
+    """Per-entity governing-law/court restructure: each entity's per-entity
+    ``jurisdiction`` (what generation writes) must bucket to the SAME jurisdiction
+    as the governing law that entity defaults to. The expected bucket is derived
+    from the LAW's own id/label (``law_forum_check.expected_forum_bucket``); the
+    playbook no longer carries a per-option ``forum_jurisdiction`` -- the court is
+    edited per signing entity, and the law is its own forum source."""
 
     def test_live_registry_and_playbook_forums_reconcile(self):
         # The shipped playbook + registry are forum-consistent at bucket granularity.
@@ -207,56 +209,59 @@ class ForumReconciliationTests(unittest.TestCase):
     def test_two_india_cities_reconcile_to_the_same_bucket(self):
         # The load-bearing case: two India entities sit in different CITIES
         # (Bengaluru vs Gandhinagar) but the same jurisdiction BUCKET (india), so
-        # reconciliation must pass even though the playbook says "Mumbai, India".
+        # reconciliation must pass even though no per-law forum is authored.
         er.validate_forum_reconciliation(load_playbook())  # both india entities present
         self.assertEqual(er._forum_bucket("courts in Bengaluru, Karnataka"), "india")
         self.assertEqual(er._forum_bucket("courts in Gandhinagar, Gujarat"), "india")
         self.assertEqual(er._forum_bucket("Mumbai, India"), "india")
 
-    def test_missing_forum_jurisdiction_is_flagged(self):
+    def test_reconciliation_passes_without_per_law_forum_jurisdiction(self):
+        # RESTRUCTURE INVARIANT: stripping every per-option forum_jurisdiction (the
+        # field is gone after the restructure) must NOT break reconciliation -- the
+        # expected bucket is derived from the law's own id. Previously this raised
+        # "missing forum_jurisdiction"; now it is the normal, supported state.
         playbook = load_playbook()
         for clause in playbook["clauses"]:
             if clause["id"] == "governing_law":
-                clause["rules"]["approved_options"][0].pop("forum_jurisdiction", None)
-        with self.assertRaises(ValueError) as ctx:
-            er.validate_forum_reconciliation(playbook)
-        self.assertIn("forum_jurisdiction", str(ctx.exception))
+                for option in clause["rules"]["approved_options"]:
+                    option.pop("forum_jurisdiction", None)
+        er.validate_forum_reconciliation(playbook)  # must not raise
 
-    def test_unresolvable_forum_jurisdiction_is_flagged(self):
+    def test_entity_court_unresolvable_to_a_bucket_is_flagged(self):
+        # An entity whose COURT does not resolve to any known jurisdiction bucket is
+        # rejected (the generator would have no jurisdiction to anchor the venue to).
         playbook = load_playbook()
-        for clause in playbook["clauses"]:
-            if clause["id"] == "governing_law":
-                clause["rules"]["approved_options"][0]["forum_jurisdiction"] = "Atlantis"
+        entities = copy.deepcopy(er.DEFAULT_SIGNING_ENTITIES)
+        entities[0]["jurisdiction"] = "Atlantis"
         with self.assertRaises(ValueError) as ctx:
-            er.validate_forum_reconciliation(playbook)
+            er.validate_forum_reconciliation(playbook, entities)
         self.assertIn("forum bucket", str(ctx.exception))
 
     def test_cross_bucket_forum_drift_is_flagged(self):
-        # Drift the india option's forum_jurisdiction to England -> the india
-        # entities (Bengaluru/Gandhinagar -> india bucket) no longer match the
-        # playbook's england_and_wales bucket. This must be caught.
+        # Point an India-law entity's COURT at England -> the entity (england_and_wales
+        # bucket) no longer matches its india law's bucket. This must be caught.
         playbook = load_playbook()
-        for clause in playbook["clauses"]:
-            if clause["id"] == "governing_law":
-                for option in clause["rules"]["approved_options"]:
-                    if option["id"] == "india":
-                        option["forum_jurisdiction"] = "England and Wales"
+        entities = copy.deepcopy(er.DEFAULT_SIGNING_ENTITIES)
+        india = next(
+            e for e in entities if e["governing_law"]["playbook_option_id"] == "india"
+        )
+        india["jurisdiction"] = "Courts of England and Wales"
         with self.assertRaises(ValueError) as ctx:
-            er.validate_forum_reconciliation(playbook)
+            er.validate_forum_reconciliation(playbook, entities)
         self.assertIn("Forum drift", str(ctx.exception))
 
     def test_reconciliation_runs_inside_validate_against_playbook(self):
-        # validate_registry_against_playbook now also reconciles forums, so a forum
-        # bucket drift is caught by the broader validator too (the one the runtime
-        # guard / route invoke).
+        # validate_registry_against_playbook now also reconciles forums, so an entity
+        # court bucket drift is caught by the broader validator too (the one the
+        # runtime guard / route invoke).
         playbook = load_playbook()
-        for clause in playbook["clauses"]:
-            if clause["id"] == "governing_law":
-                for option in clause["rules"]["approved_options"]:
-                    if option["id"] == "difc":
-                        option["forum_jurisdiction"] = "Province of Ontario, Canada"
+        entities = copy.deepcopy(er.DEFAULT_SIGNING_ENTITIES)
+        difc = next(
+            e for e in entities if e["governing_law"]["playbook_option_id"] == "difc"
+        )
+        difc["jurisdiction"] = "courts of the Province of Ontario, Canada"
         with self.assertRaises(ValueError):
-            er.validate_registry_against_playbook(playbook)
+            er.validate_registry_against_playbook(playbook, entities)
 
     def test_candidate_entity_law_court_mismatch_is_caught(self):
         # FIX B (P1): validate_forum_reconciliation must reconcile the CANDIDATE

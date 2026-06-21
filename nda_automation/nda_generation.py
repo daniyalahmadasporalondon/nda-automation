@@ -630,14 +630,16 @@ def _forum_for_option_id(option_id: str, playbook: Mapping[str, Any]) -> str:
         pass
     from . import governing_law_forum  # noqa: PLC0415
 
-    # The per-entity registry jurisdiction is the city-level source of truth and
-    # wins above. When NO registry entity defaults to this option -- e.g. a law a
-    # user just AUTHORED in the Playbook editor that has no signing entity yet --
-    # fall back to the court/venue authored ON THE PLAYBOOK OPTION itself
-    # (forum_jurisdiction). The publish lint guarantees every approved option
-    # carries a non-empty forum_jurisdiction, so a published law always resolves a
-    # court here rather than hard-refusing generation. court_name (a removed field)
-    # is still preferred when present for backward compatibility.
+    # The per-entity registry jurisdiction is the city-level source of truth and is
+    # now the ONLY place a court is authored (courts are edited per signing entity,
+    # not per playbook law). When NO registry entity defaults to this option -- e.g.
+    # a law a user just AUTHORED in the Playbook editor that has no signing entity
+    # yet -- there is no court to write, so this returns "" and the caller
+    # (:func:`_require_court_forum`) HARD-REFUSES generation. That is intentional and
+    # safe: you cannot generate an NDA under a law that no signing entity is set up to
+    # use. The legacy per-option forum_jurisdiction / court_name fields are still read
+    # below for backward compatibility with any pre-restructure playbook that retains
+    # them, but they are no longer authored or required.
     pairing = governing_law_forum.canonical_forum_for_law(dict(playbook), option_id)
     if pairing is None:
         return ""

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260621entux1">
+    <link rel="stylesheet" href="/static/styles.css?v=20260621courts2">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260619onboard1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260619onboard1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
@@ -2201,14 +2201,22 @@
             <span>Short name</span>
             <input type="text" data-entity-field="short_name" autocomplete="off" placeholder="Acme">
           </label>
-          <label class="entity-field">
-            <span>Governing law</span>
-            <select data-entity-field="governing_law"></select>
-          </label>
-          <label class="entity-field">
-            <span>Court / jurisdiction</span>
-            <input type="text" data-entity-field="jurisdiction" autocomplete="off" placeholder="courts in England and Wales">
-          </label>
+          <!-- Governing law + court are EDITED in the Playbook "Entities & Courts"
+               table (one source of truth) and shown READ-ONLY here. The hidden
+               inputs carry the values so collectEntities() round-trips them on save. -->
+          <div class="entity-field">
+            <span class="entity-field-label">Governing law</span>
+            <div class="readonly-display" data-entity-field="governing_law-display" data-readonly-display>—</div>
+            <input type="hidden" data-entity-field="governing_law">
+          </div>
+          <div class="entity-field">
+            <span class="entity-field-label">Court / jurisdiction</span>
+            <div class="readonly-display" data-entity-field="jurisdiction-display" data-readonly-display>—</div>
+            <input type="hidden" data-entity-field="jurisdiction">
+          </div>
+          <p class="entity-field entity-field-wide entity-readonly-hint">
+            Governing law &amp; court are managed in the Playbook editor &rarr; Governing Law &rarr; Entities &amp; Courts.
+          </p>
           <label class="entity-field">
             <span>Incorporation jurisdiction</span>
             <input type="text" data-entity-field="incorporation_jurisdiction" autocomplete="off" placeholder="England and Wales">
@@ -2616,7 +2624,7 @@
     <script src="/static/js/admin-personalisation.js?v=20260619selfserve1"></script>
     <script src="/static/js/admin-docusign.js?v=20260617a401"></script>
     <script src="/static/js/admin-access.js?v=20260620integ1"></script>
-    <script src="/static/js/admin-entities.js?v=20260621entux1"></script>
+    <script src="/static/js/admin-entities.js?v=20260621courts1"></script>
     <script src="/static/js/docusign-send.js?v=20260621nda1"></script>
     <script src="/static/js/contract-structure-view.js?v=20260621wave4"></script>
     <script src="/static/js/review-fill.js?v=20260617occ1"></script>
@@ -2627,7 +2635,7 @@
     <script src="/static/js/overview/facts.js?v=20260621nda1"></script>
     <script src="/static/js/overview/overview-tab.js?v=20260620integ1"></script>
     <script src="/static/js/playbook-draft-runtime.js?v=20260620integ1"></script>
-    <script src="/static/js/playbook-view.js?v=20260621wave4"></script>
+    <script src="/static/js/playbook-view.js?v=20260621courts1"></script>
     <script src="/static/js/review-workstation-actions.js?v=20260621wave4"></script>
     <script src="/static/js/review-workstation-source.js?v=20260615cp1"></script>
     <script src="/static/js/review-workstation-rendering.js?v=20260621wave4"></script>

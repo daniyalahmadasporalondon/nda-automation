@@ -692,26 +692,15 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     if (clause.id === "governing_law") {
       const addButton = clauseDetail.querySelector("#addGoverningLaw");
       const input = clauseDetail.querySelector("#governingLawInput");
-      const forumInput = clauseDetail.querySelector("#governingLawForumInput");
       if (addButton && input) {
         addButton.addEventListener("click", () => {
           const value = input.value.trim();
           if (!value) return;
-          const forum = forumInput ? forumInput.value.trim() : "";
           clause.approved_laws = dedupeList([...(clause.approved_laws || []), value]);
           clause.law_phrases = { ...(clause.law_phrases || {}), [value]: value };
           if (!clause.preferred_law) clause.preferred_law = value;
-          // Seed the new option's authored court/forum so syncStructuredRules'
-          // merge writes it onto the freshly-built option object. The publish
-          // lint requires a non-empty forum_jurisdiction, so authoring the court
-          // here at add-time is the happy path.
-          clause._forumByOptionId = {
-            ...(clause._forumByOptionId || {}),
-            [optionIdForLaw(value)]: forum,
-          };
           syncStructuredRules(clause);
           input.value = "";
-          if (forumInput) forumInput.value = "";
           renderClauseDetail();
         });
         input.addEventListener("keydown", (event) => {
@@ -743,6 +732,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
           renderClauseDetail();
         });
       });
+      wireEntityCourtsTable(clauseDetail);
     }
     // Trigger-term chips and decision-condition editing are now available for
     // EVERY clause (native + dynamic). The redline-action / fallback-wording
@@ -1246,14 +1236,16 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         <section class="admin-special" data-derived-standard="1">
           <h3>Standard Position (derived)</h3>
           <p class="admin-muted">${leverNote}</p>
-          <label class="admin-field compact"><span>Preferred Standard Position (read-only, derived)</span>
-            <textarea rows="3" readonly disabled data-derived-field="preferred_position">${escapeHtml(preferredPosition(clause))}</textarea>
+          <div class="admin-field compact"><span class="admin-field-label">Preferred Standard Position (read-only, derived)</span>
+            ${readOnlyDisplay(preferredPosition(clause), { multiline: true })}
+            <input type="hidden" data-derived-field="preferred_position" value="${escapeHtml(preferredPosition(clause))}">
             <small class="admin-muted">Auto-derived from the approved list -- edit the list to change this.</small>
-          </label>
-          <label class="admin-field compact"><span>Check Trigger Position (read-only, derived)</span>
-            <textarea rows="3" readonly disabled data-derived-field="check_trigger">${escapeHtml(checkTrigger(clause))}</textarea>
+          </div>
+          <div class="admin-field compact"><span class="admin-field-label">Check Trigger Position (read-only, derived)</span>
+            ${readOnlyDisplay(checkTrigger(clause), { multiline: true })}
+            <input type="hidden" data-derived-field="check_trigger" value="${escapeHtml(checkTrigger(clause))}">
             <small class="admin-muted">Auto-derived from the approved list -- edit the list to change this.</small>
-          </label>
+          </div>
         </section>
       `;
     }
@@ -1837,15 +1829,6 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     `;
   }
 
-  function governingLawForumForLaw(clause, law) {
-    const options = clause.rules && Array.isArray(clause.rules.approved_options)
-      ? clause.rules.approved_options
-      : [];
-    const id = optionIdForLaw(law);
-    const match = options.find((option) => option && String(option.id || "") === id);
-    return match && typeof match.forum_jurisdiction === "string" ? match.forum_jurisdiction : "";
-  }
-
   function governingLawPolicyControls(clause) {
     const approved = clause.approved_laws || [];
     const preferredLaw = clause.preferred_law || approved[0] || "";
@@ -1865,10 +1848,6 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
             <span>Draft phrase</span>
             <input name="governing_law_phrase_${index}" data-governing-law-phrase="${index}" type="text" value="${escapeHtml(lawPhrases[law] || law)}">
           </label>
-          <label class="admin-field">
-            <span>Court / forum</span>
-            <input name="governing_law_forum_${index}" data-governing-law-forum="${index}" type="text" value="${escapeHtml(governingLawForumForLaw(clause, law))}" placeholder="e.g. courts of England and Wales">
-          </label>
           <button class="secondary admin-remove-button" type="button" data-remove-governing-law="${index}" ${approved.length <= 1 ? "disabled" : ""}>Remove</button>
         </article>
       `)
@@ -1876,15 +1855,224 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     return `
       <section class="admin-special">
         <h3>Approved Governing Laws</h3>
-        <p class="admin-muted">The governing laws we accept. The AI review uses this list to decide whether a document's chosen law is approved, to pair each law with its court / forum, and to offer Governing Law redline options. The court / forum names the venue that must go with each law, and is required to publish.</p>
+        <p class="admin-muted">The governing laws we accept. The AI review uses this list to decide whether a document's chosen law is approved, and to offer Governing Law redline options. Each signing entity's court / forum is set per entity in the Entities &amp; Courts table below.</p>
         <div class="admin-policy-options">${rows}</div>
         <div class="admin-inline-add">
           <input id="governingLawInput" type="text" placeholder="Add approved jurisdiction">
-          <input id="governingLawForumInput" type="text" placeholder="Court / forum (e.g. courts of Singapore)">
           <button class="secondary" id="addGoverningLaw" type="button">Add</button>
         </div>
       </section>
+      ${entityCourtsTableSection(clause)}
     `;
+  }
+
+  // The "Entities & Courts" table: each signing entity's governing law (constrained
+  // to the approved-laws list above) + its court/forum. This is the SINGLE place
+  // entity law/court is edited (the Entities console shows them read-only). The
+  // rows are fetched + wired after render by wireEntityCourtsTable().
+  function entityCourtsTableSection(clause) {
+    const lawIds = (clause.approved_laws || []).map((law) => optionIdForLaw(law));
+    return `
+      <section class="admin-special" data-entity-courts="1" data-approved-law-ids="${escapeHtml(JSON.stringify(lawIds))}">
+        <h3>Entities &amp; Courts</h3>
+        <p class="admin-muted">Each signing entity's governing law (from the approved list above) and the court / forum written into a generated NDA for it. An entity's court must sit in the same jurisdiction as its governing law.</p>
+        <div class="admin-entity-courts" data-entity-courts-body>
+          <p class="admin-muted" data-entity-courts-status>Loading signing entities…</p>
+        </div>
+        <div class="admin-entity-courts-actions" hidden data-entity-courts-actions>
+          <p class="admin-entity-courts-message" data-entity-courts-message></p>
+          <button class="primary" type="button" data-entity-courts-save disabled>Save entities &amp; courts</button>
+        </div>
+      </section>
+    `;
+  }
+
+  // A read-only DISPLAY block (full text, auto-height, no clipping, muted fill +
+  // hairline border, a subtle "locked" marker). One treatment, reused by the
+  // Entities & Courts legal-name cells AND the derived Standard/Check-Trigger
+  // fields. `value` is plain text; it is escaped here.
+  function readOnlyDisplay(value, { multiline = false } = {}) {
+    const text = String(value == null ? "" : value);
+    const cls = multiline ? "readonly-display readonly-display-multiline" : "readonly-display";
+    return `<div class="${cls}" data-readonly-display>${escapeHtml(text) || "—"}</div>`;
+  }
+
+  // Fetch the signing-entity registry, render the Entities & Courts editor rows,
+  // and wire a Save that POSTs the FULL registry with only each entity's law +
+  // court patched (every other field preserved verbatim from the fetched payload).
+  function wireEntityCourtsTable(scope) {
+    const section = scope.querySelector("[data-entity-courts]");
+    if (!section) return;
+    const body = section.querySelector("[data-entity-courts-body]");
+    const actions = section.querySelector("[data-entity-courts-actions]");
+    const messageEl = section.querySelector("[data-entity-courts-message]");
+    const saveButton = section.querySelector("[data-entity-courts-save]");
+    const status = section.querySelector("[data-entity-courts-status]");
+    // The approved-law option ids, in the order the Approved Governing Laws block
+    // shows them -- the law <select> is constrained to exactly these.
+    let lawIds = [];
+    try {
+      lawIds = JSON.parse(section.dataset.approvedLawIds || "[]");
+    } catch (_) {
+      lawIds = [];
+    }
+    // The fetched payload: entities (full objects), lawOptions [{id,label}], and a
+    // dirty flag. Kept in closure so Save can re-emit untouched fields.
+    let fetched = null;
+
+    function setStatus(text, tone) {
+      if (!status) return;
+      status.textContent = text;
+      status.classList.toggle("is-error", tone === "error");
+    }
+    function setMessage(text, tone) {
+      if (!messageEl) return;
+      messageEl.textContent = text || "";
+      messageEl.classList.toggle("is-error", tone === "error");
+      messageEl.classList.toggle("is-ok", tone === "ok");
+    }
+    function setDirty(value) {
+      if (saveButton) saveButton.disabled = !value;
+    }
+
+    function lawOptionsHtml(selectedId) {
+      const options = (fetched?.lawOptions || []).slice();
+      // If an entity points at a law not in the approved list (orphan), keep it
+      // selectable so the admin can see it rather than it snapping silently.
+      const known = options.some((o) => o.id === selectedId);
+      const head = (selectedId && !known)
+        ? `<option value="${escapeHtml(selectedId)}" selected>${escapeHtml(humanizeId(selectedId))} (not in approved list)</option>`
+        : "";
+      const rest = options.map((o) => {
+        const sel = o.id === selectedId ? " selected" : "";
+        return `<option value="${escapeHtml(o.id)}"${sel}>${escapeHtml(o.label || o.id)}</option>`;
+      }).join("");
+      return head + rest;
+    }
+
+    function render() {
+      if (!body) return;
+      const entities = fetched?.entities || [];
+      if (!entities.length) {
+        body.innerHTML = `<p class="admin-muted">No signing entities configured.</p>`;
+        if (actions) actions.hidden = true;
+        return;
+      }
+      const rows = entities.map((entity, index) => {
+        const lawId = String(entity.governing_law?.playbook_option_id || "");
+        const court = String(entity.jurisdiction || "");
+        return `
+          <article class="admin-entity-court-row" data-entity-court-row="${index}">
+            <div class="admin-field">
+              <span class="admin-field-label">Entity</span>
+              ${readOnlyDisplay(entity.legal_name || entity.id || "Unnamed entity")}
+            </div>
+            <label class="admin-field">
+              <span>Governing law</span>
+              <select data-entity-court-law="${index}">${lawOptionsHtml(lawId)}</select>
+            </label>
+            <label class="admin-field">
+              <span>Court / forum</span>
+              <input type="text" data-entity-court-jurisdiction="${index}" value="${escapeHtml(court)}" placeholder="courts in England and Wales">
+            </label>
+          </article>
+        `;
+      }).join("");
+      body.innerHTML = `<div class="admin-entity-court-rows">${rows}</div>`;
+      if (actions) actions.hidden = false;
+      setDirty(false);
+      setMessage("");
+      body.querySelectorAll("[data-entity-court-law], [data-entity-court-jurisdiction]").forEach((el) => {
+        el.addEventListener("input", () => setDirty(true));
+        el.addEventListener("change", () => setDirty(true));
+      });
+    }
+
+    function humanizeId(id) {
+      if (typeof window !== "undefined" && typeof window.humanizeId === "function") {
+        return window.humanizeId(id);
+      }
+      return String(id || "");
+    }
+
+    function collect() {
+      // Re-emit every fetched entity verbatim, patching ONLY law + court from the
+      // edited rows via the SHARED wire helper (no drift with the Entities console).
+      const wire = (typeof AdminEntitiesView !== "undefined" && AdminEntitiesView.entityLawCourtWire)
+        ? AdminEntitiesView.entityLawCourtWire
+        : (lawId, lawLabel, jur) => ({
+            governing_law: { playbook_option_id: String(lawId || ""), label: String(lawLabel || lawId || "") },
+            jurisdiction: String(jur || "").trim(),
+          });
+      return (fetched?.entities || []).map((entity, index) => {
+        const lawSelect = body.querySelector(`[data-entity-court-law="${index}"]`);
+        const courtInput = body.querySelector(`[data-entity-court-jurisdiction="${index}"]`);
+        const lawId = lawSelect ? lawSelect.value : String(entity.governing_law?.playbook_option_id || "");
+        const lawLabel = (fetched?.lawOptions || []).find((o) => o.id === lawId)?.label || lawId;
+        const court = courtInput ? courtInput.value : String(entity.jurisdiction || "");
+        const patch = wire(lawId, lawLabel, court);
+        return { ...entity, governing_law: patch.governing_law, jurisdiction: patch.jurisdiction };
+      });
+    }
+
+    async function save() {
+      if (!fetched) return;
+      const entities = collect();
+      if (saveButton) saveButton.disabled = true;
+      setMessage("Saving…");
+      try {
+        const response = await fetch("/api/admin/signing-entities", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ entities }),
+        });
+        if (!response.ok) {
+          let detail = "Entities & courts could not be saved";
+          try {
+            const errBody = await response.json();
+            detail = errBody?.error || detail;
+          } catch (_) { /* keep fallback */ }
+          throw new Error(detail);
+        }
+        const payload = await response.json();
+        applyPayload(payload);
+        setMessage("Saved.", "ok");
+      } catch (error) {
+        if (saveButton) saveButton.disabled = false;
+        setMessage(error.message || "Entities & courts could not be saved", "error");
+      }
+    }
+
+    function applyPayload(payload) {
+      fetched = {
+        entities: Array.isArray(payload.entities) ? payload.entities : [],
+        lawOptions: Array.isArray(payload.governing_law_options)
+          ? payload.governing_law_options.filter((o) => o && o.id)
+          : (lawIds.map((id) => ({ id, label: humanizeId(id) }))),
+      };
+      render();
+    }
+
+    async function load() {
+      setStatus("Loading signing entities…");
+      try {
+        const response = await fetch("/api/admin/signing-entities", { headers: { Accept: "application/json" } });
+        if (response.status === 403) {
+          setStatus("The signing-entity registry is managed by an administrator.");
+          if (actions) actions.hidden = true;
+          return;
+        }
+        if (!response.ok) throw new Error("Signing entities could not load");
+        const payload = await response.json();
+        applyPayload(payload);
+      } catch (error) {
+        setStatus(error.message || "Signing entities could not load", "error");
+        if (actions) actions.hidden = true;
+      }
+    }
+
+    if (saveButton) saveButton.addEventListener("click", save);
+    load();
   }
 
   function governingLawRedlineControls(clause) {
@@ -2214,22 +2402,16 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     const rows = [...form.querySelectorAll("[data-governing-law-row]")];
     const approvedLaws = [];
     const lawPhrases = {};
-    // Authored court/forum per option, keyed by the option's derived id, so
-    // syncGoverningLawRules can write it onto the matching merged option object.
-    const forumByOptionId = {};
     rows.forEach((row) => {
       const law = String(row.querySelector("[data-governing-law-value]")?.value || "").trim();
       if (!law) return;
       if (approvedLaws.some((item) => item.toLowerCase() === law.toLowerCase())) return;
       const phrase = String(row.querySelector("[data-governing-law-phrase]")?.value || "").trim() || law;
-      const forum = String(row.querySelector("[data-governing-law-forum]")?.value || "").trim();
       approvedLaws.push(law);
       lawPhrases[law] = phrase;
-      forumByOptionId[optionIdForLaw(law)] = forum;
     });
     clause.approved_laws = approvedLaws;
     clause.law_phrases = lawPhrases;
-    clause._forumByOptionId = forumByOptionId;
     const preferredIndex = Number.parseInt(data.get("preferred_law_index"), 10);
     clause.preferred_law = approvedLaws[preferredIndex] || approvedLaws[0] || "";
   }
@@ -2270,10 +2452,12 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
     // Rebuild the option list by MERGING the {id,label,value,default} the editor
     // controls onto the EXISTING loaded option objects (matched by derived id),
     // never replacing them outright. The backend authors per-option fields the
-    // FE has no control for -- forum_jurisdiction (the law<->court pairing the AI
-    // forum check + generation read), aliases, entity_prefixes (the governing-law
-    // checker's recognition terms). Replacing the array would strip those before
-    // the POST, and the backend carry-over could not recover what never arrived.
+    // FE has no control for -- aliases, entity_prefixes (the governing-law
+    // checker's recognition terms), and any legacy forum_jurisdiction. Replacing
+    // the array would strip those before the POST, and the backend carry-over
+    // could not recover what never arrived. The court/forum is no longer authored
+    // here (it lives per signing entity in the Entities & Courts table), so any
+    // pre-existing forum_jurisdiction is preserved untouched by this merge.
     const existingOptions = Array.isArray(rules.approved_options) ? rules.approved_options : [];
     const existingById = {};
     existingOptions.forEach((option) => {
@@ -2281,9 +2465,6 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       const id = String(option.id || optionIdForLaw(option.value || option.label || "")).trim();
       if (id) existingById[id] = option;
     });
-    const forumByOptionId = (clause._forumByOptionId && typeof clause._forumByOptionId === "object")
-      ? clause._forumByOptionId
-      : {};
     rules.approved_options = approved.map((law) => {
       const id = optionIdForLaw(law);
       const prior = existingById[id];
@@ -2292,13 +2473,6 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       merged.label = law;
       merged.value = law;
       merged.default = law === clause.preferred_law;
-      // The authored court/forum: take the edited value when this sync ran from a
-      // forum edit, otherwise preserve whatever the merged option already carried.
-      if (Object.prototype.hasOwnProperty.call(forumByOptionId, id)) {
-        const forum = String(forumByOptionId[id] || "").trim();
-        if (forum) merged.forum_jurisdiction = forum;
-        else delete merged.forum_jurisdiction;
-      }
       return merged;
     });
     if (rules.redline_guidance && typeof rules.redline_guidance === "object") {
