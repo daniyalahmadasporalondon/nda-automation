@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 /* ===========================================================================
    Aspora Clause Studio — Review Workstation
    Modeled on the Legal Review Portal workstation: flat white top bar, compact
@@ -12610,4 +12611,430 @@ label.is-hidden {
   font-size: 11px;
   color: var(--ink-soft);
   user-select: none;
+}
+
+/* ===========================================================================
+   Aspora Design Language — Clause Editor (v5 mockup, real-CSS adaptation)
+   Scoped to the consolidated clause editor (the Playbook clause-detail panel,
+   shared across all clause types) and its sibling Policy Version History. This
+   is a RESTYLE: every selector below targets existing, behavior-bearing markup
+   produced by playbook-view.js — no handler, binding, or payload is touched.
+   The app already exposes near-identical design tokens in :root; we add the
+   few v5-specific tokens (Inter, flat radii, hover-destructive) as locally
+   scoped custom properties so the rest of the app is unaffected.
+   =========================================================================== */
+.playbook-editor-consolidated {
+  /* Aspora tokens — flat radii, brand purple, hairline borders. */
+  --pb-font: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --pb-canvas: #faf9fc;
+  --pb-surface: #ffffff;
+  --pb-ink: #170a33;
+  --pb-muted: #5d5470;
+  --pb-faint: #8e869e;
+  --pb-brand: #4f1bb3;
+  --pb-brand-hover: #3d1293;
+  --pb-line: #e6e1f0;
+  --pb-chip-bg: #f5f0ff;
+  --pb-chip-border: rgba(79, 27, 179, 0.12);
+  --pb-success: #10b981;
+  --pb-r-card: 12px;
+  --pb-r-panel: 8px;
+  --pb-r-input: 6px;
+  --pb-r-tag: 4px;
+  --pb-shadow-card: 0 4px 20px rgba(22, 8, 51, 0.015);
+  --pb-shadow-seg: 0 1px 3px rgba(22, 8, 51, 0.08);
+
+  font-family: var(--pb-font);
+  -webkit-font-smoothing: antialiased;
+  color: var(--pb-ink);
+  gap: 1.5rem;
+}
+
+.playbook-editor-consolidated input,
+.playbook-editor-consolidated textarea,
+.playbook-editor-consolidated select,
+.playbook-editor-consolidated button,
+.playbook-editor-consolidated h2,
+.playbook-editor-consolidated h3,
+.playbook-editor-consolidated h4,
+.playbook-editor-consolidated .eyebrow {
+  font-family: var(--pb-font);
+}
+
+/* ---- Header: eyebrow + clause title + stance badge ---- */
+.playbook-editor-consolidated .admin-head {
+  border-bottom: 1px solid var(--pb-line);
+  padding-bottom: 1rem;
+}
+
+.playbook-editor-consolidated .admin-head .eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--pb-faint);
+  margin: 0 0 6px;
+}
+
+.playbook-editor-consolidated .admin-head h2 {
+  font-size: 1.65rem;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.02em;
+  color: var(--pb-ink);
+}
+
+/* Stance badge in the header ("Required" / "Prohibited") — flat 4px tag. */
+.playbook-editor-consolidated .policy-chip {
+  border-radius: var(--pb-r-tag);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.3rem 0.55rem;
+  box-shadow: none;
+  align-self: center;
+}
+
+.playbook-editor-consolidated .policy-chip.required {
+  background: var(--pb-chip-bg);
+  color: var(--pb-brand);
+  border: 1px solid var(--pb-chip-border);
+}
+
+.playbook-editor-consolidated .policy-chip.prohibited {
+  background: var(--red-bg);
+  color: var(--red-ink);
+  border: 1px solid var(--red-border);
+}
+
+/* ---- Status cards: Active published + Working draft ---- */
+.playbook-editor-consolidated .playbook-version-banner {
+  gap: 1rem;
+}
+
+.playbook-editor-consolidated .playbook-version-card {
+  background: var(--pb-surface);
+  border: 1px solid var(--pb-line);
+  border-radius: var(--pb-r-panel);
+  box-shadow: var(--pb-shadow-card);
+  padding: 1.25rem 1.5rem;
+  gap: 4px;
+}
+
+.playbook-editor-consolidated .playbook-version-card.active,
+.playbook-editor-consolidated .playbook-version-card.draft {
+  background: var(--pb-surface);
+  border-color: var(--pb-line);
+}
+
+/* Restore the at-a-glance draft-state tints over the flat white base. */
+.playbook-editor-consolidated .playbook-version-banner[data-draft-state="editing"] .playbook-version-card.draft {
+  border-color: var(--amber-border);
+  background: var(--amber-bg);
+}
+.playbook-editor-consolidated .playbook-version-banner[data-draft-state="ahead"] .playbook-version-card.draft {
+  border-color: var(--green-border);
+  background: var(--green-bg);
+}
+
+.playbook-editor-consolidated .playbook-version-card .eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--pb-muted);
+}
+
+/* Status dot before each card label: published = green, draft = brand. */
+.playbook-editor-consolidated .playbook-version-card .eyebrow::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+.playbook-editor-consolidated .playbook-version-card.active .eyebrow::before {
+  background: var(--pb-success);
+}
+.playbook-editor-consolidated .playbook-version-card.draft .eyebrow::before {
+  background: var(--pb-brand);
+}
+
+.playbook-editor-consolidated .playbook-version-card strong {
+  color: var(--pb-ink);
+  font-size: 15px;
+  font-weight: 600;
+}
+.playbook-editor-consolidated .playbook-version-card small {
+  color: var(--pb-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ---- Sections ---- */
+.playbook-editor-consolidated .playbook-clause-section {
+  border-top: 1px solid var(--pb-line);
+  padding: 1.5rem 0;
+  gap: 1rem;
+}
+.playbook-editor-consolidated .playbook-clause-section:first-of-type {
+  border-top: none;
+  padding-top: 0.5rem;
+}
+
+.playbook-editor-consolidated .playbook-subpanel-head h3 {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--pb-ink);
+}
+.playbook-editor-consolidated .playbook-subpanel-head p {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--pb-muted);
+}
+
+/* ---- Field labels + inputs ---- */
+.playbook-editor-consolidated .admin-field > span,
+.playbook-editor-consolidated .admin-fieldset legend,
+.playbook-editor-consolidated .admin-special h3,
+.playbook-editor-consolidated .admin-rules h3 {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--pb-muted);
+  margin-bottom: 6px;
+  display: block;
+}
+
+.playbook-editor-consolidated .admin-special h3 {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.playbook-editor-consolidated .admin-field input,
+.playbook-editor-consolidated .admin-field select,
+.playbook-editor-consolidated .admin-field textarea,
+.playbook-editor-consolidated .admin-inline-add input,
+.playbook-editor-consolidated .admin-condition input,
+.playbook-editor-consolidated .admin-condition textarea,
+.playbook-editor-consolidated .admin-condition select {
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--pb-ink);
+  background: var(--pb-surface);
+  border: 1px solid var(--pb-line);
+  border-radius: var(--pb-r-input);
+  padding: 10px 12px;
+}
+
+.playbook-editor-consolidated .admin-field textarea,
+.playbook-editor-consolidated .admin-condition textarea {
+  resize: none;
+}
+
+.playbook-editor-consolidated .admin-field input:focus,
+.playbook-editor-consolidated .admin-field select:focus,
+.playbook-editor-consolidated .admin-field textarea:focus,
+.playbook-editor-consolidated .admin-inline-add input:focus,
+.playbook-editor-consolidated .admin-condition input:focus,
+.playbook-editor-consolidated .admin-condition textarea:focus,
+.playbook-editor-consolidated .admin-condition select:focus {
+  border-color: var(--pb-brand);
+  box-shadow: 0 0 0 3px rgba(79, 27, 179, 0.08);
+  outline: none;
+}
+
+/* Body / help text */
+.playbook-editor-consolidated .admin-muted {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--pb-muted);
+}
+
+/* ---- Stance: segmented 2-option control with radio-dot affordance ---- */
+.playbook-editor-consolidated .admin-fieldset {
+  gap: 10px;
+}
+.playbook-editor-consolidated .admin-fieldset legend {
+  margin-bottom: 8px;
+}
+.playbook-editor-consolidated .admin-fieldset label {
+  flex: 1 1 220px;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--pb-line);
+  border-radius: var(--pb-r-input);
+  background: #fcfbfe;
+  color: var(--pb-muted);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
+}
+.playbook-editor-consolidated .admin-fieldset label:has(input:checked) {
+  background: var(--pb-surface);
+  border-color: var(--pb-line);
+  box-shadow: var(--pb-shadow-seg);
+  color: var(--pb-ink);
+}
+.playbook-editor-consolidated .admin-fieldset label span {
+  font-size: 13px;
+  font-weight: 500;
+  color: inherit;
+}
+.playbook-editor-consolidated .admin-fieldset label:has(input:checked) span {
+  font-weight: 600;
+}
+.playbook-editor-consolidated .admin-fieldset input[type="radio"] {
+  accent-color: var(--pb-brand);
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
+/* ---- Inner panels (admin-special / template / rules) ---- */
+.playbook-editor-consolidated .admin-special,
+.playbook-editor-consolidated .admin-rules,
+.playbook-editor-consolidated .admin-template-field {
+  background: var(--pb-surface);
+  border: 1px solid var(--pb-line);
+  border-radius: var(--pb-r-panel);
+  padding: 1.25rem 1.5rem;
+  gap: 10px;
+}
+
+/* ---- Trigger-term / list chips (one-way terms etc.) ---- */
+.playbook-editor-consolidated .admin-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  background: var(--pb-chip-bg);
+  color: var(--pb-brand);
+  border: 1px solid var(--pb-chip-border);
+  border-radius: var(--pb-r-tag);
+  padding: 0.3rem 0.55rem;
+  font-size: 11px;
+  font-weight: 500;
+  height: auto;
+  min-height: 0;
+}
+.playbook-editor-consolidated .admin-chip.removable {
+  color: var(--pb-brand);
+}
+.playbook-editor-consolidated .admin-chip .pb-icon {
+  color: var(--pb-faint);
+  transition: color 0.15s ease;
+}
+.playbook-editor-consolidated .admin-chip.removable:hover {
+  border-color: var(--red-border);
+  background: var(--red-bg);
+  color: var(--red);
+}
+.playbook-editor-consolidated .admin-chip.removable:hover .pb-icon {
+  color: var(--red);
+}
+.playbook-editor-consolidated .pb-icon {
+  flex: 0 0 auto;
+  vertical-align: -1px;
+}
+
+/* ---- Buttons ---- */
+.playbook-editor-consolidated button.secondary,
+.playbook-editor-consolidated .admin-inline-add button,
+.playbook-editor-consolidated .admin-condition-group-head button,
+.playbook-editor-consolidated .playbook-draft-actions button,
+.playbook-editor-consolidated .admin-remove-button {
+  border-radius: var(--pb-r-input);
+  font-weight: 700;
+  font-size: 0.825rem;
+  letter-spacing: -0.01em;
+  padding: 10px 16px;
+  height: auto;
+  min-height: 0;
+  gap: 6px;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+/* Secondary (Save draft / Add term / Validate / Discard) */
+.playbook-editor-consolidated button.secondary,
+.playbook-editor-consolidated .admin-inline-add button,
+.playbook-editor-consolidated .admin-condition-group-head button {
+  background: var(--pb-surface);
+  color: var(--pb-ink);
+  border: 1px solid var(--pb-line);
+}
+.playbook-editor-consolidated button.secondary:hover,
+.playbook-editor-consolidated .admin-inline-add button:hover,
+.playbook-editor-consolidated .admin-condition-group-head button:hover {
+  background: #f8f6fc;
+  border-color: var(--pb-brand);
+}
+
+/* Save draft (submit) — also a secondary-weight control. */
+.playbook-editor-consolidated #savePlaybookButton {
+  background: var(--pb-surface);
+  color: var(--pb-ink);
+  border: 1px solid var(--pb-line);
+}
+.playbook-editor-consolidated #savePlaybookButton:hover:not(:disabled) {
+  background: #f8f6fc;
+  border-color: var(--pb-brand);
+}
+
+/* Primary (Publish) */
+.playbook-editor-consolidated .playbook-draft-actions .primary,
+.playbook-editor-consolidated #publishPlaybookButton {
+  background: var(--pb-brand);
+  color: #fff;
+  border: 1px solid var(--pb-brand);
+}
+.playbook-editor-consolidated .playbook-draft-actions .primary:hover:not(:disabled),
+.playbook-editor-consolidated #publishPlaybookButton:hover:not(:disabled) {
+  background: var(--pb-brand-hover);
+  border-color: var(--pb-brand-hover);
+}
+
+/* ---- Action bar ---- */
+.playbook-editor-consolidated .admin-actions {
+  border-top: 1px solid var(--pb-line);
+  gap: 10px;
+  padding-top: 1rem;
+  background: var(--pb-surface);
+}
+
+/* ---- Decision-condition cards ---- */
+.playbook-editor-consolidated .admin-condition {
+  border: 1px solid var(--pb-line);
+  border-radius: var(--pb-r-panel);
+  padding: 14px;
+}
+.playbook-editor-consolidated .admin-condition-head .admin-chip.removable {
+  padding: 0.3rem 0.4rem;
+}
+
+/* Generated governing-law redline preview cards stay flat too. */
+.playbook-editor-consolidated .admin-policy-option,
+.playbook-editor-consolidated .admin-redline-option-preview {
+  border-radius: var(--pb-r-panel);
+  border-color: var(--pb-line);
+}
+
+/* Validation surface — flat panel radius. */
+.playbook-editor-consolidated .playbook-validation {
+  border-radius: var(--pb-r-panel);
+  border-color: var(--pb-line);
+}
+
+/* ---- Policy Version History (sibling of the editor) ---- */
+#playbookHistory .admin-history {
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--pb-surface, #fff);
+  border-radius: var(--pb-r-panel, 8px);
+  border-color: var(--border);
 }
