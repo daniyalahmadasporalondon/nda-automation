@@ -3258,10 +3258,14 @@ h3 {
   background: #ffffff;
   border-bottom: 1px solid var(--border-soft);
   display: flex;
+  /* Wrap onto additional rows instead of overflowing horizontally into the
+     adjacent panel/header (e.g. the generator's "Our signing entity" column). */
+  flex-wrap: wrap;
   flex: 0 0 auto;
   gap: 3px;
-  height: 31px;
-  padding: 0 8px;
+  row-gap: 4px;
+  min-height: 31px;
+  padding: 3px 8px;
 }
 
 .studio-format-toolbar .fmt-sep {
@@ -8398,6 +8402,13 @@ label.is-hidden {
 
 .admin-field.compact {
   max-width: 180px;
+}
+
+/* A read-only DERIVED multiline position (e.g. the Term & Survival standard /
+   trigger positions) must fill the full row width, not the 180px compact cap
+   meant for short inline inputs. */
+.admin-field.compact:has(.readonly-display-multiline) {
+  max-width: none;
 }
 
 .admin-field > span,
