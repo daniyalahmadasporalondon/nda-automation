@@ -304,7 +304,12 @@ export function applyEntitySelection(intake, entityId, entities = SIGNING_ENTITI
 // never set `governingLawOverridden`, so `applyEntitySelection` always re-couples
 // the law to the entity. Any attempt to set a divergent law is ignored.
 export function setGoverningLawOverride(intake, entities = SIGNING_ENTITIES) {
-  const entity = findEntity(intake.entityId, entities);
+  // Tolerate a legacy 2nd positional arg (the old (intake, lawId) signature):
+  // a non-array is ignored and we re-couple to the entity from the default
+  // registry. The law is always the entity's own law — any requested law is
+  // dropped.
+  const registry = Array.isArray(entities) ? entities : SIGNING_ENTITIES;
+  const entity = findEntity(intake.entityId, registry);
   return {
     ...intake,
     governingLawOverridden: false,
@@ -315,7 +320,8 @@ export function setGoverningLawOverride(intake, entities = SIGNING_ENTITIES) {
 // Re-couples the law to the picked entity's law (the only behaviour now — the law
 // is always coupled to the entity).
 export function clearGoverningLawOverride(intake, entities = SIGNING_ENTITIES) {
-  const entity = findEntity(intake.entityId, entities);
+  const registry = Array.isArray(entities) ? entities : SIGNING_ENTITIES;
+  const entity = findEntity(intake.entityId, registry);
   return {
     ...intake,
     governingLawOverridden: false,
