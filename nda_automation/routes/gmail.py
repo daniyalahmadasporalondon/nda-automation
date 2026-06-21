@@ -21,7 +21,7 @@ from ..matter_lifecycle import (
     RepositoryMatterLifecycle,
 )
 from ..matter_repository import DiskMatterRepository
-from .common import request_owner_user_id
+from .common import request_owner_user_id, require_admin
 
 MAX_OUTBOUND_SUBJECT_CHARS = 240
 MAX_OUTBOUND_BODY_CHARS = 10_000
@@ -218,6 +218,13 @@ def _is_int_like(value: object) -> bool:
 
 
 def handle_gmail_settings_update(handler) -> None:
+    # GLOBAL Gmail sync config (search terms, intake playbook, sync frequency,
+    # import limit, enable/disable) is an admin-only write, matching every other
+    # settings writer (ai/settings, drive-settings). Status/import/send/disconnect
+    # stay correctly per-caller-token-scoped and are not gated here.
+    if not require_admin(handler):
+        return
+
     payload = handler._read_json_payload()
     if payload is None:
         return

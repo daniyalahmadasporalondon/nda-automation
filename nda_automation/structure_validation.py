@@ -54,6 +54,7 @@ from .ai_review import (
     _trusted_https_context,
 )
 from .openrouter_usage import record_openrouter_usage
+from .untrusted_text import neutralize_untrusted_text
 
 LOGGER = logging.getLogger(__name__)
 
@@ -358,7 +359,13 @@ def _build_candidates(
             "label": str(section.get("label") or ""),
             "number": section.get("number") if isinstance(section.get("number"), str) else None,
             "level": int(section.get("level", 0)) if isinstance(section.get("level"), int) else 0,
-            "heading": str(section.get("heading") or section.get("heading_text") or ""),
+            # Untrusted document text: neutralize before embedding so a hostile
+            # heading/snippet cannot pose as an instruction block (matches
+            # ai_verifier / ai_review). Snippet is neutralized inside the helper.
+            "heading": neutralize_untrusted_text(
+                section.get("heading") or section.get("heading_text") or "",
+                max_chars=SNIPPET_CHAR_LIMIT,
+            ),
             "snippet": _section_snippet(section, text_by_paragraph_id),
         })
     return candidates
@@ -374,7 +381,9 @@ def _section_snippet(
     for paragraph_id in paragraph_ids:
         text = text_by_paragraph_id.get(str(paragraph_id) or "")
         if text and text.strip():
-            collapsed = " ".join(text.split())
+            # Untrusted paragraph text: neutralize (strip control chars / defang
+            # line-start role markers) before it enters the validator packet.
+            collapsed = " ".join(neutralize_untrusted_text(text).split())
             if len(collapsed) <= SNIPPET_CHAR_LIMIT:
                 return collapsed
             return collapsed[: SNIPPET_CHAR_LIMIT - 3].rstrip() + "..."

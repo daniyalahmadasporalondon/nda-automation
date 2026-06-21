@@ -23,8 +23,12 @@ from .review_state import (
     CLAUSE_DECISION_PASS,
     CLAUSE_DECISION_REVIEW,
 )
+from .untrusted_text import neutralize_untrusted_text
 
-AI_REVIEW_VERSION = 1
+# v2: paragraph text is now injection-neutralized (control chars stripped,
+# line-start role markers defanged) before entering the reviewer packet, matching
+# ai_verifier / intake / selector. The packet shape is unchanged.
+AI_REVIEW_VERSION = 2
 DEFAULT_OPENROUTER_MODEL = "anthropic/claude-opus-4.8-fast"
 DEFAULT_AI_REVIEW_THRESHOLD = 0.75
 DEFAULT_AI_TIMEOUT_SECONDS = 180
@@ -396,7 +400,12 @@ def build_ai_review_packet(
             {
                 "id": str(paragraph.get("id") or ""),
                 "index": paragraph.get("index"),
-                "text": str(paragraph.get("text") or ""),
+                # Untrusted counterparty text: neutralize before embedding so it
+                # cannot pose as an instruction block. Clamp to the whole-packet
+                # char budget as a sane per-paragraph upper bound.
+                "text": neutralize_untrusted_text(
+                    paragraph.get("text"), max_chars=MAX_AI_CONTEXT_CHARS
+                ),
             }
             for paragraph in context_paragraphs
         ],

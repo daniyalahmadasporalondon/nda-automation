@@ -36,6 +36,7 @@ from .ai_review import (
     DEFAULT_OPENROUTER_MODEL,
     OPENROUTER_API_KEY_ENV,
     _sanitize_model_name,
+    _trusted_https_context,
 )
 from .openrouter_usage import record_openrouter_usage
 from .prohibited_positions import ANY_PROHIBITED_POSITION
@@ -579,7 +580,9 @@ class OpenRouterClauseAdapter:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with urllib.request.urlopen(
+                request, timeout=self.timeout_seconds, context=_trusted_https_context()
+            ) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
             message = error.read().decode("utf-8", errors="replace")[:300]

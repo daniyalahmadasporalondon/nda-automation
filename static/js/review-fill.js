@@ -32,9 +32,17 @@ function createFillController({ state, root, rerenderDocument }) {
   const itemState = new Map();
 
   function escape(value) {
+    // Self-contained escaping fallback: if global-bridge.mjs fails to load and
+    // window.escapeHtml is undefined, still escape (clause/counterparty text is
+    // rendered into innerHTML downstream). Matches dashboard-search.js / facts.js.
     return typeof window !== "undefined" && typeof window.escapeHtml === "function"
       ? window.escapeHtml(value)
-      : String(value == null ? "" : value);
+      : String(value == null ? "" : value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
   }
 
   function api() {
