@@ -834,6 +834,7 @@ def main() -> None:
     _record_data_dir_boot_sentinel()
     _migrate_entity_signatory_fills()
     _validate_entity_registry_against_playbook()
+    _reconcile_interrupted_reviews()
 
     server = ThreadingHTTPServer((args.host, args.port), NdaAutomationHandler)
     _start_gmail_sync_scheduler()
@@ -896,6 +897,37 @@ def _validate_entity_registry_against_playbook() -> None:
         print(f"WARNING: entity-registry/playbook drift detected at boot: {drift}")
     except Exception as error:  # pragma: no cover - defensive: never crash boot.
         _log_background_error("Entity-registry drift check failed", error)
+
+
+def _reconcile_interrupted_reviews() -> None:
+    """Heal reviews orphaned by a restart at boot, BEFORE the server serves.
+
+    A review stamps ``review_status="in_progress"`` before handing off to the
+    background pool; if the process died mid-flight that stamp is the last durable
+    state and the record sits ``in_progress`` forever. This runs the PURE status
+    reconcile (``ingestion_service.reconcile_interrupted_reviews``) once at boot:
+    matters already carrying a full ai_first result heal to ``completed``, the rest
+    are stamped the durable, recoverable ``interrupted`` status the FE renders as a
+    calm Retry. It NEVER enqueues a job or calls the AI -- re-running is the user's
+    on-demand Refresh -- so it cannot produce a review storm.
+
+    Fail-safe like its boot neighbours: any error (including an unpersisted disk so
+    there is nothing to reconcile) is logged and swallowed -- it must never crash
+    boot.
+    """
+
+    try:
+        from .ingestion_service import reconcile_interrupted_reviews  # noqa: PLC0415
+
+        summary = reconcile_interrupted_reviews()
+        if summary.get("interrupted") or summary.get("completed"):
+            print(
+                "Interrupted-review reconcile: "
+                f"interrupted={summary.get('interrupted', 0)} "
+                f"completed={summary.get('completed', 0)}."
+            )
+    except Exception as error:  # pragma: no cover - defensive: never crash boot.
+        _log_background_error("Interrupted-review reconcile failed", error)
 
 
 def _record_data_dir_boot_sentinel() -> None:

@@ -3570,13 +3570,12 @@ class ServerTests(unittest.TestCase):
 
                     # --- Land the completed review via the worker body directly ---
                     from nda_automation.matter_repository import DiskMatterRepository as _DiskRepo
-                    with patch.dict(os.environ, {"NDA_INBOUND_AI_REVIEW_ENABLED": "true"}):
-                        ingestion_service._perform_inbound_ai_review(
-                            str(matter["id"]),
-                            repository=_DiskRepo(),
-                            owner_user_id="",
-                            review_engine_func=lambda t, **kw: deepcopy(active_result),
-                        )
+                    ingestion_service._perform_inbound_ai_review(
+                        str(matter["id"]),
+                        repository=_DiskRepo(),
+                        owner_user_id="",
+                        review_engine_func=lambda t, **kw: deepcopy(active_result),
+                    )
 
                     # --- Eventual completed-state assertions (preserve original intent) ---
                     stored_matter = matter_store.get_matter(matter["id"])
@@ -3755,13 +3754,12 @@ class ServerTests(unittest.TestCase):
 
                     # --- Land the completed review via the worker body directly ---
                     from nda_automation.matter_repository import DiskMatterRepository as _DiskRepo
-                    with patch.dict(os.environ, {"NDA_INBOUND_AI_REVIEW_ENABLED": "true"}):
-                        ingestion_service._perform_inbound_ai_review(
-                            str(matter["id"]),
-                            repository=_DiskRepo(),
-                            owner_user_id="",
-                            review_engine_func=lambda t, **kw: deepcopy(active_result),
-                        )
+                    ingestion_service._perform_inbound_ai_review(
+                        str(matter["id"]),
+                        repository=_DiskRepo(),
+                        owner_user_id="",
+                        review_engine_func=lambda t, **kw: deepcopy(active_result),
+                    )
 
                     # --- Eventual completed-state assertions (preserve original intent) ---
                     stored_after_refresh = matter_store.get_matter(matter["id"])
@@ -3795,9 +3793,9 @@ class ServerTests(unittest.TestCase):
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
                 with (
-                    # Kill-switch OFF so the async AI review never runs inline here --
-                    # this test pins the CREATE-time behaviour (un-reviewed) only.
-                    patch.dict(os.environ, {"NDA_INBOUND_AI_REVIEW_ENABLED": "false"}),
+                    # This test pins the CREATE-time behaviour (un-reviewed) only; the
+                    # patched review_nda_with_active_engine below asserts no review runs
+                    # inline (inbound imports never auto-review -- there is no kill-switch).
                     patch.object(gmail_integration, "_gmail_attachment_already_imported", return_value=False),
                     patch.object(gmail_integration, "_attachment_bytes", return_value=source_docx),
                     patch.object(ingestion_service, "review_nda_with_active_engine") as active_review,
@@ -3891,7 +3889,6 @@ class ServerTests(unittest.TestCase):
                         ACTIVE_REVIEW_ENGINE_ENV: "ai_first",
                         "NDA_AI_REVIEW_ENABLED": "true",
                         "NDA_AI_ASSESSMENT_STUB": "1",
-                        "NDA_INBOUND_AI_REVIEW_ENABLED": "true",
                     }):
                         ingestion_service._perform_inbound_ai_review(
                             str(matter["id"]),

@@ -374,10 +374,12 @@ def test_persist_returns_none_counts_as_failure(caplog):
 
 
 # --------------------------------------------------------------------------- #
-# (d) Serialization + non-blocking: two review bodies never overlap, and a
-#     concurrent request is not blocked by a running review.
+# (d) Bounded concurrency: review bodies never exceed the (now 2) concurrency
+#     bound, and a concurrent request is not blocked by a running review. The
+#     synchronous storm enqueue is gone, so 2 on-demand reviews may overlap -- the
+#     bound just stops a burst from running N-at-once on the worker.
 # --------------------------------------------------------------------------- #
-def test_two_reviews_run_sequentially_not_concurrently():
+def test_two_reviews_stay_within_the_concurrency_bound():
     repository = InMemoryMatterRepository()
     matter_a = create_matter_from_document(
         filename="a.docx", document_bytes=_docx(NDA_PARAGRAPHS),
@@ -423,17 +425,20 @@ def test_two_reviews_run_sequentially_not_concurrently():
     for thread in threads:
         thread.join(timeout=5)
 
-    # The process-wide semaphore (limit 1) guarantees the two reviews never overlap.
-    assert concurrency["max"] == 1
+    # The process-wide semaphore bounds concurrency to inbound_review_concurrency()
+    # (default 2): the two reviews never EXCEED the bound (a burst is never
+    # N-at-once), even though 2 may now overlap.
+    assert concurrency["max"] <= ingestion_service.inbound_review_concurrency()
+    assert concurrency["max"] >= 1
     assert repository.get_matter(matter_a["id"])["review_result"][
         "active_review_engine"]["executed_engine"] == "ai_first"
     assert repository.get_matter(matter_b["id"])["review_result"][
         "active_review_engine"]["executed_engine"] == "ai_first"
 
 
-def test_review_concurrency_defaults_to_one(monkeypatch):
+def test_review_concurrency_defaults_to_two(monkeypatch):
     monkeypatch.delenv(ingestion_service.INBOUND_REVIEW_CONCURRENCY_ENV, raising=False)
-    assert ingestion_service.inbound_review_concurrency() == 1
+    assert ingestion_service.inbound_review_concurrency() == 2  # bumped 1 -> 2
     monkeypatch.setenv(ingestion_service.INBOUND_REVIEW_CONCURRENCY_ENV, "0")
     assert ingestion_service.inbound_review_concurrency() == 1  # clamped to >= 1
     monkeypatch.setenv(ingestion_service.INBOUND_REVIEW_CONCURRENCY_ENV, "3")
@@ -476,7 +481,7 @@ def test_burst_of_100_enqueues_creates_bounded_threads_not_one_per_job(monkeypat
 
     time.sleep(0.1)  # let the single worker pick up the first job
     assert len(live_threads) <= ingestion_service.inbound_review_concurrency()
-    assert len(live_threads) == 1  # default concurrency
+    assert len(live_threads) == 1  # pinned to 1 by the env override above
 
     gate.set()
     pool._join_for_tests(timeout=5)
