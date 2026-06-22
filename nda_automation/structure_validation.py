@@ -636,7 +636,7 @@ class OpenRouterStructureValidator:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
                     "role": "user",
-                    "content": json.dumps(user_payload, ensure_ascii=False, indent=2),
+                    "content": json.dumps(user_payload, ensure_ascii=False, separators=(",", ":")),
                 },
             ],
             "temperature": 0,

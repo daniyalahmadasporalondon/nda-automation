@@ -349,7 +349,7 @@ def build_ai_assessment_prompt(packet: Mapping[str, Any]) -> dict[str, Any]:
             "For each clause, work through reasoning_steps in order, reading negations and carve-outs literally, "
             "and escalate to review when the text is ambiguous rather than guessing. "
             "Return only JSON matching the response schema.\n\n"
-            + json.dumps(packet, ensure_ascii=False, indent=2)
+            + json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
         ),
         "response_schema": deepcopy(AI_ASSESSMENT_RESPONSE_SCHEMA),
     }
