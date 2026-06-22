@@ -4010,6 +4010,60 @@ function selectFaithfulRenderPlan(matter, renderState, capability, viewMode) {
   return { render: "page_image" };
 }
 
+// COLD-START catch-22 fix.
+//
+// selectFaithfulRenderPlan() gates faithful rendering on capability.libraryAvailable
+// (window.docx + window.JSZip present) SYNCHRONOUSLY. But the docx-preview vendor
+// libs are LAZY-LOADED -- they only inject inside renderFaithfulDocx ->
+// ensureFaithfulDocxLibs, which the plan gate would never let run on a cold page.
+// So on a fresh load libraryAvailable() is false forever, the plan stays
+// page_image/reconstruction, and the faithful upgrade never engages even though the
+// vendored scripts are reachable and lazy-injectable.
+//
+// This helper closes the loop: when the flag is ENABLED but the library is not yet
+// loaded, kick the lazy-load (faithful.ensureLibs) ONCE and, on success, re-invoke
+// the upgrade -- by which point libraryAvailable() is true so the plan resolves to
+// faithful_docx and the surface actually engages. On load failure we do NOT
+// re-invoke: the already-painted reconstruction/page-image floor stands (NEVER
+// blank). A per-call sequence guard drops a stale re-upgrade if the matter/view
+// changed while the libs were loading. Returns true when a load was kicked (so the
+// caller knows the synchronous pass is intentionally a no-op pending the reload),
+// false otherwise (flag off, already loaded, or no ensureLibs hook).
+function ensureFaithfulLibsThenReupgrade(faithful, reupgrade) {
+  if (!faithful || typeof faithful.enabled !== "function" || typeof faithful.ensureLibs !== "function") {
+    return false;
+  }
+  if (!faithful.enabled()) return false; // flag off: nothing to load
+  // Already loaded -> the plan would have engaged synchronously; no kick needed.
+  if (typeof faithful.libraryAvailable === "function" && faithful.libraryAvailable()) return false;
+  const sequence = reviewDocumentRenderRequestSequence;
+  const matterId = state.selectedMatter?.id || null;
+  // ensureLibs() is already async and returns a promise; call it directly so the
+  // lazy <script> injection STARTS now (the kick is synchronous), then re-upgrade
+  // when it resolves. Promise.resolve() wraps it so a synchronous throw is still
+  // caught by .catch and never escapes as an unhandled error.
+  Promise.resolve()
+    .then(() => faithful.ensureLibs())
+    .then(() => {
+      // Drop a stale reload: the view re-rendered or the matter changed while the
+      // vendored scripts were in flight. The fresh render path will retry on its own.
+      if (sequence !== reviewDocumentRenderRequestSequence) return;
+      if ((state.selectedMatter?.id || null) !== matterId) return;
+      if (typeof reupgrade === "function") reupgrade();
+    })
+    .catch((error) => {
+      // Lazy-load failed (404 / offline / parse): the painted floor stands. ensureLibs
+      // resets its own promise cache on failure, so a later render can retry. Never blank.
+      try {
+        // eslint-disable-next-line no-console
+        console.error("ensureFaithfulLibsThenReupgrade: faithful lib lazy-load failed; keeping painted surface", error);
+      } catch (_loggingError) {
+        // ignore logging failure
+      }
+    });
+  return true;
+}
+
 // Feature-flagged faithful-DOCX upgrade of the freshly-painted Original surface.
 // Delegates the source/precedence decision to the pure selectFaithfulRenderPlan();
 // only a { render:"faithful_docx", url } plan does any work. Fetches the real DOCX
@@ -4025,7 +4079,13 @@ function maybeUpgradeOriginalSurfaceToFaithfulDocx() {
     flagEnabled: typeof faithful.enabled === "function" ? faithful.enabled() : false,
     libraryAvailable: typeof faithful.libraryAvailable === "function" ? faithful.libraryAvailable() : true,
   });
-  if (plan.render !== "faithful_docx") return; // page_image/reconstruction: keep the painted surface
+  if (plan.render !== "faithful_docx") {
+    // COLD START: the plan can be page_image purely because the vendored libs have
+    // not lazy-loaded yet. Kick the lazy-load and re-run this upgrade once they
+    // resolve (then the plan engages). If the load fails the painted surface stands.
+    ensureFaithfulLibsThenReupgrade(faithful, maybeUpgradeOriginalSurfaceToFaithfulDocx);
+    return; // page_image/reconstruction: keep the painted surface for now
+  }
 
   const matterId = state.selectedMatter?.id;
   if (!matterId) return;
@@ -4087,6 +4147,18 @@ function maybeUpgradeSurfaceToFaithfulDocx(viewMode) {
   const faithful = (typeof window !== "undefined" && window.FaithfulDocxRender) || null;
   if (!faithful || typeof faithful.render !== "function") return;
 
+  // STALE-BYTES GUARD: the faithful redline/clean surface is fetched from
+  // /reviewed-docx, whose bytes are composed from the PERSISTED reviewer_decisions /
+  // manual edits (the last SAVED draft). If the user has unsaved in-session edits
+  // (redlineDraftDirty), swapping those persisted bytes in OVER the live
+  // reconstruction would HIDE the user's edit on screen while export still sends the
+  // live state -- the user would see pre-edit but export post-edit. So while the
+  // draft is dirty we keep the live reconstruction (the never-blank, fully-correct
+  // floor) and do not fetch/swap the persisted faithful surface. It re-engages on the
+  // next render after the draft is saved (redlineDraftDirty back to false). We also
+  // skip the cold-start lazy-load kick here: there is nothing to upgrade TO yet.
+  if (state.redlineDraftDirty) return;
+
   const plan = selectFaithfulRenderPlan(
     state.selectedMatter,
     state.reviewDocumentRender,
@@ -4096,7 +4168,14 @@ function maybeUpgradeSurfaceToFaithfulDocx(viewMode) {
     },
     viewMode,
   );
-  if (plan.render !== "faithful_docx") return; // reconstruction/page_image: keep the painted floor
+  if (plan.render !== "faithful_docx") {
+    // COLD START: same catch-22 as the Original path -- the plan can be
+    // reconstruction/page_image only because the vendored libs are not lazy-loaded
+    // yet. Kick the load and re-run THIS view's upgrade once they resolve. On load
+    // failure the painted reconstruction floor stands (never blank).
+    ensureFaithfulLibsThenReupgrade(faithful, () => maybeUpgradeSurfaceToFaithfulDocx(viewMode));
+    return; // reconstruction/page_image: keep the painted floor for now
+  }
 
   const matterId = state.selectedMatter?.id;
   if (!matterId) return;
@@ -4109,7 +4188,14 @@ function maybeUpgradeSurfaceToFaithfulDocx(viewMode) {
   const host = document.createElement("div");
   host.className = "review-faithful-docx-surface";
 
-  Promise.resolve(faithful.render(host, { url }))
+  // CLEAN view renders ACCEPTED text, not tracked-change markup. docx-preview's
+  // renderChanges defaults ON in our faithfulDocxRenderOptions(), which would draw
+  // <ins>/<del> even for the Clean view. The backend serves accepted bytes for
+  // changes=accepted, but force renderChanges:false here as belt-and-suspenders so
+  // Clean is clean regardless of what bytes arrive. Redline keeps the default (ON).
+  const renderOptions = viewMode === VIEW_MODE_CLEAN ? { renderChanges: false } : undefined;
+
+  Promise.resolve(faithful.render(host, { url }, renderOptions))
     .then((result) => {
       // Drop a stale upgrade: the view re-rendered, the matter changed, or we left
       // this view mode while the bytes were in flight.

@@ -28,6 +28,8 @@
     "test:frontend:docx-faithful": "node tests/frontend/docx-faithful-render.mjs",
     "test:frontend:faithful-plan": "node tests/frontend/faithful-render-plan.mjs",
     "test:frontend:faithful-mapping": "node tests/frontend/faithful-mapping.mjs",
+    "test:frontend:faithful-coldstart": "node tests/frontend/faithful-coldstart.mjs",
+    "test:frontend:faithful-redline-clean": "node tests/frontend/faithful-redline-clean-upgrade.mjs",
     "test:frontend:never-blank": "node tests/frontend/review-surface-never-blank.mjs"
   },
   "devDependencies": {
