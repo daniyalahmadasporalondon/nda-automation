@@ -105,12 +105,13 @@ GMAIL_IMPORT_LIMIT_UNSET = 0
 # Gmail inbound fetch query's ``newer_than:{N}d`` clause. The default mirrors
 # gmail_integration.GMAIL_INBOUND_WINDOW_DAYS (90); it is defined here (not imported
 # from gmail_integration) so the settings layer stays free of the integration import
-# graph. The band is deliberately conservative: at least 1 day (a zero/negative
-# window would fetch nothing), and at most 365 (a year is plenty of look-back; an
-# unbounded window risks an oversized scan).
+# graph. The band runs from at least 1 day (a zero/negative window would fetch
+# nothing) up to ~10 years (3650 days). Gmail's ``newer_than:Nd`` supports large
+# values and the per-poll import limit bounds the actual fetch volume, so a wide
+# look-back window is safe; the upper bound just rejects nonsense/overflow input.
 DEFAULT_GMAIL_INBOUND_WINDOW_DAYS = 90
 MIN_GMAIL_INBOUND_WINDOW_DAYS = 1
-MAX_GMAIL_INBOUND_WINDOW_DAYS = 365
+MAX_GMAIL_INBOUND_WINDOW_DAYS = 3650
 DEFAULT_GMAIL_SETTINGS = {
     # Master kill-switch the scheduler obeys: when False the WHOLE scheduled sync
     # step is skipped (not just inbound). inbound_enabled stays the inbound-specific

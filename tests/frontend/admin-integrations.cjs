@@ -708,20 +708,23 @@ const ENV_CONNECTED = {
     assert.equal(V.parseSyncWindow("30"), 30);
     assert.equal(V.parseSyncWindow("1"), 1);
     assert.equal(V.parseSyncWindow("365"), 365);
+    assert.equal(V.parseSyncWindow("3650"), 3650, "the widened ceiling is accepted");
     assert.equal(V.parseSyncWindow("0"), null);
     assert.equal(V.parseSyncWindow("-5"), null);
-    assert.equal(V.parseSyncWindow("9999"), null, "rejects over-cap (no silent clamp)");
+    assert.equal(V.parseSyncWindow("3651"), null, "rejects one past the ceiling");
+    assert.equal(V.parseSyncWindow("99999"), null, "rejects far over-cap (no silent clamp)");
     assert.equal(V.parseSyncWindow("12.5"), null);
     assert.equal(V.parseSyncWindow(""), null);
     assert.equal(V.parseSyncWindow("abc"), null);
-    assert.equal(V.MAX_SYNC_WINDOW, 365, "UI cap matches the backend band");
+    assert.equal(V.MAX_SYNC_WINDOW, 3650, "UI cap matches the backend band");
     assert.equal(V.MIN_SYNC_WINDOW, 1, "UI floor matches the backend band");
   });
 
   await test("syncWindowFromStatus clamps and defaults", async () => {
     assert.equal(V.syncWindowFromStatus({ inbound_window_days: 30 }), 30);
     assert.equal(V.syncWindowFromStatus({ settings: { inbound_window_days: 45 } }), 45);
-    assert.equal(V.syncWindowFromStatus({ inbound_window_days: 9999 }), 365);
+    assert.equal(V.syncWindowFromStatus({ inbound_window_days: 3650 }), 3650);
+    assert.equal(V.syncWindowFromStatus({ inbound_window_days: 99999 }), 3650, "clamps to the cap");
     assert.equal(V.syncWindowFromStatus({ settings: {} }), 90, "defaults to 90");
     assert.equal(V.syncWindowFromStatus({}), 90);
     assert.equal(V.syncWindowFromStatus(null), 90);

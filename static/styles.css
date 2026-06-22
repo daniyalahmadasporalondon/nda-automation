@@ -13416,6 +13416,7 @@ label.is-hidden {
 #clausesView[data-admin-surface="admin"] .personalisation-field input,
 #clausesView[data-admin-surface="admin"] .personalisation-field textarea,
 #clausesView[data-admin-surface="admin"] .integration-search-form textarea,
+#clausesView[data-admin-surface="admin"] .integration-search-form > input,
 #clausesView[data-admin-surface="admin"] .integration-input-row > input,
 #clausesView[data-admin-surface="admin"] .admin-access-add-form input {
   font-size: 13px;
@@ -13432,6 +13433,7 @@ label.is-hidden {
 #clausesView[data-admin-surface="admin"] .personalisation-field input:focus,
 #clausesView[data-admin-surface="admin"] .personalisation-field textarea:focus,
 #clausesView[data-admin-surface="admin"] .integration-search-form textarea:focus,
+#clausesView[data-admin-surface="admin"] .integration-search-form > input:focus,
 #clausesView[data-admin-surface="admin"] .integration-input-row > input:focus,
 #clausesView[data-admin-surface="admin"] .admin-access-add-form input:focus {
   border-color: var(--adm-brand);

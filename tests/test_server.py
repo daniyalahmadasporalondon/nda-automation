@@ -7335,8 +7335,20 @@ class ServerTests(unittest.TestCase):
                     [change["setting"] for change in audit[0]["changes"]],
                 )
 
+                # The widened ceiling (~10 years) is accepted and drives the query.
+                wide = self._patch_gmail_settings({"inbound_window_days": 3650})
+                self.assertEqual(wide.status, 200)
+                self.assertEqual(
+                    json.loads(wide.read().decode("utf-8"))["gmail_settings"]["inbound_window_days"],
+                    3650,
+                )
+                self.assertIn("newer_than:3650d", gmail_integration._default_inbound_query())
+                # Reset to 30 so the rejected-save assertion below has a stable baseline.
+                self._patch_gmail_settings({"inbound_window_days": 30})
+
                 # Out-of-band / bad input is rejected with a 400; stored value holds.
-                for bad in (0, -5, 9999, "abc", True):
+                # 3651 is one past the new ceiling; 99999 is far past it.
+                for bad in (0, -5, 3651, 99999, "abc", True):
                     rejected = self._patch_gmail_settings({"inbound_window_days": bad})
                     self.assertEqual(rejected.status, 400, f"window={bad!r} should 400")
                     self.assertIn("error", json.loads(rejected.read().decode("utf-8")))

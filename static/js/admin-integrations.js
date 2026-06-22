@@ -80,7 +80,7 @@ const AdminIntegrationsView = (() => {
   // Keeping these in lockstep means the UI never offers (or posts) a value the
   // server would reject with a 400.
   const MIN_SYNC_WINDOW = 1;
-  const MAX_SYNC_WINDOW = 365;
+  const MAX_SYNC_WINDOW = 3650;
   const DEFAULT_SYNC_WINDOW = 90;
   const FREQUENCY_LABELS = {
     always_on: "Always on - every 1 minute",

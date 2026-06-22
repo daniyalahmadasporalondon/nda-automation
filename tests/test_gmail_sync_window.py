@@ -48,15 +48,17 @@ def settings_data_dir(tmp_path, monkeypatch):
         ("   ", 90),         # whitespace => default
         (0, 90),             # zero would fetch nothing => default
         (-5, 90),            # negative => default
-        (9999, 90),          # over the 365 cap => default (not a silent clamp)
-        (366, 90),           # just over the cap => default
+        (99999, 90),         # over the 3650 cap => default (not a silent clamp)
+        (3651, 90),          # just over the cap => default
         ("abc", 90),         # non-numeric => default
         (True, 90),          # bool is never a day-count => default
         (False, 90),         # bool is never a day-count => default
         (1, 1),              # band floor kept
-        (365, 365),          # band ceiling kept
+        (365, 365),          # a year is well inside the band now
+        (3650, 3650),        # band ceiling (~10 years) kept
         (30, 30),            # in-band kept
         ("30", 30),          # numeric string coerced + kept
+        ("3650", 3650),      # numeric string at the ceiling coerced + kept
         (90, 90),            # the default kept
     ],
 )
@@ -66,7 +68,7 @@ def test_window_from_payload_clamps_and_falls_back(raw, expected):
 
 def test_window_band_constants_are_sane():
     assert app_settings.MIN_GMAIL_INBOUND_WINDOW_DAYS == 1
-    assert app_settings.MAX_GMAIL_INBOUND_WINDOW_DAYS == 365
+    assert app_settings.MAX_GMAIL_INBOUND_WINDOW_DAYS == 3650
     assert app_settings.DEFAULT_GMAIL_INBOUND_WINDOW_DAYS == 90
     # The default constant must mirror the integration's fallback constant so the
     # two halves of the system agree on "90".
@@ -140,6 +142,6 @@ def test_status_exposes_window_and_default(settings_data_dir):
     assert status["inbound_window_days"] == 45
     assert status["inbound_window_days_default"] == 90
     assert status["inbound_window_days_min"] == 1
-    assert status["inbound_window_days_max"] == 365
+    assert status["inbound_window_days_max"] == 3650
     # The raw stored value is also visible under settings for the FE fallback.
     assert status["settings"]["inbound_window_days"] == 45
