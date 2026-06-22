@@ -302,7 +302,13 @@ class PlaybookRulesTests(unittest.TestCase):
         )
 
         self.assertEqual(governing_law["requirement"], "Governing law must be India, Delaware, England and Wales, or DIFC.")
-        self.assertEqual(normalized_governing_law["requirement"], "Governing law must be UAE or Singapore.")
+        # The regenerated requirement re-derives the approved-law set from the editable
+        # field AND appends the forum-alignment instruction (the three layers must agree).
+        self.assertTrue(
+            normalized_governing_law["requirement"].startswith("Governing law must be UAE or Singapore."),
+            normalized_governing_law["requirement"],
+        )
+        self.assertIn("forum must be aligned", normalized_governing_law["requirement"])
         self.assertIn("preferably Singapore", normalized_governing_law["preferred_position"])
         self.assertIn("outside UAE or Singapore", normalized_governing_law["check_trigger"])
         self.assertIn("Singapore as the preferred option", normalized_governing_law["rules"]["acceptable_position"])
@@ -389,6 +395,135 @@ class PlaybookRulesTests(unittest.TestCase):
             clause for clause in packet["clauses"] if clause["clause_id"] == "governing_law"
         )
         self.assertNotIn("threshold", govlaw_rules)
+
+    # ---------- Sweep: item A (governing-law forum split) ----------
+    def test_governing_law_has_forum_alignment_fail_condition(self):
+        # Item A: the playbook encodes the binding-policy RULE 4 forum-alignment defect
+        # as a first-class fail_condition (present_but_wrong + replace_paragraph).
+        clause = next(c for c in load_playbook()["clauses"] if c["id"] == "governing_law")
+        fail = next(
+            f for f in clause["rules"]["fail_conditions"]
+            if f["id"] == "forum_does_not_match_governing_law"
+        )
+        self.assertEqual(fail["decision"], "fail")
+        self.assertEqual(fail["issue_type"], "present_but_wrong")
+        self.assertEqual(fail["redline_action"], "replace_paragraph")
+        self.assertIn("arbitration seat", fail["description"])
+        self.assertIn("aligned to the approved governing law", fail["description"])
+
+    def test_governing_law_forum_fail_condition_built_into_packet(self):
+        # The forum-alignment fail survives the governing-law normalizer's
+        # regenerate-from-approved_laws pass and reaches the BUILT AI packet, and the
+        # forum-alignment requirement is woven into the regenerated requirement +
+        # check_trigger so all three layers agree.
+        packet = playbook_rules_for_ai(deepcopy(load_playbook()))
+        gov = next(c for c in packet["clauses"] if c["clause_id"] == "governing_law")
+        fail_ids = [f["id"] for f in gov["rules"]["fail_conditions"]]
+        self.assertIn("forum_does_not_match_governing_law", fail_ids)
+        self.assertIn("forum must be aligned", gov["requirement"])
+        self.assertIn("forum must be aligned", gov["check_trigger"])
+
+    def test_governing_law_evidence_guidance_permits_venue_for_forum_defect(self):
+        # Item A: evidence_guidance excludes court-venue as evidence of the governing LAW
+        # itself, while EXPLICITLY permitting the venue/forum span to be cited for a
+        # forum-alignment defect.
+        clause = next(c for c in load_playbook()["clauses"] if c["id"] == "governing_law")
+        guidance = clause["evidence_guidance"]
+        self.assertIn("NOT evidence of the governing LAW", guidance)
+        self.assertIn("MUST cite that venue/forum span", guidance)
+
+    # ---------- Sweep: item B (mutuality) ----------
+    def test_mutuality_weak_signal_review_trigger_excludes_one_way(self):
+        # Item B: the weak-mutuality REVIEW trigger is tightened to the "silent/unclear"
+        # case and explicitly routes the affirmatively-one-way case to the FAIL.
+        clause = next(c for c in load_playbook()["clauses"] if c["id"] == "mutuality")
+        trigger = next(
+            t for t in clause["rules"]["review_triggers"]
+            if t["id"] == "weak_or_separated_mutuality_signal"
+        )
+        self.assertIn("SILENT or UNCLEAR", trigger["description"])
+        self.assertIn("one_way_party_roles", trigger["description"])
+        self.assertEqual(trigger["redline_action"], "no_change")
+
+    def test_mutuality_false_reciprocity_cue_present(self):
+        # Item B: the false-reciprocity cue is in requirement + semantic_signals — a
+        # bilateral DEFINITION does not establish mutual obligations; an operative
+        # covenant binding only the Receiving Party is one-way.
+        clause = next(c for c in load_playbook()["clauses"] if c["id"] == "mutuality")
+        self.assertIn("does NOT by itself establish mutual obligations", clause["requirement"])
+        self.assertIn("operative confidentiality COVENANT", clause["requirement"])
+        signals = " ".join(clause["semantic_signals"]).lower()
+        self.assertIn("both-sides definition", signals)
+        self.assertIn("one-way even when the definition is bilateral", signals)
+
+    # ---------- Sweep: item C (redline-action smell on review triggers) ----------
+    def test_review_triggers_use_no_change_redline_action(self):
+        # Item C: a review verdict must not carry a paragraph-replace remedy. The two
+        # offenders (ambiguous_survival_scope, missing_required_inclusions) are now
+        # no_change, matching every other review trigger.
+        playbook = load_playbook()
+        term = next(c for c in playbook["clauses"] if c["id"] == "term_and_survival")
+        ambiguous = next(
+            t for t in term["rules"]["review_triggers"] if t["id"] == "ambiguous_survival_scope"
+        )
+        self.assertEqual(ambiguous["redline_action"], "no_change")
+        ci = next(c for c in playbook["clauses"] if c["id"] == "confidential_information")
+        missing_incl = next(
+            t for t in ci["rules"]["review_triggers"] if t["id"] == "missing_required_inclusions"
+        )
+        self.assertEqual(missing_incl["redline_action"], "no_change")
+        # No review trigger in any clause carries a text-building remedy.
+        for clause in playbook["clauses"]:
+            for trigger in clause["rules"].get("review_triggers", []):
+                self.assertNotIn(
+                    trigger["redline_action"],
+                    {"replace_paragraph", "insert_after_paragraph"},
+                    f"{clause['id']}.{trigger['id']} review trigger has a text-building remedy",
+                )
+
+    # ---------- Sweep: item D (structured-data promotions) ----------
+    def test_redline_template_promoted_into_packet(self):
+        # Item D1: the resolved redline_template (and CI's standard_exclusions_template)
+        # reach the per-clause AI packet for confidential_information + signatures, so the
+        # AI is actually shown the template it is told to use.
+        packet = playbook_rules_for_ai(deepcopy(load_playbook()))
+        by = {c["clause_id"]: c for c in packet["clauses"]}
+        ci = by["confidential_information"]
+        self.assertIn("redline_template", ci)
+        self.assertIn("right of publicity", ci["redline_template"])
+        self.assertIn("standard_exclusions_template", ci)
+        self.assertIn("does not include", ci["standard_exclusions_template"])
+        sig = by["signatures"]
+        self.assertIn("redline_template", sig)
+        self.assertIn("Title:", sig["redline_template"])
+        # A clause whose remedy is option_source-only (governing_law) has no template.
+        self.assertNotIn("redline_template", by["governing_law"])
+
+    def test_indefinite_non_survival_objects_promoted_into_packet(self):
+        # Item D2: the 15-item indefinite_non_survival_objects polarity-guard list reaches
+        # the packet as a cue (indefinite license is fine; indefinite confidentiality fails).
+        self.assertIn("indefinite_non_survival_objects", AI_PACKET_CUE_LIST_FIELDS)
+        packet = playbook_rules_for_ai(deepcopy(load_playbook()))
+        term = next(c for c in packet["clauses"] if c["clause_id"] == "term_and_survival")
+        self.assertIn("indefinite_non_survival_objects", term)
+        objects = [o.lower() for o in term["indefinite_non_survival_objects"]]
+        self.assertIn("license", objects)
+        self.assertIn("royalty", objects)
+
+    # ---------- Sweep: item E (CI required-inclusions FAIL) ----------
+    def test_ci_required_inclusions_missing_is_a_fail_condition(self):
+        # Item E (user decision): a clear omission of right-of-publicity or
+        # existence-and-terms is a FAIL, present in the built packet's fail_conditions.
+        packet = playbook_rules_for_ai(deepcopy(load_playbook()))
+        ci = next(c for c in packet["clauses"] if c["clause_id"] == "confidential_information")
+        fail_ids = [f["id"] for f in ci["rules"]["fail_conditions"]]
+        self.assertIn("required_inclusions_missing", fail_ids)
+        fail = next(
+            f for f in ci["rules"]["fail_conditions"] if f["id"] == "required_inclusions_missing"
+        )
+        self.assertEqual(fail["redline_action"], "replace_paragraph")
+        self.assertIn("right of publicity", fail["description"])
+        self.assertIn("existence and terms of the Agreement", fail["description"])
 
     def test_rule_validator_rejects_missing_rules(self):
         playbook = deepcopy(load_playbook())

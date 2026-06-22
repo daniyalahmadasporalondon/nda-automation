@@ -334,11 +334,19 @@ CLAUSE_TEXT_LIST_FIELDS = {
 #  * ``approved_laws`` / ``law_phrases`` / governing-law structured fields -- already
 #    reach the model via the DERIVED requirement/preferred_position text and the binding
 #    policy block; surfacing them raw would duplicate, not add reach.
-#  * ``indefinite_non_survival_objects`` / ``allowed_exclusions`` -- consumed only as
-#    structured policy inputs, not literal-term detection cues in the checkers.
+#  * ``allowed_exclusions`` -- consumed only as a structured policy input (it is promoted
+#    to the packet separately, as a machine-readable allowlist, not a literal-term cue).
+#
+# ``indefinite_non_survival_objects`` (the 15-item license/right/royalty/grant list) IS
+# surfaced as a cue: it is the polarity guard for the "indefinite license is fine,
+# indefinite confidentiality is a FAIL" distinction. Without it the model sees only the
+# indefinite_terms ("perpetual", "indefinitely") and can over-fire on a perfectly
+# acceptable perpetual LICENSE/right grant; the object list tells it which indefinite
+# objects are NOT a survival defect.
 AI_PACKET_CUE_LIST_FIELDS: tuple[str, ...] = (
     "definition_categories",
     "exclusion_context_terms",
+    "indefinite_non_survival_objects",
     "indefinite_terms",
     "independent_development_qualification_terms",
     "independent_development_terms",
@@ -604,6 +612,22 @@ def clause_rules_for_ai(clause: Mapping[str, Any]) -> dict[str, Any]:
     allowed_exclusions = _allowed_exclusions_for_ai(normalized.get("allowed_exclusions"))
     if allowed_exclusions:
         packet_clause["allowed_exclusions"] = allowed_exclusions
+    # Promote the RESOLVED redline_template into the packet. The rules tell the model to
+    # "use the redline template", and the binding policy / drafting_note reference it, but
+    # the template text itself never reached the per-clause packet — so the model was told
+    # to apply a template it was never shown. Resolve it from the field the clause's own
+    # redline_guidance.template_field names (defaulting to "redline_template"), neutralize
+    # + cap it like other authored long text, and surface it as ``redline_template``. For
+    # confidential_information also surface its ``standard_exclusions_template`` (the
+    # shorter exclusion-only fix the drafting note distinguishes from the full template).
+    redline_template = _resolved_redline_template(normalized)
+    if redline_template:
+        packet_clause["redline_template"] = redline_template
+    standard_exclusions_template = _authored(
+        normalized.get("standard_exclusions_template"), AUTHORED_LONG_TEXT_MAX_CHARS
+    ).strip()
+    if standard_exclusions_template:
+        packet_clause["standard_exclusions_template"] = standard_exclusions_template
     # prohibited_position_patterns used to reach the model only as a hardcoded
     # label->description gloss in the binding policy block; surface the AUTHORED entries
     # (label + gloss/humanized fallback + neutralized pattern text) here so editing a
@@ -623,6 +647,28 @@ def clause_rules_for_ai(clause: Mapping[str, Any]) -> dict[str, Any]:
     if instructions:
         packet_clause["instructions"] = instructions
     return packet_clause
+
+
+def _resolved_redline_template(clause: Mapping[str, Any]) -> str:
+    """Resolve a clause's redline_template text for the per-clause AI packet.
+
+    The clause's ``rules.redline_guidance.template_field`` names which top-level clause
+    field holds the template wording (almost always ``redline_template``). Read THAT field
+    so the resolution follows the playbook's own pointer rather than hardcoding the field
+    name, and only when the guidance actually names a template_field (an option_source-only
+    remedy, e.g. governing_law, has no template). Neutralize + length-cap the text exactly
+    like other authored long text. Returns "" when there is no template to surface.
+    """
+    rules = clause.get("rules")
+    if not isinstance(rules, Mapping):
+        return ""
+    guidance = rules.get("redline_guidance")
+    if not isinstance(guidance, Mapping):
+        return ""
+    field_name = _text(guidance.get("template_field"))
+    if not field_name:
+        return ""
+    return _authored(clause.get(field_name), AUTHORED_LONG_TEXT_MAX_CHARS).strip()
 
 
 def _clause_threshold_for_ai(clause: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -708,6 +754,22 @@ STRICT_GOVERNING_LAW_MEMBERSHIP_INSTRUCTION = (
     "or conflicting wording."
 )
 
+# The forum-alignment binding policy (RULE 4): an approved governing law is not enough
+# on its own — the dispute forum (exclusive jurisdiction / venue / arbitration seat) must
+# name the SAME approved jurisdiction. The governing-law normalizer regenerates
+# ``requirement`` and ``check_trigger`` from the approved-law list, so without re-appending
+# this sentence the regenerated strings would drop the forum-alignment instruction and the
+# three layers (requirement / check_trigger / fail_conditions) would disagree. Append it so
+# the forum-alignment FAIL survives the regeneration; the regression test asserts the BUILT
+# packet carries this token.
+FORUM_ALIGNMENT_GOVERNING_LAW_INSTRUCTION = (
+    "The dispute forum must be aligned to the governing law: the exclusive jurisdiction / "
+    "venue / arbitration seat must name the SAME approved jurisdiction. An approved "
+    "governing law paired with a forum in a different or unapproved jurisdiction is a FAIL "
+    "(forum_does_not_match_governing_law); the fix is to align the forum to the approved "
+    "governing law, not to switch the governing law to the unapproved forum's jurisdiction."
+)
+
 
 def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
     approved_laws = [_text(law) for law in clause.get("approved_laws", []) if _text(law)]
@@ -718,7 +780,10 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
     if preferred_law not in approved_laws:
         preferred_law = approved_laws[0]
 
-    clause["requirement"] = f"Governing law must be {approved_label}."
+    clause["requirement"] = (
+        f"Governing law must be {approved_label}. "
+        + FORUM_ALIGNMENT_GOVERNING_LAW_INSTRUCTION
+    )
     clause["preferred_position"] = (
         "The governing law is one of the approved jurisdictions, preferably "
         f"{preferred_law} unless the NDA context supports another approved option."
@@ -726,6 +791,7 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
     clause["check_trigger"] = (
         "The governing law is missing, unclear, or names a jurisdiction outside "
         f"{approved_label}. " + STRICT_GOVERNING_LAW_MEMBERSHIP_INSTRUCTION
+        + " " + FORUM_ALIGNMENT_GOVERNING_LAW_INSTRUCTION
     )
     clause["acceptable_language"] = (
         "This Agreement shall be governed by the laws of "
@@ -750,6 +816,14 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
         "unapproved_governing_law",
         f"The governing-law clause names a jurisdiction outside {approved_label}. "
         + STRICT_GOVERNING_LAW_MEMBERSHIP_INSTRUCTION,
+    )
+    _set_condition_description(
+        rules.get("fail_conditions"),
+        "forum_does_not_match_governing_law",
+        f"The operative governing law is one of {approved_label} (approved), but the "
+        "exclusive jurisdiction / venue / arbitration seat names a different or "
+        "unapproved jurisdiction. Cite the conflicting forum/venue span. "
+        + FORUM_ALIGNMENT_GOVERNING_LAW_INSTRUCTION,
     )
     redline_guidance = rules.get("redline_guidance")
     if isinstance(redline_guidance, dict):
