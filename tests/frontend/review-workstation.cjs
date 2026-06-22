@@ -5174,7 +5174,12 @@ async function testRepositoryOutboundSendComposer(page) {
   const sendRequest = page.waitForRequest((request) => request.url().endsWith("/api/gmail/send-redline"));
   await panel.getByRole("button", { name: "Confirm Send" }).click();
   await sendRequest;
-  await waitForText(page, "#repositoryMatterPanel", "Sent redline to legal@example.com.");
+  // The send confirmation now flashes the shared green success toast (the inline
+  // "Sent redline to ..." panel text was migrated to the notification center).
+  const sendToast = page.locator("#toastStack .toast--success");
+  await sendToast.first().waitFor({ state: "visible" });
+  await assertTextContains(sendToast.first(), "Redline sent");
+  await assertTextContains(sendToast.first(), "legal@example.com");
   await waitForRepositoryCount(page, "sent", "1");
 
   assert.deepEqual(capturedSendPayload, {
@@ -5664,7 +5669,13 @@ async function testAdminPersonalisationSection(page) {
   const saveRequest = page.waitForRequest((request) => request.url().endsWith("/api/admin/personalisation-settings") && request.method() === "POST");
   await page.locator("#adminPersonalisationSaveButton").click();
   await saveRequest;
-  await waitForText(page, "#adminPersonalisationMessage", "Personalisation settings saved.");
+  // The save confirmation now flashes the shared green success toast (the inline
+  // success text was migrated to the notification center); the inline message
+  // settles to the neutral loaded/resting line.
+  const personalisationToast = page.locator("#toastStack .toast--success");
+  await personalisationToast.first().waitFor({ state: "visible" });
+  await assertTextContains(personalisationToast.first(), "Personalisation settings saved");
+  await waitForText(page, "#adminPersonalisationMessage", "Personalisation settings loaded.");
   assert.deepEqual(savedPayload, {
     sign_off: "Warm regards,",
     signature: "Daniyal Ahmad",
