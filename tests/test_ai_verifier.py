@@ -319,8 +319,8 @@ class ApplyVerifierTests(unittest.TestCase):
         self.assertEqual(summary["changed_count"], 0)
 
     def test_high_confidence_pass_is_skipped(self):
-        # A relaxed clause (NOT on the always-verify list -- mutuality) with a
-        # confident pass spends no verifier call.
+        # PURE CONFIDENCE-GATING: any clause with a confident pass spends no verifier
+        # call. mutuality here; the clause-type-specific cases are flipped below.
         clauses = [_clause("mutuality", "pass", confidence=0.97)]
         called = []
 
@@ -332,14 +332,15 @@ class ApplyVerifierTests(unittest.TestCase):
         self.assertEqual(called, [])  # never spent a call on a confident pass
         self.assertEqual(summary["verified_count"], 0)
 
-    def test_confident_confidential_information_pass_is_always_verified(self):
-        # CORE-PROTECTIVE GUARD: confidential_information is on the always-verify list,
-        # so even a CONFIDENT pass spends a verifier call exactly once -- the grounding
-        # gate cannot catch a wrong "adequate" *judgement* about a real definition quote.
+    def test_confident_confidential_information_pass_is_skipped(self):
+        # FLIPPED (was test_confident_confidential_information_pass_is_always_verified,
+        # asserted called == ["confidential_information"], verified_count == 1): under
+        # pure confidence-gating the always-verify backstop is gone, so a CONFIDENT
+        # confidential_information pass now spends ZERO verifier calls.
         clause = _clause(
             "confidential_information", "pass", clause_type="required", confidence=0.97
         )
-        self.assertTrue(_should_verify(clause))
+        self.assertFalse(_should_verify(clause))
         called = []
 
         def spy(packet):
@@ -347,10 +348,11 @@ class ApplyVerifierTests(unittest.TestCase):
             return {"verdict": VERIFIER_VERDICT_AFFIRM, "confidence": 1.0}
 
         _, summary = apply_ai_verifier([clause], source_text="x", verifier=spy)
-        self.assertEqual(called, ["confidential_information"])  # always-verified
-        self.assertEqual(summary["verified_count"], 1)
+        self.assertEqual(called, [])  # confident pass skipped
+        self.assertEqual(summary["verified_count"], 0)
 
     def test_low_confidence_pass_is_verified(self):
+        # NON-VACUITY: a LOW-confidence pass on confidential_information STILL verifies.
         clauses = [_clause("confidential_information", "pass", confidence=0.3)]
         called = []
 
@@ -361,14 +363,14 @@ class ApplyVerifierTests(unittest.TestCase):
         apply_ai_verifier(clauses, source_text="x", verifier=spy)
         self.assertEqual(called, ["confidential_information"])
 
-    def test_confident_governing_law_pass_is_force_verified(self):
-        # The govlaw EXCEPTION: a confident PASS on the governing_law clause must be
-        # re-checked even at high confidence -- the grounding gate cannot catch a
-        # confident-but-wrong *judgement* about a real quote (e.g. an unapproved
-        # governing law called "approved"). (Ordinary required clauses are NO LONGER
-        # force-verified on a confident pass -- see the latency-narrow tests below.)
+    def test_confident_governing_law_pass_is_skipped(self):
+        # FLIPPED (was test_confident_governing_law_pass_is_force_verified, asserted
+        # called == ["governing_law"]): the governing_law always-verify exception is
+        # removed. A CONFIDENT governing_law pass now SKIPS the verifier -- the main
+        # reviewer's own approved-list check, not a verifier backstop, is relied upon
+        # to catch the historical Texas "unapproved-law confident pass" incident.
         clause = _clause("governing_law", "pass", clause_type="required", confidence=0.9)
-        self.assertTrue(_should_verify(clause))
+        self.assertFalse(_should_verify(clause))
         called = []
 
         def spy(packet):
@@ -376,14 +378,12 @@ class ApplyVerifierTests(unittest.TestCase):
             return {"verdict": VERIFIER_VERDICT_AFFIRM, "confidence": 1.0}
 
         apply_ai_verifier([clause], source_text="x", verifier=spy)
-        self.assertEqual(called, ["governing_law"])
+        self.assertEqual(called, [])  # confident govlaw pass skipped
 
     def test_unknown_confidence_required_pass_is_verified(self):
         # Unknown confidence is the MOST suspicious signal, not the most trusted -- a
-        # PASS with no confidence is still second-looked even on a RELAXED required
-        # clause (mutuality is NOT on the always-verify list, so this proves the
-        # unknown-confidence rule, not the always-verify exception). Only CONFIDENT
-        # relaxed required passes are now trusted.
+        # PASS with no confidence is still second-looked. Only CONFIDENT passes are now
+        # trusted.
         clause = _clause("mutuality", "pass", clause_type="required")
         clause.pop("confidence", None)
         self.assertIsNone(clause.get("confidence"))
@@ -396,80 +396,76 @@ class ApplyVerifierTests(unittest.TestCase):
         clause.pop("confidence", None)
         self.assertTrue(_should_verify(clause))
 
-    def test_prohibited_pass_behavior_is_unchanged(self):
-        # Regression guard: a confident prohibited PASS is still always verified.
+    def test_confident_prohibited_pass_is_skipped(self):
+        # FLIPPED (was test_prohibited_pass_behavior_is_unchanged, asserted True): the
+        # prohibited always-verify branch is removed, so a CONFIDENT prohibited PASS now
+        # SKIPS the verifier under pure confidence-gating.
         clause = _clause("non_circumvention", "pass", clause_type="prohibited", confidence=0.99)
+        self.assertFalse(_should_verify(clause))
+
+    def test_low_confidence_prohibited_pass_is_still_verified(self):
+        # NON-VACUITY: a LOW-confidence prohibited pass STILL verifies (it is the AI's
+        # not-confident outcome, exactly what stays in scope).
+        clause = _clause("non_circumvention", "pass", clause_type="prohibited", confidence=0.5)
         self.assertTrue(_should_verify(clause))
 
     def test_confident_typeless_pass_is_still_skipped(self):
-        # The narrow fast-path survives: a confident PASS with a known (non-None)
-        # confidence and neither required nor prohibited type is still trusted.
+        # A confident PASS with a known (non-None) confidence is trusted.
         clause = _clause("note", "pass", clause_type="advisory", confidence=0.9)
         self.assertFalse(_should_verify(clause))
 
-    def test_latency_narrow_verifier_call_counts(self):
-        # NON-VACUITY PROOF of the latency narrow. One injected verifier, a spy that
+    def test_pure_confidence_gating_verifier_call_counts(self):
+        # NON-VACUITY PROOF of pure confidence-gating. One injected verifier, a spy that
         # records every clause it is asked to judge. The verifier must:
-        #   * NOT fire on a confident PASS of a RELAXED required clause
-        #     (mutuality + signatures -- the needless second pass we removed, the
-        #     latency win we PRESERVE for these two), AND
+        #   * NOT fire on any CONFIDENT PASS regardless of clause type -- mutuality,
+        #     signatures, governing_law, term_and_survival, confidential_information,
+        #     AND a confident prohibited pass (the always-verify exceptions are gone), AND
         #   * STILL fire on the cases that genuinely need it: a REVIEW verdict, a FAIL
-        #     verdict, and the high-blast-radius always-verify PASSes (governing_law +
-        #     term_and_survival + confidential_information, the exceptions we keep
-        #     against the shipped-once regression and to protect the core NDA clause).
+        #     verdict, and a LOW-confidence pass (what the AI is not confident about).
+        #
+        # FLIPPED (was test_latency_narrow_verifier_call_counts, which asserted
+        # governing_law + term_and_survival + confidential_information DID fire on a
+        # confident pass). They now SKIP.
         called = []
 
         def spy(packet):
             called.append(packet["clause_id"])
             return {"verdict": VERIFIER_VERDICT_AFFIRM, "confidence": 1.0}
 
-        # The clauses that must NOT be verified: confident RELAXED required passes.
-        confident_mutuality_pass = _clause(
-            "mutuality", "pass", clause_type="required", confidence=0.97
-        )
-        confident_signatures_pass = _clause(
-            "signatures", "pass", clause_type="required", confidence=0.97
-        )
         clauses = [
-            confident_mutuality_pass,
-            confident_signatures_pass,
-            _clause("non_compete", "review", clause_type="required", confidence=0.9),  # REVIEW
-            _clause("ip_assignment", "fail", clause_type="prohibited", confidence=0.9),  # FAIL
-            _clause("governing_law", "pass", clause_type="required", confidence=0.97),  # always-verify
-            _clause("term_and_survival", "pass", clause_type="required", confidence=0.97),  # always-verify
-            _clause("confidential_information", "pass", clause_type="required", confidence=0.97),  # always-verify
+            _clause("mutuality", "pass", clause_type="required", confidence=0.97),  # skipped
+            _clause("signatures", "pass", clause_type="required", confidence=0.97),  # skipped
+            _clause("governing_law", "pass", clause_type="required", confidence=0.97),  # NOW skipped
+            _clause("term_and_survival", "pass", clause_type="required", confidence=0.97),  # NOW skipped
+            _clause("confidential_information", "pass", clause_type="required", confidence=0.97),  # NOW skipped
+            _clause("non_solicit", "pass", clause_type="prohibited", confidence=0.97),  # NOW skipped
+            _clause("non_compete", "review", clause_type="required", confidence=0.9),  # REVIEW -> fires
+            _clause("ip_assignment", "fail", clause_type="prohibited", confidence=0.9),  # FAIL -> fires
+            _clause("escrow", "pass", clause_type="required", confidence=0.30),  # low-conf -> fires
         ]
 
         apply_ai_verifier(clauses, source_text="x", verifier=spy)
 
-        # The confident RELAXED required passes are the load-bearing assertion: the
-        # verifier was asked to judge each of them ZERO times (latency win preserved).
-        self.assertEqual(called.count("mutuality"), 0)
-        self.assertEqual(called.count("signatures"), 0)
-        self.assertNotIn("mutuality", called)
-        self.assertNotIn("signatures", called)
-        # Every genuinely-needs-it case DID fire.
-        self.assertIn("non_compete", called)  # REVIEW
-        self.assertIn("ip_assignment", called)  # FAIL
-        self.assertIn("governing_law", called)  # always-verify exception
-        self.assertIn("term_and_survival", called)  # always-verify exception
-        self.assertIn("confidential_information", called)  # always-verify (core protective)
-        # And exactly the five expected clauses, none extra.
+        # The confident passes are the load-bearing assertion: EVERY clause type with a
+        # confident pass was judged ZERO times.
+        for skipped in (
+            "mutuality",
+            "signatures",
+            "governing_law",
+            "term_and_survival",
+            "confidential_information",
+            "non_solicit",
+        ):
+            self.assertEqual(called.count(skipped), 0, f"{skipped} should be skipped")
+        # Exactly the not-confident cases fired: the REVIEW, the FAIL, the low-conf pass.
         self.assertEqual(
             sorted(called),
-            sorted([
-                "non_compete",
-                "ip_assignment",
-                "governing_law",
-                "term_and_survival",
-                "confidential_information",
-            ]),
+            ["escrow", "ip_assignment", "non_compete"],
         )
 
     def test_confident_relaxed_required_pass_never_calls_verifier(self):
         # The sharpest non-vacuity assertion in isolation: a single confident PASS of a
-        # RELAXED required clause (mutuality -- NOT on the always-verify list) yields a
-        # verifier call-count of EXACTLY 0.
+        # required clause (mutuality) yields a verifier call-count of EXACTLY 0.
         clause = _clause("mutuality", "pass", clause_type="required", confidence=0.97)
         self.assertFalse(_should_verify(clause))
         called = []
@@ -482,11 +478,12 @@ class ApplyVerifierTests(unittest.TestCase):
         self.assertEqual(len(called), 0)
         self.assertEqual(summary["verified_count"], 0)
 
-    def test_confident_term_and_survival_pass_is_always_verified(self):
-        # REGRESSION GUARD (the shipped-once bug class): term_and_survival is on the
-        # always-verify list, so a confident PASS still calls the verifier exactly once.
+    def test_confident_term_and_survival_pass_is_skipped(self):
+        # FLIPPED (was test_confident_term_and_survival_pass_is_always_verified,
+        # asserted called == ["term_and_survival"]): the term_and_survival always-verify
+        # exception is removed, so a CONFIDENT term_and_survival pass spends ZERO calls.
         clause = _clause("term_and_survival", "pass", clause_type="required", confidence=0.97)
-        self.assertTrue(_should_verify(clause))
+        self.assertFalse(_should_verify(clause))
         called = []
 
         def spy(packet):
@@ -494,14 +491,17 @@ class ApplyVerifierTests(unittest.TestCase):
             return {"verdict": VERIFIER_VERDICT_AFFIRM, "confidence": 1.0}
 
         apply_ai_verifier([clause], source_text="x", verifier=spy)
-        self.assertEqual(called, ["term_and_survival"])
+        self.assertEqual(called, [])  # confident term pass skipped
 
-    def test_refuted_required_pass_is_downgraded_to_review(self):
-        # END-TO-END REPRO (the exact audit case): a wrong confident PASS on a
-        # REQUIRED clause is now SEEN by the verifier and, when the verifier refutes
-        # it at high confidence, downgraded to review. On base 18e809cf the verifier
-        # never ran on this clause, so the wrong PASS shipped untouched.
-        clause = _clause("governing_law", "pass", clause_type="required", confidence=0.9)
+    def test_refuted_low_confidence_required_pass_is_downgraded_to_review(self):
+        # END-TO-END REPRO: a wrong LOW-confidence PASS on a REQUIRED clause is SEEN by
+        # the verifier (it is what the AI is not confident about) and, when the verifier
+        # refutes it at high confidence, downgraded to review.
+        #
+        # CHANGED (was test_refuted_required_pass_is_downgraded_to_review with
+        # confidence=0.9): under pure confidence-gating a CONFIDENT govlaw pass now SKIPS
+        # the verifier, so the pass must be LOW-confidence to qualify for the second look.
+        clause = _clause("governing_law", "pass", clause_type="required", confidence=0.5)
         updated, summary = apply_ai_verifier(
             [clause],
             source_text="Governed by the laws of Narnia.",
@@ -822,32 +822,27 @@ class ClauseBoundaryMarkerTests(unittest.TestCase):
 
 
 class ShouldVerifyTests(unittest.TestCase):
-    """BUGFIX: a prohibited-clause pass asserts the restriction is ABSENT -- a claim
-    no quote can ground -- so it must always be second-looked, even at high
-    confidence (the grounding gate cannot catch a hallucinated clear there).
+    """PURE CONFIDENCE-GATING: the verifier second-looks a PASS ONLY when the main AI
+    is UNCERTAIN about it (confidence is unknown, or below the 0.85 threshold). There
+    are NO always-verify-by-clause-type exceptions: a CONFIDENT pass of ANY clause type
+    -- prohibited, governing_law, term_and_survival, confidential_information,
+    mutuality, signatures -- now SKIPS the verifier. FAIL and REVIEW outcomes are still
+    always verified (those are the AI's own not-confident outcomes), and an unknown
+    (None) confidence PASS is the MOST suspicious signal so it is still verified."""
 
-    LATENCY NARROW: the verifier fires on a PASS only when the main AI is UNCERTAIN
-    (low/unknown confidence), plus two unconditional cases -- prohibited passes
-    (absence claims) and the high-blast-radius governing_law clause. A CONFIDENT pass
-    of an ordinary required clause is now TRUSTED without a second pass; force-
-    verifying every required clause put the verifier on the review's critical path.
-    An unknown (None) confidence on any pass is the MOST suspicious signal, so it is
-    verified rather than waved through."""
-
-    def test_high_confidence_prohibited_pass_is_verified(self):
+    def test_high_confidence_prohibited_pass_is_skipped(self):
+        # FLIPPED (was test_high_confidence_prohibited_pass_is_verified, asserted True):
+        # under pure confidence-gating a CONFIDENT prohibited pass now SKIPS the verifier.
         from nda_automation.ai_verifier import _should_verify
 
-        self.assertTrue(_should_verify({"decision": "pass", "type": "prohibited", "confidence": 0.97}))
+        self.assertFalse(_should_verify({"decision": "pass", "type": "prohibited", "confidence": 0.97}))
 
     def test_high_confidence_relaxed_required_pass_is_trusted(self):
         from nda_automation.ai_verifier import _should_verify
 
-        # LATENCY NARROW: force-verifying EVERY required-clause pass put the verifier
-        # on the critical path and blew the review-poll budget. A confident PASS of a
-        # RELAXED required clause (mutuality / signatures -- NOT on the always-verify
-        # list) is now TRUSTED without a second pass -- the verifier fires only on
-        # uncertainty/REVIEW/FAIL, plus the always-verify exceptions below. The latency
-        # win is preserved for these two genuinely-lower-blast-radius clauses.
+        # A confident PASS of a required clause (mutuality / signatures) is trusted
+        # without a second pass -- unchanged by this change (these were never on an
+        # always-verify list).
         self.assertFalse(
             _should_verify(
                 {"id": "mutuality", "decision": "pass", "type": "required", "confidence": 0.97}
@@ -859,39 +854,39 @@ class ShouldVerifyTests(unittest.TestCase):
             )
         )
 
-    def test_high_confidence_confidential_information_pass_is_always_verified(self):
+    def test_high_confidence_confidential_information_pass_is_skipped(self):
+        # FLIPPED (was test_high_confidence_confidential_information_pass_is_always_verified,
+        # asserted True): pure confidence-gating drops the always-verify backstop, so a
+        # CONFIDENT confidential_information pass now SKIPS the verifier.
         from nda_automation.ai_verifier import _should_verify
 
-        # CORE-PROTECTIVE GUARD: confidential_information is the core protective clause
-        # of an NDA. A confident-but-wrong "adequate" verdict on a real definition quote
-        # sails past the grounding gate (the quote is genuinely present -- the judgement
-        # is the error), shipping an under-protective agreement. So a CONFIDENT PASS is
-        # ALWAYS re-checked regardless of confidence/type.
-        self.assertTrue(
+        self.assertFalse(
             _should_verify(
                 {"id": "confidential_information", "decision": "pass", "type": "required", "confidence": 0.97}
             )
         )
 
-    def test_high_confidence_governing_law_pass_is_always_verified(self):
+    def test_high_confidence_governing_law_pass_is_skipped(self):
+        # FLIPPED (was test_high_confidence_governing_law_pass_is_always_verified,
+        # asserted True): the governing_law always-verify exception is removed. A
+        # CONFIDENT governing_law pass now SKIPS the verifier -- the main reviewer's own
+        # approved-list check (not a verifier backstop) is relied upon to catch the
+        # historical Texas "unapproved-law confident pass" incident.
         from nda_automation.ai_verifier import _should_verify
 
-        # The govlaw EXCEPTION survives the narrow: governing law is high-blast-radius
-        # (a wrong "approved governing law" writes a non-court venue into a signed
-        # NDA), so a confident PASS is ALWAYS re-checked regardless of confidence/type.
-        self.assertTrue(
+        self.assertFalse(
             _should_verify(
                 {"id": "governing_law", "decision": "pass", "type": "required", "confidence": 0.97}
             )
         )
 
-    def test_high_confidence_term_and_survival_pass_is_always_verified(self):
+    def test_high_confidence_term_and_survival_pass_is_skipped(self):
+        # FLIPPED (was test_high_confidence_term_and_survival_pass_is_always_verified,
+        # asserted True): the term_and_survival always-verify exception is removed, so a
+        # CONFIDENT term_and_survival pass now SKIPS the verifier.
         from nda_automation.ai_verifier import _should_verify
 
-        # REGRESSION GUARD: term_and_survival is also high-blast-radius (a wrong
-        # survival/term judgement on a real quote), so it STAYS always-verified on a
-        # confident pass alongside governing_law and all prohibited clauses.
-        self.assertTrue(
+        self.assertFalse(
             _should_verify(
                 {"id": "term_and_survival", "decision": "pass", "type": "required", "confidence": 0.97}
             )
@@ -900,7 +895,10 @@ class ShouldVerifyTests(unittest.TestCase):
     def test_low_confidence_pass_is_still_verified(self):
         from nda_automation.ai_verifier import _should_verify
 
+        # NON-VACUITY: a LOW-confidence (<0.85) pass on any clause STILL verifies.
         self.assertTrue(_should_verify({"decision": "pass", "type": "required", "confidence": 0.50}))
+        self.assertTrue(_should_verify({"id": "governing_law", "decision": "pass", "type": "required", "confidence": 0.84}))
+        self.assertTrue(_should_verify({"decision": "pass", "type": "prohibited", "confidence": 0.50}))
 
     def test_unknown_confidence_pass_is_verified(self):
         from nda_automation.ai_verifier import _should_verify
@@ -910,11 +908,18 @@ class ShouldVerifyTests(unittest.TestCase):
         self.assertTrue(_should_verify({"decision": "pass", "type": "advisory"}))
         self.assertTrue(_should_verify({"decision": "pass", "type": "advisory", "confidence": None}))
 
+    def test_fail_and_review_outcomes_are_still_verified(self):
+        # NON-VACUITY: a FAIL and a REVIEW outcome STILL verify (flagged / not-confident
+        # outcomes stay in scope), even at high confidence and on any clause type.
+        from nda_automation.ai_verifier import _should_verify
+
+        self.assertTrue(_should_verify({"decision": "fail", "type": "prohibited", "confidence": 0.99}))
+        self.assertTrue(_should_verify({"decision": "review", "type": "required", "confidence": 0.99}))
+
     def test_confident_pass_outside_required_or_prohibited_is_still_trusted(self):
         from nda_automation.ai_verifier import _should_verify
 
-        # The narrow confident-clear fast-path survives for non-required, non-
-        # prohibited clauses with a known confidence.
+        # A confident PASS of an advisory clause with a known confidence is trusted.
         self.assertFalse(_should_verify({"decision": "pass", "type": "advisory", "confidence": 0.97}))
 
 
@@ -1250,40 +1255,36 @@ class AIFirstPathIntegrationTests(unittest.TestCase):
         # Evidence-trust holds (build raises EvidenceProvenanceError otherwise).
         self.assertEqual(result["evidence_trust"]["status"], "verified")
         self.assertEqual(result["audit_trace"]["decision"] if "audit_trace" in result else nc["audit_trace"]["decision"], "review")
-        # LATENCY NARROW: the verifier no longer force-checks every required-clause
-        # pass. With these high-confidence (0.92) assessments only the cases that
-        # genuinely warrant a second look are verified: the non_circumvention FAIL and
-        # the three high-blast-radius always-verify PASSes (governing_law +
-        # term_and_survival + confidential_information, the core protective clause). The
-        # other two confident relaxed passes (mutuality, signatures) are TRUSTED -- the
-        # needless second passes that blew the review-poll latency budget are gone.
+        # FLIPPED (pure confidence-gating): the verifier now second-looks ONLY what the
+        # AI is not confident about. With these high-confidence (0.92) assessments, the
+        # ONLY clause verified is the non_circumvention FAIL (a flagged outcome). The
+        # confident PASSes -- including governing_law, term_and_survival, and
+        # confidential_information, which the OLD always-verify policy force-checked --
+        # are all TRUSTED and skipped now.
         verified_ids = sorted(
             record["clause_id"] for record in result["ai_verifier"]["records"]
         )
-        self.assertEqual(
-            verified_ids,
-            ["confidential_information", "governing_law", "non_circumvention", "term_and_survival"],
-        )
-        self.assertEqual(result["ai_verifier"]["verified_count"], 4)
-        self.assertEqual(result["ai_verifier"]["changed_count"], 4)
-        # The four verified clauses were refuted to review; the two trusted passes
-        # stay pass.
+        self.assertEqual(verified_ids, ["non_circumvention"])
+        self.assertEqual(result["ai_verifier"]["verified_count"], 1)
+        self.assertEqual(result["ai_verifier"]["changed_count"], 1)
+        # Only the non_circumvention FAIL was refuted to review; every confident pass
+        # stays pass.
         decisions = {c["id"]: c["decision"] for c in result["clauses"]}
         self.assertEqual(decisions["non_circumvention"], "review")
-        self.assertEqual(decisions["governing_law"], "review")
-        self.assertEqual(decisions["term_and_survival"], "review")
-        self.assertEqual(decisions["confidential_information"], "review")
-        for clause_id in ("mutuality", "signatures"):
+        for clause_id in (
+            "mutuality",
+            "signatures",
+            "governing_law",
+            "term_and_survival",
+            "confidential_information",
+        ):
             self.assertEqual(decisions[clause_id], "pass")
-        # The four verified clauses carry the verifier audit + changed marker.
+        # Only the verified clause carries the verifier audit + changed marker.
+        nc_clause = next(c for c in result["clauses"] if c["id"] == "non_circumvention")
+        self.assertTrue(nc_clause["ai_verifier"]["changed"])
         for clause in result["clauses"]:
-            if clause["id"] in (
-                "non_circumvention",
-                "governing_law",
-                "term_and_survival",
-                "confidential_information",
-            ):
-                self.assertTrue(clause["ai_verifier"]["changed"])
+            if clause["id"] != "non_circumvention":
+                self.assertNotIn("ai_verifier", clause)
 
     def test_verifier_leaves_correct_ai_first_pass_untouched(self):
         # The AI got it right (pass). The verifier must not disturb a confident pass.
@@ -1369,8 +1370,9 @@ class BatchedVerifierTests(unittest.TestCase):
     path, with the same coverage, and degrades safe on malformed/partial responses."""
 
     def _mixed_clauses(self):
-        # Mixed coverage: a fail, a review, a prohibited-pass (always verified), a
-        # low-confidence pass (verified), plus a high-confidence required pass (skipped).
+        # Mixed coverage under pure confidence-gating: a fail, a review, a
+        # low-confidence pass (verified), plus a confident prohibited pass and a
+        # confident required pass (BOTH skipped -- the always-verify exceptions are gone).
         return [
             _clause(
                 "non_circumvention",
@@ -1381,16 +1383,15 @@ class BatchedVerifierTests(unittest.TestCase):
                 evidence=["Each party shall not be restricted from dealing with introduced contacts."],
             ),
             _clause("term_and_survival", "review", confidence=0.55),
-            _clause("ip_assignment", "pass", clause_type="prohibited", confidence=0.95),
-            _clause("governing_law", "pass", confidence=0.30),
-            _clause("mutuality", "pass", confidence=0.97),  # skipped (high-conf relaxed pass)
+            _clause("ip_assignment", "pass", clause_type="prohibited", confidence=0.95),  # skipped (confident prohibited pass)
+            _clause("governing_law", "pass", confidence=0.30),  # low-conf -> verified
+            _clause("mutuality", "pass", confidence=0.97),  # skipped (confident pass)
         ]
 
     def _verdict_map(self):
         return {
             "non_circumvention": {"verdict": VERIFIER_VERDICT_REFUTE, "confidence": 0.95, "rationale": "carve-out"},
             "term_and_survival": {"verdict": VERIFIER_VERDICT_UNCERTAIN, "confidence": 0.4, "rationale": "unclear"},
-            "ip_assignment": {"verdict": VERIFIER_VERDICT_REFUTE, "confidence": 0.92, "rationale": "suspect clear"},
             "governing_law": {"verdict": VERIFIER_VERDICT_AFFIRM, "confidence": 0.8, "rationale": "ok"},
         }
 
@@ -1407,10 +1408,12 @@ class BatchedVerifierTests(unittest.TestCase):
         )
 
         # Exactly ONE batched call carrying every qualifying clause (and only those).
+        # FLIPPED: ip_assignment (a CONFIDENT prohibited pass) no longer qualifies under
+        # pure confidence-gating, so the qualifying set drops from 4 to 3.
         self.assertEqual(len(batched_verifier.calls), 1)
         self.assertEqual(
             sorted(batched_verifier.calls[0]),
-            ["governing_law", "ip_assignment", "non_circumvention", "term_and_survival"],
+            ["governing_law", "non_circumvention", "term_and_survival"],
         )
 
         # Per-clause final decisions + audit blocks are byte-equivalent.
@@ -1423,8 +1426,10 @@ class BatchedVerifierTests(unittest.TestCase):
             self.assertEqual(batched.get("review_state"), per.get("review_state"))
         self.assertEqual(batched_summary["changed_count"], per_clause_summary["changed_count"])
         self.assertEqual(batched_summary["verified_count"], per_clause_summary["verified_count"])
-        self.assertEqual(batched_summary["verified_count"], 4)
-        # The skipped high-confidence required pass was never adjudicated.
+        self.assertEqual(batched_summary["verified_count"], 3)
+        # The skipped confident passes were never adjudicated: ip_assignment (idx 2,
+        # confident prohibited pass) and mutuality (idx 4, confident required pass).
+        self.assertNotIn("ai_verifier", batched_updated[2])
         self.assertNotIn("ai_verifier", batched_updated[4])
 
     def test_zero_qualifying_clauses_makes_no_call(self):
@@ -1460,8 +1465,9 @@ class BatchedVerifierTests(unittest.TestCase):
         updated, summary = apply_ai_verifier(self._mixed_clauses(), source_text="full doc", verifier=verifier)
         ids = {c["id"] for c in updated}
         self.assertNotIn("totally_unknown_clause", ids)
-        # Verified count still reflects only the real qualifying clauses.
-        self.assertEqual(summary["verified_count"], 4)
+        # Verified count still reflects only the real qualifying clauses (3 under pure
+        # confidence-gating: ip_assignment's confident prohibited pass no longer qualifies).
+        self.assertEqual(summary["verified_count"], 3)
 
     def test_total_batch_failure_degrades_all_to_affirm(self):
         telemetry.reset()

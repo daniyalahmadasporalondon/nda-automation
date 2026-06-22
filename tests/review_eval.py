@@ -172,7 +172,13 @@ def _scripted_verifier(focus_clause_id: str, focus: dict):
     return verifier
 
 
-def _ai_first_verifier_result(text: str, verifier) -> dict:
+def _ai_first_verifier_result(
+    text: str,
+    verifier,
+    *,
+    focus_clause_id: str | None = None,
+    reviewer_confidence: float | None = None,
+) -> dict:
     """Run a verifier case through the AI-first path (key-free stub reviewer).
 
     non_circumvention is a dynamic (engine=="dynamic") clause now, so the
@@ -182,12 +188,23 @@ def _ai_first_verifier_result(text: str, verifier) -> dict:
     and passes otherwise, then layer the scripted ``ai_verifier`` overlay on top so
     the justify-or-refute decision rewrites are exercised exactly as in the shipping
     AI-first path. Mirrors ``assess_nda_with_ai`` but threads ``ai_verifier`` through.
+
+    ``reviewer_confidence`` overrides the stub reviewer's confidence on the focus
+    clause. Under PURE confidence-gating the verifier only second-looks a PASS the
+    main AI is NOT confident about, so a verifier case that exercises "the verifier
+    refutes a suspect PASS" must script a sub-threshold reviewer confidence (the stub
+    otherwise hardcodes a confident 0.95 pass, which now correctly SKIPS the verifier).
+    A FAIL/REVIEW focus needs no override -- those are always verified regardless.
     """
     playbook = load_playbook()
     validate_playbook(playbook)
     packet = build_ai_assessment_packet(text, playbook=playbook)
     raw = stub_ai_assessment_response(packet)
     assessments = _validate_ai_assessment_response(raw, playbook=playbook, packet=packet)
+    if reviewer_confidence is not None and focus_clause_id is not None:
+        for assessment in assessments:
+            if str(assessment.get("clause_id") or "") == focus_clause_id:
+                assessment["confidence"] = float(reviewer_confidence)
     return build_ai_first_review_result(
         text,
         assessments,
@@ -242,8 +259,20 @@ def run_case(case: dict) -> dict:
     if kind == KIND_DETERMINISTIC:
         result = review_nda(text)
     elif kind == KIND_VERIFIER:
-        verifier = _scripted_verifier(clause_id, dict(case.get("verifier") or {}))
-        result = _ai_first_verifier_result(text, verifier)
+        verifier_spec = dict(case.get("verifier") or {})
+        verifier = _scripted_verifier(clause_id, verifier_spec)
+        # PURE confidence-gating: a verifier case that refutes a suspect PASS must make
+        # the reviewer NOT confident, else the confident-pass skip means the verifier
+        # never runs. The fixture sets ``reviewer_confidence`` for those PASS cases.
+        reviewer_confidence = verifier_spec.get("reviewer_confidence")
+        result = _ai_first_verifier_result(
+            text,
+            verifier,
+            focus_clause_id=clause_id,
+            reviewer_confidence=(
+                float(reviewer_confidence) if reviewer_confidence is not None else None
+            ),
+        )
     elif kind == KIND_AI_FIRST_REAL:
         result = _ai_first_real_result(text)
     else:

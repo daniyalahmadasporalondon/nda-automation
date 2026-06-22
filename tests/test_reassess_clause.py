@@ -233,12 +233,15 @@ class ReassessVerifierSeesEditedTextTests(unittest.TestCase):
         self.assertIn(self.EDITED_P2, str(edited_captured.get("matched_text") or ""))
         self.assertIn(self.EDITED_P2, str(edited_captured.get("source_text") or ""))
 
-        # Sanity baseline: with NO edit, the clean original passes and the verifier
-        # sees the original document — confirming the divergence above is caused by
-        # the edit overlay, not by the spy.
+        # Sanity baseline: with NO edit, the clean original passes. UPDATED for pure
+        # confidence-gating: a clean, CONFIDENT non_circumvention pass now SKIPS the
+        # verifier entirely (the always-verify-prohibited-pass branch was removed), so
+        # the spy is never called and captures nothing. The edited case above is a FAIL,
+        # which IS always verified -- so the divergence (edited -> verified, clean ->
+        # skipped) is still caused by the edit overlay, not by the spy.
         clean_clause, clean_captured = self._reassess_with_spy(edited=False)
         self.assertEqual(clean_clause["decision"], "pass")
-        self.assertIn(self.ORIGINAL_P2, str(clean_captured.get("source_text") or ""))
+        self.assertEqual(clean_captured, {})  # confident clean pass: verifier skipped
 
 
 # ------------------------------------------------------------------ #
