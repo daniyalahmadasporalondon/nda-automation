@@ -5,7 +5,7 @@
     {
       "id": "mutuality",
       "name": "Mutuality",
-      "requirement": "The NDA must bind both parties symmetrically as disclosing and receiving parties.",
+      "requirement": "The NDA must bind both parties symmetrically as disclosing and receiving parties. A both-sides Confidential Information DEFINITION ('disclosed by either party') does NOT by itself establish mutual obligations; require an operative confidentiality COVENANT that binds EACH party as Receiving Party. A covenant obligating only 'the Recipient' / 'the Receiving Party' to protect 'the Disclosing Party's' information is one-way, even when the definition is bilateral.",
       "type": "required",
       "preferred_position": "Mutual NDA: both parties act as Disclosing Party and Receiving Party, with symmetric confidentiality obligations.",
       "check_trigger": "One-way or non-mutual language that binds only one side, fixes one party as the only Receiving Party, or otherwise fails to make both parties disclosure and receipt parties.",
@@ -28,6 +28,8 @@
         "the parties may disclose confidential information to each other",
         "each party acts as both disclosing party and receiving party",
         "a mutuality title, recital, definition, or non-mutual label is only a weak cue unless operative confidentiality obligations are reciprocal",
+        "a both-sides definition (information disclosed by either party) is not by itself mutual obligations; the operative covenant must bind each party as receiving party",
+        "a covenant obligating only the recipient or receiving party to protect the disclosing party's information is one-way even when the definition is bilateral",
         "one-way return, destroy, delete, certify, copy-control, or other administrative duties are not one-way confidentiality obligations by themselves"
       ],
       "rationale": "A one-way NDA creates asymmetric risk; Aspora's baseline is reciprocal confidentiality unless the matter is deliberately unilateral.",
@@ -66,7 +68,7 @@
             "id": "weak_or_separated_mutuality_signal",
             "decision": "review",
             "issue_type": "unclear",
-            "description": "Mutuality appears only in a title, recital, definition, separated role language, or negated/non-mutual label that does not clearly create reciprocal obligations.",
+            "description": "Mutuality appears only in a title, recital, definition, or separated role language, and the operative confidentiality obligations are SILENT or UNCLEAR (not affirmatively one-way) about whether each party is bound reciprocally. This REVIEW trigger is for genuine uncertainty only: if the operative covenant is affirmatively one-way (it binds only the Recipient / Receiving Party to protect the Disclosing Party's information), that is the one_way_party_roles FAIL, not this review.",
             "redline_action": "no_change"
           }
         ],
@@ -105,10 +107,10 @@
     {
       "id": "confidential_information",
       "name": "Confidential Information",
-      "requirement": "Confidential Information must be broad, must cover the existence and terms of the Agreement and the right of publicity, and must not include extra exclusions beyond the standard carve-outs. The protection must also stand on its own: the standard carve-outs/exclusions must not be cancelled or disapplied elsewhere in the document, the definition must not affirmatively include information the carve-outs exclude (publicly available, already known, or independently developed), and the agreement must not be subordinated to a separate external agreement (such as a Master Services Agreement) that is given overriding authority over these confidentiality terms.",
+      "requirement": "Confidential Information must be broad and must cover BOTH the existence and terms of the Agreement AND the right of publicity. These two inclusions are non-negotiable: a definition that is otherwise broad but clearly OMITS the right of publicity, or clearly OMITS the existence and terms of the Agreement, is a FAIL (required_inclusions_missing) -- not a clean pass and not merely a review. Use review only when it is genuinely unclear whether a broad catch-all reaches the inclusion. Residual-knowledge and reverse-engineering carve-outs FAIL. Any other extra carve-out beyond the standard public-domain, prior-possession, lawful third-party source, and qualified independent-development set is flagged for human REVIEW -- it is neither a clean pass nor a fail. The protection must also stand on its own: the standard carve-outs/exclusions must not be cancelled or disapplied elsewhere in the document, the definition must not affirmatively include information the carve-outs exclude (publicly available, already known, or independently developed), and the agreement must not be subordinated to a separate external agreement (such as a Master Services Agreement) that is given overriding authority over these confidentiality terms.",
       "type": "required",
       "preferred_position": "Broad definition covering all non-public business, financial, technical, customer, employee, supplier, pricing, market, product, proprietary, trade secret and source code information, including the right of publicity and the existence and terms of the Agreement, whether marked or unmarked.",
-      "check_trigger": "The definition is missing, too narrow, carves out core categories, or includes exclusions beyond the standard public-domain, prior-possession, lawful third-party source, and qualified independent-development carve-outs; OR a provision elsewhere cancels or disapplies the carve-outs/exclusions ('notwithstanding the foregoing, the exclusions shall not apply'), the definition affirmatively includes a normally-excluded category (poisoned definition), or the NDA is made subject to / incorporated into / subordinate to an external agreement that prevails or takes precedence over it.",
+      "check_trigger": "The definition is missing, too narrow, carves out core categories, clearly OMITS the right of publicity, clearly OMITS the existence and terms of the Agreement, or includes a residual-knowledge or reverse-engineering exclusion (FAIL). A clear omission of either required inclusion is a FAIL (required_inclusions_missing), not a review; reserve review only for the genuinely-unclear case where a broad catch-all might or might not reach the inclusion. An extra carve-out beyond the standard public-domain, prior-possession, lawful third-party source, and qualified independent-development set -- and which is NOT one of the failing residual/reverse-engineering ones -- is flagged for human REVIEW, not a fail and not a clean pass. Also trigger when a provision elsewhere cancels or disapplies the carve-outs/exclusions ('notwithstanding the foregoing, the exclusions shall not apply'), the definition affirmatively includes a normally-excluded category (poisoned definition), or the NDA is made subject to / incorporated into / subordinate to an external agreement that prevails or takes precedence over it.",
       "redline_template": "\"Confidential Information\" means any and all non-public business, financial, technical, customer, employee, supplier, pricing, market, product, proprietary, trade secret and source code information disclosed by either party, including the right of publicity and the existence and terms of this Agreement, whether disclosed orally, visually, electronically or in writing and whether or not marked confidential. Confidential Information does not include information that is public through no breach of this Agreement, already known without confidentiality obligation, received from a lawful third party without confidentiality obligation, or independently developed without use of or reference to Confidential Information.",
       "standard_exclusions_template": "Confidential Information does not include information that is public through no breach of this Agreement, already known without confidentiality obligation, received from a lawful third party without confidentiality obligation, or independently developed without use of or reference to Confidential Information.",
       "search_terms": [
@@ -133,7 +135,7 @@
         "separate usage-right language allowing use, retention, exploitation, or independent development outside the exclusion list"
       ],
       "rationale": "The definition should catch the business material actually exchanged in an NDA workflow without adding carve-outs that weaken protection.",
-      "evidence_guidance": "Anchor on the defined term, then inspect the same paragraph and nearby exclusion or usage-right language for category breadth, residuals, reverse engineering, and independent-development qualifications. A negated prohibition such as 'may not reverse engineer' is not a reverse-engineering carve-out. Also read the WHOLE document for structural overrides of the protection: (a) a clause that cancels/disapplies the exclusions ('the exclusions shall not apply', 'are void', 'are of no effect'), (b) a definition that affirmatively INCLUDES public, already-known, or independently-developed information, and (c) an incorporation-by-reference / 'subject to' / 'subordinate to' clause giving a separate external agreement overriding authority that prevails in conflict. Any of these undermines the Confidential Information protection even when the definition paragraph itself reads normally.",
+      "evidence_guidance": "Anchor on the defined term, then inspect the same paragraph and nearby exclusion or usage-right language for category breadth, residuals, reverse engineering, and independent-development qualifications. Separately, check the definition for the two REQUIRED inclusions: the right of publicity AND the existence and terms of the Agreement. If the definition is broad but clearly does NOT cover the right of publicity, or clearly does NOT cover the existence and terms of the Agreement, that is a FAIL (required_inclusions_missing) -- do not soften a clear omission to review; cite the definition span and note which required inclusion is absent. Only route to review when a broad catch-all genuinely might or might not reach the inclusion. A negated prohibition such as 'may not reverse engineer' is not a reverse-engineering carve-out. Also read the WHOLE document for structural overrides of the protection: (a) a clause that cancels/disapplies the exclusions ('the exclusions shall not apply', 'are void', 'are of no effect'), (b) a definition that affirmatively INCLUDES public, already-known, or independently-developed information, and (c) an incorporation-by-reference / 'subject to' / 'subordinate to' clause giving a separate external agreement overriding authority that prevails in conflict. Any of these undermines the Confidential Information protection even when the definition paragraph itself reads normally.",
       "rules": {
         "version": 1,
         "clause_type": "required",
@@ -143,7 +145,7 @@
             "id": "broad_definition_with_standard_exclusions",
             "decision": "pass",
             "issue_type": "none",
-            "description": "The definition covers the material categories in the playbook -- including, expressly, the right of publicity and the existence and terms of the Agreement -- and contains only accepted exclusions, including independent-development language only when it is qualified by no use of, access to, or reference to Confidential Information. A broad definition that omits the right of publicity or the existence and terms of the Agreement does not satisfy this condition.",
+            "description": "The definition covers the material categories in the playbook -- including, expressly, the right of publicity and the existence and terms of the Agreement -- and its exclusion list contains EXCLUSIVELY the standard accepted carve-outs (public-domain, prior-possession, lawful third-party source, and independent-development qualified by no use of, access to, or reference to Confidential Information) and no others. A broad definition that omits the right of publicity or the existence and terms of the Agreement does not satisfy this condition. Any extra carve-out beyond the standard set also does NOT satisfy this condition: a residual-knowledge or reverse-engineering exclusion is a FAIL, and any other extra exclusion routes to REVIEW.",
             "redline_action": "no_change"
           }
         ],
@@ -167,6 +169,13 @@
             "decision": "fail",
             "issue_type": "present_but_wrong",
             "description": "The definition or exclusion list excludes residual knowledge, residuals, reverse engineering, or a reverse-engineering right. Do not treat a negated prohibition on reverse engineering as an exclusion.",
+            "redline_action": "replace_paragraph"
+          },
+          {
+            "id": "required_inclusions_missing",
+            "decision": "fail",
+            "issue_type": "present_but_wrong",
+            "description": "The Confidential Information definition omits a required inclusion -- the right of publicity, or the existence and terms of the Agreement -- both of which must be covered. A definition that is otherwise broad but clearly does NOT cover the right of publicity, or clearly does NOT cover the existence and terms of the Agreement, is a FAIL (these inclusions are non-negotiable), not a pass and not merely a review.",
             "redline_action": "replace_paragraph"
           }
         ],
@@ -196,8 +205,15 @@
             "id": "missing_required_inclusions",
             "decision": "review",
             "issue_type": "unclear",
-            "description": "The definition does not expressly cover the existence and terms of the Agreement, or the right of publicity, both of which this clause requires.",
-            "redline_action": "replace_paragraph"
+            "description": "It is genuinely UNCLEAR whether the definition covers a required inclusion -- the existence and terms of the Agreement, or the right of publicity -- for example because a broad catch-all phrase ('any and all information', 'including without limitation') might or might not reach it. Use this REVIEW only for that ambiguity. If the definition clearly OMITS the right of publicity or the existence and terms of the Agreement, that is the required_inclusions_missing FAIL, not this review.",
+            "redline_action": "no_change"
+          },
+          {
+            "id": "extra_exclusion_outside_standard_set",
+            "decision": "review",
+            "issue_type": "unclear",
+            "description": "The exclusion list contains an extra carve-out beyond the standard set (public-domain, prior-possession, lawful third-party source, qualified independent-development) that is NOT a residual-knowledge or reverse-engineering exclusion -- for example a feedback/suggestions or other usage-right exclusion the disclosing party may freely use. An extra exclusion outside the approved standard set is neither a clean pass nor a fail; flag it for human review. Residual-knowledge and reverse-engineering exclusions are the exception and remain a FAIL.",
+            "redline_action": "no_change"
           }
         ],
         "evidence_requirements": {
@@ -290,7 +306,7 @@
     {
       "id": "governing_law",
       "name": "Governing Law",
-      "requirement": "Governing law must be India, Delaware, England and Wales, DIFC, or Ontario, Canada.",
+      "requirement": "Governing law must be India, Delaware, England and Wales, DIFC, or Ontario, Canada, AND the dispute forum must be aligned to that governing law: the exclusive jurisdiction / venue / arbitration seat must name the same approved jurisdiction as the operative governing law. A forum that names a different or unapproved jurisdiction than the approved governing law is a defect that must be reconciled by aligning the forum to the approved governing law.",
       "type": "required",
       "preferred_position": "The governing law is one of the approved jurisdictions, preferably England and Wales unless the matter context supports another approved option.",
       "check_trigger": "FAIL when the operative governing-law clause names a clearly-identified jurisdiction outside the approved set (India, Delaware, England and Wales, DIFC, Ontario Canada). FAIL when no operative governing-law clause is found. REVIEW (not FAIL) only when the governing-law language is genuinely unclear, conditional, conflicting, incorporates a reference to another document, uses a placeholder or TBD marker, allows the parties to choose or vary the law later, or contains a secondary carve-out that creates ambiguity about which law controls. Do not return REVIEW when the jurisdiction is unambiguously named and simply unapproved.",
@@ -335,7 +351,7 @@
         "approved-law aliases such as English law, Indian law, DIFC law, Delaware law, Ontario law, Canadian law, or Province of Ontario may count only when they describe the agreement governing law"
       ],
       "rationale": "The preferred jurisdictions are the approved operating set for this workflow; anything else should be failed or reviewed depending on how clearly the governing law is named.",
-      "evidence_guidance": "Use the operative governing-law sentence as evidence, not the whole dispute-resolution section. Do not treat a party recital saying it is incorporated, organized, formed, registered, domiciled, or existing under the laws of a jurisdiction as the agreement governing law. When an approved governing law is followed by unless otherwise agreed, subject to another agreement, chosen by a party, or a secondary carve-out for disputes, remedies, IP, enforcement, or another topic, cite that qualifying span and return REVIEW rather than pass. FAIL (not REVIEW) when the operative governing-law sentence names a clearly-identified unapproved jurisdiction such as California, New York, Singapore, France, Germany, or any other jurisdiction not in the approved list — reserve REVIEW for genuinely uncertain or conditional cases, not clearly-named wrong jurisdictions. Approved-law aliases count only when they modify the agreement governing-law clause; do not use an approved jurisdiction appearing only in addresses, party descriptions, court venue, tax, employment, or regulatory references. For failures, cite the operative unapproved governing-law sentence; for missing, explain that no operative governing-law sentence was found.",
+      "evidence_guidance": "Use the operative governing-law sentence as evidence of the governing LAW, not the whole dispute-resolution section. Do not treat a party recital saying it is incorporated, organized, formed, registered, domiciled, or existing under the laws of a jurisdiction as the agreement governing law. When an approved governing law is followed by unless otherwise agreed, subject to another agreement, chosen by a party, or a secondary carve-out for disputes, remedies, IP, enforcement, or another topic, cite that qualifying span and return REVIEW rather than pass. FAIL (not REVIEW) when the operative governing-law sentence names a clearly-identified unapproved jurisdiction such as California, New York, Singapore, France, Germany, or any other jurisdiction not in the approved list — reserve REVIEW for genuinely uncertain or conditional cases, not clearly-named wrong jurisdictions. Approved-law aliases count only when they modify the agreement governing-law clause. A court-venue, exclusive-jurisdiction, or arbitration-seat reference is NOT evidence of the governing LAW itself, and an approved jurisdiction appearing only in addresses, party descriptions, court venue, tax, employment, or regulatory references does not establish the governing law. HOWEVER, when the governing law is approved but the exclusive jurisdiction / venue / arbitration seat names a DIFFERENT or unapproved jurisdiction, you MUST cite that venue/forum span as evidence of a forum-alignment defect (the forum-does-not-match-governing-law FAIL) — here the venue text is the load-bearing evidence, not a thing to ignore. For failures, cite the operative unapproved governing-law sentence, or the conflicting forum/venue span for a forum-alignment defect; for missing, explain that no operative governing-law sentence was found.",
       "rules": {
         "version": 1,
         "clause_type": "required",
@@ -354,7 +370,7 @@
             "id": "governing_law_missing",
             "decision": "fail",
             "issue_type": "missing",
-            "description": "No operative governing-law clause is found. Party incorporation, organization, formation, registration, domicile, address, court venue, tax, employment, or regulatory-law references do not satisfy this requirement by themselves.",
+            "description": "No operative governing-law clause is found. Party incorporation, organization, formation, registration, domicile, address, court venue, tax, employment, or regulatory-law references do not establish the governing LAW by themselves. (A court-venue / exclusive-jurisdiction reference is excluded here only as evidence of the governing law; when the governing law IS approved, that same venue text is still the evidence for a forum-alignment defect — see forum_does_not_match_governing_law.)",
             "redline_action": "insert_after_paragraph"
           },
           {
@@ -362,6 +378,13 @@
             "decision": "fail",
             "issue_type": "present_but_wrong",
             "description": "The operative governing-law clause names a clearly-identified jurisdiction outside the approved playbook list (e.g. California, New York, Singapore, France, Germany, or any other non-approved jurisdiction). This is a FAIL, not a REVIEW — do not soften a clearly-named unapproved jurisdiction to review. Do not fail merely because a party is incorporated or organized under an unapproved jurisdiction if the agreement itself is governed by an approved law. Only use REVIEW when the governing-law language is genuinely unclear, conditional, or conflicting.",
+            "redline_action": "replace_paragraph"
+          },
+          {
+            "id": "forum_does_not_match_governing_law",
+            "decision": "fail",
+            "issue_type": "present_but_wrong",
+            "description": "The operative governing-law jurisdiction is approved, but the exclusive jurisdiction / venue / arbitration seat names a different or unapproved jurisdiction; the forum must be aligned to the approved governing law. Cite the conflicting forum/venue span. The correct fix is to align the forum to the approved governing law (keep the approved law; move the courts/seat to that same jurisdiction), NOT to switch the governing law to the unapproved forum's jurisdiction.",
             "redline_action": "replace_paragraph"
           }
         ],
@@ -524,7 +547,7 @@
             "decision": "review",
             "issue_type": "unclear",
             "description": "The term language is ambiguous, cross-referenced, unresolved, or unclear about whether the long survival applies only to accepted carve-outs rather than ordinary confidentiality.",
-            "redline_action": "replace_paragraph"
+            "redline_action": "no_change"
           }
         ],
         "evidence_requirements": {

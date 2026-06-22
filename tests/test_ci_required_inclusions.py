@@ -119,19 +119,37 @@ class CIRequiredInclusionsPolicyTests(unittest.TestCase):
         # (the general broad-categories behavior is unchanged).
         self.assertIn("no use of, access to, or reference to Confidential Information", description)
 
-    def test_missing_required_inclusions_review_trigger_exists(self):
+    def test_required_inclusions_missing_is_now_a_fail_condition(self):
+        # User decision: the right of publicity and the existence-and-terms inclusions
+        # are NON-NEGOTIABLE. A definition that clearly OMITS either is now a FAIL
+        # (was previously a stable review).
+        clause = _confidential_information_clause(load_playbook())
+        fail = next(
+            f for f in clause["rules"]["fail_conditions"] if f["id"] == "required_inclusions_missing"
+        )
+        self.assertEqual(fail["decision"], "fail")
+        self.assertEqual(fail["issue_type"], "present_but_wrong")
+        self.assertEqual(fail["redline_action"], REDLINE_REPLACE_PARAGRAPH)
+        # The fail names BOTH required inclusions.
+        self.assertIn("existence and terms of the Agreement", fail["description"])
+        self.assertIn("right of publicity", fail["description"])
+
+    def test_missing_required_inclusions_review_trigger_narrowed_to_ambiguity(self):
         clause = _confidential_information_clause(load_playbook())
         trigger = next(
             t for t in clause["rules"]["review_triggers"] if t["id"] == "missing_required_inclusions"
         )
         self.assertEqual(trigger["decision"], "review")
         self.assertEqual(trigger["issue_type"], "unclear")
-        # The trigger names BOTH required inclusions.
+        # The trigger still names BOTH required inclusions.
         self.assertIn("existence and terms of the Agreement", trigger["description"])
         self.assertIn("right of publicity", trigger["description"])
-        # The redline_action surfaces the corrected wording (the existing
-        # redline_template), consistent with the fail_conditions' replace action.
-        self.assertEqual(trigger["redline_action"], REDLINE_REPLACE_PARAGRAPH)
+        # It is now narrowed to the genuinely-UNCLEAR case and routes the clear-omission
+        # case to the new fail. A review verdict must not carry a paragraph-replace
+        # remedy (item C: redline_action == no_change for review triggers).
+        self.assertIn("UNCLEAR", trigger["description"])
+        self.assertIn("required_inclusions_missing", trigger["description"])
+        self.assertEqual(trigger["redline_action"], "no_change")
 
     def test_redline_template_carries_both_required_inclusions(self):
         # The proposed fix surfaced for the new trigger derives from the existing
@@ -146,16 +164,17 @@ class CIRequiredInclusionsPolicyTests(unittest.TestCase):
 class CIRequiredInclusionsReviewPipelineTests(unittest.TestCase):
     """The review pipeline honors the policy and surfaces the fix."""
 
-    def test_definition_missing_inclusions_yields_review_not_pass(self):
-        # The reviewer flags the CI definition for the missing inclusions with the
-        # template-backed replace action (blank text); the pipeline keeps it on
-        # review and defaults the corrected wording from the playbook template.
+    def test_definition_missing_inclusions_yields_fail_not_pass(self):
+        # User decision: a definition that clearly OMITS the required inclusions is a
+        # FAIL, not a review. The reviewer flags it present_but_wrong with the
+        # template-backed replace action (blank text); the deterministic redline
+        # builder defaults the corrected wording from the playbook template.
         ci = _assessment(
             "confidential_information",
-            "review",
+            "fail",
             paragraph_id="p2",
             quote='"Confidential Information" means any and all non-public business',
-            issue_type="unclear",
+            issue_type="present_but_wrong",
             proposed_redline={"action": REDLINE_REPLACE_PARAGRAPH, "paragraph_id": "p2"},
         )
         reviewer = InMemoryAssessmentReviewer(
@@ -165,21 +184,17 @@ class CIRequiredInclusionsReviewPipelineTests(unittest.TestCase):
         result = assess_nda_with_ai(OMITS_INCLUSIONS_SOURCE_TEXT, reviewer=reviewer)
 
         clause = next(c for c in result["clauses"] if c["id"] == "confidential_information")
-        self.assertEqual(clause["decision"], "review")
+        self.assertEqual(clause["decision"], "fail")
         self.assertNotEqual(clause["decision"], "pass")
 
-        # For a review verdict the proposed fix surfaces on the clause's own
-        # proposed_redline (the deterministic redline_edits builder fires only for
-        # fail/present-but-wrong; review verdicts carry the fix on the assessment).
-        # The blank AI text was defaulted from the existing redline_template, so the
-        # surfaced wording carries BOTH required inclusions for the reviewer.
-        proposed = clause["proposed_redline"]
-        self.assertEqual(proposed["action"], REDLINE_REPLACE_PARAGRAPH)
-        self.assertEqual(proposed["paragraph_id"], "p2")
-        self.assertIn("right of publicity", proposed["text"])
-        self.assertIn("existence and terms of this Agreement", proposed["text"])
-        # The same corrected wording is mirrored to suggested_redline.
-        self.assertIn("right of publicity", clause["suggested_redline"])
+        # The deterministic redline_edits builder fires for fail/present_but_wrong and
+        # defaults the blank AI text from the existing redline_template, so the surfaced
+        # corrected wording carries BOTH required inclusions for the reviewer.
+        edits = [e for e in result["redline_edits"] if e["clause_id"] == "confidential_information"]
+        self.assertTrue(edits, "a fail must produce a redline edit")
+        edit_text = " ".join(str(e.get("replacement_text") or "") for e in edits)
+        self.assertIn("right of publicity", edit_text)
+        self.assertIn("existence and terms of this Agreement", edit_text)
 
     def test_definition_with_both_inclusions_passes(self):
         # A definition that DOES cover the right of publicity and the existence and

@@ -295,9 +295,10 @@ class AIFirstReviewTests(unittest.TestCase):
         )
 
         term_result = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
-        self.assertIn("three years", term_result["requirement"])
-        self.assertIn("three years", term_result["preferred_position"])
-        self.assertIn("longer than three years", term_result["check_trigger"])
+        # Derived term strings now carry both word and numeral ("three (3) years").
+        self.assertIn("three (3) years", term_result["requirement"])
+        self.assertIn("three (3) years", term_result["preferred_position"])
+        self.assertIn("longer than three (3) years", term_result["check_trigger"])
 
     def test_evidence_quote_without_paragraph_id_resolves_to_source_paragraph(self):
         result = build_ai_first_review_result(

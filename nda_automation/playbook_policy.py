@@ -279,6 +279,11 @@ def build_playbook_policy_block(playbook: Mapping[str, Any]) -> str:
     gov_packet = _packet_clause_by_id(packet_clauses, "governing_law")
     approved_options: list[str] = []
     preferred_law = ""
+    # law -> forum/venue pairs, derived from approved_options[].forum_jurisdiction, so
+    # RULE 4 can render an explicit law->forum alignment table (the reviewer needs the
+    # expected forum for each approved law to detect a split). The forum_jurisdiction is
+    # the playbook's single source for the expected court/forum of each governing law.
+    law_forum_pairs: list[tuple[str, str]] = []
     gov_rules = gov_packet.get("rules")
     if isinstance(gov_rules, Mapping):
         options = gov_rules.get("approved_options")
@@ -289,6 +294,9 @@ def build_playbook_policy_block(playbook: Mapping[str, Any]) -> str:
                 value = _text(option.get("value")) or _text(option.get("label"))
                 if value:
                     approved_options.append(value)
+                forum = _text(option.get("forum_jurisdiction"))
+                if value and forum:
+                    law_forum_pairs.append((value, forum))
                 if option.get("default") and not preferred_law:
                     preferred_law = value
     if not preferred_law:
@@ -416,7 +424,9 @@ def build_playbook_policy_block(playbook: Mapping[str, Any]) -> str:
     lines.append(
         "The operative governing law must be one of the approved jurisdictions: "
         f"{approved_laws_label}{preferred_clause}. A clearly-named jurisdiction outside "
-        "that list is a FAIL. Separately, the dispute forum / venue / "
+        "that list is a FAIL — even if it is a perfectly valid, reasonable jurisdiction; "
+        "do not pass it because it seems reasonable. Reserve REVIEW only for genuinely "
+        "unclear, conditional, or conflicting governing-law wording. Separately, the dispute forum / venue / "
         "exclusive-jurisdiction / arbitration seat must name the SAME jurisdiction as "
         "the governing law: a split where the governing law is one approved jurisdiction "
         "but the exclusive forum or arbitration seat is a DIFFERENT (or unapproved) "
@@ -425,9 +435,17 @@ def build_playbook_policy_block(playbook: Mapping[str, Any]) -> str:
         "move the courts/seat to that same jurisdiction) — do NOT fix a mismatch by "
         "switching the governing law to an unapproved forum's jurisdiction."
     )
+    if law_forum_pairs:
+        lines.append(
+            "Approved governing law -> expected forum/venue (the forum named in the "
+            "document must match the row for the chosen governing law):"
+        )
+        for law, forum in law_forum_pairs:
+            lines.append(f"  - {law}  ->  {forum}")
     lines.append(
         "(Source: playbook clause `governing_law` — approved_laws, preferred_law "
-        f'"{preferred_law}", rules.fail_conditions "unapproved_governing_law"; '
+        f'"{preferred_law}", rules.fail_conditions "unapproved_governing_law" + '
+        '"forum_does_not_match_governing_law", approved_options[].forum_jurisdiction; '
         "conditional/secondary-governing-law override handling.)"
     )
     lines.append("")

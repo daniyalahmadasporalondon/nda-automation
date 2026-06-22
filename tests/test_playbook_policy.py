@@ -46,6 +46,28 @@ class PlaybookPolicyBlockTests(unittest.TestCase):
         self.assertIn("STRUCK, NOT NARROWED", self.block)
         self.assertIn("ALIGN THE FORUM", self.block)
 
+    def test_block_renders_law_to_forum_table_from_forum_jurisdiction(self):
+        # Sweep item A: RULE 4 renders a law -> expected-forum table DERIVED from each
+        # approved_options[].forum_jurisdiction, so the reviewer can detect a forum split.
+        self.assertIn("expected forum/venue", self.block)
+        gov = next(c for c in self.playbook["clauses"] if c["id"] == "governing_law")
+        for option in gov["rules"]["approved_options"]:
+            forum = option.get("forum_jurisdiction")
+            if forum:
+                self.assertIn(f"{option['value']}  ->  {forum}", self.block)
+
+    def test_forum_table_follows_a_mutated_forum_jurisdiction(self):
+        # Prove the table is DERIVED, not pinned: change a forum_jurisdiction and assert
+        # the rendered table follows it.
+        mutated = copy.deepcopy(self.playbook)
+        for clause in mutated["clauses"]:
+            if clause["id"] == "governing_law":
+                for option in clause["rules"]["approved_options"]:
+                    if option["id"] == "england_and_wales":
+                        option["forum_jurisdiction"] = "the Commercial Court in London"
+        block = build_playbook_policy_block(mutated)
+        self.assertIn("England and Wales  ->  the Commercial Court in London", block)
+
     def test_block_lists_every_prohibited_restraint_category(self):
         # RULE 1 catalogue must name the restraint categories the playbook enumerates.
         for phrase in (
