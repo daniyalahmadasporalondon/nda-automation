@@ -322,6 +322,24 @@
     white-space: nowrap;
   }
 
+  /* Key-value grid (admin read-only value-card look): uppercase muted label,
+     value beneath. Used in the "How the AI Review Works" guardrails card. */
+  dl.kv { margin: 0; display: grid; gap: 12px; }
+  dl.kv dt {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 2px;
+  }
+  dl.kv dd {
+    margin: 0;
+    font-size: 14px;
+    color: var(--ink-soft);
+    line-height: 1.5;
+  }
+
   .glossary dl { margin: 0; }
   .glossary dt {
     font-weight: 700;
@@ -374,18 +392,19 @@
       <button data-tab="repository"><span class="num">4</span>The Repository</button>
       <div class="group-label">Working an NDA</div>
       <button data-tab="reviewing"><span class="num">5</span>Reviewing an NDA</button>
-      <button data-tab="redlines"><span class="num">6</span>Redlines</button>
-      <button data-tab="search"><span class="num">7</span>AI Search</button>
-      <button data-tab="notifications"><span class="num">8</span>Notifications</button>
-      <button data-tab="sending"><span class="num">9</span>Sending &amp; E-Signature</button>
+      <button data-tab="ai-review"><span class="num">6</span>How the AI Review Works</button>
+      <button data-tab="redlines"><span class="num">7</span>Redlines</button>
+      <button data-tab="search"><span class="num">8</span>AI Search</button>
+      <button data-tab="notifications"><span class="num">9</span>Notifications</button>
+      <button data-tab="sending"><span class="num">10</span>Sending &amp; E-Signature</button>
       <div class="group-label">Creating &amp; receiving</div>
-      <button data-tab="generating"><span class="num">10</span>Generating an NDA</button>
-      <button data-tab="entities"><span class="num">11</span>Entities &amp; Signatories</button>
-      <button data-tab="inbox"><span class="num">12</span>The Inbox (auto-receiving)</button>
+      <button data-tab="generating"><span class="num">11</span>Generating an NDA</button>
+      <button data-tab="entities"><span class="num">12</span>Entities &amp; Signatories</button>
+      <button data-tab="inbox"><span class="num">13</span>The Inbox (auto-receiving)</button>
       <div class="group-label">Rules &amp; settings</div>
-      <button data-tab="playbook"><span class="num">13</span>The Playbook (your rulebook)</button>
-      <button data-tab="admin"><span class="num">14</span>Admin: What You Can &amp; Can't Change</button>
-      <button data-tab="glossary"><span class="num">15</span>Glossary</button>
+      <button data-tab="playbook"><span class="num">14</span>The Playbook (your rulebook)</button>
+      <button data-tab="admin"><span class="num">15</span>Admin: What You Can &amp; Can't Change</button>
+      <button data-tab="glossary"><span class="num">16</span>Glossary</button>
     </nav>
   </aside>
 
@@ -647,9 +666,117 @@
       <div class="callout">
         <strong>The takeaway:</strong> a slow review shows as <em>still-working</em>; only a real, recorded problem shows as <em>failed</em>. In every case there's a <span class="ui">Retry</span> button to run it again. You'll never lose your place, and a stuck review can't silently block you.
       </div>
+
+      <div class="callout">
+        <strong>Want the mechanics?</strong> The next tab — <strong>How the AI Review Works</strong> — opens up what happens under the hood: how the document is read and mapped, what each clause checker looks for, and the AI model, confidence gate, and citation checks behind every verdict.
+      </div>
     </section>
 
-    <!-- ============ 6. REDLINES ============ -->
+    <!-- ============ 6. HOW THE AI REVIEW WORKS (under the hood) ============
+         This tab absorbs the three former in-app "Guide" explainer panels —
+         "Document" (structure / references / concepts), "Checkers" (clause
+         decision logic), and "AI Review" (method + audit fields) — rewritten
+         in the guide's plain voice so nothing from them is lost. -->
+    <section class="tab-panel" id="tab-ai-review">
+      <h2>How the AI Review Works (under the hood)</h2>
+      <p class="panel-lede">You don't need any of this to use the app — the previous tab covers everything day-to-day. This tab is for the curious (and for admins): what actually happens between clicking <span class="ui">Review</span> and seeing the verdicts. Three stages: <strong>read the document</strong>, <strong>check each clause</strong>, and <strong>the AI layer</strong> that judges the meaning.</p>
+
+      <h3>Stage 1 — Reading the document</h3>
+      <p>Before any clause is judged, the app turns your file into something it can reason about. This part is <strong>deterministic</strong> — fixed rules, no AI, the same result every time — and it runs in a fixed order:</p>
+      <ol class="steps">
+        <li><strong>Ingest</strong> — the document arrives by manual upload, from the repository, or via Gmail intake, together with its details.</li>
+        <li><strong>Extract</strong> — Word and PDF files are read into plain text plus a record for every paragraph, keeping its numbering, heading style, table position, and any attached parts.</li>
+        <li><strong>Align</strong> — each paragraph gets a stable ID, index, and position so every later decision can point back to exactly where it came from.</li>
+        <li><strong>Map the structure</strong> — the app detects <em>this</em> document's own headings, numbering, ranges, and aliases, and builds a reference index. It never assumes "Clause 4" means a fixed thing — Clause 4 or Article II means whatever this NDA actually mapped it to.</li>
+        <li><strong>Resolve references</strong> — explicit cross-references (clause, article, section, schedule, annex, appendix, and lists like "Clauses 1, 1A and 2") are linked to the sections they point at, and each is marked resolved, partial, or unresolved.</li>
+        <li><strong>Classify concepts</strong> — each paragraph is tagged with the concept it carries: confidentiality definition, confidentiality obligation, use restriction, permitted disclosure, return/destruction, survival, and carve-outs. These tags roll up to the section that owns them.</li>
+      </ol>
+      <p>Two safeguards matter here:</p>
+      <ul>
+        <li><strong>No made-up references.</strong> Headings that refer to themselves are skipped, and prose fragments like "this section introduces…" are not mistaken for a real "Section I" reference.</li>
+        <li><strong>Substance over numbers.</strong> If a survival clause says "Articles 2, 3, 4 and 5 survive," the app can check whether those articles are <em>actually</em> confidentiality provisions — rather than trusting the sentence at face value.</li>
+      </ul>
+      <div class="callout">
+        <strong>Where the line is:</strong> this whole stage is pattern-based, not AI interpretation. Reading, mapping, references, and concept tags are deterministic <em>inputs</em>. The AI semantic judgement (Stage 3) runs afterwards as a separate layer. Ambiguous phrases like "the confidentiality obligations above" are deliberately left for the AI rather than guessed by rules.
+      </div>
+
+      <h3>Stage 2 — What each clause checker looks for</h3>
+      <p>Each important clause has its own check with a clear job, its own inputs, and its own conditions for <span class="verdict pass">PASS</span>, <span class="verdict review">REVIEW</span>, or <span class="verdict fail">FAIL</span>. (FAIL is shown in the app as <strong>"Check"</strong> — the clause needs fixing.) Here's each one in plain terms:</p>
+
+      <div class="card">
+        <h4>Mutuality</h4>
+        <p><strong>Job:</strong> confirm the NDA binds <em>both</em> sides equally, not just a one-way "receiving party" model.</p>
+        <p><strong>Passes</strong> when strong reciprocal-obligation language binds both parties as disclosing <em>and</em> receiving. <strong>Goes to Review</strong> on weak signals or role definitions without real reciprocal obligations. <strong>Fails</strong> on one-way / unilateral language. A safeguard: defining both roles is <em>not</em> enough on its own to pass — it's treated as something a human should confirm.</p>
+      </div>
+      <div class="card">
+        <h4>Confidential Information</h4>
+        <p><strong>Job:</strong> confirm the definition is broad enough and doesn't add exclusions that quietly weaken protection.</p>
+        <p><strong>Passes</strong> when a broad definition covers enough required categories with no extra carve-outs. <strong>Goes to Review</strong> when coverage is broad but only implied, or when usage-right wording might weaken protection. <strong>Fails</strong> when the definition is missing, too narrow, or contains prohibited carve-outs. A safeguard: it checks whether an "independently developed" style qualification actually attaches to the carve-out before counting it.</p>
+      </div>
+      <div class="card">
+        <h4>Governing Law</h4>
+        <p><strong>Job:</strong> confirm there's a clear governing-law value and that it's one of your approved jurisdictions.</p>
+        <p><strong>Passes</strong> when the law resolves to one on your approved list. <strong>Goes to Review</strong> on placeholder, conditional, heading-only, unresolved, or conflicting wording. <strong>Fails</strong> when a clear clause names a jurisdiction you don't approve. A safeguard: an approved law mentioned <em>elsewhere</em> (for example in a party's "incorporated under the laws of…" recital) does not rescue a non-approved governing law.</p>
+      </div>
+      <div class="card">
+        <h4>Term &amp; Survival</h4>
+        <p><strong>Job:</strong> confirm ordinary confidentiality is time-limited (within your cap), while still allowing approved longer carve-outs (like trade secrets).</p>
+        <p><strong>Passes</strong> when the ordinary term/survival is fixed and within the configured cap. <strong>Goes to Review</strong> when a cross-referenced survival scope is unresolved or not clearly ordinary confidentiality. <strong>Fails</strong> when the term is missing, over the cap, or indefinite outside allowed carve-outs. A safeguard: it inspects the <em>actual resolved sections</em> a survival clause points at, not assumed article numbers — and it won't be fooled into passing by unrelated wording like "claims survive for three years."</p>
+      </div>
+      <div class="card">
+        <h4>Non-Circumvention (a prohibited clause)</h4>
+        <p><strong>Job:</strong> confirm the NDA does <em>not</em> smuggle in non-circumvention, non-solicit, direct-dealing, substitute-purpose, or exclusivity restraints.</p>
+        <p><strong>Passes</strong> when no operative restriction of that kind appears. <strong>Goes to Review</strong> on soft introduced-party / substitute-purpose / exclusivity language with no clear operative restraint. <strong>Fails</strong> when a definite restriction appears. A safeguard: lawful-circumvention references and <em>negated</em> wording (e.g. "may not include non-solicitation obligations") are correctly read as <em>not</em> a violation.</p>
+      </div>
+      <div class="card">
+        <h4>Signatures</h4>
+        <p><strong>Job:</strong> confirm there's an execution block complete enough for both sides to sign.</p>
+        <p><strong>Passes</strong> when the block appears to include both parties, titles or capacities, and dates. <strong>Fails</strong> when it's missing or incomplete. This check is kept deliberately separate from the legal-concept verdicts — it's a structural check of the signing block, not a parse of who the signatories are.</p>
+      </div>
+
+      <h3>How a clause decision is recorded (for auditors)</h3>
+      <p>Every clause result is fully traceable. If you ever need to understand exactly <em>why</em> a clause landed where it did, the decision is laid out in a fixed reading order:</p>
+      <ol>
+        <li><strong>Review state</strong> — pass, review, or check, plus whether it blocks sending.</li>
+        <li><strong>Reason code</strong> — a short machine-readable cause (e.g. <em>approved_governing_law</em>, <em>weak_mutuality_signal</em>, <em>missing_required_clause</em>) you can read before the prose.</li>
+        <li><strong>Evidence</strong> — the paragraph IDs, matched terms, and signal type behind the decision.</li>
+        <li><strong>Analysis</strong> — the clause-specific detail (for example the term/survival or governing-law analysis).</li>
+        <li><strong>Audit trace</strong> — the full path from input → evidence → classification → outputs → final decision.</li>
+      </ol>
+      <div class="callout">
+        <strong>Why so much detail?</strong> So that when an admin wants to change a rule, they can reconcile the reason code, the evidence, the analysis, and the trace first — and change the <strong>Playbook</strong>, never the engine. (See the Playbook tab.)
+      </div>
+
+      <h3>Stage 3 — The AI layer (semantic review)</h3>
+      <p>For the meaning-heavy clauses — Mutuality, Confidential Information, Governing Law, Term &amp; Survival, and Non-Circumvention — an AI reads the wording and judges it against your Playbook. (Signatures stay on the structural check above.) This is the layer that produces the verdicts you see.</p>
+      <ul>
+        <li><strong>What it's given:</strong> the clause requirements, your Playbook rules, the structure context from Stage 1, and the relevant source paragraphs.</li>
+        <li><strong>Turning it on:</strong> AI review is enabled from the Admin tab, or configured at deployment by a system administrator.</li>
+      </ul>
+      <p>Several guardrails sit around that AI judgement — they're the reason the verdicts are trustworthy:</p>
+      <div class="card tight">
+        <dl class="kv">
+          <dt>Where it runs</dt>
+          <dd>Through a secure review service. The API keys live in backend configuration and are <strong>never</strong> exposed to anything running in your browser.</dd>
+          <dt>The model</dt>
+          <dd>A capable reasoning model is used by default, and which model runs is configurable at deployment by administrators — without touching the rest of the app.</dd>
+          <dt>Confidence gate</dt>
+          <dd>Each verdict carries a confidence score. If it's below the threshold (about <strong>0.75</strong> by default), the clause is pushed to <strong>Review</strong> instead of being trusted as a pass.</dd>
+          <dt>Citation check</dt>
+          <dd>Any pass or fail on a clause that's present <strong>must</strong> quote a sentence that genuinely appears in the document. Quotes that don't match the real text are rejected.</dd>
+          <dt>Fail-closed</dt>
+          <dd>If an assessment is missing, a citation is invalid, or the provider errors, the app does the safe thing — it escalates to Review and blocks auto-send rather than waving the document through.</dd>
+          <dt>Second opinion</dt>
+          <dd>An optional verifier pass can double-check the borderline cases the first AI was unsure about.</dd>
+        </dl>
+      </div>
+      <p>The net effect is the behaviour you saw on the previous tab: <strong>every verdict is grounded in a real quote, low confidence becomes "ask a human," and anything uncertain leans toward Review rather than a confident-sounding guess.</strong></p>
+      <div class="callout">
+        <strong>One source of truth.</strong> The AI never invents its own standards. It infers, judges, and applies <em>your</em> Playbook — and works to make documents comply <em>to</em> it. Change what's acceptable by editing the Playbook, not the engine.
+      </div>
+    </section>
+
+    <!-- ============ 7. REDLINES ============ -->
     <section class="tab-panel" id="tab-redlines">
       <h2>Redlines</h2>
       <p class="panel-lede">A redline is a tracked edit — a marked-up change showing exactly what should be added, removed, or replaced. It's the standard way lawyers exchange contract changes: deletions struck through, new text underlined.</p>

@@ -8033,6 +8033,38 @@ body.modal-open {
   grid-column: 1;
 }
 
+/* ===========================================================================
+   GUIDE SURFACE = the embedded User Guide, full-bleed.
+   The whole Guide tab IS the User Guide. Its own left sidebar (the 15
+   walkthrough tabs + Glossary) is the navigation, so the app's admin-nav is
+   hidden here and the console collapses to a single column. The guide panel
+   fills the available height and the iframe fills the panel — the handbook
+   reads as one cohesive, native surface. (Admin and Playbook surfaces are
+   unaffected: these rules are scoped to data-admin-surface="guide".)
+   =========================================================================== */
+#clausesView[data-admin-surface="guide"] .admin-nav {
+  display: none;
+}
+#clausesView[data-admin-surface="guide"] .admin-console {
+  grid-template-columns: minmax(0, 1fr);
+  height: 100%;
+}
+#clausesView[data-admin-surface="guide"] .admin-section-panel {
+  grid-column: 1;
+}
+/* The guide panel itself fills the console height so the embedded handbook
+   gets the full viewport rather than a short letterbox. */
+#clausesView[data-admin-surface="guide"] #adminUserGuidePanel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+#clausesView[data-admin-surface="guide"] #adminUserGuidePanel[hidden] {
+  display: none;
+}
+
 .admin-section-panel[hidden] {
   display: none;
 }
@@ -9448,8 +9480,16 @@ label.is-hidden {
   border-bottom-left-radius: var(--r-xl);
   border-bottom-right-radius: var(--r-xl);
   display: block;
-  height: min(72vh, 900px);
   width: 100%;
+  /* In the guide surface the panel is a flex column filling the console
+     height; the iframe takes all remaining space below the header. A min
+     keeps it usable if the viewport is short. */
+  flex: 1 1 auto;
+  min-height: 480px;
+  height: min(72vh, 900px);
+}
+#clausesView[data-admin-surface="guide"] #adminUserGuidePanel > .admin-section-head {
+  flex: none;
 }
 
 .admin-section-actions {
