@@ -612,17 +612,14 @@ def clause_rules_for_ai(clause: Mapping[str, Any]) -> dict[str, Any]:
     allowed_exclusions = _allowed_exclusions_for_ai(normalized.get("allowed_exclusions"))
     if allowed_exclusions:
         packet_clause["allowed_exclusions"] = allowed_exclusions
-    # Promote the RESOLVED redline_template into the packet. The rules tell the model to
-    # "use the redline template", and the binding policy / drafting_note reference it, but
-    # the template text itself never reached the per-clause packet — so the model was told
-    # to apply a template it was never shown. Resolve it from the field the clause's own
-    # redline_guidance.template_field names (defaulting to "redline_template"), neutralize
-    # + cap it like other authored long text, and surface it as ``redline_template``. For
-    # confidential_information also surface its ``standard_exclusions_template`` (the
-    # shorter exclusion-only fix the drafting note distinguishes from the full template).
-    redline_template = _resolved_redline_template(normalized)
-    if redline_template:
-        packet_clause["redline_template"] = redline_template
+    # NOTE: the full-clause ``redline_template`` is deliberately NOT promoted into the
+    # per-clause AI packet. Feeding the model the whole restated clause led it to propose
+    # a whole-clause ``replace_paragraph`` that cannot anchor to mid-sentence PDF paragraph
+    # fragments (the redline then duplicates / fails to insert / won't render). The model
+    # instead proposes TARGETED redlines that anchor cleanly; the redline template is
+    # applied deterministically downstream (see redline_defaults / clause_outcomes), not by
+    # the AI. The shorter exclusion-only ``standard_exclusions_template`` is still surfaced
+    # below because it is a bounded carve-out fix, not a whole-clause restatement.
     standard_exclusions_template = _authored(
         normalized.get("standard_exclusions_template"), AUTHORED_LONG_TEXT_MAX_CHARS
     ).strip()
@@ -647,28 +644,6 @@ def clause_rules_for_ai(clause: Mapping[str, Any]) -> dict[str, Any]:
     if instructions:
         packet_clause["instructions"] = instructions
     return packet_clause
-
-
-def _resolved_redline_template(clause: Mapping[str, Any]) -> str:
-    """Resolve a clause's redline_template text for the per-clause AI packet.
-
-    The clause's ``rules.redline_guidance.template_field`` names which top-level clause
-    field holds the template wording (almost always ``redline_template``). Read THAT field
-    so the resolution follows the playbook's own pointer rather than hardcoding the field
-    name, and only when the guidance actually names a template_field (an option_source-only
-    remedy, e.g. governing_law, has no template). Neutralize + length-cap the text exactly
-    like other authored long text. Returns "" when there is no template to surface.
-    """
-    rules = clause.get("rules")
-    if not isinstance(rules, Mapping):
-        return ""
-    guidance = rules.get("redline_guidance")
-    if not isinstance(guidance, Mapping):
-        return ""
-    field_name = _text(guidance.get("template_field"))
-    if not field_name:
-        return ""
-    return _authored(clause.get(field_name), AUTHORED_LONG_TEXT_MAX_CHARS).strip()
 
 
 def _clause_threshold_for_ai(clause: Mapping[str, Any]) -> dict[str, Any] | None:

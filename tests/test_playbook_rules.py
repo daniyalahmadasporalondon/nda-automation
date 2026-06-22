@@ -482,22 +482,29 @@ class PlaybookRulesTests(unittest.TestCase):
                 )
 
     # ---------- Sweep: item D (structured-data promotions) ----------
-    def test_redline_template_promoted_into_packet(self):
-        # Item D1: the resolved redline_template (and CI's standard_exclusions_template)
-        # reach the per-clause AI packet for confidential_information + signatures, so the
-        # AI is actually shown the template it is told to use.
+    def test_redline_template_not_promoted_into_packet(self):
+        # REVERT of bb83ae13: the full-clause ``redline_template`` is deliberately NOT
+        # promoted into the per-clause AI packet. Feeding the model the whole restated
+        # clause made it propose a whole-clause ``replace_paragraph`` that cannot anchor to
+        # mid-sentence PDF paragraph fragments (the redline duplicates / fails to insert /
+        # won't render). The template is applied deterministically downstream, not by the
+        # AI, which proposes targeted redlines that anchor cleanly. Lock that NO clause's
+        # packet carries ``redline_template``.
         packet = playbook_rules_for_ai(deepcopy(load_playbook()))
         by = {c["clause_id"]: c for c in packet["clauses"]}
+        for clause_id, clause_packet in by.items():
+            self.assertNotIn(
+                "redline_template",
+                clause_packet,
+                f"{clause_id} packet must NOT carry the full-clause redline_template",
+            )
+        # The OTHER bb83ae13 structured promotions are KEPT: CI's bounded exclusion-only
+        # ``standard_exclusions_template`` and term_and_survival's numeric ``threshold``.
         ci = by["confidential_information"]
-        self.assertIn("redline_template", ci)
-        self.assertIn("right of publicity", ci["redline_template"])
         self.assertIn("standard_exclusions_template", ci)
         self.assertIn("does not include", ci["standard_exclusions_template"])
-        sig = by["signatures"]
-        self.assertIn("redline_template", sig)
-        self.assertIn("Title:", sig["redline_template"])
-        # A clause whose remedy is option_source-only (governing_law) has no template.
-        self.assertNotIn("redline_template", by["governing_law"])
+        term = by["term_and_survival"]
+        self.assertIn("threshold", term)
 
     def test_indefinite_non_survival_objects_promoted_into_packet(self):
         # Item D2: the 15-item indefinite_non_survival_objects polarity-guard list reaches
