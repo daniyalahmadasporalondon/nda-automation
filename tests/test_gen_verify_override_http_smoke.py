@@ -25,7 +25,7 @@ import unittest
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 
-from nda_automation import matter_store, telemetry
+from nda_automation import entity_store, matter_store, telemetry
 from nda_automation import server as server_module
 from nda_automation.checker import load_playbook
 from nda_automation.docx_text import extract_docx_text
@@ -149,10 +149,17 @@ class OverrideHttpSmoke(unittest.TestCase):
 
     def _store_patches(self, data_dir):
         data_path = server_module.Path(data_dir)
+        # Pin the signing-entity store at our own tmp path too (defence in depth):
+        # this smoke reads the entity registry through the live
+        # ``entity_store.ENTITY_STORE_PATH`` global, so a sibling test that leaks a
+        # patched path (or pollutes a shared store) would otherwise change the
+        # entity's own court/law under us. The tmp file does not exist, so the
+        # store seeds from the in-repo defaults -- the entity's true values.
         return (
             patch.object(matter_store, "DATA_DIR", data_path),
             patch.object(matter_store, "MATTERS_PATH", data_path / "matters.json"),
             patch.object(matter_store, "UPLOADS_DIR", data_path / "uploads"),
+            patch.object(entity_store, "ENTITY_STORE_PATH", data_path / "entities.json"),
         )
 
     def _request(self, method, path, body=None, headers=None):
@@ -199,7 +206,7 @@ class OverrideHttpSmoke(unittest.TestCase):
                 self.assertNotEqual(default_opt, override_opt)
                 with tempfile.TemporaryDirectory() as data_dir:
                     p = self._store_patches(data_dir)
-                    with p[0], p[1], p[2], patch.dict(os.environ, self._env()):
+                    with p[0], p[1], p[2], p[3], patch.dict(os.environ, self._env()):
                         status, payload = self._request(
                             "POST", "/api/generate-nda",
                             _fe_payload(entity_id, override_opt, overridden=True),
@@ -218,7 +225,7 @@ class OverrideHttpSmoke(unittest.TestCase):
             with self.subTest(entity_id=entity_id):
                 with tempfile.TemporaryDirectory() as data_dir:
                     p = self._store_patches(data_dir)
-                    with p[0], p[1], p[2], patch.dict(os.environ, self._env()):
+                    with p[0], p[1], p[2], p[3], patch.dict(os.environ, self._env()):
                         payload, docx = self._generate_and_fetch(
                             _fe_payload(entity_id, default_opt, overridden=False)
                         )
@@ -242,7 +249,7 @@ class OverrideHttpSmoke(unittest.TestCase):
             with self.subTest(entity_id=entity_id):
                 with tempfile.TemporaryDirectory() as data_dir:
                     p = self._store_patches(data_dir)
-                    with p[0], p[1], p[2], patch.dict(os.environ, self._env()):
+                    with p[0], p[1], p[2], p[3], patch.dict(os.environ, self._env()):
                         payload, docx = self._generate_and_fetch(
                             _fe_payload(entity_id, default_opt, overridden=False)
                         )
