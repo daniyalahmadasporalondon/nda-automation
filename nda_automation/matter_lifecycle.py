@@ -20,6 +20,98 @@ from .matter_repository import MatterRepository
 BackgroundRunner = Callable[[Callable[[], None]], None]
 MAX_REDLINE_DRAFT_ITEMS = 200
 
+# Recipient-facing disclosure for PDF-source redline sends. The attached Word
+# document is a pdf2docx RECONSTRUCTION of the counterparty's executed PDF, so its
+# layout/tables/formatting may differ from the original. The sender already sees a
+# caveat in the app; this is the SAME honest signal carried to the counterparty who
+# opens the file. Kept verbatim so tests/UI can assert on it.
+PDF_RECONSTRUCTION_RECIPIENT_CAVEAT = (
+    "Note: the attached Word document was reconstructed from a PDF and may differ "
+    "in formatting (layout, tables, spacing) from the original. The tracked changes "
+    "reflect the proposed edits; please review the wording rather than the layout."
+)
+
+
+def _prepend_reconstruction_caveat(body: str | None) -> str:
+    """Prepend the PDF-reconstruction caveat to an outgoing email body.
+
+    Additive and minimal: it only prefixes a clearly-marked disclosure line and
+    leaves the caller-supplied body intact below it. Never touches recipient,
+    subject, or any addressing/auth.
+    """
+    caveat = PDF_RECONSTRUCTION_RECIPIENT_CAVEAT
+    existing = (body or "").strip("\n")
+    if not existing:
+        return caveat
+    # Idempotent: don't double-stamp if the caveat is already present.
+    if PDF_RECONSTRUCTION_RECIPIENT_CAVEAT in existing:
+        return body or ""
+    return f"{caveat}\n\n{existing}"
+
+
+# Short cover-note stamped into the reconstructed DOCX itself so the disclosure
+# survives even if the email body is stripped/forwarded. Kept short and verbatim.
+PDF_RECONSTRUCTION_DOCX_COVER_NOTE = (
+    "RECONSTRUCTED DOCUMENT - This Word file was rebuilt from a PDF and may differ "
+    "in formatting from the original; review the wording, not the layout."
+)
+
+
+def _stamp_docx_reconstruction_notice(docx_bytes: bytes) -> bytes:
+    """Best-effort: prepend a one-line reconstruction cover note to a DOCX body.
+
+    Inserts a single paragraph as the FIRST child of ``<w:body>`` and never touches
+    existing runs (tracked-change insertions/deletions are preserved), so the
+    upstream redline-coverage gate stays satisfied. FAILS OPEN: any error returns
+    the original bytes unchanged so a disclosure failure can never block a send.
+    Only ever called for PDF-reconstruction sends.
+    """
+
+    try:
+        import io
+
+        from docx import Document  # noqa: PLC0415
+        from docx.oxml.ns import qn  # noqa: PLC0415
+        from docx.shared import Pt, RGBColor  # noqa: PLC0415
+
+        document = Document(io.BytesIO(docx_bytes))
+        body = document.element.body
+        # A fresh empty <w:p> hosting the note; placed at the top of the body so it
+        # reads as a cover line above the reconstructed content.
+        paragraph = document.add_paragraph()
+        run = paragraph.add_run(PDF_RECONSTRUCTION_DOCX_COVER_NOTE)
+        run.bold = True
+        try:
+            run.font.size = Pt(9)
+            run.font.color.rgb = RGBColor(0x99, 0x00, 0x00)
+        except Exception:
+            # Styling is cosmetic; never let it abort the stamp.
+            pass
+        note_p = paragraph._p
+        note_p.getparent().remove(note_p)
+        # Insert before the first existing block (sectPr stays last automatically).
+        first_block = None
+        for child in body:
+            if child.tag in (qn("w:p"), qn("w:tbl")):
+                first_block = child
+                break
+        if first_block is not None:
+            first_block.addprevious(note_p)
+        else:
+            sect_pr = body.find(qn("w:sectPr"))
+            if sect_pr is not None:
+                sect_pr.addprevious(note_p)
+            else:
+                body.append(note_p)
+
+        out = io.BytesIO()
+        document.save(out)
+        return out.getvalue()
+    except Exception:
+        # Fail open: the email-body caveat is the guaranteed disclosure; a DOCX
+        # stamping failure must never block or corrupt an otherwise-valid send.
+        return docx_bytes
+
 
 class MatterLifecycleError(RuntimeError):
     pass
@@ -307,8 +399,26 @@ class RepositoryMatterLifecycle:
         if matter_view.matter_needs_human_review(send_matter) and not _matter_review_block_resolved(send_matter):
             raise MatterSendBlockedError("NDA needs human review before a redline can be sent.")
 
+        # For PDF-source matters the redline is reconstructed from the PDF (the
+        # export stamps the X-PDF-DOCX-Reconstruction header), so the sent Word file
+        # is best-effort, not faithful original formatting. Determine this BEFORE the
+        # send so the recipient-facing caveat can be injected into the outgoing body.
+        # Prefer the per-export marker; fall back to the matter-source predicate.
+        reconstructed_from_pdf = bool(
+            (redline_export.headers and redline_export.headers.get("X-PDF-DOCX-Reconstruction"))
+            or source_document_policy.matter_source_is_pdf(send_matter)
+        )
+
+        # DOCX-source sends are byte- and body-unchanged; only PDF-reconstruction
+        # sends get the recipient disclosure (email body + best-effort DOCX cover note).
+        outbound_body = body
+        outbound_attachment = redline_export.data
+        if reconstructed_from_pdf:
+            outbound_body = _prepend_reconstruction_caveat(body)
+            outbound_attachment = _stamp_docx_reconstruction_notice(redline_export.data)
+
         send_kwargs = {
-            "body": body,
+            "body": outbound_body,
             "confirmed_recipient": confirmed_recipient,
             "subject": subject,
             "to": to,
@@ -317,7 +427,7 @@ class RepositoryMatterLifecycle:
             send_kwargs["owner_user_id"] = token_owner_user_id
         sent = gmail_integration.send_redline_email(
             send_matter,
-            redline_export.data,
+            outbound_attachment,
             redline_export.filename,
             **send_kwargs,
         )
@@ -333,18 +443,10 @@ class RepositoryMatterLifecycle:
         # that already succeeded.
         self._capture_sent_artifact(
             matter_id,
-            sent_bytes=redline_export.data,
+            sent_bytes=outbound_attachment,
             filename=redline_export.filename,
             recipient=str(sent.get("to") or confirmed_recipient or ""),
             owner_user_id=owner_user_id,
-        )
-        # For PDF-source matters the redline is reconstructed from the PDF (the
-        # export stamps the X-PDF-DOCX-Reconstruction header), so the sent Word file
-        # is best-effort, not faithful original formatting. Carry that caveat to the
-        # route. Prefer the per-export marker; fall back to the matter-source predicate.
-        reconstructed_from_pdf = bool(
-            (redline_export.headers and redline_export.headers.get("X-PDF-DOCX-Reconstruction"))
-            or source_document_policy.matter_source_is_pdf(send_matter)
         )
         return MatterRedlineSendResult(
             matter=updated_matter,
