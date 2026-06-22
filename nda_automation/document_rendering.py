@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -25,6 +27,8 @@ except ImportError:  # pragma: no cover - non-POSIX fallback
 from . import matter_store
 from .durable_io import fsync_parent_directory
 from .phase_observability import RENDER_PHASE_EVENT, PhaseTimer
+
+LOGGER = logging.getLogger(__name__)
 
 DOCUMENT_RENDER_CACHE_VERSION = "document-rendering:v1"
 DOCUMENT_RENDER_METADATA_VERSION = 1
@@ -1030,13 +1034,30 @@ def render_pdf_to_page_image_manifest(
             message=exc.message,
         )
     except OSError as exc:
+        # Distinguish a full/read-only/over-quota data dir (the secondary
+        # blank-page cause: an unmounted or exhausted /var/data) from a generic
+        # write failure, and log it clearly so prod can tell "disk is full" from
+        # "something else broke". A storage-exhaustion failure is operational and
+        # logged at ERROR; a generic one stays a warning.
+        disk_full = _is_storage_exhaustion_error(exc)
+        code = "page_cache_storage_exhausted" if disk_full else "page_cache_write_failed"
+        if disk_full:
+            LOGGER.error(
+                "Page image cache write failed: render storage is full/read-only/over-quota "
+                "(%s: %s) under %s; rendered pages cannot be cached and may render blank.",
+                errno.errorcode.get(exc.errno, exc.errno),
+                exc.strerror or exc,
+                cache_root,
+            )
+        else:
+            LOGGER.warning("Page image cache write failed (%s): %s", code, exc)
         result = _page_image_error_result(
             cache_key=cache_key,
             cache_dir=cache_root,
             pdf_path=pdf_path,
             manifest_path=manifest_path,
             dpi=dpi,
-            code="page_cache_write_failed",
+            code=code,
             message=f"Page image cache could not be written: {exc}",
         )
     except Exception as exc:
@@ -1540,10 +1561,49 @@ def _truncate_error_detail(detail: str, limit: int = 500) -> str:
     return detail[: limit - 3] + "..."
 
 
+# errno values that mean "the storage cannot accept this write" rather than a
+# generic IO error: no space, read-only filesystem, over disk quota. These are
+# the operational signatures of a full or unmounted /var/data.
+_STORAGE_EXHAUSTION_ERRNOS = {
+    getattr(errno, name)
+    for name in ("ENOSPC", "EROFS", "EDQUOT", "EFBIG")
+    if hasattr(errno, name)
+}
+
+
+def _is_storage_exhaustion_error(exc: OSError) -> bool:
+    return exc.errno in _STORAGE_EXHAUSTION_ERRNOS
+
+
 def _load_fitz_module() -> Any | None:
+    """Import PyMuPDF (``fitz``), logging — not swallowing — any import failure.
+
+    A page-image render that comes back blank in prod is almost always this:
+    PyMuPDF fails to LOAD in the deployed image (e.g. the [pdf,gmail,tables]
+    co-resolution lands a broken/ABI-mismatched fitz, or a shared library is
+    missing) and this import raises. Returning None silently made a BROKEN fitz
+    indistinguishable from an ABSENT one, with zero log trail — so the renderer
+    reported "unavailable" and the page came back empty with nothing to debug.
+    We now log the exact module + message (at ERROR for a genuine load failure,
+    DEBUG for a plain absence) before returning None, so the defect is
+    self-evident from prod logs. Behavior is otherwise unchanged: callers still
+    treat None as "renderer unavailable".
+    """
     try:
         import fitz  # type: ignore[import-not-found]
-    except Exception:
+    except ModuleNotFoundError as exc:
+        # PyMuPDF genuinely not installed: expected when the [pdf] extra is off.
+        LOGGER.debug("PyMuPDF/fitz is not installed: %s", exc)
+        return None
+    except Exception as exc:
+        # Installed but failed to import (ABI/shared-lib/partial-resolution).
+        # This is the silent-blank-page root cause; surface it loudly.
+        LOGGER.error(
+            "PyMuPDF/fitz is installed but failed to import (%s: %s); "
+            "PDF page-image rendering will report unavailable and pages may render blank.",
+            exc.__class__.__name__,
+            exc,
+        )
         return None
     return fitz
 

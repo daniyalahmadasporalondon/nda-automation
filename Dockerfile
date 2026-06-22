@@ -33,4 +33,13 @@ COPY playbook.json ./
 RUN python -m pip install --upgrade pip \
     && python -m pip install ".[pdf,gmail,tables]"
 
+# Build-time smoke assert: PyMuPDF (`fitz`) must actually IMPORT and be usable in
+# this exact resolved image, not merely be present. The [pdf,gmail,tables]
+# co-resolution has previously landed a broken/ABI-mismatched fitz that imported
+# fine standalone but failed in the deployed image, silently degrading PDF
+# page-image rendering to blank pages with no log trail. Failing the build here
+# converts that silent prod degradation into a loud build failure. The same guard
+# checks pdf2docx (PDF->Word reconstruction) co-imports cleanly.
+RUN python -c "import fitz; fitz.open(); import pdf2docx; print('fitz', fitz.VersionBind, 'pdf2docx ok')"
+
 CMD ["sh", "-c", "python -m nda_automation.server --host 0.0.0.0 --port ${PORT:-8787}"]
