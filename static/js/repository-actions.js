@@ -183,7 +183,22 @@ const RepositoryActions = (() => {
         }
         return;
       }
-      loadMatterIntoReview(reviewMatter);
+      // ENTRY ERROR BOUNDARY (mirrors applyCompletedReview's guarded
+      // loadMatterIntoReview): this is the common "open a matter into the review
+      // workstation" path and had no failure surface, so any throw inside the
+      // render chain bubbled up and left the workstation blank. Surface a
+      // recoverable error instead of crashing the open.
+      try {
+        loadMatterIntoReview(reviewMatter);
+      } catch (error) {
+        if (typeof renderOperationError === "function") {
+          renderOperationError(error, "NDA review could not be displayed.");
+        } else if (typeof showMatterReviewLoadError === "function") {
+          showMatterReviewLoadError("NDA review could not be displayed.");
+        } else {
+          console.error("openMatterInReview: loadMatterIntoReview failed", error);
+        }
+      }
     }
 
     async function loadMatterReview(matterId, options = {}) {

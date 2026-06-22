@@ -38,7 +38,15 @@ import {
   renderDiffOperations,
   renderInlineToken,
   needsInlineSpace,
-} from "./inline-diff.mjs";
+// Versioned specifier so a returning browser re-fetches inline-diff.mjs when its
+// bytes change (renderDiffOperations now defensively filters null/typeless ops).
+// A bare relative import resolves to a query-less URL the browser caches
+// independently of this file's ?v=, so the global-bridge token bump alone would
+// not refresh it. global-bridge.mjs is the SOLE importer of this module (every
+// FE consumer reads window.renderDiffOperations / window.renderInlineToken via
+// this bridge, never re-importing), so versioning here cannot create a duplicate
+// module instance. Keep this token in lockstep with the inline-diff.mjs bytes.
+} from "./inline-diff.mjs?v=20260622redlineresilience1";
 import { MatterUtils } from "./matter-utils.mjs?v=reviewrecovery1";
 import {
   isSupportedSendFilename,
