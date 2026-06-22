@@ -1980,6 +1980,7 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
             <label class="admin-field">
               <span>Court / forum</span>
               <input type="text" data-entity-court-jurisdiction="${index}" value="${escapeHtml(court)}" placeholder="courts in England and Wales">
+              <span class="admin-field-note" data-entity-court-note="${index}" hidden></span>
             </label>
           </article>
         `;
@@ -1988,9 +1989,44 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       if (actions) actions.hidden = false;
       setDirty(false);
       setMessage("");
-      body.querySelectorAll("[data-entity-court-law], [data-entity-court-jurisdiction]").forEach((el) => {
+      body.querySelectorAll("[data-entity-court-jurisdiction]").forEach((el) => {
         el.addEventListener("input", () => setDirty(true));
         el.addEventListener("change", () => setDirty(true));
+      });
+      // Law <-> court COUPLING: changing the governing law re-suggests the matching
+      // court so a lone law change can't trip the backend forum-reconciliation guard
+      // (HTTP 400 "forum drift") on the very first save. We only overwrite the court
+      // when the law moves the entity to a DIFFERENT jurisdiction (and only when the
+      // current court doesn't already match it), so a deliberately-specific in-
+      // jurisdiction court (e.g. "courts in Bengaluru" under India law) is preserved.
+      // An inline note tells the admin the court was updated so nothing happens
+      // silently.
+      body.querySelectorAll("[data-entity-court-law]").forEach((lawSelect) => {
+        const index = lawSelect.getAttribute("data-entity-court-law");
+        lawSelect.dataset.prevLaw = lawSelect.value;
+        lawSelect.addEventListener("change", () => {
+          setDirty(true);
+          const newLawId = lawSelect.value;
+          const prevLawId = lawSelect.dataset.prevLaw || "";
+          lawSelect.dataset.prevLaw = newLawId;
+          const courtInput = body.querySelector(`[data-entity-court-jurisdiction="${index}"]`);
+          const note = body.querySelector(`[data-entity-court-note="${index}"]`);
+          if (!courtInput) return;
+          const jurisdictionChanged = lawForumKey(newLawId) !== lawForumKey(prevLawId);
+          const suggested = suggestedCourtForLaw(newLawId);
+          if (!suggested) return;
+          // Already matches the new law's jurisdiction phrase -> leave the admin's court.
+          const currentCourt = String(courtInput.value || "").trim().toLowerCase();
+          const forumKey = lawForumKey(newLawId);
+          const alreadyMatches = forumKey && currentCourt.includes(forumKey);
+          if (jurisdictionChanged && !alreadyMatches) {
+            courtInput.value = suggested;
+            if (note) {
+              note.textContent = `Court updated to “${suggested}” to match the new governing law. Edit it if a more specific court applies.`;
+              note.hidden = false;
+            }
+          }
+        });
       });
     }
 
@@ -2030,7 +2066,9 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         const response = await fetch("/api/admin/signing-entities", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ entities }),
+          // Echo the etag from the last load so a stale snapshot (another editor
+          // saved in between) is rejected with a 409 rather than clobbering them.
+          body: JSON.stringify({ entities, etag: fetched?.etag || "" }),
         });
         if (!response.ok) {
           let detail = "Entities & courts could not be saved";
@@ -2062,8 +2100,32 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
         lawOptions: Array.isArray(payload.governing_law_options)
           ? payload.governing_law_options.filter((o) => o && o.id)
           : (lawIds.map((id) => ({ id, label: humanizeId(id) }))),
+        // Optimistic-concurrency token: echoed back on save so a stale snapshot is
+        // rejected (409) instead of silently reverting another editor's change.
+        etag: typeof payload.etag === "string" ? payload.etag : "",
       };
       render();
+    }
+
+    // The canonical court a given law option expects, for the law->court coupling.
+    // Prefers the playbook's explicit court_name; falls back to a court phrase built
+    // from the option's forum_jurisdiction (both bucket-match the law in the backend
+    // reconciliation guard). "" when neither is known (then we cannot suggest).
+    function suggestedCourtForLaw(lawId) {
+      const opt = (fetched?.lawOptions || []).find((o) => o.id === lawId);
+      if (!opt) return "";
+      const courtName = String(opt.court_name || "").trim();
+      if (courtName) return courtName;
+      const forum = String(opt.forum_jurisdiction || "").trim();
+      return forum ? `courts in ${forum}` : "";
+    }
+
+    // The jurisdiction key for a law option (used to decide whether a law change
+    // moved the entity to a DIFFERENT jurisdiction, in which case the old court is
+    // now likely mismatched and must be re-suggested rather than silently kept).
+    function lawForumKey(lawId) {
+      const opt = (fetched?.lawOptions || []).find((o) => o.id === lawId);
+      return opt ? String(opt.forum_jurisdiction || opt.id || "").trim().toLowerCase() : "";
     }
 
     async function load() {

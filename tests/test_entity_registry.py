@@ -322,7 +322,17 @@ class SigningEntitiesPayloadTests(unittest.TestCase):
             {"id": option["id"], "label": option["label"]}
             for option in governing_law["rules"]["approved_options"]
         ]
-        self.assertEqual(payload["governing_law_options"], expected_options)
+        # id+label match the playbook positions; each option ALSO carries the
+        # canonical forum pairing (court_name/forum_jurisdiction) so the Entities
+        # & Courts editor can suggest the matching court on a law change. Assert the
+        # id/label projection equals the playbook and that the forum fields exist.
+        self.assertEqual(
+            [{"id": o["id"], "label": o["label"]} for o in payload["governing_law_options"]],
+            expected_options,
+        )
+        for option in payload["governing_law_options"]:
+            self.assertIn("court_name", option)
+            self.assertIn("forum_jurisdiction", option)
         self.assertTrue(
             all(row["matches_playbook"] for row in payload["law_mapping"])
         )

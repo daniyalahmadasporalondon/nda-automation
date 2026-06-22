@@ -60,6 +60,10 @@ const AdminEntitiesView = (() => {
     let playbookAvailable = false;
     let dirty = false;
     let loaded = false;
+    // Optimistic-concurrency token from the last load; echoed on save so a stale
+    // snapshot (another editor saved in between) is rejected (409) instead of
+    // silently clobbering the other change.
+    let currentEtag = "";
     // True only while a POST is in flight ("Saving registry..."). The Save button
     // is greyed out during this window and in the not-loaded/read-only case; at
     // every other rest it is a ready PURPLE CTA (a no-pending-changes click is a
@@ -177,6 +181,7 @@ const AdminEntitiesView = (() => {
         ? payload.governing_law_options.filter((o) => o && o.id)
         : [];
       playbookAvailable = Boolean(payload.playbook_available);
+      if (typeof payload.etag === "string") currentEtag = payload.etag;
       const entities = Array.isArray(payload.entities) ? payload.entities : [];
       renderList(entities);
       if (addButton) addButton.disabled = false;
@@ -467,7 +472,9 @@ const AdminEntitiesView = (() => {
         const response = await fetch("/api/admin/signing-entities", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ entities }),
+          // Echo the etag from the last load so a stale snapshot (another editor
+          // saved in between) is rejected with a 409 rather than clobbering them.
+          body: JSON.stringify({ entities, etag: currentEtag }),
         });
         const payload = await parseOk(response, "Registry could not be saved");
         // Save persisted: clear the in-flight flag BEFORE applyWorkspace so the Save

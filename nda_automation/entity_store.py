@@ -22,6 +22,7 @@ created on demand, never touching the bundled defaults.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -150,11 +151,54 @@ def load_entities(
         return seed
 
 
+class StaleEntityStoreError(Exception):
+    """Raised when a compare-and-swap save loses to a concurrent writer.
+
+    Carries the etag the store actually holds so the caller can tell the editor
+    its snapshot is stale and it must reload before retrying.
+    """
+
+    def __init__(self, current_etag: str) -> None:
+        super().__init__(
+            "The signing-entity registry changed since this editor loaded it; "
+            "the save was rejected to avoid clobbering the other change."
+        )
+        self.current_etag = current_etag
+
+
+def compute_etag(entities: list[dict[str, Any]] | None) -> str:
+    """Return a stable content hash for an entity list (the optimistic-lock token).
+
+    The hash is over the canonical JSON of the entity list ONLY (not the snapshot
+    envelope's ``updated_at``/``updated_by``), so the etag changes exactly when the
+    entity content changes — two saves that produce byte-identical entities share an
+    etag and don't spuriously collide. ``None`` (no usable store) hashes the same as
+    an empty list so a first-run editor and an empty store agree.
+    """
+    canonical = json.dumps(
+        entities or [], sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def stored_entities_etag(store_path: Path | None = None) -> str:
+    """Return the etag of the CURRENTLY-STORED registry (under the store lock).
+
+    Used by the read path so the editor receives the token it must echo back on
+    save. Falls back to the empty-list etag when no store exists yet.
+    """
+    if store_path is None:
+        store_path = ENTITY_STORE_PATH
+    with locked_entity_store(store_path):
+        return compute_etag(_read_stored_entities(store_path))
+
+
 def save_entities(
     entities: list[dict[str, Any]],
     *,
     store_path: Path | None = None,
     actor: str = "admin",
+    expected_etag: str | None = None,
 ) -> list[dict[str, Any]]:
     """Atomically persist ``entities`` as the new live registry snapshot.
 
@@ -162,10 +206,22 @@ def save_entities(
     :mod:`nda_automation.entity_authoring`); this layer owns only durability.
     Returns the stored entities (a deep copy) so the caller cannot mutate the
     on-disk snapshot through the returned reference.
+
+    Optimistic concurrency: when ``expected_etag`` is provided, the CURRENTLY-stored
+    entities are re-read and hashed UNDER THE SAME LOCK as the write. If that etag no
+    longer matches ``expected_etag``, a concurrent editor wrote since this caller
+    loaded its snapshot, so the save is rejected with :class:`StaleEntityStoreError`
+    rather than blindly whole-file-replacing (and silently reverting the other edit).
+    ``expected_etag=None`` keeps the legacy unconditional behaviour for callers that
+    don't supply a token.
     """
     if store_path is None:
         store_path = ENTITY_STORE_PATH
     with locked_entity_store(store_path):
+        if expected_etag is not None:
+            current_etag = compute_etag(_read_stored_entities(store_path))
+            if current_etag != expected_etag:
+                raise StaleEntityStoreError(current_etag)
         snapshot = [deepcopy(entity) for entity in entities]
         _write_snapshot(snapshot, store_path=store_path, actor=actor, source="save")
         return [deepcopy(entity) for entity in snapshot]
@@ -300,6 +356,9 @@ def _write_snapshot(
 __all__ = [
     "ENTITY_STORE_PATH",
     "ENTITY_STORE_VERSION",
+    "StaleEntityStoreError",
+    "compute_etag",
+    "stored_entities_etag",
     "locked_entity_store",
     "load_entities",
     "save_entities",
