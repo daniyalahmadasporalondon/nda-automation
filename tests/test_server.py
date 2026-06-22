@@ -1762,6 +1762,83 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(checks["data_dir_persistence"]["ok"])
         self.assertTrue(checks["data_dir_persistence"]["persisted"])
 
+    # --- Non-durable-storage operational warning (Admin banner) ---------------
+    # The loud, user-facing twin of the admin-gated `data_dir_persistence` check:
+    # when storage is non-durable the operator must be told -- right where they
+    # publish a Playbook / save an entity -- that the edit reverts on redeploy.
+
+    def _operational_warning_codes(self):
+        return {w.get("code") for w in server_module.admin_routes._operational_warnings()}
+
+    def test_durability_warning_fires_on_proven_wipe(self):
+        # POSITIVE wipe evidence (NOT_PERSISTED verdict) -> the warning fires.
+        deployment_module._reset_data_dir_persistence_state_for_tests()
+        self.addCleanup(deployment_module._reset_data_dir_persistence_state_for_tests)
+        deployment_module._data_dir_persistence_state = deployment_module.DATA_DIR_NOT_PERSISTED
+        warning = deployment_module.storage_durability_warning()
+        self.assertIsNotNone(warning)
+        self.assertEqual(warning["code"], deployment_module.STORAGE_NOT_DURABLE_WARNING_CODE)
+        self.assertTrue(deployment_module.storage_is_non_durable())
+
+    def test_durability_warning_fires_on_ephemeral_data_dir_path(self):
+        # A config regression pointing NDA_DATA_DIR at an ephemeral path (/tmp) is
+        # caught deterministically by the path denylist even without a wipe verdict.
+        deployment_module._reset_data_dir_persistence_state_for_tests()
+        self.addCleanup(deployment_module._reset_data_dir_persistence_state_for_tests)
+        with patch.dict(os.environ, {"NDA_DATA_DIR": "/tmp/nda"}, clear=False):
+            with patch.object(matter_store, "DATA_DIR", server_module.Path("/tmp/nda")):
+                self.assertTrue(deployment_module.storage_is_non_durable())
+                self.assertIsNotNone(deployment_module.storage_durability_warning())
+
+    def test_durability_warning_absent_when_persisted(self):
+        # POSITIVE durability proof + a non-ephemeral data dir -> NO warning.
+        deployment_module._reset_data_dir_persistence_state_for_tests()
+        self.addCleanup(deployment_module._reset_data_dir_persistence_state_for_tests)
+        deployment_module._data_dir_persistence_state = deployment_module.DATA_DIR_PERSISTED
+        with patch.dict(os.environ, {"NDA_DATA_DIR": "/var/data"}, clear=False):
+            with patch.object(matter_store, "DATA_DIR", server_module.Path("/var/data")):
+                self.assertFalse(deployment_module.storage_is_non_durable())
+                self.assertIsNone(deployment_module.storage_durability_warning())
+
+    def test_durability_warning_absent_on_first_boot_unknown(self):
+        # FALSE-POSITIVE GUARD: a genuine first boot (advisory unknown) on a healthy
+        # durable (non-ephemeral) disk must NOT raise the loud warning.
+        deployment_module._reset_data_dir_persistence_state_for_tests()
+        self.addCleanup(deployment_module._reset_data_dir_persistence_state_for_tests)
+        # state is UNKNOWN after reset
+        with patch.dict(os.environ, {"NDA_DATA_DIR": "/var/data"}, clear=False):
+            with patch.object(matter_store, "DATA_DIR", server_module.Path("/var/data")):
+                self.assertFalse(deployment_module.storage_is_non_durable())
+                self.assertIsNone(deployment_module.storage_durability_warning())
+
+    def test_durability_warning_absent_in_local_dev_without_data_dir(self):
+        # No NDA_DATA_DIR (local dev) -> nothing fires.
+        deployment_module._reset_data_dir_persistence_state_for_tests()
+        self.addCleanup(deployment_module._reset_data_dir_persistence_state_for_tests)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("NDA_DATA_DIR", None)
+            self.assertFalse(deployment_module.storage_is_non_durable())
+            self.assertIsNone(deployment_module.storage_durability_warning())
+
+    def test_operational_warnings_include_durability_code_when_non_durable(self):
+        # End-to-end through the prominent _operational_warnings() Admin banner hook.
+        # Patch the durability helper so the composition is what's under test (not the
+        # verdict plumbing, covered above) and app_settings keeps using the temp dir.
+        durable = {
+            "code": deployment_module.STORAGE_NOT_DURABLE_WARNING_CODE,
+            "message": deployment_module.STORAGE_NOT_DURABLE_WARNING_MESSAGE,
+        }
+        with patch.object(server_module.admin_routes, "storage_durability_warning", return_value=durable):
+            codes = self._operational_warning_codes()
+        self.assertIn(deployment_module.STORAGE_NOT_DURABLE_WARNING_CODE, codes)
+
+    def test_operational_warnings_omit_durability_code_when_durable(self):
+        # Helper returns None (durable/unknown/local) -> the warning is absent from the
+        # banner, and the rest of the warnings plumbing is unaffected.
+        with patch.object(server_module.admin_routes, "storage_durability_warning", return_value=None):
+            codes = self._operational_warning_codes()
+        self.assertNotIn(deployment_module.STORAGE_NOT_DURABLE_WARNING_CODE, codes)
+
     def test_text_review_rejects_bad_json(self):
         status, payload = self.request(
             "POST",
@@ -5614,12 +5691,14 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(initial_status, 200)
         self.assertEqual(initial_payload["active_review_engine"]["active_engine"], "ai_first")
         self.assertEqual(initial_payload["active_review_engine"]["engine_source"], "default")
-        self.assertEqual(initial_payload["operational_warnings"][0]["code"], "ai_first_without_key")
+        # Membership (not index 0): under the ephemeral test data dir the
+        # storage_not_durable warning also fires, so assert presence robustly.
+        self.assertIn("ai_first_without_key", [w["code"] for w in initial_payload["operational_warnings"]])
         self.assertEqual(initial_payload["settings_audit"], [])
         self.assertEqual(runtime_status, 200)
         self.assertEqual(runtime_payload["active_review_engine"]["active_engine"], "ai_first")
         self.assertEqual(runtime_payload["active_review_engine"]["engine_source"], "runtime_settings")
-        self.assertEqual(runtime_payload["operational_warnings"][0]["code"], "ai_first_without_key")
+        self.assertIn("ai_first_without_key", [w["code"] for w in runtime_payload["operational_warnings"]])
         self.assertEqual(runtime_payload["settings_audit"][0]["action"], "admin_settings_update")
         self.assertEqual(
             [change["setting"] for change in runtime_payload["settings_audit"][0]["changes"]],

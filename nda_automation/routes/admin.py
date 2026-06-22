@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 
 from .. import ai_review, ai_verifier, app_settings, telemetry
-from ..deployment import _deployment_status_for_host
+from ..deployment import _deployment_status_for_host, storage_durability_warning
 from ..matter_repository import DiskMatterRepository, MatterRepositoryError
 from ..review_engine import (
     REVIEW_ENGINE_AI_FIRST,
@@ -641,6 +641,13 @@ def _record_admin_audit(action: str, *, actor: str, email: str) -> None:
 
 def _operational_warnings() -> list[dict[str, str]]:
     warnings: list[dict[str, str]] = []
+    # Non-durable-storage warning FIRST: it is the most consequential (every
+    # publish/entity save silently reverts on the next redeploy), so it leads the
+    # operator's attention. Fires only on POSITIVE non-durability evidence (a proven
+    # wipe or an ephemeral NDA_DATA_DIR path), never on a healthy fresh deploy.
+    durability_warning = storage_durability_warning()
+    if durability_warning is not None:
+        warnings.append(durability_warning)
     ai_status = ai_review.ai_review_status()
     verifier_status = ai_verifier.verifier_status()
     runtime_status = active_review_engine_status()
