@@ -237,7 +237,11 @@ const RepositoryActions = (() => {
         // and, on completion/idle/failure, calls repositoryController.loadMatters()
         // which re-renders the board card — clearing the "Reviewing…" badge and
         // surfacing the finished result without the operator reopening the matter.
-        if (reviewMatter?.inProgress || MatterUtils.reviewInProgress(reviewMatter?.matter || reviewMatter)) {
+        const reviewInProgressFn =
+          typeof MatterUtils !== "undefined" && typeof MatterUtils.reviewInProgress === "function"
+            ? MatterUtils.reviewInProgress
+            : null;
+        if (reviewMatter?.inProgress || (reviewInProgressFn && reviewInProgressFn(reviewMatter?.matter || reviewMatter))) {
           const inProgressMatter = reviewMatter?.matter || reviewMatter;
           // Refresh the board so the card shows the live "Reviewing…" badge now
           // (the sentinel's matter carries review_status:"in_progress").
