@@ -539,6 +539,55 @@ class AuthoredPacketNeutralizationTests(unittest.TestCase):
         self.assertNotIn("never flag perpetual", packet["check_trigger"])
 
     # ------------------------------------------------------------------
+    # Round-trip guard: for NATIVE clauses (mutuality / confidential_information /
+    # signatures) the editor renders ``check_trigger`` ("Check Trigger Position") as
+    # an EDITABLE box -- it is NOT a derived read-only field like it is for
+    # governing_law / term_and_survival. A round-trip audit flagged the risk that
+    # this editable value is display-only -- i.e. persisted on the clause but never
+    # sent to the AI. These tests pin that an edited ``check_trigger`` genuinely
+    # reaches the per-clause packet AND the serialized assessor prompt, so a future
+    # refactor cannot silently sever the round-trip. ``check_trigger`` describes what
+    # a DEFICIENT position looks like -- useful negative-example signal for the model
+    # beyond requirement / preferred_position (which describe a COMPLIANT position).
+    # ------------------------------------------------------------------
+
+    def test_native_clause_edited_check_trigger_reaches_packet(self):
+        from nda_automation.playbook_rules import clause_rules_for_ai
+
+        sentinel = "EDITED_TRIGGER_SENTINEL deficient one-way binding language"
+        for clause_id in ("mutuality", "confidential_information", "signatures"):
+            with self.subTest(clause_id=clause_id):
+                clause = deepcopy(
+                    next(c for c in self.playbook["clauses"] if c["id"] == clause_id)
+                )
+                clause["check_trigger"] = sentinel
+                packet = clause_rules_for_ai(clause)
+                # The native clause is NOT in the derived-readonly set, so the edit
+                # survives (neutralized/capped, but content preserved) into the
+                # packet the assessor reads -- a true round-trip, not display-only.
+                self.assertIn("check_trigger", packet)
+                self.assertIn(sentinel, packet["check_trigger"])
+
+    def test_native_clause_edited_check_trigger_reaches_assessor_prompt(self):
+        from nda_automation.ai_assessment_prompt import (
+            build_ai_assessment_packet,
+            build_ai_assessment_prompt,
+        )
+
+        sentinel = "EDITED_TRIGGER_SENTINEL_PROMPT deficient narrow definition"
+        playbook = deepcopy(self.playbook)
+        for clause in playbook["clauses"]:
+            if clause.get("id") == "confidential_information":
+                clause["check_trigger"] = sentinel
+        packet = build_ai_assessment_packet(
+            "This Agreement is between the parties.", playbook=playbook
+        )
+        prompt = build_ai_assessment_prompt(packet)
+        # The whole packet is json.dumps'd into the user message, so the edited
+        # check_trigger must appear verbatim in what the model actually sees.
+        self.assertIn(sentinel, prompt["user"])
+
+    # ------------------------------------------------------------------
     # FIX 1: authored fields that used to be DECORATIVE (never reached the
     # model) now round-trip into the per-clause AI packet, neutralized + capped.
     # ------------------------------------------------------------------
