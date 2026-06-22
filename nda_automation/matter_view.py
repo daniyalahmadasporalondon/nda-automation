@@ -312,7 +312,7 @@ def public_matter(
         ):
             public.pop(_requirement_key, None)
     # Async-review lifecycle status (review_status / review_error / review_started_at)
-    # with the 300s in_progress TTL override applied on read, so the board poll
+    # with the 600s in_progress TTL override applied on read, so the board poll
     # carries live progress for the async AI review without the route blocking.
     public.update(review_status_fields(matter))
     # The canonical workflow state (phase/status/next_action/human_gate/

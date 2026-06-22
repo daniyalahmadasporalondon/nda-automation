@@ -155,7 +155,7 @@ DEFAULT_GMAIL_SETTINGS = {
     # Per-poll NEW-work import limit. 0 (unset) => fall back to the env default.
     "import_limit": GMAIL_IMPORT_LIMIT_UNSET,
     # How far back (in days) the inbound fetch scans. Feeds the query's
-    # ``newer_than:{N}d`` clause; clamped to [1, 365], defaults to 90.
+    # ``newer_than:{N}d`` clause; clamped to [1, 3650], defaults to 90.
     "inbound_window_days": DEFAULT_GMAIL_INBOUND_WINDOW_DAYS,
     "intake_playbook": "",
     "last_sync_at": "",

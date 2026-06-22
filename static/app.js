@@ -1528,12 +1528,13 @@ function activateTab(tabName) {
     }
   }
   if (tabName === "guide") {
+    // The entire Guide tab IS the embedded User Guide. Its own sidebar (the
+    // 15 walkthrough tabs + Glossary) is the navigation, so there is a single
+    // guide section — "user_guide" — that renders the full-bleed handbook.
+    // The old Document / Checkers / AI Review explainers were folded into the
+    // guide's own tabs and no longer have admin-nav entries.
     activateAdminSurface("guide");
-    if (!["document", "checkers", "ai_guide"].includes(activeAdminSection())) {
-      activateAdminSection("document");
-    } else {
-      activateAdminSection(activeAdminSection());
-    }
+    activateAdminSection("user_guide");
   }
 }
 

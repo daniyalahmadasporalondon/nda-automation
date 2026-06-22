@@ -54,7 +54,7 @@ const REVIEW_REFRESH_STILL_WORKING_MESSAGE =
 //   completed   -> stop, load the now-current matter + render results, re-enable
 //   failed      -> stop, show review_error + a Retry button
 //   idle        -> stop, "Review is current"
-// A hard TTL (~300s) stops a poll whose worker crashed without recording failure.
+// A hard TTL (~600s) stops a poll whose worker crashed without recording failure.
 // ---------------------------------------------------------------------------
 
 // The single in-flight poll. Null when no background review is being tracked.
