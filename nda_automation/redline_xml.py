@@ -1091,6 +1091,9 @@ def _deleted_run(text: str) -> str:
 _QUOTE_CHARS = "\"'“”‘’"
 _CLOSING_PUNCT_RE = re.compile(rf"^[,.;:!?%)\]{_QUOTE_CHARS}]$")
 _OPENING_BEFORE_RE = re.compile(rf"^[(\[{_QUOTE_CHARS}]$")
+# A word/URL token starts with a letter or digit (mirrors the tokenizer's word and
+# number classes). Used below to recognise the second half of a dotted abbreviation.
+_WORD_TOKEN_RE = re.compile(r"^[^\W_]|^\d")
 
 
 def _needs_inline_space(previous_token: str, token: str) -> bool:
@@ -1107,6 +1110,23 @@ def _needs_inline_space(previous_token: str, token: str) -> bool:
     if _OPENING_BEFORE_RE.match(previous_core):
         return False
     if re.match(r"^[$£€#@]$", previous_core) and re.match(r"^\d", token_core):
+        return False
+    # Email addresses: never split a word from an '@' or an '@' from a word.
+    # 'legal@discloser.com' tokenizes as ['legal','@','discloser', ...]; the source
+    # had no whitespace at either boundary, so suppressing the heuristic keeps it
+    # intact (a real ' @ ' in the source carries its own spacing and bails above).
+    if token_core == "@" or previous_core == "@":
+        return False
+    # URL path separators: 'https://example.com/policy' tokenizes the slashes as
+    # bare '/' tokens between word/URL pieces. No source whitespace surrounds them,
+    # so neither '<word>/' nor '/<word>' should gain a space.
+    if token_core == "/" or previous_core == "/":
+        return False
+    # Dotted abbreviations: a '.' directly followed by a word token with NO source
+    # whitespace ('U.S.', 'e.g.', 'i.e.') must stay tight. A real sentence boundary
+    # ('end. Next') carries its space on the following token and bails at the
+    # leading-whitespace check above, so normal sentence spacing is preserved.
+    if previous_core == "." and _WORD_TOKEN_RE.match(token_core):
         return False
     return True
 

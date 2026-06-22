@@ -123,6 +123,78 @@ class InlineSpacingTests(unittest.TestCase):
         self.assertTrue(redline_xml._needs_inline_space("Confidential", "Information"))
 
 
+class ReplaceSpacingCorruptionTests(unittest.TestCase):
+    """The word-level REPLACE path must not inject spurious spaces into emails,
+    URLs, or dotted abbreviations -- even in the UNCHANGED part of a clause.
+
+    Regression for the accept-all corruption where 'legal@discloser.com' exported
+    as 'legal @ discloser. com', 'https://example.com/policy' as
+    'https: / / example. com / policy', and 'U.S. federal law' as 'U. S. federal
+    law'. Real sentence spacing ('end. Next') must still be preserved.
+    """
+
+    def _accepted_text(self, original, replacement):
+        # Run the PRIMARY AI + governing-law replace path and read back the text a
+        # reviewer sees after Accept All (insertions + unchanged runs, no deletions).
+        paragraph_xml, _next = redline_xml._tracked_replace_paragraph(original, replacement, 1)
+        paragraph = _parse(paragraph_xml)
+        # Accepted = insertions + unchanged runs; skip <del> (deleted) subtrees.
+        accepted = []
+        for run_parent in paragraph:
+            ptag = run_parent.tag.split("}")[-1]
+            if ptag == "del":
+                continue
+            for t in run_parent.iter(_w_tag("t")):
+                accepted.append(t.text or "")
+        return "".join(accepted)
+
+    def test_email_address_round_trips_without_spurious_spaces(self):
+        self.assertEqual(
+            self._accepted_text("Contact legal@discloser.com today", "Contact legal@discloser.com now"),
+            "Contact legal@discloser.com now",
+        )
+
+    def test_url_round_trips_without_spurious_spaces(self):
+        self.assertEqual(
+            self._accepted_text("See https://example.com/policy here", "See https://example.com/policy there"),
+            "See https://example.com/policy there",
+        )
+
+    def test_dotted_abbreviation_round_trips_without_spurious_spaces(self):
+        self.assertEqual(
+            self._accepted_text("Under U.S. federal law old", "Under U.S. federal law new"),
+            "Under U.S. federal law new",
+        )
+
+    def test_eg_abbreviation_round_trips_without_spurious_spaces(self):
+        self.assertEqual(
+            self._accepted_text("For e.g. data old", "For e.g. data new"),
+            "For e.g. data new",
+        )
+
+    def test_normal_sentence_spacing_is_preserved(self):
+        # A real sentence boundary keeps its space (the following token carries it);
+        # the dotted-abbreviation rule must not regress this.
+        self.assertEqual(
+            self._accepted_text("end. Next sentence old", "end. Next sentence new"),
+            "end. Next sentence new",
+        )
+
+    def test_new_no_space_rules_at_the_predicate_level(self):
+        nspace = redline_xml._needs_inline_space
+        # @ hugs both sides (emails).
+        self.assertFalse(nspace("legal", "@"))
+        self.assertFalse(nspace("@", "discloser"))
+        # / hugs both sides (URL path separators).
+        self.assertFalse(nspace("example", "/"))
+        self.assertFalse(nspace("/", "policy"))
+        # '.' followed by a word with no source space (dotted abbreviation) hugs.
+        self.assertFalse(nspace(".", "S"))
+        self.assertFalse(nspace(".", "com"))
+        # But a real sentence boundary (space carried on the next token) still spaces.
+        self.assertFalse(nspace(".", " Next"))  # space already present -> no EXTRA space
+
+
 class RunVertAlignTests(unittest.TestCase):
     """The serializer applies a run-scope ``vertAlign`` op (Superscript/Subscript)
     as ``<w:vertAlign w:val="superscript|subscript">`` and clears it on unset."""

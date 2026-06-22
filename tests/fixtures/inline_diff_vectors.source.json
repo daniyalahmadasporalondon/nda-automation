@@ -41,6 +41,41 @@
         "previous_token": "café",
         "token": "records",
         "needs_space": true
+      },
+      {
+        "previous_token": "legal",
+        "token": "@",
+        "needs_space": false
+      },
+      {
+        "previous_token": "@",
+        "token": "discloser",
+        "needs_space": false
+      },
+      {
+        "previous_token": "example",
+        "token": "/",
+        "needs_space": false
+      },
+      {
+        "previous_token": "/",
+        "token": "policy",
+        "needs_space": false
+      },
+      {
+        "previous_token": ".",
+        "token": "S",
+        "needs_space": false
+      },
+      {
+        "previous_token": ".",
+        "token": "com",
+        "needs_space": false
+      },
+      {
+        "previous_token": ".",
+        "token": " Next",
+        "needs_space": false
       }
     ]
   },
@@ -459,6 +494,218 @@
       {
         "type": "same",
         "token": "."
+      }
+    ]
+  },
+  {
+    "name": "email round-trip",
+    "original": "Contact legal@discloser.com today",
+    "replacement": "Contact legal@discloser.com now",
+    "rendered_html": "Contact legal@discloser.com<span class=\"inline-del\"> today</span><span class=\"inline-ins\"> now</span>",
+    "operations": [
+      {
+        "type": "same",
+        "token": "Contact"
+      },
+      {
+        "type": "same",
+        "token": " legal"
+      },
+      {
+        "type": "same",
+        "token": "@"
+      },
+      {
+        "type": "same",
+        "token": "discloser"
+      },
+      {
+        "type": "same",
+        "token": "."
+      },
+      {
+        "type": "same",
+        "token": "com"
+      },
+      {
+        "type": "delete",
+        "token": " today"
+      },
+      {
+        "type": "insert",
+        "token": " now"
+      }
+    ]
+  },
+  {
+    "name": "url round-trip",
+    "original": "See https://example.com/policy here",
+    "replacement": "See https://example.com/policy there",
+    "rendered_html": "See https://example.com/policy<span class=\"inline-del\"> here</span><span class=\"inline-ins\"> there</span>",
+    "operations": [
+      {
+        "type": "same",
+        "token": "See"
+      },
+      {
+        "type": "same",
+        "token": " https"
+      },
+      {
+        "type": "same",
+        "token": ":"
+      },
+      {
+        "type": "same",
+        "token": "/"
+      },
+      {
+        "type": "same",
+        "token": "/"
+      },
+      {
+        "type": "same",
+        "token": "example"
+      },
+      {
+        "type": "same",
+        "token": "."
+      },
+      {
+        "type": "same",
+        "token": "com"
+      },
+      {
+        "type": "same",
+        "token": "/"
+      },
+      {
+        "type": "same",
+        "token": "policy"
+      },
+      {
+        "type": "delete",
+        "token": " here"
+      },
+      {
+        "type": "insert",
+        "token": " there"
+      }
+    ]
+  },
+  {
+    "name": "dotted abbreviation round-trip",
+    "original": "Under U.S. federal law old",
+    "replacement": "Under U.S. federal law new",
+    "rendered_html": "Under U.S. federal law<span class=\"inline-del\"> old</span><span class=\"inline-ins\"> new</span>",
+    "operations": [
+      {
+        "type": "same",
+        "token": "Under"
+      },
+      {
+        "type": "same",
+        "token": " U"
+      },
+      {
+        "type": "same",
+        "token": "."
+      },
+      {
+        "type": "same",
+        "token": "S"
+      },
+      {
+        "type": "same",
+        "token": "."
+      },
+      {
+        "type": "same",
+        "token": " federal"
+      },
+      {
+        "type": "same",
+        "token": " law"
+      },
+      {
+        "type": "delete",
+        "token": " old"
+      },
+      {
+        "type": "insert",
+        "token": " new"
+      }
+    ]
+  },
+  {
+    "name": "eg abbreviation round-trip",
+    "original": "For e.g. data old",
+    "replacement": "For e.g. data new",
+    "rendered_html": "For e.g. data<span class=\"inline-del\"> old</span><span class=\"inline-ins\"> new</span>",
+    "operations": [
+      {
+        "type": "same",
+        "token": "For"
+      },
+      {
+        "type": "same",
+        "token": " e"
+      },
+      {
+        "type": "same",
+        "token": "."
+      },
+      {
+        "type": "same",
+        "token": "g"
+      },
+      {
+        "type": "same",
+        "token": "."
+      },
+      {
+        "type": "same",
+        "token": " data"
+      },
+      {
+        "type": "delete",
+        "token": " old"
+      },
+      {
+        "type": "insert",
+        "token": " new"
+      }
+    ]
+  },
+  {
+    "name": "sentence boundary preserved",
+    "original": "end. Next sentence old",
+    "replacement": "end. Next sentence new",
+    "rendered_html": "end. Next sentence<span class=\"inline-del\"> old</span><span class=\"inline-ins\"> new</span>",
+    "operations": [
+      {
+        "type": "same",
+        "token": "end"
+      },
+      {
+        "type": "same",
+        "token": "."
+      },
+      {
+        "type": "same",
+        "token": " Next"
+      },
+      {
+        "type": "same",
+        "token": " sentence"
+      },
+      {
+        "type": "delete",
+        "token": " old"
+      },
+      {
+        "type": "insert",
+        "token": " new"
       }
     ]
   },
