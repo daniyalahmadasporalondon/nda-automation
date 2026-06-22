@@ -5472,10 +5472,14 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(initial_payload["personalisation"], app_settings.DEFAULT_PERSONALISATION_SETTINGS)
         self.assertEqual(initial_payload["defaults"], app_settings.DEFAULT_PERSONALISATION_SETTINGS)
         self.assertEqual(update_status, 200)
+        # The blank SEPARATOR line between the sign-off and the name MUST survive
+        # the round trip -- this block is used verbatim on every outbound NDA
+        # email, and admins author normal multi-block signatures. (Regression:
+        # the cleaner used to drop every empty line and flatten the spacing.)
         self.assertEqual(update_payload["personalisation"], {
             "sign_off": "Warm regards,",
             "signature": "Daniyal Ahmad",
-            "signature_block": "Warm regards,\nDaniyal Ahmad\nAspora Legal",
+            "signature_block": "Warm regards,\n\nDaniyal Ahmad\nAspora Legal",
         })
         self.assertEqual(update_payload["defaults"], app_settings.DEFAULT_PERSONALISATION_SETTINGS)
         self.assertEqual(persisted, update_payload["personalisation"])
@@ -5488,6 +5492,55 @@ class ServerTests(unittest.TestCase):
                 "personalisation.signature_block",
             ],
         )
+
+    def test_signature_block_blank_separator_line_round_trips(self):
+        # P0 regression: a normal multi-block email signature has a blank line
+        # between the sign-off and the name. That blank separator must survive a
+        # full save -> reload, because the stored block is pasted verbatim into
+        # every outbound NDA email. The cleaner used to drop every empty line.
+        canonical = "Best,\n\nDaniyal Ahmad\nAspora"
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                save_status, save_payload = self.request(
+                    "POST",
+                    "/api/admin/personalisation-settings",
+                    {"signature_block": canonical},
+                )
+                reload_status, reload_payload = self.request(
+                    "GET", "/api/admin/personalisation-settings"
+                )
+                persisted = app_settings.personalisation_settings()
+
+        self.assertEqual(save_status, 200)
+        self.assertEqual(save_payload["personalisation"]["signature_block"], canonical)
+        self.assertIn("\n\n", save_payload["personalisation"]["signature_block"])
+        # Reload from the store returns the same block, blank line intact.
+        self.assertEqual(reload_status, 200)
+        self.assertEqual(reload_payload["personalisation"]["signature_block"], canonical)
+        self.assertEqual(persisted["signature_block"], canonical)
+
+    def test_clean_signature_block_preserves_structure_and_tidies(self):
+        # Direct cleaner unit coverage: keep single separators, trim leading and
+        # trailing blank lines, collapse 3+ blank-line runs to one, collapse
+        # intra-line whitespace and strip trailing spaces -- single-line fields
+        # stay fully flattened.
+        clean = app_settings._clean_personalisation_setting
+        self.assertEqual(
+            clean("signature_block", "Best,\n\nDaniyal Ahmad\nAspora"),
+            "Best,\n\nDaniyal Ahmad\nAspora",
+        )
+        self.assertEqual(
+            clean("signature_block", "\n\nBest,\n\n\n\nDaniyal\n\n"),
+            "Best,\n\nDaniyal",
+        )
+        self.assertEqual(
+            clean("signature_block", "Best,   sir   \n\nDaniyal\t\tAhmad   "),
+            "Best, sir\n\nDaniyal Ahmad",
+        )
+        # Single-line fields remain whitespace-collapsed (unchanged behaviour).
+        self.assertEqual(clean("sign_off", "  Best,   regards  "), "Best, regards")
+        self.assertEqual(clean("signature", "Daniyal\n\nAhmad"), "Daniyal Ahmad")
 
     def test_personalisation_settings_endpoint_rejects_invalid_payloads(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -5540,7 +5593,7 @@ class ServerTests(unittest.TestCase):
                         {
                             "sign_off": "  Kind regards,  ",
                             "signature": "User A",
-                            "signature_block": "Kind regards,\r\nUser A\nLegal",
+                            "signature_block": "Kind regards,\r\n\r\nUser A\nLegal",
                         },
                         headers=session_headers,
                     )
@@ -5563,7 +5616,7 @@ class ServerTests(unittest.TestCase):
             {
                 "sign_off": "Kind regards,",
                 "signature": "User A",
-                "signature_block": "Kind regards,\nUser A\nLegal",
+                "signature_block": "Kind regards,\n\nUser A\nLegal",
             },
         )
         # Read back: their own saved override, persisted to disk under their id.

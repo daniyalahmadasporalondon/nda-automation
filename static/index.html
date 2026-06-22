@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260622textselect2">
+    <link rel="stylesheet" href="/static/styles.css?v=20260622sigblock1">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260621felayout1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260619onboard1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
@@ -1875,7 +1875,8 @@
                     </label>
                     <label class="personalisation-field personalisation-field-wide" for="adminSignatureBlockInput">
                       <span>Signature Block</span>
-                      <textarea id="adminSignatureBlockInput" name="signature_block" rows="5" placeholder="Best,&#10;Aspora Legal"></textarea>
+                      <textarea id="adminSignatureBlockInput" name="signature_block" rows="5" maxlength="1000" placeholder="Best,&#10;Aspora Legal"></textarea>
+                      <small class="personalisation-hint">Blank lines between blocks are kept. Up to 1000 characters.</small>
                     </label>
                     <div class="personalisation-actions">
                       <p id="adminPersonalisationMessage">Checking personalisation settings</p>
@@ -1918,7 +1919,8 @@
                       </label>
                       <label class="personalisation-field personalisation-field-wide" for="adminGlobalSignatureBlockInput">
                         <span>Signature Block</span>
-                        <textarea id="adminGlobalSignatureBlockInput" name="signature_block" rows="5" placeholder="Best,&#10;Aspora Legal"></textarea>
+                        <textarea id="adminGlobalSignatureBlockInput" name="signature_block" rows="5" maxlength="1000" placeholder="Best,&#10;Aspora Legal"></textarea>
+                        <small class="personalisation-hint">Blank lines between blocks are kept. Up to 1000 characters.</small>
                       </label>
                       <div class="personalisation-actions">
                         <p id="adminGlobalPersonalisationMessage">Checking personalisation settings</p>
