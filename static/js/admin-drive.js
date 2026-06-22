@@ -42,6 +42,9 @@ const AdminDriveView = (() => {
     drivePickerNewCancel,
     drivePickerNewError,
     reviewErrorFromPayload,
+    // Injected from app.js -> notificationsController.notifySuccess so a finished
+    // folder save flashes the ONE green success toast. No-op in the Node harness.
+    notifySuccess,
   }) {
     driveRefreshButton?.addEventListener("click", load);
     driveEnabledToggle?.addEventListener("click", updateDriveEnabled);
@@ -142,9 +145,17 @@ const AdminDriveView = (() => {
         const payload = await window.AuthExpired.parseOkJson(response, "Drive folder could not save", reviewErrorFromPayload);
         applyDriveSettings(payload.drive || {});
         setOverall("Saved", "ready");
+        // SUCCESS: flash the transient green toast; the inline fact settles to a
+        // neutral resting line that describes the persisted folder behaviour.
+        const subtitle = folderId
+          ? "Per-NDA subfolders are created inside it"
+          : "An \"NDAs\" folder is created in My Drive";
         setFact("folder-message", folderId
-          ? "NDAs root folder verified and saved. Per-NDA subfolders are created inside it."
-          : "Cleared the root folder. An \"NDAs\" folder is created in My Drive.");
+          ? "Per-NDA subfolders are created inside the root folder."
+          : "An \"NDAs\" folder is created in My Drive.");
+        if (typeof notifySuccess === "function") {
+          notifySuccess("Drive folder saved", subtitle);
+        }
       } catch (error) {
         // The 400 carries the specific reason (folder not found / not a folder / no
         // write permission / Drive auth expired). Surface it inline on the Save action

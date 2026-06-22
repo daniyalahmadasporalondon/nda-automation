@@ -13,6 +13,10 @@ const AdminAiView = (() => {
     aiOverall,
     aiRefreshButton,
     reviewErrorFromPayload,
+    // Injected from app.js -> notificationsController.notifySuccess so a finished
+    // save flashes the ONE green success toast (same machinery as the registry
+    // save). A no-op in the Node test harness, which never passes it.
+    notifySuccess,
   }) {
     aiRefreshButton?.addEventListener("click", load);
     aiKeyForm?.addEventListener("submit", saveAiKey);
@@ -73,12 +77,12 @@ const AdminAiView = (() => {
         if (aiApiKeyInput) aiApiKeyInput.value = "";
         renderAiFromPayload(payload);
         const enabledNow = payload.ai_review?.enabled === true;
-        setFact(
-          "key-message",
-          enabledNow
-            ? "AI key verified and saved. AI is on."
-            : "AI key verified and saved.",
-        );
+        // SUCCESS: flash the transient green toast (replaced the lingering inline
+        // green confirmation). The inline fact settles to a neutral resting line.
+        setFact("key-message", enabledNow ? "AI key is saved and AI is on." : "AI key is saved.");
+        if (typeof notifySuccess === "function") {
+          notifySuccess("AI key saved", "AI is ready to review");
+        }
       } catch (error) {
         setOverall(error.message || "Save failed", "blocked");
         setFact("key-message", error.message || "AI key could not save");
@@ -95,9 +99,17 @@ const AdminAiView = (() => {
         const response = await fetch("/api/ai/api-key", { method: "DELETE" });
         const payload = await window.AuthExpired.parseOkJson(response, "Saved AI key could not clear", reviewErrorFromPayload);
         renderAiFromPayload(payload);
-        setFact("key-message", payload.ai_review?.api_key_source === "environment"
+        // SUCCESS: toast it; the inline fact settles to the neutral resting state.
+        const envStillSet = payload.ai_review?.api_key_source === "environment";
+        const subtitle = envStillSet
+          ? "The backend environment key is still configured"
+          : "No local key is stored";
+        setFact("key-message", envStillSet
           ? "Local key cleared. The backend environment key is still configured."
-          : "Saved local key cleared.");
+          : "No local key is stored.");
+        if (typeof notifySuccess === "function") {
+          notifySuccess("Local key cleared", subtitle);
+        }
       } catch (error) {
         setOverall(error.message || "Clear failed", "blocked");
         setFact("key-message", error.message || "Saved AI key could not clear");
@@ -153,7 +165,11 @@ const AdminAiView = (() => {
         });
         const payload = await window.AuthExpired.parseOkJson(response, "Runtime settings could not save", reviewErrorFromPayload);
         renderAiFromPayload(payload);
-        setFact("runtime-message", "Runtime settings saved for new reviews.");
+        // SUCCESS: toast it; the inline fact settles to a neutral resting line.
+        setFact("runtime-message", "Runtime settings are saved.");
+        if (typeof notifySuccess === "function") {
+          notifySuccess("Runtime settings saved", "New reviews use the selected engine");
+        }
       } catch (error) {
         setFact("runtime-message", error.message || "Runtime settings could not save");
       } finally {

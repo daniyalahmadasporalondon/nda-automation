@@ -377,6 +377,9 @@ adminAiController = createAdminAiController({
   aiOverall: document.querySelector("#adminAiOverall"),
   aiRefreshButton: document.querySelector("#adminAiRefreshButton"),
   reviewErrorFromPayload,
+  // Transient green success toast (key saved / cleared / runtime saved) through
+  // the ONE notification center — same machinery as the registry save.
+  notifySuccess: (title, subtitle) => notificationsController.notifySuccess(title, subtitle),
 });
 adminHealthController = createAdminHealthController({
   state,
@@ -451,6 +454,9 @@ adminDriveController = createAdminDriveController({
   drivePickerNewCancel: document.querySelector("#adminDrivePickerNewCancel"),
   drivePickerNewError: document.querySelector("#adminDrivePickerNewError"),
   reviewErrorFromPayload,
+  // Transient green success toast on a finished folder save, through the ONE
+  // notification center.
+  notifySuccess: (title, subtitle) => notificationsController.notifySuccess(title, subtitle),
 });
 adminDocuSignController = createAdminDocuSignController({
   state,
@@ -473,6 +479,9 @@ adminAccessController = createAdminAccessController({
   envRootsList: document.querySelector("#adminAccessEnvRoots"),
   persistedList: document.querySelector("#adminAccessPersisted"),
   reviewErrorFromPayload,
+  // Transient green success toast on a finished add/remove, through the ONE
+  // notification center.
+  notifySuccess: (title, subtitle) => notificationsController.notifySuccess(title, subtitle),
 });
 // The signing-entity registry now lives INSIDE the Playbook editor as its
 // "Entities" section (Clauses | Entities switcher), not in the Admin area. The
@@ -508,6 +517,7 @@ adminPersonalisationController = createAdminPersonalisationController({
   message: document.querySelector("#adminPersonalisationMessage"),
   persistenceFact: document.querySelector('[data-admin-personalisation="persistence"]'),
   reviewErrorFromPayload,
+  notifySuccess: (title, subtitle) => notificationsController.notifySuccess(title, subtitle),
   onSettingsLoaded: (settings) => {
     // The caller's resolved signature is what the outbound-email defaults use.
     state.personalisationSettings = normalizePersonalisationSettings(settings);
@@ -530,6 +540,7 @@ adminGlobalPersonalisationController = createAdminPersonalisationController({
   message: document.querySelector("#adminGlobalPersonalisationMessage"),
   persistenceFact: document.querySelector('[data-admin-global-personalisation="persistence"]'),
   reviewErrorFromPayload,
+  notifySuccess: (title, subtitle) => notificationsController.notifySuccess(title, subtitle),
   onUnavailable: () => {
     const section = document.querySelector("#adminGlobalPersonalisationSection");
     if (section) section.hidden = true;

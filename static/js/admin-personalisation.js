@@ -18,6 +18,9 @@ const AdminPersonalisationView = (() => {
     message,
     persistenceFact,
     reviewErrorFromPayload,
+    // Injected from app.js -> notificationsController.notifySuccess so a finished
+    // save flashes the ONE green success toast. No-op in the Node harness.
+    notifySuccess,
     onSettingsLoaded,
     // When true (the admin global-default panel), a 403/404 means "not an admin"
     // and the surface hides itself rather than nagging — it is an optional,
@@ -106,7 +109,16 @@ const AdminPersonalisationView = (() => {
         onSettingsLoaded?.(loadedSettings, payload);
         renderFields(loadedSettings, defaultsFromPayload(payload));
         setOverall("Saved", "ready");
-        setMessage(savedMessage(payload));
+        // SUCCESS: flash the transient green toast; the inline message settles to
+        // the neutral loaded/resting state instead of a lingering green confirmation.
+        setMessage(loadedMessage(payload));
+        if (typeof notifySuccess === "function") {
+          const isSelf = ENDPOINT === SELF_ENDPOINT;
+          notifySuccess(
+            isSelf ? "Signature saved" : "Personalisation settings saved",
+            isSelf ? "New emails will use it" : "New emails use this default",
+          );
+        }
       } catch (error) {
         setOverall("Save failed", "blocked");
         setMessage(error.message || "Personalisation settings could not save");
@@ -122,13 +134,6 @@ const AdminPersonalisationView = (() => {
           : "Showing the current default signature. Save to make it your own.";
       }
       return "Personalisation settings loaded.";
-    }
-
-    function savedMessage(payload) {
-      if (ENDPOINT === SELF_ENDPOINT) {
-        return "Your signature is saved. New emails will use it.";
-      }
-      return "Personalisation settings saved.";
     }
 
     function defaultsFromPayload(payload = {}) {

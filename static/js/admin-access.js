@@ -47,6 +47,9 @@ const AdminAccessView = (() => {
     envRootsList,
     persistedList,
     reviewErrorFromPayload,
+    // Injected from app.js -> notificationsController.notifySuccess so an admin
+    // add/remove flashes the ONE green success toast. No-op in the Node harness.
+    notifySuccess,
   }) {
     refreshButton?.addEventListener("click", load);
     addForm?.addEventListener("submit", addAdmin);
@@ -116,7 +119,12 @@ const AdminAccessView = (() => {
         );
         if (emailInput) emailInput.value = "";
         render(payload);
-        setMessage(`Added ${email}.`);
+        // SUCCESS: flash the transient green toast; the re-rendered list is the
+        // resting confirmation, so the inline message clears.
+        setMessage("");
+        if (typeof notifySuccess === "function") {
+          notifySuccess("Admin added", email);
+        }
       } catch (error) {
         setMessage(error.message || "Admin could not be added");
       } finally {
@@ -140,7 +148,12 @@ const AdminAccessView = (() => {
           reviewErrorFromPayload,
         );
         render(payload);
-        setMessage(`Removed ${email}.`);
+        // SUCCESS: flash the transient green toast; the re-rendered list is the
+        // resting confirmation, so the inline message clears.
+        setMessage("");
+        if (typeof notifySuccess === "function") {
+          notifySuccess("Admin removed", email);
+        }
       } catch (error) {
         // Reject path (e.g. 409 lockout / immutable env root): reload the
         // authoritative list so the row that was NOT removed stays visible, THEN
