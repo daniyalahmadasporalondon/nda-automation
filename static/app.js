@@ -359,6 +359,12 @@ const draftIntakeController = createDraftIntakeController({
   // the persistent inline green status text). Reuses the one in-app notification
   // toaster — the same machinery as the inbound-NDA / review-failed toasts.
   notifyGenerated: (message) => notificationsController.notifySuccess(message),
+  // Pop a FAILURE toast when a generation fails, through the SAME in-app toaster
+  // (notificationsController.notify renders the red/alert variant). Keeps a failed
+  // background generation from being silent. The inline #draftIntakeStatus error
+  // stays visible alongside.
+  notifyGenerationFailed: (message) =>
+    notificationsController.notify("Generation failed", message),
   // Reveal/hide the "Send for Signature" CTA in step with the staged generation:
   // a saved generated matter -> show + prime the composer's matter; null -> hide.
   onStagedActionsChanged: setGeneratorSignatureMatter,

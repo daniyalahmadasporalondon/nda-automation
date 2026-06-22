@@ -20,9 +20,12 @@ const REVIEW_POLL_BACKOFF_AFTER_MS = 60000; // ease off after ~60s of polling
 // so this is the client-side backstop for the case the matter read itself wedges.)
 const REVIEW_POLL_TTL_MS = 300000;
 
-// User-facing copy shown on the matter while the background AI review runs.
-const REVIEW_REFRESH_PROGRESS_MESSAGE =
-  "Reviewing with AI… this runs in the background and can take a couple of minutes.";
+// Compact in-pane indicator shown on the matter while the background AI review
+// runs. The review runs in the BACKGROUND and announces COMPLETION via the in-app
+// popup (the same toaster as the inbound-NDA "N new NDAs" toast), so this inline
+// copy is deliberately small ("Reviewing…") rather than a wall of "wait here"
+// text — it only tells a looking reviewer the op is live; the popup is the signal.
+const REVIEW_REFRESH_PROGRESS_MESSAGE = "Reviewing…";
 
 // ---------------------------------------------------------------------------
 // In-flight background-review poll controller.
@@ -218,11 +221,104 @@ async function applyCompletedReview(matterId, status) {
         ? "Review is current."
         : "Review refreshed against the active Playbook.",
     );
+    // A background review only actually RAN when the server scheduled it
+    // (completed); an `idle` terminal means the stored review was already current
+    // and nothing ran, so it would be misleading to pop a "Review complete" toast
+    // for it. Announce completion through the ONE in-app toaster only for a review
+    // that genuinely finished this session.
+    if (status !== "idle") {
+      notifyReviewComplete(state.selectedMatter);
+    }
   } catch (error) {
     renderOperationError(error, "Review completed but could not load.");
   } finally {
     renderReviewRefreshNotice();
     updateExportButtonState();
+  }
+}
+
+// A human label for the matter the background review just finished, mirroring
+// reviewSendMatterTitle()'s precedence so the toast names the document the same
+// way the rest of the workstation does. Never the raw matter id.
+function reviewNotificationDocName(matter) {
+  return String(
+    matter?.document_title
+      || matter?.subject
+      || matter?.source_filename
+      || matter?.attachment_filename
+      || (typeof studioDocTitle !== "undefined" ? studioDocTitle?.textContent : "")
+      || "this NDA",
+  ).trim() || "this NDA";
+}
+
+// Announce a finished background AI review through the SAME in-app notification
+// center that pops the inbound-email "N new NDAs" toast (the controller built in
+// app.js). The review runs in the background, so its COMPLETION is the primary
+// signal — a green success toast naming the reviewed document. Best-effort: if the
+// controller is absent (isolated test/load order) the inline file-meta already
+// communicated the result, so this never throws and never blocks the render path.
+function notifyReviewComplete(matter) {
+  try {
+    if (
+      typeof notificationsController !== "undefined" &&
+      notificationsController &&
+      typeof notificationsController.notifySuccess === "function"
+    ) {
+      notificationsController.notifySuccess(
+        "Review complete",
+        `${reviewNotificationDocName(matter)} reviewed`,
+      );
+    }
+  } catch (error) {
+    // The notification is advisory; never let it break the review flow.
+  }
+}
+
+// Optional companion to the completion toast: a brief "started" popup confirming
+// the background review was scheduled, through the same in-app toaster. Guarded
+// and best-effort like the others.
+function notifyReviewStarted(matter) {
+  try {
+    if (
+      typeof notificationsController !== "undefined" &&
+      notificationsController &&
+      typeof notificationsController.notify === "function"
+    ) {
+      notificationsController.notify(
+        "Review started",
+        `${reviewNotificationDocName(matter)} — running in the background`,
+      );
+    }
+  } catch (error) {
+    // The notification is advisory; never let it break the review flow.
+  }
+}
+
+// Announce a FAILED background AI review through the same in-app notification
+// center, so a background op that fails is never silent. Red failure toast naming
+// the document and the failure reason, mirroring the inbound review-failed toast.
+// Best-effort/guarded exactly like notifyReviewComplete.
+function notifyReviewFailed(matter, message) {
+  try {
+    if (
+      typeof notificationsController !== "undefined" &&
+      notificationsController &&
+      typeof notificationsController.notify === "function"
+    ) {
+      const reason = String(message || "").trim() || "The AI review could not be completed.";
+      notificationsController.notify(
+        `Review failed — ${reviewNotificationDocName(matter)}`,
+        reason,
+      );
+      // Seed the controller's failed-set so the background inbox poll (which also
+      // toasts review_status="failed") does NOT fire a second, duplicate toast for
+      // the same matter we just announced here.
+      if (typeof notificationsController.markReviewFailureNotified === "function" && matter?.id) {
+        notificationsController.markReviewFailureNotified(matter.id);
+      }
+    }
+  } catch (error) {
+    // The notification is advisory; never let it break the review flow.
   }
 }
 
@@ -249,6 +345,7 @@ function handleReviewFailed(matter) {
     || "The AI review failed. Please retry.";
   renderReviewFailedNotice(message);
   setFileMeta(message);
+  notifyReviewFailed(matter, message);
   renderReviewRefreshNotice();
   updateExportButtonState();
 }
@@ -264,6 +361,7 @@ function handleReviewPollTimeout(matterId) {
   }
   renderReviewFailedNotice(message);
   setFileMeta(message);
+  notifyReviewFailed(state.selectedMatter?.id === matterId ? state.selectedMatter : { id: matterId }, message);
   renderReviewRefreshNotice();
   updateExportButtonState();
 }
@@ -1352,6 +1450,7 @@ async function refreshSelectedMatterReview() {
         || "The review queue is full. Please try again shortly.";
       renderReviewFailedNotice(message);
       setFileMeta(message);
+      notifyReviewFailed(state.selectedMatter, message);
       renderReviewRefreshNotice();
       updateExportButtonState();
       return;
@@ -1390,6 +1489,11 @@ async function refreshSelectedMatterReview() {
       if (typeof repositoryController?.loadMatters === "function") {
         repositoryController.loadMatters();
       }
+      // Brief "started" popup: the review now runs in the BACKGROUND, so confirm
+      // the click took effect through the one in-app toaster. The must-have signal
+      // is the COMPLETION toast fired from applyCompletedReview(); this is the
+      // optional companion that says it began.
+      notifyReviewStarted(state.selectedMatter);
       startReviewPoll(matterId);
       return;
     }
@@ -1429,8 +1533,10 @@ async function refreshSelectedMatterReview() {
     if (isStaleReviewError(error)) {
       handleStaleReviewOperationError(error, "Review could not refresh.");
     } else {
-      renderReviewFailedNotice(error.message || "Review could not refresh.");
+      const message = error.message || "Review could not refresh.";
+      renderReviewFailedNotice(message);
       renderOperationError(error, "Review could not refresh.");
+      notifyReviewFailed(state.selectedMatter, message);
     }
     renderReviewRefreshNotice();
     updateExportButtonState();

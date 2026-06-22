@@ -100,7 +100,7 @@ function createContractStructureController({ state, root }) {
       <div class="structure-skeleton" role="status" aria-live="polite">
         <div class="review-skeleton-copy">
           <span class="skeleton-dot" aria-hidden="true"></span>
-          <span>Building structure map… this runs with the review.</span>
+          <span>Building structure map…</span>
         </div>
         <div class="structure-skeleton-summary" aria-hidden="true">${tiles}</div>
         <div class="structure-skeleton-rows" aria-hidden="true">${rows}</div>

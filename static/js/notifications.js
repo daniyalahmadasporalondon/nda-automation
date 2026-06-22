@@ -323,7 +323,18 @@ const NotificationsView = (() => {
       mountToast(node, () => {});
     }
 
-    return { observe, poll, notify, notifySuccess };
+    // Mark a matter's review failure as ALREADY notified, so the background poll's
+    // observeFailures() won't fire a SECOND (duplicate) review-failed toast for it.
+    // The foreground review workstation calls this right after it pops its own
+    // immediate failure toast (it resolves the review faster than the inbox poll),
+    // routing both the immediate and the polled paths through the one seen-set.
+    // Idempotent; a falsy id is a no-op.
+    function markReviewFailureNotified(matterId) {
+      const id = String(matterId == null ? "" : matterId);
+      if (id) failedReviewSeen.add(id);
+    }
+
+    return { observe, poll, notify, notifySuccess, markReviewFailureNotified };
   }
 
   return { createController };

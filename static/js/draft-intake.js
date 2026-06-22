@@ -77,6 +77,12 @@ function createDraftIntakeController({
   // is kept only for in-progress ("Generating…") and ERROR messages. Absent = the
   // success confirmation falls back to the inline status (graceful degradation).
   notifyGenerated,
+  // Optional seam: fire a FAILURE toast when a generation fails (a thrown error,
+  // a timeout that didn't self-heal, or a self-check/sanitiser caution). The
+  // background-style generation must not fail silently — when present, an
+  // error-tone outcome routes its message to this toast IN ADDITION to keeping the
+  // inline #draftIntakeStatus error visible. Absent = inline error only (graceful).
+  notifyGenerationFailed,
   // Optional registry override. When absent the controller first tries the live
   // GET /api/signing-entities feed and falls back to the embedded mirror.
   registryEntities,
@@ -740,7 +746,15 @@ function createDraftIntakeController({
           notifyGenerated(outcome.toast);
           setStatus("");
         } else {
-          setStatus(outcome?.message || "NDA generated.", tone);
+          const fallbackMessage = outcome?.message || "NDA generated.";
+          setStatus(fallbackMessage, tone);
+          // An error-tone outcome (timeout-without-recovery, self-check flag,
+          // sanitiser caution) must not be a silent background failure: also pop a
+          // failure toast through the one in-app toaster. The inline error stays
+          // visible above. Best-effort; absent seam = inline error only.
+          if (tone === "error" && typeof notifyGenerationFailed === "function") {
+            notifyGenerationFailed(fallbackMessage);
+          }
         }
         // A real generation returns the saved-artifact handle; stage Download/Send.
         if (outcome?.generated) setStagedActions(outcome.generated);
@@ -758,7 +772,13 @@ function createDraftIntakeController({
         );
       }
     } catch (error) {
-      setStatus(error?.message || "Could not generate the NDA.", "error");
+      const message = error?.message || "Could not generate the NDA.";
+      setStatus(message, "error");
+      // A thrown generation error is a background-op failure — surface it via the
+      // one in-app toaster too, never silently. Inline error stays visible.
+      if (typeof notifyGenerationFailed === "function") {
+        notifyGenerationFailed(message);
+      }
     } finally {
       busy = false;
       if (clearButton) clearButton.disabled = false;
