@@ -994,7 +994,36 @@ function loadMatterIntoReview(matter) {
         : `${RepositoryView.sourceTypeLabel(matter.source_type)} NDA loaded`)
   );
   activateTab("review");
+  // RESUME the background-review poll when a matter is opened (or its tab is
+  // re-entered, or the page reloaded) while its review is STILL in flight. Without
+  // this, a plain open of an in-progress matter renders a disabled "Reviewing…"
+  // header but starts NO poll, so the matter strands forever with no terminal
+  // transition — half the "review never finishes" bug. We re-enter the in-flight UI
+  // (spinner + skeletons) and (re)start the single-in-flight poll, which then drives
+  // the matter to its terminal completed/failed/interrupted state exactly as the
+  // in-session refresh path does.
+  //
+  // Fires for `in_progress` (a live worker) AND `stalled` (a live-but-slow review):
+  // both are still running server-side, so resuming the poll lets them resolve. It
+  // does NOT fire for `interrupted` (the worker died — terminal/recoverable, handled
+  // by the calm Retry render) or any other terminal status. typeof-guarded so an
+  // isolated load order / test harness without the actions module is a no-op.
+  maybeResumeReviewPollOnLoad(matter);
   requestAnimationFrame(resizeSourceEditors);
+}
+
+// Resume the background-review poll for a matter loaded while its review is in
+// flight (review_status in_progress/stalled). Shared by every load funnel
+// (openMatterInReview, tab re-entry, reload) since they all route through
+// loadMatterIntoReview. Idempotent: startReviewPoll is single-in-flight and no-ops
+// when a poll for this matter is already running.
+function maybeResumeReviewPollOnLoad(matter) {
+  const status = String(matter?.review_status || "");
+  const live = status === "in_progress" || status === "stalled";
+  if (!live) return;
+  if (typeof startReviewPoll !== "function") return;
+  if (typeof enterReviewInFlightUi === "function") enterReviewInFlightUi();
+  startReviewPoll(matter.id);
 }
 
 function prepareMatterReviewLoad(matter) {

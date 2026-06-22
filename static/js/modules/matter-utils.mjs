@@ -197,13 +197,23 @@ export function reviewNeverRan(matter) {
 // returns 202) and stamps `review_status` on every matter payload. An
 // `in_progress` status means a worker is mid-review; the board and review header
 // surface a "Reviewing…" affordance and downstream actions stay disabled until it
-// resolves to `completed`/`failed`/`idle`. The read-time staleness override can also
-// report `stalled` (a slow/interrupted but NOT durably-failed review); it is treated
-// as still-in-progress here so the board keeps the calm "Reviewing…" affordance
-// rather than flipping to a failure — a pure timeout is never a failure.
+// resolves to `completed`/`failed`/`idle`.
+//
+// ONLY `in_progress` counts as in-flight here. The two other non-terminal-looking
+// states are DELIBERATELY excluded, because each must re-offer the operator a way
+// out rather than gray the Review button:
+//   - `interrupted` (DURABLE): a review was mid-flight when the worker/process died
+//     (e.g. an app restart). It is RECOVERABLE and TERMINAL — it will NOT resume on
+//     its own — so reporting it as "in progress" would gray the Review button
+//     forever. The render path instead re-enables Review and shows a calm Retry.
+//   - `stalled` (a read-time TTL label for a live-but-slow review): NOT a failure,
+//     but also NOT a hard in-flight lock here — the render path keeps the Review
+//     button ENABLED so a wedged-looking review always has an exit.
+// reviewInProgress is the shared "is this matter mid-review" discriminator (board
+// badge + inspector resume + the Review-button gray-out); keeping it `in_progress`-
+// only is precisely what makes both `interrupted` and `stalled` retryable.
 export function reviewInProgress(matter) {
-  const status = String(matter?.review_status || "");
-  return status === "in_progress" || status === "stalled";
+  return String(matter?.review_status || "") === "in_progress";
 }
 
 // True when the most recent background review DURABLY failed — only the backend's
@@ -214,6 +224,24 @@ export function reviewInProgress(matter) {
 // Retry affordance.
 export function reviewFailed(matter) {
   return String(matter?.review_status || "") === "failed";
+}
+
+// True when a review was IN-FLIGHT but the worker/process died before it could
+// resolve (e.g. an app restart) — the backend writes a DURABLE `review_status`
+// = "interrupted". This is RECOVERABLE and TERMINAL: nothing auto-runs, the
+// Review button is re-enabled (reviewInProgress is false for it), and the render
+// surfaces a calm "this review was interrupted — click Review to run it again"
+// note. It is DISTINCT from `failed` (a real error → red) and from `stalled` (a
+// read-time TTL label for a live-but-slow review).
+export function reviewInterrupted(matter) {
+  return String(matter?.review_status || "") === "interrupted";
+}
+
+// True for the read-time TTL label on a live-but-slow review. NOT a failure and
+// (since reviewInProgress no longer includes it) NOT a hard in-flight lock: the
+// render keeps the Review button enabled so a slow/wedged review always has an exit.
+export function reviewStalled(matter) {
+  return String(matter?.review_status || "") === "stalled";
 }
 
 export function gmailSendButtonLabel(blockReason) {
@@ -237,7 +265,9 @@ export const MatterUtils = {
   reviewActionable,
   reviewFailed,
   reviewInProgress,
+  reviewInterrupted,
   reviewNeverRan,
+  reviewStalled,
   reviewStale,
   reviewStaleLabel,
   reviewStaleReasons,

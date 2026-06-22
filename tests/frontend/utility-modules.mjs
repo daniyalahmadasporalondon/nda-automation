@@ -767,13 +767,34 @@ assert.equal(reviewActionable({}), false); // unknown payload: stale-only fallba
 assert.equal(MatterUtils.reviewActionable({ ai_review_ran: false }), true);
 assert.equal(MatterUtils.reviewNeverRan({ ai_review_ran: false }), true);
 
-// reviewInProgress / reviewFailed: a "stalled" review (the read-time staleness
-// override -- a slow/interrupted but NOT durably-failed review) is treated as
-// STILL in progress and is NEVER a failure. A pure timeout must not become "failed".
+// reviewInProgress: ONLY "in_progress" is a hard in-flight lock (it grays the
+// Review button to prevent a double-submit). The two other non-terminal-looking
+// states are DELIBERATELY excluded so each stays RETRYABLE / re-enables the button:
+//   - "stalled"     (read-time TTL label for a live-but-slow review)
+//   - "interrupted" (recoverable-terminal: the worker/process died mid-review)
 assert.equal(MatterUtils.reviewInProgress({ review_status: "in_progress" }), true);
-assert.equal(MatterUtils.reviewInProgress({ review_status: "stalled" }), true, "stalled keeps the in-progress affordance");
+assert.equal(MatterUtils.reviewInProgress({ review_status: "stalled" }), false, "stalled is retryable, not a hard in-flight lock");
+assert.equal(MatterUtils.reviewInProgress({ review_status: "interrupted" }), false, "interrupted is recoverable-terminal, never in-flight");
 assert.equal(MatterUtils.reviewInProgress({ review_status: "completed" }), false);
+
+// reviewInterrupted: the DURABLE "worker died mid-review" status (e.g. app restart).
+// Recoverable-terminal — distinct from failed (real error) and stalled (slow review).
+assert.equal(MatterUtils.reviewInterrupted({ review_status: "interrupted" }), true);
+assert.equal(MatterUtils.reviewInterrupted({ review_status: "failed" }), false);
+assert.equal(MatterUtils.reviewInterrupted({ review_status: "stalled" }), false);
+assert.equal(MatterUtils.reviewInterrupted({ review_status: "in_progress" }), false);
+assert.equal(MatterUtils.reviewInterrupted({}), false);
+
+// reviewStalled: the read-time TTL label for a live-but-slow review.
+assert.equal(MatterUtils.reviewStalled({ review_status: "stalled" }), true);
+assert.equal(MatterUtils.reviewStalled({ review_status: "interrupted" }), false);
+assert.equal(MatterUtils.reviewStalled({ review_status: "in_progress" }), false);
+
+// reviewFailed: ONLY a durably-recorded server error is a failure. Neither a slow
+// "stalled" review NOR an "interrupted" (worker-died) review is a failure — a pure
+// timeout / restart must never fabricate a red failure.
 assert.equal(MatterUtils.reviewFailed({ review_status: "stalled" }), false, "a stalled (timeout) review is NOT a failure");
+assert.equal(MatterUtils.reviewFailed({ review_status: "interrupted" }), false, "an interrupted review is NOT a failure");
 assert.equal(MatterUtils.reviewFailed({ review_status: "failed" }), true, "only a durable failure is a failure");
 assert.equal(MatterUtils.reviewFailed({ review_status: "in_progress" }), false);
 
