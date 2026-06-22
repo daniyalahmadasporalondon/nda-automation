@@ -283,7 +283,6 @@ class MatterStorePersistenceTests(unittest.TestCase):
                         handle.write = boom  # type: ignore[method-assign]
                     return handle
 
-                stored_filename = None
                 with patch.object(Path, "open", exploding_open):
                     with self.assertRaises(OSError):
                         repo.create_matter(**_create_kwargs(

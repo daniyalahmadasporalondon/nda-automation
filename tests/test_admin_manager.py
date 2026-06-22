@@ -15,9 +15,6 @@ to admin).
 
 from __future__ import annotations
 
-import io
-import json
-
 import pytest
 
 from nda_automation import app_settings, http_auth, matter_store, telemetry
