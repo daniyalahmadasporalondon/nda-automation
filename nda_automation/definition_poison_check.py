@@ -1,4 +1,16 @@
-"""Deterministic "definition-poison" detector (ADDITIVE review signal).
+"""Deterministic "definition-poison" detector helpers.
+
+RETIREMENT NOTE
+---------------
+The review-OVERLAY entry point (``detect_definition_poison``) that this module
+once exposed has been RETIRED, along with the two other structural-override
+overlays, now that the strengthened AI reviewer + verifier catch those traps on
+their own (proven on the live-AI safety gate). This module is KEPT because the
+deterministic Confidential-Information clause checker
+(``nda_automation/checks/confidential_information.py``) consumes
+``ci_poison_severity`` to fail a CI definition that has affirmatively gutted its
+carve-outs. ``ci_poison_severity`` and the ``detect_ci_poison`` /
+``detect_affiliate_poison`` helpers it builds on remain fully intact and tested.
 
 WHY THIS EXISTS
 ---------------
@@ -43,25 +55,9 @@ Returns ``{"reason_code", "message"}`` or ``None``. REVIEW-only, additive.
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping
 
 REASON_CODE_CI_POISON = "definition_poison_confidential_information"
 REASON_CODE_AFFILIATE_POISON = "definition_poison_overbroad_affiliate"
-
-
-# ---------------------------------------------------------------------------
-# Document accessor.
-#
-# Read the document the SAME way ``law_forum_check`` does: the resolved, extracted
-# plain text lives on ``matter["extracted_text"]``. Nothing else is consulted, so
-# the detector can never drift from how the rest of the app sees the document.
-# ---------------------------------------------------------------------------
-def _matter_text(matter: Mapping[str, Any]) -> str:
-    # Only a genuine string is the document. A non-string ``extracted_text`` (dict,
-    # list, number, ...) is NOT str()-coerced -- its repr could otherwise trip a
-    # finding -- it is treated as "no text" so the detector stays silent.
-    value = matter.get("extracted_text")
-    return value if isinstance(value, str) else ""
 
 
 # ---------------------------------------------------------------------------
@@ -528,22 +524,11 @@ def detect_affiliate_poison(text: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Public entry point.
+# NOTE: the public review-OVERLAY entry point ``detect_definition_poison(matter)``
+# was RETIRED together with the other two structural-override overlays once the
+# strengthened AI reviewer + verifier proved sufficient on the live-AI safety gate.
+# This module is KEPT because the deterministic CI-clause checker
+# (``nda_automation/checks/confidential_information.py``) consumes
+# ``ci_poison_severity`` -- that path, and the CI/Affiliate poison helpers it builds
+# on, remain fully intact and tested. There is no longer an overlay wrapper here.
 # ---------------------------------------------------------------------------
-def detect_definition_poison(matter: Mapping[str, Any]) -> dict | None:
-    """Detect a poisoned definition on a stored matter (fail-safe, review-only).
-
-    Returns ``{"reason_code", "message"}`` for the first poison shape found
-    (CI-definition poison takes precedence over Affiliate poison), or ``None`` when
-    nothing is flagged. ANY error is swallowed and returns ``None`` so the detector
-    can never crash the board poll.
-    """
-    try:
-        if not isinstance(matter, Mapping):
-            return None
-        text = _matter_text(matter)
-        if not text:
-            return None
-        return detect_ci_poison(text) or detect_affiliate_poison(text)
-    except Exception:  # noqa: BLE001 -- fail-safe: never crash the poll.
-        return None

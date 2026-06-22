@@ -1,16 +1,20 @@
-"""Tests for the definition-poison detector (precision-tuned, fail-safe)."""
+"""Tests for the definition-poison detector helpers (precision-tuned, fail-safe).
+
+The review-OVERLAY entry point (``detect_definition_poison``) was RETIRED together
+with the other structural-override overlays. The module is kept because the
+deterministic CI-clause checker consumes ``ci_poison_severity``; these tests cover
+``ci_poison_severity`` and the ``detect_ci_poison`` / ``detect_affiliate_poison``
+helpers it builds on, which remain fully intact.
+"""
 import unittest
 
 from nda_automation.definition_poison_check import (
     REASON_CODE_AFFILIATE_POISON,
     REASON_CODE_CI_POISON,
     ci_poison_severity,
-    detect_definition_poison,
+    detect_affiliate_poison,
+    detect_ci_poison,
 )
-
-
-def _matter(text):
-    return {"extracted_text": text}
 
 
 # A real UTSA-style CI definition (condensed from the slice-bank NDA fixture).
@@ -45,7 +49,7 @@ class DefinitionPoisonTests(unittest.TestCase):
             "known to the Receiving Party or independently developed by the "
             "Receiving Party."
         )
-        result = detect_definition_poison(_matter(text))
+        result = detect_ci_poison(text)
         self.assertIsNotNone(result)
         self.assertEqual(result["reason_code"], REASON_CODE_CI_POISON)
         self.assertTrue(result["message"])
@@ -56,14 +60,14 @@ class DefinitionPoisonTests(unittest.TestCase):
             "limitation, information that is already known to the public or in "
             "the public domain at the time of disclosure."
         )
-        result = detect_definition_poison(_matter(text))
+        result = detect_ci_poison(text)
         self.assertIsNotNone(result)
         self.assertEqual(result["reason_code"], REASON_CODE_CI_POISON)
 
     # ---- CI-definition poison: SILENT (the key precision case) -----------
     def test_normal_utsa_ci_definition_is_silent(self):
         # A standard UTSA definition + standard exclusions must NOT flag.
-        self.assertIsNone(detect_definition_poison(_matter(UTSA_CI_DEFINITION)))
+        self.assertIsNone(detect_ci_poison(UTSA_CI_DEFINITION))
 
     def test_standard_exclusion_block_is_silent(self):
         # The exclusion carve-out names the very categories the poison detector
@@ -73,7 +77,7 @@ class DefinitionPoisonTests(unittest.TestCase):
             "publicly available, already known to the Receiving Party, or "
             "independently developed by the Receiving Party."
         )
-        self.assertIsNone(detect_definition_poison(_matter(text)))
+        self.assertIsNone(detect_ci_poison(text))
 
     def test_non_public_ci_definition_is_silent(self):
         # REGRESSION: the bare substring "public" inside "non-public" must NOT be
@@ -83,7 +87,7 @@ class DefinitionPoisonTests(unittest.TestCase):
             "disclosed by one party to the other that is designated as "
             "confidential. The Receiving Party shall not disclose it."
         )
-        self.assertIsNone(detect_definition_poison(_matter(text)))
+        self.assertIsNone(detect_ci_poison(text))
 
     def test_utsa_independent_economic_value_is_silent(self):
         # REGRESSION: "derives independent economic value ... not being generally
@@ -95,7 +99,7 @@ class DefinitionPoisonTests(unittest.TestCase):
             "persons, and is the subject of reasonable efforts to maintain its "
             "secrecy."
         )
-        self.assertIsNone(detect_definition_poison(_matter(text)))
+        self.assertIsNone(detect_ci_poison(text))
 
     def test_exclusions_shall_not_apply_framing_is_silent(self):
         # REGRESSION: "the obligations of confidentiality shall not apply to "
@@ -108,7 +112,7 @@ class DefinitionPoisonTests(unittest.TestCase):
             "public, was already known to the Receiving Party, or is "
             "independently developed by the Receiving Party."
         )
-        self.assertIsNone(detect_definition_poison(_matter(text)))
+        self.assertIsNone(detect_ci_poison(text))
 
     def test_obfuscated_negation_poison_flags(self):
         # tp07: negated-form poison -- "shall NOT cease to be Confidential
@@ -121,7 +125,7 @@ class DefinitionPoisonTests(unittest.TestCase):
             "public domain, becoming generally known, or having been "
             "independently developed, and no exclusions of any kind shall apply."
         )
-        result = detect_definition_poison(_matter(text))
+        result = detect_ci_poison(text)
         self.assertIsNotNone(result)
         self.assertEqual(result["reason_code"], REASON_CODE_CI_POISON)
 
@@ -133,16 +137,14 @@ class DefinitionPoisonTests(unittest.TestCase):
             "The Receiving Party shall not solicit or do business with any "
             "Affiliate for a period of two years."
         )
-        result = detect_definition_poison(_matter(text))
+        result = detect_affiliate_poison(text)
         self.assertIsNotNone(result)
         self.assertEqual(result["reason_code"], REASON_CODE_AFFILIATE_POISON)
         self.assertTrue(result["message"])
 
     # ---- Affiliate poison: SILENT ---------------------------------------
     def test_normal_affiliate_definition_is_silent(self):
-        self.assertIsNone(
-            detect_definition_poison(_matter(NORMAL_AFFILIATE_DEFINITION))
-        )
+        self.assertIsNone(detect_affiliate_poison(NORMAL_AFFILIATE_DEFINITION))
 
     def test_affiliate_sweeps_competitors_flags(self):
         # tp04: "Affiliate" sweeps in competitors / same-industry entities, and a
@@ -154,7 +156,7 @@ class DefinitionPoisonTests(unittest.TestCase):
             "the Receiving Party shall not solicit or do business with any of its "
             "Affiliates."
         )
-        result = detect_definition_poison(_matter(text))
+        result = detect_affiliate_poison(text)
         self.assertIsNotNone(result)
         self.assertEqual(result["reason_code"], REASON_CODE_AFFILIATE_POISON)
 
@@ -165,7 +167,7 @@ class DefinitionPoisonTests(unittest.TestCase):
             "designate. The Parties acknowledge their mutual interest in the "
             "Purpose."
         )
-        self.assertIsNone(detect_definition_poison(_matter(text)))
+        self.assertIsNone(detect_affiliate_poison(text))
 
     def test_disclaimed_restraint_does_not_trigger_affiliate_poison(self):
         # fp09-shape: a broad-ish Affiliate definition used only for permitted
@@ -178,9 +180,13 @@ class DefinitionPoisonTests(unittest.TestCase):
             "Purpose. There are no non-compete or non-solicitation obligations in "
             "this Agreement."
         )
-        self.assertIsNone(detect_definition_poison(_matter(text)))
+        self.assertIsNone(detect_affiliate_poison(text))
 
     # ---- CI-poison SEVERITY (STRUCTURAL, polarity-correct) --------------
+    #
+    # This is the path that REMAINS LOAD-BEARING after the overlay retirement: the
+    # deterministic CI-clause checker (checks/confidential_information.py) fails a CI
+    # definition only when ``ci_poison_severity`` returns "fail".
     #
     # The severity logic is "innocent until proven guilty": it reaches the FAIL tier
     # ONLY when affirmative inclusion of an excluded category is present AND there is
@@ -310,26 +316,14 @@ class DefinitionPoisonTests(unittest.TestCase):
             self.assertIsNone(ci_poison_severity(bad))
 
     # ---- Fail-safe: garbage / empty -> None, no crash --------------------
-    def test_empty_text_returns_none(self):
-        self.assertIsNone(detect_definition_poison(_matter("")))
-        self.assertIsNone(detect_definition_poison({}))
-
-    def test_non_mapping_inputs_return_none(self):
-        for bad in (None, "a string", 12345, ["a", "list"], object()):
-            self.assertIsNone(detect_definition_poison(bad))
+    def test_empty_text_helpers_return_none(self):
+        self.assertIsNone(detect_ci_poison(""))
+        self.assertIsNone(detect_affiliate_poison(""))
 
     def test_garbage_text_returns_none(self):
         garbage = "asdf \x00\x01 ||| 99999 \n\n\t ;;;; .... random tokens"
-        self.assertIsNone(detect_definition_poison(_matter(garbage)))
-
-    def test_missing_extracted_text_key_returns_none(self):
-        self.assertIsNone(detect_definition_poison({"other": "field"}))
-
-    def test_wrong_type_extracted_text_returns_none(self):
-        # REGRESSION: a non-string extracted_text must NOT be str()-coerced (its
-        # repr could otherwise trip a finding) -- treated as no text -> None.
-        for bad in ({"nested": "dict"}, ["a", "list"], 123, 4.5, True):
-            self.assertIsNone(detect_definition_poison(_matter(bad)))
+        self.assertIsNone(detect_ci_poison(garbage))
+        self.assertIsNone(detect_affiliate_poison(garbage))
 
 
 if __name__ == "__main__":
