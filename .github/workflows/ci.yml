@@ -128,3 +128,9 @@ jobs:
 
       - name: Run entity law/court coupling test
         run: npm run test:frontend:entity-court-coupling
+
+      - name: Run faithful-render cold-start engagement test
+        run: npm run test:frontend:faithful-coldstart
+
+      - name: Run faithful redline/clean upgrade test
+        run: npm run test:frontend:faithful-redline-clean
