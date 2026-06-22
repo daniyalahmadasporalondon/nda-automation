@@ -10,8 +10,9 @@ storm-hardened inbound worker pool and returns immediately. These tests pin the
   * the bounded queue full -> 503,
   * the status lifecycle idle -> in_progress -> completed,
   * a failed review -> failed + review_error,
-  * the 300s in_progress TTL staleness override (the restart guard) reads as
-    failed/retryable WITHOUT mutating storage on a GET,
+  * the in_progress TTL staleness override (the restart guard) reads as the
+    DISTINCT ``stalled`` status (NOT failed) WITHOUT mutating storage on a GET,
+    so a pure timeout never fabricates a durable failure,
   * idempotency: an already-AI-reviewed matter is a no-op in the worker.
 
 The pool itself (concurrency bound, dedup set, queue cap, recovery sweep, worker
@@ -339,13 +340,17 @@ class StatusLifecycle(_FreshPoolMixin, unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
-# 4. The 300s in_progress TTL staleness override (the restart guard).
+# 4. The in_progress TTL staleness override (the restart guard).
+#
+# A stale in_progress is reported as the DISTINCT ``stalled`` status -- NOT ``failed``
+# -- so a slow/interrupted (but not durably-errored) review never paints a red
+# failure. Only the durable failure path writes ``failed``.
 # --------------------------------------------------------------------------- #
 class InProgressTTLOverride(_FreshPoolMixin, unittest.TestCase):
-    def test_stored_in_progress_older_than_ttl_reads_as_failed_without_mutating(self):
+    def test_stored_in_progress_past_ttl_reads_as_stalled_not_failed_without_mutating(self):
         repository = InMemoryMatterRepository()
         text = "Confidential clause whose review thread died mid-run."
-        # An in_progress stamp older than the 300s TTL (a crashed/restarted worker).
+        # An in_progress stamp older than the TTL (a crashed/restarted/long worker).
         stale_started = (
             datetime.now(timezone.utc) - timedelta(seconds=matter_view.REVIEW_IN_PROGRESS_TTL_SECONDS + 60)
         ).isoformat()
@@ -356,11 +361,14 @@ class InProgressTTLOverride(_FreshPoolMixin, unittest.TestCase):
             owner_user_id="owner@example.com",
         )
 
-        # Read via the review view (the poll path): the override fires.
+        # Read via the review view (the poll path): the override fires as STALLED, not
+        # failed -- a pure timeout must never be reported as a durable failure.
         stored = repository.get_matter(matter_id, owner_user_id="owner@example.com")
         view = matter_view.review_matter(stored)
-        self.assertEqual(view["review_status"], "failed")
-        self.assertIn("interrupted", view["review_error"].lower())
+        self.assertEqual(view["review_status"], matter_view.REVIEW_STATUS_STALLED)
+        self.assertNotEqual(view["review_status"], "failed")
+        # The message is an honest "taking longer / interrupted, retry", not an error.
+        self.assertRegex(view["review_error"].lower(), r"longer|interrupt")
 
         # And it did NOT mutate storage (the override is read-only).
         reread = repository.get_matter(matter_id, owner_user_id="owner@example.com")
@@ -396,7 +404,34 @@ class InProgressTTLOverride(_FreshPoolMixin, unittest.TestCase):
 
         stored = repository.get_matter(matter_id, owner_user_id="owner@example.com")
         public = matter_view.public_matter(stored)
-        self.assertEqual(public["review_status"], "failed")
+        # The board view also reports STALLED (not failed) for a stale in_progress.
+        self.assertEqual(public["review_status"], matter_view.REVIEW_STATUS_STALLED)
+        self.assertNotEqual(public["review_status"], "failed")
+
+    def test_durable_failure_still_reads_as_failed_distinct_from_stalled(self):
+        # The OTHER channel: a genuine, durably-recorded failure (the only thing that
+        # writes review_status="failed") must STILL read as "failed" through the same
+        # view path that emits "stalled". This proves the two are distinct -- a real
+        # error keeps its red-failure channel; only a pure timeout becomes "stalled".
+        repository = InMemoryMatterRepository()
+        text = "Confidential clause where the AI reviewer is unavailable."
+        matter_id = _seed_matter(repository, extracted_text=text, review_result=_stale_deterministic_review(text))
+
+        def _unavailable(t, *, paragraphs=None, **kwargs):
+            raise ActiveReviewEngineError("AI-first review failed: disabled")
+
+        ingestion_service._perform_inbound_ai_review(
+            matter_id,
+            repository=repository,
+            owner_user_id="owner@example.com",
+            review_engine_func=_unavailable,
+        )
+
+        stored = repository.get_matter(matter_id, owner_user_id="owner@example.com")
+        view = matter_view.review_matter(stored)
+        self.assertEqual(view["review_status"], "failed")
+        self.assertNotEqual(view["review_status"], matter_view.REVIEW_STATUS_STALLED)
+        self.assertTrue(view.get("review_error"))
 
 
 # --------------------------------------------------------------------------- #

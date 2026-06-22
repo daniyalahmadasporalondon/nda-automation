@@ -15,14 +15,34 @@ const REVIEW_POLL_INTERVAL_MS = 3500; // fast cadence for the first minute
 const REVIEW_POLL_BACKOFF_INTERVAL_MS = 8000; // slower cadence after the backoff point
 const REVIEW_POLL_BACKOFF_AFTER_MS = 60000; // ease off after ~60s of polling
 // HARD STOP. A crashed worker that never flips review_status away from
-// in_progress must not poll forever. After ~300s we stop and surface a failure +
-// Retry. (The server independently ages a stuck in_progress to `failed` at ~300s,
-// so this is the client-side backstop for the case the matter read itself wedges.)
-const REVIEW_POLL_TTL_MS = 300000;
+// in_progress must not poll forever. After this ceiling we stop and surface a
+// failure + Retry. (The server independently ages a stuck in_progress to `failed`
+// at REVIEW_IN_PROGRESS_TTL_SECONDS — kept in lockstep here — so this is the
+// client-side backstop for the case the matter read itself wedges.)
+//
+// LATENCY: this was 300s, which false-FAILED a legitimately long review (a heavy
+// doc can run 3–4 min while the worker is perfectly healthy). The ceiling is now the
+// genuine crashed-worker bound (10 min), matching the server TTL, so a slow-but-alive
+// review surfaces the "still working" reassurance below and only a truly wedged
+// review hits the hard stop. The server still owns the real failure verdict — a poll
+// that reads review_status="failed" (a genuine server error) fails immediately,
+// regardless of elapsed time.
+const REVIEW_POLL_TTL_MS = 600000;
+
+// After this much elapsed time a still-running review is taking longer than the
+// usual window (~145–245s). We keep polling (it has NOT failed) but swap the header
+// copy to an honest "still working, hang tight" reassurance so a long-but-healthy
+// review does not look stuck. Purely cosmetic; it changes no failure logic.
+const REVIEW_POLL_STILL_WORKING_AFTER_MS = 240000;
 
 // User-facing copy shown on the matter while the background AI review runs.
 const REVIEW_REFRESH_PROGRESS_MESSAGE =
   "Reviewing with AI… this runs in the background and can take a couple of minutes.";
+
+// Reassurance copy once the review legitimately runs past the usual window. It is
+// still in progress (not failed) — just a heavier document taking longer.
+const REVIEW_REFRESH_STILL_WORKING_MESSAGE =
+  "Still reviewing with AI… this document is taking a little longer than usual. Hang tight — it's still running in the background.";
 
 // ---------------------------------------------------------------------------
 // In-flight background-review poll controller.
@@ -130,10 +150,15 @@ async function runReviewPollTick(controller) {
   if (!controller || controller.stopped) return;
   controller.timer = null;
 
-  // HARD STOP: a worker that crashed without flipping review_status must not poll
-  // forever. After the TTL, surface a failure + Retry and stop.
+  // HARD STOP: a worker that never flips review_status must not poll forever. At the
+  // ceiling we do a FINAL authoritative read (handleReviewPollTimeout) — NOT an
+  // automatic failure — to decide completed / durably-failed / still-processing.
+  // It is async; swallow any rejection so a final-read error never surfaces as an
+  // unhandled promise rejection (it already falls back to the calm waiting state).
   if (Date.now() - controller.startedAt >= REVIEW_POLL_TTL_MS) {
-    if (controller === reviewPollController) handleReviewPollTimeout(controller.matterId);
+    if (controller === reviewPollController) {
+      Promise.resolve(handleReviewPollTimeout(controller.matterId)).catch(() => {});
+    }
     return;
   }
 
@@ -166,8 +191,18 @@ async function runReviewPollTick(controller) {
   }
 
   const status = String(matter.review_status || "");
-  if (status === "in_progress") {
-    // Still working: refresh the lean board entry's badge and keep polling.
+  if (status === "in_progress" || status === "stalled") {
+    // Still working (or the server's read-time staleness override reports `stalled`,
+    // a DISTINCT non-failure state — the worker may simply be running long or have
+    // been interrupted). Either way the review has NOT durably failed, so we keep
+    // polling and surface a calm "still processing" state rather than a red failure.
+    // Past the usual window, swap to the honest "taking longer than usual" copy.
+    if (status === "stalled" || Date.now() - controller.startedAt >= REVIEW_POLL_STILL_WORKING_AFTER_MS) {
+      const stalledMessage = status === "stalled"
+        ? String(matter.review_error || "").trim() || REVIEW_REFRESH_STILL_WORKING_MESSAGE
+        : REVIEW_REFRESH_STILL_WORKING_MESSAGE;
+      setFileMeta(stalledMessage);
+    }
     if (typeof repositoryController?.loadMatters === "function") {
       repositoryController.loadMatters();
     }
@@ -180,6 +215,8 @@ async function runReviewPollTick(controller) {
   exitReviewInFlightUi();
 
   if (status === "failed") {
+    // ONLY a durably-recorded server error reaches here (review_status="failed" is
+    // written solely by the backend failure path) — a pure timeout never does.
     handleReviewFailed(matter);
     return;
   }
@@ -253,16 +290,55 @@ function handleReviewFailed(matter) {
   updateExportButtonState();
 }
 
-// The TTL backstop fired: the worker never recorded a terminal status. Treat it as
-// a failure with a Retry affordance.
-function handleReviewPollTimeout(matterId) {
+// The poll TTL ceiling fired. CRITICAL: a timeout is NOT a failure. Before declaring
+// anything we do ONE FINAL authoritative status read, because the worker may have
+// finished (or durably failed) right at the ceiling:
+//   * completed / idle -> apply the real result (the review actually finished).
+//   * failed (durably recorded by the backend) -> the real failure notice + Retry.
+//   * still in_progress / stalled (or the read errors) -> a CALM "still processing"
+//     waiting state with a Refresh affordance. We do NOT fabricate
+//     review_status:"failed" into local state and do NOT render the red failure
+//     notice, so a slow-but-healthy review never shows as failed.
+async function handleReviewPollTimeout(matterId) {
   stopReviewPoll();
   exitReviewInFlightUi();
-  const message = "The AI review is taking longer than expected. Please retry.";
-  if (state.selectedMatter?.id === matterId) {
-    state.selectedMatter = { ...state.selectedMatter, review_status: "failed", review_error: message };
+  let matter = null;
+  try {
+    matter = await pollReviewMatter(matterId);
+  } catch (_error) {
+    matter = null;
   }
-  renderReviewFailedNotice(message);
+  const status = String(matter?.review_status || "");
+  if (matter && (status === "completed" || status === "idle")) {
+    // It actually finished — render the real result, not a timeout failure.
+    await applyCompletedReview(matterId, status);
+    return;
+  }
+  if (matter && status === "failed") {
+    // A genuine, durably-recorded server error — the real failure path.
+    handleReviewFailed(matter);
+    return;
+  }
+  // Still in_progress / stalled / unknown / read failed: a slow or interrupted (but
+  // NOT durably failed) review. Surface the calm waiting state — never a red failure.
+  handleReviewStillProcessing(matterId, matter);
+}
+
+// The calm "still processing / taking longer than usual" state. Distinct from a
+// failure: no red failure notice, no fabricated review_status:"failed". It offers a
+// Refresh affordance (re-runs the review-refresh poll) so the user can keep waiting
+// or nudge it, exactly as the Retry button does but worded honestly.
+function handleReviewStillProcessing(matterId, matter) {
+  const message = String(matter?.review_error || "").trim()
+    || "Still reviewing — this is taking longer than usual. Keep waiting or refresh.";
+  if (state.selectedMatter?.id === matterId) {
+    // Preserve the server's real status (in_progress/stalled) — do NOT write "failed".
+    state.selectedMatter = {
+      ...state.selectedMatter,
+      ...(matter || {}),
+    };
+  }
+  renderReviewStillProcessingNotice(message);
   setFileMeta(message);
   renderReviewRefreshNotice();
   updateExportButtonState();
@@ -284,9 +360,27 @@ function renderReviewFailedNotice(message) {
   showReviewRetryButton();
 }
 
-// Insert (or move) the visible Retry button into the toolbar status row, right
-// after #studioFileMeta. Idempotent: a single button instance is reused.
-function showReviewRetryButton() {
+// Render the CALM "still processing" state. Deliberately NOT the failure render: the
+// header reads "Still reviewing" (not the red "Review failed"), and the visible
+// affordance is labelled "Refresh" rather than "Retry". It shares the same toolbar
+// button host (re-runs the review-refresh poll on click) so a slow-but-healthy
+// review never paints a failure, but the user can still nudge/keep-polling it.
+function renderReviewStillProcessingNotice(message) {
+  if (studioOverallTitle) studioOverallTitle.textContent = "Still reviewing";
+  if (studioResultMark) {
+    studioResultMark.textContent = "…";
+    studioResultMark.className = "check is-pending";
+  }
+  if (studioResultMeta) studioResultMeta.textContent = `${message} Refresh`;
+  showReviewRetryButton("Refresh");
+}
+
+// Insert (or move) the visible Retry/Refresh button into the toolbar status row,
+// right after #studioFileMeta. Idempotent: a single button instance is reused. The
+// label defaults to "Retry" (the failure path) but the calm still-processing path
+// passes "Refresh" so the wording matches a non-failure state. Either way the click
+// re-runs the review-refresh poll.
+function showReviewRetryButton(label = "Retry") {
   if (!studioFileMeta) return;
   const host = studioFileMeta.parentElement || studioFileMeta;
   let retry = host.querySelector(".review-retry-button");
@@ -294,12 +388,12 @@ function showReviewRetryButton() {
     retry = document.createElement("button");
     retry.type = "button";
     retry.className = "secondary review-retry-button";
-    retry.textContent = "Retry";
     retry.addEventListener("click", () => {
       refreshSelectedMatterReview();
     });
   }
-  // Place it directly after the file-meta text so it reads as "<error> [Retry]".
+  retry.textContent = label;
+  // Place it directly after the file-meta text so it reads as "<message> [label]".
   if (studioFileMeta.nextSibling !== retry) {
     studioFileMeta.after(retry);
   }

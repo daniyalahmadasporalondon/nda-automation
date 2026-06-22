@@ -197,13 +197,20 @@ export function reviewNeverRan(matter) {
 // returns 202) and stamps `review_status` on every matter payload. An
 // `in_progress` status means a worker is mid-review; the board and review header
 // surface a "Reviewing…" affordance and downstream actions stay disabled until it
-// resolves to `completed`/`failed`/`idle`.
+// resolves to `completed`/`failed`/`idle`. The read-time staleness override can also
+// report `stalled` (a slow/interrupted but NOT durably-failed review); it is treated
+// as still-in-progress here so the board keeps the calm "Reviewing…" affordance
+// rather than flipping to a failure — a pure timeout is never a failure.
 export function reviewInProgress(matter) {
-  return String(matter?.review_status || "") === "in_progress";
+  const status = String(matter?.review_status || "");
+  return status === "in_progress" || status === "stalled";
 }
 
-// True when the most recent background review failed (e.g. the worker crashed or
-// the server aged out a stuck in_progress past its TTL). Drives the inline error +
+// True when the most recent background review DURABLY failed — only the backend's
+// genuine failure path (ingestion_service._record_inbound_review_failure) writes
+// review_status="failed" with a real review_error. The read-time staleness override
+// now reports the DISTINCT `stalled` status, which is NOT a failure, so a slow or
+// interrupted-but-not-errored review never trips this. Drives the inline error +
 // Retry affordance.
 export function reviewFailed(matter) {
   return String(matter?.review_status || "") === "failed";

@@ -84,11 +84,14 @@ const NotificationsView = (() => {
       );
     }
 
-    // True when the matter's async AI review has transitioned to a hard failure.
-    // The backend stamps review_status="failed" (with a human-readable review_error
-    // reason) -- e.g. a scanned-PDF that can't be parsed, an AI-reviewer outage, or
-    // the in_progress->failed TTL staleness override. Applies to ANY matter the
-    // owner can see, not just gmail_inbound ones (a generated/manual NDA can fail
+    // True when the matter's async AI review has transitioned to a hard, DURABLE
+    // failure. The backend stamps review_status="failed" (with a human-readable
+    // review_error reason) ONLY from a genuine error -- e.g. a scanned-PDF that can't
+    // be parsed or an AI-reviewer outage (ingestion_service._record_inbound_review_failure).
+    // It deliberately does NOT include the read-time staleness override, which now
+    // reports a DISTINCT "stalled" status (a slow/interrupted but not-failed review):
+    // a pure timeout must never fabricate a red failure toast. Applies to ANY matter
+    // the owner can see, not just gmail_inbound ones (a generated/manual NDA can fail
     // review too).
     function isFailedReview(matter) {
       return Boolean(
