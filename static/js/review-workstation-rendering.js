@@ -290,11 +290,13 @@ function setStudioSendButtonLabel(label = "Send Redline", title = label) {
 // it can never imply "N clauses found" before the review returns. The animation
 // is gated behind prefers-reduced-motion in CSS, not here.
 //
-// HONESTY: the copy ("Reviewing… this can take up to a minute.") pairs with the
-// shimmer so it never implies an instant result on a 30–120s job. If the review
-// pipeline exposes a per-stage/per-clause progress signal we surface it; today
-// it does not (the async backend reports only in_progress / completed / failed),
-// so we use the honest "still analysing" duration copy and never fake a bar.
+// COMPACT INDICATOR: the copy is a small "Reviewing…" (NOT a wall of "wait here /
+// can take a couple of minutes" text). The review runs in the BACKGROUND and its
+// COMPLETION is announced via the in-app popup (the same toaster as the inbound
+// "N new NDAs" toast), so this inline state is just a small live-op cue paired
+// with the shimmer; the popup is the primary signal. If the review pipeline ever
+// exposes a per-stage/per-clause progress signal we'd surface it; today the async
+// backend reports only in_progress / completed / failed, so no fake progress bar.
 //
 // The skeleton is REMOVED the moment real content arrives: setReviewWorkspaceSkeleton(false)
 // runs from exitReviewInFlightUi (poll terminal) before the result is rendered.
@@ -352,7 +354,7 @@ function setReviewWorkspaceSkeleton(active) {
       overlay.innerHTML = `
         <div class="review-skeleton-copy">
           <span class="skeleton-dot" aria-hidden="true"></span>
-          <span>Reviewing… this can take up to a minute.</span>
+          <span>Reviewing…</span>
         </div>
         ${reviewSkeletonDocumentMarkup()}`;
     } else if (overlay) {
