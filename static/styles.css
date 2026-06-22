@@ -4832,6 +4832,47 @@ h3 {
     0 8px 18px -8px rgba(15, 23, 42, 0.12);
 }
 
+/* === Phase-2 faithful-DOCX surface (redline/clean) ========================= */
+/* The faithful surface renders the REAL .docx via docx-preview (which injects its
+   own styles for fonts/tables/numbering). We only add the workstation affordances
+   the reconstruction has: an editable cursor on the mapped paragraphs and a clearly
+   read-only treatment for the edit-locked classes. */
+.review-faithful-surface .faithful-paragraph-editable[contenteditable="true"] {
+  cursor: text;
+  outline: none;
+}
+
+.review-faithful-surface .faithful-paragraph-editable[contenteditable="true"]:focus {
+  background: rgba(255, 255, 255, 0.85);
+  border-radius: 6px;
+  box-shadow:
+    0 0 0 2px rgba(85, 35, 178, 0.2),
+    0 8px 18px -8px rgba(15, 23, 42, 0.12);
+}
+
+/* Edit-locked paragraphs (tracked changes / table cell / non-text inline / block
+   split / read-back abort) are MAPPED read-only: clause-click + comments still work,
+   but the text is not directly editable here. A subtle dashed rail marks them. */
+.review-faithful-surface .studio-doc-paragraph.faithful-edit-locked {
+  position: relative;
+}
+
+.review-faithful-surface .faithful-paragraph-editable[contenteditable="false"] {
+  cursor: default;
+}
+
+.faithful-edit-locked-note {
+  background: rgba(245, 158, 11, 0.08);
+  border-left: 2px solid rgba(245, 158, 11, 0.5);
+  border-radius: 4px;
+  color: #92400e;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  margin-top: 6px;
+  padding: 4px 8px;
+  user-select: none;
+}
+
 .paragraph-redline-preview {
   cursor: pointer;
   line-height: 1.64;

@@ -3324,23 +3324,47 @@ function applyClauseEvidenceHighlight(clauseId, item, toneClass) {
   const paragraph = state.reviewParagraphs.find((entry) => String(entry.id || "") === paragraphId);
   const paragraphStart = Number(paragraph?.start);
   const spans = Array.isArray(item?.spans) ? item.spans : [];
-  let applied = false;
-  spans.forEach((span) => {
-    const start = Number(span?.start);
-    const end = Number(span?.end);
-    if (Number.isFinite(start) && Number.isFinite(end) && Number.isFinite(paragraphStart)) {
-      applied = highlightClauseTextRange(editable, start - paragraphStart, end - paragraphStart, clauseId, toneClass) || applied;
-    }
-  });
-  if (applied) return true;
   const quote = String(item?.quote || "").trim();
-  if (quote) {
+
+  // (T5c) Under TRACKED CHANGES the start-offset math is unreliable: the spans'
+  // start/end were computed against the clean source text, but a faithful surface
+  // rendered with renderChanges:true interleaves <ins>/<del> markup, so the
+  // character offsets no longer line up (a deleted run still contributes text the
+  // span offsets did not account for). When this paragraph carries tracked-change
+  // descendants, PREFER the quote-substring path (which finds the visible text
+  // wherever it lands) over the offset math. Falls back to offsets only if there is
+  // no usable quote.
+  const hasTrackedChanges = typeof editable.querySelector === "function"
+    && Boolean(editable.querySelector("ins, del"));
+
+  const applyByQuote = () => {
+    if (!quote) return false;
     const fullText = editable.textContent || "";
     const index = fullText.toLowerCase().indexOf(quote.toLowerCase());
-    if (index >= 0) {
-      return highlightClauseTextRange(editable, index, index + quote.length, clauseId, toneClass);
-    }
+    if (index < 0) return false;
+    return highlightClauseTextRange(editable, index, index + quote.length, clauseId, toneClass);
+  };
+
+  const applyBySpans = () => {
+    let applied = false;
+    spans.forEach((span) => {
+      const start = Number(span?.start);
+      const end = Number(span?.end);
+      if (Number.isFinite(start) && Number.isFinite(end) && Number.isFinite(paragraphStart)) {
+        applied = highlightClauseTextRange(editable, start - paragraphStart, end - paragraphStart, clauseId, toneClass) || applied;
+      }
+    });
+    return applied;
+  };
+
+  if (hasTrackedChanges) {
+    if (applyByQuote()) return true;
+    if (applyBySpans()) return true;
+  } else {
+    if (applyBySpans()) return true;
+    if (applyByQuote()) return true;
   }
+
   frame.classList.add(toneClass);
   return true;
 }
@@ -3821,6 +3845,22 @@ function renderStudioDocumentHighlights() {
     showStudioDocumentRender();
     notifyFillHighlights();
     highlightSelectedClauseRefs();
+
+    // OPTIONAL faithful-DOCX upgrade of the non-Original views (redline/clean),
+    // feature-flagged (default OFF) exactly like the Original branch. The
+    // reconstruction above is already painted and bound as the never-blank,
+    // fully-interactive FLOOR; this LAST step renders the ACTUAL reviewed .docx
+    // (styles, tables, numbering, w:ins/w:del) over it ONLY when the flag is on,
+    // the library is available, the source is a faithful candidate, the mapping
+    // guard passes, AND the bytes actually paint. On ANY failure -- flag off,
+    // 404 (the /reviewed-docx endpoint is owned by a separate backend lane and may
+    // not exist yet), parse error, empty render, or an ABORTED 1:1 mapping -- it
+    // leaves the painted reconstruction untouched. Side-by-Side is deliberately
+    // NOT faithful-rendered: it stays reconstruction-based (its diff columns have
+    // no faithful equivalent), so we only upgrade redline + clean.
+    if (viewMode === VIEW_MODE_REDLINE || viewMode === VIEW_MODE_CLEAN) {
+      maybeUpgradeSurfaceToFaithfulDocx(viewMode);
+    }
   } catch (error) {
     try {
       console.error("renderStudioDocumentHighlights: document render failed; painting recoverable error surface", error);
@@ -3915,20 +3955,53 @@ function matterIsPdfSource(matter) {
 //
 // Pure over its arguments (no globals) so it is unit-testable; the caller passes
 // the live flag/library capability + render-state in.
-function selectFaithfulRenderPlan(matter, renderState, capability) {
+//
+// VIEW MODE (Phase 2): the optional fourth argument selects the DOCX bytes to
+// render so the faithful surface MATCHES the view the reconstruction would paint:
+//   * "original" (or omitted): the SOURCE document, byte-identical to Phase 1
+//       (/source for DOCX, /working-docx for a PDF-source canonical DOCX).
+//   * "redline":  the REVIEWED document with tracked changes shown -- the backend
+//       composes the manual edits + clause redlines onto the real .docx and serves
+//       it at /api/matters/<id>/reviewed-docx?changes=tracked.
+//   * "clean":    the same reviewed document with changes ACCEPTED, served at
+//       /api/matters/<id>/reviewed-docx?changes=accepted.
+// The /reviewed-docx endpoint is owned by a separate backend lane and may 404
+// until it ships; the caller's renderer degrades to the reconstruction on any
+// failure (never blank), so a missing endpoint is safe. Side-by-Side never reaches
+// here -- its caller keeps it reconstruction-based.
+function selectFaithfulRenderPlan(matter, renderState, capability, viewMode) {
   const flagEnabled = Boolean(capability && capability.flagEnabled);
   const libraryAvailable = Boolean(capability && capability.libraryAvailable);
   const matterId = matter && matter.id;
+  const mode = String(viewMode || VIEW_MODE_ORIGINAL);
 
   if (flagEnabled && libraryAvailable && matterId) {
+    const encodedId = encodeURIComponent(matterId);
+    // Non-Original (redline/clean): render the REVIEWED docx so tracked changes /
+    // accepted changes match the chosen view. Works for both DOCX-source and a
+    // PDF-source matter once a canonical working DOCX exists, because the backend
+    // composes redlines onto whichever real .docx it holds. Gated the same as the
+    // source paths (DOCX always; PDF only once workingDocxReady).
+    if (mode === VIEW_MODE_REDLINE || mode === VIEW_MODE_CLEAN) {
+      const changes = mode === VIEW_MODE_CLEAN ? "accepted" : "tracked";
+      const eligible = matterIsDocxSource(matter)
+        || (matterIsPdfSource(matter) && renderState && renderState.workingDocxReady === true);
+      if (eligible) {
+        return { render: "faithful_docx", url: `/api/matters/${encodedId}/reviewed-docx?changes=${changes}` };
+      }
+      return { render: "reconstruction" };
+    }
+
+    // Original (or any non-redline/clean caller): the SOURCE document, exactly as
+    // Phase 1 shipped it.
     if (matterIsDocxSource(matter)) {
-      return { render: "faithful_docx", url: `/api/matters/${encodeURIComponent(matterId)}/source` };
+      return { render: "faithful_docx", url: `/api/matters/${encodedId}/source` };
     }
     // PDF-source faithful render is gated on the backend having produced a
     // canonical "working" DOCX. Until renderState.workingDocxReady is true this
     // branch is dormant and PDF matters fall through to page_image.
     if (matterIsPdfSource(matter) && renderState && renderState.workingDocxReady === true) {
-      return { render: "faithful_docx", url: `/api/matters/${encodeURIComponent(matterId)}/working-docx` };
+      return { render: "faithful_docx", url: `/api/matters/${encodedId}/working-docx` };
     }
   }
 
@@ -3996,6 +4069,804 @@ function maybeUpgradeOriginalSurfaceToFaithfulDocx() {
         // ignore logging failure
       }
     });
+}
+
+// === Phase 2: faithful redline/clean upgrade + interactive mapping ===========
+//
+// Feature-flagged faithful-DOCX upgrade of a NON-Original view (redline/clean).
+// The reconstruction is already painted + bound (the never-blank floor). This
+// fetches the REVIEWED .docx (tracked or accepted, per viewMode), renders it into
+// a detached host, then MAPS the rendered .docx paragraphs 1:1 onto
+// state.reviewParagraphs so every interaction (clause-click, comments, evidence
+// highlights, text + formatting edits) works on the real document. If the mapping
+// GUARD aborts -- or the render fails/empties, or a stale request returns -- the
+// painted reconstruction is left untouched. A wrong mapping is far worse than no
+// faithful render, so we abort to reconstruction rather than risk mis-attaching
+// redlines/comments to the wrong clause.
+function maybeUpgradeSurfaceToFaithfulDocx(viewMode) {
+  const faithful = (typeof window !== "undefined" && window.FaithfulDocxRender) || null;
+  if (!faithful || typeof faithful.render !== "function") return;
+
+  const plan = selectFaithfulRenderPlan(
+    state.selectedMatter,
+    state.reviewDocumentRender,
+    {
+      flagEnabled: typeof faithful.enabled === "function" ? faithful.enabled() : false,
+      libraryAvailable: typeof faithful.libraryAvailable === "function" ? faithful.libraryAvailable() : true,
+    },
+    viewMode,
+  );
+  if (plan.render !== "faithful_docx") return; // reconstruction/page_image: keep the painted floor
+
+  const matterId = state.selectedMatter?.id;
+  if (!matterId) return;
+  const sequence = reviewDocumentRenderRequestSequence;
+  const url = plan.url;
+
+  // Render into a detached host first; only swap it in once the bytes paint AND the
+  // mapping guard commits, so a failed/empty/mis-mapped faithful render can never
+  // wipe or corrupt the painted reconstruction mid-flight.
+  const host = document.createElement("div");
+  host.className = "review-faithful-docx-surface";
+
+  Promise.resolve(faithful.render(host, { url }))
+    .then((result) => {
+      // Drop a stale upgrade: the view re-rendered, the matter changed, or we left
+      // this view mode while the bytes were in flight.
+      if (sequence !== reviewDocumentRenderRequestSequence) return;
+      if (state.selectedMatter?.id !== matterId) return;
+      if ((state.documentViewMode || VIEW_MODE_REDLINE) !== viewMode) return;
+      if (!studioDocumentRender) return;
+      if (!result || !result.ok) return; // fall back: keep the reconstruction
+
+      // MAP the rendered .docx paragraphs onto the review model. Aborts (returns
+      // false) on any guard failure, leaving the reconstruction in place.
+      const mapped = bindFaithfulDocxInteractions(host, viewMode);
+      if (!mapped) return; // guard aborted -> reconstruction stands
+
+      const wrapper = document.createElement("section");
+      wrapper.className = "review-faithful-surface review-faithful-redline ready";
+      wrapper.setAttribute("data-review-render-surface", "");
+      wrapper.setAttribute("data-faithful-docx", "");
+      wrapper.setAttribute("data-faithful-view-mode", String(viewMode));
+      wrapper.setAttribute("data-render-status", "ready");
+      wrapper.setAttribute("aria-label", `Reviewed document faithful preview (${viewMode === VIEW_MODE_CLEAN ? "clean" : "redline"})`);
+      wrapper.appendChild(host);
+      studioDocumentRender.innerHTML = "";
+      studioDocumentRender.appendChild(wrapper);
+      showStudioDocumentRender();
+      // The interaction binders are DOM-walkers scoped to studioDocumentRender, so
+      // re-run the surface-level ones that paint onto the now-live faithful DOM.
+      notifyFillHighlights();
+      highlightSelectedClauseRefs();
+    })
+    .catch((error) => {
+      // Belt-and-braces: render()/mapping are contracted never to throw, but if one
+      // somehow does we keep the reconstruction rather than blank or corrupt it.
+      faithfulMappingTelemetry("upgrade_threw");
+      try {
+        // eslint-disable-next-line no-console
+        console.error("maybeUpgradeSurfaceToFaithfulDocx: faithful upgrade failed; keeping reconstruction", error);
+      } catch (_loggingError) {
+        // ignore logging failure
+      }
+    });
+}
+
+// Emits an abort/diagnostic reason for the faithful mapping. Console only today
+// (no telemetry sink wired); kept centralised so a sink can be added in one place.
+function faithfulMappingTelemetry(reason) {
+  try {
+    // eslint-disable-next-line no-console
+    console.warn(`faithful_mapping_aborted: ${reason}`);
+  } catch (_loggingError) {
+    // never let logging break the fallback
+  }
+}
+
+// Normalize a text fragment for the mapping checksum: collapse all whitespace
+// (so a rendered <br> -> "\n" and a structured "\n" -> " " compare equal) and
+// lower-case. Shared by both sides of the guard so the comparison is symmetric.
+function faithfulNormalizeText(value) {
+  return String(value == null ? "" : value).replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+// True when EVERY whitespace-token of `small` appears, in order, as a subsequence
+// of `big`'s tokens. This is the PROVEN-SAFE allowance from /tmp/drift/
+// final_guard.mjs: a legit inline tracked-INSERT makes the rendered text a
+// superset of the structured text (structured ⊑ rendered), and the rare
+// rendered-subset edge (rendered ⊑ structured) is also accepted. It is
+// deliberately NOT a substring/prefix check: an adversarial test proved a naive
+// prefix-checksum SILENTLY mis-attaches redlines on NDA boilerplate, so we require
+// an ORDERED TOKEN subsequence over the whole text, not a leading match.
+function faithfulIsTokenSubsequence(small, big) {
+  const a = faithfulNormalizeText(small).split(" ").filter(Boolean);
+  const b = faithfulNormalizeText(big).split(" ").filter(Boolean);
+  let j = 0;
+  for (const token of b) {
+    if (j < a.length && token === a[j]) j += 1;
+  }
+  return j === a.length && a.length > 0;
+}
+
+// THE GUARD (ports /tmp/drift/final_guard.mjs exactly):
+//   (1) COUNT exact, tolerance 0: N(rendered) !== N(structured) -> ABORT.
+//   (2) Per-pair CHECKSUM with ordered token-subsequence allowance: a pair matches
+//       iff norm-equal OR structured ⊑ rendered (token subseq) OR rendered ⊑
+//       structured. ABORT on the FIRST non-matching pair.
+// `rendered` is an array of strings (already header/footer-excluded by the caller);
+// `structured` is the ordered state.reviewParagraphs slice. Returns true to COMMIT,
+// false to ABORT (and emits a telemetry reason on abort).
+function faithfulMappingGuardPasses(rendered, structured) {
+  if (!Array.isArray(rendered) || !Array.isArray(structured)) {
+    faithfulMappingTelemetry("guard_bad_input");
+    return false;
+  }
+  if (rendered.length !== structured.length) {
+    faithfulMappingTelemetry(`count_mismatch rendered=${rendered.length} structured=${structured.length}`);
+    return false;
+  }
+  for (let i = 0; i < rendered.length; i += 1) {
+    const r = rendered[i];
+    const s = String(structured[i]?.text || "");
+    if (faithfulNormalizeText(r) === faithfulNormalizeText(s)) continue;
+    if (faithfulIsTokenSubsequence(s, r)) continue; // legit inline tracked-insert
+    if (faithfulIsTokenSubsequence(r, s)) continue; // legit (rare) rendered-subset
+    faithfulMappingTelemetry(`checksum_drift index=${i}`);
+    return false;
+  }
+  return true;
+}
+
+// The faithful paragraph elements to map, in TREE order, EXCLUDING header/footer
+// (docx-preview renders these as <header>/<footer>; their text would never appear
+// in the structured review paragraphs). Includes table cell paragraphs (`td p`)
+// because querySelectorAll(".docx p") already returns them in document order.
+function faithfulMappableParagraphs(container) {
+  if (!container || typeof container.querySelectorAll !== "function") return [];
+  return Array.from(container.querySelectorAll(".docx p")).filter((el) => {
+    // Exclude any paragraph inside a rendered header/footer.
+    if (typeof el.closest === "function" && el.closest("header,footer")) return false;
+    return true;
+  });
+}
+
+// Reads a faithful paragraph's text for the GUARD's checksum. Uses the shared
+// normalizer so a soft line break (<br>) contributes a "\n" (which the guard's
+// whitespace-collapse then treats as a space) -- matching how the structured side's
+// "\n" normalizes. Without this, docx-preview's <br> (which yields NO textContent
+// char) would glue two words together ("Definitions"+"As") and abort the whole-doc
+// mapping over a break that is really just whitespace. The per-paragraph read-back
+// assert still catches the cases (tabs) that genuinely cannot round-trip.
+function faithfulParagraphText(el) {
+  return faithfulEditableTextContent(el);
+}
+
+// SHARED faithful-text normalizer: produces the text the way docx_text extraction +
+// editableParagraphText (viewer.js) both see it, so capturedRunsFromFaithfulEditable
+// and paragraph.text are compared on the SAME footing. The silent trap the
+// adversarial pass surfaced: raw textContent keeps NBSP and DROPS <br>/<tab>, while
+// the backend emits "\n" for w:br/w:cr and "\t" for w:tab and the FE editor maps
+// NBSP->space. We mirror that exactly: <br>/<cr>-rendered breaks -> "\n", rendered
+// tab spans -> "\t", NBSP -> space. Used for the re-tile invariant + the read-back
+// assert (which then ABORTS to reconstruction on any residual mismatch).
+function faithfulEditableTextContent(el) {
+  if (!el) return "";
+  let text = "";
+  const ownerDoc = el.ownerDocument || (typeof document !== "undefined" ? document : null);
+  const walk = (node) => {
+    if (!node) return;
+    // Element fast-paths for the structural characters docx_text emits.
+    if (node.nodeType === 1) {
+      const tag = String(node.tagName || "").toUpperCase();
+      // Skip the contenteditable=false chrome (comment tools / verdict badge / note).
+      if (node.classList && (node.classList.contains("paragraph-comment-tools")
+        || node.classList.contains("paragraph-verdict-badge")
+        || node.classList.contains("faithful-edit-locked-note"))) {
+        return;
+      }
+      if (tag === "BR") { text += "\n"; return; }
+      // docx-preview renders a w:tab as a span with a tab class / tab character.
+      if (node.classList && (node.classList.contains("docx-tab") || node.classList.contains("tab"))) {
+        text += "\t";
+        return;
+      }
+    }
+    if (node.nodeType === 3) {
+      text += String(node.textContent || "");
+      return;
+    }
+    const children = node.childNodes || [];
+    for (let i = 0; i < children.length; i += 1) walk(children[i]);
+  };
+  walk(el);
+  if (ownerDoc) { /* keep ownerDoc reference for symmetry; not otherwise needed */ }
+  // Mirror editableParagraphText's NBSP->space + CRLF + collapse of 3+ newlines.
+  return text
+    .replace(/ /g, " ")
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n");
+}
+
+// Detect a faithful paragraph that CANNOT be safely round-tripped and must be
+// EDIT-LOCKED (still mapped read-only). Returns a short reason string, or "" when
+// the paragraph is safe to edit. The four locked classes (all proven by the
+// adversarial round-trip harness against the vendored docx-preview + the backend
+// export/extract code):
+//   1. tracked_changes  -- <ins>/<del> descendants. docx-preview shows ins+del;
+//      the backend model text (docx_text._collect_revision_aware_text) DROPS
+//      insertions and RESTORES deletions -- the OPPOSITE resolution -- so offsets
+//      drift and formatting lands on the wrong characters.
+//   2. table_cell       -- the paragraph is inside a rendered <table>. A
+//      whole-paragraph replace inside a cell is structurally risky; the extractor
+//      keeps cells in the model (so they ARE mapped), but editing routes to the
+//      reconstruction.
+//   3. nontext_inline   -- <a> (hyperlink), a rendered field, a drawing/picture, or
+//      a footnote/endnote marker. The backend _paragraph_has_nontext_inline_content
+//      RAISES on these for replace/delete, so we must lock BEFORE export, not 500.
+//   4. block_split      -- the model split one physical <w:p> into >1 paragraph
+//      (they share a source_index). One faithful <p> <-> two model ids: an edit
+//      can't be attributed.
+function faithfulParagraphEditLockReason(el, paragraph, sourceIndexCounts) {
+  if (!el || typeof el.querySelector !== "function") return "no_element";
+  // 1. Tracked changes.
+  if (el.querySelector("ins, del")) return "tracked_changes";
+  // 2. Table cell.
+  if (typeof el.closest === "function" && el.closest("table")) return "table_cell";
+  // 3. Non-text inline content (mirror the backend export guard's risky set).
+  if (el.querySelector("a[href], a[data-field], sup a, .docx-field, [data-footnote-ref], [data-endnote-ref], img, svg, object, .docx-drawing")) {
+    return "nontext_inline";
+  }
+  // 4. Block split: this model paragraph shares its source_index with another.
+  const si = paragraph && paragraph.source_index;
+  if (si !== undefined && si !== null) {
+    const count = sourceIndexCounts && typeof sourceIndexCounts.get === "function"
+      ? (sourceIndexCounts.get(String(si)) || 0)
+      : 0;
+    if (count > 1) return "block_split";
+  }
+  return "";
+}
+
+// T5b: walk the rendered .docx paragraphs in TREE order, GUARD them 1:1 against
+// state.reviewParagraphs (ordered by source_index), and -- only if the guard
+// commits -- stamp the SAME hooks the reconstruction frame uses
+// (studio-doc-paragraph + data-paragraph-id + data-clause-ids + comment tools)
+// and run the existing DOM-walking binders so clause-click / comments / evidence /
+// fill / clause-ref highlights all reattach for free. Then (T5d) make each mapped
+// paragraph RICH-editable and bind the text + formatting editors.
+//
+// Returns true on COMMIT (the caller swaps in the faithful surface), false on
+// ABORT (the caller keeps the reconstruction). NEVER mutates the live DOM on abort.
+function bindFaithfulDocxInteractions(container, viewMode) {
+  const rendered = faithfulMappableParagraphs(container);
+  // Order the review model by source_index (its document order). Paragraphs that
+  // split a source block share a source_index, so keep a STABLE sort to preserve
+  // their original relative order (Array.prototype.sort is stable in modern JS).
+  const structured = (Array.isArray(state.reviewParagraphs) ? state.reviewParagraphs.slice() : [])
+    .sort((a, b) => {
+      const ai = Number(a?.source_index);
+      const bi = Number(b?.source_index);
+      const an = Number.isFinite(ai) ? ai : Number.MAX_SAFE_INTEGER;
+      const bn = Number.isFinite(bi) ? bi : Number.MAX_SAFE_INTEGER;
+      return an - bn;
+    });
+
+  // (1)+(2) THE GUARD. Abort to reconstruction on any failure.
+  if (!faithfulMappingGuardPasses(rendered.map(faithfulParagraphText), structured)) {
+    return false;
+  }
+
+  // Build the clause-id map exactly as the reconstruction does: a paragraph's
+  // data-clause-ids = the ids of clauses whose matched_paragraph_ids include it
+  // (merged with any redline clause), suppressed for a document-title paragraph.
+  const clauseIdsByParagraphId = faithfulClauseIdsByParagraphId();
+  const comments = currentReviewComments();
+
+  // BLOCK-SPLIT detection (per the adversarial round-trip findings): the extractor
+  // can split ONE physical <w:p> into >1 model paragraph (they share a source_index).
+  // A single faithful <p> then maps to >1 model id, so an edit can't be attributed
+  // -- those paragraphs are EDIT-LOCKED (mapped read-only). Count how many model
+  // paragraphs share each source_index.
+  const sourceIndexCounts = new Map();
+  structured.forEach((paragraph) => {
+    const si = paragraph?.source_index;
+    if (si === undefined || si === null) return;
+    const key = String(si);
+    sourceIndexCounts.set(key, (sourceIndexCounts.get(key) || 0) + 1);
+  });
+
+  const ownerDoc = container.ownerDocument || (typeof document !== "undefined" ? document : null);
+
+  rendered.forEach((el, index) => {
+    const paragraph = structured[index];
+    const paragraphId = String(paragraph?.id || "");
+    // The .docx <p> becomes the FRAME (mirrors renderStudioParagraphFrame's
+    // studio-doc-paragraph): data-paragraph-id + clause ids + comment tools live on
+    // it. The run content is moved into an INNER editable wrapper so that, exactly
+    // like the reconstruction, the editable holds ONLY the rich text -- the comment
+    // tools/badge are SIBLINGS, never inside the editable. (If they were inside,
+    // syncViewerParagraphEdit's innerText read would fold the comment count/icon
+    // text into paragraph.text and corrupt it.)
+    el.classList.add("studio-doc-paragraph");
+    if (paragraphId) el.setAttribute("data-paragraph-id", paragraphId);
+    const clauseIds = clauseIdsByParagraphId.get(paragraphId) || "";
+    if (clauseIds) {
+      el.setAttribute("data-clause-ids", clauseIds);
+    } else {
+      el.removeAttribute("data-clause-ids");
+    }
+    const commentCount = paragraphCommentCount(paragraphId, comments);
+    if (commentCount) el.classList.add("has-comments");
+
+    // Move the existing run children into an inner editable wrapper.
+    const lockReason = paragraphId
+      ? faithfulParagraphEditLockReason(el, paragraph, sourceIndexCounts)
+      : "no_paragraph_id";
+    const editable = ownerDoc ? ownerDoc.createElement("div") : null;
+    if (editable) {
+      editable.className = "paragraph-editable faithful-paragraph-editable";
+      while (el.firstChild) editable.appendChild(el.firstChild);
+      el.appendChild(editable);
+
+      // Comment tools at the TOP of the frame (sibling of the editable), matching
+      // renderStudioParagraphFrame. contenteditable=false so they stay out of text.
+      if (paragraphId && typeof renderParagraphCommentTools === "function") {
+        const tools = renderParagraphCommentTools(paragraphId, commentCount).trim();
+        if (tools) el.insertAdjacentHTML("afterbegin", tools);
+      }
+
+      // (T5d) RICH-editable -- but ONLY for the paragraph classes that round-trip
+      // CLEANLY. The adversarial round-trip pass proved FOUR classes cannot be made
+      // safe by read-back normalization (tracked changes resolve OPPOSITE to the
+      // model; table cells / non-text inline trip the backend export guard; block
+      // splits can't be attributed). For those we MAP read-only (clause-ids /
+      // comments / highlights all still work) and route EDITING to the
+      // reconstruction view, one toggle away -- never risk a silent corruption the
+      // backend's text-only gate would pass. Normal prose (bold/italic/font/color/
+      // size/alignment over plain runs) stays fully editable.
+      if (paragraphId && !lockReason) {
+        editable.setAttribute("data-editable-paragraph-id", paragraphId);
+        editable.setAttribute("contenteditable", "true");
+        editable.setAttribute("spellcheck", "true");
+        editable.setAttribute("role", "textbox");
+        editable.setAttribute("aria-multiline", "true");
+        editable.setAttribute("data-faithful-editable", "");
+      } else {
+        editable.setAttribute("contenteditable", "false");
+        el.classList.add("faithful-edit-locked");
+        if (lockReason) el.setAttribute("data-faithful-lock-reason", lockReason);
+      }
+    }
+  });
+
+  // Now run the SAME binders the reconstruction path uses. They are DOM-walkers
+  // scoped to studioDocumentRender / the container, so they reattach for free.
+  // Clause-click selection (mirrors the non-Original branch's own binding).
+  container.querySelectorAll("[data-clause-ids]").forEach((paragraph) => {
+    paragraph.addEventListener("click", (event) => {
+      if (event.target.closest("[data-editable-paragraph-id]")
+        && event.target.closest("[data-editable-paragraph-id]") !== paragraph) return;
+      const clauseId = String(paragraph.dataset.clauseIds || "").split(" ").filter(Boolean)[0];
+      if (clauseId) selectReviewClause(clauseId, { jump: false });
+    });
+  });
+
+  // Comment controls bind on the container itself (works while still detached).
+  bindParagraphCommentControls(container);
+
+  // The viewer text-editor + format toolbar + comment-text highlights walk
+  // studioDocumentRender to find their nodes; at THIS point the host is still
+  // DETACHED (the caller swaps it in only after we return true). Defer those to a
+  // microtask so they run against the LIVE surface. Guarded so a stale view never
+  // binds.
+  bindFaithfulDocxEditorsWhenLive(container);
+  return true;
+}
+
+// Deferred (post-swap) bind of the studioDocumentRender-scoped binders for the
+// faithful surface: the text editor, the format toolbar, and the comment-text
+// highlights. They are no-ops until the host is live inside studioDocumentRender.
+function bindFaithfulDocxEditorsWhenLive(container) {
+  Promise.resolve().then(() => {
+    if (!studioDocumentRender || !studioDocumentRender.contains(container)) return;
+    if (typeof bindViewerParagraphEditing === "function") bindViewerParagraphEditing();
+    if (typeof bindFormatToolbar === "function") bindFormatToolbar();
+    if (typeof applyCommentTextHighlights === "function") applyCommentTextHighlights();
+  }).catch(() => { /* binders never throw; ignore */ });
+}
+
+// Reproduces the reconstruction's per-paragraph clause-id derivation
+// (renderReviewDocument + paragraphViewModel.ids) so the faithful map stamps the
+// IDENTICAL data-clause-ids -- the anti-mis-attach contract. A document-title
+// paragraph carries no clause linkage (it is the doc name, never clause content).
+function faithfulClauseIdsByParagraphId() {
+  const byParagraph = new Map();
+  const clauses = Array.isArray(state.reviewClauses) ? state.reviewClauses : [];
+  clauses.forEach((clause) => {
+    (clause.matched_paragraph_ids || []).forEach((paragraphId) => {
+      const key = String(paragraphId || "");
+      if (!key) return;
+      if (!byParagraph.has(key)) byParagraph.set(key, []);
+      byParagraph.get(key).push(clause.id);
+    });
+  });
+  // Suppress a document-title paragraph's clause linkage, matching the
+  // reconstruction (paragraphViewModel: title -> []).
+  const result = new Map();
+  (Array.isArray(state.reviewParagraphs) ? state.reviewParagraphs : []).forEach((paragraph) => {
+    const key = String(paragraph?.id || "");
+    if (!key) return;
+    if (typeof paragraphIsDocumentTitle === "function" && paragraphIsDocumentTitle(paragraph)) {
+      return; // no linkage
+    }
+    const ids = byParagraph.get(key);
+    if (ids && ids.length) result.set(key, ids.join(" "));
+  });
+  return result;
+}
+
+// True when a faithful (mapped, editable) surface is currently LIVE in the
+// document pane. Used to keep model edits IN PLACE on the faithful DOM rather than
+// re-fetching the server DOCX (which would not reflect in-session edits) and to
+// re-render a single paragraph's runs from the model after a format edit.
+function faithfulSurfaceIsLive() {
+  return Boolean(
+    studioDocumentRender
+    && typeof studioDocumentRender.querySelector === "function"
+    && studioDocumentRender.querySelector("[data-faithful-docx] [data-faithful-editable]"),
+  );
+}
+
+// (T5d) Re-render ONE faithful paragraph's run spans FROM THE MODEL, so a
+// formatting edit (the toolbar mutates paragraph.runs by offset) is reflected on
+// the faithful DOM -- the model is the single source of truth. We reuse the EXACT
+// reconstruction run renderer (renderParagraphRichText) so the run->span mapping is
+// identical to the reconstruction editor. The paragraph's comment tools (the
+// contenteditable=false toolbar at the top of the frame) are preserved.
+//
+// Before writing, we assert the model's runs re-tile to the model's text
+// (runs.map(r=>r.text).join("")===paragraph.text). renderParagraphRichText already
+// falls back to flat text on drift, so a drifted run set degrades to plain text
+// here rather than corrupting; either way the editable's textContent stays equal to
+// paragraph.text, preserving the text round-trip.
+function renderFaithfulParagraphRunsFromModel(paragraphId) {
+  if (!faithfulSurfaceIsLive()) return false;
+  const id = String(paragraphId || "");
+  if (!id) return false;
+  const editable = studioDocumentRender.querySelector(
+    `[data-faithful-editable][data-editable-paragraph-id="${cssEscape(id)}"]`,
+  );
+  if (!editable) return false;
+  const paragraph = (Array.isArray(state.reviewParagraphs) ? state.reviewParagraphs : [])
+    .find((item) => String(item.id) === id);
+  if (!paragraph) return false;
+  if (typeof renderParagraphRichText !== "function") return false;
+
+  // The editable holds ONLY the run content (the comment tools/badge are siblings
+  // on the frame), so replacing its innerHTML with the freshly rendered runs is a
+  // clean swap. renderParagraphRichText falls back to flat text on any run drift,
+  // so textContent stays equal to paragraph.text either way.
+  editable.innerHTML = renderParagraphRichText(paragraph);
+  return true;
+}
+
+// === (T5d) Faithful-DOM <-> run-model bridge ================================
+//
+// The faithful surface shows the SERVER document's styled runs (docx-preview emits
+// <strong>/<em>/<u>/<span style="font-...">). The format toolbar, however, edits
+// state.reviewParagraphs[id].runs by character offset. If the model's runs are a
+// flat/extracted approximation, formatting a selection and then re-rendering from
+// the model would DROP the source run formatting the user can see. So BEFORE the
+// first format edit on a faithful paragraph we READ the faithful DOM's styled spans
+// back into the run array, seeding the model from what is on screen.
+//
+// CRITICAL SAFETY (per spec): re-tile to the invariant
+// runs.map(r=>r.text).join("") === paragraph.text and assert captured text ===
+// editable textContent BEFORE assigning. If the re-tile / assert FAILS, ABORT this
+// paragraph's faithful editing -- route it to the reconstruction editor with a
+// visible notice -- rather than silently corrupt the runs.
+
+// Read the faithful editable's inline runs into the [{text,bold,...}] model shape,
+// recursively walking the DOM and accumulating the active inline styles from the
+// ancestor chain. Returns { runs, text } where `text` is the concatenated run text.
+//
+// To keep the invariant runs.join() === paragraph.text HONEST, this uses the SAME
+// structural-character handling as faithfulEditableTextContent / docx_text
+// extraction: a <br>/<cr> contributes "\n", a rendered tab span contributes "\t",
+// NBSP normalizes to a space. The contenteditable=false chrome (comment tools /
+// verdict badge / locked note) is skipped. Because both the captured run text and
+// the assert text take this SAME path, a residual mismatch is a REAL drift (caught
+// by the assert -> abort), never a normalization artefact.
+function capturedRunsFromFaithfulEditable(editable) {
+  if (!editable) return { runs: [], text: "" };
+  const runs = [];
+  let text = "";
+  const isChrome = (node) => node && node.classList && (
+    node.classList.contains("paragraph-comment-tools")
+    || node.classList.contains("paragraph-verdict-badge")
+    || node.classList.contains("faithful-edit-locked-note")
+  );
+  const pushChunk = (chunk, styleNode) => {
+    if (!chunk) return;
+    const normalized = chunk.replace(/ /g, " "); // NBSP -> space (shared rule)
+    const styled = styleNode ? inlineStyleFromAncestors(styleNode, editable) : {};
+    text += normalized;
+    runs.push({ text: normalized, ...styled });
+  };
+  const walk = (node) => {
+    if (!node) return;
+    if (node.nodeType === 3) { // text node
+      pushChunk(String(node.textContent || ""), node);
+      return;
+    }
+    if (node.nodeType !== 1) return; // comments etc.
+    if (isChrome(node)) return;
+    const tag = String(node.tagName || "").toUpperCase();
+    if (tag === "BR") { pushChunk("\n", node); return; }
+    if (node.classList && (node.classList.contains("docx-tab") || node.classList.contains("tab"))) {
+      pushChunk("\t", node);
+      return;
+    }
+    const children = node.childNodes || [];
+    for (let i = 0; i < children.length; i += 1) walk(children[i]);
+  };
+  walk(editable);
+  return { runs, text };
+}
+
+// Walks a text node's ancestor chain (up to, not including, `editable`) and reads
+// the inline formatting docx-preview applied: bold (<strong>/<b>/font-weight),
+// italic (<em>/<i>/font-style), underline (<u>/text-decoration), strike, the
+// font-family / font-size / color / background-color from inline styles. Returns
+// only the keys that are set, matching normalizeRun's tidy shape.
+function inlineStyleFromAncestors(node, editable) {
+  let bold = false;
+  let italic = false;
+  let underline = false;
+  let strike = false;
+  let font = "";
+  let size = 0;
+  let color = "";
+  let highlight = "";
+  let vertAlign = "";
+  let el = node.parentElement;
+  while (el && el !== editable) {
+    const tag = String(el.tagName || "").toUpperCase();
+    if (tag === "STRONG" || tag === "B") bold = true;
+    if (tag === "EM" || tag === "I") italic = true;
+    if (tag === "U") underline = true;
+    if (tag === "S" || tag === "STRIKE" || tag === "DEL") strike = true;
+    if (tag === "SUP" && !vertAlign) vertAlign = "superscript";
+    if (tag === "SUB" && !vertAlign) vertAlign = "subscript";
+    const style = el.style || {};
+    const weight = String(style.fontWeight || "").trim().toLowerCase();
+    if (weight === "bold" || Number(weight) >= 600) bold = true;
+    const fStyle = String(style.fontStyle || "").trim().toLowerCase();
+    if (fStyle === "italic" || fStyle === "oblique") italic = true;
+    const decoration = String(style.textDecoration || style.textDecorationLine || "").toLowerCase();
+    if (decoration.includes("underline")) underline = true;
+    if (decoration.includes("line-through")) strike = true;
+    if (!font) {
+      const family = String(style.fontFamily || "").trim();
+      if (family) font = fontNameFromCssFamily(family);
+    }
+    if (!size) {
+      const px = parseFloat(String(style.fontSize || ""));
+      if (Number.isFinite(px) && px > 0 && /pt$/i.test(String(style.fontSize || ""))) size = Math.round(px);
+    }
+    if (!color) {
+      const c = cssColorToHex(style.color);
+      if (c) color = c;
+    }
+    if (!highlight) {
+      const bg = cssColorToHex(style.backgroundColor);
+      if (bg) highlight = bg;
+    }
+    el = el.parentElement;
+  }
+  const out = {};
+  if (bold) out.bold = true;
+  if (italic) out.italic = true;
+  if (underline) out.underline = true;
+  if (strike) out.strike = true;
+  if (font) out.font = font;
+  if (size) out.size = size;
+  if (color) out.color = color;
+  if (highlight) out.highlight = highlight;
+  if (vertAlign) out.vertAlign = vertAlign;
+  return out;
+}
+
+// Reduce a CSS font-family stack (e.g. '"Times New Roman", serif') to the Word
+// font NAME the run model stores (the first family, unquoted).
+function fontNameFromCssFamily(family) {
+  const first = String(family || "").split(",")[0].trim().replace(/^["']|["']$/g, "");
+  return first;
+}
+
+// Best-effort CSS color -> RRGGBB (no #) for the run model. Handles #rgb / #rrggbb
+// and rgb()/rgba(); anything else -> "" (no override). Never throws.
+function cssColorToHex(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const hex3 = raw.match(/^#([0-9a-fA-F]{3})$/);
+  if (hex3) {
+    const h = hex3[1];
+    return (h[0] + h[0] + h[1] + h[1] + h[2] + h[2]).toUpperCase();
+  }
+  const hex6 = raw.match(/^#([0-9a-fA-F]{6})$/);
+  if (hex6) return hex6[1].toUpperCase();
+  const rgb = raw.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+  if (rgb) {
+    const toHex = (n) => Math.max(0, Math.min(255, Number(n))).toString(16).padStart(2, "0");
+    return (toHex(rgb[1]) + toHex(rgb[2]) + toHex(rgb[3])).toUpperCase();
+  }
+  return "";
+}
+
+// Seed a faithful paragraph's model runs from the FAITHFUL DOM (read-back), with
+// the re-tile invariant + assert. Called once, lazily, before the first format
+// edit on a faithful paragraph (the model may have no/flat runs). Returns true if
+// the model now carries DOM-faithful runs that re-tile to paragraph.text; false to
+// signal the caller MUST abort faithful editing of this paragraph (route it to the
+// reconstruction editor) rather than risk corrupting runs.
+function seedFaithfulParagraphRunsFromDom(paragraphId) {
+  if (!faithfulSurfaceIsLive()) return false;
+  const id = String(paragraphId || "");
+  const editable = studioDocumentRender.querySelector(
+    `[data-faithful-editable][data-editable-paragraph-id="${cssEscape(id)}"]`,
+  );
+  if (!editable) return false;
+  const paragraph = (Array.isArray(state.reviewParagraphs) ? state.reviewParagraphs : [])
+    .find((item) => String(item.id) === id);
+  if (!paragraph) return false;
+  // Already carries valid runs that tile the text? Nothing to seed.
+  const existing = Array.isArray(paragraph.runs) ? paragraph.runs : null;
+  if (existing && existing.length
+    && existing.map((run) => String(run?.text || "")).join("") === String(paragraph.text || "")) {
+    return true;
+  }
+
+  const captured = capturedRunsFromFaithfulEditable(editable);
+  // ASSERT 1 (BYTE-exact): the captured run text must equal the editable's own text
+  // read through the SAME shared normalizer. Both paths emit <br>->"\n", tab->"\t",
+  // NBSP->space, so a residual mismatch is a REAL read-back drift (a node the run
+  // walker handled differently than the text walker), not a normalization artefact.
+  const editableText = editableParagraphTextSafe(editable);
+  const modelText = String(paragraph.text || "");
+  const capturedJoined = captured.runs.map((run) => String(run?.text || "")).join("");
+  // ASSERT 2: the captured text re-tiles to the MODEL text (the export oracle). This
+  // is compared on the byte-exact shared normalization too; the trailing-trim that
+  // editableParagraphText applies is the only allowed difference, so we trim both.
+  const captureMatchesEditable = captured.text === editableText;
+  const tilesToModel = faithfulTrimEditableText(capturedJoined) === faithfulTrimEditableText(modelText);
+  if (!captureMatchesEditable || !tilesToModel) {
+    // ABORT this paragraph's faithful editing -> reconstruction editor + notice.
+    // (Catches the tab/break/NBSP + boundary-drift cases the backend's text-only
+    // gate would NOT catch -- this FE assert is the only defense against a correct-
+    // text / wrong-formatting-boundary read-back.)
+    faithfulMappingTelemetry(`readback_retile_failed paragraph=${id}`);
+    abortFaithfulParagraphToReconstruction(id);
+    return false;
+  }
+  // The captured run text may differ from the model text only by collapsed
+  // whitespace; rebuild the runs onto the EXACT model text so the stored invariant
+  // (byte-equal join) holds, distributing formatting by character offset.
+  paragraph.runs = retileCapturedRunsOntoText(captured.runs, modelText);
+  // Final guard: if the rebuild did not byte-tile, drop runs (degrade to plain
+  // text) rather than store a drifted set.
+  if (paragraph.runs.map((run) => String(run?.text || "")).join("") !== modelText) {
+    delete paragraph.runs;
+    faithfulMappingTelemetry(`readback_byte_tile_failed paragraph=${id}`);
+    abortFaithfulParagraphToReconstruction(id);
+    return false;
+  }
+  return true;
+}
+
+// Re-tile captured runs (whose concatenated text may differ from `text` only by
+// whitespace normalization) onto the EXACT `text`, preserving the per-character
+// formatting in order. Builds a char->format array from the captured runs (mapping
+// only non-whitespace chars 1:1 and letting whitespace inherit its neighbour), then
+// emits contiguous runs over `text`. Falls back to a single plain run if lengths
+// can't be reconciled.
+function retileCapturedRunsOntoText(capturedRuns, text) {
+  const target = String(text || "");
+  // Build a flat list of {char, fmt} for the captured non-space chars, in order.
+  const capturedChars = [];
+  (Array.isArray(capturedRuns) ? capturedRuns : []).forEach((run) => {
+    const fmt = {};
+    ["bold", "italic", "underline", "strike", "font", "size", "color", "highlight", "vertAlign"].forEach((key) => {
+      if (run[key]) fmt[key] = run[key];
+    });
+    String(run.text || "").split("").forEach((ch) => {
+      if (!/\s/.test(ch)) capturedChars.push({ ch, fmt });
+    });
+  });
+  const targetNonSpace = target.split("").filter((ch) => !/\s/.test(ch));
+  // If the non-space character streams don't line up, we cannot safely attribute
+  // formatting -> single plain run (caller's byte-tile guard then accepts it).
+  if (capturedChars.length !== targetNonSpace.length) {
+    return [{ text: target }];
+  }
+  // Walk the target, pulling the next captured format for each non-space char and
+  // reusing the last format across whitespace, then coalesce equal-format runs.
+  const runs = [];
+  let capturedIndex = 0;
+  let lastFmt = {};
+  for (const ch of target) {
+    let fmt;
+    if (/\s/.test(ch)) {
+      fmt = lastFmt;
+    } else {
+      fmt = capturedChars[capturedIndex] ? capturedChars[capturedIndex].fmt : {};
+      lastFmt = fmt;
+      capturedIndex += 1;
+    }
+    const last = runs[runs.length - 1];
+    if (last && faithfulRunFmtEqual(last, fmt)) {
+      last.text += ch;
+    } else {
+      runs.push({ text: ch, ...fmt });
+    }
+  }
+  return runs.length ? runs : [{ text: target }];
+}
+
+function faithfulRunFmtEqual(run, fmt) {
+  const keys = ["bold", "italic", "underline", "strike", "font", "size", "color", "highlight", "vertAlign"];
+  return keys.every((key) => String(run[key] || "") === String(fmt[key] || ""));
+}
+
+// Safe text of the editable EXCLUDING the comment-tools / verdict badge, read
+// through the SHARED normalizer so it is byte-comparable with the captured run
+// text (both emit <br>->"\n", tab->"\t", NBSP->space, skip the chrome). This is
+// the read-back fidelity assert's reference text.
+function editableParagraphTextSafe(editable) {
+  return faithfulEditableTextContent(editable);
+}
+
+// editableParagraphText (viewer.js) trims the final text; the model paragraph.text
+// is therefore trimmed. The captured/joined run text is NOT pre-trimmed, so the
+// re-tile comparison trims both sides exactly as the viewer does.
+function faithfulTrimEditableText(value) {
+  return String(value == null ? "" : value).trim();
+}
+
+// ABORT a single faithful paragraph's editing: make it non-editable on the
+// faithful surface and surface a visible notice telling the reviewer to use the
+// reconstruction view for this paragraph. The OTHER faithful paragraphs keep
+// working; only this one is locked. The model is untouched (no corruption).
+function abortFaithfulParagraphToReconstruction(paragraphId) {
+  const id = String(paragraphId || "");
+  if (!faithfulSurfaceIsLive()) return;
+  const editable = studioDocumentRender.querySelector(
+    `[data-faithful-editable][data-editable-paragraph-id="${cssEscape(id)}"]`,
+  );
+  if (!editable) return;
+  editable.setAttribute("contenteditable", "false");
+  editable.removeAttribute("data-faithful-editable");
+  // Lock the FRAME (the studio-doc-paragraph), and put the notice on the frame as a
+  // sibling of the editable so it is never read into paragraph.text.
+  const frame = typeof editable.closest === "function"
+    ? (editable.closest(".studio-doc-paragraph") || editable)
+    : editable;
+  frame.classList.add("faithful-edit-locked");
+  frame.setAttribute("data-faithful-lock-reason", "readback_failed");
+  if (!frame.querySelector(".faithful-edit-locked-note")) {
+    const note = document.createElement("div");
+    note.className = "faithful-edit-locked-note";
+    note.setAttribute("contenteditable", "false");
+    note.setAttribute("role", "note");
+    note.textContent = "This paragraph can't be edited on the faithful preview. Switch to the reconstruction view to edit it.";
+    frame.appendChild(note);
+  }
+  try {
+    setFileMeta("A paragraph was locked on the faithful preview; edit it in the reconstruction view.");
+  } catch (_error) {
+    // setFileMeta is best-effort
+  }
 }
 
 function reviewDocumentRenderState(result) {
