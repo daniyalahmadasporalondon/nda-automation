@@ -19,9 +19,12 @@ from nda_automation import (
     approval,
     artifact_registry,
     artifact_service,
+    matter_document_artifacts,
     matter_store,
+    pdf_ingest_conversion,
 )
 from nda_automation.review_engine import review_nda_with_active_engine
+from nda_automation.review_result_contract import extracted_text_from_paragraphs
 from nda_automation.routes import approval as approval_routes
 from nda_automation.triage import triage_review_result
 
@@ -36,6 +39,18 @@ NDA_PARAGRAPHS = [
 
 
 def _docx(paragraphs) -> bytes:
+    document = Document()
+    for text in paragraphs:
+        document.add_paragraph(text)
+    buffer = BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def _docx_with_blanks(paragraphs) -> bytes:
+    """A COMPLETE DOCX package whose body carries genuinely blank paragraphs for each
+    empty string (python-docx ``add_paragraph("")``), so the reviewed-docx export can
+    read it as a valid redline source while still exercising the blank-paragraph shape."""
     document = Document()
     for text in paragraphs:
         document.add_paragraph(text)
@@ -227,6 +242,93 @@ def test_g2_pdf_source_with_working_docx_serves_anchored_reviewed_docx():
     assert data and data[:2] == b"PK"
     # The redline markup is PRESENT -- the accepted change anchored into the working
     # DOCX body by index rather than being dropped.
+    assert _has_tracked_markup(data) is True
+
+
+def test_p0_converted_pdf_with_blank_paragraph_before_redline_exports():
+    # P0 regression: a converted-PDF working DOCX whose body carries BLANK <w:p> (the
+    # spacing paragraphs pdf2docx routinely emits) before/around a redlined clause must
+    # still EXPORT. The blank-counting source_index (export anchoring) and the
+    # blank-stripped paragraph_index (coverage gate) are reconciled by the review
+    # pipeline, so the export does not false-block on the common blank-paragraph shape.
+    clauses = [
+        "This Mutual Non-Disclosure Agreement is entered into by both parties on the date below.",
+        "Each party agrees to keep the other party's Confidential Information strictly secret.",
+        "This Agreement shall be governed by the laws of the State of Mars and its courts.",
+        "The Receiving Party shall not solicit any employees of the Disclosing Party for two years.",
+    ]
+    # LEADING blank + an INTERIOR blank: the reconstructed body the export anchors into.
+    recon = ["", clauses[0], clauses[1], "", clauses[2], clauses[3]]
+    working_docx = _docx_with_blanks(recon)
+    pypdf = [
+        {"id": f"p{i + 1}", "text": text, "source_index": i + 1, "source_part": "pdf"}
+        for i, text in enumerate(clauses)
+    ]
+    body_index = pdf_ingest_conversion.reconstructed_body_index(working_docx)
+    mapped, _m, _u = pdf_ingest_conversion.map_paragraphs_to_reconstruction(pypdf, body_index)
+    # The re-keyed source_index lives in the blank-COUNTING space (2,3,5,6).
+    assert [p["source_index"] for p in mapped] == [2, 3, 5, 6]
+
+    extracted_text = extracted_text_from_paragraphs(mapped)
+    review_result = review_nda_with_active_engine(extracted_text, paragraphs=mapped)
+    review_result["extracted_text"] = extracted_text
+
+    # The stub AI engine flags clauses but emits no redlines, so inject ONE redline on
+    # the governing-law clause keyed to its reviewed paragraph. The redline carries the
+    # blank-counting source_index (5 -> the 5th physical <w:p>, "...laws of Mars...")
+    # AND the blank-stripped paragraph_index the gate keys on -- exactly the two-index
+    # shape a real reviewed redline carries, so this exercises the P0 reconciliation.
+    govlaw_paragraph = next(
+        paragraph
+        for paragraph in review_result.get("paragraphs", [])
+        if "State of Mars" in str(paragraph.get("text") or "")
+    )
+    review_result["redline_edits"] = [
+        {
+            "id": "seeded-govlaw-redline",
+            "clause_id": "governing_law",
+            "paragraph_id": govlaw_paragraph["id"],
+            "paragraph_index": govlaw_paragraph.get("index"),
+            "source_index": govlaw_paragraph.get("source_index"),
+            "action": "replace_paragraph",
+            "original_text": govlaw_paragraph["text"],
+            "replacement_text": "This Agreement shall be governed by the laws of England and Wales.",
+        }
+    ]
+    assert govlaw_paragraph.get("source_index") == 5  # blank-counting (leading+interior blank)
+
+    matter = matter_store.create_matter(
+        source_filename="inbound.pdf",
+        document_bytes=b"%PDF-1.7\nx\n%%EOF\n",
+        extracted_text=extracted_text,
+        review_result=review_result,
+        triage=triage_review_result(review_result),
+        source_type="manual_upload",
+        board_column="in_review",
+        owner_user_id="owner-1",
+    )
+    matter_id = matter["id"]
+    artifact_service.register_working_docx(matter_id, working_docx, owner_user_id="owner-1")
+    flagged = [
+        str(clause.get("id"))
+        for clause in review_result.get("clauses", [])
+        if clause.get("decision") in ("fail", "review")
+    ]
+    assert flagged, "fixture should flag at least one clause to redline"
+    for clause_id in flagged:
+        matter_store.set_clause_reviewer_decision(
+            matter_id,
+            clause_id,
+            approval.normalize_reviewer_decision({"action": "accept"}, actor="reviewer"),
+        )
+    matter_store.update_matter_fields(matter_id, {"status": approval.MATTER_STATUS_APPROVED})
+
+    stored = matter_store.get_matter(matter_id, owner_user_id="owner-1")
+    # The export does NOT raise/block (the blank-paragraph false-block class is closed).
+    reviewed = matter_document_artifacts.build_reviewed_docx(matter_id, stored, owner_user_id="owner-1")
+    data = reviewed.export.data
+    assert data and data[:2] == b"PK"
+    # And the accepted redline actually anchored into the working DOCX body.
     assert _has_tracked_markup(data) is True
 
 

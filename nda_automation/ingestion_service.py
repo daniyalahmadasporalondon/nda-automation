@@ -1377,13 +1377,16 @@ def _convert_pdf_matter_at_ingest(
             exc_info=True,
         )
         return matter
+    # ORDER MATTERS (half-persist guard): the working artifact is what makes the
+    # export substitute the working DOCX + light up working_docx_ready, and the
+    # re-keyed paragraphs are what make the review produce redlines that anchor into
+    # it. Persist the paragraphs FIRST, then register the artifact LAST, so the two
+    # are never out of step in the harmful direction: a registered working artifact
+    # ALWAYS has its re-keyed paragraphs behind it. If artifact registration fails
+    # after the field write, roll the orphan field back so the matter falls cleanly
+    # to the legacy un-converted PDF path rather than the divergent (artifact-only /
+    # paragraphs-only) state Approach C exists to remove.
     try:
-        artifact_service.register_working_docx(
-            matter_id,
-            working.docx_bytes,
-            repository=repository,
-            owner_user_id=owner_user_id,
-        )
         updated = repository.update_matter_fields(
             matter_id,
             {WORKING_DOCX_PARAGRAPHS_FIELD: working.paragraphs},
@@ -1391,11 +1394,37 @@ def _convert_pdf_matter_at_ingest(
         )
     except Exception:
         LOGGER.warning(
-            "Persisting PDF->working-DOCX conversion failed for matter %s; keeping legacy PDF matter",
+            "Persisting PDF->working-DOCX paragraphs failed for matter %s; keeping legacy PDF matter",
             matter_id,
             exc_info=True,
         )
         return matter
+    try:
+        artifact_service.register_working_docx(
+            matter_id,
+            working.docx_bytes,
+            repository=repository,
+            owner_user_id=owner_user_id,
+        )
+    except Exception:
+        LOGGER.warning(
+            "Registering PDF->working-DOCX artifact failed for matter %s; rolling back "
+            "the re-keyed paragraphs and keeping legacy PDF matter",
+            matter_id,
+            exc_info=True,
+        )
+        try:
+            rolled_back = repository.update_matter_fields(
+                matter_id,
+                {WORKING_DOCX_PARAGRAPHS_FIELD: None},
+                owner_user_id=owner_user_id,
+            )
+        except Exception:
+            LOGGER.warning(
+                "Rolling back PDF->working-DOCX paragraphs failed for matter %s", matter_id, exc_info=True
+            )
+            return updated if isinstance(updated, dict) else matter
+        return rolled_back if isinstance(rolled_back, dict) else matter
     LOGGER.info(
         "PDF->working-DOCX conversion stored for matter %s (mapped=%d unmapped=%d)",
         matter_id,

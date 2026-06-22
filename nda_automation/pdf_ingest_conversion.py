@@ -111,34 +111,46 @@ def map_paragraphs_to_reconstruction(
     """Stamp each pypdf review paragraph with the ``source_index`` of the reconstructed
     body paragraph it best matches, dropping the ``source_part:"pdf"`` marker on success.
 
-    Alignment is a MONOTONIC forward scan: each pypdf paragraph is matched against the
-    reconstructed paragraphs at or after the running cursor, so repeated/duplicate
-    clause text aligns one-to-one in document order (twin-safe) instead of all matching
-    the first occurrence. A pypdf fragment that the reconstruction merged into a larger
-    paragraph still resolves -- its normalized text is a confident token-subset of that
-    paragraph. A paragraph that cannot be confidently placed KEEPS its ``source_part``
-    marker so the legacy fail-closed text-anchor path still guards it (never a silent
-    drop).
+    Alignment is a forward scan with a running cursor, so repeated/duplicate clause text
+    aligns one-to-one in document order (twin-safe) instead of all matching the first
+    occurrence. Two MATCH KINDS advance the cursor differently:
+
+    * A one-to-one match (normalized equality, or a fuzzy token-set ratio) CONSUMES the
+      reconstructed paragraph: the cursor advances PAST it so the next pypdf paragraph
+      looks further on.
+    * A token-SUBSET match means pdf2docx MERGED several pypdf fragments of one
+      multi-sentence clause into a single reconstructed paragraph. The cursor stays AT
+      that paragraph so every consecutive fragment of the merged clause re-matches it
+      and shares its ``source_index`` (rather than the 2nd fragment falling through to
+      the NEXT clause and stealing its index -- the collision that strict export would
+      then reject). The cursor only advances off a merged paragraph once a later
+      fragment matches a paragraph beyond it.
+
+    A paragraph that cannot be confidently placed KEEPS its ``source_part`` marker so the
+    legacy fail-closed text-anchor path still guards it (never a silent drop).
     """
     mapped: list[dict[str, Any]] = []
     mapped_count = 0
     unmapped_count = 0
     # Reconstructed paragraphs eligible for the next match, paired with their canonical
-    # source_index. Consumed monotonically so duplicates align in order.
+    # source_index. Consumed forward so duplicates align in order.
     cursor = 0
     non_empty = [(idx, norm) for (idx, _text, norm) in reconstructed_index if norm]
 
     for paragraph in pypdf_paragraphs:
         updated = dict(paragraph)
         target = _normalize_paragraph_text(paragraph.get("text"))
-        match_position, source_index = _best_forward_match(target, non_empty, cursor)
+        match_position, source_index, is_subset = _best_forward_match(target, non_empty, cursor)
         if source_index is not None and match_position is not None:
             updated["source_index"] = source_index
             # Drop the PDF marker: this review paragraph now anchors by index into the
             # reconstructed DOCX body, exactly like a native-DOCX review paragraph.
             updated.pop("source_part", None)
             mapped_count += 1
-            cursor = match_position + 1
+            # A merged-paragraph (subset) match does NOT consume the paragraph -- leave
+            # the cursor on it so the next consecutive fragment of the same clause can
+            # also map to it. A one-to-one match consumes it (advance past).
+            cursor = match_position if is_subset else match_position + 1
         else:
             unmapped_count += 1
         mapped.append(updated)
@@ -149,28 +161,33 @@ def _best_forward_match(
     target: str,
     non_empty: Sequence[tuple[int, str]],
     cursor: int,
-) -> tuple[int | None, int | None]:
+) -> tuple[int | None, int | None, bool]:
     """Best reconstructed paragraph for ``target`` at or after ``cursor``.
 
-    Returns ``(position_in_non_empty, source_index)`` or ``(None, None)``. Prefers a
-    normalized-equality / token-subset match closest to the cursor (keeping alignment
-    monotonic), then the highest token-set ratio above the threshold.
+    Returns ``(position_in_non_empty, source_index, is_subset)`` or ``(None, None,
+    False)``. Prefers a normalized-equality / token-subset match closest to the cursor
+    (keeping alignment monotonic), then the highest token-set ratio above the threshold.
+    ``is_subset`` is True only for a token-subset (merged-paragraph) match, which the
+    caller treats as a non-consuming match so a merged paragraph can absorb several
+    consecutive fragments.
     """
     if not target:
-        return None, None
+        return None, None, False
     best_position: int | None = None
     best_index: int | None = None
     best_score = 0.0
     for position in range(cursor, len(non_empty)):
         source_index, candidate = non_empty[position]
-        if candidate == target or _is_token_subset(target, candidate):
-            return position, source_index
+        if candidate == target:
+            return position, source_index, False
+        if _is_token_subset(target, candidate):
+            return position, source_index, True
         score = _token_set_ratio(target, candidate)
         if score >= PDF_INGEST_MATCH_RATIO and score > best_score:
             best_score = score
             best_position = position
             best_index = source_index
-    return best_position, best_index
+    return best_position, best_index, False
 
 
 def _is_token_subset(fragment: str, paragraph: str) -> bool:
