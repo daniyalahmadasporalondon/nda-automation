@@ -42,7 +42,6 @@ OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 GMAIL_TRIAGE_MODEL_ENV = "NDA_GMAIL_TRIAGE_MODEL"
 GMAIL_INTAKE_MODEL_ENV = "NDA_GMAIL_INTAKE_MODEL"
 DEFAULT_GMAIL_INTAKE_MODEL = "deepseek/deepseek-v4-flash"
-INBOUND_AI_REVIEW_ENABLED_ENV = "NDA_INBOUND_AI_REVIEW_ENABLED"
 
 # Worker memory is flagged red only when it crosses this fraction of the
 # container limit -- close enough that an OOM is plausibly imminent. Mirrors the
@@ -413,7 +412,6 @@ def _deployment_status_for_host(host: str) -> dict[str, object]:
     memory_check = _deployment_memory_headroom_check(memory)
     disk = _data_dir_disk_usage()
     disk_check = _deployment_disk_headroom_check(disk)
-    inbound_ai_review_check = _deployment_inbound_ai_review_check()
     boot_count = data_dir_boot_count()
     boot_count_check = _deployment_boot_count_check(boot_count)
     inbound_review_queue_depth = _inbound_review_queue_depth()
@@ -520,15 +518,6 @@ def _deployment_status_for_host(host: str) -> dict[str, object]:
             "message": disk_check["message"],
         },
         {
-            # Echo the inbound-auto-review kill-switch so an operator can SEE whether
-            # the OOM-mitigation toggle is currently disabling background review.
-            # Informational: never fails the gate (either state is valid).
-            "id": "inbound_ai_review_env",
-            "ok": inbound_ai_review_check["ok"],
-            "enabled": inbound_ai_review_check["enabled"],
-            "message": inbound_ai_review_check["message"],
-        },
-        {
             # Surface the NDA_DATA_DIR boot count so a RESTART SPIKE (the OOM
             # crash-loop signature) is visible. Informational: "unknown" before a
             # boot is recorded, never red.
@@ -562,7 +551,6 @@ def _deployment_status_for_host(host: str) -> dict[str, object]:
         "rate_limit_per_minute": rate_limit_per_minute,
         "memory": memory,
         "disk": disk,
-        "inbound_ai_review_enabled": inbound_ai_review_check["enabled"],
         "inbound_review_queue_depth": inbound_review_queue_depth,
         "data_dir_boot_count": boot_count,
         "health_check_path": "/healthz",
@@ -700,25 +688,6 @@ def _deployment_disk_headroom_check(disk: dict[str, object]) -> dict[str, object
     }
 
 
-def _deployment_inbound_ai_review_check() -> dict[str, object]:
-    """Echo the inbound auto-review kill-switch (informational, never fails gate)."""
-    enabled = _inbound_ai_review_enabled()
-    if enabled:
-        return {
-            "ok": True,
-            "enabled": True,
-            "message": f"Inbound auto-review is ENABLED ({INBOUND_AI_REVIEW_ENABLED_ENV} is not disabling it).",
-        }
-    return {
-        "ok": True,
-        "enabled": False,
-        "message": (
-            f"Inbound auto-review is DISABLED via {INBOUND_AI_REVIEW_ENABLED_ENV}; "
-            "imported NDAs keep their deterministic first-pass and stay reviewable on-demand."
-        ),
-    }
-
-
 def _deployment_boot_count_check(boot_count: int) -> dict[str, object]:
     """Surface the data-dir boot count so a restart spike (OOM loop) is visible."""
     if boot_count <= 0:
@@ -734,23 +703,8 @@ def _deployment_boot_count_check(boot_count: int) -> dict[str, object]:
     }
 
 
-def _inbound_ai_review_enabled() -> bool:
-    """Read the inbound auto-review kill-switch without importing it at module load.
-
-    Lazily pulls ``ingestion_service`` to avoid an import cycle and to stay
-    fail-safe: any import/attribute error degrades to ``True`` (the default-enabled
-    state), never crashing the status endpoint.
-    """
-    try:
-        from . import ingestion_service
-
-        return bool(ingestion_service.inbound_ai_review_enabled())
-    except Exception:  # pragma: no cover - defensive, status must never crash
-        return True
-
-
 def _inbound_review_queue_depth() -> int | None:
-    """Current inbound-review pool queue depth (pending jobs), or ``None`` on error.
+    """Current on-demand review pool queue depth (pending jobs), or ``None`` on error.
 
     Reads the public ``queue_depth()`` on the process-wide worker pool so a
     SATURATING queue is observable. Lazily imported + fail-safe -- the status

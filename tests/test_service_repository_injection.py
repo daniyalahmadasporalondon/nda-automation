@@ -48,6 +48,7 @@ def test_ingestion_service_uses_injected_repository(in_memory_matters):
         source_type="manual_upload",
         board_column="intake",
         repository=in_memory_matters,
+        defer_ai_review=False,  # eager review path: assert a review_result is produced
     )
     # Landed in the injected in-memory repo...
     assert in_memory_matters.get_matter(matter["id"]) is not None
@@ -60,7 +61,8 @@ def test_ingestion_service_uses_injected_repository(in_memory_matters):
 def test_redline_service_reads_from_injected_repository(in_memory_matters):
     docx = _docx(NDA_PARAGRAPHS)
     matter = create_matter_from_document(
-        filename="mutual-nda.docx", document_bytes=docx, repository=in_memory_matters
+        filename="mutual-nda.docx", document_bytes=docx, repository=in_memory_matters,
+        defer_ai_review=False,
     )
     review_result, source_bytes, source_filename = _review_result_for_export(
         {"matter_id": matter["id"]}, "", repository=in_memory_matters
@@ -103,6 +105,7 @@ def test_ingest_flags_and_gates_docx_with_tracked_changes(in_memory_matters, mon
         filename="redlined-nda.docx",
         document_bytes=_tracked_changes_docx(),
         repository=in_memory_matters,
+        defer_ai_review=False,
     )
     review_result = matter["review_result"]
 
@@ -129,6 +132,7 @@ def test_ingest_clean_docx_is_not_flagged(in_memory_matters, monkeypatch):
         filename="clean-nda.docx",
         document_bytes=_docx(NDA_PARAGRAPHS),
         repository=in_memory_matters,
+        defer_ai_review=False,
     )
     review_result = matter["review_result"]
 
@@ -142,7 +146,8 @@ def test_ingest_clean_docx_is_not_flagged(in_memory_matters, monkeypatch):
 def test_redline_service_full_export_against_in_memory(in_memory_matters):
     docx = _docx(NDA_PARAGRAPHS)
     matter = create_matter_from_document(
-        filename="mutual-nda.docx", document_bytes=docx, repository=in_memory_matters
+        filename="mutual-nda.docx", document_bytes=docx, repository=in_memory_matters,
+        defer_ai_review=False,
     )
     export = build_matter_redline(matter["id"], repository=in_memory_matters)
     assert export.data

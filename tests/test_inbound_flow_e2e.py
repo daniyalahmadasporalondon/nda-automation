@@ -27,11 +27,12 @@ genuine article, not a hand-rolled paragraph list.
 The four task assertions are:
   (1) the per-poll cap bounds new imports to NDA_GMAIL_IMPORT_LIMIT;
   (2) dedup prevents re-import on a second poll;
-  (3) the matter lands reviewable (and the deferred AI review runs + persists);
+  (3) the matter lands UN-REVIEWED ("Not Reviewed") -- inbound NDAs are NEVER
+      auto-reviewed; review runs only on-demand;
   (4) extraction produces the expected paragraph structure from the real PDF.
 
-Plus poll-layer coverage of the recovery sweep / kill-switch that
-``server._recover_unreviewed_inbound_matters`` runs each poll cycle.
+Plus poll-layer storm-safety coverage: importing an inbound matter enqueues NO
+review (there is no recovery sweep / auto-review path).
 """
 from __future__ import annotations
 
@@ -159,9 +160,11 @@ class _FullInboundTransport(_PublicOnlyInboxTransport):
       * ``create_matter_from_document`` runs the real ingestion against an isolated
         in-memory repository (un-reviewed at create, defer_ai_review=True);
       * dedup is routed through the SAME in-memory repository's
-        ``find_gmail_attachment`` so a second poll sees the prior import;
-      * ``schedule_inbound_ai_review`` runs the real scheduler with an injected
-        in-memory repo + synchronous runner + recording AI engine.
+        ``find_gmail_attachment`` so a second poll sees the prior import.
+
+    Inbound NDAs are NOT auto-reviewed: import leaves each matter "Not Reviewed"
+    (no AI engine runs on the poll path). The recording AI engine is kept only to
+    PROVE no review was scheduled (its call list must stay empty after import).
 
     Each message carries a distinct ``gmail_message_id`` (the dedup key is prefixed
     by it), exactly as the real ``_message_metadata`` does, so the identity dedup is
@@ -289,17 +292,8 @@ class _FullInboundTransport(_PublicOnlyInboxTransport):
             self.created_matter_ids.append(str(matter.get("id") or ""))
         return matter
 
-    def schedule_inbound_ai_review(self, matter, *, owner_user_id=""):
-        # REAL scheduler, but injected with the in-memory repo + a synchronous
-        # runner + the recording AI engine so the background review runs inline
-        # and deterministically and persists onto the same store.
-        return ingestion_service.schedule_inbound_ai_review(
-            matter,
-            repository=self.repository,
-            runner=_synchronous_runner,
-            review_engine_func=self.ai_engine,
-            owner_user_id=owner_user_id,
-        )
+    # NOTE: no schedule_inbound_ai_review seam -- inbound NDAs are NOT auto-reviewed.
+    # The poll path must never schedule a review; the recording engine proves it.
 
 
 @pytest.fixture
@@ -312,8 +306,6 @@ def import_limit_20(monkeypatch):
         gmail_integration._gmail_import_limit_from_env(),
     )
     assert gmail_integration.MAX_GMAIL_IMPORT_LIMIT == 20
-    # Inbound auto-review on (default) so the background review actually schedules.
-    monkeypatch.delenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, raising=False)
     return 20
 
 
@@ -363,16 +355,15 @@ def test_inbound_flow_e2e_import_cap_dedup_extraction_and_review(import_limit_20
     # The 20 imports landed as real matters in the store, none over the cap.
     assert len(transport.repository.list_matters(owner_user_id="owner_1")) == 20
 
-    # (3) Every imported matter is reviewable, and the deferred full AI review ran
-    # in the background and PERSISTED (executed_engine flips deterministic ->
-    # ai_first). The recording engine was called exactly once per matter.
-    assert len(transport.ai_engine.calls) == 20
+    # (3) Inbound NDAs are NOT auto-reviewed: NO AI engine ran on import, and every
+    # imported matter is left UN-REVIEWED ("Not Reviewed", review_result is None).
+    # It becomes reviewed only when a human clicks Review (the on-demand path).
+    assert transport.ai_engine.calls == []  # storm-safe: zero auto-reviews
     for matter_summary in result1["imported"]:
         matter_id = str(matter_summary["id"])
         persisted = transport.repository.get_matter(matter_id, owner_user_id="owner_1")
         assert persisted is not None
-        engine = persisted["review_result"]["active_review_engine"]["executed_engine"]
-        assert engine == "ai_first"  # background AI review completed + persisted
+        assert persisted["review_result"] is None  # un-reviewed at import
         # (4) The matter carries the REAL extracted NDA text from the PDF.
         assert "Confidential Information" in persisted["extracted_text"]
         assert "MUTUAL NON-DISCLOSURE AGREEMENT" in persisted["extracted_text"]
@@ -381,7 +372,6 @@ def test_inbound_flow_e2e_import_cap_dedup_extraction_and_review(import_limit_20
     # The inbox re-surfaces all 50 messages; the first 20 are now in the store, so
     # they are skipped at the cheap pre-download identity gate, and the scan pages
     # PAST them to make real forward progress on the next batch.
-    reviews_after_poll1 = len(transport.ai_engine.calls)
     result2 = gmail_matter_inbox.import_inbound_matters(
         transport=transport,
         limit=999,
@@ -397,9 +387,8 @@ def test_inbound_flow_e2e_import_cap_dedup_extraction_and_review(import_limit_20
     # Total matters == 40 (the original 20 + the next 20), never a re-import of the
     # first 20.
     assert len(transport.repository.list_matters(owner_user_id="owner_1")) == 40
-    # The dedup short-circuit fires BEFORE the review scheduler, so no already-
-    # imported message triggered another AI review; only the 20 new ones did.
-    assert len(transport.ai_engine.calls) == reviews_after_poll1 + 20
+    # Still NO auto-review: neither poll ever scheduled an AI review (storm-safe).
+    assert transport.ai_engine.calls == []
 
 
 def test_inbound_flow_e2e_single_message_round_trip(import_limit_20):
@@ -420,9 +409,9 @@ def test_inbound_flow_e2e_single_message_round_trip(import_limit_20):
     assert matter["source_type"] == "gmail_inbound"
     assert "MUTUAL NON-DISCLOSURE AGREEMENT" in matter["extracted_text"]
     assert "governed by the laws of England and Wales" in matter["extracted_text"]
-    # The background AI review ran exactly once (on that extracted text) and persisted.
-    assert transport.ai_engine.calls == [matter["extracted_text"]]
-    assert matter["review_result"]["active_review_engine"]["executed_engine"] == "ai_first"
+    # Inbound NDAs are NOT auto-reviewed: no AI review ran, the matter is un-reviewed.
+    assert transport.ai_engine.calls == []
+    assert matter["review_result"] is None
 
 
 # --------------------------------------------------------------------------- #
@@ -490,9 +479,9 @@ def test_inbound_flow_e2e_real_nda_mentioning_docusign_still_imports(import_limi
     matter = transport.repository.get_matter(matter_id, owner_user_id="owner_1")
     assert matter is not None
     assert matter["source_type"] == "gmail_inbound"
-    # The background AI review ran exactly once and persisted.
-    assert transport.ai_engine.calls == [matter["extracted_text"]]
-    assert matter["review_result"]["active_review_engine"]["executed_engine"] == "ai_first"
+    # Inbound NDAs are NOT auto-reviewed: it imports un-reviewed, no AI review ran.
+    assert transport.ai_engine.calls == []
+    assert matter["review_result"] is None
 
 
 def test_inbound_flow_e2e_transport_without_docusign_guard_degrades_gracefully(import_limit_20):
@@ -527,52 +516,21 @@ def test_inbound_flow_e2e_transport_without_docusign_guard_degrades_gracefully(i
 
 
 # --------------------------------------------------------------------------- #
-# Poll-layer coverage: the recovery sweep / kill-switch that the server runs each
-# poll cycle (server._recover_unreviewed_inbound_matters -> ingestion_service
-# .recover_unreviewed_inbound_matters). Complements the unit tests by asserting it
-# end-to-end against a real imported inbound matter.
+# Poll-layer storm safety: importing an inbound NDA enqueues NO review (there is
+# no recovery sweep / auto-review path any more). The matter stays "Not Reviewed".
 # --------------------------------------------------------------------------- #
 @pytest.fixture
 def fresh_review_pool(monkeypatch):
-    """Swap the module-global inbound review pool for an isolated one."""
+    """Swap the module-global review pool for an isolated one."""
     pool = ingestion_service._InboundReviewWorkerPool()
     monkeypatch.setattr(ingestion_service, "_INBOUND_REVIEW_POOL", pool)
     return pool
 
 
-def test_poll_recovery_sweep_enqueues_unreviewed_inbound_matter(monkeypatch, fresh_review_pool):
-    # Auto-review enabled (default).
-    monkeypatch.delenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, raising=False)
-    repository = InMemoryMatterRepository()
-    enqueued: list[str] = []
-    fresh_review_pool.configure(lambda matter_id, owner: enqueued.append(matter_id))
-
-    # An inbound NDA imported UN-REVIEWED (no review at create, never AI reviewed)
-    # -- e.g. a worker that restarted mid-batch before reviewing it.
-    matter = ingestion_service.create_matter_from_document(
-        filename="inbound_nda_sample.pdf",
-        document_bytes=_fixture_pdf_bytes(),
-        source_type="gmail_inbound",
-        repository=repository,
-        defer_ai_review=True,
-    )
-    assert matter["review_result"] is None  # un-reviewed at create
-
-    # The poll cycle's recovery sweep (the same call server._recover_unreviewed_
-    # inbound_matters makes) re-enqueues the un-AI-reviewed matter. It must enqueue
-    # this never-reviewed matter exactly once (and not busy-loop on it across cycles:
-    # the worker stamps it ai_first and the idempotency guard then skips it).
-    enqueued_count = ingestion_service.recover_unreviewed_inbound_matters(repository=repository)
-    fresh_review_pool._join_for_tests(timeout=5)
-
-    assert enqueued_count == 1
-    assert enqueued == [matter["id"]]
-
-
-def test_poll_kill_switch_off_enqueues_nothing(monkeypatch, fresh_review_pool):
-    # NDA_INBOUND_AI_REVIEW_ENABLED=false gates BOTH the schedule and the sweep.
-    monkeypatch.setenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, "false")
-    assert ingestion_service.inbound_ai_review_enabled() is False
+def test_import_enqueues_no_review_and_leaves_matter_unreviewed(fresh_review_pool):
+    """STORM SAFETY: creating an inbound matter enqueues NOTHING onto the review pool
+    (no auto-review, no recovery sweep), and the matter stays un-reviewed until a
+    human runs the on-demand review."""
     repository = InMemoryMatterRepository()
     enqueued: list[str] = []
     fresh_review_pool.configure(lambda matter_id, owner: enqueued.append(matter_id))
@@ -584,13 +542,30 @@ def test_poll_kill_switch_off_enqueues_nothing(monkeypatch, fresh_review_pool):
         repository=repository,
         defer_ai_review=True,
     )
+    fresh_review_pool._join_for_tests(timeout=1)
 
-    # Both the per-import schedule and the poll-cycle recovery sweep are no-ops.
-    assert ingestion_service.schedule_inbound_ai_review(matter, repository=repository) is False
-    assert ingestion_service.recover_unreviewed_inbound_matters(repository=repository) == 0
+    # Nothing was ever enqueued for review on import (the storm engine is gone).
+    assert enqueued == []
+    # The matter is un-reviewed ("Not Reviewed"), reviewable only on-demand.
+    persisted = repository.get_matter(matter["id"])
+    assert persisted["review_result"] is None
+
+
+def test_create_matter_defaults_to_deferred_review_no_sync_review(fresh_review_pool):
+    """create_matter_from_document defaults defer_ai_review=True: even a caller that
+    omits the flag gets NO synchronous review (the storm-safe default)."""
+    repository = InMemoryMatterRepository()
+    enqueued: list[str] = []
+    fresh_review_pool.configure(lambda matter_id, owner: enqueued.append(matter_id))
+
+    # NOTE: defer_ai_review NOT passed -> must default to True (no sync review).
+    matter = ingestion_service.create_matter_from_document(
+        filename="inbound_nda_sample.pdf",
+        document_bytes=_fixture_pdf_bytes(),
+        source_type="gmail_inbound",
+        repository=repository,
+    )
     fresh_review_pool._join_for_tests(timeout=1)
 
     assert enqueued == []
-    # AI-off: the matter simply stays un-reviewed (no crash), reviewable on-demand.
-    persisted = repository.get_matter(matter["id"])
-    assert persisted["review_result"] is None
+    assert matter["review_result"] is None  # no synchronous review ran at create

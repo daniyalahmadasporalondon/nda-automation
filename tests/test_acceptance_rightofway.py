@@ -115,11 +115,8 @@ def _reset_generation_gate() -> None:
 
 @pytest.fixture(autouse=True)
 def _isolation(monkeypatch):
-    """Per-test isolation: idle generation gate, default kill-switch + cap envs."""
+    """Per-test isolation: idle generation gate."""
     _reset_generation_gate()
-    # Ensure no ambient env leaks across tests; each test sets what it needs.
-    monkeypatch.delenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, raising=False)
-    monkeypatch.delenv(ingestion_service.INBOUND_REVIEW_MAX_FAILURES_ENV, raising=False)
     yield
     _reset_generation_gate()
 
@@ -249,110 +246,17 @@ class TestRightOfWay:
 
 
 # =========================================================================== #
-# 2. KILL SWITCH AT DRAIN TIME
+# 2. NO KILL-SWITCH AT DRAIN: an on-demand review always runs (it is the only
+#    enqueuer; there is no inbound auto-review path or kill-switch to skip it).
 # =========================================================================== #
-class TestKillSwitchAtDrain:
-    def test_handler_early_returns_for_already_queued_item_when_flag_flipped_off(
-        self, monkeypatch
-    ):
-        """Flag flipped to false AFTER enqueue: the worker handler must early-return
-        WITHOUT running an AI review for an item already in the queue.
-
-        This is the exact hole: today the kill-switch is checked only at
-        schedule/enqueue time (schedule_inbound_ai_review) and the recovery sweep,
-        NOT at drain. An item that was enqueued while enabled, then the operator
-        flips the emergency switch, must still be skipped at drain time.
-        """
-        repository = InMemoryMatterRepository()
-        matter = _seed_inbound_matter(repository)
-        matter_id = matter["id"]
-        engine = _stub_ai_engine()
-
-        # Simulate "already queued": the item exists and would be drained. Now the
-        # operator flips the emergency kill-switch.
-        monkeypatch.setenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, "false")
-        assert ingestion_service.inbound_ai_review_enabled() is False
-
-        # Drive the drain-time path. We call the lowest-level review entry the
-        # worker uses; the target build must make this honour the kill-switch.
-        ingestion_service._perform_inbound_ai_review(
-            matter_id,
-            repository=repository,
-            owner_user_id="owner-1",
-            review_engine_func=engine,
-            use_semaphore=False,
-        )
-
-        assert engine.calls == [], (
-            "KILL-SWITCH HOLE: the AI engine ran at DRAIN time even though "
-            "NDA_INBOUND_AI_REVIEW_ENABLED=false. The flag must be re-checked when "
-            "an already-queued item is drained, not only at enqueue."
-        )
-        unchanged = repository.get_matter(matter_id, owner_user_id="owner-1")
-        assert unchanged["review_result"]["active_review_engine"]["executed_engine"] == "deterministic"
-
-    def test_pool_handler_honours_kill_switch_at_drain(self, monkeypatch):
-        """The production worker-pool handler itself must honour the kill-switch at
-        drain (not merely the explicit _perform_* path).
-
-        _inbound_review_pool_handler reconstructs the real disk repo + engine, so
-        we patch the engine boundary it uses to a recorder and assert it is never
-        called when the flag is off. This pins the kill-switch into the same code
-        path the live daemon executes.
-        """
-        recorded: list[str] = []
-
-        def _recording_engine(text, *, paragraphs=None, **_kwargs):
-            recorded.append(text)
-            return _ai_first_review_result()
-
-        # The pool handler calls review_nda_with_active_engine via module ref.
-        monkeypatch.setattr(
-            ingestion_service, "review_nda_with_active_engine", _recording_engine, raising=False
-        )
-        # And reads matters from a real DiskMatterRepository(); make that return a
-        # ready-to-review matter so ONLY the kill-switch can stop the AI call.
-        seeded = {
-            "id": "matter_killswitch",
-            "owner_user_id": "owner-1",
-            "extracted_text": "Some inbound NDA text governed by England and Wales.",
-            "review_result": {
-                "active_review_engine": {"executed_engine": "deterministic"},
-            },
-        }
-
-        class _FakeDiskRepo:
-            def get_matter(self, matter_id, owner_user_id=""):
-                return dict(seeded) if matter_id == seeded["id"] else None
-
-            def update_matter_review(self, matter_id, review_result, triage, owner_user_id=""):
-                return {**seeded, "review_result": review_result}
-
-            def update_matter_fields(self, matter_id, fields, owner_user_id=""):
-                return {**seeded, **fields}
-
-            def list_matters(self, owner_user_id=""):
-                return [dict(seeded)]
-
-        monkeypatch.setattr(ingestion_service, "DiskMatterRepository", _FakeDiskRepo, raising=False)
-        monkeypatch.setenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, "false")
-
-        # Run the actual production per-job handler for an already-queued job.
-        ingestion_service._inbound_review_pool_handler(seeded["id"], "owner-1")
-
-        assert recorded == [], (
-            "KILL-SWITCH HOLE in the production pool handler: the AI engine ran at "
-            "drain despite NDA_INBOUND_AI_REVIEW_ENABLED=false."
-        )
-
-    def test_flag_on_still_runs_review_at_drain(self):
-        """Negative control: with the flag at its default (enabled) the same drain
-        path DOES run the AI review -- the kill-switch must not be a blanket off."""
+class TestReviewRunsAtDrain:
+    def test_review_runs_at_drain_with_no_kill_switch(self):
+        """The drain path runs the AI review unconditionally -- there is no longer a
+        kill-switch that could skip an already-queued (on-demand) review."""
         repository = InMemoryMatterRepository()
         matter = _seed_inbound_matter(repository)
         engine = _stub_ai_engine()
-        # Belt-and-braces: no generation in flight so right-of-way cannot mask this.
-        _reset_generation_gate()
+        _reset_generation_gate()  # no generation in flight to mask the run
 
         ingestion_service._perform_inbound_ai_review(
             matter["id"],
@@ -361,7 +265,7 @@ class TestKillSwitchAtDrain:
             review_engine_func=engine,
             use_semaphore=False,
         )
-        assert engine.calls, "with the kill-switch ENABLED the drain path must run the AI review"  # type: ignore[attr-defined]
+        assert engine.calls, "the drain path must run the AI review (no kill-switch)"  # type: ignore[attr-defined]
 
 
 # =========================================================================== #
@@ -421,58 +325,6 @@ class TestLoopCloser:
             "LOOP-CLOSER HOLE: a None/falsy return from update_matter_review was NOT counted "
             "as a failure. The persist-None path must increment the poison-pill counter so a "
             "permanently-unpersistable matter eventually stops being re-enqueued."
-        )
-
-    def test_three_none_returns_then_sweep_skips_the_matter(self):
-        """Full cycle: 3 None-returns -> counter at the cap (3) -> the recovery
-        sweep must NOT re-enqueue the matter (it is given up, not looped)."""
-        repository = _NonePersistRepository()
-        matter = _seed_inbound_matter(repository)
-        matter_id = matter["id"]
-        engine = _stub_ai_engine()
-
-        cap = ingestion_service.inbound_review_max_failures()
-        assert cap == 3, "spec pins the default failure cap at 3"
-
-        for _ in range(cap):
-            ingestion_service._perform_inbound_ai_review(
-                matter_id,
-                repository=repository,
-                owner_user_id="owner-1",
-                review_engine_func=engine,
-                use_semaphore=False,
-            )
-
-        failures = ingestion_service._matter_review_failure_count(
-            repository.get_matter(matter_id, owner_user_id="owner-1")
-        )
-        assert failures >= cap, (
-            f"after {cap} None-return persists the failure counter is {failures}, expected >= {cap}; "
-            "the None path is not being counted, so the sweep will loop this matter forever"
-        )
-
-        # Now the recovery sweep must SKIP this matter (poison-pill cap reached).
-        # Capture enqueues by patching the pool so the live daemon never runs and
-        # we can assert the matter id was not handed to it.
-        enqueued: list[tuple[str, str]] = []
-
-        class _RecordingPool:
-            def enqueue(self, mid, owner):
-                enqueued.append((mid, owner))
-                return True
-
-        original_pool = ingestion_service._INBOUND_REVIEW_POOL
-        ingestion_service._INBOUND_REVIEW_POOL = _RecordingPool()  # type: ignore[assignment]
-        try:
-            ingestion_service.recover_unreviewed_inbound_matters(
-                repository=repository, owner_user_id="owner-1"
-            )
-        finally:
-            ingestion_service._INBOUND_REVIEW_POOL = original_pool  # type: ignore[assignment]
-
-        assert matter_id not in {mid for mid, _ in enqueued}, (
-            "LOOP-CLOSER HOLE: a matter that hit the failure cap (3) was RE-ENQUEUED by the "
-            "recovery sweep -- the verifier-storm loop the cap is meant to break."
         )
 
     def test_none_persist_releases_the_concurrency_slot(self):

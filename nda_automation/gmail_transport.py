@@ -292,13 +292,6 @@ class GmailTransport:
     def create_matter_from_document(self, **kwargs):
         return _legacy().create_matter_from_document(**kwargs)
 
-    def schedule_inbound_ai_review(self, matter, *, owner_user_id=""):
-        # Restore inbound auto-review without the storm: the poll imported this
-        # matter FAST (deterministic first-pass); the full ai_first review runs
-        # OFF the poll thread, SERIALIZED behind a process-wide semaphore. Delegates
-        # to gmail_integration so the boundary stays patchable in tests.
-        return _legacy().schedule_inbound_ai_review(matter, owner_user_id=owner_user_id)
-
 
 _DEFAULT_TRANSPORT = GmailTransport()
 

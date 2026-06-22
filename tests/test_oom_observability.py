@@ -1,10 +1,10 @@
 """Tests for the prod OOM memory/queue observability helpers.
 
-Covers the stdlib-only RSS / cgroup-limit probes in ``process_memory``, the new
-``memory_headroom`` / ``disk_headroom`` / ``inbound_ai_review_env`` /
-``data_dir_boot_count`` deployment-status checks, the telemetry gauges, and the
-inbound-review flags in ``health_summary``. The cgroup/RSS/disk reads are mocked
-so the suite is deterministic on any platform.
+Covers the stdlib-only RSS / cgroup-limit probes in ``process_memory``, the
+``memory_headroom`` / ``disk_headroom`` / ``data_dir_boot_count`` deployment-status
+checks, the telemetry gauges, and the review-queue-depth gauge in the status
+payload. The cgroup/RSS/disk reads are mocked so the suite is deterministic on any
+platform.
 """
 
 from __future__ import annotations
@@ -229,22 +229,6 @@ def test_disk_headroom_below_warn_is_ok():
 # --------------------------------------------------------------------------- #
 
 
-def test_inbound_ai_review_check_enabled_by_default():
-    with patch.dict(os.environ, {"NDA_INBOUND_AI_REVIEW_ENABLED": ""}):
-        check = deployment._deployment_inbound_ai_review_check()
-    assert check["ok"] is True
-    assert check["enabled"] is True
-    assert "ENABLED" in check["message"]
-
-
-def test_inbound_ai_review_check_reports_disabled():
-    with patch.dict(os.environ, {"NDA_INBOUND_AI_REVIEW_ENABLED": "false"}):
-        check = deployment._deployment_inbound_ai_review_check()
-    assert check["ok"] is True  # informational, never fails the gate
-    assert check["enabled"] is False
-    assert "DISABLED" in check["message"]
-
-
 def test_boot_count_check_zero_is_unknown_ok():
     check = deployment._deployment_boot_count_check(0)
     assert check["ok"] is True
@@ -272,12 +256,11 @@ def test_deployment_status_exposes_memory_disk_and_review_observability():
     assert dep["memory"]["limit_bytes"] == 2_000_000_000
     assert dep["memory"]["used_fraction"] == 0.25
     assert "disk" in dep
-    assert "inbound_ai_review_enabled" in dep
     assert dep["inbound_review_queue_depth"] is not None
     assert "data_dir_boot_count" in dep
 
     check_ids = {c["id"] for c in dep["checks"]}
-    for expected in ("memory_headroom", "disk_headroom", "inbound_ai_review_env", "data_dir_boot_count"):
+    for expected in ("memory_headroom", "disk_headroom", "data_dir_boot_count"):
         assert expected in check_ids
 
 

@@ -4,6 +4,7 @@ import logging
 import os
 import queue
 import threading
+import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from types import ModuleType
@@ -35,56 +36,34 @@ LOGGER = logging.getLogger(__name__)
 SUPPORTED_DOCUMENT_EXTENSIONS = {".docx", ".pdf"}
 
 # --------------------------------------------------------------------------- #
-# Inbound auto-review (async + bounded worker pool)
+# On-demand AI review (async + bounded worker pool)
 # --------------------------------------------------------------------------- #
-# Inbound Gmail NDAs import FAST: create_matter_from_document runs only the
-# offline deterministic first-pass (defer_ai_review=True) so the single poll
-# thread never blocks on the slow Opus/Pro AI review. To restore the core
-# feature (inbound NDAs auto-reviewed by AI) WITHOUT the storm that motivated
-# bb62b8f, the full active-engine review (assessor + verifier) is run AFTER
-# import, OFF the poll thread, by a SINGLE persistent background WORKER POOL
-# draining a process-wide queue.
+# Inbound Gmail NDAs import FAST and DELIBERATELY stay "Not Reviewed": they are
+# NEVER auto-reviewed (auto-review on import was the Gmail-storm engine and is
+# removed entirely). A full ai_first review (assessor + verifier) runs ONLY when a
+# human clicks Review -- the on-demand path (POST /api/matters/<id>/review-refresh
+# -> enqueue_on_demand_review). That on-demand work runs OFF the request thread on
+# the SINGLE persistent background WORKER POOL below, draining a process-wide queue.
 #
-# Why a queue + a fixed pool and NOT one daemon thread per matter: a catch-up
-# poll can import up to MAX_GMAIL_IMPORT_LIMIT matters in one cycle (default 20,
-# overridable via NDA_GMAIL_IMPORT_LIMIT). Spawning a thread per matter parks one
-# daemon thread per imported matter blocked on a limit-1 bound -- a transient
-# hundreds-of-MB spike, the one remaining OOM scenario on the 2 GB worker. Instead
-# a batch enqueues that many CHEAP items (just matter_id/owner) and a FIXED pool of
-# inbound_review_concurrency() workers
-# (default 1) drains them serially. The pool size IS the concurrency bound, so
-# at most N reviews run at once -- never N threads, never N-at-once on the
-# worker, never blocking generation/requests, never re-storming the inbox.
+# Why a queue + a fixed pool and NOT one daemon thread per job: the pool size IS
+# the concurrency bound (default 1), so even a burst of on-demand clicks reviews
+# serially in the background -- never N-at-once on the 2 GB worker, never blocking
+# generation/requests. The pool, its queue, dedup, and right-of-way deferral are
+# UNCHANGED; only the inbound auto-enqueue + kill-switch + recovery sweep that fed
+# it from the storm path are gone.
 INBOUND_REVIEW_CONCURRENCY_ENV = "NDA_INBOUND_REVIEW_CONCURRENCY"
 _DEFAULT_INBOUND_REVIEW_CONCURRENCY = 1
 
-# Kill-switch (parallel to NDA_GENERATION_AI_ENABLED): default-ENABLED. Set
-# NDA_INBOUND_AI_REVIEW_ENABLED=false (or 0/no/off) to emergency-disable inbound
-# auto-review entirely -- imported NDAs keep their deterministic first-pass and
-# stay reviewable on-demand, no code change or redeploy required.
-INBOUND_AI_REVIEW_ENABLED_ENV = "NDA_INBOUND_AI_REVIEW_ENABLED"
-
-# Hard cap on the queue depth so a runaway producer (a pathological catch-up
-# backlog, a buggy sweep) can never grow the queue unboundedly. Comfortably covers
-# several MAX_GMAIL_IMPORT_LIMIT batches; the dedup-on-enqueue set means re-enqueues
-# of an already-pending matter are free, so this bound is rarely approached.
+# Hard cap on the queue depth so a runaway producer can never grow the queue
+# unboundedly. The dedup-on-enqueue set means re-enqueues of an already-pending
+# matter are free, so this bound is rarely approached.
 _INBOUND_REVIEW_QUEUE_MAXSIZE = 256
 
-# Per-sweep cap: the recovery sweep enqueues at most this many un-reviewed
-# matters per call so a large historical backlog drains over several poll
-# cycles instead of flooding the queue at once.
-_INBOUND_REVIEW_SWEEP_LIMIT = 50
-
-# Poison-pill guard (P1-2): the maximum number of times the background AI review
-# may FAIL for one matter before the recovery sweep gives up re-enqueuing it. A
-# permanently-failing review (e.g. ActiveReviewEngineError with no deterministic
-# fallback) otherwise stays un-stamped forever and the sweep re-enqueues it every
-# poll, looping endless paid assessor+verifier calls -- the verifier storm. After
-# this many attempts the matter is left needs-attention (deterministic first-pass
-# intact) instead of looping. Transient failures still retry up to the cap; a true
-# poison pill stops. Overridable via env for ops.
-INBOUND_REVIEW_MAX_FAILURES_ENV = "NDA_INBOUND_REVIEW_MAX_FAILURES"
-_DEFAULT_INBOUND_REVIEW_MAX_FAILURES = 3
+# Poison-pill guard: a review that keeps FAILING for one matter records an
+# incrementing failure count + a terminal review_status="failed" so it is never
+# left silently stuck "in_progress". (Used by the on-demand review body; there is
+# no longer a recovery sweep that re-enqueues, so this is purely the terminal
+# failure-recording contract that the board/review polls read.)
 
 # Right-of-way backoff: when a foreground NDA generation is in flight the inbound
 # review worker REFUSES to start the heavy AI review and re-queues the matter
@@ -114,33 +93,15 @@ def inbound_review_defer_backoff_seconds() -> float:
     return max(0.0, value)
 
 
-def inbound_review_max_failures() -> int:
-    """Per-matter AI-review failure cap before the recovery sweep gives up.
-
-    Defaults to ``_DEFAULT_INBOUND_REVIEW_MAX_FAILURES`` (3); a non-positive or
-    unparseable override is ignored (the cap is always >= 1 so a single transient
-    blip never permanently parks a matter).
-    """
-
-    raw = os.environ.get(INBOUND_REVIEW_MAX_FAILURES_ENV, "").strip()
-    if not raw:
-        return _DEFAULT_INBOUND_REVIEW_MAX_FAILURES
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return _DEFAULT_INBOUND_REVIEW_MAX_FAILURES
-    return max(1, value)
-
-
 def inbound_review_concurrency() -> int:
-    """How many inbound auto-reviews may run concurrently (env-configurable).
+    """How many on-demand AI reviews may run concurrently (env-configurable).
 
     Defaults to 1 -- strict serialization, the structural anti-storm guarantee.
     This is the SIZE of the persistent background worker pool, so it bounds both
     concurrency AND the number of live review threads. A larger value (e.g.
     ``NDA_INBOUND_REVIEW_CONCURRENCY=2``) is allowed if a bigger worker can
     absorb it; anything below 1 (or unparseable) clamps to 1 so the pool is
-    always a valid bound.
+    always a valid bound. (Env var name kept for ops/config compatibility.)
     """
 
     raw = os.environ.get(INBOUND_REVIEW_CONCURRENCY_ENV, "").strip()
@@ -151,22 +112,6 @@ def inbound_review_concurrency() -> int:
     except (TypeError, ValueError):
         return _DEFAULT_INBOUND_REVIEW_CONCURRENCY
     return max(1, value)
-
-
-def inbound_ai_review_enabled() -> bool:
-    """Whether inbound auto-review runs at all (env kill-switch).
-
-    Default-ENABLED: returns ``True`` unless ``NDA_INBOUND_AI_REVIEW_ENABLED`` is
-    explicitly set to a falsey value (``false``/``0``/``no``/``off``,
-    case-insensitive). When ``False`` the scheduler and the recovery sweep are
-    both no-ops -- inbound NDAs keep their deterministic first-pass and remain
-    reviewable on-demand.
-    """
-
-    raw = os.environ.get(INBOUND_AI_REVIEW_ENABLED_ENV, "").strip().lower()
-    if not raw:
-        return True
-    return raw not in {"false", "0", "no", "off"}
 
 
 # One process-wide semaphore still gates the explicit-runner path (tests inject a
@@ -591,15 +536,17 @@ def _perform_inbound_ai_review(
     review_engine_func: ReviewEngineFn,
     use_semaphore: bool = True,
     on_defer: Callable[[], None] | None = None,
+    is_on_demand: bool = False,
 ) -> None:
     """Run the full active-engine review for one inbound matter and persist it.
 
-    Re-reads the matter fresh from durable storage so a matter already reviewed
-    (idempotency) is skipped, and so a worker that restarted mid-batch resumes
-    only the not-yet-reviewed matters. Fail-soft: any error is logged and
-    swallowed -- a failed background review must never crash the worker or wedge
-    the poll; the matter keeps its deterministic first-pass and stays reviewable
-    on-demand.
+    Re-reads the matter fresh from durable storage. When ``is_on_demand`` is False
+    a matter already AI-reviewed is skipped (idempotency for any background re-drive);
+    when ``is_on_demand`` is True (a human clicked Review) that skip is BYPASSED so a
+    re-review actually RE-RUNS -- otherwise the button would silently do nothing on
+    every matter that already carries an ai_first review. Fail-soft: any error is
+    logged and swallowed -- a failed review must never crash the worker or wedge the
+    poll; the matter keeps its prior state and stays reviewable on-demand.
 
     Serialization: when ``use_semaphore`` is True (the explicit-runner path, e.g.
     tests that spawn raw threads) the whole review is gated by the process-wide
@@ -619,18 +566,8 @@ def _perform_inbound_ai_review(
 
     from contextlib import nullcontext
 
-    # Kill-switch RE-CHECK at DRAIN time, authoritative at the lowest-level review
-    # entry. The pool handler also gates before calling here, but the explicit
-    # runner path and any direct caller drain through this function -- re-reading
-    # the flag here means flipping NDA_INBOUND_AI_REVIEW_ENABLED=false stops an
-    # already-queued item from being reviewed no matter which path drains it, not
-    # just new enqueues. The item is dropped (no re-queue) because the feature is off.
-    if not inbound_ai_review_enabled():
-        LOGGER.info(
-            "Inbound AI review kill-switch off at drain; skipping matter %s", matter_id
-        )
-        return
-
+    # No kill-switch here any more: only on-demand (human-clicked Review) jobs ever
+    # reach this function, and they must ALWAYS run -- there is nothing to gate.
     gate = _INBOUND_REVIEW_SEMAPHORE if use_semaphore else nullcontext()
     with gate:
         # RIGHT-OF-WAY re-check INSIDE the bound, before any heavy AI work. When a
@@ -660,6 +597,7 @@ def _perform_inbound_ai_review(
             repository=repository,
             owner_user_id=owner_user_id,
             review_engine_func=review_engine_func,
+            is_on_demand=is_on_demand,
         )
 
 
@@ -704,6 +642,7 @@ def _perform_inbound_ai_review_locked(
     repository: MatterRepository,
     owner_user_id: str,
     review_engine_func: ReviewEngineFn,
+    is_on_demand: bool = False,
 ) -> None:
     """The review body, assuming the concurrency bound is already held."""
 
@@ -716,6 +655,7 @@ def _perform_inbound_ai_review_locked(
             owner_user_id=owner_user_id,
             review_engine_func=review_engine_func,
             telemetry=telemetry,
+            is_on_demand=is_on_demand,
         )
     finally:
         # Sample peak RSS AFTER the review's allocations, whether it succeeded or
@@ -730,6 +670,7 @@ def _perform_inbound_ai_review_body(
     owner_user_id: str,
     review_engine_func: ReviewEngineFn,
     telemetry: ModuleType,
+    is_on_demand: bool = False,
 ) -> None:
     """The actual review work; split out so the locked wrapper can time its memory."""
 
@@ -743,11 +684,16 @@ def _perform_inbound_ai_review_body(
         # during that window, updated_at will have moved and those edits are PRESERVED
         # rather than silently reset/popped by the unconditional update_matter_review.
         expected_updated_at = str(matter.get("updated_at") or "")
-        if _matter_already_ai_reviewed(matter):
+        # Idempotency skip ONLY for non-on-demand drives. An ON-DEMAND review (a human
+        # clicked Review) must BYPASS this -- otherwise the button silently does
+        # nothing for every matter that already carries an ai_first review (a
+        # re-review after playbook drift / a text change). The route already gates
+        # whether a re-review is warranted (staleness/force); once it enqueues, the
+        # drain must actually re-run.
+        if not is_on_demand and _matter_already_ai_reviewed(matter):
             LOGGER.info(
-                "Skipping inbound AI review for matter %s owner=%s: already ai_first reviewed",
+                "review skip matter=%s origin=inbound reason=already_ai_first_reviewed",
                 matter_id,
-                str(owner_user_id or ""),
             )
             telemetry.increment("inbound_ai_review_skipped_already_reviewed")
             return
@@ -866,57 +812,47 @@ def _perform_inbound_ai_review_body(
 def _inbound_review_pool_handler(matter_id: str, owner_user_id: str) -> None:
     """Worker-pool per-job handler: review one matter via the default disk repo.
 
-    The production pool stores only cheap ``(matter_id, owner_user_id)`` jobs, so
-    the handler reconstructs the default repository + active engine here. No
-    semaphore: the pool's fixed size is the concurrency bound.
+    The pool stores only cheap ``(matter_id, owner_user_id)`` jobs, so the handler
+    reconstructs the default repository + engine here. No semaphore: the pool's
+    fixed size is the concurrency bound. Only the ON-DEMAND path (a human clicking
+    Review) enqueues jobs now -- there is NO inbound auto-enqueue and NO kill-switch
+    to skip a queued review, so a clicked Review always runs.
 
-    Two gates run BEFORE any heavy AI work, in order:
+    ONE gate runs BEFORE any heavy AI work:
 
-    1. Kill-switch RE-CHECK at drain time: ``inbound_ai_review_enabled()`` is read
-       here, not only at enqueue, so flipping ``NDA_INBOUND_AI_REVIEW_ENABLED=false``
-       actually stops items already sitting in the queue from being reviewed --
-       the emergency stop works on in-flight draining, not just new enqueues. The
-       item is dropped from the queue (no re-queue) because the feature is off.
+      RIGHT OF WAY: if a foreground NDA generation is in flight
+      (``should_defer_background_ai()``), this worker REFUSES to start the review
+      and re-queues the matter after a short backoff instead of block-waiting --
+      a hard "don't start now", not a soft yield. The matter is never dropped
+      (re-enqueued off-thread once the dedup key releases), so the user-facing
+      generate keeps the single worker's GIL/CPU and stays under the frontend's
+      45 s timeout.
 
-    2. RIGHT OF WAY: if a foreground NDA generation is in flight
-       (``should_defer_background_ai()``), this worker REFUSES to start the review
-       and re-queues the matter after a short backoff instead of block-waiting --
-       a hard "don't start now", not a soft yield. The matter is never dropped
-       (re-enqueued off-thread once the dedup key releases), so the deterministic
-       user-facing generate keeps the single worker's GIL/CPU and stays under the
-       frontend's 45 s timeout.
+    Observability: emits structured START / SKIP / COMPLETE / ERROR log lines
+    tagged with the matter id, origin, and elapsed seconds, so a stuck/skipped/slow
+    review is visible in logs (the drain path was otherwise a black box).
     """
 
-    # On-demand jobs (Review-tab Refresh) run the AI-ONLY engine (fail-closed
-    # AI-first); inbound jobs keep the active-engine semantics, byte-identical to
-    # before. The marker is consulted here and cleared once the job reaches a
-    # TERMINAL state (run or kill-switch drop) -- NOT on a generation defer, where
-    # the job is re-queued and must still run AI-only.
+    # On-demand jobs (Review button) run the AI-ONLY engine (fail-closed AI-first).
+    # The marker is consulted here and cleared once the job reaches a TERMINAL state
+    # (run) -- NOT on a generation defer, where the job is re-queued and must still
+    # run AI-only. (A non-on-demand job should not reach the pool any more, but if
+    # one ever did it falls back to the active engine.)
     on_demand = _is_on_demand_review(matter_id, owner_user_id)
+    origin = "on_demand" if on_demand else "inbound"
     review_engine = _on_demand_ai_only_engine if on_demand else review_nda_with_active_engine
 
-    # Gate 1: kill-switch re-check at DRAIN time (not just enqueue time).
-    if not inbound_ai_review_enabled():
-        LOGGER.info(
-            "Inbound AI review kill-switch off at drain; skipping matter %s", matter_id
-        )
-        if on_demand:
-            # Dropped (no re-queue): clear the marker so a later inbound job for this
-            # matter is not mis-run AI-only.
-            with _ON_DEMAND_REVIEW_LOCK:
-                _ON_DEMAND_REVIEW_MATTERS.discard(_on_demand_review_key(matter_id, owner_user_id))
-        return
-
-    # Gate 2: give foreground generation the right of way -- defer + re-queue. The
+    # Gate: give foreground generation the right of way -- defer + re-queue. The
     # job is re-queued (not dropped), so the on-demand marker is LEFT in place.
     if generation_priority.should_defer_background_ai():
         from . import telemetry  # noqa: PLC0415 - keep the import light/local.
 
         telemetry.increment("inbound_ai_review_deferred_for_generation")
         LOGGER.info(
-            "Deferring inbound AI review for matter %s: a foreground generation has "
-            "the right of way; re-queuing after backoff.",
+            "review skip matter=%s origin=%s reason=generation_right_of_way; "
+            "re-queuing after backoff",
             matter_id,
+            origin,
         )
         _INBOUND_REVIEW_POOL.requeue_after_backoff(
             matter_id, owner_user_id, inbound_review_defer_backoff_seconds()
@@ -934,6 +870,8 @@ def _inbound_review_pool_handler(matter_id: str, owner_user_id: str) -> None:
             matter_id, owner_user_id, inbound_review_defer_backoff_seconds()
         )
 
+    LOGGER.info("review start matter=%s origin=%s", matter_id, origin)
+    started_at = time.monotonic()
     try:
         _perform_inbound_ai_review(
             matter_id,
@@ -942,7 +880,34 @@ def _inbound_review_pool_handler(matter_id: str, owner_user_id: str) -> None:
             review_engine_func=review_engine,
             use_semaphore=False,
             on_defer=_on_defer,
+            is_on_demand=on_demand,
         )
+    except Exception:
+        # _perform_inbound_ai_review is already fail-soft, but log any escape here so
+        # an unexpected error in the drain path is never silent.
+        LOGGER.warning(
+            "review error matter=%s origin=%s elapsed=%.1fs",
+            matter_id,
+            origin,
+            time.monotonic() - started_at,
+            exc_info=True,
+        )
+        raise
+    else:
+        if deferred["flag"]:
+            LOGGER.info(
+                "review deferred matter=%s origin=%s elapsed=%.1fs (re-queued)",
+                matter_id,
+                origin,
+                time.monotonic() - started_at,
+            )
+        else:
+            LOGGER.info(
+                "review complete matter=%s origin=%s elapsed=%.1fs",
+                matter_id,
+                origin,
+                time.monotonic() - started_at,
+            )
     finally:
         # Terminal: the review ran (completed or failed) on this drain. Clear the
         # on-demand marker UNLESS the job was re-queued by a deeper generation defer
@@ -955,198 +920,6 @@ def _inbound_review_pool_handler(matter_id: str, owner_user_id: str) -> None:
 _INBOUND_REVIEW_POOL.configure(_inbound_review_pool_handler)
 
 
-def schedule_inbound_ai_review(
-    matter: dict[str, Any] | None,
-    *,
-    repository: MatterRepository | None = None,
-    owner_user_id: str = "",
-    runner: BackgroundRunner | None = None,
-    review_engine_func: ReviewEngineFn | None = None,
-) -> bool:
-    """Schedule the full ai_first review of a just-imported inbound matter.
-
-    Production path (``runner`` left as ``None``): the matter is ENQUEUED onto a
-    process-wide bounded queue drained by a FIXED pool of
-    ``inbound_review_concurrency()`` persistent daemon workers. A 100-matter burst
-    therefore enqueues 100 cheap items and ONE worker processes them serially --
-    never 100 parked threads (the OOM edge this hardening closes).
-
-    Explicit-runner path (a ``runner`` is passed, e.g. tests): the legacy
-    per-call behaviour is preserved -- the work runs via ``runner`` and is gated
-    by the process-wide semaphore so the serialization/idempotency/fail-soft
-    contracts still hold for an injected repository + engine.
-
-    Returns True when work was scheduled, False when there is nothing to do (the
-    kill-switch is off, no matter id, a gmail duplicate, or already AI-reviewed).
-    Best-effort: a scheduling failure is logged and swallowed so it can never
-    break the import that triggered it.
-    """
-
-    if not inbound_ai_review_enabled():
-        # Emergency kill-switch: keep the deterministic first-pass, no AI review.
-        return False
-    if not isinstance(matter, dict) or matter.get("_existing_gmail_duplicate"):
-        return False
-    matter_id = str(matter.get("id") or "")
-    if not matter_id:
-        return False
-    if _matter_already_ai_reviewed(matter):
-        return False
-
-    # This is an accepted schedule request (the matter is real, not a duplicate, and
-    # not already AI-reviewed): record it BEFORE the enqueue so the count reflects
-    # demand on the review pool regardless of which enqueue path runs below. The
-    # pre-existing inbound_ai_review_{completed,failed,queue_full,schedule_failed}
-    # counters measure the downstream outcomes; this is the matching intake signal.
-    from . import telemetry
-
-    telemetry.increment("inbound_ai_review_scheduled")
-    LOGGER.info(
-        "Scheduling inbound AI review for matter %s owner=%s",
-        matter_id,
-        str(owner_user_id or ""),
-    )
-
-    # Production: enqueue onto the persistent worker pool. The pool is the
-    # serialization (its fixed size == concurrency bound), so a burst can never
-    # spawn one thread per matter.
-    if runner is None and repository is None and review_engine_func is None:
-        try:
-            return _INBOUND_REVIEW_POOL.enqueue(matter_id, str(owner_user_id or ""))
-        except Exception:
-            from . import telemetry
-
-            telemetry.increment("inbound_ai_review_schedule_failed")
-            LOGGER.warning(
-                "Failed to enqueue inbound AI review for matter %s", matter_id, exc_info=True
-            )
-            return False
-
-    # Explicit-runner path (injected repo/engine/runner): legacy semaphore-gated
-    # per-call behaviour, preserved for tests and bespoke callers.
-    repo = repository or DiskMatterRepository()
-    engine = review_engine_func or review_nda_with_active_engine
-    run = runner or run_in_daemon_thread
-
-    def _work() -> None:
-        _perform_inbound_ai_review(
-            matter_id,
-            repository=repo,
-            owner_user_id=str(owner_user_id or ""),
-            review_engine_func=engine,
-        )
-
-    try:
-        run(_work)
-    except Exception:
-        from . import telemetry
-
-        telemetry.increment("inbound_ai_review_schedule_failed")
-        LOGGER.warning("Failed to schedule inbound AI review for matter %s", matter_id, exc_info=True)
-        return False
-    return True
-
-
-def _matter_is_inbound(matter: dict[str, Any]) -> bool:
-    """True for an imported INBOUND NDA (gmail / manual upload), not outbound.
-
-    Outbound matters (generated NDAs, send-document deliveries) are reviewed
-    on-demand and must not be swept into the inbound auto-review backlog.
-    """
-
-    source_type = str(matter.get("source_type") or "").lower()
-    if source_type in {"generated", "send_document"}:
-        return False
-    return True
-
-
-def recover_unreviewed_inbound_matters(
-    *,
-    repository: MatterRepository | None = None,
-    owner_user_id: str = "",
-    limit: int = _INBOUND_REVIEW_SWEEP_LIMIT,
-) -> int:
-    """Re-enqueue inbound matters that never got their AI review (recovery sweep).
-
-    If a worker restarts/OOMs/deploys mid-batch or a transient AI failure occurs,
-    the affected NDAs keep ``executed_engine != "ai_first"`` forever -- the next
-    poll dedups them and never re-schedules, so they would stay deterministic-only
-    silently. This sweep, run on startup AND/OR each poll cycle, finds those
-    matters and enqueues them. Idempotent: the ``_matter_already_ai_reviewed``
-    guard inside the worker means an already-reviewed matter that slips in is a
-    cheap no-op. Bounded: at most ``limit`` matters per sweep, so a large
-    historical backlog drains over several cycles instead of flooding the queue.
-
-    Returns the count enqueued. Honours the kill-switch (no-op when disabled) and
-    is fully fail-soft.
-    """
-
-    if not inbound_ai_review_enabled():
-        return 0
-    repo = repository or DiskMatterRepository()
-    try:
-        matters = repo.list_matters(owner_user_id=owner_user_id)
-    except Exception:
-        LOGGER.warning("Inbound AI review recovery sweep failed to list matters", exc_info=True)
-        return 0
-
-    enqueued = 0
-    gave_up = 0  # matters skipped because they hit the per-matter failure cap (P1-2)
-    for matter in matters:
-        if enqueued >= max(0, int(limit)):
-            break
-        if not isinstance(matter, dict):
-            continue
-        if matter.get("_existing_gmail_duplicate"):
-            continue
-        if not _matter_is_inbound(matter):
-            continue
-        if _matter_already_ai_reviewed(matter):
-            continue
-        if not str(matter.get("extracted_text") or "").strip():
-            continue
-        matter_id = str(matter.get("id") or "")
-        if not matter_id:
-            continue
-        # Poison-pill guard (P1-2): a matter whose background AI review has already
-        # failed at least the cap number of times is GIVEN UP -- not re-enqueued --
-        # so a permanently-failing review (no deterministic fallback) cannot loop the
-        # sweep forever burning paid assessor+verifier calls. The matter keeps its
-        # deterministic first-pass and stays reviewable on-demand; transient failures
-        # still retried up to the cap.
-        if _matter_review_failure_count(matter) >= inbound_review_max_failures():
-            gave_up += 1
-            continue
-        matter_owner = str(matter.get("owner_user_id") or owner_user_id or "")
-        try:
-            if _INBOUND_REVIEW_POOL.enqueue(matter_id, matter_owner):
-                enqueued += 1
-        except Exception:
-            LOGGER.warning(
-                "Inbound AI review recovery sweep failed to enqueue matter %s",
-                matter_id,
-                exc_info=True,
-            )
-            continue
-    if enqueued or gave_up:
-        from . import telemetry
-
-        if enqueued:
-            telemetry.increment("inbound_ai_review_recovery_enqueued", amount=enqueued)
-        if gave_up:
-            # The poison-pill counter: matters the sweep stopped retrying because they
-            # hit the per-matter failure cap. A non-zero value is the verifier-storm
-            # signal (a review that fails permanently) for operators.
-            telemetry.increment("inbound_ai_review_gave_up", amount=gave_up)
-            LOGGER.warning(
-                "Inbound AI review recovery sweep gave up on %d matter(s) at the "
-                "per-matter failure cap (%d); they keep their deterministic first-pass.",
-                gave_up,
-                inbound_review_max_failures(),
-            )
-    return enqueued
-
-
 def create_matter_from_document(
     *,
     filename: str,
@@ -1157,7 +930,7 @@ def create_matter_from_document(
     dedupe_gmail: bool = False,
     owner_user_id: str = "",
     repository: MatterRepository | None = None,
-    defer_ai_review: bool = False,
+    defer_ai_review: bool = True,
     drive_sync_runner: BackgroundRunner = run_in_daemon_thread,
     playbook_runtime_func: PlaybookRuntimeFn | None = None,
 ) -> dict[str, Any]:
@@ -1165,14 +938,13 @@ def create_matter_from_document(
     ensure_document_size(document_bytes)
     document_type, extracted_paragraphs, extraction_quality = extract_document(filename, document_bytes)
     extracted_text = extracted_text_from_paragraphs(extracted_paragraphs)
-    # When defer_ai_review is set the matter is created UN-REVIEWED: no review runs
-    # at create. The full AI review (assessor + verifier) is scheduled to run later
-    # off the create path (inbound: schedule_inbound_ai_review; outbound generation:
-    # on-demand Refresh Review). This removes the synchronous deterministic
-    # first-pass that was tied to the production OOM/cost storm; the matter shows
-    # "Not Reviewed Yet" and sits in its source column until the async review runs.
-    # The eager paths (manual upload defaults defer_ai_review=False) still run the
-    # active engine synchronously at create, so those matters arrive reviewed.
+    # defer_ai_review DEFAULTS TO TRUE: a matter is created UN-REVIEWED and no review
+    # runs at create. This is the storm-safe default -- NO caller can accidentally
+    # trigger a synchronous inbound review. Every matter (inbound Gmail, manual
+    # upload, generated) stays "Not Reviewed Yet" and the full AI review runs ONLY
+    # on-demand when a human clicks Review (enqueue_on_demand_review). A caller may
+    # still pass defer_ai_review=False to opt into a synchronous eager review at
+    # create, but no production path does (it was the OOM/cost-storm trigger).
     if defer_ai_review:
         review_result = None
     else:
@@ -1244,9 +1016,6 @@ __all__ = [
     "enqueue_on_demand_review",
     "extract_document",
     "extract_document_paragraphs",
-    "inbound_ai_review_enabled",
     "inbound_review_concurrency",
     "is_supported_document_filename",
-    "recover_unreviewed_inbound_matters",
-    "schedule_inbound_ai_review",
 ]
