@@ -118,3 +118,6 @@ jobs:
 
       - name: Run editor format toolbar tests
         run: npm run test:frontend:editor-format
+
+      - name: Run entity law/court coupling test
+        run: npm run test:frontend:entity-court-coupling

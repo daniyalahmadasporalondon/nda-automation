@@ -8404,6 +8404,17 @@ label.is-hidden {
   max-width: 180px;
 }
 
+/* Inline coupling note (e.g. "Court updated to match the new governing law").
+   A calm, soft advisory under the court input — never an error tone. */
+.admin-field-note {
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.admin-field-note[hidden] {
+  display: none;
+}
+
 /* A read-only DERIVED multiline position (e.g. the Term & Survival standard /
    trigger positions) must fill the full row width, not the 180px compact cap
    meant for short inline inputs. */

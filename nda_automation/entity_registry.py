@@ -351,12 +351,20 @@ def _playbook_governing_law_option_ids(playbook: Mapping[str, Any]) -> set[str]:
 
 
 def _playbook_governing_law_options(playbook: Mapping[str, Any]) -> list[dict[str, str]]:
-    """The governing_law approved_options as ``[{"id", "label"}]`` from the playbook.
+    """The governing_law approved_options as ``[{"id", "label", ...}]`` from the playbook.
 
     This is the canonical source for the draft-intake override dropdown's law
     choices (id + display label), so the frontend does not have to derive them
     from the embedded entity mirror. Ids are taken verbatim; the label falls back
     to value then id when an option omits it. Order follows the playbook.
+
+    Each option also carries the canonical forum pairing for that law —
+    ``court_name`` (the proper court/venue string the generator writes) and
+    ``forum_jurisdiction`` (the jurisdiction whose courts apply) — so the
+    Entities & Courts editor can, when an admin changes an entity's governing law,
+    SUGGEST the matching court instead of leaving the old court to trip the
+    backend forum-reconciliation guard on first save. Both fields default to ``""``
+    when the option carries no canonical forum.
     """
 
     for clause in playbook.get("clauses", []):
@@ -376,7 +384,16 @@ def _playbook_governing_law_options(playbook: Mapping[str, Any]) -> list[dict[st
                 or str(option.get("value") or "").strip()
                 or option_id
             )
-            result.append({"id": option_id, "label": label})
+            result.append(
+                {
+                    "id": option_id,
+                    "label": label,
+                    "court_name": str(option.get("court_name") or "").strip(),
+                    "forum_jurisdiction": str(
+                        option.get("forum_jurisdiction") or ""
+                    ).strip(),
+                }
+            )
         return result
     return []
 

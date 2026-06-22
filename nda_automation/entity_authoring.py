@@ -132,6 +132,10 @@ def load_entities_workspace() -> dict[str, Any]:
     playbook = _read_playbook_or_none()
     payload = entity_registry.signing_entities_payload(playbook)
     payload["playbook_available"] = playbook is not None
+    # Optimistic-concurrency token: the etag of the live stored entities. The editor
+    # echoes this back on save so a stale snapshot (another editor wrote in between)
+    # is rejected with a 409 instead of silently clobbering the other change.
+    payload["etag"] = entity_store.stored_entities_etag()
     return payload
 
 
@@ -224,6 +228,39 @@ def _normalise_law_labels(
             entity["governing_law"]["label"] = label_by_id[option_id]
 
 
+def _law_fingerprint(
+    entities: list[dict[str, Any]],
+) -> dict[str, tuple[str, str, str, str]]:
+    """Map entity id -> the JURISDICTION-BEARING fields whose correctness depends on
+    the playbook (law option id, court/jurisdiction, incorporation jurisdiction, label).
+
+    These are exactly the fields the playbook is needed to validate or backfill:
+      - ``governing_law.playbook_option_id`` and ``jurisdiction`` (orphan guard +
+        forum reconciliation),
+      - ``incorporation_jurisdiction``, which flows verbatim into the signed NDA's
+        "incorporated under the laws of X" recital — an unsanctioned value here
+        reaches a signed legal document just like a bad law option would, so it is
+        equally un-provable while the playbook is missing, and
+      - ``governing_law.label``, the playbook-canonical display string normalised by
+        ``_normalise_law_labels`` (skipped when the playbook is None) — including it
+        means a label edit during an outage is refused rather than persisted corrupt.
+
+    Used to tell, when the playbook is unreadable, whether a candidate save would
+    change any jurisdiction-bearing value (which we cannot validate and so must
+    refuse) or only touches non-law identity fields (signatory/address/names — safe
+    to persist).
+    """
+    return {
+        str(entity.get("id") or ""): (
+            str(entity.get("governing_law", {}).get("playbook_option_id") or ""),
+            str(entity.get("jurisdiction") or ""),
+            str(entity.get("incorporation_jurisdiction") or ""),
+            str(entity.get("governing_law", {}).get("label") or ""),
+        )
+        for entity in entities
+    }
+
+
 def save_entities_registry(
     payload: dict[str, Any],
     *,
@@ -237,6 +274,12 @@ def save_entities_registry(
     live playbook BEFORE any disk write, so a rejected save is a no-op. On success
     the store is rewritten atomically and the fresh workspace payload is returned.
 
+    ``payload["etag"]`` (optional) is the optimistic-concurrency token the editor
+    received from its last GET. When present it is echoed to the store's
+    compare-and-swap save, so a stale editor (one whose snapshot predates another
+    editor's write) is rejected with a 409 rather than silently reverting the other
+    change. Absent token = legacy unconditional save.
+
     ``store_path`` resolves at call time from ``entity_store.ENTITY_STORE_PATH``
     when not supplied, so a test (or a relocated data dir) is honoured.
     """
@@ -247,6 +290,9 @@ def save_entities_registry(
         raise EntityAuthoringError(
             {"error": "Provide an 'entities' list to save."}, status=400
         )
+
+    expected_etag = payload.get("etag")
+    expected_etag = str(expected_etag) if expected_etag else None
 
     entities = [_coerce_entity(raw) for raw in entities_raw]
 
@@ -259,22 +305,56 @@ def save_entities_registry(
     playbook = _read_playbook_or_none()
     _normalise_law_labels(entities, playbook)
 
-    # FAIL-CLOSED: the orphan guard (every governing-law id must be a currently
-    # approved playbook option) is the single-source-of-truth join and must hold
-    # ESPECIALLY when the playbook is missing. If the playbook can't be read we
-    # cannot prove the law is approved, so we REJECT the save rather than skipping
-    # the guard and persisting an entity that may point at an unsanctioned law.
     if playbook is None:
-        raise EntityAuthoringError(
-            {
-                "error": (
-                    "The governing-law playbook could not be read, so signing-entity "
-                    "law options cannot be validated against it. The registry was not "
-                    "saved. Restore the playbook and try again."
-                )
-            },
-            status=503,
+        # Playbook unreadable: we cannot run law validation (orphan guard + forum
+        # reconciliation). Rather than fail-close on EVERY edit (which contradicted
+        # the console's own "Saving is still possible but law validation is skipped"
+        # promise), we persist NON-LAW edits (signatory, address, names) and refuse
+        # ONLY a change that would need the missing playbook to validate: a changed
+        # governing-law option or court, or an added/removed entity whose law we
+        # can't prove is approved. Structural invariants still apply.
+        try:
+            entity_registry.validate_registry(entities)
+        except ValueError as error:
+            raise EntityAuthoringError({"error": str(error)}, status=400) from error
+
+        stored = entity_store.load_entities(
+            defaults=entity_registry.DEFAULT_SIGNING_ENTITIES, store_path=store_path
         )
+        before = _law_fingerprint(stored)
+        after = _law_fingerprint(entities)
+        if before != after:
+            raise EntityAuthoringError(
+                {
+                    "error": (
+                        "The governing-law playbook could not be read, so changes to "
+                        "an entity's governing law, court, or incorporation "
+                        "jurisdiction cannot be validated and were not saved. Non-law "
+                        "edits (signatory, address, names) can be saved while the "
+                        "playbook is unavailable; restore the playbook to change law, "
+                        "court, or incorporation jurisdiction."
+                    )
+                },
+                status=503,
+            )
+        # Law fields unchanged -> safe to persist the non-law edits.
+        try:
+            entity_store.save_entities(
+                entities,
+                store_path=store_path,
+                actor=actor,
+                expected_etag=expected_etag,
+            )
+        except entity_store.StaleEntityStoreError as stale:
+            raise _stale_save_error(stale) from stale
+        except OSError as error:
+            raise EntityAuthoringError(
+                {"error": "Signing-entity registry could not be saved."}, status=500
+            ) from error
+
+        workspace = load_entities_workspace()
+        workspace["saved"] = True
+        return workspace
 
     # Structural validation first (id/name/law-id/court/address invariants), then
     # the orphan guard against the live playbook (the law must be approved). Both
@@ -287,7 +367,11 @@ def save_entities_registry(
         raise EntityAuthoringError({"error": str(error)}, status=400) from error
 
     try:
-        entity_store.save_entities(entities, store_path=store_path, actor=actor)
+        entity_store.save_entities(
+            entities, store_path=store_path, actor=actor, expected_etag=expected_etag
+        )
+    except entity_store.StaleEntityStoreError as stale:
+        raise _stale_save_error(stale) from stale
     except OSError as error:
         raise EntityAuthoringError(
             {"error": "Signing-entity registry could not be saved."}, status=500
@@ -296,6 +380,21 @@ def save_entities_registry(
     workspace = load_entities_workspace()
     workspace["saved"] = True
     return workspace
+
+
+def _stale_save_error(stale: "entity_store.StaleEntityStoreError") -> EntityAuthoringError:
+    """Translate a lost compare-and-swap into a 409 the editor can act on."""
+    return EntityAuthoringError(
+        {
+            "error": (
+                "Another editor saved the signing-entity registry since you loaded "
+                "it, so your save was rejected to avoid reverting their change. "
+                "Reload the registry and re-apply your edit."
+            ),
+            "etag": stale.current_etag,
+        },
+        status=409,
+    )
 
 
 def validate_entities_payload(payload: dict[str, Any]) -> dict[str, Any]:

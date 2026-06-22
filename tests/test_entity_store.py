@@ -312,11 +312,13 @@ class EntityAuthoringTests(unittest.TestCase):
         # The store was NOT written (a rejected save is a no-op).
         self.assertFalse(store_path.exists())
 
-    def test_save_fails_closed_when_playbook_unreadable(self):
-        # C1: when the playbook can't be read the orphan-approval join cannot be
-        # proven, so a save carrying an orphan governing-law id must be REJECTED
-        # (fail-closed) and NOT persisted -- never silently skip the guard.
+    def test_save_rejects_law_change_when_playbook_unreadable(self):
+        # BUG C: when the playbook can't be read the orphan-approval join cannot be
+        # proven, so a save that CHANGES an entity's governing law (or court) must be
+        # REJECTED (503) -- we cannot validate the new law against the missing
+        # playbook. The stored law value is left untouched.
         store_path = _tmp_store()
+        entity_store.save_entities(self._seed(), store_path=store_path, actor="seed")
         entities = self._seed()
         entities[0]["governing_law"] = {"playbook_option_id": "narnia", "label": "Narnia"}
         with patch.object(
@@ -327,23 +329,112 @@ class EntityAuthoringTests(unittest.TestCase):
                     {"entities": entities}, store_path=store_path
                 )
         self.assertEqual(ctx.exception.status, 503)
-        # The store was NOT written (a rejected save is a no-op).
-        self.assertFalse(store_path.exists())
+        # The stored law was NOT changed (the rejected law edit is a no-op).
+        stored = entity_store.load_entities(
+            defaults=entity_registry.DEFAULT_SIGNING_ENTITIES, store_path=store_path
+        )
+        self.assertEqual(stored[0]["governing_law"]["playbook_option_id"], "india")
 
-    def test_save_fails_closed_when_playbook_unreadable_even_if_law_clean(self):
-        # C1: fail-closed is unconditional on the save path -- even a registry whose
-        # laws WOULD be approved is rejected when the playbook is unreadable, because
-        # the single-source-of-truth join cannot be evaluated. Nothing is persisted.
+    def test_save_rejects_court_change_when_playbook_unreadable(self):
+        # BUG C: a court (jurisdiction) change is law-validated (forum
+        # reconciliation), so it is equally un-provable when the playbook is missing
+        # -> rejected 503, court unchanged.
         store_path = _tmp_store()
+        entity_store.save_entities(self._seed(), store_path=store_path, actor="seed")
+        entities = self._seed()
+        entities[0]["jurisdiction"] = "courts in Delaware, USA"
         with patch.object(
             entity_authoring, "_read_playbook_or_none", return_value=None
         ):
             with self.assertRaises(entity_authoring.EntityAuthoringError) as ctx:
                 entity_authoring.save_entities_registry(
-                    {"entities": self._seed()}, store_path=store_path
+                    {"entities": entities}, store_path=store_path
                 )
         self.assertEqual(ctx.exception.status, 503)
-        self.assertFalse(store_path.exists())
+
+    def test_save_persists_non_law_edit_when_playbook_unreadable(self):
+        # BUG C regression: the console promises "Saving is still possible but law
+        # validation is skipped" when the playbook is unavailable. A NON-LAW edit
+        # (signatory, address, names) -- leaving law + court untouched -- must
+        # PERSIST, matching that promise, instead of fail-closing on every save.
+        store_path = _tmp_store()
+        entity_store.save_entities(self._seed(), store_path=store_path, actor="seed")
+        entities = self._seed()
+        entities[0]["signatory"] = {"name": "Brand New Signer", "title": "Director"}
+        with patch.object(
+            entity_authoring, "_read_playbook_or_none", return_value=None
+        ):
+            workspace = entity_authoring.save_entities_registry(
+                {"entities": entities}, store_path=store_path
+            )
+        self.assertTrue(workspace.get("saved"))
+        stored = entity_store.load_entities(
+            defaults=entity_registry.DEFAULT_SIGNING_ENTITIES, store_path=store_path
+        )
+        self.assertEqual(stored[0]["signatory"]["name"], "Brand New Signer")
+        # Law + court were left exactly as stored.
+        self.assertEqual(stored[0]["governing_law"]["playbook_option_id"], "india")
+
+    def test_save_rejects_incorporation_jurisdiction_change_when_playbook_unreadable(
+        self,
+    ):
+        # P1: incorporation_jurisdiction flows verbatim into the signed NDA's
+        # "incorporated under the laws of X" recital. It is jurisdiction-bearing and
+        # so is un-provable when the playbook is missing -- a change to it (law +
+        # court left untouched) must be REFUSED (503), not waved through as a
+        # "non-law edit". Otherwise an outage lets an unsanctioned jurisdiction
+        # ("Cayman Islands") reach a signed legal document.
+        store_path = _tmp_store()
+        entity_store.save_entities(self._seed(), store_path=store_path, actor="seed")
+        entities = self._seed()
+        india_idx = next(
+            i
+            for i, e in enumerate(entities)
+            if e["governing_law"]["playbook_option_id"] == "india"
+        )
+        original_incorp = entities[india_idx]["incorporation_jurisdiction"]
+        entities[india_idx]["incorporation_jurisdiction"] = "Cayman Islands"
+        with patch.object(
+            entity_authoring, "_read_playbook_or_none", return_value=None
+        ):
+            with self.assertRaises(entity_authoring.EntityAuthoringError) as ctx:
+                entity_authoring.save_entities_registry(
+                    {"entities": entities}, store_path=store_path
+                )
+        self.assertEqual(ctx.exception.status, 503)
+        # The stored incorporation jurisdiction was NOT changed (rejected = no-op).
+        stored = entity_store.load_entities(
+            defaults=entity_registry.DEFAULT_SIGNING_ENTITIES, store_path=store_path
+        )
+        self.assertEqual(
+            stored[india_idx]["incorporation_jurisdiction"], original_incorp
+        )
+        self.assertNotEqual(
+            stored[india_idx]["incorporation_jurisdiction"], "Cayman Islands"
+        )
+
+    def test_save_persists_signatory_edit_even_when_incorporation_unchanged(self):
+        # P1 companion: the fix must not over-refuse. A genuine non-law edit
+        # (signatory name) with law + court + incorporation_jurisdiction all
+        # unchanged must still PERSIST during a playbook outage.
+        store_path = _tmp_store()
+        entity_store.save_entities(self._seed(), store_path=store_path, actor="seed")
+        entities = self._seed()
+        entities[0]["signatory"] = {"name": "Outage Signer", "title": "Director"}
+        with patch.object(
+            entity_authoring, "_read_playbook_or_none", return_value=None
+        ):
+            workspace = entity_authoring.save_entities_registry(
+                {"entities": entities}, store_path=store_path
+            )
+        self.assertTrue(workspace.get("saved"))
+        stored = entity_store.load_entities(
+            defaults=entity_registry.DEFAULT_SIGNING_ENTITIES, store_path=store_path
+        )
+        self.assertEqual(stored[0]["signatory"]["name"], "Outage Signer")
+        # incorporation_jurisdiction (and law) untouched -> the edit was allowed
+        # because it touched no jurisdiction-bearing field.
+        self.assertEqual(stored[0]["governing_law"]["playbook_option_id"], "india")
 
     def test_save_rejects_bracket_in_legal_name(self):
         # C2: a template-token-shaped legal_name (e.g. "[GOVERNING LAW]") collides
@@ -458,7 +549,14 @@ class EntityAuthoringTests(unittest.TestCase):
             {"id": o["id"], "label": o["label"]}
             for o in governing_law["rules"]["approved_options"]
         ]
-        self.assertEqual(workspace["governing_law_options"], expected)
+        self.assertEqual(
+            [{"id": o["id"], "label": o["label"]} for o in workspace["governing_law_options"]],
+            expected,
+        )
+        # The workspace carries the optimistic-concurrency token (BUG B): a
+        # non-empty etag the editor echoes back on save.
+        self.assertIn("etag", workspace)
+        self.assertTrue(workspace["etag"])
 
 
 class _FakeHandler:
@@ -544,6 +642,40 @@ class AdminEntityRouteTests(unittest.TestCase):
         with patch("nda_automation.routes.common.request_is_admin", return_value=True):
             entity_routes.handle_admin_signing_entities_save(handler)
         self.assertEqual(handler.status, 400)
+
+    def test_stale_etag_save_is_409_and_does_not_revert(self):
+        # BUG B: two editors load the same etag. Editor A saves a COURT change;
+        # Editor B (holding the now-stale etag) then saves a SIGNATORY-only change
+        # with the OLD court. Without optimistic concurrency, B's whole-file replace
+        # would silently revert A's court. With it, B is rejected 409 and A's court
+        # survives.
+        with patch("nda_automation.routes.common.request_is_admin", return_value=True):
+            # Both editors load the same snapshot + etag.
+            get = _FakeHandler(admin=True)
+            entity_routes.handle_admin_signing_entities(get)
+            etag0 = get.response["etag"]
+
+            # Editor A changes real_transfer's court to a different england court.
+            ents_a = [dict(e) for e in entity_registry.list_entities()]
+            rt_a = next(e for e in ents_a if e["id"] == "real_transfer")
+            rt_a["jurisdiction"] = "the English courts"
+            a = _FakeHandler(admin=True, body={"entities": ents_a, "etag": etag0})
+            entity_routes.handle_admin_signing_entities_save(a)
+            self.assertEqual(a.status, 200)
+
+            # Editor B (stale etag0) saves a signatory-only edit with the OLD court.
+            ents_b = [dict(e) for e in entity_registry.list_entities()]
+            rt_b = next(e for e in ents_b if e["id"] == "real_transfer")
+            rt_b["signatory"] = {"name": "Someone B", "title": "Director"}
+            b = _FakeHandler(admin=True, body={"entities": ents_b, "etag": etag0})
+            entity_routes.handle_admin_signing_entities_save(b)
+            self.assertEqual(b.status, 409)
+            self.assertIn("etag", b.response)
+
+        # Editor A's court change survived (B did not clobber it).
+        stored = json.loads(self.store_path.read_text())["entities"]
+        rt_stored = next(e for e in stored if e["id"] == "real_transfer")
+        self.assertEqual(rt_stored["jurisdiction"], "the English courts")
 
 
 if __name__ == "__main__":
