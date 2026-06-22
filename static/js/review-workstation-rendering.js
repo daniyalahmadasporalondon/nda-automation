@@ -3772,6 +3772,16 @@ function renderStudioDocumentHighlights() {
     // freshly-painted page-image surface. The controller self-gates to a matter
     // being loaded and re-loads only when the matter changes.
     notifyPdfMarkupOriginalRendered();
+    // OPTIONAL faithful-DOCX upgrade (feature-flagged, default OFF). For a
+    // DOCX-source matter we hold the real .docx bytes; when the flag is on we
+    // render the ACTUAL document (styles, tables, numbering, w:ins/w:del tracked
+    // changes) over this surface instead of the page-image/reconstruction. This
+    // is the LAST thing in the Original branch so the existing surface is already
+    // painted: if the faithful render is disabled, unavailable, or fails for any
+    // reason it simply leaves the existing surface in place (never blank). It does
+    // not touch the structured/redline views, the overview panel, or
+    // insert-into-blanks -- those live in the non-Original modes below.
+    maybeUpgradeOriginalSurfaceToFaithfulDocx();
     return;
   }
   // Any non-Original render means we have left the Original view: drop the
@@ -3869,6 +3879,74 @@ function notifyPdfMarkupLeaveOriginal() {
   if (typeof pdfMarkupController !== "undefined" && pdfMarkupController) {
     pdfMarkupController.onLeaveOriginal();
   }
+}
+
+// True for a DOCX-source matter (the only kind whose real bytes we can render
+// faithfully today). PDF-source matters intentionally stay on the existing
+// renderer until a later Approach-C effort feeds them a canonical DOCX. Mirrors
+// how sourcePdfRenderCandidate() sniffs the source filename extension.
+function selectedMatterIsDocxSource() {
+  const matter = state.selectedMatter;
+  if (!matter?.id) return false;
+  const filename = String(matter.source_filename || matter.attachment_filename || "").trim();
+  return /\.docx$/i.test(filename);
+}
+
+// Feature-flagged faithful-DOCX upgrade of the freshly-painted Original surface.
+// Self-gates on: the flag being ON, the vendored library being present, and a
+// DOCX-source matter. Fetches the real .docx bytes from the existing owner-scoped
+// /source endpoint (no new endpoint) and renders them with docx-preview. On ANY
+// failure it leaves the already-painted existing surface untouched -- the pane is
+// never blanked. A request sequence + matter-id recheck drops a stale async
+// upgrade if the user has since changed view mode or matter.
+function maybeUpgradeOriginalSurfaceToFaithfulDocx() {
+  const faithful = (typeof window !== "undefined" && window.FaithfulDocxRender) || null;
+  if (!faithful || typeof faithful.render !== "function") return;
+  if (typeof faithful.enabled === "function" && !faithful.enabled()) return;
+  if (!selectedMatterIsDocxSource()) return;
+
+  const matterId = state.selectedMatter?.id;
+  if (!matterId) return;
+  const sequence = reviewDocumentRenderRequestSequence;
+  const url = `/api/matters/${encodeURIComponent(matterId)}/source`;
+
+  // Render into a detached host first; only swap it into the live surface once we
+  // know it produced real content, so a failed/empty faithful render can never
+  // wipe the existing surface mid-flight.
+  const host = document.createElement("div");
+  host.className = "review-faithful-docx-surface";
+
+  Promise.resolve(faithful.render(host, { url }))
+    .then((result) => {
+      // Drop a stale upgrade: the view re-rendered, the matter changed, or we left
+      // the Original view while the bytes were in flight.
+      if (sequence !== reviewDocumentRenderRequestSequence) return;
+      if (state.selectedMatter?.id !== matterId) return;
+      if ((state.documentViewMode || VIEW_MODE_REDLINE) !== VIEW_MODE_ORIGINAL) return;
+      if (!studioDocumentRender) return;
+      if (!result || !result.ok) return; // fall back: keep the existing surface
+      const wrapper = document.createElement("section");
+      wrapper.className = "review-original-surface review-faithful-original ready";
+      wrapper.setAttribute("data-review-render-surface", "");
+      wrapper.setAttribute("data-original-surface", "");
+      wrapper.setAttribute("data-faithful-docx", "");
+      wrapper.setAttribute("data-render-status", "ready");
+      wrapper.setAttribute("aria-label", "Original document faithful preview");
+      wrapper.appendChild(host);
+      studioDocumentRender.innerHTML = "";
+      studioDocumentRender.appendChild(wrapper);
+      showStudioDocumentRender();
+    })
+    .catch((error) => {
+      // Belt-and-braces: render() is contracted never to throw, but if it somehow
+      // does we still keep the existing surface rather than blank the pane.
+      try {
+        // eslint-disable-next-line no-console
+        console.error("maybeUpgradeOriginalSurfaceToFaithfulDocx: faithful upgrade failed; keeping existing surface", error);
+      } catch (_loggingError) {
+        // ignore logging failure
+      }
+    });
 }
 
 function reviewDocumentRenderState(result) {

@@ -9,6 +9,7 @@ venv/
 .env.*
 !.env.example
 node_modules/
+.test-deps/
 playwright-report/
 test-results/
 dist/
