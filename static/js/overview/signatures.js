@@ -218,7 +218,16 @@ function formatSignedDate(value) {
 // File-local HTML escaper. Named escapeHtml (not the bare `escape`) so a classic
 // script declaration never clobbers the browser's built-in window.escape.
 function escapeHtml(value) {
-  return typeof window !== "undefined" && typeof window.escapeHtml === "function"
+  // Delegate to the canonical bridged escaper ONLY when it is a *different*
+  // function. This file is a classic <script>, so this top-level `function
+  // escapeHtml` auto-binds to window.escapeHtml until global-bridge.mjs (a
+  // deferred module) overwrites it with the html-utils escaper. Without the
+  // `!== escapeHtml` guard the pre-bridge render path has window.escapeHtml
+  // resolve to THIS function -> infinite recursion -> "Maximum call stack size
+  // exceeded". The inline fallback below matches html-utils byte-for-byte.
+  return typeof window !== "undefined"
+    && typeof window.escapeHtml === "function"
+    && window.escapeHtml !== escapeHtml
     ? window.escapeHtml(value)
     : String(value == null ? "" : value)
         .replace(/&/g, "&amp;")
