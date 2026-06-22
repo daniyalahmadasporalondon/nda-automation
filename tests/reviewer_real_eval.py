@@ -61,6 +61,26 @@ The clauses + traps (one adversarial case per clause)
    signatures has ZERO automated coverage today).
 9. SIGNATURES (missing) -- an NDA body with NO signature block at all. A missing
    signature block must not pass.
+10. CONFIDENTIAL_INFORMATION -- CARVE-OUT NEGATION: the CI exclusions sit intact
+    on the page but a "notwithstanding ... the exclusions shall not apply" clause
+    cancels them. The reviewer must not clear the gutted protection.
+11. CONFIDENTIAL_INFORMATION -- INCORPORATION/SUBORDINATION OVERRIDE: the NDA is
+    made "subject to" an external Master Services Agreement that "shall prevail in
+    the event of any conflict". The reviewer must not clear a silently-overridable
+    protection.
+12. CONFIDENTIAL_INFORMATION -- POISONED DEFINITION: the definition affirmatively
+    INCLUDES publicly-available / already-known / independently-developed
+    information. The reviewer must not clear a definition that swallows its own
+    exclusions.
+13. NON_CIRCUMVENTION -- OVER-BROAD AFFILIATE breadth: an "Affiliate" definition
+    drawn beyond corporate control sweeps in arbitrary non-parties/competitors,
+    and a non-solicit restraint leans on it. The reviewer must not clear the
+    restraint. (No playbook clause owns definition breadth -- the hardest trap.)
+
+Cases 10-13 are the structural-override traps the deterministic review overlays
+(notwithstanding_check / incorporation_check / definition_poison_check) catch
+today. They are the evidence gate that must go GREEN on the live reviewer BEFORE
+any overlay is retired (north star: no deterministic layer in review).
 
 How to run
 ----------
@@ -314,6 +334,110 @@ _SIGNATURES_MISSING = _doc(
 )
 
 
+# ---- Cases 10-13: STRUCTURAL-OVERRIDE traps (the retiring-overlay coverage) ----
+#
+# These four traps are exactly the ones the deterministic review overlays
+# (notwithstanding_check / incorporation_check / definition_poison_check) catch
+# today by ELEVATING a clean AI pass to review. They are cross-clause /
+# whole-document attacks that a naive clause-by-clause read can miss, so they are
+# the evidence gate that must go GREEN on the live reviewer BEFORE any overlay is
+# retired (north star: no deterministic layer in review). Each asserts the
+# reviewer must NOT clear (pass) the undermined confidential_information clause on
+# its own. A review or a fail both count as "caught"; only a pass is unsafe.
+
+# ---- Case 10: carve-out negation (notwithstanding_check trap) ----
+# The CI exclusions sit intact on the page (Section 2) but a "notwithstanding"
+# clause (Section 1.2) cancels them under a condition. The protection is wider
+# than it reads; the reviewer must not clear CI.
+_CARVEOUT_NEGATION = _doc(
+    '1. Confidential Information. "Confidential Information" means any and all '
+    "non-public business, financial, technical, customer, supplier, pricing and "
+    "proprietary information disclosed by either party, together with the existence "
+    "and terms of this Agreement.",
+    "1.2 Notwithstanding anything to the contrary in this Agreement, the standard "
+    "exclusions in Section 2 shall not apply where the Discloser notifies the "
+    "Recipient that it considers the information sensitive.",
+    "2. Exclusions. Confidential Information does not include information that (a) is "
+    "or becomes publicly available through no fault of the Recipient; (b) was already "
+    "lawfully known to the Recipient; (c) is rightfully received from a third party "
+    "without obligation of confidentiality; or (d) is independently developed by the "
+    "Recipient without use of the Confidential Information.",
+    "3. Obligations. The Recipient shall hold the Confidential Information in "
+    "confidence and use it solely to evaluate the relationship.",
+    "4. Governing Law. This Agreement shall be governed by the laws of England and Wales.",
+    "5. Term. The confidentiality obligations survive for a fixed period of two (2) years.",
+    _SIGNATURE_BLOCK,
+)
+
+# ---- Case 11: incorporation / subordination override (incorporation_check trap) ----
+# The NDA is made "subject to" an external Master Services Agreement that is
+# "incorporated herein by reference and shall prevail in the event of any
+# conflict" (Section 3.2). The confidentiality terms can be silently overridden by
+# an unseen document; the reviewer must not clear CI. Direction-resolved: only the
+# OTHER document prevailing is the hit.
+_INCORPORATION_OVERRIDE = _doc(
+    '1. Confidential Information. "Confidential Information" means any and all '
+    "non-public business, financial, technical, customer, supplier, pricing and "
+    "proprietary information disclosed by either party, together with the existence "
+    "and terms of this Agreement.",
+    "2. Exclusions. Confidential Information does not include information that is or "
+    "becomes publicly available, was already lawfully known to the Recipient, is "
+    "rightfully received from a third party, or is independently developed without "
+    "use of the Confidential Information.",
+    "3.1 The Recipient shall hold the Confidential Information in confidence and use "
+    "it solely to evaluate the relationship.",
+    "3.2 All obligations of the parties under this Agreement are subject to, and "
+    "shall be construed in accordance with, the terms of the Master Services "
+    "Agreement between the parties dated 1 January 2024, the terms of which are "
+    "incorporated herein by reference and shall prevail in the event of any conflict.",
+    "4. Governing Law. This Agreement shall be governed by the laws of England and Wales.",
+    "5. Term. The confidentiality obligations survive for a fixed period of two (2) years.",
+    _SIGNATURE_BLOCK,
+)
+
+# ---- Case 12: poisoned CI definition (definition_poison_check, CI form) ----
+# The definition affirmatively INCLUDES publicly available, already-known and
+# independently-developed information -- the standard carve-out categories folded
+# back IN. Genuinely public knowledge becomes a contractual secret; the reviewer
+# must not clear CI.
+_CI_POISON = _doc(
+    '1. Confidential Information. "Confidential Information" means all business, '
+    "financial, technical, customer, supplier, pricing, market, proprietary and "
+    "trade secret information disclosed by either party, and includes information "
+    "that is publicly available, already known to the Receiving Party, or "
+    "independently developed by the Receiving Party.",
+    "2. Obligations. The Recipient shall hold the Confidential Information in "
+    "confidence and use it solely to evaluate the relationship.",
+    "3. Governing Law. This Agreement shall be governed by the laws of England and Wales.",
+    "4. Term. The confidentiality obligations survive for a fixed period of two (2) years.",
+    _SIGNATURE_BLOCK,
+)
+
+# ---- Case 13: over-broad Affiliate definition feeding a restraint ----
+#      (definition_poison_check, AFFILIATE/group form -- the breadth trap with NO
+#       owning playbook clause; the hardest blind-spot to close on the AI alone.)
+# "Affiliate" is drawn beyond the corporate-control test to sweep in arbitrary
+# non-parties (anyone a party designates, competitors), and a non-solicit restraint
+# then leans on that defined term -- so the restraint binds far more parties than it
+# appears. A naive clause-by-clause read clears both the definition and the restraint.
+_AFFILIATE_POISON = _doc(
+    '1. Confidential Information. "Confidential Information" means all non-public '
+    "business, financial, technical and trade secret information disclosed by either "
+    "party.",
+    '2. Definitions. "Affiliate" means, with respect to a party, any entity that '
+    "controls, is controlled by, or is under common control with that party, AND any "
+    "other person or entity that such party may from time to time designate, whether "
+    "or not affiliated with or under common control with that party, including any "
+    "actual or potential competitor of the other party.",
+    "3. Restraint. The Recipient shall not, and shall procure that none of its "
+    "Affiliates shall, for a period of two (2) years, solicit, hire, or do business "
+    "with any customer, supplier, or business contact of the Disclosing Party.",
+    "4. Governing Law. This Agreement shall be governed by the laws of England and Wales.",
+    "5. Term. The confidentiality obligations survive for a fixed period of two (2) years.",
+    _SIGNATURE_BLOCK,
+)
+
+
 def build_cases() -> List[Dict[str, object]]:
     """The adversarial real-path cases -- one per clause + the precision guards."""
     return [
@@ -391,6 +515,48 @@ def build_cases() -> List[Dict[str, object]]:
             "trap": "missing_signature_block",
             "source_text": _SIGNATURES_MISSING,
             # No signature block anywhere; must not pass.
+            "forbidden_decisions": [CLAUSE_DECISION_PASS],
+        },
+        # --- Structural-override traps: the retiring-overlay evidence gate. ---
+        # Each must NOT clear (pass) the clause the override undermines on the
+        # live reviewer's own judgment -- this is the coverage a deterministic
+        # overlay supplies today and the proof needed before retiring it.
+        {
+            "name": "confidential_information_carveout_negation_must_not_clear",
+            "clause_id": "confidential_information",
+            "trap": "carveout_negation_notwithstanding",
+            "source_text": _CARVEOUT_NEGATION,
+            # A clause that cancels the CI exclusions guts the protection; the
+            # CI definition must not be cleared as a clean pass.
+            "forbidden_decisions": [CLAUSE_DECISION_PASS],
+        },
+        {
+            "name": "confidential_information_incorporation_override_must_not_clear",
+            "clause_id": "confidential_information",
+            "trap": "incorporation_subordination_override",
+            "source_text": _INCORPORATION_OVERRIDE,
+            # The NDA is subordinated to an external MSA that prevails; the
+            # confidentiality terms can be silently overridden. Must not clear.
+            "forbidden_decisions": [CLAUSE_DECISION_PASS],
+        },
+        {
+            "name": "confidential_information_poisoned_definition_must_not_clear",
+            "clause_id": "confidential_information",
+            "trap": "definition_poison_ci_includes_excluded",
+            "source_text": _CI_POISON,
+            # A definition that affirmatively includes the excluded categories is
+            # poisoned; must not pass.
+            "forbidden_decisions": [CLAUSE_DECISION_PASS],
+        },
+        {
+            "name": "non_circumvention_overbroad_affiliate_restraint_must_not_clear",
+            "clause_id": "non_circumvention",
+            "trap": "definition_poison_overbroad_affiliate",
+            "source_text": _AFFILIATE_POISON,
+            # An over-broad Affiliate definition feeds a non-solicit restraint, so
+            # the restraint binds arbitrary non-parties. The restraint clause must
+            # not be cleared. (Hardest trap: no playbook clause owns definition
+            # breadth, so this is the most likely live-AI blind-spot.)
             "forbidden_decisions": [CLAUSE_DECISION_PASS],
         },
     ]
