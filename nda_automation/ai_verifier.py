@@ -76,6 +76,22 @@ _VERIFIABLE_DECISIONS = {CLAUSE_DECISION_FAIL, CLAUSE_DECISION_REVIEW}
 # Below it (or when confidence is unknown) a pass is still cheap insurance to check.
 HIGH_CONFIDENCE_PASS_THRESHOLD = 0.85
 
+# Clause ids that are ALWAYS adversarially re-checked on a PASS regardless of
+# confidence. These are the high-blast-radius judgements where a confident-but-wrong
+# clear (a real quote, a wrong *judgement* about it -- e.g. an unapproved governing
+# law called "approved", or an over-long survival term read as fine) slips past the
+# grounding gate (you cannot quote an ABSENT clause, and a real quote with a wrong
+# judgement still looks grounded), so the latency of a second look is worth it even
+# on a confident pass.
+#
+# REGRESSION GUARD: this codebase has ALREADY shipped a bug where dropping the
+# confident-PASS verify let a wrong "approved governing law = Texas" slip through.
+# So the narrowing keeps the high-blast-radius required clauses (governing_law +
+# term_and_survival) AND all prohibited clauses always-verified -- it only relaxes the
+# LOWER-risk confident required passes (mutuality/confidential_information/signatures)
+# that were force-verifying every review and blew the review-poll latency budget.
+ALWAYS_VERIFY_PASS_CLAUSE_IDS = frozenset({"governing_law", "term_and_survival"})
+
 # A refute below VERIFIER_MIN_CONFIDENCE is too hesitant to act on confidently --
 # it still routes to human review (the verifier never flips silently).
 VERIFIER_MIN_CONFIDENCE = 0.6
@@ -517,20 +533,26 @@ def _should_verify(clause: Mapping[str, object]) -> bool:
         # quote can ground (you cannot quote absent text), so the grounding gate
         # cannot catch a hallucinated clear. Always second-look it, even at high
         # confidence.
-        #
-        # REQUIRED clauses get the same treatment: a confident-but-wrong "approved
-        # governing law" or over-long survival term sails through the grounding gate
-        # (the quote it cites is real, the *judgement* about it is wrong), so a
-        # high-confidence PASS must still be adversarially re-checked. Both the
-        # prohibited and required families therefore force-verify on every PASS.
         clause_type = str(clause.get("type") or "").strip().lower()
-        if clause_type in {"prohibited", "required"}:
+        if clause_type == "prohibited":
             return True
+        # The high-blast-radius EXCEPTIONS: governing_law (a wrong "approved governing
+        # law" writes a non-court venue into a signed NDA) and term_and_survival (a
+        # wrong survival/term judgement), where the grounding gate cannot catch a wrong
+        # *judgement* about a real quote. These are ALWAYS re-checked on a PASS
+        # regardless of confidence.
+        if str(clause.get("id") or "").strip().lower() in ALWAYS_VERIFY_PASS_CLAUSE_IDS:
+            return True
+        # Otherwise the verifier runs ONLY when the main AI is UNCERTAIN about the
+        # pass. A high-confidence PASS of a LOWER-risk clause (the relaxed required
+        # family -- mutuality/confidential_information/signatures -- and any non-
+        # required type) is trusted WITHOUT a second pass; force-verifying every
+        # required clause is what put the verifier on the critical path and blew the
+        # review-poll latency budget. Unknown confidence is the MOST suspicious signal
+        # -- a PASS with no confidence (e.g. via the deterministic checker path) cannot
+        # be trusted as a confident clear, so verify it. Otherwise only spend a call on
+        # a *low*-confidence pass; trust confident clears.
         confidence = _confidence(clause)
-        # Unknown confidence is the MOST suspicious signal -- a PASS with no
-        # confidence (e.g. via the deterministic checker path) cannot be trusted as a
-        # confident clear, so verify it. Otherwise only spend a call on a *low*-
-        # confidence pass; trust confident clears.
         return confidence is None or confidence < HIGH_CONFIDENCE_PASS_THRESHOLD
     return False
 

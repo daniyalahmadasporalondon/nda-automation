@@ -26,7 +26,27 @@ from .workflow import workflow_state
 # storage on a GET. Single source of truth for the read-time staleness window
 # shared by the board view (``public_matter``), the review view (``review_matter``)
 # and the review-refresh route payload.
-REVIEW_IN_PROGRESS_TTL_SECONDS = 300
+#
+# LATENCY: a legitimate AI review runs ~145-245s and, on a heavy/contended doc, can
+# legitimately exceed the old 300s window WITHOUT the worker having crashed. The old
+# 300s ceiling force-FAILED those still-running reviews on read, painting a false
+# "review failed" while the backend was healthily working. The ceiling is now a
+# generous interrupted-worker bound (10 min) -- comfortably above a real long review,
+# so a slow-but-alive review keeps reading as ``in_progress`` ("still working") and
+# only a worker that has plausibly been interrupted ages out. Keep the FE poll TTL
+# (static/js/review-workstation-actions.js: REVIEW_POLL_TTL_MS) at/under this value.
+REVIEW_IN_PROGRESS_TTL_SECONDS = 600
+
+# DISTINCT from ``failed``. A stored ``in_progress`` that ages past the TTL is NOT a
+# durable failure -- storage was never marked failed and the worker may simply have
+# been interrupted (restart/OOM/deploy) or be running long. We surface it as its own
+# ``stalled`` status (read-only, never mutating storage) so the UI can render a calm
+# "still processing / interrupted -- retry" waiting state. ONLY a genuine, durably
+# recorded error (ingestion_service._record_inbound_review_failure writes
+# review_status="failed" with a real review_error) is a true ``failed``. The failure
+# TOAST (static/js/notifications.js) keys strictly on "failed", so a ``stalled`` read
+# never fabricates a red failure notification from a pure timeout.
+REVIEW_STATUS_STALLED = "stalled"
 
 
 def review_status_fields(matter: dict[str, Any]) -> dict[str, Any]:
@@ -35,17 +55,25 @@ def review_status_fields(matter: dict[str, Any]) -> dict[str, Any]:
     Reads the stored ``review_status`` / ``review_started_at`` / ``review_error``
     and applies the TTL STALENESS OVERRIDE computed ON READ (never mutating storage
     on a GET): a stored ``in_progress`` whose ``review_started_at`` is older than
-    ``REVIEW_IN_PROGRESS_TTL_SECONDS`` (300s) is reported as ``failed`` with an
-    "interrupted, retry" error -- the restart/OOM/deploy guard so a worker that died
-    mid-review reads as a retryable failure, not an eternal spinner. Only present
-    keys are returned (a matter with no async review carries none of them).
+    ``REVIEW_IN_PROGRESS_TTL_SECONDS`` (10 min) is reported as the DISTINCT
+    ``stalled`` status (NOT ``failed``) with an "interrupted / taking longer, retry"
+    message -- the restart/OOM/deploy guard so a worker that died mid-review reads as
+    a calm retryable waiting state, not an eternal spinner and not a red failure. A
+    genuine ``failed`` only ever comes from the durable
+    ``_record_inbound_review_failure`` path. Only present keys are returned (a matter
+    with no async review carries none of them).
     """
     status = str(matter.get("review_status") or "")
     error = str(matter.get("review_error") or "")
     started_at = str(matter.get("review_started_at") or "")
     if status == "in_progress" and _review_in_progress_expired(started_at):
-        status = "failed"
-        error = "The review was interrupted. Please try again."
+        # A stale in_progress is NOT a durable failure -- report a DISTINCT ``stalled``
+        # status (read-only override, storage untouched) so the UI renders a calm
+        # "interrupted / taking longer -- retry" waiting state rather than a red
+        # failure. Only ingestion_service._record_inbound_review_failure produces a
+        # genuine "failed". The failure toast (notifications.js) ignores ``stalled``.
+        status = REVIEW_STATUS_STALLED
+        error = "The review is taking longer than expected or was interrupted. You can keep waiting or retry."
     fields: dict[str, Any] = {}
     if status:
         fields["review_status"] = status

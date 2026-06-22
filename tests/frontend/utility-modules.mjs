@@ -767,6 +767,16 @@ assert.equal(reviewActionable({}), false); // unknown payload: stale-only fallba
 assert.equal(MatterUtils.reviewActionable({ ai_review_ran: false }), true);
 assert.equal(MatterUtils.reviewNeverRan({ ai_review_ran: false }), true);
 
+// reviewInProgress / reviewFailed: a "stalled" review (the read-time staleness
+// override -- a slow/interrupted but NOT durably-failed review) is treated as
+// STILL in progress and is NEVER a failure. A pure timeout must not become "failed".
+assert.equal(MatterUtils.reviewInProgress({ review_status: "in_progress" }), true);
+assert.equal(MatterUtils.reviewInProgress({ review_status: "stalled" }), true, "stalled keeps the in-progress affordance");
+assert.equal(MatterUtils.reviewInProgress({ review_status: "completed" }), false);
+assert.equal(MatterUtils.reviewFailed({ review_status: "stalled" }), false, "a stalled (timeout) review is NOT a failure");
+assert.equal(MatterUtils.reviewFailed({ review_status: "failed" }), true, "only a durable failure is a failure");
+assert.equal(MatterUtils.reviewFailed({ review_status: "in_progress" }), false);
+
 const calls = [];
 const repositoryApi = createRepositoryApi({
   fetchImpl: async (url, options = {}) => {

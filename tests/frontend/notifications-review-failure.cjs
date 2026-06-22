@@ -233,6 +233,48 @@ function run() {
     console.log("ok 3 - non-inbound (generated) failed review toasts with reason");
   }
 
+  // ---------------------------------------------------------------------------
+  // 5: a "stalled" review (the read-time staleness override -- a pure timeout, NOT
+  //    a durable failure) must NEVER fire a red failure toast. This is the core
+  //    false-failure regression: a slow/interrupted review is not an error.
+  // ---------------------------------------------------------------------------
+  {
+    container.children = [];
+    const sandbox = makeSandbox();
+    const create = loadNotifications(sandbox);
+    const controller = create({
+      container,
+      openMatter: () => {},
+      openRepository: () => {},
+      fetchMatters: undefined,
+    });
+
+    controller.observe([]); // seed empty
+    // The matter ages past the TTL -> the backend reports review_status="stalled"
+    // (distinct from "failed"). A repeated poll must still never toast.
+    const stalled = {
+      id: "slow1",
+      source_type: "gmail_inbound",
+      counterparty: "Patient Co",
+      review_status: "stalled",
+      review_error: "The review is taking longer than expected or was interrupted. You can keep waiting or retry.",
+    };
+    controller.observe([stalled]);
+    controller.observe([stalled]);
+    assert.equal(errorToasts().length, 0, "a stalled (timeout) review must NOT fire a failure toast");
+
+    // And a genuine failure on the SAME matter afterwards STILL toasts (the channel
+    // is intact -- stalled does not poison the failed-seen set).
+    controller.observe([
+      { ...stalled, review_status: "failed", review_error: "Real error: AI reviewer unavailable." },
+    ]);
+    const toasts = errorToasts();
+    assert.equal(toasts.length, 1, "a real failure after a stall still toasts exactly once");
+    assert.match(toasts[0].innerHTML, /Real error/, "the genuine failure reason surfaces");
+    passed += 1;
+    console.log("ok 4 - stalled (timeout) review never toasts; a real failure after it still does");
+  }
+
   console.log(`\n# ${passed} test group(s) passed`);
 }
 
