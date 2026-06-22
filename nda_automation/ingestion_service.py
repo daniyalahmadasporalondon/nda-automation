@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from types import ModuleType
 from typing import Any
 
-from . import generation_priority
+from . import artifact_service, generation_priority, pdf_ingest_conversion
 from .checker import ParagraphAlignmentError
 from .document_limits import ensure_document_size
 from .docx_text import DocxExtractionError, detect_docx_tracked_changes, extract_docx_paragraphs
@@ -1066,7 +1066,16 @@ def _perform_inbound_ai_review_body(
             matter_id,
             str(owner_user_id or ""),
         )
-        paragraphs = review_result_paragraphs(matter.get("review_result"))
+        # Approach C: a converted PDF matter carries re-keyed working-DOCX paragraphs
+        # (source_index re-stamped to the reconstructed body, source_part:"pdf"
+        # dropped). Prefer those so the redlines this review produces anchor by index
+        # into the working DOCX exactly like a native-DOCX matter. Fall back to the
+        # review_result's stored paragraphs (native DOCX) when no conversion ran.
+        working_paragraphs = matter.get(WORKING_DOCX_PARAGRAPHS_FIELD)
+        if isinstance(working_paragraphs, list) and working_paragraphs:
+            paragraphs = working_paragraphs
+        else:
+            paragraphs = review_result_paragraphs(matter.get("review_result"))
         review_result = review_engine_func(extracted_text, paragraphs=paragraphs)
     except ParagraphAlignmentError:
         # Stored paragraph offsets did not align; retry text-only so a tracked
@@ -1304,12 +1313,125 @@ def create_matter_from_document(
         dedupe_gmail=dedupe_gmail,
         owner_user_id=owner_user_id,
     )
+    # Approach C: a PDF source matter is reconstructed to a canonical working DOCX
+    # ONCE here at ingest and its review paragraphs re-keyed to anchor by index into
+    # that DOCX (so a converted PDF thereafter behaves exactly like a native DOCX
+    # matter). FAIL-OPEN: any conversion error leaves the legacy un-converted PDF
+    # matter intact -- ingest NEVER hard-blocks on the conversion.
+    matter = _convert_pdf_matter_at_ingest(
+        matter,
+        document_type=document_type,
+        document_bytes=document_bytes,
+        extracted_paragraphs=extracted_paragraphs,
+        repository=repository,
+        owner_user_id=owner_user_id,
+    )
     RepositoryMatterLifecycle(repository).complete_intake(
         matter,
         owner_user_id=owner_user_id,
         drive_sync_runner=drive_sync_runner,
     )
     return matter
+
+
+# The matter field that carries the PDF→DOCX-reconstruction body paragraphs, already
+# re-keyed (``source_index`` re-stamped, ``source_part:"pdf"`` dropped) to anchor by
+# index into the working DOCX. The on-demand review prefers these over the raw pypdf
+# paragraphs so the redlines it produces anchor into the working DOCX body.
+WORKING_DOCX_PARAGRAPHS_FIELD = "working_docx_paragraphs"
+
+
+def _convert_pdf_matter_at_ingest(
+    matter: dict[str, Any],
+    *,
+    document_type: str,
+    document_bytes: bytes,
+    extracted_paragraphs: list[dict[str, Any]],
+    repository: MatterRepository,
+    owner_user_id: str,
+) -> dict[str, Any]:
+    """Reconstruct a PDF matter to a working DOCX and persist it (Approach C).
+
+    Only PDF matters are converted; a DOCX matter is returned untouched. On success
+    the working DOCX is registered as a role="working" artifact and the re-keyed
+    review paragraphs are stored on the matter. FAIL-OPEN: on ANY error the original
+    (un-converted) matter is returned and ingest proceeds, so a flaky/unavailable
+    reconstruction engine never blocks an import.
+    """
+    if document_type != "pdf":
+        return matter
+    matter_id = str(matter.get("id") or "")
+    source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "")
+    if not matter_id:
+        return matter
+    try:
+        working = pdf_ingest_conversion.convert_pdf_matter_to_docx(
+            document_bytes,
+            source_filename,
+            extracted_paragraphs,
+        )
+    except Exception:
+        LOGGER.warning(
+            "PDF->working-DOCX conversion failed for matter %s; keeping legacy PDF matter",
+            matter_id,
+            exc_info=True,
+        )
+        return matter
+    # ORDER MATTERS (half-persist guard): the working artifact is what makes the
+    # export substitute the working DOCX + light up working_docx_ready, and the
+    # re-keyed paragraphs are what make the review produce redlines that anchor into
+    # it. Persist the paragraphs FIRST, then register the artifact LAST, so the two
+    # are never out of step in the harmful direction: a registered working artifact
+    # ALWAYS has its re-keyed paragraphs behind it. If artifact registration fails
+    # after the field write, roll the orphan field back so the matter falls cleanly
+    # to the legacy un-converted PDF path rather than the divergent (artifact-only /
+    # paragraphs-only) state Approach C exists to remove.
+    try:
+        updated = repository.update_matter_fields(
+            matter_id,
+            {WORKING_DOCX_PARAGRAPHS_FIELD: working.paragraphs},
+            owner_user_id=owner_user_id,
+        )
+    except Exception:
+        LOGGER.warning(
+            "Persisting PDF->working-DOCX paragraphs failed for matter %s; keeping legacy PDF matter",
+            matter_id,
+            exc_info=True,
+        )
+        return matter
+    try:
+        artifact_service.register_working_docx(
+            matter_id,
+            working.docx_bytes,
+            repository=repository,
+            owner_user_id=owner_user_id,
+        )
+    except Exception:
+        LOGGER.warning(
+            "Registering PDF->working-DOCX artifact failed for matter %s; rolling back "
+            "the re-keyed paragraphs and keeping legacy PDF matter",
+            matter_id,
+            exc_info=True,
+        )
+        try:
+            rolled_back = repository.update_matter_fields(
+                matter_id,
+                {WORKING_DOCX_PARAGRAPHS_FIELD: None},
+                owner_user_id=owner_user_id,
+            )
+        except Exception:
+            LOGGER.warning(
+                "Rolling back PDF->working-DOCX paragraphs failed for matter %s", matter_id, exc_info=True
+            )
+            return updated if isinstance(updated, dict) else matter
+        return rolled_back if isinstance(rolled_back, dict) else matter
+    LOGGER.info(
+        "PDF->working-DOCX conversion stored for matter %s (mapped=%d unmapped=%d)",
+        matter_id,
+        working.mapped_count,
+        working.unmapped_count,
+    )
+    return updated if isinstance(updated, dict) else matter
 
 
 def extract_document_paragraphs(filename: str, document_bytes: bytes) -> tuple[str, list[dict[str, Any]]]:

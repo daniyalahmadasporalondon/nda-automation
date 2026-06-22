@@ -7,7 +7,15 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import docx_package_renderer, export_service, fill_export, pdf_docx_reconstruction, telemetry
+from . import (
+    artifact_registry,
+    artifact_service,
+    docx_package_renderer,
+    export_service,
+    fill_export,
+    pdf_docx_reconstruction,
+    telemetry,
+)
 from .checker import review_nda
 from .document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from .docx_export import (
@@ -298,6 +306,36 @@ def _build_redline_export(
     )
 
 
+def _working_docx_for_matter(
+    matter: dict,
+    matter_id: str,
+    *,
+    repository: MatterRepository,
+    owner_user_id: str = "",
+) -> tuple[bytes | None, str]:
+    """Return ``(bytes, .docx filename)`` of a converted PDF matter's working DOCX.
+
+    Returns ``(None, "")`` when the matter has no role="working" artifact (a native
+    DOCX matter, or a PDF whose ingest-time conversion failed and stayed legacy).
+    The returned filename carries a ``.docx`` suffix so the redline export routes the
+    matter through the native-DOCX index-anchored branch.
+    """
+    if not matter_id:
+        return None, ""
+    artifact = artifact_registry.latest_artifact_for_role(matter, artifact_registry.ROLE_WORKING)
+    if artifact is None:
+        return None, ""
+    working_bytes = artifact_service.get_artifact_bytes(
+        matter_id, artifact.id, repository=repository, owner_user_id=owner_user_id
+    )
+    if not working_bytes:
+        return None, ""
+    filename = artifact.name or "working.docx"
+    if not filename.lower().endswith(".docx"):
+        filename = f"{Path(filename).stem or 'working'}.docx"
+    return working_bytes, filename
+
+
 def _review_result_for_export(
     payload: dict, fallback_text: str, *, repository: MatterRepository, owner_user_id: str = ""
 ) -> tuple[dict, bytes | None, str]:
@@ -316,6 +354,18 @@ def _review_result_for_export(
         source_filename = str(matter.get("source_filename") or "")
         if source_document_bytes is None:
             raise DocxExtractionError("NDA source document is missing from storage.")
+        # Approach C: when a PDF source matter has a reconstructed working DOCX
+        # (built once at ingest), the redline anchors by INDEX into THAT DOCX -- the
+        # review paragraphs were re-keyed to its body. Substitute the working DOCX
+        # bytes + a .docx filename so the export takes the native-DOCX branch below
+        # (exact index anchoring), never the lossy per-export pdf2docx reconstruction
+        # fuzzy path. Falls through to the legacy PDF path when no working DOCX exists.
+        working_bytes, working_filename = _working_docx_for_matter(
+            matter, matter_id.strip(), repository=repository, owner_user_id=owner_user_id
+        )
+        if working_bytes is not None and working_filename:
+            source_document_bytes = working_bytes
+            source_filename = working_filename
         _apply_saved_redline_draft(payload, matter)
         submitted_text = _submitted_matter_source_text(payload)
         if _matter_source_text_changed(submitted_text, matter, review_result):

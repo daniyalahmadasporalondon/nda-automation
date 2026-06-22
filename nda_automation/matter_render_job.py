@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
-from . import document_rendering
+from . import artifact_registry, document_rendering
 from .matter_repository import DiskMatterRepository, MatterRepository, MatterRepositoryError
 
 DEFAULT_RENDER_STATUS_POLL_GRACE_SECONDS = 5.0
@@ -76,15 +76,33 @@ def render_status_payload(
         wait_timeout_seconds=poll_grace_seconds,
     )
     if render_result is not None:
-        return {
-            "document_render": public_document_render(
-                matter_id or "",
-                render_result.rendered,
-                matter=matter,
-                page_manifest=render_result.page_manifest,
-            )
-        }
-    return {"document_render": rendering_in_progress_payload(matter_id or "", source_filename)}
+        document_render = public_document_render(
+            matter_id or "",
+            render_result.rendered,
+            matter=matter,
+            page_manifest=render_result.page_manifest,
+        )
+    else:
+        document_render = rendering_in_progress_payload(matter_id or "", source_filename)
+    # FE seam (frozen): the PDF faithful-render branch lights up when a canonical
+    # working DOCX (Approach C) exists for this matter. Reported in BOTH the ready and
+    # in-progress payloads so the FE can switch as soon as the converted DOCX is ready,
+    # independent of the page-image render state.
+    document_render["working_docx_ready"] = matter_has_working_docx(matter)
+    return {"document_render": document_render}
+
+
+def matter_has_working_docx(matter: dict[str, Any] | None) -> bool:
+    """True when the matter carries a persisted role="working" DOCX artifact.
+
+    The artifact's presence is the readiness signal: ``register_working_docx`` stores
+    the bytes before appending the record, so a registered working artifact always has
+    retrievable bytes. A native DOCX matter (or a PDF whose ingest conversion failed)
+    has none -> False.
+    """
+    if not isinstance(matter, dict):
+        return False
+    return artifact_registry.latest_artifact_for_role(matter, artifact_registry.ROLE_WORKING) is not None
 
 
 def render_pdf_file(

@@ -18,12 +18,14 @@ from typing import Any
 
 from . import artifact_registry
 from .artifact_registry import (
+    ACTOR_AI,
     ACTOR_HUMAN,
     Artifact,
     ArtifactRegistryError,
     ROLE_ORIGINAL,
     ROLE_REDLINE,
     ROLE_REVIEWED,
+    ROLE_WORKING,
     SOURCE_GENERATED,
     SOURCE_GMAIL,
     SOURCE_UPLOAD,
@@ -187,6 +189,57 @@ def register_reviewed_docx(
         based_on_artifact_id=(based_on.id if based_on is not None else ""),
         make_current=True,
         metadata=metadata,
+        repository=repository,
+        owner_user_id=owner_user_id,
+    )
+
+
+def register_working_docx(
+    matter_id: str,
+    working_bytes: bytes,
+    *,
+    repository: MatterRepository | None = None,
+    owner_user_id: str = "",
+) -> Artifact | None:
+    """Register the canonical PDF→DOCX conversion as a role="working" artifact.
+
+    Approach C reconstructs a PDF source matter to a DOCX ONCE at ingest. That
+    DOCX is the index-anchorable body the faithful renderer + the redline pipeline
+    treat exactly like a native DOCX source. This wrapper owns the working-artifact
+    semantics so the ingest caller passes only the bytes:
+
+    * actor = ai (the conversion engine produced it), source = upload, role =
+      working.
+    * based_on = the matter's original artifact when one exists, so lineage reads
+      original(PDF) -> working(DOCX).
+    * make_current = False: the working DOCX is an internal anchor, NOT the
+      "current" lifecycle deliverable (the original PDF stays the user-facing
+      source until a redline/reviewed version supersedes it).
+
+    IDEMPOTENT on the working bytes' content hash: re-ingesting the same PDF (or a
+    backfill) that reconstructs byte-identically registers nothing new and returns
+    None. Returns the new Artifact, or None on the skip case.
+    """
+    repository = repository or DiskMatterRepository()
+    matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+    if matter is None:
+        raise ArtifactMatterNotFoundError(f"Matter {matter_id!r} not found.")
+
+    new_hash = hash_bytes(working_bytes)
+    existing_working = latest_artifact_for_role(matter, ROLE_WORKING)
+    if existing_working is not None and existing_working.content_hash == new_hash:
+        return None
+
+    original = latest_artifact_for_role(matter, ROLE_ORIGINAL)
+    return add_artifact(
+        matter_id,
+        source=SOURCE_UPLOAD,
+        actor=ACTOR_AI,
+        role=ROLE_WORKING,
+        document_bytes=working_bytes,
+        based_on_artifact_id=(original.id if original is not None else ""),
+        make_current=False,
+        metadata={"materialized_at": "ingest", "transform": "pdf_to_working_docx"},
         repository=repository,
         owner_user_id=owner_user_id,
     )

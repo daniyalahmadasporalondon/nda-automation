@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import re
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, NamedTuple
 from zipfile import BadZipFile, ZipFile
 import xml.etree.ElementTree as ET
 
@@ -286,17 +286,17 @@ def _extract_main_document_paragraphs(document: ZipFile) -> List[DocxParagraph]:
     numbering = _read_numbering(document)
     numbering_state: Dict[str, Dict[int, int]] = {}
     paragraphs: List[DocxParagraph] = []
-    for source_index, (paragraph, table_context) in enumerate(_iter_document_paragraphs(root), start=1):
-        text = _paragraph_text(paragraph)
+    for indexed in iter_indexed_body_paragraphs(root):
+        text = _paragraph_text(indexed.paragraph)
         if text:
             paragraphs.append(_paragraph_record(
-                paragraph,
+                indexed.paragraph,
                 text,
-                source_index=source_index,
+                source_index=indexed.source_index,
                 styles=styles,
                 numbering=numbering,
                 numbering_state=numbering_state,
-                table_context=table_context,
+                table_context=indexed.table_context,
             ))
     return paragraphs
 
@@ -321,16 +321,48 @@ def _extract_supplemental_paragraphs(document: ZipFile) -> List[DocxParagraph]:
     return paragraphs
 
 
-def _iter_document_paragraphs(root: ET.Element) -> Iterable[tuple[ET.Element, Dict[str, object] | None]]:
+class IndexedBodyParagraph(NamedTuple):
+    """A body ``<w:p>`` with its canonical 1-based ``source_index``.
+
+    This is the SINGLE source of truth for "number every body paragraph in document
+    order". Both the review-paragraph ``source_index`` (minted in
+    ``_extract_main_document_paragraphs``) and the export's physical-paragraph index
+    (``docx_export._indexed_source_paragraphs``) are derived from this one walk, so a
+    redline's ``source_index`` is an exact, twin-safe lookup into the same numbering
+    the export applies. ``parent`` is the element the ``<w:p>`` is a direct child of
+    (the export replaces/inserts in place); ``table_context`` carries cell
+    coordinates when the paragraph lives in a table cell, else None.
+    """
+
+    source_index: int
+    parent: ET.Element
+    paragraph: ET.Element
+    table_context: Dict[str, object] | None
+
+
+def iter_indexed_body_paragraphs(root: ET.Element) -> Iterable[IndexedBodyParagraph]:
+    """Yield every body ``<w:p>`` in canonical document order with a 1-based index.
+
+    ``root`` may be the parsed ``word/document.xml`` element or a ``<w:body>``; the
+    body is located when present so the numbering is identical regardless of which
+    the caller passes.
+    """
     body = root.find(f"{WORD_NS}body")
     container = body if body is not None else root
     table_counter = 0
+    source_index = 0
 
-    def walk(parent: ET.Element, table_context: Dict[str, int] | None = None, table_depth: int = 0):
-        nonlocal table_counter
+    def walk(parent: ET.Element, table_context: Dict[str, object] | None, table_depth: int):
+        nonlocal table_counter, source_index
         for child in list(parent):
             if child.tag == f"{WORD_NS}p":
-                yield child, table_context
+                source_index += 1
+                yield IndexedBodyParagraph(
+                    source_index=source_index,
+                    parent=parent,
+                    paragraph=child,
+                    table_context=table_context,
+                )
             elif child.tag == f"{WORD_NS}tbl":
                 nested_table_depth = table_depth + 1
                 if nested_table_depth > MAX_DOCX_TABLE_NESTING_DEPTH:
@@ -357,7 +389,12 @@ def _iter_document_paragraphs(root: ET.Element) -> Iterable[tuple[ET.Element, Di
             else:
                 yield from walk(child, table_context, table_depth)
 
-    yield from walk(container)
+    yield from walk(container, None, 0)
+
+
+def _iter_document_paragraphs(root: ET.Element) -> Iterable[tuple[ET.Element, Dict[str, object] | None]]:
+    for indexed in iter_indexed_body_paragraphs(root):
+        yield indexed.paragraph, indexed.table_context
 
 
 def _paragraph_record(

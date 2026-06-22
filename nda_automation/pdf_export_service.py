@@ -5,7 +5,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from . import document_rendering, matter_render_job, pdf_docx_reconstruction
+from . import (
+    artifact_registry,
+    artifact_service,
+    document_rendering,
+    matter_render_job,
+    pdf_docx_reconstruction,
+)
 from .matter_repository import DiskMatterRepository, MatterRepository
 
 PDF_EXPORT_MIME = document_rendering.PDF_CONTENT_TYPE
@@ -83,6 +89,11 @@ def matter_source_download_url(matter_id: str) -> str:
 def matter_source_docx_download_url(matter_id: str) -> str:
     matter_id = str(matter_id or "").strip()
     return f"/api/matters/{quote(matter_id, safe='')}/source-docx" if matter_id else ""
+
+
+def matter_working_docx_download_url(matter_id: str) -> str:
+    matter_id = str(matter_id or "").strip()
+    return f"/api/matters/{quote(matter_id, safe='')}/working-docx" if matter_id else ""
 
 
 def matter_reviewed_docx_download_url(matter_id: str) -> str:
@@ -367,6 +378,47 @@ def build_matter_pdf_source_docx_export(
         filename=reconstructed.filename,
         content_type=reconstructed.content_type,
         headers=reconstructed.headers or {},
+    )
+
+
+def build_matter_working_docx_export(
+    matter_id: str | None,
+    *,
+    owner_user_id: str = "",
+    repository: MatterRepository | None = None,
+) -> MatterDocxExport:
+    """Serve the canonical working DOCX (Approach C) for a converted PDF matter.
+
+    Owner-scoped + fail-closed exactly like the other matter document endpoints:
+    ``get_matter`` returns None on an owner mismatch (a past P0 treated an ownerless
+    matter as a wildcard -- this stays closed). 404 until the ingest-time PDF→DOCX
+    conversion has produced + persisted a role="working" artifact (e.g. a native
+    DOCX matter, or a PDF whose conversion failed/has not run, has none).
+    """
+    matter_id = str(matter_id or "").strip()
+    repository = repository or DiskMatterRepository()
+    matter = repository.get_matter(matter_id, owner_user_id=owner_user_id) if matter_id else None
+    if matter is None:
+        raise PdfExportError({"error": "NDA not found."}, status=404)
+    artifact = artifact_registry.latest_artifact_for_role(matter, artifact_registry.ROLE_WORKING)
+    if artifact is None:
+        raise PdfExportError({"error": "A working Word document is not available for this NDA."}, status=404)
+    working_bytes = artifact_service.get_artifact_bytes(
+        matter_id, artifact.id, repository=repository, owner_user_id=owner_user_id
+    )
+    if not working_bytes:
+        raise PdfExportError({"error": "A working Word document is not available for this NDA."}, status=404)
+    source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "")
+    download_name = (
+        pdf_docx_reconstruction.reconstructed_docx_filename(source_filename)
+        if source_filename
+        else "working.docx"
+    )
+    return MatterDocxExport(
+        data=working_bytes,
+        filename=download_name,
+        content_type=DOCX_DOWNLOAD_MIME,
+        headers={"X-Working-Docx-Artifact-ID": artifact.id},
     )
 
 
