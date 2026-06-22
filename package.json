@@ -24,9 +24,13 @@
     "test:frontend:format-run-props": "node tests/frontend/format-toolbar-run-props.cjs",
     "test:frontend:generator-format-extras": "node tests/frontend/generator-format-extras.cjs",
     "test:frontend:editor-format": "node tests/frontend/format-toolbar-run-props.cjs && node tests/frontend/generator-format-extras.cjs",
-    "test:frontend:find-replace": "node tests/frontend/find-replace.cjs"
+    "test:frontend:find-replace": "node tests/frontend/find-replace.cjs",
+    "test:frontend:docx-faithful": "node tests/frontend/docx-faithful-render.mjs",
+    "test:frontend:faithful-plan": "node tests/frontend/faithful-render-plan.mjs",
+    "test:frontend:never-blank": "node tests/frontend/review-surface-never-blank.mjs"
   },
   "devDependencies": {
+    "jsdom": "^24.1.0",
     "playwright": "^1.52.0",
     "pngjs": "^7.0.0"
   }

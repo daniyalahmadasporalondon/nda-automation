@@ -3772,6 +3772,16 @@ function renderStudioDocumentHighlights() {
     // freshly-painted page-image surface. The controller self-gates to a matter
     // being loaded and re-loads only when the matter changes.
     notifyPdfMarkupOriginalRendered();
+    // OPTIONAL faithful-DOCX upgrade (feature-flagged, default OFF). For a
+    // DOCX-source matter we hold the real .docx bytes; when the flag is on we
+    // render the ACTUAL document (styles, tables, numbering, w:ins/w:del tracked
+    // changes) over this surface instead of the page-image/reconstruction. This
+    // is the LAST thing in the Original branch so the existing surface is already
+    // painted: if the faithful render is disabled, unavailable, or fails for any
+    // reason it simply leaves the existing surface in place (never blank). It does
+    // not touch the structured/redline views, the overview panel, or
+    // insert-into-blanks -- those live in the non-Original modes below.
+    maybeUpgradeOriginalSurfaceToFaithfulDocx();
     return;
   }
   // Any non-Original render means we have left the Original view: drop the
@@ -3869,6 +3879,123 @@ function notifyPdfMarkupLeaveOriginal() {
   if (typeof pdfMarkupController !== "undefined" && pdfMarkupController) {
     pdfMarkupController.onLeaveOriginal();
   }
+}
+
+// True for a DOCX-source matter (real .docx bytes we can render faithfully today).
+// Mirrors how sourcePdfRenderCandidate() sniffs the source filename extension.
+function matterIsDocxSource(matter) {
+  const filename = String(matter?.source_filename || matter?.attachment_filename || "").trim();
+  return /\.docx$/i.test(filename);
+}
+
+// True for a PDF-source matter (no native DOCX bytes; needs a canonical DOCX built
+// by the backend before it can be rendered faithfully).
+function matterIsPdfSource(matter) {
+  const filename = String(matter?.source_filename || matter?.attachment_filename || "").trim();
+  return /\.pdf$/i.test(filename);
+}
+
+// PURE selection/precedence function: given a matter, the normalized render-state,
+// and the faithful-render capability flags, decide HOW the Original surface should
+// be rendered. Returns exactly one of:
+//   { render: "faithful_docx", url }  -> render the real DOCX bytes from `url`
+//   { render: "page_image" }          -> keep the already-painted base surface (no-op)
+//   { render: "reconstruction" }      -> the never-blank floor (text reconstruction)
+//
+// Precedence (first match wins):
+//   1. faithful_docx -- only when the flag is ON *and* the vendored library is
+//      available *and* a same-origin DOCX URL exists for this source:
+//        - DOCX source  -> /api/matters/<id>/source        (native bytes; today)
+//        - PDF source   -> /api/matters/<id>/working-docx   (canonical DOCX) but
+//          ONLY when renderState.workingDocxReady === true. That flag + endpoint
+//          are owned by a separate backend lane and default absent/false, so this
+//          branch is INERT until the backend ships them; PDF matters fall through.
+//   2. page_image -- the base surface is already painted, so faithful is a no-op.
+//   3. reconstruction -- the never-blank floor.
+//
+// Pure over its arguments (no globals) so it is unit-testable; the caller passes
+// the live flag/library capability + render-state in.
+function selectFaithfulRenderPlan(matter, renderState, capability) {
+  const flagEnabled = Boolean(capability && capability.flagEnabled);
+  const libraryAvailable = Boolean(capability && capability.libraryAvailable);
+  const matterId = matter && matter.id;
+
+  if (flagEnabled && libraryAvailable && matterId) {
+    if (matterIsDocxSource(matter)) {
+      return { render: "faithful_docx", url: `/api/matters/${encodeURIComponent(matterId)}/source` };
+    }
+    // PDF-source faithful render is gated on the backend having produced a
+    // canonical "working" DOCX. Until renderState.workingDocxReady is true this
+    // branch is dormant and PDF matters fall through to page_image.
+    if (matterIsPdfSource(matter) && renderState && renderState.workingDocxReady === true) {
+      return { render: "faithful_docx", url: `/api/matters/${encodeURIComponent(matterId)}/working-docx` };
+    }
+  }
+
+  // The base Original surface (page image / source preview) is already painted, so
+  // there is nothing to upgrade -- this is a no-op, not a blank.
+  return { render: "page_image" };
+}
+
+// Feature-flagged faithful-DOCX upgrade of the freshly-painted Original surface.
+// Delegates the source/precedence decision to the pure selectFaithfulRenderPlan();
+// only a { render:"faithful_docx", url } plan does any work. Fetches the real DOCX
+// bytes from the plan's owner-scoped URL and renders them with docx-preview. On
+// ANY failure it leaves the already-painted existing surface untouched -- the pane
+// is never blanked. A request sequence + matter-id recheck drops a stale async
+// upgrade if the user has since changed view mode or matter.
+function maybeUpgradeOriginalSurfaceToFaithfulDocx() {
+  const faithful = (typeof window !== "undefined" && window.FaithfulDocxRender) || null;
+  if (!faithful || typeof faithful.render !== "function") return;
+
+  const plan = selectFaithfulRenderPlan(state.selectedMatter, state.reviewDocumentRender, {
+    flagEnabled: typeof faithful.enabled === "function" ? faithful.enabled() : false,
+    libraryAvailable: typeof faithful.libraryAvailable === "function" ? faithful.libraryAvailable() : true,
+  });
+  if (plan.render !== "faithful_docx") return; // page_image/reconstruction: keep the painted surface
+
+  const matterId = state.selectedMatter?.id;
+  if (!matterId) return;
+  const sequence = reviewDocumentRenderRequestSequence;
+  const url = plan.url;
+
+  // Render into a detached host first; only swap it into the live surface once we
+  // know it produced real content, so a failed/empty faithful render can never
+  // wipe the existing surface mid-flight.
+  const host = document.createElement("div");
+  host.className = "review-faithful-docx-surface";
+
+  Promise.resolve(faithful.render(host, { url }))
+    .then((result) => {
+      // Drop a stale upgrade: the view re-rendered, the matter changed, or we left
+      // the Original view while the bytes were in flight.
+      if (sequence !== reviewDocumentRenderRequestSequence) return;
+      if (state.selectedMatter?.id !== matterId) return;
+      if ((state.documentViewMode || VIEW_MODE_REDLINE) !== VIEW_MODE_ORIGINAL) return;
+      if (!studioDocumentRender) return;
+      if (!result || !result.ok) return; // fall back: keep the existing surface
+      const wrapper = document.createElement("section");
+      wrapper.className = "review-original-surface review-faithful-original ready";
+      wrapper.setAttribute("data-review-render-surface", "");
+      wrapper.setAttribute("data-original-surface", "");
+      wrapper.setAttribute("data-faithful-docx", "");
+      wrapper.setAttribute("data-render-status", "ready");
+      wrapper.setAttribute("aria-label", "Original document faithful preview");
+      wrapper.appendChild(host);
+      studioDocumentRender.innerHTML = "";
+      studioDocumentRender.appendChild(wrapper);
+      showStudioDocumentRender();
+    })
+    .catch((error) => {
+      // Belt-and-braces: render() is contracted never to throw, but if it somehow
+      // does we still keep the existing surface rather than blank the pane.
+      try {
+        // eslint-disable-next-line no-console
+        console.error("maybeUpgradeOriginalSurfaceToFaithfulDocx: faithful upgrade failed; keeping existing surface", error);
+      } catch (_loggingError) {
+        // ignore logging failure
+      }
+    });
 }
 
 function reviewDocumentRenderState(result) {
@@ -3970,7 +4097,23 @@ function normalizeReviewDocumentRender(candidate) {
     status,
   };
   if (pages.length) renderState.pages = pages;
+  // The page-image (rasterization) status is a SEPARATE signal from the top-level
+  // render status: for a PDF matter the PDF render can succeed (status "ready" +
+  // pdf_url) while page-image rasterization fails, in which case the backend sends
+  // page_image_status:"failed"/"error" and pages:[]. We MUST read it so the
+  // non-Original surfaces do not take the page-image/iframe branch and paint a
+  // blank block above the editable text. Read defensively from snake/camel case.
+  const pageImageStatus = stringValue(candidate.page_image_status || candidate.pageImageStatus);
+  if (pageImageStatus) renderState.pageImageStatus = pageImageStatus.toLowerCase();
   if (candidate.source_fallback || candidate.sourceFallback) renderState.sourceFallback = true;
+  // Backend signal (owned by the source->canonical-DOCX lane) that a PDF-source
+  // matter now has a canonical "working" DOCX available at /api/matters/<id>/
+  // working-docx. Defaults FALSE/absent, which keeps the PDF faithful-render branch
+  // in selectFaithfulRenderPlan dormant until the backend ships it. Read defensively
+  // from either snake_case (server JSON) or camelCase.
+  if (candidate.working_docx_ready === true || candidate.workingDocxReady === true) {
+    renderState.workingDocxReady = true;
+  }
   const overlay = normalizeDocumentOverlay(candidate.document_overlay || candidate.documentOverlay);
   if (overlay) renderState.documentOverlay = overlay;
   const errorCode = stringValue(candidate.error_code || candidate.errorCode);
@@ -4070,16 +4213,47 @@ function stringValue(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+// True only when a page-image (or iframe) preview surface would genuinely paint
+// content for the NON-Original views: the top-level render is ready AND the
+// page-image rasterization itself is good AND we actually have page images to show.
+//
+// WHY: for a PDF matter the PDF render can succeed (status "ready" + pdf_url) while
+// page-image rasterization FAILS -- the backend then sends page_image_status:
+// "failed"/"error" and pages:[]. Without this guard the non-Original surface took
+// the `status==="ready" && pdfUrl` iframe branch and painted a fixed-height
+// (~520px) /render-pdf iframe that shows BLANK when the iframe never paints,
+// shoving the editable text reconstruction far below the fold. The reconstruction
+// is the always-visible FLOOR; the page-image surface is only a tier-2 upgrade, so
+// when it cannot genuinely paint we emit nothing and let the reconstruction stand.
+function pageImageSurfaceUsable(renderState) {
+  if (!renderState) return false;
+  if ((renderState.status || "") !== "ready") return false;
+  const pages = Array.isArray(renderState.pages) ? renderState.pages : [];
+  if (!pages.length) return false;
+  // page_image_status, when present, must itself be good. Absent -> trust `pages`
+  // (the backend only attaches a manifest+pages when rasterization produced them).
+  const pageImageStatus = renderState.pageImageStatus || "";
+  if (pageImageStatus && !["ready", "complete", "completed", "available", "success"].includes(pageImageStatus)) {
+    return false;
+  }
+  return true;
+}
+
 function renderPdfDocumentSurface(renderState) {
   if (!renderState) return "";
-  const status = renderState.status || "loading";
   const pages = Array.isArray(renderState.pages) ? renderState.pages : [];
   const pageLabel = renderState.pageCount
     ? `${renderState.pageCount} ${renderState.pageCount === 1 ? "page" : "pages"}`
     : "";
   const meta = [renderState.sourceLabel, pageLabel].filter(Boolean).join(" · ");
 
-  if (status === "ready" && pages.length) {
+  // ONLY paint the page-image surface when it is genuinely usable. We deliberately
+  // do NOT fall back to a fixed-height /render-pdf iframe here: in the non-Original
+  // views the editable text reconstruction is appended right after this and is the
+  // always-visible floor, so a blank/half-painted iframe above it would just push
+  // the real content below the fold. When the page images are not usable we emit
+  // nothing and let the reconstruction be the surface.
+  if (pageImageSurfaceUsable(renderState)) {
     return `
       <section class="review-pdf-surface review-page-surface ready" data-review-pdf-surface data-review-render-surface data-render-status="ready" aria-label="Rendered document preview">
         <div class="review-pdf-status">
@@ -4094,30 +4268,8 @@ function renderPdfDocumentSurface(renderState) {
     `;
   }
 
-  if (status === "ready" && renderState.pdfUrl) {
-    return `
-      <section class="review-pdf-surface ready" data-review-pdf-surface data-render-status="ready" aria-label="Rendered document preview">
-        <div class="review-pdf-status">
-          <strong>${escapeHtml(meta || "Rendered PDF")}</strong>
-          <span>High-resolution preview</span>
-        </div>
-        <iframe class="review-pdf-frame" src="${escapeHtml(renderState.pdfUrl)}" title="${escapeHtml(renderState.sourceLabel || "Rendered document")}"></iframe>
-      </section>
-      <div class="review-fallback-divider" aria-hidden="true"><span>Editable text review</span></div>
-    `;
-  }
-
-  const message = status === "error"
-    ? renderState.error || "Rendered PDF is unavailable. Showing editable text review."
-    : "Preparing high-resolution document preview. Showing editable text review.";
-  return `
-    <section class="review-pdf-surface ${escapeHtml(status)}" data-review-pdf-surface data-render-status="${escapeHtml(status)}" aria-label="Rendered document preview status">
-      <div class="review-pdf-status">
-        <strong>${escapeHtml(status === "error" ? "PDF preview unavailable" : "PDF preview loading")}</strong>
-        <span>${escapeHtml(message)}</span>
-      </div>
-    </section>
-  `;
+  // Not usable: no banner, no blank iframe -- the reconstruction below stands alone.
+  return "";
 }
 
 function renderOriginalDocumentSurface(renderState) {

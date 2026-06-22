@@ -2196,6 +2196,17 @@
 
     <script src="/static/js/config.js?v=20260621wave4"></script>
     <!--
+      Vendored (no-CDN) faithful-DOCX rendering for the Review workstation. The
+      vendored jszip + docx-preview bundles are LAZILY self-injected by
+      docx-faithful-render.js on first use (loadScriptOnce / ensureFaithfulDocxLibs,
+      retry-on-failure) -- NOT via static tags here, so a missing/404'd vendor file
+      degrades gracefully (and is retried) rather than reporting the library
+      "unavailable" forever. Default OFF behind a single localStorage flag
+      (localStorage["nda.faithfulDocxRender"] = "1"; see config.js) with a
+      never-blank fallback. See static/vendor/VERSIONS.md.
+    -->
+    <script src="/static/js/docx-faithful-render.js?v=20260622docxfaithful2"></script>
+    <!--
       Single-source utility bridge. html-utils / clause-status / inline-diff /
       matter-utils now live ONLY as static/js/modules/*.mjs (the modules the
       frontend tests import). This module exposes their exports as the globals
