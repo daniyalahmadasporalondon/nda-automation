@@ -322,6 +322,20 @@ def handle_gmail_settings_update(handler) -> None:
             )
             return
         updates["inbound_search_terms"] = inbound_search_terms
+        # When the (default-OFF) custom-terms detection feature is enabled, these
+        # saved terms ALSO feed the deterministic NDA content scorer. Validate them
+        # against the STRICTER detection rules (min length, generic-word denylist,
+        # literal-substring/regex-neutralization, count cap) and report any that
+        # would be SKIPPED back to the admin, so an invalid signal term is never
+        # silently applied or silently dropped. The terms are still saved as-is for
+        # display/fetch; the scorer re-validates defensively at read time.
+        if gmail_integration.gmail_custom_detection_terms_enabled():
+            _accepted, rejected = app_settings.validate_admin_detection_terms(inbound_search_terms)
+            if rejected:
+                skipped = "; ".join(f"\"{item['term']}\" ({item['reason']})" for item in rejected)
+                warnings.append(
+                    "Some Signal Terms won't be used for NDA detection and were skipped: " + skipped + "."
+                )
     if "intake_playbook" in payload:
         intake_playbook = payload.get("intake_playbook")
         if not isinstance(intake_playbook, str) or len(intake_playbook) > app_settings.MAX_GMAIL_INTAKE_PLAYBOOK_LENGTH:
