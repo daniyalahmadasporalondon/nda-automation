@@ -11,6 +11,19 @@ const RepositoryBoard = (() => {
       .replace(/'/g, "&#039;");
   }
 
+  // True while a background AI review is running on this matter (review_status ===
+  // "in_progress"). Defensive: MatterUtils is wired by the module bridge before
+  // any user interaction, but if it (or just this predicate) is missing -- an
+  // isolated test stub or a partial load order -- degrade to "not in progress"
+  // rather than throwing and crashing the whole board render. Mirrors the guarded
+  // callers in contract-structure-view.js / review-workstation-rendering.js.
+  function matterReviewInProgress(matter) {
+    if (typeof MatterUtils === "undefined" || typeof MatterUtils.reviewInProgress !== "function") {
+      return false;
+    }
+    return Boolean(MatterUtils.reviewInProgress(matter));
+  }
+
   function renderBoard({
     errorMessage = "",
     gmailDemoMatterList,
@@ -217,7 +230,7 @@ const RepositoryBoard = (() => {
     // "Reviewing…" badge that supersedes the reviewed/not-reviewed state; otherwise
     // it is quiet/green when the AI has reviewed and amber when it has not -- text
     // label (not colour-only) for a11y.
-    const reviewInProgress = MatterUtils.reviewInProgress(matter);
+    const reviewInProgress = matterReviewInProgress(matter);
     const reviewBadge = reviewInProgress
       ? `<span class="repository-review-badge reviewing" aria-busy="true" title="An AI review is running on this NDA in the background.">Reviewing…</span>`
       : aiReviewRan
