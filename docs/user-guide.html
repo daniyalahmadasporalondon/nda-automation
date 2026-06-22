@@ -1,0 +1,1322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NDA Automation — User Guide</title>
+<style>
+  :root {
+    --canvas: #FAF9FC;
+    --card: #FFFFFF;
+    --ink: #170A33;
+    --ink-soft: #4A4163;
+    --ink-faint: #6B6385;
+    --brand: #4F1BB3;
+    --brand-soft: #F3EEFB;
+    --brand-tint: #EDE6FA;
+    --hairline: #E6E1F0;
+    --pass: #1F8A4C;
+    --pass-bg: #E7F5EC;
+    --review: #B5780A;
+    --review-bg: #FBF1DD;
+    --fail: #C0322B;
+    --fail-bg: #FBE9E8;
+    --radius: 12px;
+    --radius-sm: 8px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--canvas);
+    color: var(--ink);
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .app {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    min-height: 100vh;
+  }
+
+  /* ---------- Sidebar ---------- */
+  .sidebar {
+    background: var(--card);
+    border-right: 1px solid var(--hairline);
+    padding: 24px 16px 48px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+  }
+  .brandmark {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 8px 20px;
+  }
+  .brandmark .dot {
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    background: var(--brand);
+    flex: none;
+  }
+  .brandmark .label {
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
+  }
+  .brandmark .label small {
+    display: block;
+    font-weight: 500;
+    font-size: 12px;
+    color: var(--ink-faint);
+  }
+  .guide-search {
+    width: 100%;
+    margin: 0 0 18px;
+    padding: 9px 12px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-family: inherit;
+    color: var(--ink);
+    background: var(--canvas);
+  }
+  .guide-search:focus {
+    outline: none;
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px var(--brand-soft);
+  }
+  nav.tabs { display: flex; flex-direction: column; gap: 2px; }
+  nav.tabs button {
+    text-align: left;
+    border: none;
+    background: transparent;
+    color: var(--ink-soft);
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    padding: 9px 12px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    line-height: 1.35;
+    transition: background .12s, color .12s;
+  }
+  nav.tabs button:hover { background: var(--brand-soft); color: var(--ink); }
+  nav.tabs button.active {
+    background: var(--brand);
+    color: #fff;
+    font-weight: 600;
+  }
+  nav.tabs button .num {
+    display: inline-block;
+    width: 1.4em;
+    color: var(--ink-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  nav.tabs button.active .num { color: rgba(255,255,255,.7); }
+  nav.tabs .group-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--ink-faint);
+    font-weight: 600;
+    padding: 16px 12px 4px;
+  }
+  .no-results-note {
+    display: none;
+    padding: 10px 12px;
+    font-size: 13px;
+    color: var(--ink-faint);
+  }
+
+  /* ---------- Main ---------- */
+  main {
+    padding: 40px 56px 96px;
+    max-width: 920px;
+  }
+  header.page-head {
+    border-bottom: 1px solid var(--hairline);
+    padding-bottom: 20px;
+    margin-bottom: 8px;
+  }
+  header.page-head h1 {
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0 0 4px;
+  }
+  header.page-head p {
+    margin: 0;
+    color: var(--ink-faint);
+    font-size: 14px;
+  }
+
+  section.tab-panel { display: none; animation: fade .18s ease; }
+  section.tab-panel.active { display: block; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  h2 {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+    margin: 32px 0 6px;
+  }
+  .panel-lede {
+    color: var(--ink-soft);
+    font-size: 16px;
+    margin: 0 0 8px;
+  }
+  h3 {
+    font-size: 16px;
+    font-weight: 700;
+    margin: 28px 0 8px;
+  }
+  h4 {
+    font-size: 14px;
+    font-weight: 700;
+    margin: 20px 0 4px;
+    color: var(--ink);
+  }
+  p { margin: 0 0 12px; }
+  ul, ol { margin: 0 0 14px; padding-left: 22px; }
+  li { margin: 4px 0; }
+  strong { font-weight: 600; }
+  a { color: var(--brand); }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    padding: 20px 22px;
+    margin: 16px 0;
+  }
+  .card.tight { padding: 16px 18px; }
+
+  .steps {
+    counter-reset: step;
+    list-style: none;
+    padding-left: 0;
+    margin: 14px 0;
+  }
+  .steps > li {
+    position: relative;
+    padding-left: 40px;
+    margin: 12px 0;
+  }
+  .steps > li::before {
+    counter-increment: step;
+    content: counter(step);
+    position: absolute;
+    left: 0; top: 0;
+    width: 26px; height: 26px;
+    background: var(--brand);
+    color: #fff;
+    border-radius: 50%;
+    font-size: 13px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .callout {
+    border-left: 3px solid var(--brand);
+    background: var(--brand-soft);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    padding: 12px 16px;
+    margin: 16px 0;
+    font-size: 15px;
+  }
+  .callout.warn {
+    border-left-color: var(--review);
+    background: var(--review-bg);
+  }
+  .callout strong:first-child { color: var(--brand); }
+  .callout.warn strong:first-child { color: var(--review); }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 14px 0 18px;
+    font-size: 14px;
+  }
+  th, td {
+    text-align: left;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--hairline);
+    vertical-align: top;
+  }
+  th {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--ink-faint);
+    font-weight: 600;
+  }
+  td:first-child { font-weight: 600; }
+
+  .verdict {
+    display: inline-block;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 2px 9px;
+    border-radius: 999px;
+    letter-spacing: .02em;
+  }
+  .verdict.pass { background: var(--pass-bg); color: var(--pass); }
+  .verdict.review { background: var(--review-bg); color: var(--review); }
+  .verdict.fail { background: var(--fail-bg); color: var(--fail); }
+
+  kbd, .ui {
+    font-family: inherit;
+    font-weight: 600;
+    background: var(--brand-tint);
+    color: var(--brand);
+    padding: 1px 7px;
+    border-radius: 6px;
+    font-size: 0.92em;
+    white-space: nowrap;
+  }
+
+  .glossary dl { margin: 0; }
+  .glossary dt {
+    font-weight: 700;
+    margin-top: 18px;
+    font-size: 15px;
+  }
+  .glossary dd {
+    margin: 2px 0 0;
+    color: var(--ink-soft);
+    font-size: 15px;
+  }
+  .glossary .letter {
+    color: var(--brand);
+    font-weight: 800;
+    font-size: 13px;
+    border-bottom: 1px solid var(--hairline);
+    padding-bottom: 4px;
+    margin-top: 28px;
+  }
+
+  mark {
+    background: #FFE9A8;
+    color: var(--ink);
+    border-radius: 3px;
+    padding: 0 1px;
+  }
+  .search-hidden { display: none !important; }
+
+  @media (max-width: 860px) {
+    .app { grid-template-columns: 1fr; }
+    .sidebar { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--hairline); }
+    main { padding: 28px 22px 80px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brandmark">
+      <span class="dot"></span>
+      <span class="label">NDA Automation<small>User Guide</small></span>
+    </div>
+    <input class="guide-search" id="guideSearch" type="search" placeholder="Search the guide…" aria-label="Search the guide">
+    <div class="no-results-note" id="noResults">No tabs match that search.</div>
+    <nav class="tabs" id="tabNav">
+      <div class="group-label">Get started</div>
+      <button data-tab="welcome" class="active"><span class="num">1</span>Welcome / Start Here</button>
+      <button data-tab="big-picture"><span class="num">2</span>The Big Picture</button>
+      <button data-tab="dashboard"><span class="num">3</span>Your Dashboard</button>
+      <button data-tab="repository"><span class="num">4</span>The Repository</button>
+      <div class="group-label">Working an NDA</div>
+      <button data-tab="reviewing"><span class="num">5</span>Reviewing an NDA</button>
+      <button data-tab="redlines"><span class="num">6</span>Redlines</button>
+      <button data-tab="search"><span class="num">7</span>AI Search</button>
+      <button data-tab="notifications"><span class="num">8</span>Notifications</button>
+      <button data-tab="sending"><span class="num">9</span>Sending &amp; E-Signature</button>
+      <div class="group-label">Creating &amp; receiving</div>
+      <button data-tab="generating"><span class="num">10</span>Generating an NDA</button>
+      <button data-tab="entities"><span class="num">11</span>Entities &amp; Signatories</button>
+      <button data-tab="inbox"><span class="num">12</span>The Inbox (auto-receiving)</button>
+      <div class="group-label">Rules &amp; settings</div>
+      <button data-tab="playbook"><span class="num">13</span>The Playbook (your rulebook)</button>
+      <button data-tab="admin"><span class="num">14</span>Admin: What You Can &amp; Can't Change</button>
+      <button data-tab="glossary"><span class="num">15</span>Glossary</button>
+    </nav>
+  </aside>
+
+  <main>
+    <header class="page-head">
+      <h1>NDA Automation — User Guide</h1>
+      <p>A plain-English walkthrough of the whole app, start to finish. Pick a topic on the left.</p>
+    </header>
+
+    <!-- ============ 1. WELCOME ============ -->
+    <section class="tab-panel active" id="tab-welcome">
+      <h2>Welcome — start here</h2>
+      <p class="panel-lede">This app takes an NDA from "just arrived" all the way to "signed and filed," with an AI assistant doing the first-pass legal review for you.</p>
+
+      <p>An <strong>NDA</strong> (non-disclosure agreement) is the contract two companies sign to promise they'll keep each other's information confidential. Instead of handling each one by hand, this app lets you:</p>
+      <ul>
+        <li><strong>Receive</strong> NDAs that arrive by email, or upload them yourself.</li>
+        <li><strong>Review</strong> them automatically — an AI reads each NDA and checks it against your company's rules (your "playbook").</li>
+        <li><strong>Flag and mark up</strong> problems — it points out clauses that don't meet your standards and proposes "redlines" (suggested edits, shown like tracked changes in Word).</li>
+        <li><strong>Generate</strong> brand-new NDAs from a template, filled in with the right party names, dates, and governing law.</li>
+        <li><strong>Send</strong> the finished NDA out — by email, or for e-signature through DocuSign.</li>
+      </ul>
+
+      <div class="callout">
+        <strong>One word you'll see everywhere:</strong> a <strong>matter</strong> is just the app's name for one NDA and everything attached to it — the original document, the AI's review, any redlines, and its current status. When you see "matter," read "an NDA and its file."
+      </div>
+
+      <h3>The main tabs, at a glance</h3>
+      <p>Across the top of the app is a tab bar. Here's where to go when you want to…</p>
+      <table>
+        <thead><tr><th>Tab</th><th>Go here to…</th></tr></thead>
+        <tbody>
+          <tr><td>Dashboard</td><td>See your at-a-glance overview: pipeline counts, connection health, the smart search box, and the intake queue.</td></tr>
+          <tr><td>Generator</td><td>Create a new NDA from scratch — pick your signing entity and counterparty, set the term and purpose, and generate a draft.</td></tr>
+          <tr><td>Repository</td><td>Work through your active NDAs on the six-column board (your main work surface).</td></tr>
+          <tr><td>Corpus</td><td>Search your library of signed NDAs — group by counterparty or month, filter with facets.</td></tr>
+          <tr><td>Review</td><td>Read and mark up a single NDA. You usually reach it by clicking a card in the Repository.</td></tr>
+          <tr><td>Playbook</td><td>See and edit your company's rules — the standard clauses, approved options, and thresholds the AI checks against.</td></tr>
+          <tr><td>Admin</td><td>Settings and connections: AI Runtime, Health, Gmail, Personalisation, Drive, DocuSign, Access, and Signing Entities.</td></tr>
+          <tr><td>Guide</td><td>Built-in explainers of how the app's document intelligence works under the hood.</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout">
+        <strong>Inbox isn't a separate tab.</strong> Inbound NDAs from email show up as the <span class="ui">Inbox</span> column on the Repository board and in the <span class="ui">Intake Queue</span> on the Dashboard. You manage the actual Gmail connection under <span class="ui">Admin → Gmail</span>.
+      </div>
+
+      <h3>New here? Two ways to get your first NDA</h3>
+      <ol class="steps">
+        <li>Open the <span class="ui">Generator</span> tab to draft a brand-new NDA, or</li>
+        <li>Connect Gmail under <span class="ui">Admin → Gmail</span> so inbound NDAs import themselves.</li>
+      </ol>
+      <p>Either way, once an NDA is in the app, open it and click <span class="ui">Review</span> to let the AI do the first pass. Then read on — the <strong>Reviewing an NDA</strong> tab explains what you'll see.</p>
+    </section>
+
+    <!-- ============ 2. BIG PICTURE ============ -->
+    <section class="tab-panel" id="tab-big-picture">
+      <h2>The big picture: the life of an NDA</h2>
+      <p class="panel-lede">Every NDA takes the same journey through the app. You can follow any NDA along these six steps.</p>
+
+      <ol class="steps">
+        <li><strong>It arrives (or you upload it).</strong> An NDA shows up one of three ways: it lands in your connected Gmail inbox and the app pulls it in automatically, you upload a Word or PDF file yourself, or you generate a new one from scratch in the app.</li>
+        <li><strong>The AI reviews it.</strong> The AI reads the NDA clause by clause and compares each part against your playbook — your standard rules, for example "the confidentiality period must be at most 5 years" or "the governing law must be on our approved list." This is the <strong>review</strong>.</li>
+        <li><strong>Problems get flagged and redlined.</strong> The app gives each clause a verdict — it <strong>passes</strong>, it <strong>needs review</strong> (a human should look), or it <strong>fails</strong> (a clear problem). For problem clauses, it proposes <strong>redlines</strong>: specific edits that would bring the clause in line with your rules.</li>
+        <li><strong>A human approves it.</strong> You open the NDA, look at the AI's findings, fix or accept the redlines, and mark each flagged clause <strong>Reviewed</strong> to confirm you've checked it. This unlocks the next step.</li>
+        <li><strong>It gets sent.</strong> You send the marked-up NDA back to the counterparty by email, or send a clean copy out for signature via DocuSign.</li>
+        <li><strong>It gets signed and filed.</strong> Once both sides sign, the NDA is <strong>executed</strong>. Executed agreements drop off your active board and move into the <strong>Corpus</strong> — your permanent, searchable library of signed NDAs.</li>
+      </ol>
+
+      <div class="callout">
+        <strong>The whole point:</strong> steps 2 and 3 (the AI review and redlines) used to be slow manual legal work. The app does the first pass; you stay in control at step 4.
+      </div>
+
+      <h3>The Playbook steers everything</h3>
+      <p>The <strong>playbook</strong> is the single source of truth for your rules — the confidentiality period you accept, the governing laws you allow, which clauses are required, and so on. The AI doesn't invent its own standards; it judges every NDA against this playbook. When you change a rule in the Playbook tab, that's what the AI checks against going forward. (See the <strong>Playbook</strong> tab for the full story.)</p>
+    </section>
+
+    <!-- ============ 3. DASHBOARD ============ -->
+    <section class="tab-panel" id="tab-dashboard">
+      <h2>Your Dashboard</h2>
+      <p class="panel-lede">When you sign in you land on the Dashboard. It opens with "Welcome back" and gives you an at-a-glance picture of your NDA pipeline.</p>
+
+      <h3>Pipeline health (top-left)</h3>
+      <p>Four small status lights show whether the app's connections are working. Each shows "Checking…" first, then a healthy or warning state.</p>
+      <ul>
+        <li><strong>AI Review</strong> — is the AI reviewer switched on and reachable.</li>
+        <li><strong>Email</strong> — is your Gmail connected (for pulling in inbound NDAs).</li>
+        <li><strong>Drive</strong> — is Google Drive connected (for filing signed NDAs).</li>
+        <li><strong>DocuSign</strong> — is e-signature connected.</li>
+      </ul>
+
+      <h3>Two big action buttons (top-right)</h3>
+      <ul>
+        <li><span class="ui">+ Submit for Review</span> — upload an NDA file and have the AI review it.</li>
+        <li><span class="ui">Send Document</span> — email a document straight to a counterparty.</li>
+      </ul>
+
+      <h3>The four count tiles</h3>
+      <p>A row of cards showing how many NDAs are in each major stage right now.</p>
+      <table>
+        <thead><tr><th>Tile</th><th>What it counts</th></tr></thead>
+        <tbody>
+          <tr><td>Inbox</td><td>NDAs that arrived by email and are waiting.</td></tr>
+          <tr><td>In Review</td><td>NDAs the AI has reviewed and are waiting on you.</td></tr>
+          <tr><td>Reviewed</td><td>NDAs you've checked and approved.</td></tr>
+          <tr><td>Sent</td><td>NDAs sent out (by email or for signature).</td></tr>
+        </tbody>
+      </table>
+
+      <h3>The search box</h3>
+      <p>A wide bar that says <span class="ui">Search or ask about your documents…</span>. This isn't just a keyword box — you can ask it in plain English (for example, "show me everything waiting on the other side"). It interprets your question and shows matching NDAs, with a <span class="ui">Showing: …</span> line explaining how it read your request. (Full details on the <strong>AI Search</strong> tab.) Below the box are quick-filter chips you can click instead of typing:</p>
+      <ul>
+        <li><span class="ui">Show all documents pending approval</span></li>
+        <li><span class="ui">Show all documents awaiting signature</span></li>
+        <li><span class="ui">Find documents by counterparty</span> — groups your NDAs by who they're with.</li>
+      </ul>
+
+      <h3>The Intake Queue</h3>
+      <p>At the bottom, a table titled <span class="ui">Intake Queue</span> lists NDAs that have come in and need attention, with columns <strong>Document Name</strong>, <strong>Counterparty</strong>, <strong>Sender</strong>, <strong>Date</strong>, and <strong>Action</strong>. If nothing's waiting, it says "No Inbox NDAs yet."</p>
+    </section>
+
+    <!-- ============ 4. REPOSITORY ============ -->
+    <section class="tab-panel" id="tab-repository">
+      <h2>The Repository: your work board</h2>
+      <p class="panel-lede">The Repository tab (titled "Contract Repository") is the heart of your day-to-day work — a board with six columns, like a Kanban board, where each NDA is a card that moves left to right as it progresses.</p>
+
+      <p>The header has a <span class="ui">Search cards</span> box to filter the board, and a sync-status line telling you when your Gmail last imported anything.</p>
+
+      <h3>The six columns (left to right)</h3>
+      <ol>
+        <li><strong>Generated</strong> — NDAs you created in the app's Generator.</li>
+        <li><strong>Upload</strong> — NDAs you manually uploaded. (There's a small <span class="ui">+</span> button to add one.)</li>
+        <li><strong>Inbox</strong> — NDAs that arrived through your connected Gmail.</li>
+        <li><strong>In Review</strong> — NDAs the AI has reviewed; waiting for you to look.</li>
+        <li><strong>Reviewed</strong> — NDAs you've checked and approved.</li>
+        <li><strong>Sent</strong> — NDAs sent out for signature or email.</li>
+      </ol>
+
+      <div class="callout">
+        An NDA in the first three columns (Generated / Upload / Inbox) automatically jumps to <strong>In Review</strong> the moment an AI review runs on it. Nothing ever moves backward. Once an NDA is fully signed (<strong>executed</strong>), it leaves the board entirely and goes to the Corpus library.
+      </div>
+
+      <h3>What a card shows you</h3>
+      <ul>
+        <li>The <strong>document title</strong> (or filename) and the <strong>sender / counterparty</strong>.</li>
+        <li>A <strong>source badge</strong> telling you where it came from: <span class="ui">Inbox</span>, <span class="ui">Mail</span>, <span class="ui">Manual Upload</span>, <span class="ui">Generated</span>, or <span class="ui">Sent NDA</span>.</li>
+        <li>A <strong>review badge</strong> showing its AI-review state:
+          <ul>
+            <li><span class="ui">AI reviewed</span> — the AI has reviewed this NDA.</li>
+            <li><span class="ui">Reviewing…</span> — a review is running right now in the background.</li>
+            <li><span class="ui">Not reviewed</span> — no AI review yet. Open the NDA to run one. "Not reviewed" is a deliberate nudge, not an error.</li>
+          </ul>
+        </li>
+        <li>A <span class="ui">Stale</span> badge if the NDA was edited after its last review (so the review may be out of date).</li>
+        <li>An <strong>issue count</strong> (e.g. "3 issues") once a review has run, plus the column it's in.</li>
+        <li>A short snippet and the date it arrived.</li>
+      </ul>
+
+      <h3>How to… (Repository)</h3>
+      <p><strong>Open an NDA:</strong> Click any card (or press Enter when it's focused). This takes you into the Review workstation for that NDA.</p>
+      <p><strong>Search the board:</strong> Type into the <span class="ui">Search cards</span> box at the top. It filters cards by title, sender, filename, source, status, and more. If nothing matches, the column shows "No matching documents."</p>
+      <p><strong>Add an upload directly:</strong> Click the <span class="ui">+</span> on the Upload column header.</p>
+      <p><strong>Delete an NDA:</strong> Click the small <span class="ui">x</span> on a card. It asks "Delete NDA and stored document?" — confirm with <span class="ui">Delete</span> or back out with <span class="ui">Cancel</span>.</p>
+      <p><strong>Brand-new account?</strong> If your board is completely empty, you'll see a "Welcome — let's get your first NDA here" panel with two starter steps: open the Generator to draft one, or connect Gmail to import inbound NDAs.</p>
+    </section>
+
+    <!-- ============ 5. REVIEWING ============ -->
+    <section class="tab-panel" id="tab-reviewing">
+      <h2>Reviewing an NDA</h2>
+      <p class="panel-lede">This is the heart of the app. You upload or receive an NDA, and the app uses AI to read it, check it against your own rules, and mark up anything that needs to change.</p>
+
+      <h3>How to issue a review</h3>
+      <p>You start a review from the <strong>review workstation</strong> — the screen where one NDA is open, with the document on the left and a clause panel on the right.</p>
+      <ol class="steps">
+        <li>Open the NDA you want to review (from your inbox/board, or by uploading it).</li>
+        <li>Look at the toolbar above the document. You'll see a button labelled <span class="ui">Review</span>.</li>
+        <li>Click <span class="ui">Review</span>.</li>
+      </ol>
+      <p>Here's what happens next:</p>
+      <ul>
+        <li>The button changes to <span class="ui">Reviewing…</span> and a shimmering placeholder appears over the document while it works.</li>
+        <li>A message shows: <em>"Reviewing with AI… this runs in the background and can take a couple of minutes."</em></li>
+        <li><strong>The review runs in the background.</strong> You don't have to sit and wait — switch to another NDA, work on something else, or close the screen. The review keeps going on the server.</li>
+        <li>A typical review takes roughly <strong>2 to 4 minutes</strong> (it reads the whole document clause by clause).</li>
+        <li>When it finishes, the workstation <strong>updates on its own</strong> with the verdicts, highlighted text, and comments. You don't need to refresh anything.</li>
+      </ul>
+
+      <div class="callout">
+        <strong>Re-running a review:</strong> the same <span class="ui">Review</span> button re-runs the review later (for example, after you've changed the Playbook rules). The newest result replaces the old one.
+      </div>
+
+      <h3>What the review actually does</h3>
+      <p>In plain terms: <strong>an AI legal reviewer reads the NDA one clause at a time and checks each important clause against your Playbook.</strong> For each clause it works through a fixed method, in order:</p>
+      <ol>
+        <li><strong>Locate</strong> — find the part of the document that covers this clause.</li>
+        <li><strong>Read carefully</strong> — read it literally, paying attention to "not," "except," "unless," and other words that flip a sentence's meaning.</li>
+        <li><strong>Apply</strong> — compare what it found against your Playbook's rule for that clause.</li>
+        <li><strong>Cite</strong> — pick out the exact sentence from the document that drives its decision.</li>
+        <li><strong>Decide</strong> — give the clause a verdict (see below).</li>
+      </ol>
+      <p>The clauses it checks are the ones your Playbook cares about — typically <strong>Mutuality, Confidential Information, Governing Law, Term &amp; Survival, Non-Circumvention,</strong> and <strong>Signatures</strong>. Because the list comes from the Playbook, if you add a new rule there, the review starts checking for it automatically.</p>
+      <p>A key safeguard: the AI is told to <strong>escalate to review when it's unsure</strong>, rather than guess a pass or a fail. If the wording is ambiguous, conflicting, or it can't tell, the safe answer is "a human should look at this."</p>
+
+      <h3>The three verdicts</h3>
+      <p>Every important clause gets one of three verdicts. This is the most important thing to understand on the whole screen.</p>
+      <div class="card">
+        <p><span class="verdict pass">PASS</span> &nbsp;<strong>"looks fine."</strong> The clause meets your Playbook's rule. Nothing to do.<br>
+        <em>Example:</em> the governing law is England &amp; Wales, which is on your approved list.</p>
+      </div>
+      <div class="card">
+        <p><span class="verdict review">REVIEW</span> &nbsp;<strong>"a human should look at this before sending."</strong> The AI isn't confident enough to call it either way — the wording is ambiguous, conditional, conflicting, or depends on text it couldn't fully judge. This is <em>not</em> a failure.<br>
+        <em>Example:</em> a confidentiality term worded in an unusual way that might or might not be time-limited.<br>
+        <strong>What you do:</strong> read the flagged clause, decide if it's acceptable, then acknowledge it (see "the approve gate" on the Redlines tab). A Review clause <strong>blocks you from sending</strong> until a person has signed off on it.</p>
+      </div>
+      <div class="card">
+        <p><span class="verdict fail">FAIL</span> &nbsp;<strong>"a real problem, flagged and marked up."</strong> The clause clearly breaks a Playbook rule: a required clause is missing, a clause is present but wrong, or a forbidden clause is present. The app flags it and proposes a markup (a redline) to fix it.<br>
+        <em>Example:</em> the governing law isn't one you approve — you'll see a FAIL with the exact sentence highlighted and a proposed redline replacing it with an approved law.<br>
+        <strong>What you do:</strong> review the proposed fix and include it in the redline you send back (see the Redlines tab).</p>
+      </div>
+      <p>At the top of the panel you also see an <strong>overall verdict</strong> — a single PASS, REVIEW, or FAIL summary plus a tally like "4/6," telling you how many clauses passed. If no AI review has run yet, this reads <span class="ui">Not reviewed</span> with the prompt "Run Review to see verdicts" — that's normal and just means you haven't clicked <span class="ui">Review</span> yet.</p>
+
+      <h3>Confidence and the double-check</h3>
+      <p>You don't need to manage this, but it's good to know it's happening:</p>
+      <ul>
+        <li>Along with each verdict, the AI reports <strong>how confident it is</strong> (a score behind the scenes). If its confidence on a clause is low, the app doesn't quietly trust it — it pushes that clause toward <strong>Review</strong> so a person looks.</li>
+        <li>The app can also run a <strong>second AI pass — a verifier — that double-checks the cases the first AI was unsure about.</strong> Think of it as a second opinion on the borderline calls.</li>
+      </ul>
+      <p>The practical effect: borderline judgements lean toward "ask a human" rather than toward a confident-sounding but shaky pass or fail. The system is built to <strong>err on the side of flagging</strong>, not on the side of waving things through.</p>
+
+      <h3>Why every verdict points to the text ("grounding")</h3>
+      <p>The AI is required to <strong>quote the exact part of the document it's judging.</strong> This is called <strong>grounding</strong>, and it's a deliberate trust mechanism.</p>
+      <ul>
+        <li>For any clause actually present in the document, the AI <strong>must cite a real, word-for-word quote</strong> from the NDA to support its verdict — whether Pass, Review, or Fail.</li>
+        <li>The app <strong>checks those quotes against the real document.</strong> If the AI claims a quote that doesn't actually appear, that quote is rejected.</li>
+        <li>If the AI can't produce a supporting quote for a present clause, its verdict is <strong>bumped up to human review</strong> and the document is blocked from sending.</li>
+      </ul>
+      <p>Why this matters: the AI <strong>can't make things up.</strong> Every verdict you see is tied to a specific sentence you can read for yourself. Click a flagged clause and the app highlights the exact paragraph it's talking about. (The only verdicts with no quote are honest ones: a <em>required clause that's missing</em>, or a <em>forbidden clause that's correctly absent</em> — in both cases there's nothing to quote.)</p>
+
+      <h3>The review workstation: what you see</h3>
+      <p><strong>On the left: the document.</strong> The full NDA text, with relevant paragraphs highlighted by verdict colour and a small text badge — <span class="ui">Pass</span>, <span class="ui">Review</span>, <span class="ui">Fail</span>, or <span class="ui">Prohibited</span> — on each flagged paragraph (so the verdict is never shown by colour alone). The view buttons above the document let you switch how the markup is shown — see the <strong>Redlines</strong> tab.</p>
+      <p><strong>On the right: the clause panel.</strong> A list of the checked clauses, each with its verdict. Click a clause to see:</p>
+      <ul>
+        <li>the <strong>verdict</strong> (Pass / Needs Review / Fail / Reviewed),</li>
+        <li>the <strong>evidence</strong> — the exact quoted sentence(s) the AI relied on,</li>
+        <li>the AI's <strong>reasoning</strong> — a plain-language explanation of why it decided that way,</li>
+        <li>a place to <strong>attach a comment</strong> — your own note that travels into the Word export,</li>
+        <li>and, for flagged clauses, the <strong>proposed redline</strong> with <span class="ui">Include</span> / <span class="ui">Ignore</span> controls.</li>
+      </ul>
+
+      <h3>When a review is slow or interrupted</h3>
+      <p>Reviews take a couple of minutes, so it helps to know the difference between "still working" and "actually broken." The app draws this line carefully: <strong>a slow review is never mistaken for a failed one.</strong></p>
+      <ul>
+        <li><strong>Still reviewing (normal):</strong> while the AI is working, the NDA shows as <span class="ui">Reviewing…</span> with the shimmer placeholder. A slow review is <em>not</em> a failed one — it just hasn't finished. The app keeps checking for the result on its own and switches to the finished results as soon as they're ready.</li>
+        <li><strong>Taking a little longer than usual:</strong> if a review runs past the usual window (about <strong>4 minutes</strong>), the message calmly switches to <em>"Still reviewing with AI… this document is taking a little longer than usual. Hang tight — it's still running in the background."</em> This is a reassurance, <strong>not</strong> an error — the app keeps polling.</li>
+        <li><strong>Interrupted in the background ("stalled"):</strong> if a review's recorded start time gets old (the server's safety window is about <strong>10 minutes</strong>), the app reports it as a distinct <strong>"stalled"</strong> state — "still processing / interrupted, retry" — rather than a failure. A stalled review shows a calm waiting message and a <span class="ui">Retry</span> button, so a review can never appear stuck forever <em>and</em> a slow review never fakes a red failure.</li>
+        <li><strong>Failed (a real error):</strong> only a genuine, recorded error shows <span class="ui">Review failed</span> with a short explanation and a <span class="ui">Retry</span> button. Click <span class="ui">Retry</span> to run it again.</li>
+      </ul>
+      <div class="callout">
+        <strong>The takeaway:</strong> a slow review shows as <em>still-working</em>; only a real, recorded problem shows as <em>failed</em>. In every case there's a <span class="ui">Retry</span> button to run it again. You'll never lose your place, and a stuck review can't silently block you.
+      </div>
+    </section>
+
+    <!-- ============ 6. REDLINES ============ -->
+    <section class="tab-panel" id="tab-redlines">
+      <h2>Redlines</h2>
+      <p class="panel-lede">A redline is a tracked edit — a marked-up change showing exactly what should be added, removed, or replaced. It's the standard way lawyers exchange contract changes: deletions struck through, new text underlined.</p>
+
+      <h3>Where redlines come from</h3>
+      <ol>
+        <li><strong>AI-proposed redlines</strong> — when a clause fails (or needs a fix), the AI suggests the corrected wording. For example, swapping an unapproved governing law for an approved one, or striking out a forbidden restriction.</li>
+        <li><strong>Your own edits</strong> — you can type directly into the document (in <span class="ui">Redline</span> view), and your changes are tracked as redlines too. You can also add comments to any paragraph using the small comment button that appears on it.</li>
+      </ol>
+
+      <h3>The four document views</h3>
+      <p>A row of view buttons above the document changes how the markup is shown:</p>
+      <ul>
+        <li><span class="ui">Redline</span> — the original text with proposed edits shown as tracked changes (struck-through deletions, underlined insertions). This is the default.</li>
+        <li><span class="ui">Clean</span> — the final text with all edits applied, markup hidden. This is what the document would look like if every change were accepted.</li>
+        <li><span class="ui">Side by Side</span> — the original and the proposed version next to each other.</li>
+        <li><span class="ui">Original</span> — the untouched source document, with your edits and comments hidden.</li>
+      </ul>
+
+      <h3>Including or ignoring individual redlines</h3>
+      <p>You decide which proposed changes make it into the document you send. On each proposed edit you'll see two buttons:</p>
+      <ul>
+        <li><span class="ui">Include</span> — this change will be in the exported document.</li>
+        <li><span class="ui">Ignore</span> — this change will be left out. A clause whose redline you've ignored shows a small <span class="ui">Ignored in export</span> tag so you can see at a glance what you've chosen to drop.</li>
+      </ul>
+      <div class="callout">
+        The AI <strong>proposes</strong>, but <strong>you dispose</strong> — nothing is auto-applied. You stay in control of every change that goes out.
+      </div>
+
+      <h3>The approve gate (the safety check before sending)</h3>
+      <p>You cannot send an NDA out while clauses are still waiting on a human. This is the <strong>approve gate</strong>.</p>
+      <ul>
+        <li>Each <span class="ui">Review</span> clause shows as a clickable pill. When you've checked it, click it to mark it <span class="ui">Reviewed</span>.</li>
+        <li>There's also a <span class="ui">Reviewed</span> button in the toolbar that marks <strong>all</strong> outstanding "needs review" clauses as reviewed at once (it asks you to confirm first, listing what it will change).</li>
+        <li>Once every flagged clause is acknowledged, the banner tells you <em>"All review clauses marked reviewed. You can send the redline now."</em></li>
+        <li>The final <span class="ui">Approve</span> action lives on the matter's <span class="ui">Overview</span> tab footer.</li>
+      </ul>
+      <p>Until that gate is satisfied, the <span class="ui">Send Redline</span> button stays disabled. (Note: even after you've reviewed everything, a document can still be unsendable for other reasons — a hard <strong>Fail</strong>, a missing recipient email, or the review being out of date — and the banner will tell you exactly which.)</p>
+
+      <h3>Saving your work</h3>
+      <ul>
+        <li><span class="ui">Save Draft</span> keeps your edits, comments, and Include/Ignore choices so you can come back later.</li>
+        <li><span class="ui">Reset Draft</span> / <span class="ui">Discard</span> throws away unsaved changes (it warns you first and lists what would be lost).</li>
+      </ul>
+
+      <h3>Exporting the marked-up Word document</h3>
+      <p>When you're happy with the changes:</p>
+      <ol class="steps">
+        <li>Click the <span class="ui">Download</span> button.</li>
+        <li>A small menu appears showing <span class="ui">DOCX</span> (Word) and <span class="ui">PDF</span> options — plus a preview of exactly what the download will include (which clause redlines, your manual edits, and any comments).</li>
+        <li>Choose <span class="ui">DOCX</span> to get the marked-up Word file with all your <strong>Included</strong> redlines and comments as real Word tracked changes and Word comments.</li>
+      </ol>
+      <p>You can also click <span class="ui">Send Redline</span> to email the marked-up document straight back to the other side, with a summary of the changes auto-filled into the email body. (You confirm the recipient before it sends — see the <strong>Sending &amp; E-Signature</strong> tab.)</p>
+
+      <div class="callout warn">
+        <strong>One caveat to know:</strong> if the original NDA came in as a <strong>PDF</strong> (not a Word file), the Word document you export is <strong>rebuilt from the PDF</strong> and may not perfectly preserve the original formatting. The app tells you when this is the case so you're not surprised.
+      </div>
+    </section>
+
+    <!-- ============ 7. AI SEARCH ============ -->
+    <section class="tab-panel" id="tab-search">
+      <h2>AI Search</h2>
+      <p class="panel-lede">The app has two search bars. They look similar but do different jobs — knowing which is which saves a lot of confusion.</p>
+
+      <h3>A. The Dashboard search bar (the "smart" one)</h3>
+      <p>This is the big search box on the <strong>Dashboard</strong>. Its placeholder reads <span class="ui">Search or ask about your documents…</span> and it has a little sparkle icon on the submit button, because it's <strong>AI-assisted</strong>: you can type a plain-English request, not just a keyword.</p>
+      <p><strong>What it searches:</strong> every NDA in your workspace — the same list you see in the Repository (inbox NDAs, generated, uploaded, sent, and so on). It does <strong>not</strong> invent results; every result is a real document you own.</p>
+      <p><strong>How it works:</strong></p>
+      <ol class="steps">
+        <li>You type a request and press the arrow (or Enter).</li>
+        <li>The app shows a brief <span class="ui">Interpreting…</span> message while it reads your request.</li>
+        <li>The AI translates your words into a filter. A small <span class="ui">Showing: …</span> line appears explaining how it understood you.</li>
+        <li>The matching documents appear as a list below.</li>
+        <li>If the AI can't make sense of the request, it quietly falls back to a plain keyword match over your document titles and counterparty names — so the box <strong>always</strong> returns something useful, even for a bare name.</li>
+      </ol>
+      <p><strong>What you can do with each result:</strong></p>
+      <ul>
+        <li><strong>Click the result</strong> to open that NDA in the workstation.</li>
+        <li><span class="ui">Summarize</span> — produces a short AI summary of that NDA, shown inline and clearly labelled <span class="ui">AI summary</span> so it's never mistaken for verified fact. If it can't run, you get a friendly "Summary unavailable right now." message.</li>
+        <li><span class="ui">Relationships</span> — shows that document's history/lineage as a simple timeline (original → AI redline / reviewed / generated → counterparty version), with the current version marked. This is factual, not AI — it just reads the versions the app already has. A brand-new document shows "No earlier versions yet."</li>
+      </ul>
+      <p><strong>Example searches:</strong></p>
+      <ul>
+        <li><code>documents still in review</code> — lists NDAs that haven't finished review yet.</li>
+        <li><code>NDAs from Moorwand</code> — typing just a company name filters to that counterparty's documents.</li>
+        <li><code>signed NDAs governed by English law</code> — the AI reads this as a filter and shows matching signed agreements.</li>
+      </ul>
+      <div class="callout"><strong>Tip:</strong> press <kbd>Escape</kbd> in the search box to clear it and return to the default view.</div>
+
+      <h3>B. The Corpus search bar (the "filing-cabinet" one)</h3>
+      <p>The <strong>Corpus</strong> tab is your read-only archive of signed and on-file NDAs. Its search bar placeholder reads <span class="ui">Search counterparties, NDAs…</span>. This one is <strong>not</strong> AI-powered — it's a fast, plain text filter over what's already loaded (counterparty names, NDA titles, filenames). It also has a <strong>facet rail</strong> down the left side: clickable filter groups you can stack up. Each filter you click becomes a removable <strong>token</strong> (a little chip with an ×) in the search bar.</p>
+      <p><strong>What you can filter by (facets):</strong></p>
+      <ul>
+        <li><strong>Stage</strong> — where the NDA sits in the workflow (Generated, Inbox, In Review, Reviewed, Sent, Upload).</li>
+        <li><strong>Source</strong> — In app, On file (Drive), or both.</li>
+        <li><strong>Flags</strong> — Repeat entity, Duplicate document, Drive copy.</li>
+        <li><strong>Governing law</strong>, <strong>Non-solicit</strong>, <strong>Non-compete</strong>, <strong>Mutuality</strong> (Mutual / One-way), <strong>Term length</strong> (e.g. 3–5 years), <strong>Review outcome</strong> (Clean / Needs review / Has fail), <strong>Restraint type</strong>, and <strong>Origin</strong> (Generated / Received).</li>
+      </ul>
+      <p>By default the Corpus shows only <strong>Executed</strong> (fully signed) NDAs — your "library." A toggle in the header lets you <span class="ui">Include in-progress</span> ones too.</p>
+      <p><strong>Example searches:</strong></p>
+      <ul>
+        <li>Type <code>Acme</code> to jump to every NDA with Acme.</li>
+        <li>Click <span class="ui">Mutuality → One-way</span> and <span class="ui">Governing law → England &amp; Wales</span> to stack two filters and see only one-way English-law NDAs.</li>
+        <li>Click <span class="ui">Flags → Repeat entity</span> to surface counterparties you've signed more than one NDA with.</li>
+      </ul>
+      <div class="callout"><strong>Rule of thumb:</strong> use the <strong>Dashboard</strong> bar to <em>ask a question</em> about your live documents; use the <strong>Corpus</strong> bar to <em>browse and filter</em> your archive.</div>
+    </section>
+
+    <!-- ============ 8. NOTIFICATIONS ============ -->
+    <section class="tab-panel" id="tab-notifications">
+      <h2>Notifications</h2>
+      <p class="panel-lede">A toast is a small notification card that slides in at the top-right of the screen. The app uses toasts to tell you about things that happened in the background, so you don't have to sit and watch.</p>
+
+      <p><strong>The reassurance:</strong> much of the heavy work — importing a new NDA from your email inbox, running the AI review — happens on its own, on a schedule, on the server. You don't trigger it and you don't wait for it. When it's done, <strong>a toast tells you.</strong> You can carry on working on another tab meanwhile.</p>
+
+      <h3>When you get a toast, and what each means</h3>
+      <table>
+        <thead><tr><th>Toast</th><th>What it means</th><th>What clicking it does</th></tr></thead>
+        <tbody>
+          <tr><td>New NDA from [company]</td><td>A new NDA arrived in your connected email inbox and was imported automatically.</td><td>Opens that NDA for review.</td></tr>
+          <tr><td>N new NDAs in your inbox</td><td>Several NDAs arrived at once; they're summarised into one card instead of flooding the screen.</td><td>Opens the Repository so you can work through them.</td></tr>
+          <tr><td>Review failed — [company]</td><td>The automatic AI review couldn't finish (e.g. a scanned PDF that couldn't be read, or the reviewer was temporarily unavailable). The card names the reason.</td><td>Opens that NDA so you can retry the review.</td></tr>
+          <tr><td>NDA generated</td><td>An NDA you just created in the Generator was produced successfully.</td><td>Nothing — it's just a confirmation.</td></tr>
+          <tr><td>Other alerts</td><td>Occasional one-off notices, e.g. "Review can't be completed — no AI reviewer available."</td><td>Nothing — informational.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Good to know</h3>
+      <ul>
+        <li><strong>Your existing inbox won't flood you.</strong> The very first time the app looks at your documents after you load the page, it silently notes what's already there. Only genuinely <strong>new</strong> arrivals during your session will toast.</li>
+        <li><strong>Toasts disappear on their own</strong> after about 12 seconds. Hover over one to keep it open while you read it.</li>
+        <li><strong>Each toast has an ×</strong> in the corner to dismiss it manually.</li>
+        <li>The stack is capped at a handful of toasts at once; older ones drop off so the corner never piles up.</li>
+      </ul>
+      <div class="callout">
+        A slow review never fakes a red toast. The failure toast keys strictly on a genuinely recorded failure — a review that's merely running long (or was interrupted and reads as "stalled") will <strong>not</strong> pop a "Review failed" notification.
+      </div>
+    </section>
+
+    <!-- ============ 9. SENDING ============ -->
+    <section class="tab-panel" id="tab-sending">
+      <h2>Sending &amp; E-Signature</h2>
+      <p class="panel-lede">Two ways to get a document out: email it as-is with Send Document, or send a finalised NDA for electronic signature through DocuSign.</p>
+
+      <h3>Send Document (email a Word file as-is)</h3>
+      <p>Use <span class="ui">Send Document</span> when you simply want to email a Word document out to a counterparty — as-is, no review pipeline. You'll find the button on the Dashboard.</p>
+      <p><strong>What you can send:</strong> a <code>.docx</code> Word document. (Other file types aren't accepted here.)</p>
+      <ol class="steps">
+        <li>On the Dashboard, click <span class="ui">Send Document</span>. A dialog titled "Send document" opens.</li>
+        <li><strong>Attach the file</strong> — click <span class="ui">Select document</span> and choose a <code>.docx</code>, or drag-and-drop it onto the dropzone. The file name and size appear once it's attached.</li>
+        <li>Fill in <strong>Recipient email</strong> (required). The Send button stays greyed out until you've attached a valid <code>.docx</code> <em>and</em> entered a valid email address.</li>
+        <li><strong>Subject</strong> is optional — it defaults to the file name if you leave it blank.</li>
+        <li><strong>Message</strong> is an optional email body.</li>
+        <li>Click <span class="ui">Send document</span>.</li>
+      </ol>
+      <p><strong>What happens:</strong> the document is emailed through your connected Gmail account, exactly as attached. A card for it lands in the <span class="ui">Sent</span> column of your Repository, and the app switches you there.</p>
+      <div class="callout">No document yet? The dialog has a <span class="ui">Draft new NDA</span> link that jumps you straight to the Generator.</div>
+
+      <h3>The recipient-confirmation safety step</h3>
+      <p>When you reply to an inbound NDA with a <strong>reviewed redline</strong>, the app makes you <strong>confirm exactly who you're sending to</strong> before anything goes out. This is a deliberate guard against sending sensitive documents to the wrong (or a spoofed) address.</p>
+      <ul>
+        <li>The send composer shows the resolved <strong>To</strong> address plainly.</li>
+        <li>When you confirm, the app sends that exact address back to the server as the confirmed recipient.</li>
+        <li>The <strong>server refuses to send</strong> if the confirmed address doesn't match the NDA's resolved recipient — you'll see <em>"The confirmed recipient does not match the NDA recipient; refusing to send."</em></li>
+        <li>If the recipient was taken from an inbound email header (rather than typed by you), confirmation is <strong>required</strong> before the send is allowed at all.</li>
+      </ul>
+      <p>In short: the app will not email a document to an address you haven't explicitly confirmed.</p>
+
+      <h3>Sending for e-signature (DocuSign)</h3>
+      <p>Once an NDA is finalised, you can send it out to be signed electronically through DocuSign, without leaving the app. The button is labelled <span class="ui">Send for Signature</span> and appears on a generated or reviewed NDA.</p>
+      <p><strong>Who signs:</strong> an NDA here is signed by <strong>two parties</strong> — the <strong>counterparty</strong> and the <strong>Aspora signatory</strong> (your side). Both are pre-filled when the composer opens.</p>
+      <ol class="steps">
+        <li>Open the finalised NDA and click <span class="ui">Send for Signature</span>. A "Send for signature" dialog opens.</li>
+        <li>Check the <strong>signer rows</strong> — each shows a name and email for the Counterparty and the Aspora signatory, pre-filled. Edit any field if needed.</li>
+        <li><strong>Choose the signing order</strong> if you like: use the up/down arrows on a signer row to set who signs first (a <em>sequential</em> order), or choose <strong>parallel</strong> so both can sign at the same time.</li>
+        <li>Click <span class="ui">Send for signature</span>.</li>
+      </ol>
+      <p><strong>What happens next:</strong></p>
+      <ul>
+        <li>The app creates a DocuSign <strong>envelope</strong> (the package that goes out for signing) and shows you a status badge plus the envelope ID.</li>
+        <li>Signers receive their DocuSign request by email and sign there — <strong>you don't sign inside this app.</strong></li>
+        <li>The app <strong>polls the live status</strong> automatically, so the badge advances on its own (e.g. to <span class="ui">Signed / Completed</span>) without you reloading. There's also a <span class="ui">Refresh status</span> option to check on demand.</li>
+        <li>Once everything is signed, a <span class="ui">Download signed</span> link appears so you can grab the completed signed PDF.</li>
+      </ul>
+      <p><strong>Safeguards worth knowing:</strong></p>
+      <ul>
+        <li><strong>No duplicate envelopes.</strong> Once an NDA is out for signature, the button becomes inert and relabels to <span class="ui">Sent for signature</span> — a second click can't send a second copy. (A legitimate resend is only allowed after an envelope is finished, declined, or voided.)</li>
+        <li><strong>DocuSign not connected?</strong> You'll get a clear message: <em>"DocuSign isn't connected — connect it in Admin → Integrations,"</em> often with a one-click link to connect.</li>
+        <li>You must <strong>save the NDA first</strong> (and, in the Review workstation, run the AI review) before the button will let you send.</li>
+      </ul>
+    </section>
+
+    <!-- ============ 10. GENERATING ============ -->
+    <section class="tab-panel" id="tab-generating">
+      <h2>Generating an NDA</h2>
+      <p class="panel-lede">The app can build a brand-new NDA for you automatically from a ready-made template, so you don't have to write the legal wording yourself. No legal or technical background needed.</p>
+
+      <h3>Where the Generator is</h3>
+      <p>The Generator is its own tab in the top navigation, labelled <span class="ui">Generator</span>. Click it to open the intake form. The screen has two halves:</p>
+      <ul>
+        <li><strong>Left:</strong> the <strong>intake form</strong> — the short list of details you fill in.</li>
+        <li><strong>Right:</strong> a <strong>live preview</strong> — a readable draft that fills in as you type, so you can watch the document take shape. (The preview is just a what-you-see view. The real, final document is produced when you press <span class="ui">Generate NDA</span>.)</li>
+      </ul>
+
+      <h3>What you fill in</h3>
+      <ol>
+        <li><strong>Signing entity</strong> — which one of <em>your company's</em> legal entities is signing. Pick from a dropdown (e.g. "Aspora Technology Services Private Limited"). This is the single most important choice, because it auto-fills several other fields (see Entities &amp; Signatories). Required.</li>
+        <li><strong>Office address</strong> (only shown for some entities) — if the chosen entity has more than one registered address, you pick which office signs. Most entities have one address, so this picker is hidden for them.</li>
+        <li><strong>The other party (the counterparty)</strong>:
+          <ul>
+            <li><strong>Company name</strong> (required) — e.g. "Acme Logistics Ltd."</li>
+            <li><strong>Company email</strong> (optional) — only needed if you want to email the NDA afterwards.</li>
+            <li><strong>Jurisdiction of incorporation</strong> (optional) — the country/state the other company is registered in.</li>
+            <li><strong>Registered office address</strong> (optional).</li>
+            <li><strong>Business description</strong> (optional) — used in the recital ("WHEREAS…") section.</li>
+          </ul>
+        </li>
+        <li><strong>NDA type</strong> — today the app produces a <strong>mutual</strong> NDA, meaning both sides protect each other's information.</li>
+        <li><strong>Term</strong> — how many years the NDA lasts, set with a <span class="ui">+ / −</span> stepper. Minimum is <strong>1 year</strong>; the maximum is set by your playbook — currently <strong>5 years</strong>. If you type a bigger number (say 10), it's automatically reduced to the cap, and the form tells you it was capped.</li>
+        <li><strong>Purpose / project</strong> (optional) — a short note on why the two companies are talking, e.g. "evaluating a payments partnership."</li>
+        <li><strong>Governing law &amp; court</strong> — shown as <strong>read-only text</strong>. You don't fill these in; they're set automatically by the signing entity you picked.</li>
+      </ol>
+
+      <div class="callout">
+        <strong>Example.</strong> You pick "Aspora Technology Services Private Limited" as the signing entity, type "Acme Logistics Ltd" as the counterparty, set the term to 3 years, and write "exploring a delivery partnership" as the purpose. The governing law shows <strong>India</strong> and the court shows <strong>courts in Bengaluru, Karnataka</strong> automatically — you never had to choose them.
+      </div>
+
+      <h3>What you get out</h3>
+      <p>When the form is complete, press <span class="ui">Generate NDA</span>. The app:</p>
+      <ol class="steps">
+        <li>Builds a finished NDA as a <strong>Word file (.docx)</strong> using your company's standard template plus the live rulebook (the playbook).</li>
+        <li>Loads the finished text into an editor so you can make small edits in place.</li>
+        <li>Lets you <span class="ui">Download</span> the document, or <span class="ui">Send</span> it by email to the counterparty (if you entered their email).</li>
+      </ol>
+      <p>A few helper buttons:</p>
+      <ul>
+        <li><span class="ui">Clear</span> — empties the form so you can start over.</li>
+        <li><span class="ui">Start a new NDA</span> — empties the form <em>and</em> clears the document editor, for a completely clean slate.</li>
+      </ul>
+      <div class="callout warn">
+        The generated document is checked automatically before it's saved. If the inputs would produce a non-compliant NDA (for example, an unapproved governing law, or text that smuggles in a banned clause), the app refuses and shows you a clear message instead of producing a bad document.
+      </div>
+    </section>
+
+    <!-- ============ 11. ENTITIES ============ -->
+    <section class="tab-panel" id="tab-entities">
+      <h2>Entities &amp; Signatories</h2>
+      <p class="panel-lede">A signing entity is one of your own company's legal companies — the specific corporate body that signs the NDA on your side. The entity is the master switch: pick it, and everything legal follows automatically.</p>
+
+      <h3>What entities are</h3>
+      <p>Large organisations aren't a single legal company — they're made up of several registered companies in different countries. For example, this app's company has entities such as:</p>
+      <ul>
+        <li><strong>Aspora Technology Services Private Limited</strong> (India)</li>
+        <li><strong>Aspora Financial Services (IFSC) Private Limited</strong> (India, Gujarat)</li>
+        <li><strong>Vance Money Services LLC</strong> (Delaware, USA)</li>
+        <li><strong>Real Transfer Limited</strong> (United Kingdom)</li>
+        <li><strong>Vance Techlabs Limited</strong> (Dubai, DIFC)</li>
+        <li><strong>Vance Technologies Limited</strong> (United Kingdom)</li>
+        <li><strong>Nesse Technologies Inc</strong> (Canada, Ontario)</li>
+      </ul>
+      <p>Each signing entity is a self-contained <strong>bundle</strong> of facts: its <strong>legal name</strong>, its <strong>registered office address</strong> (some have more than one), its <strong>default governing law</strong>, its <strong>court</strong>, its <strong>jurisdiction of incorporation</strong>, and its <strong>signatory</strong> (who signs for it).</p>
+
+      <h3>Why they exist</h3>
+      <p>The right legal company has to sign the NDA, and the correct law and court must travel with it. If a UK entity is signing, the NDA must use UK law and UK courts — never, say, Delaware law by accident. By keeping each entity's facts bundled, the moment you pick the entity, the correct legal name, address, law, and court all come along automatically. You cannot accidentally pair the wrong law with the wrong company.</p>
+      <div class="callout">
+        <strong>Why bundles matter.</strong> "Aspora Technology" (in Bengaluru) and "Aspora Financial Services" (in Gandhinagar) <em>both</em> use Indian law — but they sit in different cities, so their courts differ. Because the court is stored on each entity, picking one entity always gets that entity's own city's court, not the other's.
+      </div>
+
+      <h3>Signatories</h3>
+      <p>A <strong>signatory</strong> is the actual person who signs the NDA on behalf of an entity. They have a <strong>name</strong> (e.g. "Daniyal Ahmad") and a <strong>title</strong> (their job role, e.g. "Director"). Each signing entity carries its own signatory, so when you pick an entity in the Generator, the signatory's name and title are <strong>filled in automatically</strong> into the signature block — you don't type them. If an entity doesn't yet have a named signatory, the document simply leaves blank signature lines for a person to sign by hand, rather than printing placeholder text.</p>
+
+      <h3>Governing law &amp; court (jurisdiction)</h3>
+      <ul>
+        <li><strong>Governing law</strong> — <em>which country or state's law</em> the NDA follows (e.g. "India," "Delaware," "England and Wales"). If there's ever a disagreement, this is the body of law used to interpret the contract.</li>
+        <li><strong>Court / jurisdiction</strong> — <em>which courts</em> would actually hear a dispute (e.g. "courts in Bengaluru, Karnataka" or "the DIFC Courts"). The law and the court go together but are not the same thing.</li>
+      </ul>
+      <p>Every signing entity has a default law and court, written automatically into the NDA's "Governing law and jurisdiction" clause. In the Generator they appear as read-only text — you see them, but you don't pick them.</p>
+
+      <h4>Approved laws only</h4>
+      <p>Your company keeps a list of <strong>approved laws</strong> in its playbook. Today the approved set is:</p>
+      <ul>
+        <li>India</li>
+        <li>Delaware</li>
+        <li>England and Wales</li>
+        <li>DIFC (the Dubai International Financial Centre, a common-law zone with its own courts)</li>
+        <li>Ontario, Canada</li>
+      </ul>
+      <p>Only these laws are allowed, and the app enforces it:</p>
+      <ul>
+        <li>An administrator <strong>cannot save</strong> an entity whose law isn't on the approved list — the save is rejected with a clear error.</li>
+        <li>The Generator <strong>will not produce</strong> an NDA using an unapproved law. Generation is refused rather than quietly producing a non-compliant document.</li>
+        <li>A guard also requires the <strong>court to match the law's jurisdiction</strong> — you can't end up with, say, an English court paired with DIFC law. A mismatch is blocked before anything is signed.</li>
+      </ul>
+
+      <h3>How it all ties together</h3>
+      <p>The signing entity is the master switch. <strong>Pick the entity, and everything legal follows automatically:</strong></p>
+      <ol>
+        <li><strong>Legal name and address</strong> — filled from the entity's bundle.</li>
+        <li><strong>Signatory</strong> — the entity's named signer (and title) is placed in the signature block.</li>
+        <li><strong>Governing law</strong> — set to the entity's default approved law.</li>
+        <li><strong>Court</strong> — set to the entity's own court.</li>
+      </ol>
+      <p>You still control the <em>deal</em> details: the other party's name and address, the purpose, and the term (within the playbook's cap). But the <em>legal</em> details — who signs, under which law, in which court — are coupled to the entity so they can never be mismatched.</p>
+
+      <h3>Where entities are managed</h3>
+      <p>Day-to-day, you just <em>pick</em> an entity in the Generator. Entities themselves are set up and edited by an administrator in the <span class="ui">Admin → Entities</span> console. A regular user sees the list read-only; only an admin can add or change entities. Their governing law and court are managed in the Playbook editor's <span class="ui">Entities &amp; Courts</span> table, so there's one single source of truth.</p>
+    </section>
+
+    <!-- ============ 12. INBOX ============ -->
+    <section class="tab-panel" id="tab-inbox">
+      <h2>The Inbox (auto-receiving NDAs)</h2>
+      <p class="panel-lede">The app can watch a connected Gmail inbox, notice emails that contain an NDA, and pull those NDAs into the app for you — without you uploading anything by hand.</p>
+
+      <p>There are two ways an NDA gets into the app: you <strong>upload it yourself</strong> (drag a Word or PDF file in), or <strong>the app fetches it from email</strong> — this is the Inbox, and it's what this section is about.</p>
+
+      <h3>Step by step: how the Inbox works</h3>
+      <ol class="steps">
+        <li><strong>You connect a Gmail account.</strong> An administrator connects the company's NDA inbox (for example, a shared address like <code>legal@yourcompany.com</code>) to the app once. After that, the app has permission to read that inbox.</li>
+        <li><strong>The app checks the inbox on a schedule.</strong> Every so often (by default, every 10 minutes — adjustable), the app looks at recent emails.</li>
+        <li><strong>It looks for emails with document attachments.</strong> It only considers emails that are in the inbox (not sent by you), have a Word (<code>.docx</code>) or PDF attachment, and arrived within the look-back window (default 90 days — an editable admin setting; see Admin).</li>
+        <li><strong>It decides which of those are actually NDAs.</strong> An invoice or sales deck that happens to have an attachment is <em>not</em> pulled in. A real NDA is. (See "How it decides" below.)</li>
+        <li><strong>It pulls the NDA in and creates a "matter" for it.</strong> A matter is just the app's word for one NDA it's tracking. The new matter shows up in your Inbox list.</li>
+        <li><strong>It reviews the NDA in the background.</strong> It imports the NDA quickly, then runs the slower, careful AI review a little later, in the background (see below).</li>
+        <li><strong>You get a notification.</strong> When new NDAs arrive, you see a small pop-up — for example "New NDA from Acme Corp," or "3 new NDAs in your inbox."</li>
+      </ol>
+
+      <h3>How it decides an email is an NDA ("detection")</h3>
+      <p>The app doesn't just trust the subject line. It looks at several things and weighs them up:</p>
+      <ul>
+        <li><strong>The words in the email</strong> — subject, body, and the preview snippet. Words like "non-disclosure agreement," "NDA," "mutual NDA," or "confidentiality agreement" are strong signals.</li>
+        <li><strong>The attachment's file name</strong> — e.g. <code>Mutual-NDA-Acme.docx</code> is a strong signal.</li>
+        <li><strong>The text <em>inside</em> the attachment</strong> — the app actually opens the document and reads it. This matters because many NDAs are forwarded with a bland email body ("Please see attached for review") where the only proof is inside the file itself.</li>
+      </ul>
+      <p>It also actively <em>rules things out</em>:</p>
+      <ul>
+        <li><strong>Sales and business documents are filtered out.</strong> If an attachment looks like a proposal, invoice, purchase order, pricing deck, or questionnaire — and doesn't read like an NDA — it's skipped. (A genuine NDA that happens to mention a "proposal" in passing is <em>not</em> wrongly skipped.)</li>
+        <li><strong>E-signature notification emails are ignored.</strong> Automated "your document is ready to sign" emails from DocuSign are recognised and skipped, so they don't create phantom NDAs.</li>
+      </ul>
+      <p>If a document is borderline — some NDA wording but not enough to be confident — the app doesn't silently throw it away. It routes it to a human-review lane so a person can take a look rather than losing it.</p>
+      <div class="callout">
+        <strong>Example.</strong> An email arrives with the subject "Please review and sign" and an attachment named <code>Agreement-Final.pdf</code>. The body says nothing about NDAs. The app opens the PDF, sees "Confidentiality Agreement," "Disclosing Party," and "Receiving Party" inside it, and correctly decides it <em>is</em> an NDA — even though the email itself gave no hint.
+      </div>
+
+      <h3>Why review runs in the background (not instantly)</h3>
+      <p>When an NDA is imported, the app records it right away but <strong>defers the heavy AI review</strong> to run a little later. Reading an NDA and judging every clause with AI is slow and uses real computing power. If 20 NDAs all arrived at once and the app tried to fully review them all at the same instant, it could overload itself. So instead, the app:</p>
+      <ul>
+        <li>imports each NDA quickly (so you see it appear),</li>
+        <li>adds it to a <strong>queue</strong> (a waiting line) of NDAs to be reviewed,</li>
+        <li>and works through that queue steadily, usually <strong>one at a time</strong>.</li>
+      </ul>
+      <p>While an NDA is waiting its turn, it shows as <span class="ui">Not Reviewed Yet</span>. Once the background review finishes, its verdict appears. This is normal and intentional — the app being careful, not the app being broken.</p>
+
+      <h3>The global on/off switch &amp; sync settings</h3>
+      <p>All of these live in the <strong>Admin</strong> area, under <span class="ui">Email accounts and sync</span> (the Gmail card).</p>
+
+      <h4>The master "stop" switch</h4>
+      <p>A single switch labelled <span class="ui">Gmail polling</span> sits at the top of the Gmail settings.</p>
+      <ul>
+        <li><strong>On</strong> — the app checks the inbox on its schedule and pulls in NDAs.</li>
+        <li><strong>Off</strong> — the app stops checking entirely. Nothing new is pulled in. This is the <strong>safety stop</strong>: if anything ever looks wrong, turning this off halts all automatic inbound processing at once.</li>
+      </ul>
+      <p>Think of it as the main power switch for auto-receiving NDAs. NDAs already in the app stay exactly where they are; only <em>new</em> automatic intake stops.</p>
+
+      <h4>How often it checks ("sync frequency")</h4>
+      <table>
+        <thead><tr><th>Setting</th><th>What it means</th></tr></thead>
+        <tbody>
+          <tr><td>Always on</td><td>Checks about every minute.</td></tr>
+          <tr><td>10 min</td><td>Checks every 10 minutes <em>(default)</em>.</td></tr>
+          <tr><td>30 min</td><td>Checks every 30 minutes.</td></tr>
+          <tr><td>1 hour</td><td>Checks every hour.</td></tr>
+          <tr><td>2 hours</td><td>Checks every 2 hours.</td></tr>
+        </tbody>
+      </table>
+      <p>More frequent checking means NDAs appear sooner; less frequent is gentler on the system. <strong>10 minutes</strong> is the default and a sensible balance.</p>
+
+      <h4>How far back it looks ("the sync window")</h4>
+      <p>The app only considers emails from within the look-back window. This is an <strong>editable admin setting</strong> — the inbound window in days. It defaults to <strong>90 days</strong> and can be set anywhere from <strong>1 day up to about 10 years (3,650 days)</strong>. Limiting the window stops the app from re-trawling years of old email every time it checks.</p>
+
+      <h4>Import limit per poll</h4>
+      <p>You can cap how many <em>new</em> NDAs the app pulls in during a single check (default is sensible; the maximum is 40). This is a gentle "catch-up" control: if a big backlog builds up, the app drains it a batch at a time across several checks instead of grabbing everything at once.</p>
+
+      <h4>Inbound search terms</h4>
+      <p>An editable list of words the app shows as hints for deciding whether an email is an NDA (e.g. "NDA," "non-disclosure agreement," "confidentiality agreement"). Most people never need to touch this.</p>
+      <div class="callout warn">
+        <strong>Heads-up:</strong> today this field saves and displays your words but does <strong>not yet</strong> change which emails are detected as NDAs — detection currently uses a fixed, built-in vocabulary. See the Admin tab for the full explanation.
+      </div>
+
+      <h4>Sync history</h4>
+      <p>The Gmail card also shows a short history of recent checks: when the app last looked, how many NDAs it imported, and how many it skipped. A quick way to confirm the inbox connection is alive and working.</p>
+    </section>
+
+    <!-- ============ 13. PLAYBOOK ============ -->
+    <section class="tab-panel" id="tab-playbook">
+      <h2>The Playbook (your rulebook)</h2>
+      <p class="panel-lede">The Playbook is the single, central description of what your company considers acceptable in an NDA. It's the most important concept in the whole app.</p>
+
+      <div class="callout">
+        <strong>The Playbook is the one source of truth for the rules.</strong> The AI reads the Playbook and judges every NDA against it. If you change a rule in the Playbook, the AI's judgments change to match — automatically. You don't need to change any code, retrain anything, or email anyone.
+      </div>
+
+      <h3>Why this matters</h3>
+      <ul>
+        <li><strong>Every NDA is judged consistently</strong> — by the same written rules, every time.</li>
+        <li><strong>You are in control.</strong> The AI doesn't have its own private opinions about what a "good" NDA is. It applies <em>your</em> rules.</li>
+        <li><strong>Changes are instant and global.</strong> Decide to accept a new governing law? Add it to the Playbook once, and every future NDA is judged with that law allowed.</li>
+      </ul>
+
+      <h3>What's in the Playbook</h3>
+      <p>The Playbook is organised as a list of <strong>clauses</strong> — the specific parts of an NDA the app cares about. Out of the box, these are:</p>
+      <ol>
+        <li><strong>Mutuality</strong> — does the NDA bind <em>both</em> sides equally, or only one side?</li>
+        <li><strong>Confidential Information</strong> — is "confidential information" defined broadly enough, without sneaky carve-outs that weaken protection?</li>
+        <li><strong>Governing Law</strong> — which country's / state's law governs? (Must be one of your approved jurisdictions.)</li>
+        <li><strong>Term and Survival</strong> — how long do the confidentiality obligations last? (Your default cap is <strong>five years</strong> for ordinary confidentiality.)</li>
+        <li><strong>Non-Circumvention</strong> — the NDA must <strong>not</strong> sneak in extra business restrictions like non-competes, non-solicits, exclusivity, IP-grabs, or penalty clauses. (This one is a <em>prohibited</em> clause.)</li>
+        <li><strong>Signatures</strong> — does the signing block name both parties, their titles, and a date?</li>
+      </ol>
+      <p>Each clause carries the same kinds of information, in plain English:</p>
+      <ul>
+        <li><strong>What good looks like</strong> — the standard/position you want.</li>
+        <li><strong>What to watch for</strong> — the wording that should raise a flag.</li>
+        <li><strong>Suggested fix language</strong> — the wording the app can drop in to correct the document (a redline).</li>
+      </ul>
+
+      <h3>"Required" vs "Prohibited" clauses</h3>
+      <p>Every clause has a <strong>stance</strong>:</p>
+      <ul>
+        <li><strong>Required</strong> — this <em>should be present and correct</em>. The app flags it if it's <strong>missing or deficient</strong> (e.g. a Governing Law clause pointing at the wrong country).</li>
+        <li><strong>Prohibited</strong> — this <em>should not appear at all</em>. The app flags it if it's <strong>present</strong> (e.g. a non-compete buried inside an NDA).</li>
+      </ul>
+
+      <h3>"Approved options" (a list of what's allowed)</h3>
+      <p>Some clauses hold a <strong>list of allowed choices</strong> — called <strong>approved options</strong>. The clearest example is <strong>Governing Law</strong>. By default that list is:</p>
+      <ul>
+        <li>India</li>
+        <li>Delaware</li>
+        <li>England &amp; Wales <em>(marked as the preferred default)</em></li>
+        <li>DIFC (Dubai International Financial Centre)</li>
+        <li>Ontario, Canada</li>
+      </ul>
+      <div class="callout">
+        <strong>Example.</strong> An NDA governed by <strong>"the laws of Texas"</strong> gets <strong>flagged</strong> — Texas isn't on your approved list. An NDA governed by <strong>"England and Wales"</strong> <strong>passes</strong>. If you later add Texas to the approved-options list, the very next Texas NDA passes instead. <em>You</em> control the list; the AI just applies it.
+      </div>
+
+      <h3>Pass / Review / Fail — the three outcomes</h3>
+      <p>For each clause, the Playbook defines the conditions that lead to one of three verdicts:</p>
+      <ul>
+        <li><span class="verdict pass">PASS</span> — the clause meets your rules. Nothing to do.</li>
+        <li><span class="verdict review">REVIEW</span> — the wording is unclear, conditional, or borderline. A human should look.</li>
+        <li><span class="verdict fail">FAIL</span> — the clause clearly breaks a rule (e.g. an unapproved governing law, or a prohibited non-compete). It needs fixing.</li>
+      </ul>
+      <p>So a single NDA produces a clause-by-clause report card: each clause gets a Pass, Review, or Fail, all decided by the rules you wrote in the Playbook.</p>
+
+      <h3>How the AI uses the Playbook</h3>
+      <p>When the app reviews an NDA, it hands the AI the text of the NDA and your Playbook rules for each clause. The AI's job is to <strong>judge the NDA against your Playbook</strong> — clause by clause — and report Pass, Review, or Fail with a quote from the document as evidence. It's making the document comply <em>to your rules</em>; it never invents rules of its own and never quietly overrides the Playbook.</p>
+      <div class="callout">
+        <strong>The punchline:</strong> if you want the app to judge NDAs differently, you change the Playbook, not the AI. The Playbook is the steering wheel.
+      </div>
+    </section>
+
+    <!-- ============ 14. ADMIN ============ -->
+    <section class="tab-panel" id="tab-admin">
+      <h2>Admin: What You Can &amp; Can't Change</h2>
+      <p class="panel-lede">The golden rule: the app lets you change the rules and the connections. It does not let you change the engine. Some powerful behaviours (which AI model runs, how an NDA is detected, the safety caps) are set in the deployment — not in the screen — on purpose, so the system stays safe and consistent.</p>
+
+      <h3>The Admin area — what's in it</h3>
+      <p>The Admin area is a settings console, split into sections you pick from a left-hand list.</p>
+      <table>
+        <thead><tr><th>Section</th><th>What it's for</th></tr></thead>
+        <tbody>
+          <tr><td>Playbook</td><td>The rulebook. Clause rules and approved language. Also holds the Signing Entities registry and the Entities &amp; Courts table (governing law + court per entity).</td></tr>
+          <tr><td>AI Runtime</td><td>Turn AI review on/off, paste the AI key, see the provider and model.</td></tr>
+          <tr><td>Health</td><td>Read-only monitoring of AI review.</td></tr>
+          <tr><td>Gmail</td><td>Connect mailboxes, pause/resume sync, and set the sync window, frequency, search terms, and intake criteria.</td></tr>
+          <tr><td>Personalisation</td><td>Your email/document sign-off and signature.</td></tr>
+          <tr><td>Drive</td><td>Google Drive upload connection and auto-filing.</td></tr>
+          <tr><td>DocuSign</td><td>E-signature connection.</td></tr>
+          <tr><td>Admin Access</td><td>Who is allowed to administer the app.</td></tr>
+          <tr><td>Document / Checkers / AI Review</td><td>Read-only guides explaining how the system works. Nothing to change here.</td></tr>
+        </tbody>
+      </table>
+      <div class="callout">
+        Most of these sections are <strong>admin-only</strong>. If you're signed in but not an admin, you'll see a calm "managed by an administrator" message instead of the controls. (The exception is your own Personalisation signature, which every signed-in user can set.)
+      </div>
+
+      <h3>What you can change</h3>
+      <ul>
+        <li><strong>The Playbook (the rulebook)</strong> — <em>Playbook → Clauses.</em> The single source of truth for clause rules. The intended, safe way to change how NDAs are reviewed.</li>
+        <li><strong>Signing entities</strong> — <em>Playbook → Signing Entities.</em> The list of legal entities (legal name, addresses, incorporation, signatory). Saving replaces the whole registry, so save once you've finished editing.</li>
+        <li><strong>Governing law &amp; court (per entity)</strong> — <em>Playbook → Entities &amp; Courts table.</em> Edited here (one source of truth) and shown read-only on the entity card. The law must be one of the approved options — an unapproved law is rejected on save.</li>
+        <li><strong>AI Runtime — turn AI on/off and set the key</strong> — paste an OpenRouter key (verified against OpenRouter <em>before</em> it's saved, so a bad key never turns AI on); the on/off toggle controls whether NDAs get the AI review pass. AI can't be turned on without a working key.</li>
+        <li><strong>Gmail — pause/resume sync</strong> — pauses or resumes scheduled polling. It does <em>not</em> disconnect the account.</li>
+        <li><strong>Gmail — sync frequency</strong> — Always on (every 1 min), 10 min, 30 min, 1 hour, or 2 hours.</li>
+        <li><strong>Gmail — import limit (per-poll cap)</strong> — how many new messages a single scan processes. Set 1–40; the app caps at 40.</li>
+        <li><strong>Gmail — inbound window (days)</strong> — how far back the inbox scan looks. Default 90 days; settable from 1 to about 3,650 days (~10 years). <em>This is editable</em> (it was previously a fixed 90).</li>
+        <li><strong>Gmail — inbound search terms</strong> — a list of NDA-related words. <strong>Read the caveat below</strong> — today this saves and displays but does not actually change detection.</li>
+        <li><strong>Gmail — NDA intake criteria</strong> — free-text guidance fed to the AI that classifies whether an inbound email is an NDA. Leave empty for the built-in default. It changes <em>only</em> the NDA / NOT-NDA judging criteria, not the fixed security rules or output format. Max ~8,000 characters.</li>
+        <li><strong>Personalisation — your signature</strong> — your sign-off, signature name, and full block. Every user sets their own; an admin can set the shared default.</li>
+        <li><strong>Drive — connection and auto-filing</strong> — connect Google Drive, choose a folder, toggle auto-filing of new matters.</li>
+        <li><strong>Admin Access — who can administer</strong> — add or remove in-app admins by email (see the bootstrap caveat below).</li>
+      </ul>
+
+      <h3>Important caveats / known limits</h3>
+      <div class="callout warn">
+        <strong>"Inbound search terms" does NOT change NDA detection (today).</strong> This is the biggest gotcha. The field saves your words and shows them back, <strong>but it does not currently change which inbound emails get detected and imported as NDAs.</strong> In plain terms: the inbox scan fetches a structural envelope (every Word/PDF attachment in the window that you didn't send) — the keyword list isn't part of that fetch. After fetching, the system scores each attachment for "NDA-ness" using a fixed, built-in vocabulary baked into the code, not the words you typed. So your saved terms are stored and displayed as a hint, but no detection decision reads them yet. Editing the field is safe — it just won't change behaviour. (Wiring the configured terms into the scorer is an engineering change, gated behind a feature flag that is not enabled today.)
+      </div>
+      <div class="callout warn">
+        <strong>Some settings can be "pinned" by the deployment.</strong> A few controls can be overridden by the environment the app runs in; when that happens the UI says so and locks the control. For example: the <strong>AI Runtime engine</strong> can be pinned ("Runtime settings are pinned by the backend environment" — your save is ignored by design); the <strong>AI key source</strong> can be an environment key that clearing the in-app key won't remove; the <strong>Gmail import limit</strong> falls back to an environment default when no in-app value is set.
+      </div>
+      <div class="callout warn">
+        <strong>Changes apply to NEW work, not past work.</strong> Turning AI on/off, changing the engine, or editing the Playbook affects <em>future</em> reviews. It does not retroactively re-judge NDAs already reviewed.
+      </div>
+      <div class="callout warn">
+        <strong>"Bootstrap" admins cannot be removed in-app.</strong> Admins set in the deployment (labelled <span class="ui">Bootstrap</span>) are immutable — there's no Remove button. Only admins added in-app can be removed. The app also prevents you from removing the last admin / locking yourself out.
+      </div>
+      <div class="callout warn">
+        <strong>The Gmail master toggle is the real stop.</strong> It's the actual on/off for scheduled sync. The per-role inbound/outbound rows are secondary; when the master sync is off, those rows are inert no matter how they're configured.
+      </div>
+
+      <h3>What you cannot change from the app (the "backend")</h3>
+      <p>These are set by engineers in the deployment configuration ("environment variables") or hardcoded — deliberately, for safety and consistency:</p>
+      <ul>
+        <li><strong>Which AI models are used</strong> — the reviewer, verifier, intake classifier, and structure model are chosen by environment configuration. You choose <em>whether</em> AI runs (the toggle); you don't pick the model by clicking.</li>
+        <li><strong>The NDA-detection vocabulary and "floor"</strong> — the built-in keyword tables and the minimum score an attachment must reach to be treated as an NDA (and the lower bar for routing to human triage) are hardcoded, so detection stays consistent across every account.</li>
+        <li><strong>The Gmail fetch query structure</strong> — the shape of the inbox search ("attachments only, not from me, within the window") is fixed in the code. (The window <em>length</em> in days <em>is</em> editable — see above.)</li>
+        <li><strong>The import-limit ceiling (max 40)</strong> — you set the per-poll limit, but the upper cap of 40 is fixed to protect Gmail's rate limits.</li>
+        <li><strong>The AI verifier (second-opinion pass)</strong> — driven by the environment, not a UI switch. It's active only when configured in the deployment and a key is present.</li>
+        <li><strong>The AI confidence threshold and target clauses</strong> — come from environment configuration / the Playbook; shown read-only in AI Runtime.</li>
+        <li><strong>The deterministic (rules-based) checks</strong> — the non-AI structural checks are part of the program logic, not settings, so results stay repeatable regardless of AI state.</li>
+      </ul>
+      <p><strong>Why are these locked?</strong> Two reasons: <strong>safety</strong> (a wrong value could miss real NDAs, leak documents, or hit rate limits) and <strong>consistency</strong> (every account behaves the same, so results are predictable and auditable). Engineers change these through configuration with review — not through a click anyone could make by accident.</p>
+
+      <h3>Safety notes</h3>
+      <ul>
+        <li><strong>The Gmail master toggle is your emergency stop.</strong> To stop the system pulling in and processing inbound NDAs, turn off Gmail sync. Disconnecting a single account is <em>not</em> the same as stopping sync.</li>
+        <li><strong>The Playbook is the safe place to change review behaviour.</strong> If you want a clause treated differently, edit the Playbook — the intended, reviewed path, not the locked detection/AI internals.</li>
+        <li><strong>Changing detection or AI behaviour is sensitive.</strong> Detection vocabulary, thresholds, the fetch window structure, and model choice are intentionally not in the UI. If you think one is wrong, that's an engineering change — raise it rather than looking for a hidden switch.</li>
+        <li><strong>Adding an AI key turns on real (paid) AI calls.</strong> Clearing the in-app key (or turning AI off) stops in-app AI calls — but remember an environment key can keep AI configured regardless.</li>
+        <li><strong>Admin Access is privileged.</strong> Anyone you add as an admin can change the rulebook, entities, and connections. Add sparingly; bootstrap admins are immutable by design.</li>
+      </ul>
+    </section>
+
+    <!-- ============ 15. GLOSSARY ============ -->
+    <section class="tab-panel glossary" id="tab-glossary">
+      <h2>Glossary</h2>
+      <p class="panel-lede">Every term used in this guide, in plain English, alphabetised.</p>
+
+      <div class="letter">A</div>
+      <dl>
+        <dt>Admin</dt><dd>A signed-in user allowed into the settings console to change the rulebook, signing entities, connections, and who else can administer. Most admin sections are hidden from non-admins, who see a "managed by an administrator" message instead.</dd>
+        <dt>AI model</dt><dd>The specific artificial-intelligence system that does a job (reviewing a clause, classifying an inbound email, etc.). You can choose <em>whether</em> AI runs, but <em>which model</em> is set by the environment, not by clicking.</dd>
+        <dt>AI summary</dt><dd>A short, on-demand AI-written summary of a single NDA, shown inline from a search result via the Summarize button. Always labelled "AI summary" so it's never mistaken for verified fact.</dd>
+        <dt>Approve gate</dt><dd>The safety check that stops you sending an NDA while clauses still need a human. You mark each flagged clause (or all of them) as Reviewed; the final Approve action lives on the matter's Overview tab. Until the gate is satisfied, Send Redline stays disabled.</dd>
+        <dt>Approved law</dt><dd>A governing law on the company's allowed list (currently India, Delaware, England and Wales, DIFC, and Ontario, Canada). Only approved laws may be used; the app refuses to generate or save an NDA using a law outside this list.</dd>
+        <dt>Approved option</dt><dd>A list of allowed choices inside a clause. The clearest example is the list of approved governing laws. An NDA that picks something off the list (e.g. Texas law) gets flagged.</dd>
+      </dl>
+
+      <div class="letter">B</div>
+      <dl>
+        <dt>Background processing / Background review</dt><dd>Work the app does on its own, server-side, without you waiting — chiefly importing inbound NDAs and running the AI review. A new NDA is imported quickly, then queued and reviewed a little later (usually one at a time) to avoid overload. Until its turn comes it shows "Not Reviewed Yet"; a toast notifies you when work finishes.</dd>
+      </dl>
+
+      <div class="letter">C</div>
+      <dl>
+        <dt>Clause</dt><dd>One numbered chunk of the contract covering a single topic (e.g. Governing Law, Term, Confidential Information). The AI reviews the NDA one clause at a time, and the Playbook carries a rule for each clause it cares about (Mutuality, Confidential Information, Governing Law, Term and Survival, Non-Circumvention, Signatures).</dd>
+        <dt>Confidence</dt><dd>A behind-the-scenes score for how sure the AI is about a clause's verdict. Low confidence pushes a clause toward Review rather than letting a shaky pass or fail stand.</dd>
+        <dt>Corpus</dt><dd>Your read-only, searchable library (the "filing cabinet") of finished, signed (executed) NDAs. By default it shows only executed agreements, with a toggle to include in-progress ones. You browse and filter it; you don't edit documents here.</dd>
+        <dt>Counterparty</dt><dd>The other company on the NDA — the party you're signing the agreement with. In the Generator you enter its name, and optionally its email, address, and a description of its business.</dd>
+        <dt>Court / jurisdiction</dt><dd>Which courts would actually hear a dispute about the NDA (e.g. "courts in Bengaluru, Karnataka" or "the DIFC Courts"). It travels with the signing entity alongside the governing law, and the two must belong to the same legal system.</dd>
+      </dl>
+
+      <div class="letter">D</div>
+      <dl>
+        <dt>Detection</dt><dd>How the app decides whether an email actually contains an NDA. It weighs the email's words (subject, body, preview), the attachment's file name, and the text inside the attached document — and filters out non-NDAs like invoices, sales decks, and e-signature notifications.</dd>
+        <dt>Detection floor</dt><dd>The minimum "NDA-ness" score an inbox attachment must reach before the system treats it as an NDA worth importing (with a lower bar for routing to human triage). This floor is hardcoded for consistency and safety, and is not an editable setting.</dd>
+      </dl>
+
+      <div class="letter">E</div>
+      <dl>
+        <dt>E-signature / DocuSign</dt><dd>Sending a finalised NDA out to be signed electronically via DocuSign. Both parties (the counterparty and the Aspora signatory) sign in DocuSign by email; the app tracks status and offers a "Download signed" link when complete.</dd>
+        <dt>Envelope (DocuSign)</dt><dd>The DocuSign package containing the document sent for signature. The app shows its ID and status, prevents accidental duplicate envelopes, and polls until signing is finished.</dd>
+        <dt>Environment variable</dt><dd>A configuration value set in the deployment (the server the app runs on), not in the app's screens. Engineers use these for things like which AI model runs, the AI key, or the active review engine. When a setting is controlled this way, the UI usually says it is "pinned by the backend environment" and locks the control.</dd>
+        <dt>Executed</dt><dd>Fully signed by both sides. An executed NDA leaves the active board and moves into the Corpus library.</dd>
+      </dl>
+
+      <div class="letter">F</div>
+      <dl>
+        <dt>Fail</dt><dd>Verdict meaning the clause clearly breaks a Playbook rule (a required clause is missing, a clause is present but wrong, or a forbidden clause is present). The app flags it and proposes a redline to fix it. Shown in red.</dd>
+        <dt>Flag (feature flag)</dt><dd>A switch, usually set in the environment, that turns a piece of behaviour on or off without changing the app's screens. Some behaviour (for example, wiring the saved "inbound search terms" into actual detection, or the AI verifier pass) depends on such a flag being enabled in the deployment — so a field can appear in the UI yet have no effect until the flag is on.</dd>
+      </dl>
+
+      <div class="letter">G</div>
+      <dl>
+        <dt>Generate</dt><dd>To create a brand-new, finished NDA document automatically from a template, by pressing "Generate NDA" in the Generator tab. You fill in a short form; the app produces a downloadable Word (.docx) file.</dd>
+        <dt>Global toggle (Gmail polling switch)</dt><dd>The single master on/off switch for scheduled Gmail sync. Turning it off is the safety stop: the app stops checking the inbox entirely and pulls in nothing new. NDAs already in the app are unaffected. Disconnecting one mailbox is not the same as flipping this toggle.</dd>
+        <dt>Governing law</dt><dd>Which country's or state's law the NDA is interpreted under (e.g. India, Delaware, England and Wales), set automatically by the signing entity. Shown read-only in the Generator.</dd>
+        <dt>Grounding</dt><dd>The rule that the AI must quote the exact sentence from the document that supports its verdict. The app checks those quotes against the real text, so the AI can't make things up. An unsupported verdict on a present clause is bumped to human review.</dd>
+      </dl>
+
+      <div class="letter">I</div>
+      <dl>
+        <dt>Inbox / Intake</dt><dd>The app's ability to receive NDAs automatically by reading a connected Gmail account, instead of you uploading each file by hand. "Intake" is the moment an NDA enters the app and becomes something it is tracking.</dd>
+        <dt>Include / Ignore</dt><dd>The two controls on each proposed redline. Include puts the change into the exported document; Ignore leaves it out (marked "Ignored in export"). The AI proposes, but you decide what actually goes out.</dd>
+        <dt>Intake Queue</dt><dd>The Dashboard table listing inbound NDAs that have arrived and need attention.</dd>
+      </dl>
+
+      <div class="letter">M</div>
+      <dl>
+        <dt>Matter</dt><dd>The app's name for one NDA and everything attached to it — the document, its AI review, redlines, status, and history. Each imported or uploaded NDA becomes a matter.</dd>
+      </dl>
+
+      <div class="letter">N</div>
+      <dl>
+        <dt>NDA</dt><dd>A non-disclosure agreement: a contract where two parties promise to keep each other's confidential information secret.</dd>
+        <dt>Notification / Toast</dt><dd>A small card that slides in at the top-right of the screen to tell you something happened in the background (a new NDA arrived, a review finished or failed, a document was generated). Auto-dismisses after about 12 seconds; click to act on it, or × to close.</dd>
+      </dl>
+
+      <div class="letter">P</div>
+      <dl>
+        <dt>Pass</dt><dd>Verdict meaning the clause meets your Playbook's rule — nothing to do. Shown in green.</dd>
+        <dt>Playbook</dt><dd>Your company's master rulebook — the single source of truth for all the rules, approved options, the maximum term, and the standard clause positions. The AI reads it and judges every NDA against it; change a rule and the AI's judgments change to match.</dd>
+      </dl>
+
+      <div class="letter">R</div>
+      <dl>
+        <dt>Recipient confirmation</dt><dd>A safety step that requires you to confirm the exact email address before an NDA goes out. The server refuses to send if the confirmed address doesn't match the document's intended recipient — a guard against sending to the wrong or a spoofed address.</dd>
+        <dt>Redline</dt><dd>A tracked edit — a marked-up change to the contract showing exactly what to add, remove, or replace. Deletions are struck through and new text is underlined, so the other side can see precisely what changed. The standard way contract changes are exchanged.</dd>
+        <dt>Repository</dt><dd>The six-column board where your active NDAs live and move from "arrived" to "sent" as you work them (Generated, Upload, Inbox, In Review, Reviewed, Sent).</dd>
+        <dt>Required vs Prohibited (clause stance)</dt><dd>A "required" clause should be present and correct (flagged if missing/wrong); a "prohibited" clause should not appear at all (flagged if present, e.g. a non-compete).</dd>
+        <dt>Review</dt><dd>The AI's clause-by-clause read of an NDA, comparing each part against your Playbook and giving a verdict. Also the amber verdict (see next entry).</dd>
+        <dt>Review (verdict)</dt><dd>Verdict meaning the AI isn't confident enough to decide, so a human should look before sending (the wording is ambiguous, conditional, or conflicting). Not a failure. Shown in amber. A Review clause blocks sending until a person acknowledges it.</dd>
+        <dt>Review workstation</dt><dd>The screen where one NDA is open — the document with highlighted clauses on the left, and the clause list with verdicts, evidence, reasoning, comments, and proposed redlines on the right.</dd>
+        <dt>Rule / Condition</dt><dd>The written test inside a clause that produces a verdict. Each clause defines conditions that lead to Pass (meets the rules), Review (unclear — a human should check), or Fail (clearly breaks a rule).</dd>
+      </dl>
+
+      <div class="letter">S</div>
+      <dl>
+        <dt>Search facet</dt><dd>A clickable filter group in the Corpus's left-hand rail (e.g. Governing law, Mutuality, Term length, Stage, Flags). Select values to narrow the list; each selection becomes a removable chip (token) in the search bar. Facets stack together to combine filters.</dd>
+        <dt>Send Document</dt><dd>The Dashboard flow for emailing a .docx document to a counterparty as-is (no review or redlining), through your connected Gmail. The sent item appears in the Repository's Sent column.</dd>
+        <dt>Setting (vs hardcoded)</dt><dd>A "setting" is something you change by clicking in the app; it's saved and takes effect for new work. "Hardcoded" means the value is fixed in the program and can only be changed by engineers. The Playbook rules, Gmail sync frequency, and the inbound window (days) are settings; the NDA-detection vocabulary and the import-limit ceiling of 40 are hardcoded.</dd>
+        <dt>Signatory</dt><dd>The actual person who signs the NDA on behalf of a signing entity, identified by a name and a title (job role). Filled in automatically based on the entity you choose.</dd>
+        <dt>Signing entity</dt><dd>One of your own company's legal companies that signs the NDA on your side (e.g. "Aspora Technology Services Private Limited"). Each entity bundles its legal name, address, default governing law, court, and signatory, so picking it fills all of them in at once — and fixes the governing law and court.</dd>
+        <dt>Signing order</dt><dd>Whether signers sign one after another (sequential — set with the up/down arrows on each signer row) or at the same time (parallel).</dd>
+        <dt>Single source of truth</dt><dd>The idea that the Playbook — and only the Playbook — defines the rules. The AI has no opinions of its own; it applies the Playbook. To change how NDAs are judged, you edit the Playbook, not the AI.</dd>
+        <dt>Stalled / still reviewing</dt><dd>A review that hasn't finished yet shows as "Reviewing…" and is not a failure — the app keeps checking and shows the result when ready. If a review runs past the usual window (~4 minutes) the copy switches to a calm "still working, hang tight" reassurance; if its recorded start time gets old (the server's ~10-minute window) it reports a distinct "stalled / interrupted, retry" state. Only a genuine, recorded error shows as "failed," and there is always a Retry button.</dd>
+        <dt>Status</dt><dd>Where an NDA currently sits in its lifecycle; on the board this is the column it's in (Generated, Upload, Inbox, In Review, Reviewed, or Sent).</dd>
+        <dt>Sync frequency</dt><dd>How often the app checks the connected inbox for new NDAs. Options range from "Always on" (about every minute) to every 2 hours; the default is every 10 minutes. Separate from the sync window and the import limit.</dd>
+        <dt>Sync window (inbound window)</dt><dd>How far back in time the app looks when scanning the inbox. It is an editable admin setting (in days), defaulting to 90 days and settable from 1 to about 3,650 days. Older email is ignored.</dd>
+      </dl>
+
+      <div class="letter">T</div>
+      <dl>
+        <dt>Template</dt><dd>The company's standard, pre-written NDA document (the "Generic NDA"). It supplies the fixed structure and boilerplate legal wording; the Generator fills in the blanks (party names, term, law, etc.) for each new deal.</dd>
+        <dt>Term</dt><dd>How long the NDA stays in force, in years. Set with a +/− stepper in the Generator. The minimum is 1 year and the maximum is capped by the playbook (currently 5 years); a larger number is automatically reduced to the cap.</dd>
+      </dl>
+
+      <div class="letter">V</div>
+      <dl>
+        <dt>Verdict</dt><dd>The AI's outcome for a single clause. Every important clause gets one of three: Pass, Review, or Fail.</dd>
+        <dt>Verifier</dt><dd>An optional second AI pass that double-checks the borderline cases the first AI was unsure about — a built-in second opinion. It runs only when configured in the deployment (there is no in-app toggle).</dd>
+      </dl>
+    </section>
+  </main>
+</div>
+
+<script>
+(function () {
+  var nav = document.getElementById("tabNav");
+  var buttons = Array.prototype.slice.call(nav.querySelectorAll("button[data-tab]"));
+  var panels = Array.prototype.slice.call(document.querySelectorAll("section.tab-panel"));
+
+  function show(tabId) {
+    buttons.forEach(function (b) { b.classList.toggle("active", b.dataset.tab === tabId); });
+    panels.forEach(function (p) { p.classList.toggle("active", p.id === "tab-" + tabId); });
+    if (window.scrollTo) window.scrollTo(0, 0);
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener("click", function () { show(b.dataset.tab); });
+  });
+
+  // --- Search-the-guide: filter sidebar tabs by matching panel text ---
+  var search = document.getElementById("guideSearch");
+  var noResults = document.getElementById("noResults");
+  var groupLabels = Array.prototype.slice.call(nav.querySelectorAll(".group-label"));
+
+  search.addEventListener("input", function () {
+    var q = search.value.trim().toLowerCase();
+    if (!q) {
+      buttons.forEach(function (b) { b.classList.remove("search-hidden"); });
+      groupLabels.forEach(function (g) { g.classList.remove("search-hidden"); });
+      noResults.style.display = "none";
+      return;
+    }
+    var anyVisible = false;
+    buttons.forEach(function (b) {
+      var panel = document.getElementById("tab-" + b.dataset.tab);
+      var hay = (b.textContent + " " + (panel ? panel.textContent : "")).toLowerCase();
+      var hit = hay.indexOf(q) !== -1;
+      b.classList.toggle("search-hidden", !hit);
+      if (hit) anyVisible = true;
+    });
+    groupLabels.forEach(function (g) { g.classList.add("search-hidden"); });
+    noResults.style.display = anyVisible ? "none" : "block";
+  });
+})();
+</script>
+</body>
+</html>
