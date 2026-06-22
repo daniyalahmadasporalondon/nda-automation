@@ -111,6 +111,53 @@ class FakeConverter:
         return self.png_payload
 
 
+class PlaceholderPngTests(unittest.TestCase):
+    """The placeholder is the module's never-blank guarantee, so it must be a
+    GENUINELY DECODABLE PNG -- not merely non-empty bytes. A malformed placeholder
+    re-introduces the exact blank-box defect this module exists to prevent."""
+
+    def test_placeholder_has_png_signature(self):
+        self.assertTrue(PLACEHOLDER_PNG_BYTES.startswith(PNG_SIGNATURE))
+
+    def test_placeholder_idat_zlib_stream_round_trips(self):
+        import zlib
+
+        idat_marker = PLACEHOLDER_PNG_BYTES.find(b"IDAT")
+        self.assertGreater(idat_marker, 0)
+        declared_length = int.from_bytes(
+            PLACEHOLDER_PNG_BYTES[idat_marker - 4 : idat_marker], "big"
+        )
+        idat_data = PLACEHOLDER_PNG_BYTES[idat_marker + 4 : idat_marker + 4 + declared_length]
+        self.assertEqual(len(idat_data), declared_length)
+        # Must actually decompress (the old placeholder failed here with
+        # "invalid stored block lengths").
+        raw = zlib.decompress(idat_data)
+        self.assertTrue(len(raw) > 0)
+
+    def test_placeholder_opens_in_a_real_decoder(self):
+        # Prefer PIL; fall back to PyMuPDF. If neither is installed, skip rather
+        # than pass vacuously -- the point is a CONFORMANT decoder accepts it.
+        opened = False
+        try:
+            from PIL import Image  # type: ignore[import-not-found]
+
+            image = Image.open(BytesIO(PLACEHOLDER_PNG_BYTES))
+            image.load()  # forces full decode, not just header parse
+            self.assertEqual(image.size, (1, 1))
+            opened = True
+        except ImportError:
+            pass
+        if not opened:
+            try:
+                import fitz  # type: ignore[import-not-found]
+
+                fitz.open(stream=PLACEHOLDER_PNG_BYTES, filetype="png")
+                opened = True
+            except ImportError:
+                self.skipTest("no PNG decoder (PIL/PyMuPDF) available to validate placeholder")
+        self.assertTrue(opened)
+
+
 class NormalizeEmfWmfTests(unittest.TestCase):
     def test_emf_part_becomes_png_with_converter(self):
         fake_png = PNG_SIGNATURE + b"converted-logo"

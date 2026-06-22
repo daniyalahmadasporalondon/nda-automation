@@ -58,20 +58,25 @@ VECTOR_IMAGE_EXTENSIONS = {"emf": EMF_CONTENT_TYPE, "wmf": WMF_CONTENT_TYPE}
 
 DEFAULT_CONVERSION_TIMEOUT_SECONDS = 30
 
-# A 1x1 transparent PNG. Used as the guaranteed fallback when no EMF/WMF
-# conversion tool is available (or a specific image fails to convert), so the
-# rewritten DOCX never carries an undecodable vector part that renders blank.
+# A VALID 1x1 transparent RGBA PNG. Used as the guaranteed fallback when no
+# EMF/WMF conversion tool is available (or a specific image fails to convert), so
+# the rewritten DOCX never carries an undecodable vector part that renders blank.
+# Every byte here matters: this must DECODE in a real renderer (PIL/browser), not
+# merely be non-empty. Its IDAT is a genuine zlib stream of one filtered
+# transparent pixel, with correct chunk lengths and CRCs (verified by the unit
+# test, which asserts zlib round-trips the IDAT and a decoder opens the image).
 PLACEHOLDER_PNG_BYTES = bytes(
     [
         0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,  # PNG signature
-        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,  # IHDR chunk length + type
+        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,  # IHDR length(13) + type
         0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,  # width=1, height=1
-        0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,  # bit depth/colour/etc + CRC
-        0x89,
-        0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54,  # IDAT chunk length + type
-        0x78, 0x9C, 0x62, 0x00, 0x01, 0x00, 0x00, 0x05,  # zlib stream
-        0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4,              # IDAT data + CRC
-        0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,  # IEND chunk length + type
+        0x08, 0x06, 0x00, 0x00, 0x00,                    # depth=8, colour=6(RGBA), ...
+        0x1F, 0x15, 0xC4, 0x89,                          # IHDR CRC
+        0x00, 0x00, 0x00, 0x0B, 0x49, 0x44, 0x41, 0x54,  # IDAT length(11) + type
+        0x78, 0xDA, 0x63, 0x60, 0x00, 0x02, 0x00,        # zlib: deflate of one transparent pixel
+        0x00, 0x05, 0x00, 0x01,                          # zlib adler32 tail
+        0xE9, 0xFA, 0xDC, 0xD8,                          # IDAT CRC
+        0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,  # IEND length(0) + type
         0xAE, 0x42, 0x60, 0x82,                          # IEND CRC
     ]
 )

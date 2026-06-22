@@ -26,15 +26,34 @@ class RenderGetBucketNameTests(unittest.TestCase):
             "/api/matters/m_123/reviewed-docx",
             "/api/matters/m_123/reviewed-pdf",
             "/api/matters/m_123/working-docx",
+            "/api/matters/m_123/marked-up-pdf",
+            "/api/matters/m_123/signed-document",
         ]
         for path in cases:
             with self.subTest(path=path):
                 self.assertEqual(_rate_limit_bucket_name("GET", path), RENDER_GET_BUCKET)
 
+    def test_marked_up_pdf_is_bucketed(self):
+        # Regression: /marked-up-pdf re-opens the PDF in PyMuPDF and stamps every
+        # annotation on EVERY request; it MUST be throttled like the other render
+        # routes, not left unbucketed for an authenticated loop to abuse.
+        self.assertEqual(
+            _rate_limit_bucket_name("GET", "/api/matters/m_1/marked-up-pdf"),
+            RENDER_GET_BUCKET,
+        )
+
+    def test_signed_document_is_bucketed(self):
+        self.assertEqual(
+            _rate_limit_bucket_name("GET", "/api/matters/m_1/signed-document"),
+            RENDER_GET_BUCKET,
+        )
+
     def test_unrelated_get_routes_stay_unbucketed(self):
         self.assertEqual(_rate_limit_bucket_name("GET", "/api/matters/m_1"), "")
         self.assertEqual(_rate_limit_bucket_name("GET", "/api/matters"), "")
         self.assertEqual(_rate_limit_bucket_name("GET", "/static/app.js"), "")
+        # The annotations LIST route is not a render route -> stays unbucketed.
+        self.assertEqual(_rate_limit_bucket_name("GET", "/api/matters/m_1/pdf-annotations"), "")
 
     def test_matter_backup_get_bucket_unchanged(self):
         self.assertEqual(_rate_limit_bucket_name("GET", "/api/matters/export"), "matter-backup")

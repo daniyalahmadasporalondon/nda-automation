@@ -118,7 +118,15 @@ def _rate_limit_bucket_name(method: str, path: str) -> str:
 # Suffixes/segments of the matter byte/render GET routes. These live under
 # /api/matters/<id>/... so they cannot be matched by exact path; we match the
 # trailing segment (and the /render-page/ infix for per-page image fetches).
-# Mirrors the route dispatch in server.do_GET.
+# Mirrors the route dispatch in server.do_GET. Every entry here is a route that
+# does per-request RENDER work or streams a (potentially large) document, the
+# expensive class this bucket exists to bound:
+#   * /marked-up-pdf re-opens the PDF in PyMuPDF and stamps every stored
+#     annotation on EVERY request (routes/pdf_markup.bake_user_annotations) --
+#     unbucketed, an authenticated loop runs unbounded fitz render work.
+#   * /signed-document streams the stored executed PDF, but when none is captured
+#     yet it triggers a live DocuSign API sync; bucketing bounds both the
+#     large-bytes stream and that external-call fan-out per caller.
 _RENDER_GET_SUFFIXES = (
     "/source",
     "/source-pdf",
@@ -128,6 +136,8 @@ _RENDER_GET_SUFFIXES = (
     "/reviewed-docx",
     "/reviewed-pdf",
     "/working-docx",
+    "/marked-up-pdf",
+    "/signed-document",
 )
 
 
