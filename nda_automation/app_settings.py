@@ -101,6 +101,16 @@ MIN_GMAIL_IMPORT_LIMIT = 1
 # (gmail_integration.MAX_GMAIL_IMPORT_LIMIT); a stored, positive value is the
 # single source of truth and wins over the env.
 GMAIL_IMPORT_LIMIT_UNSET = 0
+# The admin-editable inbound sync window ("how far back, in days"). This feeds the
+# Gmail inbound fetch query's ``newer_than:{N}d`` clause. The default mirrors
+# gmail_integration.GMAIL_INBOUND_WINDOW_DAYS (90); it is defined here (not imported
+# from gmail_integration) so the settings layer stays free of the integration import
+# graph. The band is deliberately conservative: at least 1 day (a zero/negative
+# window would fetch nothing), and at most 365 (a year is plenty of look-back; an
+# unbounded window risks an oversized scan).
+DEFAULT_GMAIL_INBOUND_WINDOW_DAYS = 90
+MIN_GMAIL_INBOUND_WINDOW_DAYS = 1
+MAX_GMAIL_INBOUND_WINDOW_DAYS = 365
 DEFAULT_GMAIL_SETTINGS = {
     # Master kill-switch the scheduler obeys: when False the WHOLE scheduled sync
     # step is skipped (not just inbound). inbound_enabled stays the inbound-specific
@@ -112,6 +122,9 @@ DEFAULT_GMAIL_SETTINGS = {
     "sync_frequency": "10_minutes",
     # Per-poll NEW-work import limit. 0 (unset) => fall back to the env default.
     "import_limit": GMAIL_IMPORT_LIMIT_UNSET,
+    # How far back (in days) the inbound fetch scans. Feeds the query's
+    # ``newer_than:{N}d`` clause; clamped to [1, 365], defaults to 90.
+    "inbound_window_days": DEFAULT_GMAIL_INBOUND_WINDOW_DAYS,
     "intake_playbook": "",
     "last_sync_at": "",
     "last_sync_imported_count": 0,
@@ -511,6 +524,43 @@ def gmail_import_limit(settings: dict[str, Any] | None = None) -> int:
     return max(MIN_GMAIL_IMPORT_LIMIT, min(env_default, MAX_GMAIL_IMPORT_LIMIT_CLAMP))
 
 
+def gmail_inbound_window_days_from_payload(value: object) -> int:
+    """Parse + clamp the inbound sync window (in days) from raw payload/stored input.
+
+    Returns an int in ``[MIN_GMAIL_INBOUND_WINDOW_DAYS, MAX_GMAIL_INBOUND_WINDOW_DAYS]``.
+    Unlike the import limit there is no "unset" sentinel: a window of 0 would fetch
+    nothing, so any absent/blank/non-positive/unparseable/over-cap input falls back
+    to the safe ``DEFAULT_GMAIL_INBOUND_WINDOW_DAYS`` (90) rather than wedging the
+    fetch at an empty or oversized window. Values inside the band are clamped to it.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return DEFAULT_GMAIL_INBOUND_WINDOW_DAYS
+    # bool is an int subclass; True/False is never a meaningful day-count, so treat
+    # it as bad input and fall back to the default.
+    if isinstance(value, bool):
+        return DEFAULT_GMAIL_INBOUND_WINDOW_DAYS
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_GMAIL_INBOUND_WINDOW_DAYS
+    if parsed < MIN_GMAIL_INBOUND_WINDOW_DAYS or parsed > MAX_GMAIL_INBOUND_WINDOW_DAYS:
+        # Out-of-band (0, negative, or absurdly large) => safe default rather than a
+        # silently-clamped extreme the admin did not intend.
+        return DEFAULT_GMAIL_INBOUND_WINDOW_DAYS
+    return parsed
+
+
+def gmail_inbound_window_days(settings: dict[str, Any] | None = None) -> int:
+    """The single effective inbound sync window, in days.
+
+    The stored ``inbound_window_days`` setting is the source of truth; a corrupt,
+    missing, or out-of-band stored value falls back to ``DEFAULT_GMAIL_INBOUND_WINDOW_DAYS``
+    (90) via the normalizer, so this reader can never return an empty/oversized window.
+    """
+    current = settings if isinstance(settings, dict) else gmail_settings()
+    return gmail_inbound_window_days_from_payload(current.get("inbound_window_days"))
+
+
 def record_gmail_sync(
     result: dict[str, Any],
     *,
@@ -588,6 +638,7 @@ def gmail_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "outbound_enabled": bool(payload.get("outbound_enabled", DEFAULT_GMAIL_SETTINGS["outbound_enabled"])),
         "sync_frequency": sync_frequency,
         "import_limit": gmail_import_limit_from_payload(payload.get("import_limit")),
+        "inbound_window_days": gmail_inbound_window_days_from_payload(payload.get("inbound_window_days")),
         "intake_playbook": _clamp_intake_playbook(payload.get("intake_playbook")),
         "last_sync_at": str(payload.get("last_sync_at") or DEFAULT_GMAIL_SETTINGS["last_sync_at"]),
         "last_sync_imported_count": _nonnegative_int(
@@ -782,6 +833,10 @@ def _valid_gmail_setting(key: str, value: Any) -> bool:
         # Always normalizable (0/blank/invalid => unset => env fallback; positive =>
         # clamped). The normalizer clamps on write; strict request validation that
         # surfaces a 400 lives in the route handler.
+        return True
+    if key == "inbound_window_days":
+        # Always normalizable (blank/invalid/out-of-band => default 90; in-band =>
+        # kept). Strict request validation surfacing a 400 lives in the route handler.
         return True
     if key == "inbound_search_terms":
         return bool(gmail_search_terms_from_payload(value, fallback=[]))

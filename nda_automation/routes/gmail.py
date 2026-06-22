@@ -22,7 +22,7 @@ from ..matter_lifecycle import (
     RepositoryMatterLifecycle,
 )
 from ..matter_repository import DiskMatterRepository
-from .common import request_owner_user_id
+from .common import request_owner_user_id, require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -221,10 +221,16 @@ def _is_int_like(value: object) -> bool:
 
 
 def handle_gmail_settings_update(handler) -> None:
+    # Admin-gate ALL Gmail settings writes. These knobs (window, import limit, search
+    # terms, intake criteria, enable switches) directly control the inbound NDA
+    # intake fetch, so a non-admin must never be able to mutate them.
+    if not require_admin(handler):
+        return
     payload = handler._read_json_payload()
     if payload is None:
         return
 
+    previous = app_settings.gmail_settings()
     updates: dict[str, object] = {}
     # Honesty signals returned alongside the saved settings: when a requested
     # value is silently reduced by a safety cap, surface a warning so the admin
@@ -266,6 +272,35 @@ def handle_gmail_settings_update(handler) -> None:
                 f"Import limit capped at {app_settings.MAX_GMAIL_IMPORT_LIMIT_CLAMP} "
                 "(max safe per-poll value)."
             )
+    if "inbound_window_days" in payload:
+        window_value = payload.get("inbound_window_days")
+        # Accept an int (or int-coercible numeric/string), reject bool and anything
+        # non-numeric so a malformed payload returns a clear 400 rather than silently
+        # falling back to the default. The day-count must be inside the supported band.
+        if isinstance(window_value, bool) or not _is_int_like(window_value):
+            handler._send_json(
+                {"error": "Gmail sync window must be a whole number of days."},
+                status=400,
+            )
+            return
+        requested_window = int(window_value)
+        if (
+            requested_window < app_settings.MIN_GMAIL_INBOUND_WINDOW_DAYS
+            or requested_window > app_settings.MAX_GMAIL_INBOUND_WINDOW_DAYS
+        ):
+            handler._send_json(
+                {
+                    "error": (
+                        f"Gmail sync window must be between {app_settings.MIN_GMAIL_INBOUND_WINDOW_DAYS} "
+                        f"and {app_settings.MAX_GMAIL_INBOUND_WINDOW_DAYS} days."
+                    )
+                },
+                status=400,
+            )
+            return
+        # In-band: the normalizer is a no-op here, but route it through so the stored
+        # value always matches what the reader would re-derive.
+        updates["inbound_window_days"] = app_settings.gmail_inbound_window_days_from_payload(requested_window)
     if "sync_cadence" in payload:
         handler._send_json({"error": "Use sync_frequency for Gmail sync frequency."}, status=400)
         return
@@ -301,6 +336,7 @@ def handle_gmail_settings_update(handler) -> None:
         return
 
     settings = app_settings.update_gmail_settings(updates)
+    _record_gmail_settings_audit(previous, settings)
     response: dict[str, object] = {
         "gmail_settings": settings,
         "gmail": gmail_integration.gmail_status(),
@@ -310,6 +346,38 @@ def handle_gmail_settings_update(handler) -> None:
         # case a future multi-field save accumulates more.
         response["warning"] = " ".join(warnings)
     handler._send_json(response)
+
+
+# The Gmail settings most worth an audit trail: the inbound-fetch controls and the
+# pause/enable switches. Mirrors routes/drive.py::_record_drive_settings_audit.
+_AUDITED_GMAIL_SETTINGS = (
+    "sync_enabled",
+    "inbound_enabled",
+    "outbound_enabled",
+    "sync_frequency",
+    "import_limit",
+    "inbound_window_days",
+    "inbound_search_terms",
+    "intake_playbook",
+)
+
+
+def _record_gmail_settings_audit(previous: dict, current: dict) -> None:
+    changes = []
+    for key in _AUDITED_GMAIL_SETTINGS:
+        before = previous.get(key)
+        after = current.get(key)
+        if before != after:
+            changes.append({"setting": f"gmail.{key}", "before": before, "after": after})
+    if not changes:
+        return
+    telemetry.increment("settings_audit_events")
+    app_settings.record_settings_audit_event({
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "actor": "admin",
+        "action": "gmail_settings_update",
+        "changes": changes,
+    })
 
 
 def handle_gmail_send_redline(handler) -> None:

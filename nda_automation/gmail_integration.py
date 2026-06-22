@@ -124,16 +124,28 @@ def _gmail_search_query_term(term: str) -> str:
     return cleaned
 
 
-# The fetch window for the inbound scan. Extracted to a named constant so tests
-# and future tuning have a single source of truth.
+# The DEFAULT fetch window for the inbound scan. Extracted to a named constant so
+# tests and the fallback path have a single source of truth. The EFFECTIVE window is
+# now admin-configurable (app_settings.gmail_inbound_window_days); this constant is
+# the value used when no setting is stored or the stored value is corrupt.
 GMAIL_INBOUND_WINDOW_DAYS = 90
-# The structural envelope: every docx/pdf attachment in the inbox in-window that
-# was not sent by us. The NDA keyword group is intentionally NOT part of this
-# query -- it is only a scoring/ranking hint (see NDA_MESSAGE_QUERY), never a
-# fetch gate. Gmail only indexes subject/body/snippet/filename, so AND-appending
-# the keyword group would hide attachment-only NDAs with a neutral subject; the
-# deterministic content scorer is the real gate after the fetch.
-GMAIL_INBOUND_BASE_QUERY = f"in:inbox has:attachment (filename:docx OR filename:pdf) -from:me newer_than:{GMAIL_INBOUND_WINDOW_DAYS}d"
+
+
+def _inbound_envelope_query(window_days: int) -> str:
+    # The structural envelope: every docx/pdf attachment in the inbox in-window that
+    # was not sent by us. The NDA keyword group is intentionally NOT part of this
+    # query -- it is only a scoring/ranking hint (see NDA_MESSAGE_QUERY), never a
+    # fetch gate. Gmail only indexes subject/body/snippet/filename, so AND-appending
+    # the keyword group would hide attachment-only NDAs with a neutral subject; the
+    # deterministic content scorer is the real gate after the fetch.
+    return f"in:inbox has:attachment (filename:docx OR filename:pdf) -from:me newer_than:{window_days}d"
+
+
+# The import-time STATIC envelope at the default window. Retained as the
+# fallback/back-compat constant for any consumer that reads it directly; the
+# EFFECTIVE query is built at call time from the configured window (see
+# _default_inbound_query) so a stored window change takes effect without a reimport.
+GMAIL_INBOUND_BASE_QUERY = _inbound_envelope_query(GMAIL_INBOUND_WINDOW_DAYS)
 # Retained as the scoring/ranking-hint vocabulary input (deterministic content
 # scorer + gmail_inbound_parsing_summary). NOT appended to the fetch query.
 NDA_MESSAGE_QUERY = _gmail_search_terms_query(app_settings.DEFAULT_GMAIL_INBOUND_SEARCH_TERMS)
@@ -231,6 +243,13 @@ def gmail_status(owner_user_id: str = "") -> dict[str, Any]:
         # The built-in NDA-intake criteria, surfaced so the admin textarea can show
         # it as a placeholder when the editable setting is left empty.
         "intake_playbook_default": gmail_intake_classifier.DEFAULT_INTAKE_PLAYBOOK,
+        # The effective inbound sync window (days) + its default/bounds, surfaced so
+        # the admin "Sync window" field can show the current value and validate input.
+        # The effective value is re-derived (never trusts a corrupt stored value).
+        "inbound_window_days": app_settings.gmail_inbound_window_days(settings),
+        "inbound_window_days_default": app_settings.DEFAULT_GMAIL_INBOUND_WINDOW_DAYS,
+        "inbound_window_days_min": app_settings.MIN_GMAIL_INBOUND_WINDOW_DAYS,
+        "inbound_window_days_max": app_settings.MAX_GMAIL_INBOUND_WINDOW_DAYS,
         "sync": user_store.gmail_sync_status(owner_user_id) if owner_user_id else _global_gmail_sync_status(settings),
         "account_match": True,
         "user_scoped": bool(owner_user_id),
@@ -409,7 +428,17 @@ def _global_gmail_sync_status(settings: dict[str, Any]) -> dict[str, Any]:
 def _default_inbound_query() -> str:
     # Only the structural envelope. The keyword terms are no longer a fetch gate;
     # they live on as the deterministic content-scoring/ranking vocabulary.
-    return GMAIL_INBOUND_BASE_QUERY
+    #
+    # The window (``newer_than:{N}d``) is admin-configurable, so build the envelope
+    # at CALL time from the stored setting. The reader already falls back to the
+    # default (90) on a missing/corrupt/out-of-band value; wrap it once more so even
+    # a settings-read failure degrades to the static GMAIL_INBOUND_BASE_QUERY rather
+    # than ever raising on this hot inbound path.
+    try:
+        window_days = app_settings.gmail_inbound_window_days()
+    except Exception:  # pragma: no cover - defensive: settings read must never break fetch
+        return GMAIL_INBOUND_BASE_QUERY
+    return _inbound_envelope_query(window_days)
 
 
 def gmail_role_setup_error(role: str, owner_user_id: str = "") -> str:
