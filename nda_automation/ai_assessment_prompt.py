@@ -12,7 +12,7 @@ from .playbook_rules import PLAYBOOK_RULES_VERSION, playbook_rules_for_ai
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
 from .untrusted_text import neutralize_untrusted_text
 
-AI_ASSESSMENT_PROMPT_VERSION = 13
+AI_ASSESSMENT_PROMPT_VERSION = 14
 AI_ASSESSMENT_TASK = "ai_first_clause_assessment"
 MAX_AI_ASSESSMENT_PARAGRAPHS = 120
 MAX_AI_ASSESSMENT_CHARS = 60000
@@ -169,6 +169,29 @@ AI_ASSESSMENT_INSTRUCTIONS = [
         "Honour carve-outs, exceptions, and conditions ('except', 'other than', 'provided that', 'unless', 'to the "
         "extent'): they narrow or invert the obligation, so judge the obligation as it reads AFTER applying them. A "
         "genuine prohibition and freedom-preserving language can co-exist in one paragraph; assess each on its own terms."
+    ),
+    (
+        "STRUCTURAL OVERRIDES (read the WHOLE document, not just one clause): a clause can look standard while "
+        "language ELSEWHERE in the agreement silently guts it. Before you pass a clause, scan the rest of the document "
+        "for any provision that cancels, disapplies, subordinates, or overrides it, and -- when one exists -- flag the "
+        "clause it undermines (review, or fail when the override is unambiguous). Three shapes you MUST catch: "
+        "(1) CANCELLED CARVE-OUTS -- a provision (often led by 'notwithstanding the foregoing/anything to the contrary') "
+        "stating that the confidentiality EXCLUSIONS / exceptions / carve-outs 'shall not apply', 'are void', "
+        "'are inapplicable', or 'are of no effect' (in whole or under some condition). The exclusions still appear on "
+        "the page but have been negated, so the Confidential Information protection is wider than it reads -- flag "
+        "Confidential Information. (2) INCORPORATION / SUBORDINATION OVERRIDE -- the NDA is made 'subject to', "
+        "'incorporated by reference' into, or 'subordinate to' a SEPARATE external agreement (e.g. a Master Services "
+        "Agreement, SOW, framework or main agreement) that is given OVERRIDING authority ('shall prevail', 'takes "
+        "precedence', 'controls in the event of conflict'). The confidentiality terms you are reviewing can then be "
+        "silently overridden by an unseen document, so the agreement does not clearly stand on its own -- flag this "
+        "(Confidential Information and/or Governing Law) for human review. Direction matters: this fires only when the "
+        "OTHER document prevails over this NDA, never when THIS NDA prevails / supersedes (a normal entire-agreement "
+        "merger clause running in this NDA's favour is fine). (3) POISONED DEFINITION -- a definition (e.g. "
+        "'Confidential Information', 'Affiliate', 'Representative') drawn so broadly it defeats the protection or "
+        "sweeps in non-parties: a Confidential Information definition that affirmatively INCLUDES (or refuses to stop "
+        "treating as confidential) information the standard carve-outs exclude -- publicly available, already known, "
+        "or independently developed information -- has gutted the exclusions through the definition; flag Confidential "
+        "Information (fail when it includes an excluded category with no surviving carve-out anywhere)."
     ),
     (
         "When the language is ambiguous, borderline, internally conflicting, or you cannot tell with confidence whether "
