@@ -23,7 +23,7 @@ from io import BytesIO
 from zipfile import ZipFile
 
 from nda_automation import docx_package_renderer, redline_export_service, source_redline_docx
-from nda_automation.docx_export import PdfRedlineAnchorError
+from nda_automation.docx_export import PdfRedlineAnchorError, SupplementalRedlineUnavailableError
 from nda_automation.redline_actions import REDLINE_REPLACE_PARAGRAPH
 
 from tests.test_docx_export import W_NS, make_source_docx, revision_text_for_state
@@ -307,14 +307,18 @@ class DocxSourceRegressionTests(unittest.TestCase):
         self.assertIn((CONFIDENTIALITY, CONFIDENTIALITY), states)
 
 
-class SupplementalPartSkipPreservedTests(unittest.TestCase):
-    def test_header_part_redline_still_skipped_with_warning(self):
-        # Guardrail: the fix must NOT change the genuine supplemental-part behavior. A
-        # redline targeting a header/footer (source_part != "pdf") still cannot anchor
-        # in the body and remains a logged skip -- it is NOT treated as a PDF redline
-        # and does NOT raise or count as incomplete.
-        source_docx = make_source_docx([GOVERNING_LAW])
-        review_result = {
+class SupplementalPartFailClosedTests(unittest.TestCase):
+    """A header/footer paragraph IS extracted and reviewed
+    (docx_text._extract_supplemental_paragraphs), so a clause can match one and earn
+    an APPROVED redline. But this body-only export writes only word/document.xml and
+    copies header1.xml/footer1.xml through unchanged, so the change has no home. The
+    OLD behaviour silently logged-and-dropped it while reporting full success -- the
+    header/footer analogue of the PDF silent-drop P0. The export must now FAIL CLOSED
+    (strict) or report the redline as incomplete (lenient): in NO case may it return
+    success with the redline silently dropped."""
+
+    def _header_review_result(self):
+        return {
             "paragraphs": [
                 {"id": "p1", "index": 1, "source_part": "header1", "text": GOVERNING_LAW},
             ],
@@ -330,14 +334,38 @@ class SupplementalPartSkipPreservedTests(unittest.TestCase):
             ],
         }
 
-        with self.assertLogs("nda_automation.docx_export", level="WARNING") as logs:
-            package = source_redline_docx.build_source_redline_package(
+    def test_header_part_redline_fails_closed_strict(self):
+        # Strict (the default for send/approve/export): an unapplied approved
+        # header/footer redline RAISES rather than shipping a falsely-successful file.
+        source_docx = make_source_docx([GOVERNING_LAW])
+        review_result = self._header_review_result()
+
+        with self.assertRaises(SupplementalRedlineUnavailableError) as ctx:
+            source_redline_docx.build_source_redline_package(
                 source_docx, review_result, strict=True
             )
+        self.assertEqual(ctx.exception.count, 1)
+        # It is a DocxExportError subclass, so existing fail-closed callers block.
+        from nda_automation.docx_export import DocxExportError
 
-        self.assertIn("unresolved or ambiguous anchor", "\n".join(logs.output))
-        self.assertEqual(package.anchor_uncertain_redlines, [])
-        # Body paragraph is untouched (header redline did not land in the body).
+        self.assertIsInstance(ctx.exception, DocxExportError)
+
+    def test_header_part_redline_reported_incomplete_lenient(self):
+        # Lenient (preview/draft/diagnostic): the file is still produced, but the
+        # unapplied header redline is surfaced as incomplete -- NOT silently dropped
+        # under a clean/successful package.
+        source_docx = make_source_docx([GOVERNING_LAW])
+        review_result = self._header_review_result()
+
+        package = source_redline_docx.build_source_redline_package(
+            source_docx, review_result, strict=False
+        )
+
+        # The redline is reported as unapplied/incomplete, not silently lost.
+        self.assertEqual(len(package.anchor_uncertain_redlines), 1)
+        self.assertEqual(package.anchor_uncertain_redlines[0].get("id"), "r1")
+        # Body paragraph is untouched (the header redline did not land in the body),
+        # but the package is explicitly flagged incomplete rather than presented clean.
         states = _body_paragraph_states(package.data)
         self.assertEqual(states, [(GOVERNING_LAW, GOVERNING_LAW)])
 
