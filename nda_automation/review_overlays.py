@@ -14,7 +14,11 @@ risking a "deterministic ghost").
 THE ANTI-GHOST CONTRACT (enforced here, once, for every overlay)
 ----------------------------------------------------------------
 ``apply_review_overlays(review_state, matter)`` runs the law/forum overlay PLUS a
-list of additive detectors over ``review_state``. For EACH overlay:
+(currently empty) list of additive detectors over ``review_state``. The three
+structural-override detectors that once lived here -- carve-out negation,
+incorporation override, and definition poison -- have been RETIRED now that the
+strengthened AI reviewer + verifier catch those traps directly; the pipeline
+degrades cleanly to the law<->forum overlay alone. For EACH overlay:
 
 * Only a state that is currently a clean PASS ("pass") is ever upgraded -- to REVIEW.
 * Any state already REVIEW or CHECK (or anything other than a clean pass) is returned
@@ -165,11 +169,14 @@ def _coverage_detectors() -> list[DetectorFn]:
     detector is a one-line addition to ``_SPECS`` below.
     """
     # (module attribute, function name) -- the SHARED DETECTOR CONTRACT.
-    _specs: list[tuple[str, str]] = [
-        ("notwithstanding_check", "detect_carveout_negation"),
-        ("incorporation_check", "detect_incorporation_override"),
-        ("definition_poison_check", "detect_definition_poison"),
-    ]
+    #
+    # The three structural-override overlays (carve-out negation, incorporation
+    # override, definition poison) were RETIRED once the live-AI safety gate proved
+    # the strengthened reviewer (STRUCTURAL OVERRIDES prompt v14 + playbook cues) +
+    # verifier catch those traps on their own. This list is intentionally empty: the
+    # pipeline below degrades cleanly to the law<->forum overlay only. Re-wiring a
+    # future additive detector is still a one-line ``(module, function)`` addition.
+    _specs: list[tuple[str, str]] = []
     detectors: list[DetectorFn] = []
     for module_name, func_name in _specs:
         try:

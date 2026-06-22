@@ -394,18 +394,22 @@ function renderStudioResult(result) {
 }
 
 // --- Additive review-overlay surfacing ---------------------------------------
-// A review OVERLAY (the law/forum mismatch detector + the cross-clause coverage
-// detectors: notwithstanding-carveout, incorporation-by-reference, definition-
-// poison) can ELEVATE a clean AI "pass" to "review" and BLOCK send. The overlay
-// writes its reason(s) onto the matter's review_state in matter_view.public_matter
-// — NOT onto the AI review_result that drives the per-clause pills — so without
-// this surface the reviewer sees every clause green and no explanation for the
-// block. These helpers read the overlay channel off state.selectedMatter.review_state
-// and (1) render a matter-level banner listing every active flag and (2) attach
-// each clause-targeted reason to its clause as a review finding. ALL overlay sources
-// share the same overlay_review_reasons channel, so this is ONE code path — no
-// per-detector special-casing. SECURITY: overlay messages may carry document-derived
-// text, so every interpolated value is escapeHtml()'d.
+// A review OVERLAY can ELEVATE a clean AI "pass" to "review" and BLOCK send. As of
+// the overlay-retirement, the only remaining overlay is the law/forum mismatch
+// detector — the three structural-override coverage detectors (notwithstanding-
+// carveout, incorporation-by-reference, definition-poison) were removed once the
+// strengthened AI reviewer + verifier covered those traps, so apply_review_overlays
+// now writes only the law/forum channel. The overlay writes its reason(s) onto the
+// matter's review_state in matter_view.public_matter — NOT onto the AI review_result
+// that drives the per-clause pills — so without this surface the reviewer sees every
+// clause green and no explanation for the block. These helpers read the overlay
+// channel off state.selectedMatter.review_state and (1) render a matter-level banner
+// listing every active flag and (2) attach each clause-targeted reason to its clause
+// as a review finding. ALL overlay sources share the same overlay_review_reasons
+// channel, so this is ONE code path — no per-detector special-casing. When NO overlay
+// fires (the common case now), collectOverlayFindings() returns [] and the banner
+// stays hidden — no JS error on an empty overlay channel. SECURITY: overlay messages
+// may carry document-derived text, so every interpolated value is escapeHtml()'d.
 
 // Map an overlay reason_code -> the clause id it should attach to. An overlay that
 // is not clause-targeted (absent / unknown code) is covered by the banner alone.

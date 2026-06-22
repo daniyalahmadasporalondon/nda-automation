@@ -593,13 +593,15 @@ class AIAssessmentPromptTests(unittest.TestCase):
 
     # ---- Category A (U6): binding policy + scope rule + multi-edit + version bump ----
 
-    def test_prompt_version_is_bumped_to_13(self):
-        # The packet/prompt version marks the Category A change to consumers
-        # (ai_assessor packet_version). It must be the bumped value, not the old 12.
-        self.assertEqual(AI_ASSESSMENT_PROMPT_VERSION, 13)
+    def test_prompt_version_is_bumped_to_14(self):
+        # The packet/prompt version marks the latest change to consumers
+        # (ai_assessor packet_version). v14 is the STRUCTURAL OVERRIDES strengthening
+        # that lets the reviewer + verifier catch the structural traps the retired
+        # deterministic overlays used to backstop. It must be the bumped value.
+        self.assertEqual(AI_ASSESSMENT_PROMPT_VERSION, 14)
         packet = build_ai_assessment_packet(SOURCE_TEXT, playbook=load_playbook())
-        self.assertEqual(packet["version"], 13)
-        self.assertEqual(build_ai_assessment_prompt(packet)["version"], 13)
+        self.assertEqual(packet["version"], 14)
+        self.assertEqual(build_ai_assessment_prompt(packet)["version"], 14)
 
     def test_packet_carries_the_derived_binding_policy_block(self):
         # U6 injects the U5-derived policy block under playbook.binding_policy. It is
