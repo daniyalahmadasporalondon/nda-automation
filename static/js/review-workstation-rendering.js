@@ -3902,7 +3902,17 @@ function requestMatterDocumentRenderPreview() {
   if (hasDocumentRenderPreview(state.reviewDocumentRender)) return;
   const filename = String(state.selectedMatter.source_filename || state.selectedMatter.attachment_filename || "").trim();
   if (!/\.(docx|pdf)$/i.test(filename)) return;
-  if (state.reviewDocumentRender?.sourceFallback && !isRepositoryMatterForRenderPreview(state.selectedMatter)) return;
+  // A PDF "Original PDF" source arrives as a sourceFallback candidate (see
+  // sourcePdfRenderCandidate). The backend rasterizes such a PDF fine via
+  // PyMuPDF (document_rendering.py, no soffice), so a PDF source that has a
+  // real /source URL must ALWAYS attempt the page-image render -- the same way
+  // a .docx source already flows straight through to /render-status. The gate
+  // used to drop a sourceFallback PDF unless the matter carried repository
+  // markers (source_type / board_column / document_title / review_refresh),
+  // which left every non-repository "Original PDF" matter (e.g. Pismo) blank
+  // even though the backend could render it. We only need the matter id + a
+  // .docx/.pdf source (both already checked above) to drive /render-status, so
+  // the repository-marker condition is removed.
 
   const sequence = reviewDocumentRenderRequestSequence + 1;
   reviewDocumentRenderRequestSequence = sequence;
@@ -4031,10 +4041,6 @@ function positiveInteger(value) {
 
 function hasDocumentRenderPreview(renderState) {
   return Boolean(renderState?.pages?.length || (renderState?.pdfUrl && !renderState?.sourceFallback));
-}
-
-function isRepositoryMatterForRenderPreview(matter) {
-  return Boolean(matter?.source_type || matter?.board_column || matter?.document_title || matter?.review_refresh);
 }
 
 function normalizedRenderStatus(status, pdfUrl, pages = []) {
