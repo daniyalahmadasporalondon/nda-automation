@@ -123,10 +123,36 @@ async function testTrackedChangesRender() {
 }
 
 // ---------------------------------------------------------------------------
-// (B) Shipped module never-blank fallback contract
+// (B) Shipped module never-blank fallback contract + localStorage flag
 // ---------------------------------------------------------------------------
-function loadFaithfulModule(windowStub) {
-  const sandbox = { window: windowStub, document: windowStub.document, console, module: { exports: {} }, fetch: undefined };
+// SINGLE enable path: localStorage["nda.faithfulDocxRender"] = "1". There is NO
+// window flag any more. We build a tiny localStorage stub so the headless test can
+// drive the flag exactly the way the browser would.
+function makeLocalStorage(initial) {
+  const map = new Map(Object.entries(initial || {}));
+  return {
+    getItem(key) { return map.has(key) ? map.get(key) : null; },
+    setItem(key, value) { map.set(key, String(value)); },
+    removeItem(key) { map.delete(key); },
+  };
+}
+
+function loadFaithfulModule(windowStub, localStorageStub) {
+  const win = windowStub || {};
+  // Prefer the sandbox-global `localStorage` (the browser's first lookup). We do
+  // NOT assign win.localStorage: a real jsdom window exposes it as a getter-only
+  // property, so the module's `typeof localStorage !== "undefined"` path is what we
+  // exercise here.
+  let winLocalStorage;
+  try { winLocalStorage = win.localStorage; } catch (_error) { winLocalStorage = undefined; }
+  const sandbox = {
+    window: win,
+    document: win.document,
+    console,
+    module: { exports: {} },
+    fetch: undefined,
+    localStorage: localStorageStub || winLocalStorage,
+  };
   sandbox.Blob = typeof Blob !== "undefined" ? Blob : undefined;
   sandbox.ArrayBuffer = ArrayBuffer;
   vm.createContext(sandbox);
@@ -134,29 +160,35 @@ function loadFaithfulModule(windowStub) {
   return sandbox.module.exports;
 }
 
+// A library-present window: lazy ensureFaithfulDocxLibs() short-circuits because
+// window.docx.renderAsync + window.JSZip are already present, so no <script> is
+// injected. renderAsync paints whatever `paint` does into the scratch node.
+function libraryReadyWindow(paint) {
+  return {
+    JSZip: {},
+    docx: { renderAsync: async (data, container) => { if (paint) paint(container); } },
+    document: { createElement: () => ({}) },
+  };
+}
+
 async function testFallbackContract() {
-  // Flag OFF (no window flag) -> { ok:false, reason:"flag_off" }, never throws.
-  const win1 = { document: { createElement: () => ({}) } };
-  const mod1 = loadFaithfulModule(win1);
+  // Flag OFF (no localStorage key) -> { ok:false, reason:"flag_off" }, never throws.
+  const offStore = makeLocalStorage({});
+  const mod1 = loadFaithfulModule(libraryReadyWindow(), offStore);
   const r1 = await mod1.renderFaithfulDocx({ innerHTML: "", childElementCount: 0, textContent: "" }, { url: "/x" });
   assert.equal(r1.ok, false, "flag OFF must resolve ok:false");
   assert.equal(r1.reason, "flag_off");
 
-  // Flag ON but library unavailable (no window.docx) -> ok:false library_unavailable.
-  const win2 = { NDA_FAITHFUL_DOCX_RENDER: true, document: { createElement: () => ({}) } };
-  const mod2 = loadFaithfulModule(win2);
+  // Flag ON but library genuinely unavailable AND no document to inject a <script>
+  // -> ensureFaithfulDocxLibs rejects -> ok:false library_unavailable (no throw).
+  const onStore = makeLocalStorage({ "nda.faithfulDocxRender": "1" });
+  const mod2 = loadFaithfulModule({ document: undefined }, onStore);
   const r2 = await mod2.renderFaithfulDocx({ innerHTML: "", childElementCount: 0, textContent: "" }, { url: "/x" });
   assert.equal(r2.ok, false, "library unavailable must resolve ok:false");
   assert.equal(r2.reason, "library_unavailable");
 
   // Flag ON, library present, but no bytes / no url -> ok:false no_bytes (no throw).
-  const win3 = {
-    NDA_FAITHFUL_DOCX_RENDER: "true",
-    JSZip: {},
-    docx: { renderAsync: async () => {} },
-    document: { createElement: () => ({}) },
-  };
-  const mod3 = loadFaithfulModule(win3);
+  const mod3 = loadFaithfulModule(libraryReadyWindow(), makeLocalStorage({ "nda.faithfulDocxRender": "true" }));
   const r3 = await mod3.renderFaithfulDocx({ innerHTML: "", childElementCount: 0, textContent: "" }, {});
   assert.equal(r3.ok, false, "no bytes must resolve ok:false");
   assert.equal(r3.reason, "no_bytes");
@@ -166,19 +198,77 @@ async function testFallbackContract() {
   assert.equal(r4.ok, false);
   assert.equal(r4.reason, "no_container");
 
-  // Flag string parsing: enabled() honours "1"/"true"/"on"/"yes", rejects "0"/"".
-  assert.equal(loadFaithfulModule({ NDA_FAITHFUL_DOCX_RENDER: "on", document: {} }).faithfulDocxRenderEnabled(), true);
-  assert.equal(loadFaithfulModule({ NDA_FAITHFUL_DOCX_RENDER: "0", document: {} }).faithfulDocxRenderEnabled(), false);
-  assert.equal(loadFaithfulModule({ document: {} }).faithfulDocxRenderEnabled(), false, "default must be OFF");
+  // Flag string parsing: enabled() honours "1"/"true"/"on"/"yes", rejects "0"/""/absent.
+  assert.equal(loadFaithfulModule({}, makeLocalStorage({ "nda.faithfulDocxRender": "on" })).faithfulDocxRenderEnabled(), true);
+  assert.equal(loadFaithfulModule({}, makeLocalStorage({ "nda.faithfulDocxRender": "yes" })).faithfulDocxRenderEnabled(), true);
+  assert.equal(loadFaithfulModule({}, makeLocalStorage({ "nda.faithfulDocxRender": "0" })).faithfulDocxRenderEnabled(), false);
+  assert.equal(loadFaithfulModule({}, makeLocalStorage({})).faithfulDocxRenderEnabled(), false, "default must be OFF (absent key)");
+  // The OLD window flag must NOT enable the feature any more (single enable path).
+  assert.equal(loadFaithfulModule({ NDA_FAITHFUL_DOCX_RENDER: true }, makeLocalStorage({})).faithfulDocxRenderEnabled(), false,
+    "the removed window flag must be inert");
 
   // renderChanges:true is in the default options the module passes to docx-preview.
   assert.equal(mod3.faithfulDocxRenderOptions().renderChanges, true,
     "module must request tracked-change rendering");
 
   console.log("PASS (B) fallback contract: flag_off / library_unavailable / no_bytes / no_container "
-    + "all resolve ok:false without throwing; default flag OFF; renderChanges default true.");
+    + "all resolve ok:false without throwing; localStorage flag (default OFF); window flag inert; renderChanges default true.");
+}
+
+// ---------------------------------------------------------------------------
+// (C) Empty-body guard: a CSS-only (empty-body) render must NOT falsely pass.
+// ---------------------------------------------------------------------------
+// docx-preview injects a <style> into the (style)container even when the body is
+// empty. The guard must measure VISIBLE content, excluding <style>/<script>, and
+// must require a real rendered element -- otherwise the injected CSS text would
+// falsely satisfy a textContent check and a blank page would swap over the user's
+// content. We drive this with a real jsdom window so the DOM traversal is exercised.
+async function testEmptyBodyGuard() {
+  const dom = new JSDOM("<!doctype html><html><body></body></html>");
+  const { window } = dom;
+  const onStore = makeLocalStorage({ "nda.faithfulDocxRender": "1" });
+  // Stub a "library" that simulates docx-preview's empty-body behaviour: it injects
+  // ONLY a <style> element into the styleContainer (3rd arg) and nothing into the
+  // render node. A naive textContent guard would count the CSS and pass.
+  window.JSZip = {};
+  window.docx = {
+    renderAsync: async (_data, _renderNode, styleContainer) => {
+      const host = styleContainer || _renderNode;
+      const style = window.document.createElement("style");
+      style.textContent = ".docx{color:red} /* lots and lots of injected css text */";
+      host.appendChild(style);
+    },
+  };
+
+  const mod = loadFaithfulModule(window, onStore);
+
+  // faithfulDocxVisibleTextLength excludes <style>/<script>.
+  const probe = window.document.createElement("div");
+  const styleOnly = window.document.createElement("style");
+  styleOnly.textContent = "body{color:blue} /* css */";
+  probe.appendChild(styleOnly);
+  assert.equal(mod.faithfulDocxVisibleTextLength(probe), 0,
+    "visible-text length must exclude <style> text");
+
+  // faithfulDocxContainerHasContent: a node holding only a <style> has NO content.
+  assert.equal(mod.faithfulDocxContainerHasContent(probe), false,
+    "a style-only node must report no content");
+
+  // End-to-end: render an empty body -> ok:false empty_render, container untouched.
+  const live = window.document.createElement("div");
+  live.appendChild(window.document.createTextNode("EXISTING RECONSTRUCTION"));
+  const bytes = new Uint8Array([1, 2, 3]); // any bytes; stub renderAsync ignores them
+  const result = await mod.renderFaithfulDocx(live, { bytes });
+  assert.equal(result.ok, false, "empty-body render must NOT pass");
+  assert.equal(result.reason, "empty_render");
+  assert.ok(live.textContent.includes("EXISTING RECONSTRUCTION"),
+    "the live container must be left intact (never blanked) on an empty render");
+
+  console.log("PASS (C) empty-body guard: CSS-only render reports empty_render; "
+    + "visible-text excludes <style>; live container left intact.");
 }
 
 await testTrackedChangesRender();
 await testFallbackContract();
+await testEmptyBodyGuard();
 console.log("\nALL PASS: docx-faithful-render headless validation");

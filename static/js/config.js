@@ -7,6 +7,19 @@ const VIEW_MODE_SIDE_BY_SIDE = "sidebyside";
 const VIEW_MODE_ORIGINAL = "original";
 const DOCUMENT_VIEW_MODES = [VIEW_MODE_REDLINE, VIEW_MODE_CLEAN, VIEW_MODE_SIDE_BY_SIDE, VIEW_MODE_ORIGINAL];
 
+// Faithful-DOCX render feature flag (Review workstation "Original"/redline/clean/
+// sidebyside surfaces). SINGLE enable path: localStorage. Default OFF.
+//
+//   ENABLE in a running app (persists across reloads):
+//     localStorage.setItem("nda.faithfulDocxRender", "1")   // then re-render the matter
+//   DISABLE:
+//     localStorage.removeItem("nda.faithfulDocxRender")     // or setItem(..., "0")
+//
+// FAITHFUL_DOCX_RENDER_FLAG_KEY is the one localStorage key; FAITHFUL_DOCX_RENDER_DEFAULT
+// is the default used when the key is absent (false = OFF). There is no window flag.
+const FAITHFUL_DOCX_RENDER_FLAG_KEY = "nda.faithfulDocxRender";
+const FAITHFUL_DOCX_RENDER_DEFAULT = false;
+
 const REDLINE_DELETE_PARAGRAPH = "delete_paragraph";
 const REDLINE_INSERT_AFTER_PARAGRAPH = "insert_after_paragraph";
 const REDLINE_REPLACE_PARAGRAPH = "replace_paragraph";

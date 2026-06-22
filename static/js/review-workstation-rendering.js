@@ -4097,6 +4097,14 @@ function normalizeReviewDocumentRender(candidate) {
     status,
   };
   if (pages.length) renderState.pages = pages;
+  // The page-image (rasterization) status is a SEPARATE signal from the top-level
+  // render status: for a PDF matter the PDF render can succeed (status "ready" +
+  // pdf_url) while page-image rasterization fails, in which case the backend sends
+  // page_image_status:"failed"/"error" and pages:[]. We MUST read it so the
+  // non-Original surfaces do not take the page-image/iframe branch and paint a
+  // blank block above the editable text. Read defensively from snake/camel case.
+  const pageImageStatus = stringValue(candidate.page_image_status || candidate.pageImageStatus);
+  if (pageImageStatus) renderState.pageImageStatus = pageImageStatus.toLowerCase();
   if (candidate.source_fallback || candidate.sourceFallback) renderState.sourceFallback = true;
   // Backend signal (owned by the source->canonical-DOCX lane) that a PDF-source
   // matter now has a canonical "working" DOCX available at /api/matters/<id>/
@@ -4205,16 +4213,47 @@ function stringValue(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+// True only when a page-image (or iframe) preview surface would genuinely paint
+// content for the NON-Original views: the top-level render is ready AND the
+// page-image rasterization itself is good AND we actually have page images to show.
+//
+// WHY: for a PDF matter the PDF render can succeed (status "ready" + pdf_url) while
+// page-image rasterization FAILS -- the backend then sends page_image_status:
+// "failed"/"error" and pages:[]. Without this guard the non-Original surface took
+// the `status==="ready" && pdfUrl` iframe branch and painted a fixed-height
+// (~520px) /render-pdf iframe that shows BLANK when the iframe never paints,
+// shoving the editable text reconstruction far below the fold. The reconstruction
+// is the always-visible FLOOR; the page-image surface is only a tier-2 upgrade, so
+// when it cannot genuinely paint we emit nothing and let the reconstruction stand.
+function pageImageSurfaceUsable(renderState) {
+  if (!renderState) return false;
+  if ((renderState.status || "") !== "ready") return false;
+  const pages = Array.isArray(renderState.pages) ? renderState.pages : [];
+  if (!pages.length) return false;
+  // page_image_status, when present, must itself be good. Absent -> trust `pages`
+  // (the backend only attaches a manifest+pages when rasterization produced them).
+  const pageImageStatus = renderState.pageImageStatus || "";
+  if (pageImageStatus && !["ready", "complete", "completed", "available", "success"].includes(pageImageStatus)) {
+    return false;
+  }
+  return true;
+}
+
 function renderPdfDocumentSurface(renderState) {
   if (!renderState) return "";
-  const status = renderState.status || "loading";
   const pages = Array.isArray(renderState.pages) ? renderState.pages : [];
   const pageLabel = renderState.pageCount
     ? `${renderState.pageCount} ${renderState.pageCount === 1 ? "page" : "pages"}`
     : "";
   const meta = [renderState.sourceLabel, pageLabel].filter(Boolean).join(" · ");
 
-  if (status === "ready" && pages.length) {
+  // ONLY paint the page-image surface when it is genuinely usable. We deliberately
+  // do NOT fall back to a fixed-height /render-pdf iframe here: in the non-Original
+  // views the editable text reconstruction is appended right after this and is the
+  // always-visible floor, so a blank/half-painted iframe above it would just push
+  // the real content below the fold. When the page images are not usable we emit
+  // nothing and let the reconstruction be the surface.
+  if (pageImageSurfaceUsable(renderState)) {
     return `
       <section class="review-pdf-surface review-page-surface ready" data-review-pdf-surface data-review-render-surface data-render-status="ready" aria-label="Rendered document preview">
         <div class="review-pdf-status">
@@ -4229,30 +4268,8 @@ function renderPdfDocumentSurface(renderState) {
     `;
   }
 
-  if (status === "ready" && renderState.pdfUrl) {
-    return `
-      <section class="review-pdf-surface ready" data-review-pdf-surface data-render-status="ready" aria-label="Rendered document preview">
-        <div class="review-pdf-status">
-          <strong>${escapeHtml(meta || "Rendered PDF")}</strong>
-          <span>High-resolution preview</span>
-        </div>
-        <iframe class="review-pdf-frame" src="${escapeHtml(renderState.pdfUrl)}" title="${escapeHtml(renderState.sourceLabel || "Rendered document")}"></iframe>
-      </section>
-      <div class="review-fallback-divider" aria-hidden="true"><span>Editable text review</span></div>
-    `;
-  }
-
-  const message = status === "error"
-    ? renderState.error || "Rendered PDF is unavailable. Showing editable text review."
-    : "Preparing high-resolution document preview. Showing editable text review.";
-  return `
-    <section class="review-pdf-surface ${escapeHtml(status)}" data-review-pdf-surface data-render-status="${escapeHtml(status)}" aria-label="Rendered document preview status">
-      <div class="review-pdf-status">
-        <strong>${escapeHtml(status === "error" ? "PDF preview unavailable" : "PDF preview loading")}</strong>
-        <span>${escapeHtml(message)}</span>
-      </div>
-    </section>
-  `;
+  // Not usable: no banner, no blank iframe -- the reconstruction below stands alone.
+  return "";
 }
 
 function renderOriginalDocumentSurface(renderState) {

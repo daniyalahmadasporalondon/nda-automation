@@ -2196,15 +2196,16 @@
 
     <script src="/static/js/config.js?v=20260621wave4"></script>
     <!--
-      Vendored (no-CDN) faithful-DOCX rendering stack for the Review workstation
-      "Original" surface. JSZip MUST load before docx-preview (the UMD bundle reads
-      the global JSZip and exposes window.docx). docx-faithful-render.js wraps both
-      behind a default-OFF feature flag (window.NDA_FAITHFUL_DOCX_RENDER) with a
+      Vendored (no-CDN) faithful-DOCX rendering for the Review workstation. The
+      vendored jszip + docx-preview bundles are LAZILY self-injected by
+      docx-faithful-render.js on first use (loadScriptOnce / ensureFaithfulDocxLibs,
+      retry-on-failure) -- NOT via static tags here, so a missing/404'd vendor file
+      degrades gracefully (and is retried) rather than reporting the library
+      "unavailable" forever. Default OFF behind a single localStorage flag
+      (localStorage["nda.faithfulDocxRender"] = "1"; see config.js) with a
       never-blank fallback. See static/vendor/VERSIONS.md.
     -->
-    <script src="/static/vendor/jszip/jszip.min.js?v=jszip3101"></script>
-    <script src="/static/vendor/docx-preview/docx-preview.min.js?v=docxpreview037"></script>
-    <script src="/static/js/docx-faithful-render.js?v=20260622docxfaithful1"></script>
+    <script src="/static/js/docx-faithful-render.js?v=20260622docxfaithful2"></script>
     <!--
       Single-source utility bridge. html-utils / clause-status / inline-diff /
       matter-utils now live ONLY as static/js/modules/*.mjs (the modules the
