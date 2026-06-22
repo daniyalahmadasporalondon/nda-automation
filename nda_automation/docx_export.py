@@ -123,6 +123,35 @@ class PdfRedlineAnchorError(DocxExportError):
         )
 
 
+class SupplementalRedlineUnavailableError(DocxExportError):
+    """Raised (in strict/fail-closed mode) when an APPROVED redline targets a
+    supplemental part -- a header or footer -- that this body-only export cannot
+    write.
+
+    Header/footer paragraphs ARE extracted and reviewed
+    (``docx_text._extract_supplemental_paragraphs``), so a clause can match one and
+    earn an approved redline. But the source-redline export patches only
+    ``word/document.xml`` and copies ``header1.xml``/``footer1.xml`` through
+    unchanged, so the change has nowhere to land. Silently logging-and-dropping it
+    (the prior behaviour) shipped a Word file that reported full success while an
+    accepted change to an outbound legal document was discarded -- the header/footer
+    analogue of the PDF silent-drop P0. Strict mode raises instead so the export
+    never presents as successful with a dropped header/footer redline.
+
+    ``redlines`` are the unapplied supplemental edits (for diagnostics); ``count``
+    is their number (for the user-facing message).
+    """
+
+    def __init__(self, redlines: List[RedlineEdit]):
+        self.redlines = list(redlines)
+        self.count = len(self.redlines)
+        plural = "" if self.count == 1 else "s"
+        super().__init__(
+            f"{self.count} approved redline{plural} target a header or footer that "
+            "could not be written to the exported Word document."
+        )
+
+
 _AI_NOT_RUN_NOTICE = "AI review has not been run on this document."
 
 
@@ -541,12 +570,13 @@ def _redlines_by_source_paragraph(
     redlines: object,
     source_paragraphs: List[SourceParagraph],
     review_paragraphs: object = None,
-) -> Tuple[Dict[int, List[RedlineEdit]], List[RedlineEdit], List[RedlineEdit]]:
+) -> Tuple[Dict[int, List[RedlineEdit]], List[RedlineEdit], List[RedlineEdit], List[RedlineEdit]]:
     grouped: Dict[int, List[RedlineEdit]] = {}
     unresolved: List[RedlineEdit] = []
     pdf_uncertain: List[RedlineEdit] = []
+    supplemental_unapplied: List[RedlineEdit] = []
     if not isinstance(redlines, list):
-        return grouped, unresolved, pdf_uncertain
+        return grouped, unresolved, pdf_uncertain, supplemental_unapplied
 
     review_paragraphs_by_id = _review_paragraphs_by_id(review_paragraphs)
     # Resolve one source paragraph per *distinct review paragraph*, claiming each
@@ -593,18 +623,24 @@ def _redlines_by_source_paragraph(
                 ):
                     unresolved.append(redline)
                     continue
-                LOGGER.warning(
-                    "Skipping source redline with unresolved or ambiguous anchor: id=%s action=%s paragraph_id=%s",
-                    redline.get("id"),
-                    redline.get("action"),
-                    redline.get("paragraph_id"),
-                )
+                # A supplemental-part (header/footer) redline. These paragraphs ARE
+                # extracted and reviewed (docx_text._extract_supplemental_paragraphs),
+                # so a clause can match one and earn an APPROVED redline -- but this
+                # body-only export writes only word/document.xml and copies
+                # header1.xml/footer1.xml through verbatim, so the change has NO home
+                # here. Previously this was a silent LOGGER.warning + drop: the export
+                # reported full success while an accepted change to an outbound legal
+                # document was discarded (the header/footer analogue of the PDF
+                # silent-drop P0). Fail closed instead -- collect it so the caller
+                # RAISES rather than shipping a falsely-successful package. This
+                # mirrors the unanchored-redline and pdf_uncertain coverage gates.
+                supplemental_unapplied.append(redline)
                 continue
             claimed_indexes.add(source_paragraph.source_index)
             if review_key is not None:
                 resolved_by_review_key[review_key] = source_paragraph
         grouped.setdefault(source_paragraph.source_index, []).append(redline)
-    return grouped, unresolved, pdf_uncertain
+    return grouped, unresolved, pdf_uncertain, supplemental_unapplied
 
 
 def _resolve_shared_split_block_paragraph(
@@ -835,33 +871,52 @@ def _apply_redline_edits_to_source_document(
     *,
     strict: bool = True,
 ) -> Tuple[Dict[int, ET.Element], List[RedlineEdit]]:
-    """Apply redlines to the body and report PDF redlines that could not anchor.
+    """Apply redlines to the body and report redlines that could not be applied.
 
-    ``strict`` (fail-closed, the default) raises ``PdfRedlineAnchorError`` when ANY
-    PDF-source redline could not be confidently placed, so send/approve/export never
-    emit a Word file missing accepted changes. ``strict=False`` (preview / draft /
-    diagnostic) instead returns those unplaceable redlines so the caller can produce
-    the file but mark it an incomplete redline. Either way a PDF redline is never
-    silently dropped. Returns ``(source_paragraph_by_index, pdf_uncertain_redlines)``.
+    ``strict`` (fail-closed, the default) raises when ANY redline could not be
+    applied, so send/approve/export never emit a Word file missing accepted changes:
+    ``PdfRedlineAnchorError`` for an unanchorable PDF-source redline, and
+    ``SupplementalRedlineUnavailableError`` for an approved header/footer redline
+    that this body-only export cannot write (it patches only ``word/document.xml``
+    and copies ``header1.xml``/``footer1.xml`` through unchanged). ``strict=False``
+    (preview / draft / diagnostic) instead returns those unapplied redlines (PDF
+    and supplemental) so the caller can produce the file but mark it an incomplete
+    redline. Either way a redline is NEVER silently dropped. Returns
+    ``(source_paragraph_by_index, incomplete_redlines)``.
     """
     source_paragraphs = _indexed_source_paragraphs(document_root)
     source_paragraph_by_index = {
         paragraph.source_index: paragraph.paragraph
         for paragraph in source_paragraphs
     }
-    redlines_by_source_index, unresolved_redlines, pdf_uncertain_redlines = _redlines_by_source_paragraph(
+    (
+        redlines_by_source_index,
+        unresolved_redlines,
+        pdf_uncertain_redlines,
+        supplemental_unapplied_redlines,
+    ) = _redlines_by_source_paragraph(
         redlines,
         source_paragraphs,
         review_paragraphs,
     )
     if unresolved_redlines:
         raise DocxExportError(_unanchored_redline_error(unresolved_redlines))
+    if supplemental_unapplied_redlines and strict:
+        # Fail closed: an approved header/footer redline has no home in this
+        # body-only export. Rather than ship a Word file that reports success while
+        # silently omitting an accepted change to an outbound legal document, abort.
+        raise SupplementalRedlineUnavailableError(supplemental_unapplied_redlines)
     if pdf_uncertain_redlines and strict:
         # Fail closed: rather than ship a reconstructed Word doc that silently omits
         # these accepted changes, abort so the caller surfaces the recovery path.
         raise PdfRedlineAnchorError(pdf_uncertain_redlines)
+    # Lenient mode (preview/draft/diagnostic): the file is still produced, but
+    # unapplied header/footer redlines are reported alongside the PDF-uncertain ones
+    # so the caller labels it an INCOMPLETE redline rather than presenting success
+    # with a silently dropped change.
+    incomplete_redlines = list(pdf_uncertain_redlines) + list(supplemental_unapplied_redlines)
     if not redlines_by_source_index:
-        return source_paragraph_by_index, pdf_uncertain_redlines
+        return source_paragraph_by_index, incomplete_redlines
 
     revision_id = _next_revision_id(document_root)
     for source_paragraph in reversed(source_paragraphs):
@@ -932,7 +987,7 @@ def _apply_redline_edits_to_source_document(
                 source_paragraph.parent.insert(insert_position, inserted_paragraph)
                 insert_position += 1
                 revision_id += 1
-    return source_paragraph_by_index, pdf_uncertain_redlines
+    return source_paragraph_by_index, incomplete_redlines
 
 
 def _unanchored_redline_error(redlines: List[RedlineEdit]) -> str:

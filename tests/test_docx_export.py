@@ -13,6 +13,7 @@ from nda_automation.docx_export import (
     A4_PAGE_HEIGHT_TWIPS,
     A4_PAGE_WIDTH_TWIPS,
     DocxExportError,
+    SupplementalRedlineUnavailableError,
     accept_all_revisions,
     build_review_report_docx,
     build_source_redline_docx,
@@ -3581,11 +3582,8 @@ class DocxExportTests(unittest.TestCase):
         with self.assertRaisesRegex(DocxExportError, "could not anchor 1 approved redline"):
             build_source_redline_docx(source_docx, review_result)
 
-    def test_source_docx_export_skips_supplemental_part_redlines(self):
-        source_docx = make_source_docx([
-            "This Agreement shall be governed by the laws of California.",
-        ])
-        review_result = {
+    def _supplemental_part_review_result(self):
+        return {
             "overall_status": "does_not_meet_requirements",
             "requirements_passed": 0,
             "requirements_failed": 1,
@@ -3611,13 +3609,42 @@ class DocxExportTests(unittest.TestCase):
             ],
         }
 
-        with self.assertLogs("nda_automation.docx_export", level="WARNING") as logs:
-            redlined_docx = build_source_redline_docx(source_docx, review_result)
-        self.assertIn("unresolved or ambiguous anchor", "\n".join(logs.output))
+    def test_source_docx_export_fails_closed_on_supplemental_part_redline(self):
+        # A header/footer paragraph is extracted and reviewed, so an APPROVED redline
+        # can target it -- but this body-only export cannot write header1.xml/footer1.xml.
+        # The OLD behaviour silently logged-and-dropped it while reporting success (the
+        # header/footer analogue of the PDF silent-drop P0). Strict (the default for
+        # send/approve/export) must now FAIL CLOSED instead.
+        source_docx = make_source_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+        review_result = self._supplemental_part_review_result()
 
-        assert_docx_package_healthy(self, redlined_docx)
-        _settings_root, document_root, _document_xml = docx_xml_roots(redlined_docx)
+        with self.assertRaises(SupplementalRedlineUnavailableError) as ctx:
+            build_source_redline_docx(source_docx, review_result)
+        self.assertEqual(ctx.exception.count, 1)
+        self.assertIsInstance(ctx.exception, DocxExportError)
+
+    def test_source_docx_export_reports_supplemental_redline_incomplete_lenient(self):
+        # Lenient (preview/draft/diagnostic): the file is still produced, but the
+        # unapplied header redline is surfaced as incomplete -- never silently dropped
+        # under a clean/successful package.
+        source_docx = make_source_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+        review_result = self._supplemental_part_review_result()
+
+        package = source_redline_docx.build_source_redline_package(
+            source_docx, review_result, strict=False
+        )
+
+        self.assertEqual(len(package.anchor_uncertain_redlines), 1)
+        self.assertEqual(package.anchor_uncertain_redlines[0].get("id"), "r1")
+        assert_docx_package_healthy(self, package.data)
+        _settings_root, document_root, _document_xml = docx_xml_roots(package.data)
         paragraphs = document_root.findall(".//w:body/w:p", W_NS)
+        # Body untouched (the header redline did not land in the body), but the package
+        # is explicitly flagged incomplete rather than presented as clean success.
         self.assertEqual(
             [
                 (
