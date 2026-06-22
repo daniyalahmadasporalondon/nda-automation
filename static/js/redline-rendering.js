@@ -30,7 +30,47 @@ function renderReviewDocument({
     selectedClauseId,
     viewMode,
   }));
-  return renderReviewParagraphsWithTables(paragraphs, renderOne);
+  // PER-PARAGRAPH ERROR BOUNDARY. A single malformed/unanchorable redline (or a
+  // bad paragraph view-model) used to throw synchronously here and abort the
+  // ENTIRE document paint, blanking the workstation and killing every citation.
+  // Wrapping each paragraph render means one bad paragraph degrades to its plain
+  // editable text (id + citation hooks intact, no redline) while every other
+  // clause/paragraph still renders normally. This is graceful degradation, NOT
+  // hiding real redlines: any paragraph whose redline CAN render still renders it.
+  const safeRenderOne = (paragraph) => {
+    try {
+      return renderOne(paragraph);
+    } catch (error) {
+      try {
+        console.error("renderReviewDocument: paragraph render failed; degrading to plain text", paragraph?.id, error);
+      } catch (_loggingError) {
+        // never let a logging failure re-break the boundary
+      }
+      return renderDegradedDocumentParagraph(paragraph);
+    }
+  };
+  return renderReviewParagraphsWithTables(paragraphs, safeRenderOne);
+}
+
+// Fallback used by the per-paragraph error boundary: render the paragraph as
+// plain editable text inside the normal .studio-doc-paragraph frame, preserving
+// its data-paragraph-id (so citations still resolve) but dropping any redline.
+// A small marker tells the user this one paragraph's proposed edit could not be
+// displayed, rather than leaving a silent gap.
+function renderDegradedDocumentParagraph(paragraph) {
+  const paragraphId = String(paragraph?.id || "");
+  let body;
+  try {
+    body = renderParagraphRichText(paragraph);
+  } catch (_richTextError) {
+    body = escapeHtml(String(paragraph?.text || ""));
+  }
+  const marker = '<div class="paragraph-redline-note paragraph-redline-unavailable" contenteditable="false">Redline unavailable for this paragraph.</div>';
+  return renderStudioParagraphFrame({
+    body: `${body}${marker}`,
+    classes: ["doc-redline-degraded"],
+    paragraphId,
+  });
 }
 
 function redlineEditContract() {

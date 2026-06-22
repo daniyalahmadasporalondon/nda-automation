@@ -10,7 +10,11 @@ export function fullReplacementOperations(original, replacement) {
 export function renderDiffOperations(operations) {
   let previousOriginalToken = "";
   let previousAcceptedToken = "";
-  return operations
+  // Defensive: drop any stray null/typeless op (and tolerate a non-array input)
+  // so a single malformed diff operation that slipped the redline sanitizer can
+  // never throw here and abort the surrounding document/clause render.
+  return (Array.isArray(operations) ? operations : [])
+    .filter((op) => op && op.type)
     .map((operation) => {
       const className = operation.type === "delete"
         ? "inline-del"

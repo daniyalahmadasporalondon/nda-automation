@@ -4,6 +4,28 @@ function reviewWorkstationModel() {
   return window.ReviewWorkstationModel || null;
 }
 
+// Runs the shipped RedlineEditContract sanitizer over the RAW server redlines so
+// malformed edits (unknown action, missing paragraph_id, null/typeless inline
+// diff ops) are dropped before they can throw in the render chain. Fail-open: if
+// the contract bridge is missing the raw list is returned untouched -- this is a
+// resilience guard, never a reason to withhold an otherwise-normal review.
+function sanitizeReviewRedlines(rawEdits) {
+  const contract = window.RedlineEditContract;
+  if (!contract || typeof contract.normalizeRedlineEdits !== "function") {
+    return Array.isArray(rawEdits) ? rawEdits : [];
+  }
+  try {
+    return contract.normalizeRedlineEdits(rawEdits);
+  } catch (error) {
+    try {
+      console.error("sanitizeReviewRedlines: sanitizer threw; falling back to raw edits", error);
+    } catch (_loggingError) {
+      // ignore logging failure
+    }
+    return Array.isArray(rawEdits) ? rawEdits : [];
+  }
+}
+
 function renderResult(result, reviewedText) {
   pendingReviewSendMatterId = null;
   state.reviewDocumentRender = reviewDocumentRenderState(result);
@@ -14,7 +36,15 @@ function renderResult(result, reviewedText) {
   state.reviewParagraphs = result.paragraphs || [];
   state.reviewOriginalParagraphs = snapshotReviewParagraphs(state.reviewParagraphs);
   state.reviewExportOriginalParagraphs = snapshotReviewParagraphs(state.reviewParagraphs);
-  state.reviewRedlines = result.redline_edits || [];
+  // SANITIZE server redlines on the live path before anything renders them. The
+  // RedlineEditContract sanitizer (modules/redline-edit-contract.mjs) drops
+  // unknown actions, requires a paragraph_id, and filters malformed
+  // inline_diff_operations (null / typeless ops) -- exactly the shapes that used
+  // to throw synchronously deeper in the render chain and blank the whole
+  // workstation. It was written for this and was never called here. Fail-open:
+  // if the contract bridge is somehow unavailable, fall back to the raw edits so
+  // a normal review is never withheld.
+  state.reviewRedlines = sanitizeReviewRedlines(result.redline_edits) || [];
   state.reviewComments = [];
   state.exportClauseDecisions = defaultExportClauseDecisions(state.reviewClauses, state.reviewRedlines);
   state.exportRedlineDecisions = {};
@@ -3748,32 +3778,64 @@ function renderStudioDocumentHighlights() {
   // markup toolbar/overlays so they never bleed into the other modes.
   notifyPdfMarkupLeaveOriginal();
 
-  const documentHtml = renderReviewDocument({
-    clauses: state.reviewClauses,
-    comments: currentReviewComments(),
-    originalParagraphs: manualRedlineBaselineParagraphs(),
-    paragraphs: state.reviewParagraphs,
-    redlines: effectiveReviewRedlines(),
-    selectedClauseId: state.selectedReviewClauseId,
-    viewMode,
-  });
-  studioDocumentRender.innerHTML = `${renderPdfDocumentSurface(state.reviewDocumentRender)}${documentHtml}`;
-
-  studioDocumentRender.querySelectorAll("[data-clause-ids]").forEach((paragraph) => {
-    paragraph.addEventListener("click", (event) => {
-      if (event.target.closest("[data-editable-paragraph-id]")) return;
-      const clauseId = paragraph.dataset.clauseIds.split(" ").filter(Boolean)[0];
-      if (clauseId) selectReviewClause(clauseId, { jump: false });
+  // OUTER ERROR BOUNDARY. Even with the per-paragraph boundary and the redline
+  // sanitizer in place, the reconstruction + DOM bind can still throw for a
+  // reason we did not anticipate (a malformed clause, a bad render-surface, a
+  // binding failure). If it does, we must NOT leave the pane on the blank
+  // skeleton -- paint a recoverable error surface and still reveal the pane so
+  // the user sees a recoverable state instead of an empty workstation.
+  try {
+    const documentHtml = renderReviewDocument({
+      clauses: state.reviewClauses,
+      comments: currentReviewComments(),
+      originalParagraphs: manualRedlineBaselineParagraphs(),
+      paragraphs: state.reviewParagraphs,
+      redlines: effectiveReviewRedlines(),
+      selectedClauseId: state.selectedReviewClauseId,
+      viewMode,
     });
-  });
-  bindViewerParagraphEditing();
-  if (typeof bindFormatToolbar === "function") bindFormatToolbar();
-  bindParagraphCommentControls(studioDocumentRender);
-  applyCommentTextHighlights();
+    studioDocumentRender.innerHTML = `${renderPdfDocumentSurface(state.reviewDocumentRender)}${documentHtml}`;
 
+    studioDocumentRender.querySelectorAll("[data-clause-ids]").forEach((paragraph) => {
+      paragraph.addEventListener("click", (event) => {
+        if (event.target.closest("[data-editable-paragraph-id]")) return;
+        const clauseId = paragraph.dataset.clauseIds.split(" ").filter(Boolean)[0];
+        if (clauseId) selectReviewClause(clauseId, { jump: false });
+      });
+    });
+    bindViewerParagraphEditing();
+    if (typeof bindFormatToolbar === "function") bindFormatToolbar();
+    bindParagraphCommentControls(studioDocumentRender);
+    applyCommentTextHighlights();
+
+    showStudioDocumentRender();
+    notifyFillHighlights();
+    highlightSelectedClauseRefs();
+  } catch (error) {
+    try {
+      console.error("renderStudioDocumentHighlights: document render failed; painting recoverable error surface", error);
+    } catch (_loggingError) {
+      // never let a logging failure swallow the recovery
+    }
+    paintStudioDocumentRenderError(error);
+  }
+}
+
+// Recoverable error surface for the OUTER document-render boundary. Painted into
+// the document pane (and the pane is still revealed) so a render failure shows a
+// readable, recoverable message instead of leaving the workstation blank.
+function paintStudioDocumentRenderError(error) {
+  if (!studioDocumentRender) return;
+  const message = renderDocumentErrorMessage({ error })
+    || "The document could not be displayed. Reload or reopen this matter to try again.";
+  studioDocumentRender.innerHTML = `
+    <div class="studio-doc-render-error" role="alert">
+      <strong>The document could not be displayed.</strong>
+      <p>${escapeHtml(message)}</p>
+      <p>The review data is intact -- reload or reopen this matter to try again.</p>
+    </div>
+  `;
   showStudioDocumentRender();
-  notifyFillHighlights();
-  highlightSelectedClauseRefs();
 }
 
 // Bridge to the Fill controller (constructed in app.js): keep its name/address
