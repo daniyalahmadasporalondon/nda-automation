@@ -13,6 +13,7 @@ from .. import (
     telemetry,
 )
 from ..docx_export import DOCX_MIME, DocxExportError, accept_all_revisions
+from ..docx_image_normalize import normalize_docx_emf_wmf_images
 from ..docx_text import DocxExtractionError
 from ..matter_lifecycle import MatterApprovalBlockedError, MatterNotFoundError, RepositoryMatterLifecycle
 from ..matter_repository import DiskMatterRepository, MatterRepository
@@ -261,6 +262,11 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
             return
         if export_filename.lower().endswith(".docx"):
             export_filename = f"{export_filename[:-len('.docx')]}-accepted.docx"
+
+    # Convert any EMF/WMF vector media to browser-renderable PNG so the faithful
+    # preview shows logos instead of blank boxes. Pure + fail-open: a non-DOCX or
+    # an un-normalizable archive is returned unchanged, never raising.
+    export_bytes = normalize_docx_emf_wmf_images(export_bytes)
 
     handler._send_download(
         export_bytes,

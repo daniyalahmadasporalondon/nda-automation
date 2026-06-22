@@ -11,6 +11,7 @@ from ..checker import ParagraphAlignmentError
 from ..document_limits import DocumentSizeError, DOCUMENT_TOO_LARGE_MESSAGE, ensure_document_size
 from ..docx_text import DocxExtractionError, extract_docx_paragraphs
 from ..ai_assessor import ai_first_review_enabled
+from ..docx_image_normalize import normalize_docx_emf_wmf_images
 from ..ingestion_service import (
     create_matter_from_document,
     enqueue_on_demand_review,
@@ -551,8 +552,12 @@ def handle_matter_source_docx(handler, path: str, *, send_body: bool = True) -> 
     except pdf_export_service.PdfExportError as error:
         handler._send_json(error.payload, status=error.status, headers=error.headers, send_body=send_body)
         return
+    # MatterDocxExport is frozen; normalize into a local rather than mutate result.data.
+    # Converts any EMF/WMF vector media to browser-renderable PNG so the faithful
+    # preview shows logos instead of blank boxes. Pure + fail-open.
+    source_docx_bytes = normalize_docx_emf_wmf_images(result.data)
     handler._send_download(
-        result.data,
+        source_docx_bytes,
         result.filename,
         result.content_type,
         headers=result.headers,
