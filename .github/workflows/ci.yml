@@ -78,6 +78,7 @@ jobs:
         run: |
           find static -name '*.js' -print0 | xargs -0 -n1 node --check
           node --check tests/frontend/review-workstation.cjs
+          node --check tests/frontend/review-recovery.cjs
 
   frontend:
     name: Frontend behavior
@@ -115,6 +116,12 @@ jobs:
 
       - name: Run shimmer-skeleton loading-state test
         run: npm run test:frontend:shimmer
+
+      - name: Run review-recovery transition test
+        run: npm run test:frontend:review-recovery
+
+      - name: Run frontend utility-module unit tests
+        run: npm run test:frontend:utils
 
       - name: Run editor format toolbar tests
         run: npm run test:frontend:editor-format

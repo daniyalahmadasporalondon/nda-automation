@@ -3523,6 +3523,17 @@ h3 {
   background: var(--green);
 }
 
+/* (d) NEUTRAL "Reviewing…": a review is actively in flight. Deliberately muted (not
+   green/amber/red) so an in-progress run never reuses the stored-review verdict — the
+   verdict on screen is about to be replaced, so no traffic-light tone is asserted. */
+.studio-review-stale-indicator.is-reviewing {
+  color: var(--ink-muted);
+}
+
+.studio-review-stale-indicator.is-reviewing::before {
+  background: var(--ink-muted);
+}
+
 .studio-refresh-review {
   background: #fff;
   border: 1px solid var(--amber-border);

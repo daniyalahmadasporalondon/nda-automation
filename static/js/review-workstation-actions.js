@@ -107,8 +107,22 @@ function enterReviewInFlightUi() {
   updateExportButtonState();
 }
 
-// Clear the in-flight header state (spinner + aria-busy). Button enable/label are
-// re-derived from the now-current matter by renderReviewRefreshNotice().
+// The set of OPTIMISTIC in-flight file-meta strings enterReviewInFlightUi() (and the
+// long-running poll) can write. exitReviewInFlightUi treats studioFileMeta as
+// SERVER-DERIVED, not a sticky optimistic string: when a poll is torn down WITHOUT a
+// terminal render writing a fresh message (the nav-away / superseded branches), it
+// must not leave the header frozen on "Reviewing with AI…" while the Review button is
+// already re-enabled (an incoherent state). We only reset the meta when it still holds
+// one of these in-flight strings, so a real terminal message (failed/interrupted/
+// completed all call setFileMeta after this) or an unrelated message is never stomped.
+const REVIEW_IN_FLIGHT_META_MESSAGES = [
+  () => REVIEW_REFRESH_PROGRESS_MESSAGE,
+  () => REVIEW_REFRESH_STILL_WORKING_MESSAGE,
+];
+
+// Clear the in-flight header state (spinner + aria-busy + the optimistic "Reviewing…"
+// meta). Button enable/label are re-derived from the now-current matter by
+// renderReviewRefreshNotice().
 function exitReviewInFlightUi() {
   if (studioRefreshReviewButton?.isConnected) {
     studioRefreshReviewButton.classList.remove("is-refreshing");
@@ -119,6 +133,15 @@ function exitReviewInFlightUi() {
   // so the skeleton never lingers over arrived content. renderStudioResult also
   // clears it defensively, so a double-clear is a harmless no-op.
   if (typeof setReviewWorkspaceSkeleton === "function") setReviewWorkspaceSkeleton(false);
+  // Reset a STRANDED "Reviewing…" file-meta. Only when it still holds an in-flight
+  // optimistic string — so a terminal render's real message (set right after this) and
+  // any unrelated meta are preserved. This closes the nav-away/supersede incoherence
+  // where the poll stopped but the header stayed frozen on "Reviewing with AI…".
+  if (studioFileMeta) {
+    const current = String(studioFileMeta.textContent || "");
+    const isInFlightMeta = REVIEW_IN_FLIGHT_META_MESSAGES.some((get) => get() === current);
+    if (isInFlightMeta) setFileMeta("");
+  }
 }
 
 // Begin polling the background review for `matterId`. Single in-flight: starting a
@@ -214,6 +237,16 @@ async function runReviewPollTick(controller) {
   stopReviewPoll();
   exitReviewInFlightUi();
 
+  if (status === "interrupted") {
+    // RECOVERABLE-TERMINAL: the worker/process died mid-review (e.g. an app
+    // restart) and the backend durably stamped review_status="interrupted".
+    // Nothing auto-runs. We STOP polling (it will never resume on its own) and
+    // render the calm retryable state — Review re-enabled + an inline note — NOT
+    // the red failure path (handleReviewFailed/renderReviewFailedNotice), which
+    // is reserved for a genuine review_status="failed".
+    handleReviewInterrupted(matter);
+    return;
+  }
   if (status === "failed") {
     // ONLY a durably-recorded server error reaches here (review_status="failed" is
     // written solely by the backend failure path) — a pure timeout never does.
@@ -295,6 +328,8 @@ function handleReviewFailed(matter) {
 // finished (or durably failed) right at the ceiling:
 //   * completed / idle -> apply the real result (the review actually finished).
 //   * failed (durably recorded by the backend) -> the real failure notice + Retry.
+//   * interrupted (the worker died, e.g. an app restart) -> the calm recoverable-
+//     terminal state (Review re-enabled + inline note), NOT a red failure.
 //   * still in_progress / stalled (or the read errors) -> a CALM "still processing"
 //     waiting state with a Refresh affordance. We do NOT fabricate
 //     review_status:"failed" into local state and do NOT render the red failure
@@ -319,8 +354,14 @@ async function handleReviewPollTimeout(matterId) {
     handleReviewFailed(matter);
     return;
   }
-  // Still in_progress / stalled / unknown / read failed: a slow or interrupted (but
-  // NOT durably failed) review. Surface the calm waiting state — never a red failure.
+  if (matter && status === "interrupted") {
+    // The worker died mid-review (recoverable-terminal) — the calm Retry render, not
+    // a red failure and not the generic still-processing wording.
+    handleReviewInterrupted(matter);
+    return;
+  }
+  // Still in_progress / stalled / unknown / read failed: a slow but NOT durably failed
+  // review. Surface the calm waiting state — never a red failure.
   handleReviewStillProcessing(matterId, matter);
 }
 
@@ -342,6 +383,48 @@ function handleReviewStillProcessing(matterId, matter) {
   setFileMeta(message);
   renderReviewRefreshNotice();
   updateExportButtonState();
+}
+
+// The calm INTERRUPTED state: a review was in-flight when the worker/process died
+// (e.g. an app restart) and the backend durably stamped review_status="interrupted".
+// This is RECOVERABLE-TERMINAL — nothing auto-runs, the poll has already stopped,
+// and the operator simply clicks the (re-enabled) Review button to run it again.
+//
+// Deliberately NOT the failure path: no red "Review failed" header, no fabricated
+// review_status:"failed", and no error toast (notifications.js keys its red toast on
+// "failed" only). We adopt the server's real status into local state so
+// renderReviewRefreshNotice re-enables the Review button (MatterUtils.reviewInProgress
+// is false for "interrupted"), then surface the calm inline note.
+const REVIEW_INTERRUPTED_MESSAGE =
+  "This review was interrupted — click Review to run it again.";
+
+function handleReviewInterrupted(matter) {
+  if (state.selectedMatter?.id === matter.id) {
+    // Preserve the server's real status ("interrupted") — do NOT write "failed".
+    state.selectedMatter = { ...state.selectedMatter, ...matter };
+  }
+  const message = String(matter?.review_error || "").trim() || REVIEW_INTERRUPTED_MESSAGE;
+  renderReviewInterruptedNotice(message);
+  setFileMeta(message);
+  // Re-enables/relabels the Review button from the now-current ("interrupted") matter
+  // and clears any in-flight spinner. The Review button IS the retry affordance here.
+  renderReviewRefreshNotice();
+  updateExportButtonState();
+}
+
+// Render the CALM interrupted state into the studio result header. Mirrors the
+// still-processing render (neutral pending mark, never the red failure mark), but the
+// affordance is the re-enabled Review button rather than a toolbar Retry/Refresh
+// button — so we drop any stale Retry button to keep the header coherent.
+function renderReviewInterruptedNotice(message) {
+  if (studioOverallTitle) studioOverallTitle.textContent = "Review interrupted";
+  if (studioResultMark) {
+    studioResultMark.textContent = "…";
+    studioResultMark.className = "check is-pending";
+  }
+  if (studioResultMeta) studioResultMeta.textContent = message;
+  // No toolbar Retry/Refresh button: the re-enabled "Review" button is the action.
+  clearReviewRetryButton();
 }
 
 // Render the failed-review state. The error TEXT goes into the studio result
@@ -1672,11 +1755,30 @@ function renderReviewRefreshNotice(refresh = state.selectedMatter?.review_refres
   const message = serverStale
     ? staleReviewMessage(refresh || state.selectedMatter?.review_refresh)
     : "This review may be out of date — the document changed since it last ran. Refresh with AI to re-check.";
+  // ACTIVELY reviewing == the server reports an in-flight review for this matter
+  // (review_status === "in_progress"). Computed up here because the freshness
+  // indicator must NOT reuse the stored-review verdict while a fresh review runs —
+  // showing a green "Reviewed" mid-review is incoherent. The same flag also drives the
+  // Review-button enable/gray below. Guarded so an isolated load order / test harness
+  // without MatterUtils falls back to "not in flight".
+  const reviewActivelyRunning =
+    typeof MatterUtils !== "undefined" && typeof MatterUtils.reviewInProgress === "function"
+      ? Boolean(MatterUtils.reviewInProgress(state.selectedMatter))
+      : false;
   if (studioReviewStaleIndicator) {
     // Traffic-light freshness indicator. Exactly one tone class is applied per
-    // render (red / green / amber); clear all three first so re-renders never stack.
-    studioReviewStaleIndicator.classList.remove("is-not-reviewed", "is-reviewed", "is-stale");
-    if (!reviewed) {
+    // render (red / green / amber / neutral-reviewing); clear all first so re-renders
+    // never stack.
+    studioReviewStaleIndicator.classList.remove("is-not-reviewed", "is-reviewed", "is-stale", "is-reviewing");
+    if (reviewActivelyRunning) {
+      // (d) A review is actively in flight -> NEUTRAL "Reviewing…". Never reuse the
+      // stored-review verdict (green "Reviewed") mid-review — the verdict on screen is
+      // about to be replaced, so claiming "Reviewed" right now is misleading.
+      studioReviewStaleIndicator.hidden = false;
+      studioReviewStaleIndicator.textContent = "Reviewing…";
+      studioReviewStaleIndicator.title = "An AI review is running on this NDA now.";
+      studioReviewStaleIndicator.classList.add("is-reviewing");
+    } else if (!reviewed) {
       // (a) NO stored review -> RED "Not Reviewed".
       studioReviewStaleIndicator.hidden = false;
       studioReviewStaleIndicator.textContent = "Not Reviewed";
@@ -1714,24 +1816,21 @@ function renderReviewRefreshNotice(refresh = state.selectedMatter?.review_refres
   // can ALWAYS (re-)run the AI review on demand — including on a matter that is
   // already reviewed-and-current (the document may have changed off-screen, or the
   // operator simply wants a fresh pass). The ONLY state that grays it is an active
-  // in-flight review (review_status in_progress/stalled), to prevent a double-submit
-  // of the SAME review; that run shows "Reviewing…" instead.
+  // in-flight review (review_status === "in_progress"), to prevent a double-submit
+  // of the SAME review; that run shows "Reviewing…" instead. A `stalled`
+  // (live-but-slow) or `interrupted` (worker died mid-review) status is NOT a hard
+  // in-flight lock — both keep the button ENABLED so a wedged-looking review always
+  // has a Retry exit (MatterUtils.reviewInProgress is in_progress-only).
   // PRESENCE is gated only on "is a matter open" — NOT on whether review clauses
   // exist. A never-reviewed matter has zero clauses, and gating on
   // reviewClauses.length > 0 hid this button exactly in the state where the user
   // most needs it (the only way to run the first AI review). The button is now
   // present whenever a matter is loaded and ENABLE/GRAY is driven solely by the
   // actively-reviewing guard.
+  // `reviewActivelyRunning` is computed once at the top of this function (it also
+  // drives the neutral "Reviewing…" freshness indicator) — reuse it here. It is
+  // in_progress-only, so a `stalled`/`interrupted` matter keeps the button ENABLED.
   const matterLoaded = Boolean(state.selectedMatter?.id);
-  // ACTIVELY reviewing == the server reports an in-flight review for this matter
-  // (review_status in_progress/stalled). MatterUtils.reviewInProgress is the shared
-  // discriminator (board badge + inspector resume use it too); guard its presence
-  // so an isolated load order / test harness without it falls back to "not in
-  // flight" (the button stays enabled, never wrongly disabled).
-  const reviewActivelyRunning =
-    typeof MatterUtils !== "undefined" && typeof MatterUtils.reviewInProgress === "function"
-      ? Boolean(MatterUtils.reviewInProgress(state.selectedMatter))
-      : false;
   studioRefreshReviewButton.hidden = !matterLoaded;
   // Enabled whenever a matter is loaded and no review is actively in flight. The
   // in-session run additionally sets disabled + the .is-refreshing spinner directly

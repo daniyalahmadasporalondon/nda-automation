@@ -20,6 +20,7 @@
     "test:frontend:notifications": "node tests/frontend/notifications-review-failure.cjs",
     "test:frontend:guide-leak": "node tests/frontend/guide-no-dev-detail.cjs",
     "test:frontend:shimmer": "node tests/frontend/shimmer-skeletons.cjs",
+    "test:frontend:review-recovery": "node tests/frontend/review-recovery.cjs",
     "test:frontend:format-run-props": "node tests/frontend/format-toolbar-run-props.cjs",
     "test:frontend:generator-format-extras": "node tests/frontend/generator-format-extras.cjs",
     "test:frontend:editor-format": "node tests/frontend/format-toolbar-run-props.cjs && node tests/frontend/generator-format-extras.cjs",
