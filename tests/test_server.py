@@ -97,6 +97,32 @@ class ServerTests(unittest.TestCase):
         if hasattr(server_module, "_clear_gmail_sync_backoff_for_tests"):
             server_module._clear_gmail_sync_backoff_for_tests()
         telemetry.reset()
+        # Neutralize the process-wide inbound AI-review worker pool for the duration
+        # of every test. ingestion_service._INBOUND_REVIEW_POOL is a persistent
+        # singleton of daemon workers. On the production-default kill-switch
+        # (inbound_ai_review_enabled() is default-True) any test that calls the real
+        # gmail_integration.import_inbound_matters() enqueues a heavy review job onto
+        # it; that background worker then writes the reviewed matter into the test's
+        # per-test tempfile.TemporaryDirectory()/matters AFTER the test body has
+        # exited, racing the directory teardown -> intermittent, order-dependent
+        # "OSError: [Errno 66] Directory not empty" (the singleton is warmed/kept busy
+        # by an earlier import test, e.g.
+        # test_gmail_import_skips_duplicate_and_imports_new_attachment). Swapping in a
+        # fresh, isolated pool with a no-op handler -- the same pattern the
+        # controlled-pool tests already use -- makes the enqueue a no-op: no
+        # background disk write, no race. No test in this class asserts on the async
+        # review side-effect, so this never weakens a signal. tearDown restores the
+        # real singleton.
+        self._orig_inbound_review_pool = ingestion_service._INBOUND_REVIEW_POOL
+        isolated_pool = ingestion_service._InboundReviewWorkerPool()
+        isolated_pool.configure(lambda _matter_id, _owner_user_id: None)
+        ingestion_service._INBOUND_REVIEW_POOL = isolated_pool
+
+    def tearDown(self):
+        # Restore the real persistent worker pool the setUp swap displaced.
+        orig_pool = getattr(self, "_orig_inbound_review_pool", None)
+        if orig_pool is not None:
+            ingestion_service._INBOUND_REVIEW_POOL = orig_pool
 
     @classmethod
     def tearDownClass(cls):
