@@ -62,6 +62,7 @@ from .review_state import (
     CLAUSE_DECISION_FAIL,
     CLAUSE_DECISION_PASS,
     CLAUSE_DECISION_REVIEW,
+    _normalize_clause_decision,
     aggregate_review_state,
     clause_review_state,
 )
@@ -273,6 +274,7 @@ def reassess_single_clause(
             contract_structure=contract_structure,
         )
     _refinalize_ai_first_verifier_changes(clause_results_list, ai_verifier_review, document_paragraphs)
+    _reconcile_unchanged_clause_review_states(clause_results_list, ai_verifier_review)
     # Build redline for just this clause.
     redline_edits = _build_redline_edits(clause_results_list, document_paragraphs)
     attach_redline_rationales(
@@ -444,6 +446,7 @@ def build_ai_first_review_result(
             contract_structure=contract_structure,
         )
     _refinalize_ai_first_verifier_changes(clause_results, ai_verifier_review, document_paragraphs)
+    _reconcile_unchanged_clause_review_states(clause_results, ai_verifier_review)
     counts = review_result_clause_counts(clause_results)
     review_state = aggregate_review_state(
         clause_results,
@@ -801,6 +804,95 @@ def _clause_result_from_assessment(
     if isinstance(review_context.get("contract_structure"), dict):
         result["structure_context"] = _structure_context_for_clause(str(result["id"]), review_context)
     return result
+
+
+def _reconcile_unchanged_clause_review_states(
+    clause_results: list[ClauseResult],
+    verifier_review: Mapping[str, Any],
+) -> None:
+    """Reconcile the floor-escalated clauses the verifier did NOT change.
+
+    ROOT CAUSE: ``clause_review_state`` derives its state through
+    ``_normalize_clause_decision``, which applies the low-confidence-pass safety
+    floor (a ``pass`` whose semantic confidence is below the review threshold is
+    escalated to ``review``). When that floor fires, the clause itself still carried
+    the un-floored ``pass`` -- so its stored ``decision``/``needs_review``/``passes``
+    disagreed with the derived ``review_state``, and the final evidence-provenance
+    check raised ``EvidenceProvenanceError`` ("review_state decision does not match
+    clause decision" / "review_state review does not match needs_review").
+
+    This runs AFTER the verifier (and ``_refinalize_ai_first_verifier_changes``), so
+    the verifier still adjudicates the clause's GENUINE ``pass`` first (pre-empting the
+    floor here would hide a suspect pass from the verifier and drop its
+    ``ai_verifier_*`` reason code). Clauses the verifier already rewrote carry a
+    coherent verifier-owned state and are skipped; only the verifier-UNCHANGED clauses
+    are reconciled to the floor's escalation, then their derived structures rebuilt.
+
+    The floor only ever ESCALATES a pass to review (never softens), so a
+    genuinely-inconsistent state is never silently "fixed" -- only the floor's own
+    escalation is propagated onto the clause.
+    """
+    changed_ids = {
+        str(record.get("clause_id") or "")
+        for record in verifier_review.get("records", [])
+        if isinstance(record, Mapping) and record.get("changed")
+    }
+    for clause in clause_results:
+        if not isinstance(clause, dict):
+            continue
+        if str(clause.get("id") or "") in changed_ids:
+            continue
+        stored_decision = str(clause.get("decision") or "")
+        decision = _reconcile_clause_decision(clause)
+        # No-op fast path: the floor did not escalate this clause, so its stored
+        # decision and every derived structure already agree -- leave it untouched.
+        if decision == stored_decision:
+            continue
+        # The floor moved the decision; rebuild the structures that key off it so the
+        # clause, its review_state, and its audit trace all agree before validation.
+        clause["review_state"] = clause_review_state(clause, decision)
+        clause["audit_trace"] = _audit_trace(clause)
+
+
+def _reconcile_clause_decision(
+    clause: dict[str, Any],
+    playbook_clause: Mapping[str, Any] | None = None,
+) -> str:
+    """Sync a clause's stored decision fields with the normalizer's floored verdict.
+
+    Re-derive the authoritative decision with the SAME normalizer ``review_state``
+    uses, then reconcile the clause's decision-dependent fields
+    (``decision``/``passes``/``needs_review``/``status``/``blocks_send``) to it.
+    Returns the reconciled decision for the caller to pass to ``clause_review_state``.
+    When the floor does not move the decision this is a no-op that returns the stored
+    decision unchanged.
+    """
+    stored_decision = str(clause.get("decision") or "")
+    normalized_decision = _normalize_clause_decision(clause, stored_decision)
+    if normalized_decision == stored_decision:
+        return stored_decision
+    clause["decision"] = normalized_decision
+    clause["passes"] = normalized_decision == CLAUSE_DECISION_PASS
+    clause["needs_review"] = normalized_decision == CLAUSE_DECISION_REVIEW
+    effective_playbook = playbook_clause if playbook_clause is not None else clause
+    clause["status"] = _normalized_status(
+        None,
+        normalized_decision,
+        str(clause.get("issue_type") or ""),
+        effective_playbook,
+    )
+    # The floor escalates to review, which always blocks an automatic send.
+    if normalized_decision == CLAUSE_DECISION_REVIEW:
+        clause["blocks_send"] = True
+    # The clause's reason code is LEFT UNTOUCHED on purpose: clause_review_state derives
+    # review_state's reason codes from the clause's existing reason_code (via
+    # review_state._existing_reason_codes), and the structured-evidence/audit-trace
+    # records also key off the clause's reason_code -- so leaving it in place keeps the
+    # clause, its review_state, its evidence records, and its audit trace all in
+    # agreement, which is exactly what the evidence-provenance contract checks. Only the
+    # decision/needs_review/passes/status drifted from the floor; those are reconciled
+    # above.
+    return normalized_decision
 
 
 def _refinalize_ai_first_verifier_changes(

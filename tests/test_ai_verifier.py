@@ -1316,6 +1316,63 @@ class AIFirstPathIntegrationTests(unittest.TestCase):
         self.assertEqual(nc["decision"], "fail")
         self.assertEqual(nc["decision_source"], "ai")
 
+    def test_low_confidence_pass_finalizes_clean_with_reconciled_review_state(self):
+        # REGRESSION (evidence-provenance reconcile): the low-confidence-pass safety
+        # floor in _normalize_clause_decision escalates a `pass` under the
+        # semantic-confidence threshold to `review`. clause_review_state applies that
+        # floor internally, so the derived review_state read "review" while the clause
+        # still carried decision=="pass" -> finalization raised EvidenceProvenanceError
+        # ("review_state decision does not match clause decision"). With the verifier ON
+        # (prod default) this clause is also re-checked, so the bug surfaced on the
+        # verifier path. Here we drive the SHIPPING build path with a low-confidence
+        # pass and a verifier that AFFIRMS it (does not change the decision), so the
+        # only escalation in play is the floor. The build must NOT raise, and the
+        # clause's decision must be reconciled to a consistent review state.
+        assessments = self._all_assessments("pass")
+        for assessment in assessments:
+            if assessment["clause_id"] == "confidential_information":
+                assessment["confidence"] = 0.4  # below the 0.75 semantic-review floor
+        # Build raises EvidenceProvenanceError on any clause<->review_state mismatch.
+        result = build_ai_first_review_result(
+            self.SOURCE_TEXT,
+            assessments,
+            ai_verifier=_scripted(VERIFIER_VERDICT_AFFIRM, confidence=0.95),
+        )
+        self.assertEqual(result["evidence_trust"]["status"], "verified")
+        ci = next(c for c in result["clauses"] if c["id"] == "confidential_information")
+        # The floor escalated the suspect pass to review; the clause's decision fields
+        # and its review_state now AGREE (the heart of the provenance contract).
+        self.assertEqual(ci["decision"], "review")
+        self.assertTrue(ci["needs_review"])
+        self.assertFalse(ci["passes"])
+        self.assertEqual(ci["review_state"]["decision"], "review")
+        self.assertEqual(ci["review_state"]["state"], "review")
+
+    def test_verifier_flip_of_low_confidence_fail_finalizes_clean(self):
+        # The verifier-flip path itself, with the reconcile guard on the refinalize
+        # path: a low-confidence FAIL that the verifier REFUTES (fail -> review). The
+        # verifier rewrites the decision and _refinalize_ai_first_verifier_changes
+        # re-derives review_state through the reconcile guard; the result must finalize
+        # cleanly with review_state matching the rewritten decision (no
+        # EvidenceProvenanceError on the verifier-flip path).
+        assessments = self._all_assessments("fail")
+        for assessment in assessments:
+            if assessment["clause_id"] == "non_circumvention":
+                assessment["confidence"] = 0.4  # below the floor, but a fail already blocks
+        result = build_ai_first_review_result(
+            self.SOURCE_TEXT,
+            assessments,
+            ai_verifier=_scripted(VERIFIER_VERDICT_REFUTE, confidence=0.95),
+        )
+        self.assertEqual(result["evidence_trust"]["status"], "verified")
+        nc = next(c for c in result["clauses"] if c["id"] == "non_circumvention")
+        self.assertEqual(nc["decision"], "review")
+        self.assertEqual(nc["decision_source"], "ai_verifier")
+        self.assertEqual(nc["ai_verifier"]["original_decision"], "fail")
+        self.assertTrue(nc["needs_review"])
+        self.assertEqual(nc["review_state"]["decision"], "review")
+        self.assertEqual(nc["review_state"]["state"], "review")
+
 
 class _RecordingBatchVerifier:
     """A batched verifier driven by a ``{clause_id: verdict}`` map.
