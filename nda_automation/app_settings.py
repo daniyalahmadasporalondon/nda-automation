@@ -897,11 +897,41 @@ def _clean_personalisation_setting(key: str, value: Any) -> str:
 def _clean_personalisation_text(value: object, *, max_length: int, multiline: bool) -> str:
     text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
     if multiline:
-        lines = [" ".join(line.split()) for line in text.split("\n")]
-        cleaned = "\n".join(line for line in lines if line)
+        # Preserve the LINE STRUCTURE of a multi-block signature: a single blank
+        # separator line between blocks (e.g. "Best,\n\nDaniyal\nAspora") must
+        # survive the round trip, because this block is used verbatim on every
+        # outbound NDA email. We still tidy each line (collapse intra-line runs
+        # of whitespace, strip trailing spaces), trim leading/trailing blank
+        # lines, and collapse a run of 3+ consecutive blank lines down to a
+        # single one -- but we never drop a lone blank separator line.
+        cleaned = _clean_multiline_block(text)
     else:
         cleaned = " ".join(text.split())
     return cleaned[:max_length]
+
+
+def _clean_multiline_block(text: str) -> str:
+    """Tidy a multi-line block while preserving single blank separator lines.
+
+    - Collapse intra-line whitespace runs to a single space and strip each line.
+    - Trim leading and trailing blank lines.
+    - Collapse any run of 2+ consecutive blank lines down to a single blank line
+      (so a separator survives, but spacing can't balloon).
+    """
+    lines = [" ".join(line.split()) for line in text.split("\n")]
+    result: list[str] = []
+    pending_blank = False
+    for line in lines:
+        if line:
+            if pending_blank and result:
+                # Only emit a separator if we've already seen a non-blank line.
+                result.append("")
+            pending_blank = False
+            result.append(line)
+        else:
+            pending_blank = True
+    # ``pending_blank`` left over => trailing blank line(s); intentionally dropped.
+    return "\n".join(result)
 
 
 def _clean_personalisation_owner_id(value: object) -> str:

@@ -10351,6 +10351,13 @@ label.is-hidden {
   outline: none;
 }
 
+.personalisation-hint {
+  color: var(--ink-muted);
+  font: 600 10px/1.4 var(--font-body);
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+
 .personalisation-field input:disabled,
 .personalisation-field textarea:disabled,
 .personalisation-actions button:disabled,
