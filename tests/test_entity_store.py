@@ -487,19 +487,20 @@ class AdminEntityRouteTests(unittest.TestCase):
     def setUp(self):
         self.store_path = _tmp_store()
         # Point the authoring save at an isolated store for write tests.
-        self._patches = [
-            patch.object(entity_store, "ENTITY_STORE_PATH", self.store_path),
-            patch(
-                "nda_automation.entity_authoring.entity_store.ENTITY_STORE_PATH",
-                self.store_path,
-            ),
-        ]
-        for p in self._patches:
-            p.start()
+        #
+        # ``entity_authoring.entity_store`` is the SAME module object as
+        # ``entity_store``, so both former patch targets aliased the one
+        # attribute ``entity_store.ENTITY_STORE_PATH``. Patching it twice left
+        # the second patch capturing the ALREADY-patched tmp value as its
+        # "original", so its ``stop()`` re-installed the tmp path after the
+        # first patch restored the real one -- leaking the tmp (polluted) store
+        # path into every later test in the process. A single patch on the
+        # canonical attribute is sufficient and cannot leak.
+        self._patch = patch.object(entity_store, "ENTITY_STORE_PATH", self.store_path)
+        self._patch.start()
 
     def tearDown(self):
-        for p in self._patches:
-            p.stop()
+        self._patch.stop()
 
     def test_admin_get_returns_workspace(self):
         handler = _FakeHandler(admin=True)
