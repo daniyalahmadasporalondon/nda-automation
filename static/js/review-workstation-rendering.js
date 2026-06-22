@@ -3881,34 +3881,83 @@ function notifyPdfMarkupLeaveOriginal() {
   }
 }
 
-// True for a DOCX-source matter (the only kind whose real bytes we can render
-// faithfully today). PDF-source matters intentionally stay on the existing
-// renderer until a later Approach-C effort feeds them a canonical DOCX. Mirrors
-// how sourcePdfRenderCandidate() sniffs the source filename extension.
-function selectedMatterIsDocxSource() {
-  const matter = state.selectedMatter;
-  if (!matter?.id) return false;
-  const filename = String(matter.source_filename || matter.attachment_filename || "").trim();
+// True for a DOCX-source matter (real .docx bytes we can render faithfully today).
+// Mirrors how sourcePdfRenderCandidate() sniffs the source filename extension.
+function matterIsDocxSource(matter) {
+  const filename = String(matter?.source_filename || matter?.attachment_filename || "").trim();
   return /\.docx$/i.test(filename);
 }
 
+// True for a PDF-source matter (no native DOCX bytes; needs a canonical DOCX built
+// by the backend before it can be rendered faithfully).
+function matterIsPdfSource(matter) {
+  const filename = String(matter?.source_filename || matter?.attachment_filename || "").trim();
+  return /\.pdf$/i.test(filename);
+}
+
+// PURE selection/precedence function: given a matter, the normalized render-state,
+// and the faithful-render capability flags, decide HOW the Original surface should
+// be rendered. Returns exactly one of:
+//   { render: "faithful_docx", url }  -> render the real DOCX bytes from `url`
+//   { render: "page_image" }          -> keep the already-painted base surface (no-op)
+//   { render: "reconstruction" }      -> the never-blank floor (text reconstruction)
+//
+// Precedence (first match wins):
+//   1. faithful_docx -- only when the flag is ON *and* the vendored library is
+//      available *and* a same-origin DOCX URL exists for this source:
+//        - DOCX source  -> /api/matters/<id>/source        (native bytes; today)
+//        - PDF source   -> /api/matters/<id>/working-docx   (canonical DOCX) but
+//          ONLY when renderState.workingDocxReady === true. That flag + endpoint
+//          are owned by a separate backend lane and default absent/false, so this
+//          branch is INERT until the backend ships them; PDF matters fall through.
+//   2. page_image -- the base surface is already painted, so faithful is a no-op.
+//   3. reconstruction -- the never-blank floor.
+//
+// Pure over its arguments (no globals) so it is unit-testable; the caller passes
+// the live flag/library capability + render-state in.
+function selectFaithfulRenderPlan(matter, renderState, capability) {
+  const flagEnabled = Boolean(capability && capability.flagEnabled);
+  const libraryAvailable = Boolean(capability && capability.libraryAvailable);
+  const matterId = matter && matter.id;
+
+  if (flagEnabled && libraryAvailable && matterId) {
+    if (matterIsDocxSource(matter)) {
+      return { render: "faithful_docx", url: `/api/matters/${encodeURIComponent(matterId)}/source` };
+    }
+    // PDF-source faithful render is gated on the backend having produced a
+    // canonical "working" DOCX. Until renderState.workingDocxReady is true this
+    // branch is dormant and PDF matters fall through to page_image.
+    if (matterIsPdfSource(matter) && renderState && renderState.workingDocxReady === true) {
+      return { render: "faithful_docx", url: `/api/matters/${encodeURIComponent(matterId)}/working-docx` };
+    }
+  }
+
+  // The base Original surface (page image / source preview) is already painted, so
+  // there is nothing to upgrade -- this is a no-op, not a blank.
+  return { render: "page_image" };
+}
+
 // Feature-flagged faithful-DOCX upgrade of the freshly-painted Original surface.
-// Self-gates on: the flag being ON, the vendored library being present, and a
-// DOCX-source matter. Fetches the real .docx bytes from the existing owner-scoped
-// /source endpoint (no new endpoint) and renders them with docx-preview. On ANY
-// failure it leaves the already-painted existing surface untouched -- the pane is
-// never blanked. A request sequence + matter-id recheck drops a stale async
+// Delegates the source/precedence decision to the pure selectFaithfulRenderPlan();
+// only a { render:"faithful_docx", url } plan does any work. Fetches the real DOCX
+// bytes from the plan's owner-scoped URL and renders them with docx-preview. On
+// ANY failure it leaves the already-painted existing surface untouched -- the pane
+// is never blanked. A request sequence + matter-id recheck drops a stale async
 // upgrade if the user has since changed view mode or matter.
 function maybeUpgradeOriginalSurfaceToFaithfulDocx() {
   const faithful = (typeof window !== "undefined" && window.FaithfulDocxRender) || null;
   if (!faithful || typeof faithful.render !== "function") return;
-  if (typeof faithful.enabled === "function" && !faithful.enabled()) return;
-  if (!selectedMatterIsDocxSource()) return;
+
+  const plan = selectFaithfulRenderPlan(state.selectedMatter, state.reviewDocumentRender, {
+    flagEnabled: typeof faithful.enabled === "function" ? faithful.enabled() : false,
+    libraryAvailable: typeof faithful.libraryAvailable === "function" ? faithful.libraryAvailable() : true,
+  });
+  if (plan.render !== "faithful_docx") return; // page_image/reconstruction: keep the painted surface
 
   const matterId = state.selectedMatter?.id;
   if (!matterId) return;
   const sequence = reviewDocumentRenderRequestSequence;
-  const url = `/api/matters/${encodeURIComponent(matterId)}/source`;
+  const url = plan.url;
 
   // Render into a detached host first; only swap it into the live surface once we
   // know it produced real content, so a failed/empty faithful render can never
@@ -4049,6 +4098,14 @@ function normalizeReviewDocumentRender(candidate) {
   };
   if (pages.length) renderState.pages = pages;
   if (candidate.source_fallback || candidate.sourceFallback) renderState.sourceFallback = true;
+  // Backend signal (owned by the source->canonical-DOCX lane) that a PDF-source
+  // matter now has a canonical "working" DOCX available at /api/matters/<id>/
+  // working-docx. Defaults FALSE/absent, which keeps the PDF faithful-render branch
+  // in selectFaithfulRenderPlan dormant until the backend ships it. Read defensively
+  // from either snake_case (server JSON) or camelCase.
+  if (candidate.working_docx_ready === true || candidate.workingDocxReady === true) {
+    renderState.workingDocxReady = true;
+  }
   const overlay = normalizeDocumentOverlay(candidate.document_overlay || candidate.documentOverlay);
   if (overlay) renderState.documentOverlay = overlay;
   const errorCode = stringValue(candidate.error_code || candidate.errorCode);
