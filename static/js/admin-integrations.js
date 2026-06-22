@@ -76,6 +76,12 @@ const AdminIntegrationsView = (() => {
   const MIN_IMPORT_LIMIT = 1;
   const MAX_IMPORT_LIMIT = 40;
   const DEFAULT_IMPORT_LIMIT = 20;
+  // Mirror the backend band (app_settings.MIN/MAX/DEFAULT_GMAIL_INBOUND_WINDOW_DAYS).
+  // Keeping these in lockstep means the UI never offers (or posts) a value the
+  // server would reject with a 400.
+  const MIN_SYNC_WINDOW = 1;
+  const MAX_SYNC_WINDOW = 365;
+  const DEFAULT_SYNC_WINDOW = 90;
   const FREQUENCY_LABELS = {
     always_on: "Always on - every 1 minute",
     "10_minutes": "Every 10 minutes",
@@ -100,6 +106,9 @@ const AdminIntegrationsView = (() => {
     gmailImportLimitForm,
     gmailImportLimitInput,
     gmailImportLimitSaveButton,
+    gmailSyncWindowForm,
+    gmailSyncWindowInput,
+    gmailSyncWindowSaveButton,
     gmailIntakeForm,
     gmailIntakeInput,
     gmailIntakeSaveButton,
@@ -125,6 +134,16 @@ const AdminIntegrationsView = (() => {
       gmailImportLimitSaveButton.addEventListener("click", (event) => {
         event.preventDefault();
         updateGmailImportLimit();
+      });
+    }
+    gmailSyncWindowForm?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      updateGmailSyncWindow();
+    });
+    if (gmailSyncWindowSaveButton && !gmailSyncWindowForm) {
+      gmailSyncWindowSaveButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        updateGmailSyncWindow();
       });
     }
     gmailIntakeForm?.addEventListener("submit", (event) => {
@@ -257,6 +276,34 @@ const AdminIntegrationsView = (() => {
       }
     }
 
+    async function updateGmailSyncWindow() {
+      const windowDays = parseSyncWindow(gmailSyncWindowInput?.value);
+      if (windowDays === null) {
+        setOverall("Add window", "blocked");
+        setFact("sync-window-copy", `Enter a whole number between ${MIN_SYNC_WINDOW} and ${MAX_SYNC_WINDOW}.`);
+        return;
+      }
+      setSyncWindowDisabled(true);
+      setOverall("Saving", "pending");
+      try {
+        const payload = await postGmailSettings(
+          { inbound_window_days: windowDays },
+          "Gmail sync window could not save",
+        );
+        state.gmailStatus = payload.gmail || state.gmailStatus || {};
+        await load();
+      } catch (error) {
+        setOverall(error.message || "Save failed", "blocked");
+        // Restore the input to the last-known-good value first, then surface the
+        // error inline so the message is not immediately overwritten by the
+        // re-render's "Syncs emails from the last N days." copy.
+        renderSyncWindow(state.gmailStatus || {});
+        setFact("sync-window-copy", error.message || "Gmail sync window could not save.");
+      } finally {
+        setSyncWindowDisabled(false);
+      }
+    }
+
     async function updateGmailFrequency(syncFrequency) {
       const currentFrequency = state.gmailStatus?.settings?.sync_frequency || DEFAULT_FREQUENCY;
       if (syncFrequency === currentFrequency) return;
@@ -384,6 +431,7 @@ const AdminIntegrationsView = (() => {
       setOverall(paused ? "Paused" : ready ? "Connected" : "Needs setup", paused ? "pending" : ready ? "ready" : "blocked");
       renderToggleControls(status);
       renderImportLimit(status);
+      renderSyncWindow(status);
       renderFrequencyControl(status.settings?.sync_frequency || DEFAULT_FREQUENCY);
       renderSearchTerms(status);
       renderIntakePlaybook(status);
@@ -545,6 +593,7 @@ const AdminIntegrationsView = (() => {
       renderSyncHistory(syncStatus(state.gmailStatus || {}).sync_history || []);
       renderToggleControls(state.gmailStatus || {});
       renderImportLimit(state.gmailStatus || {});
+      renderSyncWindow(state.gmailStatus || {});
       renderFrequencyControl(state.gmailStatus?.settings?.sync_frequency || DEFAULT_FREQUENCY);
       renderSearchTerms(state.gmailStatus || {});
     }
@@ -619,6 +668,17 @@ const AdminIntegrationsView = (() => {
     function setImportLimitDisabled(disabled) {
       if (gmailImportLimitInput) gmailImportLimitInput.disabled = disabled;
       if (gmailImportLimitSaveButton) gmailImportLimitSaveButton.disabled = disabled;
+    }
+
+    function renderSyncWindow(status) {
+      const windowDays = syncWindowFromStatus(status);
+      if (gmailSyncWindowInput) gmailSyncWindowInput.value = String(windowDays);
+      setFact("sync-window-copy", `Syncs emails from the last ${windowDays} days.`);
+    }
+
+    function setSyncWindowDisabled(disabled) {
+      if (gmailSyncWindowInput) gmailSyncWindowInput.disabled = disabled;
+      if (gmailSyncWindowSaveButton) gmailSyncWindowSaveButton.disabled = disabled;
     }
 
     function renderFrequencyControl(syncFrequency) {
@@ -742,6 +802,29 @@ const AdminIntegrationsView = (() => {
     const parsed = Number(trimmed);
     if (!Number.isFinite(parsed) || parsed < MIN_IMPORT_LIMIT) return null;
     return Math.min(parsed, MAX_IMPORT_LIMIT);
+  }
+
+  function syncWindowFromStatus(status) {
+    // Prefer the server-derived effective window (already clamped + fallback-safe);
+    // fall back to the raw stored setting, then the default, so the field always
+    // shows an in-band value.
+    const raw = status?.inbound_window_days ?? status?.settings?.inbound_window_days;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value < MIN_SYNC_WINDOW) return DEFAULT_SYNC_WINDOW;
+    // Clamp the displayed value into the supported band so a stale or over-the-cap
+    // stored value never renders something the input cannot hold.
+    return Math.min(Math.floor(value), MAX_SYNC_WINDOW);
+  }
+
+  function parseSyncWindow(value) {
+    // Reject blanks, decimals, and non-numeric input; reject out-of-band values
+    // (the backend returns a 400 for them) so the POST only ever carries a value
+    // the server will accept.
+    const trimmed = String(value == null ? "" : value).trim();
+    if (!/^\d+$/.test(trimmed)) return null;
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed) || parsed < MIN_SYNC_WINDOW || parsed > MAX_SYNC_WINDOW) return null;
+    return parsed;
   }
 
   function gmailConnectionState(role, account, token, status) {
@@ -898,7 +981,18 @@ const AdminIntegrationsView = (() => {
     });
   }
 
-  return { createController, importLimitFromStatus, parseImportLimit, MAX_IMPORT_LIMIT, MIN_IMPORT_LIMIT };
+  return {
+    createController,
+    importLimitFromStatus,
+    parseImportLimit,
+    MAX_IMPORT_LIMIT,
+    MIN_IMPORT_LIMIT,
+    syncWindowFromStatus,
+    parseSyncWindow,
+    MAX_SYNC_WINDOW,
+    MIN_SYNC_WINDOW,
+    DEFAULT_SYNC_WINDOW,
+  };
 })();
 
 function createAdminIntegrationsController(options) {

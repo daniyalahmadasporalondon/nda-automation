@@ -189,11 +189,13 @@ function mountController(initialStatus) {
   const gmailCard = new FakeElement("article");
   const enabledCopy = copySpan("enabled-copy");
   const importLimitCopy = copySpan("import-limit-copy");
+  const syncWindowCopy = copySpan("sync-window-copy");
   const searchTermsCopy = copySpan("search-terms-copy");
   const inboundConfigured = copySpan("inbound-configured");
   const outboundConfigured = copySpan("outbound-configured");
   gmailCard.appendChild(enabledCopy);
   gmailCard.appendChild(importLimitCopy);
+  gmailCard.appendChild(syncWindowCopy);
   gmailCard.appendChild(searchTermsCopy);
   gmailCard.appendChild(inboundConfigured);
   gmailCard.appendChild(outboundConfigured);
@@ -206,6 +208,12 @@ function mountController(initialStatus) {
   // click drives the same submit handler.
   gmailImportLimitSaveButton.addEventListener("click", async () => {
     await gmailImportLimitForm.submit();
+  });
+  const gmailSyncWindowInput = new FakeElement("input");
+  const gmailSyncWindowSaveButton = new FakeElement("button");
+  const gmailSyncWindowForm = new FakeElement("form");
+  gmailSyncWindowSaveButton.addEventListener("click", async () => {
+    await gmailSyncWindowForm.submit();
   });
   const gmailSearchTermsInput = new FakeElement("textarea");
   const gmailSearchSaveButton = new FakeElement("button");
@@ -228,6 +236,9 @@ function mountController(initialStatus) {
     gmailImportLimitForm,
     gmailImportLimitInput,
     gmailImportLimitSaveButton,
+    gmailSyncWindowForm,
+    gmailSyncWindowInput,
+    gmailSyncWindowSaveButton,
     gmailSearchForm,
     gmailSearchTermsInput,
     gmailSearchSaveButton,
@@ -244,11 +255,15 @@ function mountController(initialStatus) {
     gmailImportLimitInput,
     gmailImportLimitSaveButton,
     gmailImportLimitForm,
+    gmailSyncWindowInput,
+    gmailSyncWindowSaveButton,
+    gmailSyncWindowForm,
     gmailSearchTermsInput,
     gmailSearchSaveButton,
     gmailSearchForm,
     enabledCopy,
     importLimitCopy,
+    syncWindowCopy,
     searchTermsCopy,
     inboundConfigured,
     outboundConfigured,
@@ -608,6 +623,108 @@ const ENV_CONNECTED = {
     assert.equal(V.importLimitFromStatus({ settings: {} }), 20);
     assert.equal(V.importLimitFromStatus({}), 20);
     assert.equal(V.importLimitFromStatus(null), 20);
+  });
+
+  // --- Sync window (days) controls -----------------------------------------
+
+  await test("the sync-window input saves and re-renders from refreshed status", async () => {
+    const ui = mountController(ENV_CONNECTED);
+    ui.gmailSyncWindowInput.value = "30";
+    const refreshed = {
+      ...ENV_CONNECTED,
+      inbound_window_days: 30,
+      inbound_window_days_default: 90,
+      settings: { sync_enabled: true, inbound_window_days: 30 },
+    };
+    const calls = installFetch((url) => {
+      if (url === "/api/gmail/status") return { payload: { gmail: refreshed } };
+      if (url === "/api/matters") return { payload: { matters: [] } };
+      if (url === "/api/gmail/settings") return { payload: { gmail: refreshed } };
+      return {};
+    });
+
+    await ui.gmailSyncWindowSaveButton.click();
+    await flush();
+
+    const save = calls.find((c) => c.url === "/api/gmail/settings");
+    assert.ok(save, "a settings POST is sent");
+    assert.deepEqual(save.body, { inbound_window_days: 30 }, "posts the typed window");
+    assert.equal(ui.gmailSyncWindowInput.value, "30", "input reflects the saved window");
+    assert.match(
+      ui.syncWindowCopy.textContent,
+      /Syncs emails from the last 30 days\./,
+      "copy reflects the refreshed window"
+    );
+  });
+
+  await test("an out-of-band sync window is rejected client-side (no POST)", async () => {
+    const ui = mountController(ENV_CONNECTED);
+    ui.gmailSyncWindowInput.value = "9999";
+    const calls = installFetch(() => ({}));
+
+    await ui.gmailSyncWindowSaveButton.click();
+    await flush();
+
+    assert.ok(
+      !calls.some((c) => c.url === "/api/gmail/settings"),
+      "an over-cap window must not be posted"
+    );
+    assert.match(
+      ui.syncWindowCopy.textContent,
+      /between 1 and 365/,
+      "shows the inline band message"
+    );
+  });
+
+  await test("a 400 from the server on the sync window surfaces inline", async () => {
+    const ui = mountController(ENV_CONNECTED);
+    // 30 is in-band client-side, so the POST happens and the server 400 must land
+    // inline (proves the error path surfaces a server rejection too).
+    ui.gmailSyncWindowInput.value = "30";
+    installFetch((url) => {
+      if (url === "/api/gmail/settings") {
+        return {
+          ok: false,
+          status: 400,
+          payload: { error: "Gmail sync window must be between 1 and 365 days." },
+        };
+      }
+      if (url === "/api/gmail/status") return { payload: { gmail: { ...ENV_CONNECTED } } };
+      if (url === "/api/matters") return { payload: { matters: [] } };
+      return {};
+    });
+
+    await ui.gmailSyncWindowSaveButton.click();
+    await flush();
+
+    assert.match(
+      ui.syncWindowCopy.textContent,
+      /between 1 and 365 days/,
+      "the server 400 is surfaced inline next to the field"
+    );
+  });
+
+  await test("parseSyncWindow validates the band", async () => {
+    assert.equal(V.parseSyncWindow("30"), 30);
+    assert.equal(V.parseSyncWindow("1"), 1);
+    assert.equal(V.parseSyncWindow("365"), 365);
+    assert.equal(V.parseSyncWindow("0"), null);
+    assert.equal(V.parseSyncWindow("-5"), null);
+    assert.equal(V.parseSyncWindow("9999"), null, "rejects over-cap (no silent clamp)");
+    assert.equal(V.parseSyncWindow("12.5"), null);
+    assert.equal(V.parseSyncWindow(""), null);
+    assert.equal(V.parseSyncWindow("abc"), null);
+    assert.equal(V.MAX_SYNC_WINDOW, 365, "UI cap matches the backend band");
+    assert.equal(V.MIN_SYNC_WINDOW, 1, "UI floor matches the backend band");
+  });
+
+  await test("syncWindowFromStatus clamps and defaults", async () => {
+    assert.equal(V.syncWindowFromStatus({ inbound_window_days: 30 }), 30);
+    assert.equal(V.syncWindowFromStatus({ settings: { inbound_window_days: 45 } }), 45);
+    assert.equal(V.syncWindowFromStatus({ inbound_window_days: 9999 }), 365);
+    assert.equal(V.syncWindowFromStatus({ settings: {} }), 90, "defaults to 90");
+    assert.equal(V.syncWindowFromStatus({}), 90);
+    assert.equal(V.syncWindowFromStatus(null), 90);
   });
 
   process.stdout.write(`\nadmin-integrations.cjs: ${passed} passed\n`);

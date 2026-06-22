@@ -1730,6 +1730,17 @@
                   </section>
 
                   <section class="integration-subsection">
+                    <h3>Sync window (days)</h3>
+                    <form class="integration-search-form" id="adminGmailSyncWindowForm">
+                      <input id="adminGmailSyncWindowInput" type="number" min="1" max="365" step="1" inputmode="numeric" aria-label="Gmail sync window in days" />
+                      <div class="integration-search-actions">
+                        <p data-admin-gmail="sync-window-copy">Checking sync window</p>
+                        <button class="secondary" id="adminGmailSyncWindowSaveButton" type="submit">Save window</button>
+                      </div>
+                    </form>
+                  </section>
+
+                  <section class="integration-subsection">
                     <h3>Sync frequency</h3>
                     <div class="integration-frequency-control" id="adminGmailFrequencyControl" role="group" aria-label="Gmail sync frequency">
                       <button type="button" data-gmail-frequency="always_on" aria-pressed="false">Always on</button>
@@ -2619,7 +2630,7 @@
     <script src="/static/js/auth-session.js?v=20260618depstatus1"></script>
     <script src="/static/js/admin-ai.js?v=20260621humanize1"></script>
     <script src="/static/js/admin-health.js?v=20260621humanize1"></script>
-    <script src="/static/js/admin-integrations.js?v=20260618gmailfix"></script>
+    <script src="/static/js/admin-integrations.js?v=20260622syncwindow1"></script>
     <script src="/static/js/admin-drive.js?v=20260621nda1"></script>
     <script src="/static/js/admin-personalisation.js?v=20260619selfserve1"></script>
     <script src="/static/js/admin-docusign.js?v=20260617a401"></script>
@@ -2648,6 +2659,6 @@
     <script src="/static/js/notifications.js?v=20260620integ2"></script>
     <script src="/static/js/generator-editor.js?v=20260621wave3"></script>
     <script src="/static/js/find-replace.js?v=20260621wave3"></script>
-    <script src="/static/app.js?v=20260622savetoast1"></script>
+    <script src="/static/app.js?v=20260622syncwindow1"></script>
   </body>
 </html>
