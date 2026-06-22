@@ -66,12 +66,20 @@ def _fresh_ai_review_result(extracted_text: str) -> dict:
 
 
 class _FakeHandler:
-    def __init__(self, *, repository, current_user_id: str = "owner@example.com"):
+    def __init__(self, *, repository, current_user_id: str = "owner@example.com", body=None):
         self.matter_repository = repository
         self.current_user_id = current_user_id
         self.current_user = {"id": current_user_id, "email": current_user_id}
         self.status = None
         self.json = None
+        # The parsed JSON request body the route reads via _read_json_payload. None
+        # ==> behave like a legacy no-body caller (the route's getattr guard / empty
+        # default), matching POSTs with no JSON payload.
+        self._body = body
+
+    def _read_json_payload(self):
+        # Mirror server._read_json_payload's contract: an absent body parses to {}.
+        return {} if self._body is None else dict(self._body)
 
     def _send_json(self, payload, status=200, headers=None, *, send_body=True):
         self.status = status
@@ -253,6 +261,54 @@ class ExplicitRefreshEnqueuesAsync(unittest.TestCase):
         matters_routes.review_nda_with_active_engine = spy
         try:
             handler = _FakeHandler(repository=repository)
+            matters_routes.handle_matter_review_refresh(
+                handler, f"/api/matters/{matter_id}/review-refresh"
+            )
+        finally:
+            matters_routes.review_nda_with_active_engine = original
+
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(spy.calls, 0)
+        self.assertEqual(handler.json["review_status"], "idle")
+        self.assertFalse(handler.json["job_scheduled"])
+
+    def test_force_re_reviews_a_fresh_not_stale_matter(self):
+        # An already-reviewed, NOT-stale matter (the Review button shows "Reviewed").
+        # Without force this returns 200 idle (above); with force:true (the Review
+        # click) it must RE-ENQUEUE the AI review (202 in_progress) so the operator
+        # can re-run on demand. The engine is still never run inline.
+        repository = InMemoryMatterRepository()
+        text = "Confidential clause that already has a fresh AI review."
+        matter_id = _seed_matter(repository, extracted_text=text, review_result=_fresh_ai_review_result(text))
+
+        spy = _SpyEngine()
+        original = matters_routes.review_nda_with_active_engine
+        matters_routes.review_nda_with_active_engine = spy
+        try:
+            handler = _FakeHandler(repository=repository, body={"force": True})
+            matters_routes.handle_matter_review_refresh(
+                handler, f"/api/matters/{matter_id}/review-refresh"
+            )
+        finally:
+            matters_routes.review_nda_with_active_engine = original
+
+        self.assertEqual(handler.status, 202)
+        self.assertEqual(spy.calls, 0, "the forced re-run MUST NOT run the AI engine inline")
+        self.assertEqual(handler.json["review_status"], "in_progress")
+        self.assertTrue(handler.json["job_scheduled"])
+
+    def test_force_false_still_idles_on_a_fresh_matter(self):
+        # An explicit force:false body must behave exactly like no body: a fresh,
+        # not-stale matter stays idle (the gate is preserved).
+        repository = InMemoryMatterRepository()
+        text = "Confidential clause that already has a fresh AI review."
+        matter_id = _seed_matter(repository, extracted_text=text, review_result=_fresh_ai_review_result(text))
+
+        spy = _SpyEngine()
+        original = matters_routes.review_nda_with_active_engine
+        matters_routes.review_nda_with_active_engine = spy
+        try:
+            handler = _FakeHandler(repository=repository, body={"force": False})
             matters_routes.handle_matter_review_refresh(
                 handler, f"/api/matters/{matter_id}/review-refresh"
             )
