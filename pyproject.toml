@@ -14,7 +14,17 @@ dependencies = [
 
 [project.optional-dependencies]
 pdf = [
-  "PyMuPDF>=1.24",
+  # PyMuPDF (`fitz`) is pinned to a KNOWN-GOOD window, not left open at >=1.24.
+  # Why: when this extra co-resolves with [tables] (camelot 2.x) and [gmail], an
+  # open floor let pip land an older or ABI-mismatched fitz than the standalone
+  # PyMuPDF that works locally; that broken fitz fails to import in the prod image
+  # and PDF page-image rendering silently degraded to blank pages. The floor
+  # 1.26.7 is the version pdf2docx 0.5.13 itself requires (so the two never fight),
+  # and the <1.28 ceiling blocks an unvetted minor ABI bump from shipping
+  # unverified. 1.27.x is the validated line. If you raise the ceiling, re-run the
+  # Dockerfile `import fitz; fitz.open` smoke assert against python:3.11-slim with
+  # the full `.[pdf,gmail,tables]` set before merging.
+  "PyMuPDF>=1.26.7,<1.28",
   "pdf2docx>=0.5.8",
   "pypdf>=6.0",
 ]

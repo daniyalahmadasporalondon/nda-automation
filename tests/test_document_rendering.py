@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from nda_automation import document_rendering
@@ -984,6 +985,79 @@ class DocumentRenderingDeploymentConfigTests(unittest.TestCase):
                 self.assertIn(package, dockerfile)
         self.assertIn("fc-cache -f", dockerfile)
         self.assertNotIn("ttf-mscorefonts-installer", dockerfile)
+
+    def test_dockerfile_smoke_asserts_fitz_imports(self):
+        # A broken/missing fitz must FAIL THE BUILD, not ship a silently-degraded
+        # image that renders blank pages.
+        repo_root = Path(__file__).resolve().parents[1]
+        dockerfile = (repo_root / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("import fitz", dockerfile)
+        self.assertIn("fitz.open()", dockerfile)
+
+    def test_pyproject_pins_pymupdf_to_known_good_window(self):
+        # The [pdf] extra must not leave PyMuPDF open at >=1.24 (that let the
+        # co-resolution land a broken fitz). It must carry a bounded pin.
+        repo_root = Path(__file__).resolve().parents[1]
+        pyproject = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertNotIn('"PyMuPDF>=1.24"', pyproject)
+        self.assertIn("PyMuPDF>=1.26.7,<1.28", pyproject)
+
+
+class LoadFitzModuleLoggingTests(unittest.TestCase):
+    def test_logs_error_when_fitz_installed_but_import_fails(self):
+        # A broken (installed-but-unimportable) fitz is the silent-blank-page root
+        # cause; it must leave a loud ERROR trail, not just return None.
+        import builtins
+
+        real_import = builtins.__import__
+
+        def exploding_import(name, *args, **kwargs):
+            if name == "fitz":
+                raise ImportError("libmupdf.so: undefined symbol")
+            return real_import(name, *args, **kwargs)
+
+        with unittest.mock.patch.object(builtins, "__import__", exploding_import):
+            with self.assertLogs(document_rendering.LOGGER, level="ERROR") as captured:
+                self.assertIsNone(document_rendering._load_fitz_module())
+        joined = "\n".join(captured.output)
+        self.assertIn("failed to import", joined)
+        self.assertIn("undefined symbol", joined)
+
+    def test_logs_only_debug_when_fitz_genuinely_absent(self):
+        import builtins
+
+        real_import = builtins.__import__
+
+        def missing_import(name, *args, **kwargs):
+            if name == "fitz":
+                raise ModuleNotFoundError("No module named 'fitz'")
+            return real_import(name, *args, **kwargs)
+
+        with unittest.mock.patch.object(builtins, "__import__", missing_import):
+            # A genuine absence must NOT raise an ERROR (only DEBUG): assertLogs at
+            # ERROR raises if nothing is logged at that level.
+            with self.assertRaises(AssertionError):
+                with self.assertLogs(document_rendering.LOGGER, level="ERROR"):
+                    self.assertIsNone(document_rendering._load_fitz_module())
+
+
+class StorageExhaustionClassifierTests(unittest.TestCase):
+    def test_enospc_and_erofs_are_storage_exhaustion(self):
+        import errno as _errno
+
+        for name in ("ENOSPC", "EROFS", "EDQUOT"):
+            code = getattr(_errno, name, None)
+            if code is None:
+                continue
+            with self.subTest(errno=name):
+                exc = OSError(code, os.strerror(code))
+                self.assertTrue(document_rendering._is_storage_exhaustion_error(exc))
+
+    def test_generic_io_error_is_not_storage_exhaustion(self):
+        import errno as _errno
+
+        exc = OSError(_errno.EACCES, os.strerror(_errno.EACCES))
+        self.assertFalse(document_rendering._is_storage_exhaustion_error(exc))
 
 
 if __name__ == "__main__":

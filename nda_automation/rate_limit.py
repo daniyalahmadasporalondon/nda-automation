@@ -8,6 +8,22 @@ DEFAULT_RATE_LIMIT_PER_MINUTE = 300
 RATE_LIMITED_MESSAGE = "Too many requests. Try again shortly."
 TRUSTED_PROXY_COUNT_ENV = "NDA_TRUSTED_PROXY_COUNT"
 
+# Byte/render GET routes (document source bytes, DOCX->PDF render, page images,
+# reconstructed DOCX/PDF) are expensive: each can pin a soffice/pdf2docx slot and
+# rasterize pages. They were unbucketed (returning "" below), so one
+# authenticated user could hammer them and starve other tenants of both render
+# slots. They get their OWN per-caller bucket with a SEPARATE, more generous
+# limit so an interactive review (which fans out source + render-status + page
+# images for a multi-page doc) is never throttled, while an abusive loop is.
+RENDER_GET_BUCKET = "render-bytes"
+# 240/min (4/sec) per caller. A single interactive review of a multi-page doc
+# bursts source + repeated render-status polls + per-page image fetches, so the
+# cap is set well above a realistic review burst while still hard-bounding an
+# abusive loop that would otherwise pin both soffice/pdf2docx slots and starve
+# other tenants. Operators can tune it via the env knob below.
+DEFAULT_RENDER_GET_RATE_LIMIT_PER_MINUTE = 240
+RENDER_GET_RATE_LIMIT_ENV = "NDA_RENDER_GET_RATE_LIMIT_PER_MINUTE"
+
 _RATE_LIMIT_LOCK = threading.Lock()
 _RATE_LIMIT_BUCKETS: dict[tuple[str, str], tuple[float, int]] = {}
 
@@ -57,7 +73,7 @@ def _rate_limit_retry_after(method: str, path: str, client_host: str) -> int:
     bucket_name = _rate_limit_bucket_name(method, path)
     if not bucket_name:
         return 0
-    limit = _rate_limit_per_window()
+    limit = _rate_limit_per_window_for_bucket(bucket_name)
     if limit <= 0:
         return 0
     window_seconds = _rate_limit_window_seconds()
@@ -75,8 +91,12 @@ def _rate_limit_retry_after(method: str, path: str, client_host: str) -> int:
 
 
 def _rate_limit_bucket_name(method: str, path: str) -> str:
-    if method == "GET" and path == "/api/matters/export":
-        return "matter-backup"
+    if method == "GET":
+        if path == "/api/matters/export":
+            return "matter-backup"
+        if _is_render_get_path(path):
+            return RENDER_GET_BUCKET
+        return ""
     if method != "POST":
         return ""
     buckets = {
@@ -93,6 +113,57 @@ def _rate_limit_bucket_name(method: str, path: str) -> str:
         "/api/dashboard/assistant": "dashboard-assistant",
     }
     return buckets.get(path, "")
+
+
+# Suffixes/segments of the matter byte/render GET routes. These live under
+# /api/matters/<id>/... so they cannot be matched by exact path; we match the
+# trailing segment (and the /render-page/ infix for per-page image fetches).
+# Mirrors the route dispatch in server.do_GET.
+_RENDER_GET_SUFFIXES = (
+    "/source",
+    "/source-pdf",
+    "/source-docx",
+    "/render-status",
+    "/render-pdf",
+    "/reviewed-docx",
+    "/reviewed-pdf",
+    "/working-docx",
+)
+
+
+def _is_render_get_path(path: str) -> bool:
+    if not path.startswith("/api/matters/"):
+        return False
+    if "/render-page/" in path:
+        return True
+    return any(path.endswith(suffix) for suffix in _RENDER_GET_SUFFIXES)
+
+
+def _rate_limit_per_window_for_bucket(bucket_name: str) -> int:
+    """Resolve the per-window request cap for a bucket.
+
+    Most buckets share the global NDA_RATE_LIMIT_PER_MINUTE cap. The byte/render
+    GET bucket has its OWN configurable cap (NDA_RENDER_GET_RATE_LIMIT_PER_MINUTE)
+    so the expensive render routes can be throttled independently of (and more
+    generously than) the general API, without breaking an interactive review.
+    """
+    if bucket_name == RENDER_GET_BUCKET:
+        return _render_get_rate_limit_per_window()
+    return _rate_limit_per_window()
+
+
+def _render_get_rate_limit_per_window() -> int:
+    try:
+        return max(
+            0,
+            int(
+                os.environ.get(
+                    RENDER_GET_RATE_LIMIT_ENV, str(DEFAULT_RENDER_GET_RATE_LIMIT_PER_MINUTE)
+                )
+            ),
+        )
+    except ValueError:
+        return DEFAULT_RENDER_GET_RATE_LIMIT_PER_MINUTE
 
 
 def _rate_limit_per_window() -> int:
