@@ -5089,7 +5089,7 @@ h3 {
   right: 8px;
   text-transform: uppercase;
   top: 6px;
-  user-select: none;
+  user-select: text;
   z-index: 4;
 }
 
@@ -12621,7 +12621,6 @@ label.is-hidden {
   gap: 6px;
   font-size: 11px;
   color: var(--ink-soft);
-  user-select: none;
 }
 
 /* ---------------------------------------------------------------------------
