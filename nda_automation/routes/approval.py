@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .. import (
     approval,
@@ -12,7 +12,7 @@ from .. import (
     redline_export_service,
     telemetry,
 )
-from ..docx_export import DOCX_MIME, DocxExportError
+from ..docx_export import DOCX_MIME, DocxExportError, accept_all_revisions
 from ..docx_text import DocxExtractionError
 from ..matter_lifecycle import MatterApprovalBlockedError, MatterNotFoundError, RepositoryMatterLifecycle
 from ..matter_repository import DiskMatterRepository, MatterRepository
@@ -130,10 +130,39 @@ def handle_matter_approve(handler, path: str) -> None:
     })
 
 
+def _reviewed_docx_changes_mode(handler) -> str | None:
+    """Read the ``?changes=tracked|accepted`` selector off the request.
+
+    ``tracked`` (the default when absent) keeps the ``w:ins``/``w:del`` revision
+    markup; ``accepted`` flattens it (accept-all-revisions) so the faithful renderer
+    can show the clean post-acceptance text. Returns None for an unrecognised value
+    so the caller can 400 rather than silently defaulting.
+    """
+    query = parse_qs(urlparse(getattr(handler, "path", "") or "").query)
+    values = query.get("changes")
+    if not values:
+        return "tracked"
+    requested = str(values[0] or "").strip().lower()
+    if requested in ("", "tracked"):
+        return "tracked"
+    if requested == "accepted":
+        return "accepted"
+    return None
+
+
 def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -> None:
     matter_id = parse_matter_id(path, suffix="/reviewed-docx")
     if matter_id is None:
         handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
+        return
+
+    changes_mode = _reviewed_docx_changes_mode(handler)
+    if changes_mode is None:
+        handler._send_json(
+            {"error": "changes must be 'tracked' or 'accepted'."},
+            status=400,
+            send_body=send_body,
+        )
         return
 
     owner_user_id = request_owner_user_id(handler)
@@ -212,13 +241,30 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
     headers = {
         "X-Export-Verified": verified_value,
         "X-Reviewed-Redline-Count": str(len(reviewed_docx.payload["export_redline_edits"])),
+        "X-Reviewed-Changes": changes_mode,
     }
     headers.update(export_headers)
     if reviewed_docx.artifact is not None:
         headers["X-Reviewed-Artifact-ID"] = reviewed_docx.artifact.id
+
+    export_bytes = redline_export.data
+    export_filename = redline_export.filename
+    if changes_mode == "accepted" and not is_original_export:
+        # Flatten the tracked w:ins/w:del to a clean post-acceptance document so the
+        # faithful renderer shows the final agreed text, not the redline overlay. The
+        # original-export case (PDF served unchanged, no revisions) has nothing to
+        # accept and is already clean, so it is left untouched.
+        try:
+            export_bytes = accept_all_revisions(export_bytes)
+        except DocxExportError as error:
+            handler._send_json({"error": str(error)}, status=400, send_body=send_body)
+            return
+        if export_filename.lower().endswith(".docx"):
+            export_filename = f"{export_filename[:-len('.docx')]}-accepted.docx"
+
     handler._send_download(
-        redline_export.data,
-        redline_export.filename,
+        export_bytes,
+        export_filename,
         redline_export.content_type or DOCX_MIME,
         headers=headers,
         send_body=send_body,

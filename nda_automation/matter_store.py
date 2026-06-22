@@ -139,6 +139,11 @@ MATTER_UPDATE_FIELDS = {
     "signature_voided",
     "signature_voided_at",
     "status",
+    # Approach C (PDF→DOCX at ingest): the reconstructed working-DOCX body paragraphs,
+    # re-keyed so each carries the reconstructed paragraph's source_index and drops the
+    # source_part:"pdf" marker. Stored at ingest so the on-demand review produces
+    # redlines that anchor by index into the working DOCX, exactly like native DOCX.
+    "working_docx_paragraphs",
 }
 
 

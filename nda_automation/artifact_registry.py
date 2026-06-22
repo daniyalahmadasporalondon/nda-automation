@@ -43,6 +43,11 @@ ROLE_GENERATED = "generated"
 ROLE_COUNTER = "counter"
 ROLE_SENT = "sent"
 ROLE_SIGNED = "signed"
+# A PDF source matter reconstructed to a canonical working DOCX once at ingest
+# (Approach C). It is NOT a lifecycle deliverable like a redline or a sent copy;
+# it is the index-anchorable body a converted-PDF matter behaves against, so the
+# faithful renderer + redline pipeline can treat it exactly like a native DOCX.
+ROLE_WORKING = "working"
 ROLES = (
     ROLE_ORIGINAL,
     ROLE_REDLINE,
@@ -51,6 +56,7 @@ ROLES = (
     ROLE_COUNTER,
     ROLE_SENT,
     ROLE_SIGNED,
+    ROLE_WORKING,
 )
 
 # ``actor`` — who produced it. ``counterparty``/``ai``/``human`` are the common
@@ -77,6 +83,7 @@ STAGE_LEGAL_REVIEW = "legal_review"
 STAGE_SENT = "sent"
 STAGE_COUNTER = "counter"
 STAGE_SIGNED = "signed"
+STAGE_WORKING = "working_docx"
 STAGES = (
     STAGE_RECEIVED,
     STAGE_DRAFT,
@@ -85,6 +92,7 @@ STAGES = (
     STAGE_SENT,
     STAGE_COUNTER,
     STAGE_SIGNED,
+    STAGE_WORKING,
 )
 # The REPEATABLE stages carry a ``_v{N}`` suffix from v1; the one-shot stages
 # (received, draft, signed) get no version suffix.
@@ -225,6 +233,8 @@ def stage_for(role: str, actor: str = "") -> str:
         return STAGE_COUNTER
     if role_slug == ROLE_SIGNED:
         return STAGE_SIGNED
+    if role_slug == ROLE_WORKING:
+        return STAGE_WORKING
     # Unknown role: fall back to a slug of the role so the name stays meaningful.
     return _slug(role_slug) or "doc"
 
