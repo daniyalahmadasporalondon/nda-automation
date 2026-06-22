@@ -151,14 +151,32 @@ def handle_matter_review_refresh(handler, path: str) -> None:
 
     owner_user_id = request_owner_user_id(handler)
 
+    # The Review button is an explicit, user-initiated action: a click is always a
+    # request to (re-)run the AI review on THIS matter. ``force`` (sent by the Review-
+    # tab refresh) makes that request UNCONDITIONAL so an already-reviewed, not-stale
+    # matter can still be re-reviewed on demand (the document may have changed off-
+    # screen, or the operator just wants a fresh pass). Without it the not-stale path
+    # below short-circuits to idle and the re-review never runs. The body is OPTIONAL
+    # (legacy/no-body callers default ``force=False``, preserving today's gate); a
+    # malformed JSON body still 400s via _read_json_payload.
+    force = False
+    read_payload = getattr(handler, "_read_json_payload", None)
+    if callable(read_payload):
+        body = read_payload()
+        if body is None:
+            # _read_json_payload already emitted a 400 for a malformed body.
+            return
+        force = bool(body.get("force"))
+
     may_be_stale, _reasons = _review_may_be_stale(
         matter,
         playbook_stale=review_result_is_stale(matter.get("review_result")),
     )
 
     # Not stale: a fresh AI review already exists. Nothing to enqueue -- report idle
-    # and return the matter as-is (no heavy work, no block).
-    if not may_be_stale:
+    # and return the matter as-is (no heavy work, no block). A forced re-run skips
+    # this short-circuit and falls through to the enqueue path below.
+    if not may_be_stale and not force:
         payload = _matter_review_payload(matter, matter_id, was_stale=False, refresh_attempted=True)
         payload["review_status"] = "idle"
         payload["job_scheduled"] = False

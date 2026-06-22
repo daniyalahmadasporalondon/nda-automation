@@ -1427,9 +1427,17 @@ async function refreshSelectedMatterReview() {
   // turns out to be a no-op (idle) or unavailable, the branches below restore it.
   enterReviewInFlightUi();
   try {
+    // `force: true` makes this an UNCONDITIONAL re-run: the click is always an
+    // explicit, user-initiated request to (re-)review THIS matter, so the server
+    // must re-enqueue the AI review even when the stored review is already current
+    // (not stale). Without it, a click on a reviewed-and-current matter would short-
+    // circuit to 200 idle and the operator could never get a fresh pass. The double-
+    // submit guard is the single-in-flight check above (reviewPollInFlightForMatter)
+    // plus the server's own dedup, NOT the staleness gate.
     const response = await fetch(`/api/matters/${encodeURIComponent(matterId)}/review-refresh`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force: true }),
     });
     let payload = {};
     try {
@@ -1702,32 +1710,44 @@ function renderReviewRefreshNotice(refresh = state.selectedMatter?.review_refres
   //
   // No-jump header: the label is ALWAYS "Review" (no "Review"/"Refresh Review"
   // relabel) and the button never appears/disappears between states — it only
-  // ENABLES or GRAYS. It is interactive when there is something to review
-  // (UNREVIEWED, or a reviewed-but-STALE matter) and DISABLED/grayed when the
-  // review is already current (reviewed && !stale), since a click would be a
-  // no-op. Safe fallback when ai_review_ran is absent: aiReviewRan() ->
-  // hasReviewResults(), i.e. the current/reviewed behavior.
+  // ENABLES or GRAYS. It is interactive whenever a matter is open so the operator
+  // can ALWAYS (re-)run the AI review on demand — including on a matter that is
+  // already reviewed-and-current (the document may have changed off-screen, or the
+  // operator simply wants a fresh pass). The ONLY state that grays it is an active
+  // in-flight review (review_status in_progress/stalled), to prevent a double-submit
+  // of the SAME review; that run shows "Reviewing…" instead.
   // PRESENCE is gated only on "is a matter open" — NOT on whether review clauses
   // exist. A never-reviewed matter has zero clauses, and gating on
   // reviewClauses.length > 0 hid this button exactly in the state where the user
   // most needs it (the only way to run the first AI review). The button is now
-  // present whenever a matter is loaded and ENABLE/GRAY is driven by `actionable`.
+  // present whenever a matter is loaded and ENABLE/GRAY is driven solely by the
+  // actively-reviewing guard.
   const matterLoaded = Boolean(state.selectedMatter?.id);
-  // `reviewed` is already resolved above (aiReviewRan()) for the stale indicator.
-  // Actionable when not yet reviewed, or reviewed-but-stale (something to re-run).
-  const actionable = !reviewed || stale;
+  // ACTIVELY reviewing == the server reports an in-flight review for this matter
+  // (review_status in_progress/stalled). MatterUtils.reviewInProgress is the shared
+  // discriminator (board badge + inspector resume use it too); guard its presence
+  // so an isolated load order / test harness without it falls back to "not in
+  // flight" (the button stays enabled, never wrongly disabled).
+  const reviewActivelyRunning =
+    typeof MatterUtils !== "undefined" && typeof MatterUtils.reviewInProgress === "function"
+      ? Boolean(MatterUtils.reviewInProgress(state.selectedMatter))
+      : false;
   studioRefreshReviewButton.hidden = !matterLoaded;
-  // Disabled (grayed via the global button:disabled rule) when the review is
-  // current and there is nothing to do; the .is-refreshing class still drives the
-  // in-flight spinner/disabled state during an actual run.
-  studioRefreshReviewButton.disabled = !matterLoaded || !actionable;
-  studioRefreshReviewButton.setAttribute("aria-disabled", String(!matterLoaded || !actionable));
-  studioRefreshReviewButton.textContent = "Review";
+  // Enabled whenever a matter is loaded and no review is actively in flight. The
+  // in-session run additionally sets disabled + the .is-refreshing spinner directly
+  // via enterReviewInFlightUi(); this guard covers the reopened-while-reviewing case
+  // (the matter carries review_status:"in_progress" but this render still runs).
+  studioRefreshReviewButton.disabled = !matterLoaded || reviewActivelyRunning;
+  studioRefreshReviewButton.setAttribute(
+    "aria-disabled",
+    String(!matterLoaded || reviewActivelyRunning),
+  );
+  studioRefreshReviewButton.textContent = reviewActivelyRunning ? "Reviewing…" : "Review";
   studioRefreshReviewButton.title = !reviewed
     ? "Run the AI review against the active Playbook."
     : stale
       ? message
-      : "Review is current — re-run is unnecessary.";
+      : "Re-run the AI review against the active Playbook.";
 }
 
 function staleReviewMessage(refresh, fallback = "Review is stale — refresh before sending.") {
