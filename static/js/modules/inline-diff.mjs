@@ -54,5 +54,17 @@ export function needsInlineSpace(previousToken, token) {
   if (/^[,.;:!?%)]$/.test(tokenCore)) return false;
   if (/^[(]$/.test(previousCore)) return false;
   if (/^[$£€#@]$/.test(previousCore) && /^\d/.test(tokenCore)) return false;
+  // Email addresses: never split a word from an '@' or an '@' from a word
+  // ('legal@discloser.com'). Mirrors _needs_inline_space in redline_xml.py so the
+  // on-screen preview matches the exported DOCX byte-for-byte.
+  if (tokenCore === "@" || previousCore === "@") return false;
+  // URL path separators ('https://example.com/policy'): bare '/' tokens between
+  // word/URL pieces stay tight.
+  if (tokenCore === "/" || previousCore === "/") return false;
+  // Dotted abbreviations ('U.S.', 'e.g.'): a '.' directly followed by a word token
+  // with no source whitespace stays tight. A real sentence boundary ('end. Next')
+  // carries its space on the following token and bails at the leading-whitespace
+  // check above, so normal sentence spacing is preserved.
+  if (previousCore === "." && /^(?:[^\W_]|\d)/u.test(tokenCore)) return false;
   return true;
 }
