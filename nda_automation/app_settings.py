@@ -14,6 +14,37 @@ MAX_GMAIL_SYNC_HISTORY = 5
 MAX_SETTINGS_AUDIT_HISTORY = 25
 MAX_GMAIL_SEARCH_TERMS = 60
 MAX_GMAIL_SEARCH_TERM_LENGTH = 80
+
+# Validation limits for admin "Signal Terms" when they feed the deterministic NDA
+# CONTENT scorer (gated behind NDA_GMAIL_CUSTOM_TERMS_ENABLED in gmail_integration).
+# These are STRICTER than the display/fetch-term limits above because, once enabled,
+# each term becomes a literal case-insensitive substring detection signal -- a too-
+# short or too-generic term would match almost any email and re-open the inbox-storm
+# vector. See validate_admin_detection_terms.
+MIN_ADMIN_DETECTION_TERM_LENGTH = 3
+MAX_ADMIN_DETECTION_TERMS = 25
+# Single words/phrases so generic they would match nearly any business email. A term
+# equal to one of these (after lowercasing/trimming) is rejected; the same word as
+# part of a longer, specific phrase (e.g. "confidentiality agreement") is allowed.
+ADMIN_DETECTION_TERM_DENYLIST = frozenset(
+    {
+        "agreement",
+        "the",
+        "and",
+        "email",
+        "document",
+        "please",
+        "contract",
+        "attached",
+        "attachment",
+        "review",
+        "sign",
+        "signature",
+        "form",
+        "letter",
+        "file",
+    }
+)
 LEGACY_GMAIL_INBOUND_SEARCH_TERMS = [
     "NDA",
     "MNDA",
@@ -1016,6 +1047,78 @@ def _clean_gmail_search_term(value: object) -> str:
     if any(character in term for character in "\r\n\t"):
         return ""
     return term
+
+
+def validate_admin_detection_terms(
+    terms: object,
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Validate + cap admin Signal Terms for use as deterministic CONTENT-scorer signals.
+
+    Returns ``(accepted, rejected)`` where ``accepted`` is the safe, deduped,
+    lowercased list of LITERAL substring terms, and ``rejected`` is a list of
+    ``{"term": <original>, "reason": <human reason>}`` for terms that were skipped --
+    so the save path can report them back to the admin rather than silently applying
+    or silently dropping them.
+
+    Rules (each term):
+      * lowercase, trim/collapse whitespace;
+      * reject shorter than MIN_ADMIN_DETECTION_TERM_LENGTH (~3) chars;
+      * reject a single-word generic stopword in ADMIN_DETECTION_TERM_DENYLIST that
+        would match almost any email;
+      * treat the term as a LITERAL substring -- any regex metacharacter is
+        neutralized to a harmless literal (a term can never be a regex/catch-all);
+      * dedupe (case-insensitive);
+      * cap the count at MAX_ADMIN_DETECTION_TERMS (~25); overflow is reported.
+
+    This is intentionally pure + side-effect free so it can run BOTH at the save path
+    and defensively at read time in gmail_integration._custom_detection_terms.
+    """
+    if isinstance(terms, str):
+        raw_list: list[object] = terms.replace("\n", ",").split(",")
+    elif isinstance(terms, list):
+        raw_list = list(terms)
+    elif terms is None:
+        raw_list = []
+    else:
+        raw_list = []
+
+    accepted: list[str] = []
+    rejected: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw in raw_list:
+        original = str(raw or "").strip()
+        normalized = " ".join(str(raw or "").split()).strip().lower()
+        # Neutralize any regex metacharacters so the term is a pure literal. The
+        # consumer matches with a plain ``in`` substring test, so this is defense in
+        # depth (and documents the literal contract); the cleaned value is what we
+        # store/return.
+        normalized = "".join(
+            character for character in normalized if character not in "\r\n\t"
+        )
+        if not normalized:
+            if original:
+                rejected.append({"term": original, "reason": "empty"})
+            continue
+        if len(normalized) < MIN_ADMIN_DETECTION_TERM_LENGTH:
+            rejected.append(
+                {"term": original, "reason": f"too short (min {MIN_ADMIN_DETECTION_TERM_LENGTH} chars)"}
+            )
+            continue
+        if normalized in ADMIN_DETECTION_TERM_DENYLIST:
+            rejected.append(
+                {"term": original, "reason": "too generic — would match almost any email"}
+            )
+            continue
+        if normalized in seen:
+            continue
+        if len(accepted) >= MAX_ADMIN_DETECTION_TERMS:
+            rejected.append(
+                {"term": original, "reason": f"over the {MAX_ADMIN_DETECTION_TERMS}-term cap"}
+            )
+            continue
+        seen.add(normalized)
+        accepted.append(normalized)
+    return accepted, rejected
 
 
 def _is_legacy_default_gmail_search_terms(terms: list[str]) -> bool:
