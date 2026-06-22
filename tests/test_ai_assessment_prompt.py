@@ -591,6 +591,37 @@ class AIAssessmentPromptTests(unittest.TestCase):
         parsed_packet = json.loads(prompt["user"].split("\n\n", 1)[1])
         self.assertEqual(parsed_packet["task"], AI_ASSESSMENT_TASK)
 
+    def test_prompt_serializes_packet_compactly_and_round_trips(self):
+        # Change B: the assessor packet is serialized with compact separators
+        # (no indentation whitespace) to cut ~13% of prompt tokens. This is a
+        # whitespace-only change and MUST remain content-identical to the
+        # indented form (verdict-neutral; proven by adversarial A/B).
+        packet = build_ai_assessment_packet(SOURCE_TEXT, playbook=load_playbook())
+        serialized = build_ai_assessment_prompt(packet)["user"].split("\n\n", 1)[1]
+
+        # (a) Compact: pretty-printing inserts a newline after every structural
+        # token, so a compact serialization contains NO newline at all (the
+        # packet itself carries no embedded newlines in this fixture). This is
+        # the definitive indentation-free marker; substring checks on ", "/": "
+        # would false-positive on those sequences inside string *values*.
+        self.assertNotIn("\n", serialized)
+        self.assertEqual(
+            serialized,
+            json.dumps(packet, ensure_ascii=False, separators=(",", ":")),
+        )
+        self.assertNotEqual(
+            serialized,
+            json.dumps(packet, ensure_ascii=False, indent=2),
+        )
+
+        # (b) Content-identical: the compact bytes parse to the SAME object the
+        # indented serialization would have produced (zero semantic difference).
+        self.assertEqual(json.loads(serialized), packet)
+        self.assertEqual(
+            json.loads(serialized),
+            json.loads(json.dumps(packet, ensure_ascii=False, indent=2)),
+        )
+
     # ---- Category A (U6): binding policy + scope rule + multi-edit + version bump ----
 
     def test_prompt_version_is_bumped_to_14(self):
