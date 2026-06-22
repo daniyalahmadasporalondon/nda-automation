@@ -382,6 +382,18 @@ function applyParagraphFont(fontName) {
   commitParagraphFormatChange();
 }
 
+// Before the FIRST run-scope (inline) edit on a faithful paragraph, seed the
+// model's runs from the faithful DOM so the source document's existing run
+// formatting (bold/italic/font) is preserved through the offset edit. Returns
+// false to ABORT the edit (the read-back failed its re-tile/assert and the
+// paragraph was locked to the reconstruction editor) so the caller bails out
+// rather than corrupting runs. A no-op (true) when no faithful surface is live.
+function prepareFaithfulRunEdit(paragraph) {
+  if (typeof faithfulSurfaceIsLive !== "function" || !faithfulSurfaceIsLive()) return true;
+  if (typeof seedFaithfulParagraphRunsFromDom !== "function") return true;
+  return seedFaithfulParagraphRunsFromDom(paragraph.id);
+}
+
 // Toggles a run-scope boolean property ("bold"|"italic") across the active
 // paragraph's current text selection. No selection -> no-op + a hint. The toggle
 // is "all-on -> off, otherwise on": if every covered char already has the
@@ -394,6 +406,7 @@ function toggleRunFormatting(property) {
     setFileMeta("Select text to format");
     return;
   }
+  if (!prepareFaithfulRunEdit(paragraph)) return;
   const { startOffset, endOffset } = selection;
   pushParagraphFormatHistory(paragraph);
   const allHave = runRangeHasFormatting(paragraph, startOffset, endOffset, property, true);
@@ -414,6 +427,7 @@ function toggleRunValueFormatting(property, value) {
     setFileMeta("Select text to format");
     return;
   }
+  if (!prepareFaithfulRunEdit(paragraph)) return;
   const { startOffset, endOffset } = selection;
   pushParagraphFormatHistory(paragraph);
   const allHave = runRangeHasFormatting(paragraph, startOffset, endOffset, property, value);
@@ -441,6 +455,7 @@ function clearRunFormatting() {
     setFileMeta("Select text to clear formatting");
     return;
   }
+  if (!prepareFaithfulRunEdit(paragraph)) return;
   const { startOffset, endOffset } = selection;
   pushParagraphFormatHistory(paragraph);
   CLEAR_RUN_PROPERTIES.forEach((property) => {
@@ -463,6 +478,7 @@ function applyFontChange(fontName) {
     applyParagraphFont(fontName);
     return;
   }
+  if (!prepareFaithfulRunEdit(paragraph)) return;
   const next = String(fontName || "").trim();
   pushParagraphFormatHistory(paragraph);
   // An empty choice clears the run-level font override over the selection.
@@ -489,6 +505,7 @@ function applyRunColor(hex) {
     refreshFormatToolbarState();
     return;
   }
+  if (!prepareFaithfulRunEdit(paragraph)) return;
   pushParagraphFormatHistory(paragraph);
   setRunFormatting(paragraph, selection.startOffset, selection.endOffset, "color", next);
   commitParagraphFormatChange();
@@ -508,6 +525,7 @@ function applyRunHighlight(name) {
     setFileMeta("Select text to highlight");
     return;
   }
+  if (!prepareFaithfulRunEdit(paragraph)) return;
   const next = String(name || "").trim();
   pushParagraphFormatHistory(paragraph);
   // An empty choice clears the highlight over the selection.
@@ -549,6 +567,7 @@ function applyFontSizeChange(sizePt) {
     applyParagraphFontSize(sizePt);
     return;
   }
+  if (!prepareFaithfulRunEdit(paragraph)) return;
   const next = normalizeFontSize(sizePt);
   pushParagraphFormatHistory(paragraph);
   setRunFormatting(paragraph, selection.startOffset, selection.endOffset, "size", next || false);
@@ -623,8 +642,32 @@ function selectionForActiveParagraph() {
 
 // Shared post-change path: mark the redline draft dirty and re-render the
 // document so the format_paragraph redline + on-screen alignment/font update.
+//
+// FAITHFUL surface (Phase 2): a full renderStudioDocumentHighlights() repaint would
+// drop back to the reconstruction and then asynchronously RE-FETCH the server DOCX
+// -- which does NOT carry the in-session formatting edit -- so the edit would
+// visually vanish (the model keeps it, so export stays correct, but the surface
+// would mislead). Instead, when a faithful surface is live we re-render JUST the
+// active paragraph's runs FROM THE MODEL into the faithful DOM (the model is the
+// single source of truth) and skip the repaint. The redline DRAFT is still marked
+// dirty so the edit persists + exports exactly as it would from the reconstruction.
 function commitParagraphFormatChange() {
   if (typeof markRedlineDraftDirty === "function") markRedlineDraftDirty();
+  const faithfulLive = typeof faithfulSurfaceIsLive === "function" && faithfulSurfaceIsLive();
+  if (faithfulLive && typeof renderFaithfulParagraphRunsFromModel === "function") {
+    const paragraph = activeFormatParagraph();
+    const rendered = paragraph ? renderFaithfulParagraphRunsFromModel(paragraph.id) : false;
+    if (rendered) {
+      // The editable node was rebuilt; re-bind its editors so editing keeps working,
+      // then refresh the toolbar pressed-state.
+      if (typeof bindViewerParagraphEditing === "function") bindViewerParagraphEditing();
+      if (typeof bindFormatToolbar === "function") bindFormatToolbar();
+      refreshFormatToolbarState();
+      return;
+    }
+    // Fall through to the full repaint if the in-place render could not run (e.g.
+    // the paragraph was not found on the faithful surface): correctness over speed.
+  }
   if (typeof renderStudioDocumentHighlights === "function") renderStudioDocumentHighlights();
   // renderStudioDocumentHighlights re-runs bindFormatToolbar, which refreshes the
   // pressed-state; refresh again here for the no-render guard paths above.
