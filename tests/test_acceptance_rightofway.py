@@ -1,5 +1,5 @@
 """INDEPENDENT adversarial acceptance gate for the "Generate right-of-way +
-kill-switch + loop-closer" hardening (branch ``fix/generate-right-of-way``).
+loop-closer" hardening (branch ``fix/generate-right-of-way``).
 
 These tests are written against the *target* behaviour the builder must satisfy,
 NOT the code as it stands on the base SHA. On the base they are expected to
@@ -16,10 +16,11 @@ The four target behaviours under test (one section each):
    after the guard exits. Boundary: an item enqueued *during* a generation is
    processed only after the guard exits.
 
-2. KILL SWITCH AT DRAIN TIME -- with NDA_INBOUND_AI_REVIEW_ENABLED=false, the
-   inbound review worker handler must early-return WITHOUT running an AI review,
-   even for items ALREADY in the queue (flag flipped after enqueue, checked at
-   DRAIN, not only at enqueue).
+2. NO KILL SWITCH AT DRAIN TIME -- there is NO inbound auto-review path and NO
+   kill-switch any more (NDA_INBOUND_AI_REVIEW_ENABLED is dead -- the env is no
+   longer read). Only on-demand, human-clicked Review jobs reach the pool, and a
+   queued review must therefore ALWAYS run at drain: the worker handler runs the AI
+   review with nothing to gate or skip it.
 
 3. LOOP-CLOSER -- when the persist step (update_matter_review) returns
    None/falsy, it must be COUNTED as a failure (poison-pill counter increments),

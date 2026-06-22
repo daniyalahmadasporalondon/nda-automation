@@ -52,7 +52,14 @@ SUPPORTED_DOCUMENT_EXTENSIONS = {".docx", ".pdf"}
 # UNCHANGED; only the inbound auto-enqueue + kill-switch + recovery sweep that fed
 # it from the storm path are gone.
 INBOUND_REVIEW_CONCURRENCY_ENV = "NDA_INBOUND_REVIEW_CONCURRENCY"
-_DEFAULT_INBOUND_REVIEW_CONCURRENCY = 1
+# Default raised 1 -> 2: the synchronous Gmail-storm enqueue is GONE (only
+# on-demand, human-clicked Review jobs reach the pool now), so a single slow
+# review no longer needs to be the head-of-line block for every other user's
+# click. Two workers let two on-demand reviews drain in parallel. Conservative on
+# purpose -- 2, not higher: each concurrent review is a full Opus assessor+verifier
+# run, so 2 ~= 2x peak memory/cost on the worker. The pool is designed for N
+# workers (see _InboundReviewWorkerPool), so 2 is a safe bound, not a hack.
+_DEFAULT_INBOUND_REVIEW_CONCURRENCY = 2
 
 # Hard cap on the queue depth so a runaway producer can never grow the queue
 # unboundedly. The dedup-on-enqueue set means re-enqueues of an already-pending
@@ -93,15 +100,49 @@ def inbound_review_defer_backoff_seconds() -> float:
     return max(0.0, value)
 
 
+# Per-job TOTAL wall-clock deadline. The per-socket urlopen timeout
+# (NDA_AI_TIMEOUT_SECONDS) is per-OPERATION: a trickle-feeding endpoint that keeps
+# the socket barely alive can hold the single logical review slot far past any
+# sane budget, starving every other queued review (head-of-line). This deadline
+# bounds the TOTAL time ONE job may own a slot. Default 300s, deliberately BELOW
+# the 600s read-time in_progress TTL (matter_view.REVIEW_IN_PROGRESS_TTL_SECONDS):
+# a job is freed and stamped terminal before the read layer would even start
+# painting it ``stalled``. A non-positive override DISABLES the cap (0 = no
+# watchdog), for ops escape-hatch parity with the other tunables.
+REVIEW_JOB_DEADLINE_ENV = "NDA_REVIEW_JOB_DEADLINE_SECONDS"
+_DEFAULT_REVIEW_JOB_DEADLINE_SECONDS = 300.0
+
+
+def review_job_deadline_seconds() -> float:
+    """Total wall-clock budget one review job may own its slot (env-configurable).
+
+    Defaults to ``_DEFAULT_REVIEW_JOB_DEADLINE_SECONDS`` (300s, under the 600s read
+    TTL). ``0`` or negative DISABLES the watchdog (unbounded, the prior behaviour);
+    an unparseable value falls back to the default.
+    """
+
+    raw = os.environ.get(REVIEW_JOB_DEADLINE_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_REVIEW_JOB_DEADLINE_SECONDS
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_REVIEW_JOB_DEADLINE_SECONDS
+    return value
+
+
 def inbound_review_concurrency() -> int:
     """How many on-demand AI reviews may run concurrently (env-configurable).
 
-    Defaults to 1 -- strict serialization, the structural anti-storm guarantee.
-    This is the SIZE of the persistent background worker pool, so it bounds both
-    concurrency AND the number of live review threads. A larger value (e.g.
-    ``NDA_INBOUND_REVIEW_CONCURRENCY=2``) is allowed if a bigger worker can
-    absorb it; anything below 1 (or unparseable) clamps to 1 so the pool is
-    always a valid bound. (Env var name kept for ops/config compatibility.)
+    Defaults to 2 -- the synchronous storm enqueue is gone, so two on-demand
+    reviews draining in parallel stops one slow review from being the head-of-line
+    block for every other user's click. This is the SIZE of the persistent
+    background worker pool, so it bounds both concurrency AND the number of live
+    review threads. A larger value (e.g. ``NDA_INBOUND_REVIEW_CONCURRENCY=3``) is
+    allowed if a bigger worker can absorb it (each concurrent review is a full
+    assessor+verifier run, so N ~= Nx peak memory/cost); anything below 1 (or
+    unparseable) clamps to 1 so the pool is always a valid bound. (Env var name
+    kept for ops/config compatibility.)
     """
 
     raw = os.environ.get(INBOUND_REVIEW_CONCURRENCY_ENV, "").strip()
@@ -528,6 +569,175 @@ def _record_inbound_review_failure(
         )
 
 
+# Grace before a stored ``in_progress`` is treated as orphaned at BOOT. At boot no
+# worker pool thread is running yet (the pool starts lazily on the first enqueue,
+# which only happens once the server is serving), so any stored ``in_progress`` is
+# by definition not being driven by a live worker. The grace is a belt-and-braces
+# guard against a clock-skew edge: a review whose start stamp is within the last
+# 60s is left untouched, on the vanishingly-unlikely chance its worker survived a
+# warm restart and is about to finish. Env override for ops.
+INBOUND_REVIEW_RECONCILE_GRACE_ENV = "NDA_REVIEW_RECONCILE_GRACE_SECONDS"
+_DEFAULT_INBOUND_REVIEW_RECONCILE_GRACE_SECONDS = 60.0
+
+# The durable status a boot reconcile stamps onto an orphaned (worker died mid-
+# flight) review that has NO completed ai_first result. DISTINCT from ``failed`` (a
+# real error) and from the read-time ``stalled`` TTL label (a live-but-slow review):
+# ``interrupted`` is RECOVERABLE -- the FE renders a calm Retry and NOTHING auto-runs
+# it. We PRODUCE it here; the FE consumes it. Re-running is the user's on-demand
+# Refresh, never this reconcile.
+REVIEW_STATUS_INTERRUPTED = "interrupted"
+_INTERRUPTED_REVIEW_MESSAGE = (
+    "The previous review was interrupted by a restart. Click Review to run it again."
+)
+
+
+def _review_reconcile_grace_seconds() -> float:
+    """Grace window (seconds) before a stored ``in_progress`` is reconciled at boot."""
+
+    raw = os.environ.get(INBOUND_REVIEW_RECONCILE_GRACE_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_INBOUND_REVIEW_RECONCILE_GRACE_SECONDS
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_INBOUND_REVIEW_RECONCILE_GRACE_SECONDS
+    return max(0.0, value)
+
+
+def _review_started_before_grace(started_at: str, grace_seconds: float) -> bool:
+    """True when ``started_at`` is missing/unparseable, or older than the grace.
+
+    A missing/garbled start stamp is treated as old (reconcile it): an orphaned
+    review with no usable start time is exactly the kind of stuck record we want to
+    clear, never leave wedged ``in_progress`` forever.
+    """
+
+    if grace_seconds <= 0:
+        return True
+    raw = str(started_at or "").strip()
+    if not raw:
+        return True
+    try:
+        started = datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return True
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - started).total_seconds()
+    return age >= grace_seconds
+
+
+def reconcile_interrupted_reviews(
+    repository: MatterRepository | None = None,
+) -> dict[str, int]:
+    """Boot-time reconcile of reviews orphaned by a worker/process death (P0).
+
+    A review stamps ``review_status="in_progress"`` BEFORE handing off to the
+    background pool. If the process dies mid-flight (deploy / OOM / restart), that
+    stamp is the LAST durable state -- the terminal ``completed``/``failed`` stamp
+    never lands, and the record sits ``in_progress`` forever (the read-time TTL only
+    paints a transient ``stalled`` label; it never heals the stored value). At boot
+    no pool worker is running yet, so EVERY stored ``in_progress`` past a short grace
+    is by definition orphaned. For each such matter:
+
+      * if it ALREADY carries a full ``ai_first`` result (``_matter_already_ai_reviewed``)
+        the review actually finished and only the terminal stamp was lost -> heal it
+        to ``review_status="completed"`` (clear ``review_error``);
+      * otherwise the review never produced a result -> stamp the DURABLE,
+        RECOVERABLE ``review_status="interrupted"`` + a calm ``review_error`` telling
+        the user to click Review to run it again.
+
+    HARD INVARIANT -- STORM-IMPOSSIBLE BY CONSTRUCTION: this function performs a PURE
+    STATUS RECONCILE. It NEVER enqueues a job, NEVER calls the AI, NEVER touches the
+    worker pool or its queue. It is exactly NOT the removed recovery sweep (whose bug
+    was re-enqueuing un-recorded matters forever); re-running an interrupted review is
+    left entirely to the user's on-demand Refresh. There is no code path from here to
+    an AI call, so no startup state can produce a review storm.
+
+    Owner-safe + idempotent: writes go through the allowlisted ``_stamp_review_status``
+    with each matter's own ``owner_user_id`` (no cross-tenant write); ``review_started_at``
+    is deliberately PRESERVED (not cleared) so the record keeps its provenance and a
+    second run finds the now-terminal matter and skips it (it is no longer
+    ``in_progress``). Fully fail-soft: a per-matter error is logged and skipped, and a
+    repository-level failure is swallowed -- this must never crash boot. Returns a
+    small summary ``{"scanned", "interrupted", "completed", "errors"}`` (also logged).
+    """
+
+    summary = {"scanned": 0, "interrupted": 0, "completed": 0, "errors": 0}
+    repository = repository or DiskMatterRepository()
+    grace_seconds = _review_reconcile_grace_seconds()
+
+    from . import telemetry  # noqa: PLC0415 - keep the import light/local.
+
+    try:
+        # Empty owner = ALL matters across every tenant (admin-equivalent read). This
+        # is a system boot task, not a request, so it must see every orphaned review.
+        matters = repository.list_matters("")
+    except Exception:  # pragma: no cover - defensive: never crash boot.
+        LOGGER.warning("Interrupted-review reconcile could not list matters", exc_info=True)
+        telemetry.increment("review_reconcile_list_failed")
+        return summary
+
+    if not isinstance(matters, list):
+        return summary
+
+    for matter in matters:
+        if not isinstance(matter, dict):
+            continue
+        if str(matter.get("review_status") or "") != "in_progress":
+            continue
+        if not _review_started_before_grace(
+            str(matter.get("review_started_at") or ""), grace_seconds
+        ):
+            # Within the grace window -- a warm-restart worker may still finish it.
+            continue
+        summary["scanned"] += 1
+        matter_id = str(matter.get("id") or "")
+        if not matter_id:
+            continue
+        owner_user_id = str(matter.get("owner_user_id") or "")
+        try:
+            if _matter_already_ai_reviewed(matter):
+                # The AI review FINISHED; only the terminal stamp was lost. Heal it.
+                _stamp_review_status(
+                    matter_id,
+                    {"review_status": "completed", "review_error": ""},
+                    repository=repository,
+                    owner_user_id=owner_user_id,
+                )
+                summary["completed"] += 1
+            else:
+                # Orphaned with no result -> durable, RECOVERABLE interrupted state.
+                # NOTE: review_started_at is intentionally NOT cleared.
+                _stamp_review_status(
+                    matter_id,
+                    {
+                        "review_status": REVIEW_STATUS_INTERRUPTED,
+                        "review_error": _INTERRUPTED_REVIEW_MESSAGE,
+                    },
+                    repository=repository,
+                    owner_user_id=owner_user_id,
+                )
+                summary["interrupted"] += 1
+        except Exception:  # pragma: no cover - per-matter best-effort.
+            summary["errors"] += 1
+            LOGGER.warning(
+                "Interrupted-review reconcile failed for matter %s", matter_id, exc_info=True
+            )
+
+    telemetry.increment("review_reconcile_interrupted", summary["interrupted"])
+    telemetry.increment("review_reconcile_completed", summary["completed"])
+    LOGGER.info(
+        "Interrupted-review reconcile: scanned=%d interrupted=%d completed=%d errors=%d "
+        "(pure status reconcile -- no re-enqueue, no AI call)",
+        summary["scanned"],
+        summary["interrupted"],
+        summary["completed"],
+        summary["errors"],
+    )
+    return summary
+
+
 def _perform_inbound_ai_review(
     matter_id: str,
     *,
@@ -644,11 +854,108 @@ def _perform_inbound_ai_review_locked(
     review_engine_func: ReviewEngineFn,
     is_on_demand: bool = False,
 ) -> None:
-    """The review body, assuming the concurrency bound is already held."""
+    """The review body, assuming the concurrency bound is already held.
+
+    WALL-CLOCK CAP (Task 3): the body is run under a per-job total deadline. The
+    per-socket ``urlopen`` timeout is per-operation, so a trickle-feeding endpoint
+    could otherwise hold this (single, slot-bounded) thread far past budget and
+    starve every other queued review. When ``review_job_deadline_seconds()`` is
+    positive the body runs in a daemon sub-thread that this thread ``join``s with
+    the deadline; on timeout we RECORD a terminal status and RETURN, freeing the
+    logical slot so the next queued job runs immediately.
+
+    RESIDUAL (documented, by design): Python threads cannot be force-killed, so the
+    timed-out body keeps running in its detached daemon thread until its own socket
+    timeout (``NDA_AI_TIMEOUT_SECONDS``) tears the dead call down on its own. We do
+    NOT block on it. Two benign consequences: (1) for a short window two review
+    bodies may overlap on the worker (the deadline trade is "free the slot" vs.
+    "wait for a wedged call"); (2) if the orphaned body somehow finishes LATE it may
+    persist its (real) result and re-stamp ``completed`` over our ``interrupted`` --
+    which is a strictly better user outcome (a finished review) than the stuck slot
+    we were escaping. When the deadline is non-positive the watchdog is disabled and
+    the body runs inline exactly as before.
+    """
 
     from . import telemetry
 
+    deadline = review_job_deadline_seconds()
+
     try:
+        if deadline <= 0:
+            # Watchdog disabled: run inline, prior behaviour.
+            _perform_inbound_ai_review_body(
+                matter_id,
+                repository=repository,
+                owner_user_id=owner_user_id,
+                review_engine_func=review_engine_func,
+                telemetry=telemetry,
+                is_on_demand=is_on_demand,
+            )
+        else:
+            _run_review_body_with_deadline(
+                matter_id,
+                repository=repository,
+                owner_user_id=owner_user_id,
+                review_engine_func=review_engine_func,
+                telemetry=telemetry,
+                is_on_demand=is_on_demand,
+                deadline=deadline,
+            )
+    finally:
+        # Sample peak RSS AFTER the review's allocations, whether it succeeded or
+        # failed, so even an OOM-adjacent failing review is measured.
+        _log_inbound_review_memory(matter_id)
+
+
+def _run_review_body_with_deadline(
+    matter_id: str,
+    *,
+    repository: MatterRepository,
+    owner_user_id: str,
+    review_engine_func: ReviewEngineFn,
+    telemetry: ModuleType,
+    is_on_demand: bool,
+    deadline: float,
+) -> None:
+    """Run the review body in a daemon sub-thread bounded by a wall-clock deadline.
+
+    On a clean finish (within budget) this is transparent -- identical to running
+    the body inline. On timeout it stamps a terminal ``interrupted`` status (the
+    same RECOVERABLE state a boot reconcile uses: the FE shows a calm Retry, nothing
+    auto-runs it) and RETURNS, releasing the slot. The detached body thread lives on
+    until its socket timeout; see the caller's RESIDUAL note. Fail-soft: a spawn
+    failure falls back to running the body inline (better an unbounded run than a
+    dropped review).
+    """
+
+    done = threading.Event()
+
+    def _runner() -> None:
+        try:
+            _perform_inbound_ai_review_body(
+                matter_id,
+                repository=repository,
+                owner_user_id=owner_user_id,
+                review_engine_func=review_engine_func,
+                telemetry=telemetry,
+                is_on_demand=is_on_demand,
+            )
+        finally:
+            done.set()
+
+    try:
+        worker = threading.Thread(
+            target=_runner,
+            name=f"inbound-ai-review-job-{matter_id}",
+            daemon=True,
+        )
+        worker.start()
+    except Exception:  # pragma: no cover - thread spawn failure: run inline instead.
+        LOGGER.warning(
+            "Review-deadline watchdog could not spawn for matter %s; running inline",
+            matter_id,
+            exc_info=True,
+        )
         _perform_inbound_ai_review_body(
             matter_id,
             repository=repository,
@@ -657,10 +964,34 @@ def _perform_inbound_ai_review_locked(
             telemetry=telemetry,
             is_on_demand=is_on_demand,
         )
-    finally:
-        # Sample peak RSS AFTER the review's allocations, whether it succeeded or
-        # failed, so even an OOM-adjacent failing review is measured.
-        _log_inbound_review_memory(matter_id)
+        return
+
+    finished = done.wait(timeout=deadline)
+    if finished:
+        return
+
+    # DEADLINE EXCEEDED: free the slot. Stamp a terminal RECOVERABLE status so the
+    # board/review polls stop reporting "in progress" forever and the user gets a
+    # calm Retry. The detached body thread keeps running until its socket timeout.
+    telemetry.increment("inbound_ai_review_deadline_exceeded")
+    LOGGER.warning(
+        "Inbound AI review exceeded the %.0fs job deadline for matter %s; freeing the "
+        "slot and stamping a recoverable interrupted status (the call dies on its own "
+        "socket timeout).",
+        deadline,
+        matter_id,
+    )
+    _stamp_review_status(
+        matter_id,
+        {
+            "review_status": REVIEW_STATUS_INTERRUPTED,
+            "review_error": (
+                "The review took too long and was stopped. Click Review to run it again."
+            ),
+        },
+        repository=repository,
+        owner_user_id=owner_user_id,
+    )
 
 
 def _perform_inbound_ai_review_body(
