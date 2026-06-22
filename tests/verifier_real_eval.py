@@ -41,14 +41,15 @@ The failure modes (named by the audit)
    to refute B's restriction.
 4. OVER-CLEAR GUARD -- a real, unambiguous FAIL (a hard non-compete). The
    verifier must NOT downgrade it to pass.
-5. REQUIRED-CLAUSE CONFIDENT-PASS COVERAGE -- a confident-but-WRONG PASS on a
-   REQUIRED clause (an unapproved governing law -- "the laws of the State of
-   Texas" -- mislabelled "approved"). On base 18e809cf ``_should_verify`` only
-   force-verified PROHIBITED passes, so a confident required PASS like this was
-   never re-checked and shipped untouched. Now the required family is force-
-   verified too: the verifier SEES this clause and must NOT affirm the wrong
-   clear (refute->review or uncertain are the safe answers; a sustained ``pass``
-   is the regression).
+5. NOT-CONFIDENT WRONG-PASS COVERAGE -- a NOT-confident (sub-threshold) but WRONG
+   PASS on a REQUIRED clause (an unapproved governing law -- "the laws of the
+   State of Texas" -- mislabelled "approved"). Under pure confidence-gating the
+   verifier second-looks a PASS only when the main AI is not confident about it
+   (the always-verify-by-clause-type exceptions, incl. governing_law, are gone --
+   a CONFIDENT wrong clear is now relied upon to be caught by the main reviewer's
+   own approved-list check). The verifier SEES this not-confident clause and must
+   NOT affirm the wrong clear (refute->review or uncertain are the safe answers; a
+   sustained ``pass`` is the regression).
 
 How to run
 ----------
@@ -189,9 +190,11 @@ def _required_govlaw_finding(
 ) -> Dict[str, object]:
     """A finalized governing_law (REQUIRED) clause result.
 
-    Shaped to pass ``_should_verify`` via the required-type force-verify path
-    (the coverage this branch adds), carrying the matched_text/evidence the
-    verifier reads. Used for the confident-but-wrong required-PASS case.
+    Under pure confidence-gating a PASS reaches ``_should_verify`` only when it is
+    NOT confident (confidence below the 0.85 threshold, or unknown) -- there is no
+    longer a required-type/clause-id always-verify path. Callers pass a sub-threshold
+    ``confidence`` for the not-confident-clear case so the finding reaches the verifier;
+    carries the matched_text/evidence the verifier reads.
     """
     return {
         "id": "governing_law",
@@ -379,22 +382,26 @@ def build_cases() -> List[Dict[str, object]]:
             "forbidden_decisions": [CLAUSE_DECISION_PASS],
         },
         {
-            "name": "required_govlaw_confident_wrong_pass_must_not_sustain_clear",
-            "failure_mode": "required_clause_confident_pass_coverage",
+            "name": "required_govlaw_uncertain_wrong_pass_must_not_sustain_clear",
+            "failure_mode": "uncertain_required_pass_coverage",
             "finding": _required_govlaw_finding(
-                # A CONFIDENT PASS (0.9) on a REQUIRED clause -- exactly what base
-                # 18e809cf skipped. The branch's required-family force-verify is what
-                # gets this finding in front of the verifier at all.
+                # PURE CONFIDENCE-GATING: a CONFIDENT govlaw PASS now SKIPS the verifier
+                # (the always-verify exception was removed -- the MAIN reviewer's own
+                # approved-list check is relied upon for a confident clear, e.g. the
+                # historical Texas incident). The verifier's remaining job on a PASS is to
+                # second-look only what the main AI is NOT confident about, so this case
+                # is a sub-threshold (0.5) govlaw clear: the AI cleared it but was unsure,
+                # which is exactly what the verifier must catch.
                 decision=CLAUSE_DECISION_PASS,
                 matched_text=_UNAPPROVED_GOVLAW_TEXT,
                 reason="Governing law present and approved.",
-                confidence=0.9,
+                confidence=0.5,
             ),
             "source_text": _UNAPPROVED_GOVLAW_TEXT,
             "contract_structure": None,
-            # Texas is NOT an approved governing law, so the confident PASS is wrong.
-            # The verifier must refute it (-> review) or flag uncertain; sustaining
-            # the ``pass`` is the regression this coverage fix exists to catch.
+            # Texas is NOT an approved governing law, so the (not-confident) PASS is
+            # wrong. The verifier must refute it (-> review) or flag uncertain; sustaining
+            # the ``pass`` is the regression this coverage case exists to catch.
             "forbidden_decisions": [CLAUSE_DECISION_PASS],
         },
     ]

@@ -536,7 +536,8 @@
     "verifier": {
       "verdict": "refute",
       "confidence": 0.98,
-      "rationale": "This is a negated disclaimer, not an operative business restraint."
+      "rationale": "This is a negated disclaimer, not an operative business restraint.",
+      "reviewer_confidence": 0.5
     },
     "expected": {
       "decision": "review"
@@ -588,7 +589,8 @@
     "verifier": {
       "verdict": "refute",
       "confidence": 0.98,
-      "rationale": "This is only about legal compliance and does not restrict dealings with introduced parties or commercial opportunities."
+      "rationale": "This is only about legal compliance and does not restrict dealings with introduced parties or commercial opportunities.",
+      "reviewer_confidence": 0.5
     },
     "expected": {
       "decision": "review"
@@ -644,7 +646,8 @@
     "verifier": {
       "verdict": "refute",
       "confidence": 0.95,
-      "rationale": "This is a prohibited non-compete restriction, not an acceptable NDA confidentiality term."
+      "rationale": "This is a prohibited non-compete restriction, not an acceptable NDA confidentiality term.",
+      "reviewer_confidence": 0.5
     },
     "expected": {
       "decision": "review"
@@ -661,7 +664,8 @@
     "verifier": {
       "verdict": "refute",
       "confidence": 0.95,
-      "rationale": "This is a prohibited IP assignment position in an NDA."
+      "rationale": "This is a prohibited IP assignment position in an NDA.",
+      "reviewer_confidence": 0.5
     },
     "expected": {
       "decision": "review"
@@ -678,7 +682,8 @@
     "verifier": {
       "verdict": "refute",
       "confidence": 0.95,
-      "rationale": "This is a prohibited liquidated-damages or penalty position."
+      "rationale": "This is a prohibited liquidated-damages or penalty position.",
+      "reviewer_confidence": 0.5
     },
     "expected": {
       "decision": "review"
@@ -695,7 +700,8 @@
     "verifier": {
       "verdict": "refute",
       "confidence": 0.95,
-      "rationale": "This is a prohibited auto-renewal and no-termination lock."
+      "rationale": "This is a prohibited auto-renewal and no-termination lock.",
+      "reviewer_confidence": 0.5
     },
     "expected": {
       "decision": "review"
@@ -815,12 +821,13 @@
     "kind": "verifier",
     "high_risk": true,
     "label_source": "category_a",
-    "label_note": "Category-A /tmp/catA/case4 (compound monster: notwithstanding-kills-carveouts + MSA shall-prevail + 18-month non-compete framed as a use restriction in §4.1). Ground truth = FAIL on each defect; the operative non-compete restraint must not pass clean. The AI-first stub misses the buried restraint and clears non_circumvention; the adversarial verifier refutes the hallucinated clear, downgrading it to review.",
+    "label_note": "Category-A /tmp/catA/case4 (compound monster: notwithstanding-kills-carveouts + MSA shall-prevail + 18-month non-compete framed as a use restriction in §4.1). Ground truth = FAIL on each defect; the operative non-compete restraint must not pass clean. The AI-first stub clears non_circumvention but is NOT confident (reviewer_confidence below threshold); under pure confidence-gating that not-confident clear is exactly what the verifier second-looks, and the adversarial verifier refutes the hallucinated clear, downgrading it to review.",
     "text": "MUTUAL NON-DISCLOSURE AGREEMENT\n\nThis Mutual Non-Disclosure Agreement (this \"Agreement\") is entered into as of 19 February 2026 (the \"Effective Date\") by and between Initech LLC, a limited liability company organised under the laws of the State of Delaware with offices at 500 Technology Drive, Wilmington, Delaware 19801, United States (\"Initech\"), and Aspora Technologies Limited, a company incorporated under the laws of England and Wales with offices at 70 St Mary Axe, London EC3A 8BE, United Kingdom (\"Aspora\"). Each is a \"Party\" and together the \"Parties.\"\n\nRECITALS\n\nWHEREAS, the Parties have an existing Master Services Agreement and wish to exchange confidential information in connection with a potential expansion of their relationship (the \"Purpose\"); and\n\nWHEREAS, the Parties wish to protect such information on the terms set out below.\n\nNOW, THEREFORE, the Parties agree as follows.\n\n1. Confidential Information\n\n1.1 \"Confidential Information\" means any and all non-public business, financial, technical, customer, supplier, pricing, and proprietary information disclosed by either party, in any form, together with the existence and terms of this Agreement. Notwithstanding anything to the contrary in this Agreement, the standard exclusions in Section 2 shall not apply where the Discloser notifies the Recipient that it considers the information sensitive.\n\n2. Exclusions\n\n2.1 Confidential Information does not include information that (a) is or becomes publicly available through no fault of the Recipient; (b) was already lawfully known to the Recipient without obligation of confidentiality; (c) is rightfully received from a third party without obligation of confidentiality; or (d) is independently developed by the Recipient without use of the Confidential Information.\n\n3. Obligations and Relationship to Other Agreements\n\n3.1 The Recipient shall hold the Confidential Information in confidence, use it solely to evaluate the relationship, and protect it with at least reasonable care.\n\n3.2 All obligations of the parties under this Agreement are subject to, and shall be construed in accordance with, the terms of the Master Services Agreement between the parties dated 1 January 2024, the terms of which are incorporated herein by reference and shall prevail in the event of any conflict.\n\n4. Use Restriction\n\n4.1 The Recipient shall use the Confidential Information solely to evaluate and pursue the Purpose. The Recipient shall, during the term of this Agreement and for a period of eighteen (18) months following its termination, not use any Confidential Information, nor any knowledge or relationships derived from it, to participate in, advise, or invest in any business that is engaged in activities competitive with the Discloser in the field to which the Confidential Information relates.\n\n5. Permitted Disclosures\n\n5.1 The Recipient may disclose Confidential Information to the extent required by applicable law, regulation, or legal process, provided that, where lawful and practicable, it gives the Discloser prompt prior written notice.\n\n6. Term and Survival\n\n6.1 This Agreement remains in effect for two (2) years, and the confidentiality obligations survive for two (2) years from the date of disclosure.\n\n7. Governing Law and Jurisdiction\n\n7.1 This Agreement shall be governed by the laws of Delaware.\n\n7.2 The parties submit to the exclusive jurisdiction of the state and federal courts located in the State of Delaware.\n\n8. Data Protection\n\n8.1 Each party shall comply with applicable data protection laws in respect of any personal data processed in connection with the Purpose.\n\n9. Intellectual Property\n\n9.1 All Confidential Information remains the property of the Discloser. No licence under any intellectual property right is granted except the limited right to use the Confidential Information for the Purpose.\n\n10. No Warranty\n\n10.1 All Confidential Information is provided \"as is,\" and neither party warrants its accuracy or completeness.\n\n11. Return or Destruction\n\n11.1 Upon the Discloser's written request, or on expiry or termination, the Recipient shall promptly return or destroy the Confidential Information, subject to one archival copy retained as required by law.\n\n12. General\n\n12.1 Entire Agreement. Subject to Section 3.2, this Agreement is the entire agreement between the parties on the subject matter of confidentiality.\n\n12.2 Amendment; Waiver. Any amendment or waiver must be in writing and signed by both parties.\n\n12.3 Severability. If any provision is held unenforceable, the remainder shall continue in effect.\n\n12.4 Counterparts. This Agreement may be executed in counterparts, including by electronic signature.\n\n13. Signatures\n\nSigned for and on behalf of Initech LLC\n\nBy: _______________________________\n\nName: ____________________\n\nTitle: ____________________\n\nDate: ____________________\n\nSigned for and on behalf of Aspora Technologies Limited\n\nBy: _______________________________\n\nName: ____________________\n\nTitle: ____________________\n\nDate: ____________________\n",
     "verifier": {
       "verdict": "refute",
       "confidence": 0.95,
-      "rationale": "The §4.1 18-month non-compete framed as a use restriction is a prohibited operative restraint the clear missed; refute the pass."
+      "rationale": "The §4.1 18-month non-compete framed as a use restriction is a prohibited operative restraint the clear missed; refute the pass.",
+      "reviewer_confidence": 0.5
     },
     "expected": {
       "decision": "review",

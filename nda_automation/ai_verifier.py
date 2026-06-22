@@ -18,9 +18,11 @@ Design constraints (see task #15):
   DeepSeek verifier model. When the AI verifier is not enabled (or not keyed) the
   second pass is a true NO-OP -- it returns the reviewer's findings untouched
   rather than re-judging them with any deterministic/regex code.
-- Cost-aware. High-confidence ``pass`` findings are skipped by default -- the
-  verifier exists to catch *misclassifications*, and an adversarial second look
-  is most valuable on escalations (fail/review) and low-confidence clears.
+- Cost-aware, PURE confidence-gating. A high-confidence ``pass`` is skipped for
+  EVERY clause type (no always-verify-by-clause-type exceptions) -- the verifier
+  exists to catch *misclassifications*, and an adversarial second look is spent
+  only on what the main AI is not confident about: every escalation (fail/review)
+  and every low/unknown-confidence pass.
 
 The verifier is the accuracy lever: a single keyword checker can fire ``fail`` on
 a freedom-to-deal carve-out ("shall not be restricted from dealing with introduced
@@ -72,36 +74,12 @@ _VERDICTS = {VERIFIER_VERDICT_AFFIRM, VERIFIER_VERDICT_REFUTE, VERIFIER_VERDICT_
 # trust; escalations are where misclassifications hurt, so they are always checked.
 _VERIFIABLE_DECISIONS = {CLAUSE_DECISION_FAIL, CLAUSE_DECISION_REVIEW}
 
-# A pass at or above this confidence is trusted without spending a verifier call.
-# Below it (or when confidence is unknown) a pass is still cheap insurance to check.
+# PURE CONFIDENCE-GATING: a PASS at or above this confidence is trusted without
+# spending a verifier call -- for EVERY clause type. Below it (or when confidence is
+# unknown) a PASS is still cheap insurance to check. There are no always-verify-by-
+# clause-type exceptions: the verifier second-looks only what the main AI is not
+# confident about (low-confidence passes + every FAIL/REVIEW outcome).
 HIGH_CONFIDENCE_PASS_THRESHOLD = 0.85
-
-# Clause ids that are ALWAYS adversarially re-checked on a PASS regardless of
-# confidence. These are the high-blast-radius judgements where a confident-but-wrong
-# clear (a real quote, a wrong *judgement* about it -- e.g. an unapproved governing
-# law called "approved", or an over-long survival term read as fine) slips past the
-# grounding gate (you cannot quote an ABSENT clause, and a real quote with a wrong
-# judgement still looks grounded), so the latency of a second look is worth it even
-# on a confident pass.
-#
-# REGRESSION GUARD: this codebase has ALREADY shipped a bug where dropping the
-# confident-PASS verify let a wrong "approved governing law = Texas" slip through.
-# So the narrowing keeps the high-blast-radius required clauses (governing_law +
-# term_and_survival) AND all prohibited clauses always-verified -- it only relaxes the
-# LOWER-risk confident required passes (mutuality/signatures) that were force-verifying
-# every review and blew the review-poll latency budget.
-#
-# confidential_information is HERE (not relaxed) because it is the core protective
-# clause of an NDA: a confident-but-WRONG pass there ships an under-protective
-# agreement, and the grounding gate cannot catch a wrong *judgement* about a real
-# quote (the cited definition/exclusions text is genuinely present -- the verdict
-# that it is adequate is the error). The relaxation would trust that verdict on the
-# reviewer's uncalibrated self-reported confidence alone; adversarial live-testing
-# found no hole on the current prod model but that safety depends on the model's
-# calibration, so CI keeps the always-verify backstop here.
-ALWAYS_VERIFY_PASS_CLAUSE_IDS = frozenset(
-    {"governing_law", "term_and_survival", "confidential_information"}
-)
 
 # A refute below VERIFIER_MIN_CONFIDENCE is too hesitant to act on confidently --
 # it still routes to human review (the verifier never flips silently).
@@ -536,41 +514,36 @@ def _playbook_guidance_for_verifier(clause: Mapping[str, object]) -> Dict[str, o
 
 
 def _should_verify(clause: Mapping[str, object]) -> bool:
+    # PURE CONFIDENCE-GATING: the verifier second-looks ONLY what the main AI is not
+    # confident about. There are NO always-verify-by-clause-type exceptions left --
+    # prohibited, governing_law, term_and_survival, confidential_information,
+    # mutuality, and signatures are all gated identically by confidence.
+    #
+    # FAIL and REVIEW outcomes are always verified: those are the AI's own flagged /
+    # not-confident outcomes (not confident passes), so they stay in scope -- exactly
+    # "only what it's not confident about".
     decision = str(clause.get("decision") or "")
     if decision in _VERIFIABLE_DECISIONS:
         return True
     if decision == CLAUSE_DECISION_PASS:
-        # A prohibited-clause pass asserts the restriction is ABSENT -- a claim no
-        # quote can ground (you cannot quote absent text), so the grounding gate
-        # cannot catch a hallucinated clear. Always second-look it, even at high
-        # confidence.
-        clause_type = str(clause.get("type") or "").strip().lower()
-        if clause_type == "prohibited":
-            return True
-        # The high-blast-radius EXCEPTIONS: governing_law (a wrong "approved governing
-        # law" writes a non-court venue into a signed NDA), term_and_survival (a wrong
-        # survival/term judgement), and confidential_information (the core protective
-        # clause -- a wrong "adequate" verdict ships an under-protective NDA), where the
-        # grounding gate cannot catch a wrong *judgement* about a real quote. These are
-        # ALWAYS re-checked on a PASS regardless of confidence.
-        if str(clause.get("id") or "").strip().lower() in ALWAYS_VERIFY_PASS_CLAUSE_IDS:
-            return True
-        # Otherwise the verifier runs ONLY when the main AI is UNCERTAIN about the
-        # pass. A high-confidence PASS of a LOWER-risk clause (the relaxed required
-        # family -- mutuality/signatures -- and any non-required type) is trusted
-        # WITHOUT a second pass; force-verifying every required clause is what put the
-        # verifier on the critical path and blew the review-poll latency budget.
+        # A PASS is re-checked ONLY when the main AI is UNCERTAIN about it: confidence
+        # is unknown, or below HIGH_CONFIDENCE_PASS_THRESHOLD. A CONFIDENT (>=0.85) PASS
+        # of ANY clause type now SKIPS the verifier.
+        #
         # Unknown confidence is the MOST suspicious signal -- a PASS with no confidence
         # (e.g. via the deterministic checker path) cannot be trusted as a confident
         # clear, so verify it. Otherwise only spend a call on a *low*-confidence pass;
         # trust confident clears.
         #
-        # CALIBRATION DEPENDENCY: relaxing mutuality/signatures trusts the reviewer's
-        # self-reported confidence to decide a confident PASS is safe to skip. That is
-        # only sound while the reviewer model (NDA_AI_MODEL) is well-calibrated -- it
-        # was validated against the current prod model. Re-validate this relaxation
-        # (and reconsider which ids belong in ALWAYS_VERIFY_PASS_CLAUSE_IDS) whenever
-        # NDA_AI_MODEL changes.
+        # CALIBRATION DEPENDENCY: this trusts the reviewer's self-reported confidence to
+        # decide a confident PASS is safe to skip. That is only sound while the reviewer
+        # model (NDA_AI_MODEL) is well-calibrated -- it was validated against the current
+        # prod model. RE-TEST this gate whenever NDA_AI_MODEL changes.
+        #
+        # HISTORICAL NOTE: the governing_law "unapproved-law confident pass" regression
+        # (the Texas incident -- a wrong "approved governing law = Texas" clearing) is now
+        # relied upon to be caught by the MAIN reviewer's own approved-list check, NOT by
+        # a verifier always-verify backstop.
         confidence = _confidence(clause)
         return confidence is None or confidence < HIGH_CONFIDENCE_PASS_THRESHOLD
     return False
