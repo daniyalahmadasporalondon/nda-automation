@@ -67,6 +67,21 @@ NON_PERSISTENT_DATA_DIR_WARNING = (
     "on every restart). Verify the persistent disk is actually mounted at NDA_DATA_DIR."
 )
 
+# Operational-warning code + copy surfaced PROMINENTLY in the Admin view (via
+# routes/admin._operational_warnings) when storage is non-durable.  This is the
+# loud, user-facing twin of the admin-gated deployment-status `data_dir_persistence`
+# check: it tells the operator -- in plain language, right where they publish a
+# Playbook or save a signing entity -- that those edits will NOT survive the next
+# redeploy.  The ROOT fix is the Render persistent disk (Starter tier; render.yaml
+# already configures it), so the copy names that action explicitly.  No emoji per
+# Principle 5.
+STORAGE_NOT_DURABLE_WARNING_CODE = "storage_not_durable"
+STORAGE_NOT_DURABLE_WARNING_MESSAGE = (
+    "Storage is not durable - published Playbook changes and signing-entity edits "
+    "will be lost on the next redeploy. Enable a Render persistent disk (Starter "
+    "tier) so NDA_DATA_DIR survives a restart and these edits stick."
+)
+
 # Per-deploy / per-instance identity Render injects at runtime.  RENDER_GIT_COMMIT
 # changes on every code deploy; RENDER_INSTANCE_ID changes on every (re)start of the
 # running instance.  Together they let us tell a GENUINE FIRST BOOT (no sentinel,
@@ -240,6 +255,49 @@ def _first_env_value(env_names: tuple[str, ...]) -> str | None:
 
 def data_dir_persistence_state() -> str:
     return _data_dir_persistence_state
+
+
+def storage_is_non_durable() -> bool:
+    """True when persisted state will NOT survive the next redeploy.
+
+    Combines the two POSITIVE, host-independent non-durability signals so the
+    classification never false-positives on a healthy fresh deploy:
+
+    * the boot sentinel proved a WIPE (``DATA_DIR_NOT_PERSISTED``) -- a prior
+      deploy's sentinel that should have survived a restart vanished; or
+    * ``NDA_DATA_DIR`` IS set but resolves to an ephemeral path (``/tmp`` etc.) --
+      a config regression the path denylist catches deterministically.
+
+    Deliberately does NOT fire on the advisory ``unknown`` verdict (a genuine
+    FIRST boot on a healthy durable disk is indistinguishable from a wipe until a
+    restart preserves the sentinel) -- that would flag every fresh durable deploy
+    red.  In local dev (no ``NDA_DATA_DIR``) nothing fires.  Never raises.
+    """
+    try:
+        if _data_dir_persistence_state == DATA_DIR_NOT_PERSISTED:
+            return True
+        if os.environ.get("NDA_DATA_DIR") and _is_ephemeral_storage_path(matter_store.DATA_DIR):
+            return True
+    except Exception:  # pragma: no cover - classification must never crash a caller.
+        return False
+    return False
+
+
+def storage_durability_warning() -> dict[str, str] | None:
+    """The prominent non-durable-storage operational warning, or ``None``.
+
+    Returns the ``storage_not_durable`` warning (code + message) when
+    :func:`storage_is_non_durable` is True, so the Admin view surfaces -- right
+    where an operator publishes a Playbook or saves a signing entity -- that the
+    edit will be lost on the next redeploy.  ``None`` (no warning) when storage is
+    durable, unknown, or local dev.  Never raises.
+    """
+    if storage_is_non_durable():
+        return {
+            "code": STORAGE_NOT_DURABLE_WARNING_CODE,
+            "message": STORAGE_NOT_DURABLE_WARNING_MESSAGE,
+        }
+    return None
 
 
 def data_dir_boot_count() -> int:
