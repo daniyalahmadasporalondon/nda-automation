@@ -704,7 +704,7 @@
       <p><strong>What you can filter by (facets):</strong></p>
       <ul>
         <li><strong>Stage</strong> — where the NDA sits in the workflow (Generated, Inbox, In Review, Reviewed, Sent, Upload).</li>
-        <li><strong>Source</strong> — In app, On file (Drive), or both.</li>
+        <li><strong>Source</strong> — <span class="ui">In app</span>, <span class="ui">In app + Drive</span>, or <span class="ui">On file (Drive)</span>.</li>
         <li><strong>Flags</strong> — Repeat entity, Duplicate document, Drive copy.</li>
         <li><strong>Governing law</strong>, <strong>Non-solicit</strong>, <strong>Non-compete</strong>, <strong>Mutuality</strong> (Mutual / One-way), <strong>Term length</strong> (e.g. 3–5 years), <strong>Review outcome</strong> (Clean / Needs review / Has fail), <strong>Restraint type</strong>, and <strong>Origin</strong> (Generated / Received).</li>
       </ul>
@@ -796,7 +796,7 @@
       </ul>
       <p><strong>Safeguards worth knowing:</strong></p>
       <ul>
-        <li><strong>No duplicate envelopes.</strong> Once an NDA is out for signature, the button becomes inert and relabels to <span class="ui">Sent for signature</span> — a second click can't send a second copy. (A legitimate resend is only allowed after an envelope is finished, declined, or voided.)</li>
+        <li><strong>Hard to re-trigger by accident.</strong> Once an NDA is out for signature, the button relabels to a status view and a <span class="ui">Sent for signature</span> badge appears — so the screen no longer offers a fresh "send," and you won't accidentally re-trigger it from there.</li>
         <li><strong>DocuSign not connected?</strong> You'll get a clear message: <em>"DocuSign isn't connected — connect it in Admin → Integrations,"</em> often with a one-click link to connect.</li>
         <li>You must <strong>save the NDA first</strong> (and, in the Review workstation, run the AI review) before the button will let you send.</li>
       </ul>
@@ -828,7 +828,7 @@
           </ul>
         </li>
         <li><strong>NDA type</strong> — today the app produces a <strong>mutual</strong> NDA, meaning both sides protect each other's information.</li>
-        <li><strong>Term</strong> — how many years the NDA lasts, set with a <span class="ui">+ / −</span> stepper. Minimum is <strong>1 year</strong>; the maximum is set by your playbook — currently <strong>5 years</strong>. If you type a bigger number (say 10), it's automatically reduced to the cap, and the form tells you it was capped.</li>
+        <li><strong>Term</strong> — how many years the NDA lasts, set with a <span class="ui">+ / −</span> stepper. Minimum is <strong>1 year</strong>; the maximum is set by your playbook — currently <strong>5 years</strong>. If you type a bigger number (say 10), it's silently clamped to the cap as you type. A standing hint — <em>"Playbook caps the term at 5 years"</em> — is always shown beside the field so you know the limit up front.</li>
         <li><strong>Purpose / project</strong> (optional) — a short note on why the two companies are talking, e.g. "evaluating a payments partnership."</li>
         <li><strong>Governing law &amp; court</strong> — shown as <strong>read-only text</strong>. You don't fill these in; they're set automatically by the signing entity you picked.</li>
       </ol>
@@ -995,7 +995,7 @@
       <h4>Inbound search terms</h4>
       <p>An editable list of words the app shows as hints for deciding whether an email is an NDA (e.g. "NDA," "non-disclosure agreement," "confidentiality agreement"). Most people never need to touch this.</p>
       <div class="callout warn">
-        <strong>Heads-up:</strong> today this field saves and displays your words but does <strong>not yet</strong> change which emails are detected as NDAs — detection currently uses a fixed, built-in vocabulary. See the Admin tab for the full explanation.
+        <strong>Heads-up:</strong> today this field is <strong>informational</strong> — detection uses a fixed, built-in vocabulary, so your saved words are stored and shown back but don't change which emails are detected as NDAs. An optional, off-by-default setting that lets your custom terms influence detection is being added. See the Admin tab for the full explanation.
       </div>
 
       <h4>Sync history</h4>
@@ -1106,7 +1106,7 @@
         <li><strong>Gmail — sync frequency</strong> — Always on (every 1 min), 10 min, 30 min, 1 hour, or 2 hours.</li>
         <li><strong>Gmail — import limit (per-poll cap)</strong> — how many new messages a single scan processes. Set 1–40; the app caps at 40.</li>
         <li><strong>Gmail — inbound window (days)</strong> — how far back the inbox scan looks. Default 90 days; settable from 1 to about 3,650 days (~10 years). <em>This is editable</em> (it was previously a fixed 90).</li>
-        <li><strong>Gmail — inbound search terms</strong> — a list of NDA-related words. <strong>Read the caveat below</strong> — today this saves and displays but does not actually change detection.</li>
+        <li><strong>Gmail — inbound search terms</strong> — a list of NDA-related words. <strong>Read the caveat below</strong> — today these are informational; detection uses a fixed, built-in vocabulary.</li>
         <li><strong>Gmail — NDA intake criteria</strong> — free-text guidance fed to the AI that classifies whether an inbound email is an NDA. Leave empty for the built-in default. It changes <em>only</em> the NDA / NOT-NDA judging criteria, not the fixed security rules or output format. Max ~8,000 characters.</li>
         <li><strong>Personalisation — your signature</strong> — your sign-off, signature name, and full block. Every user sets their own; an admin can set the shared default.</li>
         <li><strong>Drive — connection and auto-filing</strong> — connect Google Drive, choose a folder, toggle auto-filing of new matters.</li>
@@ -1115,7 +1115,7 @@
 
       <h3>Important caveats / known limits</h3>
       <div class="callout warn">
-        <strong>"Inbound search terms" does NOT change NDA detection (today).</strong> This is the biggest gotcha. The field saves your words and shows them back, <strong>but it does not currently change which inbound emails get detected and imported as NDAs.</strong> In plain terms: the inbox scan fetches a structural envelope (every Word/PDF attachment in the window that you didn't send) — the keyword list isn't part of that fetch. After fetching, the system scores each attachment for "NDA-ness" using a fixed, built-in vocabulary baked into the code, not the words you typed. So your saved terms are stored and displayed as a hint, but no detection decision reads them yet. Editing the field is safe — it just won't change behaviour. (Wiring the configured terms into the scorer is an engineering change, gated behind a feature flag that is not enabled today.)
+        <strong>"Inbound search terms" are informational today.</strong> The field saves your words and shows them back, <strong>but right now detection uses a fixed, built-in vocabulary — your saved terms don't change which inbound emails get detected and imported as NDAs.</strong> In plain terms: the inbox scan fetches a structural envelope (every Word/PDF attachment in the window that you didn't send) — the keyword list isn't part of that fetch. After fetching, the system scores each attachment for "NDA-ness" using that fixed, built-in vocabulary baked into the code, not the words you typed. So your saved terms are stored and displayed as a hint, but no detection decision reads them yet. Editing the field is safe — it just won't change behaviour. (An optional, off-by-default setting that lets your custom terms influence detection is being added; until you turn it on, the built-in vocabulary is what decides.)
       </div>
       <div class="callout warn">
         <strong>Some settings can be "pinned" by the deployment.</strong> A few controls can be overridden by the environment the app runs in; when that happens the UI says so and locks the control. For example: the <strong>AI Runtime engine</strong> can be pinned ("Runtime settings are pinned by the backend environment" — your save is ignored by design); the <strong>AI key source</strong> can be an environment key that clearing the in-app key won't remove; the <strong>Gmail import limit</strong> falls back to an environment default when no in-app value is set.
@@ -1199,7 +1199,7 @@
       <div class="letter">F</div>
       <dl>
         <dt>Fail</dt><dd>Verdict meaning the clause clearly breaks a Playbook rule (a required clause is missing, a clause is present but wrong, or a forbidden clause is present). The app flags it and proposes a redline to fix it. Shown in red.</dd>
-        <dt>Flag (feature flag)</dt><dd>A switch, usually set in the environment, that turns a piece of behaviour on or off without changing the app's screens. Some behaviour (for example, wiring the saved "inbound search terms" into actual detection, or the AI verifier pass) depends on such a flag being enabled in the deployment — so a field can appear in the UI yet have no effect until the flag is on.</dd>
+        <dt>Flag (feature flag)</dt><dd>A switch, usually set in the environment, that turns a piece of behaviour on or off without changing the app's screens. Some behaviour (for example, the optional setting that lets your custom "inbound search terms" influence detection, or the AI verifier pass) depends on such a switch being enabled in the deployment — so a field can appear in the UI yet have no effect until the switch is on. The inbound-search-terms switch is off by default; today those terms are informational and detection uses a fixed, built-in vocabulary.</dd>
       </dl>
 
       <div class="letter">G</div>
