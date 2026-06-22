@@ -233,6 +233,15 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
             paragraphs.append(paragraph)
 
     if not paragraphs:
+        # No text layer (scanned / image-only PDF). Try the OCR fallback FIRST. It
+        # is DEFAULT-OFF and self-gating: when OCR is disabled/unconfigured/fails it
+        # returns None and we re-raise the SAME clear error below -- never an empty
+        # or garbage "review". When it recovers text, that text is fed through the
+        # existing TEXT-ONLY splitter so the never-merge-safe heuristics stay in
+        # force (OCR yields flat text, exactly like the visitor-unsupported path).
+        ocr_extraction = _try_ocr_fallback(data, page_count=page_count)
+        if ocr_extraction is not None:
+            return ocr_extraction
         raise PdfExtractionError("No readable text was found in the PDF. Scanned PDFs need OCR before review.")
     extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraphs)
     visual_profile = _pdf_visual_profile(data)
@@ -251,6 +260,75 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
     # recovered 2-column table cells under quality["visual_profile"], which the
     # one-dimensional prose splitter flattens. It NEVER raises.
     quality = augment_quality_with_tables(quality, data)
+    return PdfExtraction(paragraphs=paragraphs, quality=quality)
+
+
+def _try_ocr_fallback(data: bytes, *, page_count: int) -> PdfExtraction | None:
+    """Recover text from a no-text-layer (scanned) PDF via the OCR fallback.
+
+    Returns a ``PdfExtraction`` built from OCR'd text when the DEFAULT-OFF OCR
+    fallback is enabled, configured AND recovered real text; otherwise ``None``
+    so the caller re-raises the original clear scanned-reject error.
+
+    The OCR text is FLAT (no geometry), so it is split with the TEXT-ONLY
+    ``_split_pdf_paragraphs`` -- the same never-merge-safe path the
+    visitor-unsupported flat-text case already uses. Each recovered paragraph is
+    flagged ``{"ocr": True}`` and the quality report carries an ``ocr_recovered``
+    flag plus a warning so downstream never mistakes OCR'd text for a clean text
+    layer. NEVER raises and NEVER returns an empty extraction.
+    """
+
+    try:
+        from .pdf_ocr import ocr_pdf_text
+    except Exception:
+        return None
+
+    try:
+        ocr_text = ocr_pdf_text(data)
+    except Exception:
+        # ocr_pdf_text is fail-safe by contract, but belt-and-suspenders: any
+        # surprise degrades to the unchanged scanned-reject.
+        return None
+    if not ocr_text or not ocr_text.strip():
+        return None
+
+    lines = _normalized_lines(ocr_text)
+    paragraph_texts = [text for text in _split_pdf_paragraphs(lines) if text.strip()]
+    if not paragraph_texts:
+        return None
+
+    paragraphs: List[Paragraph] = []
+    for paragraph_text in paragraph_texts:
+        paragraph: Paragraph = {
+            "id": f"p{len(paragraphs) + 1}",
+            "source_index": len(paragraphs) + 1,
+            "source_part": "pdf",
+            "page_number": 1,
+            "text": paragraph_text,
+            "ocr": True,
+        }
+        paragraphs.append(paragraph)
+
+    extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraphs)
+    quality = _pdf_quality_report(
+        page_count=page_count,
+        pages_with_text=0,
+        pages_without_text=page_count,
+        extracted_text=extracted_text,
+        paragraph_count=len(paragraphs),
+        repeated_margin_count=0,
+        visual_profile=None,
+    )
+    quality["ocr_recovered"] = True
+    warnings = quality.get("warnings")
+    if isinstance(warnings, list):
+        warnings.append({
+            "type": "pdf_ocr_recovered",
+            "message": (
+                "This PDF had no text layer; the text was recovered by OCR and may "
+                "contain transcription errors. Verify against the original document."
+            ),
+        })
     return PdfExtraction(paragraphs=paragraphs, quality=quality)
 
 
