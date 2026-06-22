@@ -938,6 +938,10 @@ class ServerTests(unittest.TestCase):
         # auth-focused tests), so the allow case asserts a clean 200 on the gate.
         ("POST", "/api/ai/settings", {"enabled": False}),
         ("POST", "/api/admin/personalisation-settings", {"sign_off": "Best,"}),
+        # Gmail settings writes (window/import-limit/search-terms/enable switches)
+        # drive the inbound NDA intake fetch, so the whole route is admin-gated. A
+        # valid in-band window proves the denial is authorization (403), not a 400.
+        ("POST", "/api/gmail/settings", {"inbound_window_days": 30}),
     )
 
     def _google_oauth_auth_env(self, **overrides):
@@ -7377,14 +7381,79 @@ class ServerTests(unittest.TestCase):
                 non_str = self._patch_gmail_settings({"intake_playbook": 123})
                 self.assertEqual(non_str.status, 400)
 
+    def test_gmail_settings_patch_accepts_and_rejects_inbound_window_days(self):
+        # POST /api/gmail/settings with a valid in-band window persists, drives the
+        # effective inbound query's newer_than:{N}d clause, and is audited; out-of-band
+        # / non-numeric input returns a 400 and leaves the stored value untouched.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                # Valid value persists.
+                ok = self._patch_gmail_settings({"inbound_window_days": 30})
+                self.assertEqual(ok.status, 200)
+                body = json.loads(ok.read().decode("utf-8"))
+                self.assertEqual(body["gmail_settings"]["inbound_window_days"], 30)
+                self.assertEqual(app_settings.gmail_settings()["inbound_window_days"], 30)
+
+                # The EFFECTIVE inbound query now carries the configured window.
+                self.assertIn("newer_than:30d", gmail_integration._default_inbound_query())
+                self.assertIn(
+                    "newer_than:30d",
+                    body["gmail"]["inbound"]["query"],
+                    "the status payload's inbound query reflects the saved window",
+                )
+                self.assertEqual(body["gmail"]["inbound_window_days"], 30)
+                self.assertEqual(body["gmail"]["inbound_window_days_default"], 90)
+
+                # The change is audited.
+                audit = app_settings.settings_audit_history()
+                self.assertTrue(audit, "a settings audit event is recorded")
+                self.assertEqual(audit[0]["action"], "gmail_settings_update")
+                self.assertIn(
+                    "gmail.inbound_window_days",
+                    [change["setting"] for change in audit[0]["changes"]],
+                )
+
+                # The widened ceiling (~10 years) is accepted and drives the query.
+                wide = self._patch_gmail_settings({"inbound_window_days": 3650})
+                self.assertEqual(wide.status, 200)
+                self.assertEqual(
+                    json.loads(wide.read().decode("utf-8"))["gmail_settings"]["inbound_window_days"],
+                    3650,
+                )
+                self.assertIn("newer_than:3650d", gmail_integration._default_inbound_query())
+                # Reset to 30 so the rejected-save assertion below has a stable baseline.
+                self._patch_gmail_settings({"inbound_window_days": 30})
+
+                # Out-of-band / bad input is rejected with a 400; stored value holds.
+                # 3651 is one past the new ceiling; 99999 is far past it.
+                for bad in (0, -5, 3651, 99999, "abc", True):
+                    rejected = self._patch_gmail_settings({"inbound_window_days": bad})
+                    self.assertEqual(rejected.status, 400, f"window={bad!r} should 400")
+                    self.assertIn("error", json.loads(rejected.read().decode("utf-8")))
+                self.assertEqual(
+                    app_settings.gmail_settings()["inbound_window_days"],
+                    30,
+                    "a rejected save never mutates the stored window",
+                )
+
     def _patch_gmail_settings(self, payload):
         from nda_automation.routes import gmail as gmail_routes
+
+        class _FakeServer:
+            # The admin gate (require_admin) reads handler.server.server_address[0]
+            # to detect a loopback host; on loopback with auth not required the local
+            # caller is trusted, so this validation-focused test clears the gate
+            # without modelling a full authenticated session.
+            server_address = ("127.0.0.1", 0)
 
         class _FakeHandler:
             def __init__(self, payload):
                 self._payload = payload
                 self.status = None
                 self._chunks = []
+                self.server = _FakeServer()
+                self.current_user = None
 
             def _read_json_payload(self):
                 return self._payload
