@@ -228,19 +228,34 @@ def _normalise_law_labels(
             entity["governing_law"]["label"] = label_by_id[option_id]
 
 
-def _law_fingerprint(entities: list[dict[str, Any]]) -> dict[str, tuple[str, str]]:
-    """Map entity id -> the LAW-VALIDATED fields (law option id, court/jurisdiction).
+def _law_fingerprint(
+    entities: list[dict[str, Any]],
+) -> dict[str, tuple[str, str, str, str]]:
+    """Map entity id -> the JURISDICTION-BEARING fields whose correctness depends on
+    the playbook (law option id, court/jurisdiction, incorporation jurisdiction, label).
 
-    These are exactly the fields whose correctness depends on the playbook (the
-    orphan guard + forum reconciliation). Used to tell, when the playbook is
-    unreadable, whether a candidate save would change any law-validated value (which
-    we cannot validate and so must refuse) or only touches non-law identity fields
-    (signatory/address/names — safe to persist).
+    These are exactly the fields the playbook is needed to validate or backfill:
+      - ``governing_law.playbook_option_id`` and ``jurisdiction`` (orphan guard +
+        forum reconciliation),
+      - ``incorporation_jurisdiction``, which flows verbatim into the signed NDA's
+        "incorporated under the laws of X" recital — an unsanctioned value here
+        reaches a signed legal document just like a bad law option would, so it is
+        equally un-provable while the playbook is missing, and
+      - ``governing_law.label``, the playbook-canonical display string normalised by
+        ``_normalise_law_labels`` (skipped when the playbook is None) — including it
+        means a label edit during an outage is refused rather than persisted corrupt.
+
+    Used to tell, when the playbook is unreadable, whether a candidate save would
+    change any jurisdiction-bearing value (which we cannot validate and so must
+    refuse) or only touches non-law identity fields (signatory/address/names — safe
+    to persist).
     """
     return {
         str(entity.get("id") or ""): (
             str(entity.get("governing_law", {}).get("playbook_option_id") or ""),
             str(entity.get("jurisdiction") or ""),
+            str(entity.get("incorporation_jurisdiction") or ""),
+            str(entity.get("governing_law", {}).get("label") or ""),
         )
         for entity in entities
     }
@@ -313,10 +328,11 @@ def save_entities_registry(
                 {
                     "error": (
                         "The governing-law playbook could not be read, so changes to "
-                        "an entity's governing law or court cannot be validated and "
-                        "were not saved. Non-law edits (signatory, address, names) can "
-                        "be saved while the playbook is unavailable; restore the "
-                        "playbook to change law or court."
+                        "an entity's governing law, court, or incorporation "
+                        "jurisdiction cannot be validated and were not saved. Non-law "
+                        "edits (signatory, address, names) can be saved while the "
+                        "playbook is unavailable; restore the playbook to change law, "
+                        "court, or incorporation jurisdiction."
                     )
                 },
                 status=503,

@@ -375,6 +375,67 @@ class EntityAuthoringTests(unittest.TestCase):
         # Law + court were left exactly as stored.
         self.assertEqual(stored[0]["governing_law"]["playbook_option_id"], "india")
 
+    def test_save_rejects_incorporation_jurisdiction_change_when_playbook_unreadable(
+        self,
+    ):
+        # P1: incorporation_jurisdiction flows verbatim into the signed NDA's
+        # "incorporated under the laws of X" recital. It is jurisdiction-bearing and
+        # so is un-provable when the playbook is missing -- a change to it (law +
+        # court left untouched) must be REFUSED (503), not waved through as a
+        # "non-law edit". Otherwise an outage lets an unsanctioned jurisdiction
+        # ("Cayman Islands") reach a signed legal document.
+        store_path = _tmp_store()
+        entity_store.save_entities(self._seed(), store_path=store_path, actor="seed")
+        entities = self._seed()
+        india_idx = next(
+            i
+            for i, e in enumerate(entities)
+            if e["governing_law"]["playbook_option_id"] == "india"
+        )
+        original_incorp = entities[india_idx]["incorporation_jurisdiction"]
+        entities[india_idx]["incorporation_jurisdiction"] = "Cayman Islands"
+        with patch.object(
+            entity_authoring, "_read_playbook_or_none", return_value=None
+        ):
+            with self.assertRaises(entity_authoring.EntityAuthoringError) as ctx:
+                entity_authoring.save_entities_registry(
+                    {"entities": entities}, store_path=store_path
+                )
+        self.assertEqual(ctx.exception.status, 503)
+        # The stored incorporation jurisdiction was NOT changed (rejected = no-op).
+        stored = entity_store.load_entities(
+            defaults=entity_registry.DEFAULT_SIGNING_ENTITIES, store_path=store_path
+        )
+        self.assertEqual(
+            stored[india_idx]["incorporation_jurisdiction"], original_incorp
+        )
+        self.assertNotEqual(
+            stored[india_idx]["incorporation_jurisdiction"], "Cayman Islands"
+        )
+
+    def test_save_persists_signatory_edit_even_when_incorporation_unchanged(self):
+        # P1 companion: the fix must not over-refuse. A genuine non-law edit
+        # (signatory name) with law + court + incorporation_jurisdiction all
+        # unchanged must still PERSIST during a playbook outage.
+        store_path = _tmp_store()
+        entity_store.save_entities(self._seed(), store_path=store_path, actor="seed")
+        entities = self._seed()
+        entities[0]["signatory"] = {"name": "Outage Signer", "title": "Director"}
+        with patch.object(
+            entity_authoring, "_read_playbook_or_none", return_value=None
+        ):
+            workspace = entity_authoring.save_entities_registry(
+                {"entities": entities}, store_path=store_path
+            )
+        self.assertTrue(workspace.get("saved"))
+        stored = entity_store.load_entities(
+            defaults=entity_registry.DEFAULT_SIGNING_ENTITIES, store_path=store_path
+        )
+        self.assertEqual(stored[0]["signatory"]["name"], "Outage Signer")
+        # incorporation_jurisdiction (and law) untouched -> the edit was allowed
+        # because it touched no jurisdiction-bearing field.
+        self.assertEqual(stored[0]["governing_law"]["playbook_option_id"], "india")
+
     def test_save_rejects_bracket_in_legal_name(self):
         # C2: a template-token-shaped legal_name (e.g. "[GOVERNING LAW]") collides
         # with the engine fill markers (DoSes generation) -- reject, do not persist.
