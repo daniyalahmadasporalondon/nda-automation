@@ -130,14 +130,11 @@ services:
       # AI feature — generation only.
       - key: NDA_GENERATION_AI_ENABLED
         value: "false"
-      # Inbound auto-review kill-switch (default true). Imported Gmail NDAs get a
-      # fast deterministic first-pass on the poll thread, then the full AI review
-      # runs in the background via a single persistent worker pool draining a
-      # bounded queue (size = NDA_INBOUND_REVIEW_CONCURRENCY, default 1). Set
-      # "false" to emergency-disable inbound auto-review entirely without a code
-      # change; NDAs keep their deterministic first-pass + stay reviewable on-demand.
-      - key: NDA_INBOUND_AI_REVIEW_ENABLED
-        value: "true"
+      # NOTE: inbound NDAs are NOT auto-reviewed. They import "Not Reviewed" and the
+      # full AI review runs ONLY on-demand when a human clicks Review (drained by a
+      # single persistent worker pool, size = NDA_INBOUND_REVIEW_CONCURRENCY,
+      # default 1). The former NDA_INBOUND_AI_REVIEW_ENABLED kill-switch is removed --
+      # there is no inbound auto-review path to disable.
       # Gentle catch-up knob (code default 20). Caps how many inbound messages a
       # SINGLE poll cycle downloads + triages (NDA_GMAIL_TRIAGE_MODEL) + classifies
       # (intake) + text-extracts on the poll thread before queuing AI reviews. When

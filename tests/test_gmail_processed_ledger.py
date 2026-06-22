@@ -48,9 +48,6 @@ def import_limit_20(monkeypatch):
         gmail_integration._gmail_import_limit_from_env(),
     )
     assert gmail_integration.MAX_GMAIL_IMPORT_LIMIT == 20
-    from nda_automation import ingestion_service
-
-    monkeypatch.delenv(ingestion_service.INBOUND_AI_REVIEW_ENABLED_ENV, raising=False)
     return 20
 
 

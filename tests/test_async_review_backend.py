@@ -472,6 +472,51 @@ class OnDemandUsesAIOnlyEngine(_FreshPoolMixin, unittest.TestCase):
         # And the marker is cleared after a terminal run.
         self.assertFalse(ingestion_service._is_on_demand_review(matter_id, "owner@example.com"))
 
+    def test_on_demand_re_review_runs_even_when_already_ai_first(self):
+        """RE-REVIEW: a matter that ALREADY carries an ai_first review must STILL be
+        re-reviewed on-demand. The body's _matter_already_ai_reviewed idempotency
+        skip is bypassed for on-demand jobs -- otherwise the Review button silently
+        does nothing on the 2nd+ click (after playbook drift / a text change)."""
+        repository = InMemoryMatterRepository()
+        text = "Confidential clause re-reviewed after the first AI review."
+        # Seed a matter that ALREADY has an ai_first review (executed_engine=ai_first).
+        matter_id = _seed_matter(
+            repository, extracted_text=text, review_result=_fresh_ai_review_result(text)
+        )
+        self.assertTrue(
+            ingestion_service._matter_already_ai_reviewed(repository.get_matter(matter_id, owner_user_id="owner@example.com"))
+        )
+
+        engine_calls: list[str] = []
+
+        def _engine(t, *, paragraphs=None, **kwargs):
+            engine_calls.append(t)
+            return _fresh_ai_review_result(t)
+
+        # On-demand re-review (is_on_demand=True) must RE-RUN the engine.
+        ingestion_service._perform_inbound_ai_review(
+            matter_id,
+            repository=repository,
+            owner_user_id="owner@example.com",
+            review_engine_func=_engine,
+            use_semaphore=False,
+            is_on_demand=True,
+        )
+        self.assertEqual(engine_calls, [text], "on-demand re-review must re-run despite an existing ai_first review")
+
+        # Negative control: a NON-on-demand drive on the same already-reviewed matter
+        # is correctly skipped by the idempotency guard (no re-run).
+        engine_calls.clear()
+        ingestion_service._perform_inbound_ai_review(
+            matter_id,
+            repository=repository,
+            owner_user_id="owner@example.com",
+            review_engine_func=_engine,
+            use_semaphore=False,
+            is_on_demand=False,
+        )
+        self.assertEqual(engine_calls, [], "a non-on-demand drive must still skip an already ai_first matter")
+
 
 if __name__ == "__main__":
     unittest.main()
