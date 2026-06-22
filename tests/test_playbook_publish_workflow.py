@@ -147,8 +147,9 @@ class PlaybookPublishWorkflowTests(unittest.TestCase):
         # The draft sidecar must not leak into the packet built from the active playbook.
         self.assertEqual(packet_after_draft["playbook"], baseline_packet["playbook"])
         term_clause = _packet_clause(packet_after_draft, "term_and_survival")
-        self.assertIn("five years", term_clause["requirement"])
-        self.assertNotIn("seven years", term_clause["requirement"])
+        # Derived term wording carries both word and numeral ("five (5) years").
+        self.assertIn("five (5) years", term_clause["requirement"])
+        self.assertNotIn("seven (7) years", term_clause["requirement"])
 
     def test_publishing_draft_changes_ai_packet(self):
         baseline_packet = self._active_packet()
@@ -161,7 +162,7 @@ class PlaybookPublishWorkflowTests(unittest.TestCase):
         packet_after_publish = self._active_packet()
         self.assertNotEqual(packet_after_publish["playbook"], baseline_packet["playbook"])
         term_clause = _packet_clause(packet_after_publish, "term_and_survival")
-        self.assertIn("seven years", term_clause["requirement"])
+        self.assertIn("seven (7) years", term_clause["requirement"])
 
     def test_published_survival_jurisdiction_and_fallback_wording_appear_in_packet(self):
         draft_playbook = deepcopy(self.original_playbook)
@@ -176,7 +177,7 @@ class PlaybookPublishWorkflowTests(unittest.TestCase):
 
         # Survival term threshold flows into the term clause wording.
         term_clause = _packet_clause(packet, "term_and_survival")
-        self.assertIn("three years", term_clause["requirement"])
+        self.assertIn("three (3) years", term_clause["requirement"])
 
         # Jurisdiction change flows into the approved options, the default, and the
         # fallback/redline drafting note.

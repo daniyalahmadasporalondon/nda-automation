@@ -62,6 +62,57 @@ class PlaybookRulesTests(unittest.TestCase):
                 self.assertIn("missing", issue_types)
                 self.assertIn("present_but_wrong", issue_types)
 
+    def test_confidential_information_routes_extra_exclusion_to_review(self):
+        """FIX 1: an extra carve-out beyond the standard set that is NOT a residual /
+        reverse-engineering exclusion must resolve ONE way — REVIEW, not pass, not fail.
+
+        Guards the three previously-conflicting fields against re-divergence: the prose
+        requirement/check_trigger must frame the extra exclusion as REVIEW (not an implied
+        FAIL), the rules must carry an explicit review trigger for an exclusion outside the
+        approved standard set, and residual/reverse-engineering must stay a FAIL.
+        """
+        packet = playbook_rules_for_ai(load_playbook())
+        ci = next(clause for clause in packet["clauses"] if clause["clause_id"] == "confidential_information")
+
+        # Prose now frames an extra (non-residual/RE) exclusion as REVIEW, not FAIL.
+        for field in ("requirement", "check_trigger"):
+            text = ci[field].lower()
+            self.assertIn("review", text, f"{field} must mention human review for extra exclusions")
+
+        rules = ci["rules"]
+        review_ids = {trigger["id"] for trigger in rules["review_triggers"]}
+        self.assertIn("extra_exclusion_outside_standard_set", review_ids)
+        extra = next(
+            trigger for trigger in rules["review_triggers"]
+            if trigger["id"] == "extra_exclusion_outside_standard_set"
+        )
+        self.assertEqual(extra["decision"], "review")
+
+        # Residual / reverse-engineering stays a FAIL — the carve-out exception.
+        fail_ids = {condition["id"] for condition in rules["fail_conditions"]}
+        self.assertIn("problematic_residual_or_reverse_engineering_exclusion", fail_ids)
+
+        # No fail condition is keyed on a generic "extra exclusion" — it must be review.
+        for condition in rules["fail_conditions"]:
+            self.assertNotIn("extra_exclusion_outside_standard_set", condition["id"])
+
+        # FIX 1 (root cause): the standard-exclusions allowlist must be promoted into the
+        # packet as STRUCTURED data so the model has a concrete comparison target. Without
+        # it the model never noticed an extra carve-out and silently passed (false-pass).
+        allowlist = ci["allowed_exclusions"]
+        approved_ids = {entry["id"] for entry in allowlist["approved_set"]}
+        self.assertEqual(
+            approved_ids,
+            {
+                "public_domain",
+                "prior_possession",
+                "lawful_third_party_source",
+                "independent_development_without_use",
+            },
+        )
+        self.assertIn("review", allowlist["instruction"].lower())
+        self.assertIn("fail", allowlist["instruction"].lower())
+
     def test_prohibited_clause_rules_cover_present_prohibited_language(self):
         non_circumvention = next(
             clause for clause in load_playbook()["clauses"] if clause["id"] == "non_circumvention"
@@ -264,6 +315,33 @@ class PlaybookRulesTests(unittest.TestCase):
             ["Singapore"],
         )
 
+    def test_ai_packet_governing_law_retains_strict_membership_fail_token(self):
+        """FIX 2: the normalizer regenerates the governing-law check_trigger and the
+        unapproved fail condition from the approved-law list. Assert the BUILT AI packet
+        still carries the strict-membership FAIL instruction in BOTH, so a future
+        normalizer change that re-flattens those strings (dropping the "FAIL an unapproved
+        law — do not soften to review" emphasis) fails CI.
+        """
+        playbook = deepcopy(load_playbook())
+
+        packet = playbook_rules_for_ai(playbook)
+        govlaw = next(
+            clause for clause in packet["clauses"] if clause["clause_id"] == "governing_law"
+        )
+
+        check_trigger = govlaw["check_trigger"]
+        self.assertIn("FAIL", check_trigger)
+        self.assertIn("reasonable jurisdiction", check_trigger)
+        self.assertIn("reserve REVIEW only", check_trigger)
+
+        unapproved = next(
+            condition
+            for condition in govlaw["rules"]["fail_conditions"]
+            if condition["id"] == "unapproved_governing_law"
+        )
+        self.assertIn("FAIL", unapproved["description"])
+        self.assertIn("reasonable jurisdiction", unapproved["description"])
+
     def test_ai_rules_packet_derives_term_survival_guidance_from_cap(self):
         playbook = deepcopy(load_playbook())
         term = next(clause for clause in playbook["clauses"] if clause["id"] == "term_and_survival")
@@ -276,12 +354,41 @@ class PlaybookRulesTests(unittest.TestCase):
         packet = playbook_rules_for_ai(playbook)
         term_rules = next(clause for clause in packet["clauses"] if clause["clause_id"] == "term_and_survival")
 
-        self.assertIn("three years", term_rules["requirement"])
-        self.assertIn("three years", term_rules["preferred_position"])
-        self.assertIn("longer than three years", term_rules["check_trigger"])
-        self.assertIn("three years", term_rules["rules"]["acceptable_position"])
-        self.assertIn("three years", term_rules["rules"]["pass_conditions"][0]["description"])
-        self.assertIn("longer than three years", term_rules["rules"]["fail_conditions"][1]["description"])
+        # FIX 3: the derived AI-context strings now carry BOTH the spelled word and the
+        # numeral so the cap is uniformly salient ("three (3) years").
+        self.assertIn("three (3) years", term_rules["requirement"])
+        self.assertIn("three (3) years", term_rules["preferred_position"])
+        self.assertIn("longer than three (3) years", term_rules["check_trigger"])
+        self.assertIn("three (3) years", term_rules["rules"]["acceptable_position"])
+        self.assertIn("three (3) years", term_rules["rules"]["pass_conditions"][0]["description"])
+        self.assertIn("longer than three (3) years", term_rules["rules"]["fail_conditions"][1]["description"])
+
+    def test_ai_packet_carries_structured_term_threshold(self):
+        """FIX 3: the term cap reaches the model as STRUCTURED data, not prose only.
+
+        Asserts the built per-clause packet exposes ``threshold`` with the integer cap,
+        unit, direction, and inclusivity — in addition to the existing derived prose — so
+        a weaker model never has to parse the numeral back out of "five (5) years".
+        """
+        playbook = deepcopy(load_playbook())
+        term = next(clause for clause in playbook["clauses"] if clause["id"] == "term_and_survival")
+        term["max_term_years"] = 7
+
+        packet = playbook_rules_for_ai(playbook)
+        term_rules = next(clause for clause in packet["clauses"] if clause["clause_id"] == "term_and_survival")
+
+        self.assertEqual(
+            term_rules["threshold"],
+            {"limit": 7, "unit": "years", "direction": "max", "inclusive": True},
+        )
+        # The prose form must remain alongside the structured field (both, not either).
+        self.assertIn("seven (7) years", term_rules["requirement"])
+
+        # Clauses without a numeric cap do not gain a threshold field (no empty padding).
+        govlaw_rules = next(
+            clause for clause in packet["clauses"] if clause["clause_id"] == "governing_law"
+        )
+        self.assertNotIn("threshold", govlaw_rules)
 
     def test_rule_validator_rejects_missing_rules(self):
         playbook = deepcopy(load_playbook())

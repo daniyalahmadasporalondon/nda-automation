@@ -587,6 +587,23 @@ def clause_rules_for_ai(clause: Mapping[str, Any]) -> dict[str, Any]:
         cues = _authored_term_list(normalized.get(cue_field))
         if cues:
             packet_clause[cue_field] = cues
+    # FIX 3: surface numeric clause thresholds as STRUCTURED data, not prose only. The
+    # term cap (max_term_years) previously reached the model only as a spelled phrase
+    # ("five years") inside derived text, leaving a weaker model to parse the integer back
+    # out. Emit the threshold as a structured field so the cap and its direction are
+    # machine-explicit alongside the existing prose.
+    threshold = _clause_threshold_for_ai(normalized)
+    if threshold:
+        packet_clause["threshold"] = threshold
+    # FIX 1: promote the STANDARD-EXCLUSIONS ALLOWLIST into the packet as structured
+    # data. Previously allowed_exclusions reached the model only as prose, so the model
+    # had nothing concrete to compare a document's exclusion against and silently passed
+    # extra (non-residual/RE) carve-outs it never flagged as "beyond the standard set".
+    # Surfacing the approved set as an explicit, machine-readable allowlist gives the
+    # reviewer the comparison target the review-routing rule depends on.
+    allowed_exclusions = _allowed_exclusions_for_ai(normalized.get("allowed_exclusions"))
+    if allowed_exclusions:
+        packet_clause["allowed_exclusions"] = allowed_exclusions
     # prohibited_position_patterns used to reach the model only as a hardcoded
     # label->description gloss in the binding policy block; surface the AUTHORED entries
     # (label + gloss/humanized fallback + neutralized pattern text) here so editing a
@@ -608,6 +625,66 @@ def clause_rules_for_ai(clause: Mapping[str, Any]) -> dict[str, Any]:
     return packet_clause
 
 
+def _clause_threshold_for_ai(clause: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Structured numeric threshold for the per-clause AI packet, or None.
+
+    Currently only ``term_and_survival`` carries a numeric cap (``max_term_years``). The
+    derived prose already states it ("up to five (5) years"); this surfaces the SAME cap
+    as a machine-explicit structured field — ``{"limit": 5, "unit": "years",
+    "direction": "max", "inclusive": true}`` — so the integer reaches a weaker model
+    without it having to parse the number back out of the sentence. ``inclusive`` is true
+    because the cap is "up to N years" (N years is allowed; longer than N fails).
+    """
+    clause_id = str(clause.get("id") or "")
+    if clause_id != "term_and_survival":
+        return None
+    limit = _int_value(clause.get("max_term_years"))
+    if not limit:
+        return None
+    return {
+        "limit": limit,
+        "unit": "years",
+        "direction": "max",
+        "inclusive": True,
+    }
+
+
+def _allowed_exclusions_for_ai(raw: object) -> dict[str, Any] | None:
+    """Structured standard-exclusions allowlist for the per-clause AI packet, or None.
+
+    ``allowed_exclusions`` is authored as slugs (e.g. ``public_domain``). Surface them as
+    a machine-readable allowlist — both the slug ``id`` and a humanized ``label`` — plus a
+    one-line ``instruction`` stating the comparison rule the review routing depends on:
+    an exclusion outside this approved set is REVIEW, with residual-knowledge and
+    reverse-engineering exclusions the FAIL exception. This is the comparison target the
+    model lacked, so it can actually NOTICE an extra carve-out instead of silently passing.
+    """
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        return None
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for entry in raw:
+        slug = _text(entry)
+        if not slug or slug in seen:
+            continue
+        seen.add(slug)
+        label = slug.replace("_", " ").strip()
+        items.append({"id": slug, "label": label})
+    if not items:
+        return None
+    return {
+        "approved_set": items,
+        "instruction": (
+            "These are the ONLY standard exclusions/carve-outs permitted in the "
+            "Confidential Information definition. An exclusion outside this approved set "
+            "is NOT a clean pass: a residual-knowledge or reverse-engineering exclusion "
+            "is a FAIL, and any OTHER extra exclusion (for example a feedback/suggestions "
+            "or usage-right carve-out the disclosing party may freely use) must be flagged "
+            "for human REVIEW. Compare every exclusion in the document against this set."
+        ),
+    }
+
+
 def _clause_instructions(clause: Mapping[str, Any]) -> list[str]:
     raw = clause.get("instructions")
     if isinstance(raw, str):
@@ -616,6 +693,20 @@ def _clause_instructions(clause: Mapping[str, Any]) -> list[str]:
     if isinstance(raw, list):
         return [_text(item) for item in raw if _text(item)]
     return []
+
+
+# Strict-membership invariant for the governing-law check. The normalizer regenerates
+# ``check_trigger`` and ``fail_conditions[unapproved_governing_law]`` from the approved-law
+# LIST at packet-build time; without re-appending this sentence those regenerated strings
+# drop the authored "FAIL an unapproved law — do not soften to review" emphasis and the
+# model is left to infer it from redundant siblings. Append it so the FAIL/strict-membership
+# instruction always survives the regeneration. The regression test in test_playbook_rules.py
+# asserts the BUILT packet carries this token, so a future re-flatten fails CI.
+STRICT_GOVERNING_LAW_MEMBERSHIP_INSTRUCTION = (
+    "A clearly-named jurisdiction outside this list is a FAIL even if it is a valid, "
+    "reasonable jurisdiction; reserve REVIEW only for genuinely unclear, conditional, "
+    "or conflicting wording."
+)
 
 
 def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
@@ -634,7 +725,7 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
     )
     clause["check_trigger"] = (
         "The governing law is missing, unclear, or names a jurisdiction outside "
-        f"{approved_label}."
+        f"{approved_label}. " + STRICT_GOVERNING_LAW_MEMBERSHIP_INSTRUCTION
     )
     clause["acceptable_language"] = (
         "This Agreement shall be governed by the laws of "
@@ -657,7 +748,8 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
     _set_condition_description(
         rules.get("fail_conditions"),
         "unapproved_governing_law",
-        f"The governing-law clause names a jurisdiction outside {approved_label}.",
+        f"The governing-law clause names a jurisdiction outside {approved_label}. "
+        + STRICT_GOVERNING_LAW_MEMBERSHIP_INSTRUCTION,
     )
     redline_guidance = rules.get("redline_guidance")
     if isinstance(redline_guidance, dict):
@@ -709,7 +801,10 @@ def _normalize_governing_law_clause(clause: dict[str, Any]) -> None:
 
 def _normalize_term_survival_clause(clause: dict[str, Any]) -> None:
     max_years = _int_value(clause.get("max_term_years")) or 5
-    cap_label = _year_count_label(max_years)
+    # These derived strings are AI-context fields. Emit BOTH the spelled word and the
+    # numeral (e.g. "five (5) years") so the cap is uniformly salient to a weaker model
+    # across the configurable 1-25 range, rather than reaching it as a spelled phrase only.
+    cap_label = _year_count_label(max_years, parenthetical=True)
 
     clause["requirement"] = (
         "The NDA term and ordinary confidentiality survival must be fixed at up to "

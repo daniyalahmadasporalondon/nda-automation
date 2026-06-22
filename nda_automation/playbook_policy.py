@@ -416,7 +416,9 @@ def build_playbook_policy_block(playbook: Mapping[str, Any]) -> str:
     lines.append(
         "The operative governing law must be one of the approved jurisdictions: "
         f"{approved_laws_label}{preferred_clause}. A clearly-named jurisdiction outside "
-        "that list is a FAIL. Separately, the dispute forum / venue / "
+        "that list is a FAIL — even if it is a perfectly valid, reasonable jurisdiction; "
+        "do not pass it because it seems reasonable. Reserve REVIEW only for genuinely "
+        "unclear, conditional, or conflicting governing-law wording. Separately, the dispute forum / venue / "
         "exclusive-jurisdiction / arbitration seat must name the SAME jurisdiction as "
         "the governing law: a split where the governing law is one approved jurisdiction "
         "but the exclusive forum or arbitration seat is a DIFFERENT (or unapproved) "
