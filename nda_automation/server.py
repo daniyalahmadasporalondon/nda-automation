@@ -410,6 +410,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if path.startswith("/api/matters/") and path.endswith("/marked-up-pdf"):
             pdf_markup_routes.handle_marked_up_pdf(self, path, send_body=send_body)
             return
+        if path.startswith("/api/matters/") and path.endswith("/annotated-pdf"):
+            pdf_markup_routes.handle_annotated_pdf(self, path, send_body=send_body)
+            return
         if path.startswith("/api/corpus/artifacts/"):
             corpus_routes.handle_corpus_artifact_download(self, self.path, send_body=send_body)
             return

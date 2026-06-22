@@ -20,7 +20,12 @@ from datetime import datetime, timezone
 from urllib.parse import unquote
 
 from .. import pdf_markup, telemetry
-from ..annotated_pdf_export import annotated_pdf_download_filename
+from ..annotated_pdf_export import (
+    ANNOTATED_PDF_MIME,
+    ANNOTATED_PDF_VERIFICATION_HEADER,
+    annotated_pdf_download_filename,
+    build_matter_annotated_pdf,
+)
 from ..matter_repository import DiskMatterRepository, MatterRepository
 from .common import parse_matter_id, request_owner_user_id
 
@@ -222,3 +227,80 @@ def handle_marked_up_pdf(handler, path: str, *, send_body: bool = True) -> None:
 def _marked_up_filename(source_filename: str) -> str:
     base = annotated_pdf_download_filename(source_filename)
     return base.replace("-annotated-review.pdf", "-marked-up.pdf")
+
+
+def handle_annotated_pdf(handler, path: str, *, send_body: bool = True) -> None:
+    """Recovery export: source PDF with the REVIEW redlines baked on as annotations.
+
+    This is the fallback offered by ``PdfSourceRedlineUnavailableError`` when the
+    DOCX redline path fails closed for a PDF-source NDA. Because it is a recovery
+    route, it must never dead-end: when the review highlights cannot be anchored
+    (or the review is missing/stale, or PyMuPDF is unavailable) we fall back to
+    returning the unmodified source PDF rather than erroring. We only surface an
+    error when there is no usable PDF to return at all (matter not found, the
+    source is not a PDF, or the source bytes are missing from storage).
+    """
+    matter_id = parse_matter_id(path, suffix="/annotated-pdf")
+    if matter_id is None:
+        handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
+        return
+
+    telemetry.increment("annotated_pdf_export_requests")
+    owner_user_id = request_owner_user_id(handler)
+    repository = _repository(handler)
+    matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+    if matter is None:
+        telemetry.increment("annotated_pdf_export_failed")
+        handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
+        return
+
+    source_filename = str(matter.get("source_filename") or "")
+    if not source_filename.lower().endswith(".pdf"):
+        telemetry.increment("annotated_pdf_export_failed")
+        handler._send_json(
+            {"error": "Annotated PDF export is available only for PDF NDAs."},
+            status=400,
+            send_body=send_body,
+        )
+        return
+
+    source_bytes = repository.get_source_document_bytes(matter)
+    if source_bytes is None:
+        telemetry.increment("annotated_pdf_export_failed")
+        handler._send_json(
+            {"error": "NDA source PDF is missing from storage."},
+            status=400,
+            send_body=send_body,
+        )
+        return
+
+    annotation_count = 0
+    fallback = False
+    try:
+        export = build_matter_annotated_pdf(
+            matter_id, repository=repository, owner_user_id=owner_user_id
+        )
+        data = export.data
+        filename = export.filename
+        annotation_count = export.annotation_count
+    except Exception:
+        # The redline annotations could not be produced (no anchorable review
+        # text, stale/missing review, missing optional dependency, render
+        # failure). The whole point of this route is a working fallback after
+        # the DOCX redline path failed -- so return the original source PDF.
+        telemetry.increment("annotated_pdf_export_fallback_source")
+        data = source_bytes
+        filename = annotated_pdf_download_filename(source_filename)
+        fallback = True
+
+    handler._send_download(
+        data,
+        filename,
+        ANNOTATED_PDF_MIME,
+        headers={
+            "X-Export-Verified": ANNOTATED_PDF_VERIFICATION_HEADER,
+            "X-PDF-Annotation-Count": str(annotation_count),
+            "X-PDF-Annotation-Fallback": "source-original" if fallback else "none",
+        },
+        send_body=send_body,
+    )
