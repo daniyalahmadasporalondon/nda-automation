@@ -935,6 +935,10 @@
                 <strong>AI Review</strong>
                 <span>Method and audit fields</span>
               </button>
+              <button class="admin-section-button" type="button" data-admin-section="user_guide" data-admin-surface="guide" aria-pressed="false">
+                <strong>User Guide</strong>
+                <span>Full walkthrough handbook</span>
+              </button>
             </aside>
 
             <section class="admin-section-panel active" id="adminPlaybookPanel" data-admin-panel="playbook">
@@ -1680,6 +1684,27 @@
                   </dl>
                 </section>
               </section>
+            </section>
+
+            <section class="admin-section-panel" id="adminUserGuidePanel" data-admin-panel="user_guide" hidden>
+              <header class="admin-section-head">
+                <div>
+                  <p class="eyebrow">handbook</p>
+                  <h1>User Guide</h1>
+                </div>
+                <a class="admin-guide-open" href="/static/user-guide.html?v=20260622userguide2" target="_blank" rel="noopener">Open the full User Guide in a new tab</a>
+              </header>
+              <!-- The user guide is a self-contained static HTML document served at
+                   /static/user-guide.html. It is embedded here via an iframe so the
+                   Guide tab presents the full 15-section handbook inline, while the
+                   header link above opens the same document full-screen in a new
+                   tab. Kept self-contained (not re-templated) to avoid breakage. -->
+              <iframe
+                class="admin-user-guide-frame"
+                src="/static/user-guide.html?v=20260622userguide2"
+                title="NDA Automation User Guide"
+                loading="lazy"
+              ></iframe>
             </section>
 
             <section class="admin-section-panel" id="adminIntegrationsPanel" data-admin-panel="email" hidden>

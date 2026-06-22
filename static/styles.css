@@ -9419,6 +9419,39 @@ label.is-hidden {
   margin: 0;
 }
 
+/* User Guide handbook: a clear link to open the served guide full-screen, plus
+   an inline iframe that fills the panel and presents the self-contained guide. */
+.admin-guide-open {
+  align-items: center;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md, 8px);
+  color: var(--brand);
+  display: inline-flex;
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  gap: 6px;
+  padding: 7px 12px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.admin-guide-open:hover {
+  background: var(--bg-panel);
+  border-color: var(--brand);
+}
+
+.admin-user-guide-frame {
+  background: var(--bg-panel);
+  border: 0;
+  border-bottom-left-radius: var(--r-xl);
+  border-bottom-right-radius: var(--r-xl);
+  display: block;
+  height: min(72vh, 900px);
+  width: 100%;
+}
+
 .admin-section-actions {
   align-items: center;
   display: flex;
