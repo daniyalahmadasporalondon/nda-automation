@@ -39,7 +39,7 @@ import {
   renderInlineToken,
   needsInlineSpace,
 } from "./inline-diff.mjs";
-import { MatterUtils } from "./matter-utils.mjs";
+import { MatterUtils } from "./matter-utils.mjs?v=reviewrecovery1";
 import {
   isSupportedSendFilename,
   isValidRecipientEmail,
