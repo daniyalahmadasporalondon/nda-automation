@@ -276,6 +276,10 @@ const RepositoryActions = (() => {
         const refresh = reviewMatter?.review_refresh || {};
         // Non-async terminal outcomes (200): an idle no-op, a still-stale review, or
         // a cleared redline draft. Each surfaces its own inspector message below.
+        // DELIBERATELY KEPT INLINE (not migrated to a toast): "Saved redline draft was
+        // cleared" is a CONSEQUENCE the user must not miss — a vanishing success toast
+        // is the wrong channel for "your work was discarded". The stale/plain branches
+        // are neutral status, not celebratory success, so they stay inline for parity.
         if (refresh.stale) {
           setPanelMessage(MatterUtils.reviewStaleLabel(reviewMatter) || "Review is still stale.");
         } else if (refresh.redline_draft_cleared) {
@@ -478,12 +482,17 @@ const RepositoryActions = (() => {
           renderBoard();
           renderDetailPanel(payload.matter);
         }
-        // PDF-source matters send a Word file reconstructed from the PDF; append the
-        // honest formatting caveat so the operator does not assume faithful original output.
+        // SUCCESS: flash the transient green toast for the send confirmation.
+        // PDF-source matters send a Word file reconstructed from the PDF — that is a
+        // WARNING the operator must not miss, so it stays INLINE/persistent (never
+        // buried in a vanishing toast). A clean send clears the inline message.
+        if (typeof window !== "undefined" && typeof window.notifySuccess === "function") {
+          window.notifySuccess("Redline sent", recipient);
+        }
         const sendCaveat = payload.source_reconstructed_from_pdf
-          ? " Note: this Word file was reconstructed from a PDF and may not preserve original formatting."
+          ? "Note: this Word file was reconstructed from a PDF and may not preserve original formatting."
           : "";
-        setPanelMessage(`Sent redline to ${recipient}.${sendCaveat}`);
+        setPanelMessage(sendCaveat);
       } catch (error) {
         setPendingSendMatterId(null);
         renderDetailPanel(matter);

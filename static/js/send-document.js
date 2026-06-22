@@ -169,7 +169,13 @@ function createSendDocumentController({
       if (!response.ok) throw reviewErrorFromPayload(payload, "Document could not be sent");
 
       const matter = payload.matter || {};
-      resetForm({ status: `Sent ${matter.source_filename || selectedFile.name} to ${recipient}.` });
+      // SUCCESS: flash the transient green toast through the ONE notification
+      // center, then close the modal cleanly (no lingering inline green status to
+      // race the modal close). Errors stay INLINE in the modal (see catch).
+      if (typeof window !== "undefined" && typeof window.notifySuccess === "function") {
+        window.notifySuccess("Document sent", `to ${recipient}`);
+      }
+      resetForm();
       closeModal({ restoreFocus: false });
       await repositoryController.loadMatters();
       activateTab("repository");
