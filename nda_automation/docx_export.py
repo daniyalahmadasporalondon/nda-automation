@@ -9,6 +9,7 @@ from typing import Dict, List, NamedTuple, Tuple
 from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
 from . import redline_edit_contract
+from .docx_paragraph_index import iter_body_paragraphs
 from .review_state import review_was_ai_executed
 from .redline_actions import (
     REDLINE_DELETE_PARAGRAPH,
@@ -950,28 +951,23 @@ def _unanchored_redline_error(redlines: List[RedlineEdit]) -> str:
 
 
 def _indexed_source_paragraphs(root: ET.Element) -> List[SourceParagraph]:
+    # Number the physical <w:p> through the SINGLE canonical walker that also mints
+    # the review-paragraph source_index in docx_text. Sharing the walker is what makes
+    # a redline's source_index an exact, twin-safe lookup here (rather than two
+    # parallel reimplementations that can silently drift and anchor a duplicate clause
+    # to the wrong twin).
     paragraphs: List[SourceParagraph] = []
-    source_index = 0
-
-    def visit(parent: ET.Element) -> None:
-        nonlocal source_index
-        for child in list(parent):
-            if child.tag == _w_tag("p"):
-                source_index += 1
-                text = _paragraph_text(child)
-                paragraphs.append(
-                    SourceParagraph(
-                        source_index=source_index,
-                        parent=parent,
-                        paragraph=child,
-                        text=text,
-                        normalized_text=_normalize_paragraph_text(text),
-                    )
-                )
-                continue
-            visit(child)
-
-    visit(root)
+    for indexed in iter_body_paragraphs(root):
+        text = _paragraph_text(indexed.paragraph)
+        paragraphs.append(
+            SourceParagraph(
+                source_index=indexed.source_index,
+                parent=indexed.parent,
+                paragraph=indexed.paragraph,
+                text=text,
+                normalized_text=_normalize_paragraph_text(text),
+            )
+        )
     return paragraphs
 
 
