@@ -88,9 +88,20 @@ HIGH_CONFIDENCE_PASS_THRESHOLD = 0.85
 # confident-PASS verify let a wrong "approved governing law = Texas" slip through.
 # So the narrowing keeps the high-blast-radius required clauses (governing_law +
 # term_and_survival) AND all prohibited clauses always-verified -- it only relaxes the
-# LOWER-risk confident required passes (mutuality/confidential_information/signatures)
-# that were force-verifying every review and blew the review-poll latency budget.
-ALWAYS_VERIFY_PASS_CLAUSE_IDS = frozenset({"governing_law", "term_and_survival"})
+# LOWER-risk confident required passes (mutuality/signatures) that were force-verifying
+# every review and blew the review-poll latency budget.
+#
+# confidential_information is HERE (not relaxed) because it is the core protective
+# clause of an NDA: a confident-but-WRONG pass there ships an under-protective
+# agreement, and the grounding gate cannot catch a wrong *judgement* about a real
+# quote (the cited definition/exclusions text is genuinely present -- the verdict
+# that it is adequate is the error). The relaxation would trust that verdict on the
+# reviewer's uncalibrated self-reported confidence alone; adversarial live-testing
+# found no hole on the current prod model but that safety depends on the model's
+# calibration, so CI keeps the always-verify backstop here.
+ALWAYS_VERIFY_PASS_CLAUSE_IDS = frozenset(
+    {"governing_law", "term_and_survival", "confidential_information"}
+)
 
 # A refute below VERIFIER_MIN_CONFIDENCE is too hesitant to act on confidently --
 # it still routes to human review (the verifier never flips silently).
@@ -537,21 +548,29 @@ def _should_verify(clause: Mapping[str, object]) -> bool:
         if clause_type == "prohibited":
             return True
         # The high-blast-radius EXCEPTIONS: governing_law (a wrong "approved governing
-        # law" writes a non-court venue into a signed NDA) and term_and_survival (a
-        # wrong survival/term judgement), where the grounding gate cannot catch a wrong
-        # *judgement* about a real quote. These are ALWAYS re-checked on a PASS
-        # regardless of confidence.
+        # law" writes a non-court venue into a signed NDA), term_and_survival (a wrong
+        # survival/term judgement), and confidential_information (the core protective
+        # clause -- a wrong "adequate" verdict ships an under-protective NDA), where the
+        # grounding gate cannot catch a wrong *judgement* about a real quote. These are
+        # ALWAYS re-checked on a PASS regardless of confidence.
         if str(clause.get("id") or "").strip().lower() in ALWAYS_VERIFY_PASS_CLAUSE_IDS:
             return True
         # Otherwise the verifier runs ONLY when the main AI is UNCERTAIN about the
         # pass. A high-confidence PASS of a LOWER-risk clause (the relaxed required
-        # family -- mutuality/confidential_information/signatures -- and any non-
-        # required type) is trusted WITHOUT a second pass; force-verifying every
-        # required clause is what put the verifier on the critical path and blew the
-        # review-poll latency budget. Unknown confidence is the MOST suspicious signal
-        # -- a PASS with no confidence (e.g. via the deterministic checker path) cannot
-        # be trusted as a confident clear, so verify it. Otherwise only spend a call on
-        # a *low*-confidence pass; trust confident clears.
+        # family -- mutuality/signatures -- and any non-required type) is trusted
+        # WITHOUT a second pass; force-verifying every required clause is what put the
+        # verifier on the critical path and blew the review-poll latency budget.
+        # Unknown confidence is the MOST suspicious signal -- a PASS with no confidence
+        # (e.g. via the deterministic checker path) cannot be trusted as a confident
+        # clear, so verify it. Otherwise only spend a call on a *low*-confidence pass;
+        # trust confident clears.
+        #
+        # CALIBRATION DEPENDENCY: relaxing mutuality/signatures trusts the reviewer's
+        # self-reported confidence to decide a confident PASS is safe to skip. That is
+        # only sound while the reviewer model (NDA_AI_MODEL) is well-calibrated -- it
+        # was validated against the current prod model. Re-validate this relaxation
+        # (and reconsider which ids belong in ALWAYS_VERIFY_PASS_CLAUSE_IDS) whenever
+        # NDA_AI_MODEL changes.
         confidence = _confidence(clause)
         return confidence is None or confidence < HIGH_CONFIDENCE_PASS_THRESHOLD
     return False
