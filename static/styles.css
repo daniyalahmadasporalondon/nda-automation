@@ -13677,3 +13677,330 @@ label.is-hidden {
   color: #8e869e;
   margin: 0 0 6px;
 }
+
+/* ============================================================================
+   Aspora design language — the "Submit NDA for review" (#manualUploadModal) and
+   "Send document" (#sendDocumentModal) modals. Both share the .upload-modal /
+   .upload-modal-dialog structure, so this single scoped block restyles the whole
+   family consistently. EVERY selector is prefixed with .upload-modal so nothing
+   leaks into the rest of the app (no !important, no global element rules). This
+   mirrors the Playbook + Admin Aspora tokens: Inter, canvas #faf9fc / card #fff,
+   ink #170a33 / muted #5d5470 / faint #8e869e, brand #4f1bb3 hover #3d1293,
+   hairline #e6e1f0, success #10b981; radii 12 (dialog) / 8 (cards+dropzone) /
+   6 (inputs+buttons) / 4 (tags).
+   ========================================================================== */
+.upload-modal {
+  --um-font: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --um-canvas: #faf9fc;
+  --um-surface: #ffffff;
+  --um-ink: #170a33;
+  --um-muted: #5d5470;
+  --um-faint: #8e869e;
+  --um-brand: #4f1bb3;
+  --um-brand-hover: #3d1293;
+  --um-line: #e6e1f0;
+  --um-line-strong: #d8cdee;
+  --um-success: #10b981;
+  --um-r-card: 12px;
+  --um-r-panel: 8px;
+  --um-r-input: 6px;
+  --um-r-tag: 4px;
+}
+
+/* Inter typography throughout the modal (headings, body, controls). */
+.upload-modal,
+.upload-modal h1,
+.upload-modal h2,
+.upload-modal button,
+.upload-modal input,
+.upload-modal textarea,
+.upload-modal select {
+  font-family: var(--um-font);
+}
+
+/* ---- Shell: dialog radius 12, hairline, subtle shadow, canvas inner ---- */
+.upload-modal .upload-modal-dialog {
+  background: var(--um-surface);
+  border: 1px solid var(--um-line);
+  border-radius: var(--um-r-card);
+  box-shadow: 0 18px 60px -28px rgba(23, 10, 51, 0.45);
+}
+
+.upload-modal .upload-shell {
+  background: var(--um-canvas);
+  padding: 22px 24px 24px;
+}
+
+/* ---- Header: Inter title scale + flat monoline close ---- */
+.upload-modal .upload-header {
+  align-items: center;
+  border-bottom: 1px solid var(--um-line);
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+}
+
+.upload-modal .repository-title {
+  align-items: center;
+  display: flex;
+  gap: 11px;
+}
+
+.upload-modal .upload-header h1 {
+  color: var(--um-ink);
+  font-family: var(--um-font);
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  margin: 0;
+}
+
+/* Monoline upload glyph in the header tinted to brand, flattened to 4px. */
+.upload-modal .upload-icon {
+  border: 1.5px solid var(--um-brand);
+  border-radius: var(--um-r-tag);
+  color: var(--um-brand);
+  height: 24px;
+  width: 24px;
+}
+
+.upload-modal .upload-icon::before,
+.upload-modal .upload-icon::after {
+  background: var(--um-brand);
+}
+
+.upload-modal .send-modal-close {
+  background: var(--um-surface);
+  border: 1px solid var(--um-line);
+  border-radius: var(--um-r-input);
+  color: var(--um-muted);
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.upload-modal .send-modal-close:hover {
+  background: #f8f6fc;
+  border-color: var(--um-line-strong);
+  color: var(--um-ink);
+}
+
+/* ---- Panels: flat hairline cards, no heavy shadow ---- */
+.upload-modal .upload-panel,
+.upload-modal .upload-side-panel {
+  background: var(--um-surface);
+  border: 1px solid var(--um-line);
+  border-radius: var(--um-r-panel);
+  box-shadow: none;
+}
+
+/* ---- Dropzone: flat 8px container, keep the brand upload-arrow affordance ---- */
+.upload-modal .upload-dropzone {
+  background: var(--um-canvas);
+  border: 1px dashed var(--um-line-strong);
+  border-radius: var(--um-r-panel);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.upload-modal .upload-dropzone:hover,
+.upload-modal .upload-dropzone.dragging {
+  background: #f6f3fb;
+  border-color: var(--um-brand);
+  box-shadow: none;
+}
+
+.upload-modal .upload-dropzone strong {
+  color: var(--um-ink);
+  font-family: var(--um-font);
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.upload-modal .upload-dropzone span {
+  color: var(--um-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.upload-modal .upload-dropzone-mark {
+  border-color: var(--um-brand);
+}
+
+.upload-modal .upload-dropzone-mark::before,
+.upload-modal .upload-dropzone-mark::after {
+  background: var(--um-brand);
+}
+
+/* ---- "No file selected" bar: flat hairline, muted ---- */
+.upload-modal .upload-selected-file {
+  background: var(--um-canvas);
+  border: 1px solid var(--um-line);
+  border-radius: var(--um-r-input);
+  color: var(--um-ink);
+}
+
+.upload-modal .upload-selected-file.empty {
+  color: var(--um-faint);
+  font-weight: 500;
+}
+
+.upload-modal .upload-selected-file span {
+  color: var(--um-muted);
+}
+
+/* ---- Field labels: uppercase muted 11/600/0.05em ---- */
+.upload-modal .upload-field span {
+  color: var(--um-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+/* ---- Inputs / textareas: 6px radius, hairline, brand focus ring ---- */
+.upload-modal .upload-field input,
+.upload-modal .upload-field textarea,
+.upload-modal .upload-field select {
+  background: var(--um-surface);
+  border: 1px solid var(--um-line-strong);
+  border-radius: var(--um-r-input);
+  color: var(--um-ink);
+}
+
+.upload-modal .upload-field input:focus,
+.upload-modal .upload-field textarea:focus,
+.upload-modal .upload-field select:focus {
+  border-color: var(--um-brand);
+  box-shadow: 0 0 0 3px rgba(79, 27, 179, 0.12);
+  outline: none;
+}
+
+.upload-modal .upload-field input::placeholder,
+.upload-modal .upload-field textarea::placeholder {
+  color: var(--um-faint);
+}
+
+/* ---- Action bar + status ---- */
+.upload-modal .upload-actions {
+  border-top: 1px solid var(--um-line);
+}
+
+.upload-modal .upload-status {
+  color: var(--um-muted);
+  font-weight: 500;
+}
+
+.upload-modal .upload-status.success {
+  color: var(--um-success);
+}
+
+/* ---- Buttons: primary brand purple, secondary white+hairline, 6px ---- */
+.upload-modal .upload-actions button {
+  border-radius: var(--um-r-input);
+  font-family: var(--um-font);
+  font-size: 0.825rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.upload-modal .upload-actions button.secondary {
+  background: var(--um-surface);
+  border: 1px solid var(--um-line);
+  color: var(--um-ink);
+}
+
+.upload-modal .upload-actions button.secondary:hover:not(:disabled) {
+  background: #f8f6fc;
+  border-color: var(--um-brand);
+}
+
+.upload-modal .upload-actions button[type="submit"] {
+  background: var(--um-brand);
+  border: 1px solid var(--um-brand);
+  color: #ffffff;
+}
+
+.upload-modal .upload-actions button[type="submit"]:hover:not(:disabled) {
+  background: var(--um-brand-hover);
+  border-color: var(--um-brand-hover);
+}
+
+/* ---- Right route panel: flat hairline value cards (SOURCE / STATUS /
+   WHAT-HAPPENS-NEXT / CHANNEL), like the admin value cards ---- */
+.upload-modal .upload-side-panel .eyebrow {
+  color: var(--um-faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  margin: 0 0 6px;
+  text-transform: uppercase;
+}
+
+.upload-modal .upload-side-panel h2 {
+  color: var(--um-ink);
+  font-family: var(--um-font);
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  margin: 0 0 14px;
+}
+
+.upload-modal .upload-side-panel div {
+  background: var(--um-canvas);
+  border: 1px solid var(--um-line);
+  border-radius: var(--um-r-panel);
+  padding: 11px 12px;
+}
+
+.upload-modal .upload-side-panel dt {
+  color: var(--um-faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.upload-modal .upload-side-panel dd {
+  color: var(--um-ink);
+  font-size: 13px;
+  font-weight: 600;
+  margin: 5px 0 0;
+}
+
+/* ---- "Draft new NDA" CTA: flat secondary link, monoline, 6px ---- */
+.upload-modal .send-document-draft-cta {
+  border-top: 1px solid var(--um-line);
+}
+
+.upload-modal .send-document-draft-cta p {
+  color: var(--um-muted);
+}
+
+.upload-modal .send-document-draft-link {
+  background: var(--um-surface);
+  border: 1px solid var(--um-line);
+  border-radius: var(--um-r-input);
+  color: var(--um-brand);
+  font-family: var(--um-font);
+  font-size: 0.825rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.upload-modal .send-document-draft-link:hover {
+  background: #f8f6fc;
+  border-color: var(--um-brand);
+  color: var(--um-brand-hover);
+}
+
+.upload-modal .send-document-draft-icon {
+  fill: none;
+  flex: 0 0 auto;
+  height: 15px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+  width: 15px;
+}
