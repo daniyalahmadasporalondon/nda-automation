@@ -4358,7 +4358,9 @@ function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequ
           return;
         }
         // Painted. Swap in a READ-ONLY faithful surface (no interactive redline
-        // overlay) with an honest note that tracked redlines live on the other tabs.
+        // overlay). The document renders CLEANLY -- no in-surface banner; the honest
+        // "tracked redlines aren't on this tab" status is surfaced through the app's
+        // notification system (a transient toast) instead, fired once per fallback.
         const wrapper = document.createElement("section");
         wrapper.className = "review-faithful-surface review-faithful-redline review-faithful-redline-fallback ready";
         wrapper.setAttribute("data-review-render-surface", "");
@@ -4367,13 +4369,13 @@ function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequ
         wrapper.setAttribute("data-faithful-fallback", candidate.label);
         wrapper.setAttribute("data-render-status", "ready");
         wrapper.setAttribute("aria-label", `Faithful document preview (tracked redlines unavailable; showing ${candidate.label})`);
-        wrapper.appendChild(faithfulRedlineFallbackNote(candidate.label));
         wrapper.appendChild(host);
         studioDocumentRender.innerHTML = "";
         studioDocumentRender.appendChild(wrapper);
         showStudioDocumentRender();
         notifyFillHighlights();
         highlightSelectedClauseRefs();
+        notifyRedlineFaithfulFallback(matterId, failedViewMode, candidate.label);
         faithfulMappingTelemetry(`redline_faithful_fallback:${candidate.label}`);
       })
       .catch(() => {
@@ -4385,17 +4387,41 @@ function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequ
   tryCandidate(0);
 }
 
-// Small, honest in-surface note for the faithful redline fallback: tracked redlines
-// could not be composed for this matter, so the true document is shown (clean /
-// original) instead -- the reviewer can see the real formatting, and the structured
-// redline view + the Clean/Original tabs carry the change detail.
-function faithfulRedlineFallbackNote(label) {
-  const note = document.createElement("div");
-  note.className = "review-faithful-fallback-note";
-  note.setAttribute("role", "note");
-  const showing = label === "clean" ? "the accepted (clean) document" : "the original document";
-  note.textContent = `Tracked redlines aren't available to render on this tab yet, so ${showing} is shown faithfully here. Switch to the structured Redline view for the change-by-change detail.`;
-  return note;
+// The honest "tracked redlines aren't on this tab" status for the faithful redline
+// fallback, surfaced through the app's existing notification system (the toast
+// controller created in app.js) rather than a banner painted INSIDE the document
+// surface -- so the faithful document renders cleanly. Reuses the same transient,
+// auto-dismissing role="status" toast primitive as the other in-app advisories
+// (notificationsController.notify), so callers get one consistent notification
+// mechanism rather than a bespoke in-document banner.
+//
+// Fired ONCE per distinct fallback (keyed by matter + failed view + which faithful
+// document we fell back to) so a re-render of the same fallback does not re-toast,
+// while a genuinely new fallback (different matter/view/source) does notify again.
+//
+// Defensive: if the controller is not present (e.g. an isolated test/render harness)
+// this is a best-effort no-op and never throws -- the faithful render still stands.
+let lastRedlineFaithfulFallbackToastKey = null;
+function notifyRedlineFaithfulFallback(matterId, failedViewMode, label) {
+  try {
+    const key = `${String(matterId)}::${String(failedViewMode)}::${String(label)}`;
+    if (key === lastRedlineFaithfulFallbackToastKey) return; // already toasted this fallback
+    lastRedlineFaithfulFallbackToastKey = key;
+    if (
+      typeof notificationsController !== "undefined" &&
+      notificationsController &&
+      typeof notificationsController.notify === "function"
+    ) {
+      const showing = label === "clean" ? "the accepted (clean) document" : "the original document";
+      notificationsController.notify(
+        "Tracked redlines aren't on this tab",
+        `${showing.charAt(0).toUpperCase()}${showing.slice(1)} is shown faithfully here. `
+          + "Use the structured Redline view for the change-by-change detail.",
+      );
+    }
+  } catch (_notifyError) {
+    // The notification is advisory; never let it break the faithful fallback render.
+  }
 }
 
 // Emits an abort/diagnostic reason for the faithful mapping. Console only today

@@ -4873,21 +4873,6 @@ h3 {
   user-select: none;
 }
 
-/* Honest note shown when the tracked-redline reviewed-docx can't be composed for a
-   matter (e.g. no approved/reviewed artifact -> 409): the Redline tab then shows the
-   FAITHFUL clean/original document read-only instead of the plain reconstruction. */
-.review-faithful-redline-fallback .review-faithful-fallback-note {
-  background: rgba(85, 35, 178, 0.06);
-  border-left: 3px solid rgba(85, 35, 178, 0.45);
-  border-radius: 6px;
-  color: #4c1d95;
-  font-size: 0.82rem;
-  line-height: 1.45;
-  margin: 0 0 12px;
-  padding: 8px 12px;
-  user-select: none;
-}
-
 .paragraph-redline-preview {
   cursor: pointer;
   line-height: 1.64;

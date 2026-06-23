@@ -113,12 +113,26 @@ function buildSandbox({
     selectedReviewClauseId: null,
   };
 
+  // Capture toasts fired through the app's notification system. The faithful redline
+  // fallback now surfaces its "tracked redlines aren't on this tab" status via
+  // notificationsController.notify (a transient toast) INSTEAD of an in-document
+  // banner, so this stub records the calls the way app.js's real controller would.
+  const toasts = [];
+  const notificationsController = {
+    notify: (title, subtitle) => {
+      toasts.push({ title: String(title || ""), subtitle: String(subtitle || "") });
+    },
+  };
+
   const sandbox = {
     console,
     window,
     document: documentRef,
     state,
     studioDocumentRender,
+    // The global toast controller (created in app.js in the browser). The fallback
+    // reads it defensively via `typeof notificationsController !== "undefined"`.
+    notificationsController,
     // showStudioDocumentRender lives in another classic file (not loaded here); stub
     // it so the upgrade's reveal call is a no-op. The other surface binders
     // (bindFaithfulDocxInteractions / notifyFillHighlights / highlightSelectedClauseRefs)
@@ -130,7 +144,7 @@ function buildSandbox({
   for (const file of ["config.js", "review-workstation-rendering.js"]) {
     vm.runInContext(fs.readFileSync(path.join(STATIC_JS_DIR, file), "utf8"), sandbox, { filename: file });
   }
-  return { sandbox, state, studioDocumentRender, calls, documentRef };
+  return { sandbox, state, studioDocumentRender, calls, documentRef, toasts };
 }
 
 function flushMicrotasks() {
@@ -216,14 +230,16 @@ async function testDirtyDraftNotOverwritten() {
 // ---------------------------------------------------------------------------
 // (#4) REDLINE 409/error -> FAITHFUL fallback (Clean/Original), NOT the plain
 //      reconstruction. The tracked reviewed-docx fails (409 no-artifact); the
-//      surface must resolve to a faithful read-only document with an honest note,
-//      and the plain reconstruction must NOT be the final surface.
+//      surface must resolve to a faithful read-only document rendered CLEANLY
+//      (no in-document banner), the honest "tracked redlines aren't on this tab"
+//      status is surfaced through the notification system (a toast) instead, and
+//      the plain reconstruction must NOT be the final surface.
 // ---------------------------------------------------------------------------
 async function testRedline409FallsBackToFaithful() {
   // The tracked reviewed-docx (changes=tracked) fails; the accepted (clean) AND the
   // source bytes still paint -> the fallback should pick the FIRST that paints (clean).
   {
-    const { sandbox, studioDocumentRender, calls } = buildSandbox({
+    const { sandbox, studioDocumentRender, calls, toasts } = buildSandbox({
       renderOutcome: (url) => (url.includes("changes=tracked") ? "fail" : "ok"),
     });
     const upgrade = vm.runInContext("maybeUpgradeSurfaceToFaithfulDocx", sandbox);
@@ -238,10 +254,20 @@ async function testRedline409FallsBackToFaithful() {
       "the swapped-in surface must be the faithful FALLBACK (clean/original), tagged data-faithful-fallback");
     assert.equal(surface.getAttribute("data-faithful-fallback"), "clean",
       "the first painting fallback candidate (accepted/clean) must win");
-    assert.ok(studioDocumentRender.querySelector(".review-faithful-fallback-note"),
-      "an honest note must explain tracked redlines live on the Clean/Original tabs");
+    // The in-document banner must be GONE: the faithful document renders cleanly,
+    // with NO note injected into the render surface.
+    assert.equal(studioDocumentRender.querySelector(".review-faithful-fallback-note"), null,
+      "the in-document fallback note must NOT be injected into the render surface (it moved to the toast system)");
     assert.ok(!studioDocumentRender.textContent.includes("EXISTING RECONSTRUCTION FLOOR"),
       "the plain reconstruction must NOT be the final surface (faithful fallback replaces it)");
+    // The status is surfaced through the notification system instead: exactly one
+    // toast, conveying the "tracked redlines aren't on this tab -> use the Redline view" status.
+    assert.equal(toasts.length, 1,
+      "the faithful fallback must fire exactly one notification toast (the status moved out of the document surface)");
+    assert.match(toasts[0].title, /tracked redlines aren't on this tab/i,
+      "the toast title must convey that tracked redlines aren't on this tab");
+    assert.match(toasts[0].subtitle, /Redline view/i,
+      "the toast must point the reviewer at the structured Redline view for the change-by-change detail");
     // tracked (failed primary) + accepted (clean fallback) were both requested.
     assert.ok(calls.urls.some((u) => u.includes("changes=tracked")), "must have tried tracked first");
     assert.ok(calls.urls.some((u) => u.includes("changes=accepted")), "must have fallen back to accepted/clean");
@@ -250,7 +276,7 @@ async function testRedline409FallsBackToFaithful() {
   // Tracked AND accepted both fail (no reviewed artifact at all) -> the faithful
   // ORIGINAL /source is the floor; it paints, so the surface is faithful (original).
   {
-    const { sandbox, studioDocumentRender } = buildSandbox({
+    const { sandbox, studioDocumentRender, toasts } = buildSandbox({
       renderOutcome: (url) => (url.includes("/reviewed-docx") ? "fail" : "ok"),
     });
     const upgrade = vm.runInContext("maybeUpgradeSurfaceToFaithfulDocx", sandbox);
@@ -263,12 +289,45 @@ async function testRedline409FallsBackToFaithful() {
     assert.ok(surface, "with no reviewed artifact, the faithful ORIGINAL source must be the fallback floor");
     assert.equal(surface.getAttribute("data-faithful-fallback"), "original",
       "the original source document must be the fallback when no reviewed bytes exist");
+    assert.equal(studioDocumentRender.querySelector(".review-faithful-fallback-note"), null,
+      "no in-document fallback note even on the original-source floor (status is a toast)");
     assert.ok(!studioDocumentRender.textContent.includes("EXISTING RECONSTRUCTION FLOOR"),
       "the faithful original replaces the plain reconstruction");
+    assert.equal(toasts.length, 1, "the original-source fallback must also fire exactly one toast");
   }
 
   console.log("PASS (#4) redline 409 -> faithful fallback: clean wins when accepted paints; "
-    + "original is the floor when no reviewed artifact exists; never the plain reconstruction.");
+    + "original is the floor when no reviewed artifact exists; never the plain reconstruction; "
+    + "no in-document banner; status surfaced via a single notification toast.");
+}
+
+// ---------------------------------------------------------------------------
+// (#6) The fallback toast fires ONCE per distinct fallback (no spam). A second
+//      upgrade for the SAME matter+view+fallback-source must NOT re-toast, while a
+//      genuinely different fallback (e.g. a different matter) DOES notify again.
+// ---------------------------------------------------------------------------
+async function testFallbackToastFiresOncePerFallback() {
+  const { sandbox, toasts } = buildSandbox({
+    matter: { id: "m-dedupe", source_filename: "nda.docx" },
+    renderOutcome: (url) => (url.includes("changes=tracked") ? "fail" : "ok"),
+  });
+  const upgrade = vm.runInContext("maybeUpgradeSurfaceToFaithfulDocx", sandbox);
+
+  // First fallback -> one toast.
+  upgrade("redline");
+  await flushMicrotasks();
+  await flushMicrotasks();
+  await flushMicrotasks();
+  assert.equal(toasts.length, 1, "first fallback fires one toast");
+
+  // A re-render of the SAME fallback (same matter/view/source) must NOT re-toast.
+  upgrade("redline");
+  await flushMicrotasks();
+  await flushMicrotasks();
+  await flushMicrotasks();
+  assert.equal(toasts.length, 1, "re-rendering the SAME fallback must not spam a second toast");
+
+  console.log("PASS (#6) fallback toast fires once per distinct fallback (no re-render spam).");
 }
 
 // ---------------------------------------------------------------------------
@@ -298,5 +357,7 @@ await testCleanRendersAcceptedText();
 await testDirtyDraftNotOverwritten();
 await testRedline409FallsBackToFaithful();
 await testNoDocxBytesKeepsReconstruction();
+await testFallbackToastFiresOncePerFallback();
 console.log("\nALL PASS: faithful-redline-clean-upgrade (#2 clean accepted-text + #3 dirty-draft guard "
-  + "+ #4 redline-409 faithful fallback + #5 no-bytes reconstruction floor).");
+  + "+ #4 redline-409 faithful fallback [no banner; toast surfaces status] + #5 no-bytes reconstruction floor "
+  + "+ #6 toast-once-per-fallback).");
