@@ -1535,7 +1535,61 @@ function activateTab(tabName) {
     // guide's own tabs and no longer have admin-nav entries.
     activateAdminSurface("guide");
     activateAdminSection("user_guide");
+    initGuideToggle();
   }
+}
+
+// --- User⇄Developer guide toggle (open to all users) -----------------------
+// The Guide tab embeds one of two self-contained static HTML guides via an
+// iframe. The segmented toggle in #adminUserGuidePanel swaps which one is
+// shown (iframe src + open-in-new-tab href + header title) and persists the
+// choice in localStorage. Both guides are public static files — no auth gate.
+var GUIDE_SRC = {
+  user: "/static/user-guide.html?v=20260623devguide1",
+  developer: "/static/developer-guide.html?v=20260623devguide1",
+};
+var GUIDE_MODE_STORAGE_KEY = "ndaGuideMode";
+
+function applyGuideMode(mode) {
+  var resolved = mode === "developer" ? "developer" : "user";
+  var frame = document.getElementById("guideFrame");
+  var link = document.getElementById("guideOpenLink");
+  var title = document.getElementById("guideTitle");
+  var src = GUIDE_SRC[resolved];
+  if (frame && frame.getAttribute("src") !== src) frame.setAttribute("src", src);
+  if (link) link.setAttribute("href", src);
+  if (title) title.textContent = resolved === "developer" ? "Developer Guide" : "User Guide";
+  var buttons = document.querySelectorAll(".guide-mode-btn[data-guide-mode]");
+  Array.prototype.forEach.call(buttons, function (btn) {
+    btn.classList.toggle("active", btn.dataset.guideMode === resolved);
+  });
+  try {
+    window.localStorage.setItem(GUIDE_MODE_STORAGE_KEY, resolved);
+  } catch (err) {
+    /* localStorage may be unavailable (private mode); mode just won't persist */
+  }
+}
+
+function initGuideToggle() {
+  var buttons = document.querySelectorAll(".guide-mode-btn[data-guide-mode]");
+  if (!buttons.length) return;
+  var stored = "user";
+  try {
+    if (window.localStorage.getItem(GUIDE_MODE_STORAGE_KEY) === "developer") {
+      stored = "developer";
+    }
+  } catch (err) {
+    /* default to user when storage is unavailable */
+  }
+  if (!initGuideToggle._bound) {
+    Array.prototype.forEach.call(buttons, function (btn) {
+      btn.addEventListener("click", function () {
+        applyGuideMode(btn.dataset.guideMode);
+      });
+    });
+    initGuideToggle._bound = true;
+  }
+  applyGuideMode(stored);
 }
 
 function renderDashboardInboxTable() {

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260623reviewtabv2-2">
+    <link rel="stylesheet" href="/static/styles.css?v=20260623devguide1">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260621felayout1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260619onboard1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
@@ -1258,19 +1258,29 @@
               <header class="admin-section-head">
                 <div>
                   <p class="eyebrow">handbook</p>
-                  <h1>User Guide</h1>
+                  <h1 id="guideTitle">User Guide</h1>
                 </div>
-                <a class="admin-guide-open" href="/static/user-guide.html?v=20260622userguide3" target="_blank" rel="noopener">Open the full User Guide in a new tab</a>
+                <div class="admin-guide-actions">
+                  <!-- User⇄Developer toggle (open to all users; persisted in
+                       localStorage "ndaGuideMode"). app.js#applyGuideMode swaps the
+                       iframe src + open-link href + this title and toggles .active. -->
+                  <div class="guide-mode-toggle" role="group" aria-label="Guide mode">
+                    <button type="button" class="guide-mode-btn active" data-guide-mode="user">User</button>
+                    <button type="button" class="guide-mode-btn" data-guide-mode="developer">Developer</button>
+                  </div>
+                  <a class="admin-guide-open" id="guideOpenLink" href="/static/user-guide.html?v=20260623devguide1" target="_blank" rel="noopener">Open the full guide in a new tab</a>
+                </div>
               </header>
-              <!-- The user guide is a self-contained static HTML document served at
-                   /static/user-guide.html. It is embedded here via an iframe so the
-                   Guide tab presents the full 15-section handbook inline, while the
-                   header link above opens the same document full-screen in a new
-                   tab. Kept self-contained (not re-templated) to avoid breakage. -->
+              <!-- The guides are self-contained static HTML documents served at
+                   /static/user-guide.html and /static/developer-guide.html. One is
+                   embedded here via the iframe below; the User⇄Developer toggle swaps
+                   which one is shown (and the header link + title). Kept self-contained
+                   (not re-templated) to avoid breakage. -->
               <iframe
+                id="guideFrame"
                 class="admin-user-guide-frame"
-                src="/static/user-guide.html?v=20260622userguide3"
-                title="NDA Automation User Guide"
+                src="/static/user-guide.html?v=20260623devguide1"
+                title="NDA Automation Guide"
                 loading="lazy"
               ></iframe>
             </section>
@@ -2264,6 +2274,6 @@
     <script src="/static/js/notifications.js?v=20260623reviewtabv2-1"></script>
     <script src="/static/js/generator-editor.js?v=20260621wave3"></script>
     <script src="/static/js/find-replace.js?v=20260621wave3"></script>
-    <script src="/static/app.js?v=20260622syncwindow1"></script>
+    <script src="/static/app.js?v=20260623devguide1"></script>
   </body>
 </html>
