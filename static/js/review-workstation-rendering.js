@@ -51,6 +51,10 @@ function renderResult(result, reviewedText) {
   state.redlineTemplateSelections = defaultRedlineTemplateSelections(state.reviewRedlines);
   state.redlineDraft = null;
   state.redlineDraftDirty = false;
+  // FIX 1: a fresh review result is the authoritative model; any prior pending
+  // source-textarea edit has been superseded, so clear the dirty guard so the
+  // textarea can re-sync from the new model.
+  state.sourceTextDirty = false;
   state.reviewedClauseIds = {};
   state.reasoningTrailOpen = {};
   state.reviewResolution = null;
