@@ -14431,14 +14431,22 @@ label.is-hidden {
   color: var(--brand);
 }
 
-/* Send Redline — the toolbar's primary action gets the brand fill. */
-#reviewView #studioSendButton:not(:disabled) {
+/* Send Redline — the toolbar's primary action gets the brand fill.
+   Exclude .blocked/.confirming so those state modifiers keep their own styling. */
+#reviewView #studioSendButton:not(:disabled):not(.blocked):not(.confirming) {
   background: var(--brand);
   color: #fff;
 }
 
-#reviewView #studioSendButton:hover:not(:disabled) {
+#reviewView #studioSendButton:hover:not(:disabled):not(.blocked):not(.confirming) {
   background: var(--brand-bright);
   box-shadow: none;
   color: #fff;
 }
+
+/* ---- Round-2 polish: brand Refresh-review button + centre the page ------- */
+#reviewView .studio-refresh-review { background: var(--brand); border-color: var(--brand); color: #fff; }
+#reviewView .studio-refresh-review:hover:not(:disabled),
+#reviewView .studio-refresh-review:focus-visible { background: var(--brand-bright); border-color: var(--brand-bright); color: #fff; }
+#reviewView .studio-refresh-review.is-refreshing::before { border-color: rgba(255,255,255,0.45); border-top-color: #fff; }
+#reviewView .studio-page { margin-left: auto; margin-right: auto; }

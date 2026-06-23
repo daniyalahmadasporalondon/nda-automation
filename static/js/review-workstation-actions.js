@@ -132,7 +132,20 @@ function reviewPollInFlightForMatter(matterId) {
 
 // Tear down the active poll: clear its timer and mark it stopped so any pending
 // async tick is a no-op. Idempotent.
+//
+// stopReviewPoll() is the SINGLE choke point every abort routes through — including
+// paths that DON'T also call exitReviewInFlightUi() (resetReviewResults() via the
+// Clear button, and any future stop-without-exit). So the persistent "Reviewing with
+// AI…" progress notification is dismissed HERE, guaranteeing no teardown path
+// (Clear, matter-switch, nav-away, supersede, completed, failed, timeout) can orphan
+// it. clearReviewProgressNotification()/dismissInProgress() is idempotent (a safe
+// no-op when no toast exists / id is unknown), so the paths that ALSO call
+// exitReviewInFlightUi() — which clears it again — double-clear harmlessly.
 function stopReviewPoll() {
+  // Dismiss the progress notification on EVERY stop, even the early-return below: a
+  // poll may have been torn down already (controller null) while the notification is
+  // still up, e.g. a second Clear. The dismissal is idempotent so this is always safe.
+  clearReviewProgressNotification();
   if (!reviewPollController) return;
   reviewPollController.stopped = true;
   if (reviewPollController.timer !== null && reviewPollController.timer !== undefined) {

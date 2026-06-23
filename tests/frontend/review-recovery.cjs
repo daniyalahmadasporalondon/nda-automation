@@ -411,6 +411,95 @@ async function main() {
     await page.close();
   } catch (error) { failures.push(["5b exit preserves unrelated meta", error]); }
 
+  // --- Case 6 (P0): the REAL Clear path (resetReviewResults via clearReview) dismisses
+  //     the persistent progress notification. This drives the ACTUAL teardown that does
+  //     NOT call exitReviewInFlightUi() — it only calls stopReviewPoll(). On the un-fixed
+  //     code (dismiss living solely in exitReviewInFlightUi) the toast is ORPHANED and
+  //     this FAILS; after the P0 fix (dismiss in the stopReviewPoll choke point) it PASSES.
+  try {
+    const page = await loadPage(browser);
+    await page.evaluate(() => {
+      // Minimal stubs for the helpers resetReviewResults() calls that the recovery
+      // harness doesn't otherwise need. We deliberately do NOT touch the notification
+      // spies, so the dismissal we assert comes only through the real teardown.
+      window.cancelViewerReviewRefresh = function () {};
+      window.updateReviewUndoButtonState = function () {};
+      window.AppState = { resetReviewResults: function () {} };
+      // Raise the in-flight UI exactly as a real review-start would: this puts up the
+      // persistent "Reviewing with AI…" notification AND starts a live poll.
+      state.selectedMatter = { id: "m-clear", review_status: "in_progress" };
+      enterReviewInFlightUi();
+      __realStartReviewPoll("m-clear");
+    });
+    const before = await page.evaluate(() => ({
+      raised: window.__spy.notifyInProgress.slice(),
+      dismissedCount: window.__spy.dismissInProgress.length,
+      inFlight: reviewPollInFlight(),
+    }));
+    assert.equal(before.raised.length, 1, "review-start must have raised exactly one progress notification");
+    assert.ok(before.inFlight, "a poll must be in flight before the Clear");
+    // Drive the REAL Clear teardown — NOT a hand-call to exitReviewInFlightUi. Assert it
+    // fired AT LEAST ONE NEW dismissal of the in-flight id (delta from the pre-Clear
+    // baseline), so the persistent progress notification is not orphaned.
+    await page.evaluate(() => { resetReviewResults(); });
+    const after = await page.evaluate(() => ({
+      dismissed: window.__spy.dismissInProgress.slice(),
+      inFlight: reviewPollInFlight(),
+    }));
+    assert.equal(after.inFlight, false, "Clear/resetReviewResults did not stop the poll");
+    assert.ok(
+      after.dismissed.length > before.dismissedCount,
+      "Clear/resetReviewResults fired no new dismissal (it would orphan the progress notification)",
+    );
+    assert.ok(
+      after.dismissed.includes("review-in-progress"),
+      "Clear/resetReviewResults ORPHANED the persistent progress notification (never dismissed the in-flight id)",
+    );
+    process.stdout.write("  ok 6 - real Clear (resetReviewResults) dismisses the in-flight progress notification\n");
+    await page.close();
+  } catch (error) { failures.push(["6 Clear dismisses progress notice", error]); }
+
+  // --- Case 7 (P0): a matter-switch MID-POLL (opening a DIFFERENT matter while a review
+  //     is in flight) must dismiss the prior progress notification, not strand it. The
+  //     real entry point is startReviewPoll(), which supersedes the old poll by calling
+  //     stopReviewPoll() — the same choke point that now clears the notice. We assert the
+  //     prior "Reviewing with AI…" toast for the FIRST matter is dismissed by the switch.
+  try {
+    const page = await loadPage(browser);
+    await page.evaluate(() => {
+      // First matter: review in flight, progress notification up.
+      state.selectedMatter = { id: "m-first", review_status: "in_progress" };
+      enterReviewInFlightUi();
+      __realStartReviewPoll("m-first");
+    });
+    const before = await page.evaluate(() => ({
+      raised: window.__spy.notifyInProgress.slice(),
+      dismissedCount: window.__spy.dismissInProgress.length,
+      inFlightFirst: reviewPollInFlightForMatter("m-first"),
+    }));
+    assert.equal(before.raised.length, 1, "first matter must have raised one progress notification");
+    assert.ok(before.inFlightFirst, "first matter's poll must be in flight before the switch");
+    // Switch to a DIFFERENT matter mid-poll: startReviewPoll supersedes via stopReviewPoll.
+    await page.evaluate(() => { __realStartReviewPoll("m-second"); });
+    const after = await page.evaluate(() => ({
+      dismissed: window.__spy.dismissInProgress.slice(),
+      inFlightFirst: reviewPollInFlightForMatter("m-first"),
+      inFlightSecond: reviewPollInFlightForMatter("m-second"),
+    }));
+    assert.equal(after.inFlightFirst, false, "the first matter's poll must be superseded by the switch");
+    assert.ok(after.inFlightSecond, "the second matter's poll must be in flight after the switch");
+    assert.ok(
+      after.dismissed.length > before.dismissedCount,
+      "a matter-switch mid-poll fired no new dismissal (it would orphan the prior progress notification)",
+    );
+    assert.ok(
+      after.dismissed.includes("review-in-progress"),
+      "a matter-switch mid-poll ORPHANED the prior progress notification (never dismissed the in-flight id)",
+    );
+    process.stdout.write("  ok 7 - matter-switch mid-poll dismisses the prior in-flight progress notification\n");
+    await page.close();
+  } catch (error) { failures.push(["7 matter-switch dismisses progress notice", error]); }
+
   await browser.close();
 
   if (failures.length) {
