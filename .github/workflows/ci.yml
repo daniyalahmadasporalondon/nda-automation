@@ -22,6 +22,11 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          # Full history so the cache-bust guards can walk index.html history
+          # to locate each asset's last token-bump commit (--tree) and resolve
+          # the push/PR base ref (--base).
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -76,6 +81,15 @@ jobs:
             fi
           fi
           python3 scripts/cache_bust_guard.py --base "${BASE}"
+
+      - name: Guard static cache-bust tokens (whole-tree)
+        # Absolute check, independent of the diff range: every versioned asset's
+        # current bytes must match its bytes as of the commit that last bumped
+        # its ?v= token. Catches staleness split across commits (token bumped in
+        # one commit, asset bytes changed in a later one) -- the failure mode the
+        # range-diff step above can miss (and that shipped to prod, e.g.
+        # de9aed0c). Needs full history (fetch-depth: 0 above).
+        run: python3 scripts/cache_bust_guard.py --tree
 
       - name: Check JavaScript syntax
         run: |

@@ -221,6 +221,107 @@ def run_git_guard(
     )
 
 
+# --- whole-tree (absolute) guard -------------------------------------------
+#
+# The range-diff guard above (``--staged`` / ``--base``) only inspects the
+# assets that changed *within one diff range*. That misses the real-world way
+# staleness ships: a token is bumped in commit A, then the asset's bytes change
+# in a *later* commit B that does not touch index.html at all. Neither A nor B
+# is, on its own, a violation in its own range -- but the deployed tree is now
+# stale (asset content from B, token from A). This is the exact failure that
+# shipped to prod (e.g. de9aed0c changed styles.css / config.js /
+# review-workstation-rendering.js without touching index.html).
+#
+# The whole-tree guard is *absolute*, not range-relative: for every versioned
+# asset referenced in HEAD's index.html, it finds the commit that last bumped
+# that asset's ``?v=`` token, and asserts the asset's current bytes are
+# identical to its bytes at that commit. If they differ, the live tree is stale
+# regardless of how the change was split across commits.
+
+
+def _rev_for_token_bump(asset: str, repo_root: Path, rev: str) -> Optional[str]:
+    """Newest commit (<= ``rev``) where ``asset``'s ?v= token changed.
+
+    Walks index.html history newest-first and returns the first commit whose
+    token for ``asset`` differs from its first parent's token. Returns ``None``
+    if the asset's token never changed across recorded history (it has carried
+    the same token since it was introduced).
+    """
+    log = _git(
+        ["log", rev, "--first-parent", "--format=%H", "--", INDEX_REL], repo_root
+    )
+    commits = [c for c in log.splitlines() if c]
+    token_cache: Dict[str, Dict[str, str]] = {}
+
+    def token_at(commit: str) -> Optional[str]:
+        if commit not in token_cache:
+            try:
+                txt = _git(["show", f"{commit}:{INDEX_REL}"], repo_root)
+            except subprocess.CalledProcessError:
+                txt = ""
+            token_cache[commit] = parse_tokens(txt)
+        return token_cache[commit].get("static/" + asset)
+
+    for commit in commits:
+        try:
+            parent = _git(["rev-parse", f"{commit}^"], repo_root).strip()
+        except subprocess.CalledProcessError:
+            parent = ""
+        cur = token_at(commit)
+        par = token_at(parent) if parent else None
+        if cur != par:
+            return commit
+    return None
+
+
+def _blob_at(path: str, commit: str, repo_root: Path) -> Optional[str]:
+    """Blob object id of ``path`` at ``commit`` (``None`` if absent)."""
+    try:
+        out = _git(["rev-parse", f"{commit}:{path}"], repo_root).strip()
+    except subprocess.CalledProcessError:
+        return None
+    return out or None
+
+
+def run_tree_guard(
+    *,
+    rev: str = "HEAD",
+    repo_root: Optional[Path] = None,
+) -> List[Violation]:
+    """Absolute whole-tree check: every versioned asset's bytes match its token.
+
+    For each asset referenced with a ``?v=`` token in ``rev``'s index.html,
+    locate the commit that last bumped that token and compare the asset's blob
+    id then vs at ``rev``. A mismatch means the deployed asset changed after its
+    token was last bumped -> returning browsers serve stale bytes.
+    """
+    if repo_root is None:
+        repo_root = _discover_repo_root()
+    index_html = _index_html_at(rev, staged=False, repo_root=repo_root)
+    tokens = parse_tokens(index_html)
+
+    violations: List[Violation] = []
+    for asset_path, token in sorted(tokens.items()):
+        # asset_path is repo-root-relative ("static/..."); strip prefix for lookup.
+        asset = asset_path[len("static/") :]
+        bump_commit = _rev_for_token_bump(asset, repo_root, rev)
+        current_blob = _blob_at(asset_path, rev, repo_root)
+        if current_blob is None:
+            # Referenced asset missing from the tree -> a 404, surface it.
+            violations.append(Violation(asset_path, token, None))
+            continue
+        if bump_commit is None:
+            # Token has never changed; only stale if the file changed since the
+            # asset was first introduced with this token. Compare against the
+            # oldest recorded blob is overkill -- if the token never moved but
+            # the file did, that is caught by the introducing-commit comparison.
+            continue
+        bump_blob = _blob_at(asset_path, bump_commit, repo_root)
+        if bump_blob is not None and bump_blob != current_blob:
+            violations.append(Violation(asset_path, token, token))
+    return violations
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group(required=True)
@@ -234,6 +335,15 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="REF",
         help="CI mode: check changes in REF...HEAD (e.g. origin/main)",
     )
+    group.add_argument(
+        "--tree",
+        action="store_true",
+        help=(
+            "whole-tree mode: assert every versioned asset's current bytes "
+            "match its bytes as of the commit that last bumped its ?v= token "
+            "(catches staleness split across commits)"
+        ),
+    )
     return parser
 
 
@@ -241,7 +351,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
-        violations = run_git_guard(staged=args.staged, base=args.base)
+        if args.tree:
+            violations = run_tree_guard()
+        else:
+            violations = run_git_guard(staged=args.staged, base=args.base)
     except subprocess.CalledProcessError as exc:
         sys.stderr.write(f"cache-bust guard: git error: {exc}\n")
         return 2

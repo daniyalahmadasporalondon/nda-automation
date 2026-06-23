@@ -221,5 +221,110 @@ class CliEndToEndTests(unittest.TestCase):
             )
 
 
+class WholeTreeGuardTests(unittest.TestCase):
+    """The absolute (``--tree``) guard catches staleness split across commits.
+
+    The range-diff guard (``--staged`` / ``--base``) only inspects assets that
+    changed *within one diff range*. The real prod failure was: a token bumped
+    in commit A, then the asset's bytes changed in a *later* commit B that never
+    touched index.html. The whole-tree guard compares each asset's current bytes
+    against its bytes as of the commit that last bumped its token, so it catches
+    that case regardless of how the change was split across commits.
+    """
+
+    def _run_guard(self, repo: Path, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(GUARD_PATH), *args],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+        )
+
+    def _git(self, repo: Path, *args: str) -> None:
+        subprocess.run(["git", *args], cwd=str(repo), check=True, capture_output=True)
+
+    def test_tree_mode_catches_stale_split_across_commits(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._git(repo, "init", "-q")
+            self._git(repo, "config", "user.email", "t@example.com")
+            self._git(repo, "config", "user.name", "t")
+            (repo / "static").mkdir()
+            (repo / "scripts").mkdir()
+            (repo / "scripts" / "cache_bust_guard.py").write_text(
+                GUARD_PATH.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            asset = repo / "static" / "app.js"
+            index = repo / "static" / "index.html"
+
+            # Commit A: introduce asset + token, then bump the token (so a real
+            # "token last changed" commit exists).
+            asset.write_text("console.log('v1');\n", encoding="utf-8")
+            index.write_text(
+                '<script src="/static/app.js?v=20260101a"></script>\n',
+                encoding="utf-8",
+            )
+            self._git(repo, "add", "-A")
+            self._git(repo, "commit", "-q", "-m", "introduce")
+            index.write_text(
+                '<script src="/static/app.js?v=20260101b"></script>\n',
+                encoding="utf-8",
+            )
+            self._git(repo, "add", "-A")
+            self._git(repo, "commit", "-q", "-m", "bump token (A)")
+
+            # Range-diff guard against A would be clean here. Now commit B
+            # changes ONLY the asset bytes -- no index.html touch, no token bump.
+            asset.write_text("console.log('v2 changed');\n", encoding="utf-8")
+            self._git(repo, "add", "-A")
+            self._git(repo, "commit", "-q", "-m", "change asset only (B)")
+
+            stale = self._run_guard(repo, "--tree")
+            self.assertEqual(
+                stale.returncode,
+                1,
+                msg=f"--tree should flag split staleness.\nstderr={stale.stderr}",
+            )
+            self.assertIn("static/app.js", stale.stderr)
+
+            # Commit C: bump the token to match the new bytes -> clean.
+            index.write_text(
+                '<script src="/static/app.js?v=20260101c"></script>\n',
+                encoding="utf-8",
+            )
+            self._git(repo, "add", "-A")
+            self._git(repo, "commit", "-q", "-m", "bump token (C)")
+            fixed = self._run_guard(repo, "--tree")
+            self.assertEqual(
+                fixed.returncode,
+                0,
+                msg=f"--tree should be clean after bump.\nstderr={fixed.stderr}",
+            )
+
+    def test_shipped_tree_is_not_stale(self):
+        """The real shipped HEAD must have no stale versioned assets.
+
+        This is the live guard: if a future commit changes a versioned asset
+        without bumping its ?v= token in static/index.html, this fails.
+        """
+        result = self._run_guard(ROOT, "--tree")
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=(
+                "Shipped static/index.html has stale cache-bust tokens "
+                f"(bump them):\n{result.stderr}"
+            ),
+        )
+
+    def test_ci_runs_tree_guard_step(self):
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("--tree", workflow)
+
+
 if __name__ == "__main__":
     unittest.main()
