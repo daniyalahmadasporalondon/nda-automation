@@ -62,12 +62,62 @@
       });
     }
 
-    // ---- Page scroll (viewport-pages over the continuously scrolled doc) ----
+    // ---- Page scroll ----
+    // FIX 2 (P1): the indicator used to read ceil(scrollHeight / viewportHeight) --
+    // a count of viewport-sized SCROLL slices over the reconstructed text, NOT the
+    // document's real page count. For an image-rendered matter the document renders
+    // as N discrete page-image tiles (figure.review-render-page); the slice count
+    // could read "17" for a 7-page PDF purely because the reconstructed text was
+    // taller than 7 viewports. So when real page tiles are present we report the
+    // TILE count (the true page count) and the current page is the tile whose top is
+    // nearest the top of the viewport; Next/Prev then step tile-to-tile. When there
+    // are no tiles (DOCX / faithful reconstruction = genuine continuous scroll) we
+    // keep the original viewport-slice pagination unchanged.
+    function pageTiles() {
+      return Array.prototype.slice.call(
+        scrollEl.querySelectorAll("[data-review-render-page]"),
+      );
+    }
+    function tileMetrics(tiles) {
+      const scrollRect = scrollEl.getBoundingClientRect();
+      const total = tiles.length;
+      // Current = the last tile whose top edge is at or above the viewport top
+      // (i.e. the page currently filling the top of the pane), defaulting to 1.
+      let current = 1;
+      for (let i = 0; i < tiles.length; i += 1) {
+        const top = tiles[i].getBoundingClientRect().top - scrollRect.top;
+        // 4px slack so a tile resting flush at the top still counts as "reached".
+        if (top <= 4) current = i + 1;
+        else break;
+      }
+      return { total: total, current: Math.min(total, Math.max(1, current)) };
+    }
     function pageMetrics() {
+      const tiles = pageTiles();
+      if (tiles.length) {
+        const m = tileMetrics(tiles);
+        return { tiles: tiles, total: m.total, current: m.current };
+      }
       const vh = scrollEl.clientHeight || 1;
       const total = Math.max(1, Math.ceil(scrollEl.scrollHeight / vh));
       const current = Math.min(total, Math.floor(scrollEl.scrollTop / vh) + 1);
-      return { vh: vh, total: total, current: current };
+      return { tiles: null, vh: vh, total: total, current: current };
+    }
+    function scrollToTile(tile) {
+      if (!tile) return;
+      const scrollRect = scrollEl.getBoundingClientRect();
+      const top = tile.getBoundingClientRect().top - scrollRect.top + scrollEl.scrollTop;
+      scrollEl.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+    }
+    function stepPage(delta) {
+      const m = pageMetrics();
+      if (m.tiles && m.tiles.length) {
+        const targetIndex = Math.min(m.total - 1, Math.max(0, m.current - 1 + delta));
+        scrollToTile(m.tiles[targetIndex]);
+        return;
+      }
+      // Continuous-scroll (no tiles): keep the ~90%-of-a-viewport nudge.
+      scrollEl.scrollBy({ top: delta * Math.round(scrollEl.clientHeight * 0.9), behavior: "smooth" });
     }
     function updatePages() {
       if (!pageIndicator) return;
@@ -78,12 +128,12 @@
     }
     if (pagePrev) {
       pagePrev.addEventListener("click", function () {
-        scrollEl.scrollBy({ top: -Math.round(scrollEl.clientHeight * 0.9), behavior: "smooth" });
+        stepPage(-1);
       });
     }
     if (pageNext) {
       pageNext.addEventListener("click", function () {
-        scrollEl.scrollBy({ top: Math.round(scrollEl.clientHeight * 0.9), behavior: "smooth" });
+        stepPage(1);
       });
     }
     let scrollRaf = 0;

@@ -31,6 +31,12 @@ const AppState = (() => {
       redlineTemplateSelections: {},
       redlineDraft: null,
       redlineDraftDirty: false,
+      // FIX 1 (P0): set true by the source-textarea input handler the moment a key
+      // is typed and cleared once the typed text is reconciled into
+      // reviewParagraphs (or on a fresh load/reset). While true,
+      // syncReviewSourceFromParagraphs() must not overwrite the textarea from the
+      // model -- that is the guard against silent loss of pending keystrokes.
+      sourceTextDirty: false,
       reviewedClauseIds: {},
       reasoningTrailOpen: {},
       reviewResolution: null,

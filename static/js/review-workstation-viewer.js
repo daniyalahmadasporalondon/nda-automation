@@ -679,6 +679,13 @@ function syncReviewSourceFromParagraphs() {
     .filter(Boolean)
     .join("\n\n");
   state.reviewSourceText = text;
+  // FIX 1 guard: if the user has unreconciled keystrokes pending in the source
+  // textarea (state.sourceTextDirty, set by the input handler before its debounce
+  // commits), do NOT overwrite the .value from the model -- that is exactly the
+  // silent data-loss this fix closes. The model text is still tracked above; the
+  // visible textarea keeps the in-flight edit until the reconcile lands. This
+  // mirrors the redlineDraftDirty "don't clobber unsaved edits" pattern.
+  if (state.sourceTextDirty) return;
   setSourceText(text);
 }
 
@@ -845,27 +852,80 @@ function scrollTextareaToIndex(input, index) {
   });
 }
 
-function scrollRenderedClauseToView(clauseId) {
+function scrollRenderedClauseToView(clauseId, options = {}) {
   const container = studioDocumentRender.closest(".studio-page-wrap");
   if (!container) return;
 
   const targets = renderedClauseTargets(clauseId);
-  if (!targets.length) return;
+  if (!targets.length) {
+    // FIX 3 (P2): no anchor target. Previously this was a SILENT no-op -- a dead
+    // clause click. This happens on image-rendered matters whose only render
+    // anchors are whole page figures (no per-paragraph data-paragraph-id), e.g. an
+    // un-converted pre-Approach-C PDF in the Original page-image view. The
+    // structured/redline view DOES render data-paragraph-id anchors, so fall back:
+    // if we are in the Original page-image view and have a structured paragraph
+    // model to render, switch to Redline and re-jump once. Otherwise surface a
+    // brief inline notice instead of failing silently.
+    const inOriginalView = (state.documentViewMode || VIEW_MODE_REDLINE) === VIEW_MODE_ORIGINAL;
+    const haveStructuredModel = Array.isArray(state.reviewParagraphs) && state.reviewParagraphs.length > 0;
+    if (!options.fromFallback && inOriginalView && haveStructuredModel
+      && typeof setDocumentViewMode === "function") {
+      setDocumentViewMode(VIEW_MODE_REDLINE, { render: true });
+      // Re-jump after the redline surface (with its paragraph anchors) paints.
+      requestAnimationFrame(() => scrollRenderedClauseToView(clauseId, { fromFallback: true }));
+      return;
+    }
+    try {
+      console.warn(`scrollRenderedClauseToView: no anchor for clause ${clauseId}; jump unavailable in this view`);
+    } catch (_loggingError) {
+      /* never let a logging failure swallow the fallback */
+    }
+    if (studioResultMeta) {
+      studioResultMeta.textContent = "Jump unavailable in page view — switch to Redline or Clean to locate this clause.";
+    }
+    return;
+  }
 
   const nextIndex = state.clauseJumpIndexes[clauseId] || 0;
   const target = targets[nextIndex % targets.length];
   state.clauseJumpIndexes[clauseId] = (nextIndex + 1) % targets.length;
   if (!target) return;
 
-  const targetTop = layoutOffsetTop(target) - layoutOffsetTop(container);
-  container.scrollTo({
-    behavior: "smooth",
-    top: Math.max(0, targetTop - container.clientHeight * RENDERED_SCROLL_CONTEXT_RATIO),
-  });
+  // FIX 3 (highlights-but-doesn't-scroll): the target IS found and gets the
+  // selected/pulse class, but the document pane never scrolled to it -- a converted
+  // PDF matter has 100+ data-paragraph-id paragraphs and clicking a clause chip
+  // selected the right one (e.g. governing_law->p68) while .studio-page-wrap stayed
+  // at scrollTop 0. The cause was the manual offset math:
+  // layoutOffsetTop(target) - layoutOffsetTop(container) walks offsetParent chains,
+  // and when the target's offsetParent is NOT the .studio-page-wrap scroller (a
+  // positioned ancestor sits between them) the computed top is wrong and scrollTo
+  // no-ops. scrollIntoView resolves the actual scrollable ancestor itself and needs
+  // no offset arithmetic -- the same approach jumpToParagraph already uses
+  // reliably. We keep scrollContainerToElement as a guarded explicit-scroll
+  // fallback for environments without a working scrollIntoView.
+  scrollContainerToElement(container, target);
 
   target.classList.remove("paragraph-pulse");
   void target.offsetWidth;
   target.classList.add("paragraph-pulse");
+}
+
+// Bring `element` into view within its scroll container. Prefers the native
+// scrollIntoView (resolves the real scrollable ancestor; no offset math), and
+// falls back to an explicit scrollTop set computed from bounding rects (NOT
+// offsetParent chains) when scrollIntoView is unavailable.
+function scrollContainerToElement(container, element) {
+  if (!element) return;
+  if (typeof element.scrollIntoView === "function") {
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+    return;
+  }
+  if (!container) return;
+  const containerRect = container.getBoundingClientRect();
+  const elementRect = element.getBoundingClientRect();
+  const delta = elementRect.top - containerRect.top;
+  const targetTop = container.scrollTop + delta - container.clientHeight * RENDERED_SCROLL_CONTEXT_RATIO;
+  container.scrollTo({ behavior: "smooth", top: Math.max(0, targetTop) });
 }
 
 // Scroll the document to a specific paragraph id and flash it. Powers the
