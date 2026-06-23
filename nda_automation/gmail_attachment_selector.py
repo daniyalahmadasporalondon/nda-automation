@@ -125,7 +125,12 @@ def _configured_api_key() -> str:
 
 
 def _configured_model() -> str:
-    return os.environ.get(GMAIL_TRIAGE_MODEL_ENV, "").strip() or DEFAULT_GMAIL_TRIAGE_MODEL
+    # Central role resolver: persisted (ai_models.gmail_triage) -> env
+    # (NDA_GMAIL_TRIAGE_MODEL) -> DEFAULT_GMAIL_TRIAGE_MODEL. Lazy import avoids the
+    # model_resolver<->gmail_attachment_selector cycle.
+    from . import model_resolver
+
+    return model_resolver.resolve_model("gmail_triage")
 
 
 def _request_body(message_metadata: Mapping[str, Any], candidates: Sequence[Mapping[str, Any]]) -> dict[str, Any]:

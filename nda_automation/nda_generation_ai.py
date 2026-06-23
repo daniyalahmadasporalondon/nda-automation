@@ -127,14 +127,16 @@ DEFAULT_ADAPT_MAX_TOKENS = 512
 def configured_generation_model() -> str:
     """The model to use for clause adaptation on the generate path.
 
-    Reads ``NDA_GENERATION_MODEL`` (a fast model is the point — see above), falling
-    back to :data:`DEFAULT_GENERATION_MODEL`. Mirrors the resolution shape of the
-    other per-feature model knobs (gmail intake / structure validation) so the env
-    surface stays consistent. Deliberately does NOT read ``NDA_AI_MODEL`` — the
-    review model and the generation model are independent.
+    Resolves via the central role resolver: persisted (ai_models.generation) ->
+    env (``NDA_GENERATION_MODEL``, a fast model is the point — see above) ->
+    :data:`DEFAULT_GENERATION_MODEL`. Deliberately does NOT read ``NDA_AI_MODEL``
+    — the review model and the generation model are independent. Lazy import
+    avoids the model_resolver<->nda_generation_ai cycle.
     """
 
-    return os.environ.get(GENERATION_MODEL_ENV, "").strip() or DEFAULT_GENERATION_MODEL
+    from . import model_resolver
+
+    return model_resolver.resolve_model("generation")
 
 
 # Per-call ceiling for a single clause adaptation. Generation is synchronous and

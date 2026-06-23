@@ -148,7 +148,12 @@ def _configured_dpi() -> int:
 
 
 def _configured_model() -> str:
-    return _sanitize_model_name(os.environ.get(NDA_PDF_OCR_MODEL_ENV, "").strip() or DEFAULT_OCR_MODEL)
+    # Central role resolver: persisted (ai_models.pdf_ocr) -> env
+    # (NDA_PDF_OCR_MODEL) -> DEFAULT_OCR_MODEL. Lazy import avoids the
+    # model_resolver<->pdf_ocr cycle.
+    from . import model_resolver
+
+    return _sanitize_model_name(model_resolver.resolve_model("pdf_ocr"))
 
 
 # --- OpenRouter vision provider ------------------------------------------------

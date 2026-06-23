@@ -1062,6 +1062,13 @@ def _parse_json_object(content: str) -> object:
 # --------------------------------------------------------------------------- #
 # Public entry point
 # --------------------------------------------------------------------------- #
+def _configured_search_intent_model() -> str:
+    # Lazy import avoids the model_resolver<->dashboard_search_intent cycle.
+    from . import model_resolver
+
+    return model_resolver.resolve_model("search_intent")
+
+
 def translate_search_intent(
     query: str,
     *,
@@ -1092,7 +1099,13 @@ def translate_search_intent(
         }
 
     resolved_settings = dict(settings or _ai_review_settings())
-    model = str(resolved_settings.get("model") or DEFAULT_OPENROUTER_MODEL)
+    # Model is now DECOUPLED from the reviewer: own role/env knob
+    # (NDA_SEARCH_INTENT_MODEL) whose default equals the reviewer's effective
+    # default, so behaviour is unchanged until an admin overrides it. An explicitly
+    # injected settings.model still wins (test seam); only the default path consults
+    # the role resolver. enable/provider/key/timeout ride shared AI settings.
+    explicit_model = str(resolved_settings.get("model") or "").strip() if settings is not None else ""
+    model = explicit_model or _configured_search_intent_model()
 
     intent_transport = transport
     if intent_transport is None:

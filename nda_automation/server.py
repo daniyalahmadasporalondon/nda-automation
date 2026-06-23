@@ -310,6 +310,9 @@ _POST_EXACT_ROUTES = {
     "/api/admin/admins/add": admin_routes.handle_admin_add,
     "/api/ai/api-key": admin_routes.handle_ai_api_key_update,
     "/api/ai/settings": admin_routes.handle_ai_settings_update,
+    # Per-role AI model picker write. Admin-gated inside the handler; CSRF enforced
+    # by do_POST before dispatch. Body: {"models": {"<role>": "<model id>", ...}}.
+    "/api/ai/models": admin_routes.handle_ai_models_update,
     "/api/demo/reset": matter_routes.handle_demo_reset,
     "/api/export-review-docx": review_routes.handle_review_docx_export,
     "/api/playbook": _handle_playbook_save_post,

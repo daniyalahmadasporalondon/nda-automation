@@ -320,6 +320,13 @@ def _summary_text_from_response(payload: Mapping[str, Any]) -> str:
 # --------------------------------------------------------------------------- #
 # Public entry point
 # --------------------------------------------------------------------------- #
+def _configured_matter_summary_model() -> str:
+    # Lazy import avoids the model_resolver<->matter_summary cycle.
+    from . import model_resolver
+
+    return model_resolver.resolve_model("matter_summary")
+
+
 def summarize_matter(
     matter: Mapping[str, Any],
     *,
@@ -340,7 +347,13 @@ def summarize_matter(
         raise MatterSummaryError("This NDA has no document text to summarize.")
 
     resolved_settings = dict(settings or _ai_review_settings())
-    model = str(resolved_settings.get("model") or DEFAULT_OPENROUTER_MODEL)
+    # Model is now DECOUPLED from the reviewer: own role/env knob
+    # (NDA_MATTER_SUMMARY_MODEL) whose default equals the reviewer's effective
+    # default, so behaviour is unchanged until an admin overrides it. An explicitly
+    # injected settings.model still wins (test seam); only the default path consults
+    # the role resolver. enable/provider/key/timeout ride shared AI settings.
+    explicit_model = str(resolved_settings.get("model") or "").strip() if settings is not None else ""
+    model = explicit_model or _configured_matter_summary_model()
 
     summary_transport = transport
     if summary_transport is None:

@@ -182,6 +182,19 @@ DEFAULT_AI_SETTINGS = {
     "provider": "",
     "model": "",
 }
+# Per-role AI model overrides set by an admin from the in-app model picker. Shape:
+#   {"models": {"<role>": "<model id>", ...}}
+# Only roles the admin has explicitly set are stored; an absent role falls through
+# to its env var / built-in default (resolved in :mod:`model_resolver`). Roles are
+# NOT validated against the role registry here (that lives in model_resolver, which
+# imports app_settings -- importing it back would be circular); the admin route is
+# the gate that only ever writes known roles + catalog-valid model ids.
+DEFAULT_MODEL_SETTINGS: dict[str, Any] = {
+    "models": {},
+}
+# A persisted model id can never exceed the same 200-char ceiling the reviewer
+# model uses (mirrors ai_settings_from_payload).
+MAX_MODEL_ID_LENGTH = 200
 DEFAULT_ADMIN_SETTINGS: dict[str, Any] = {
     "admins": [],
 }
@@ -249,6 +262,10 @@ def ai_settings() -> dict[str, Any]:
     return _repository().read_section("ai_review", ai_settings_from_payload)
 
 
+def model_settings() -> dict[str, Any]:
+    return _repository().read_section("ai_models", model_settings_from_payload)
+
+
 def review_runtime_settings() -> dict[str, Any]:
     return _repository().read_section("review_runtime", review_runtime_settings_from_payload)
 
@@ -276,6 +293,49 @@ def update_ai_settings(updates: dict[str, Any]) -> dict[str, Any]:
         return ai_settings()
 
     return _repository().update_section("ai_review", ai_settings_from_payload, cleaned)
+
+
+def update_model_settings(updates: dict[str, Any]) -> dict[str, Any]:
+    """Merge per-role model overrides into the ``ai_models`` section.
+
+    ``updates`` is a flat ``{role: model_id}`` map. A role mapped to ``None`` or
+    an empty/blank string is CLEARED (deleted from the section so it falls back to
+    env/default); any other value is normalized + stored. Invalid entries (non-str
+    role, over-length model) are dropped. The merge is atomic + lock-guarded (the
+    repository's ``update_section_with`` does the read-modify-write under flock).
+    """
+
+    cleaned: dict[str, Any] = {}
+    for role, value in updates.items():
+        if not isinstance(role, str) or not role.strip():
+            continue
+        role = role.strip()
+        if value is None:
+            cleaned[role] = None
+            continue
+        if not isinstance(value, str):
+            continue
+        model = value.strip()
+        if not model:
+            cleaned[role] = None
+            continue
+        if len(model) > MAX_MODEL_ID_LENGTH:
+            continue
+        cleaned[role] = model
+
+    if not cleaned:
+        return model_settings()
+
+    def _apply(current: dict[str, Any]) -> dict[str, Any]:
+        models = dict(current.get("models") or {})
+        for role, model in cleaned.items():
+            if model is None:
+                models.pop(role, None)
+            else:
+                models[role] = model
+        return {"models": models}
+
+    return _repository().update_section_with("ai_models", model_settings_from_payload, _apply)
 
 
 def update_review_runtime_settings(updates: dict[str, Any]) -> dict[str, Any]:
@@ -705,6 +765,29 @@ def ai_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if len(model) > 200:
         model = ""
     return {"enabled": enabled, "provider": provider, "model": model}
+
+
+def model_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the persisted ``ai_models`` section to ``{"models": {role: id}}``.
+
+    Defensive against junk on disk: drops non-str roles, non-str / blank /
+    over-length model ids. Never raises -- a corrupt section degrades to "no
+    overrides" so resolution falls back to env/default rather than crashing.
+    """
+
+    raw = payload.get("models") if isinstance(payload, dict) else None
+    models: dict[str, str] = {}
+    if isinstance(raw, dict):
+        for role, value in raw.items():
+            if not isinstance(role, str) or not role.strip():
+                continue
+            if not isinstance(value, str):
+                continue
+            model = value.strip()
+            if not model or len(model) > MAX_MODEL_ID_LENGTH:
+                continue
+            models[role.strip()] = model
+    return {"models": models}
 
 
 def review_runtime_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:

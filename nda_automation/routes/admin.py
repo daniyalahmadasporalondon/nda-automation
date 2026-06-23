@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from .. import ai_review, ai_verifier, app_settings, telemetry
+from .. import ai_review, ai_verifier, app_settings, model_resolver, telemetry
 from ..deployment import _deployment_status_for_host, storage_durability_warning
 from ..matter_repository import DiskMatterRepository, MatterRepositoryError
 from ..review_engine import (
@@ -83,6 +83,10 @@ def handle_ai_settings(handler, *, send_body: bool = True) -> None:
             "ai_review": ai_review.ai_review_status(),
             "ai_verifier": ai_verifier.verifier_status(),
             "active_review_engine": active_review_engine_status(),
+            # Per-role model picker payload: for every AI role, its effective model,
+            # the source (persisted|env|default), the env var, the built-in default,
+            # and the recommended-model allowlist that drives the FE dropdown.
+            "ai_models": model_resolver.role_model_overview(),
             "operational_warnings": _operational_warnings(),
             "settings_audit": app_settings.settings_audit_history(),
         },
@@ -290,6 +294,125 @@ def handle_ai_settings_update(handler) -> None:
         "active_review_engine": active_review_engine_status(),
         "operational_warnings": _operational_warnings() + extra_response_warnings,
         "settings_audit": app_settings.settings_audit_history(),
+    })
+
+
+def handle_ai_models_update(handler) -> None:
+    """POST /api/ai/models -- set (or clear) the model for one or more AI roles.
+
+    Request body: ``{"models": {"<role>": "<model id>", ...}}``. Each role:
+      - must be a known role (model_resolver.ROLES) else 400;
+      - a non-empty model id is validated against the live OpenRouter catalog via
+        ``ai_review.validate_model_slug``: ``not_found`` -> 400 (reject the whole
+        request, persist nothing); ``unverified`` (catalog down) -> persist + WARN
+        so a transient outage can't lock saves;
+      - an empty string / null CLEARS the override (falls back to env/default).
+
+    Admin-gated (require_admin). On success persists via update_model_settings and
+    records a per-role settings-audit event stamped with the real actor.
+    """
+
+    if not require_admin(handler):
+        return
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+
+    raw_models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(raw_models, dict) or not raw_models:
+        handler._send_json(
+            {"error": "Provide a non-empty 'models' object of {role: model id}."},
+            status=400,
+        )
+        return
+
+    known_roles = set(model_resolver.ROLES)
+    updates: dict[str, object] = {}
+    extra_response_warnings: list[dict[str, str]] = []
+
+    for role, value in raw_models.items():
+        if not isinstance(role, str) or role.strip() not in known_roles:
+            handler._send_json(
+                {"error": f"Unknown AI model role '{role}'."},
+                status=400,
+            )
+            return
+        role = role.strip()
+
+        # Null / blank => clear the override (fall back to env/default).
+        if value is None or (isinstance(value, str) and not value.strip()):
+            updates[role] = None
+            continue
+
+        if not isinstance(value, str):
+            handler._send_json(
+                {"error": f"Model id for role '{role}' must be a string."},
+                status=400,
+            )
+            return
+        model = value.strip()
+        if len(model) > app_settings.MAX_MODEL_ID_LENGTH:
+            handler._send_json(
+                {"error": f"Model id for role '{role}' is too long."},
+                status=400,
+            )
+            return
+
+        # Validate against the PUBLIC OpenRouter catalog (no key needed). A mistyped
+        # slug must never persist + silently no-op at call time.
+        catalog_status, catalog_message = ai_review.validate_model_slug(model)
+        if catalog_status == "not_found":
+            handler._send_json(
+                {"error": f"{role}: {catalog_message}"},
+                status=400,
+            )
+            return
+        if catalog_status == "unverified":
+            # Catalog unreachable: don't hard-block on a transient outage. Persist
+            # with an explicit unverified-model warning rather than a false success.
+            extra_response_warnings.append(
+                {"code": "ai_model_unverified", "message": f"{role}: {catalog_message}"}
+            )
+        updates[role] = model
+
+    previous_models = app_settings.model_settings().get("models", {})
+    telemetry.increment("ai_models_updates")
+    app_settings.update_model_settings(updates)
+    current_models = app_settings.model_settings().get("models", {})
+    _record_model_settings_audit_if_changed(handler, previous_models, current_models)
+
+    handler._send_json({
+        "ai_models": model_resolver.role_model_overview(),
+        "operational_warnings": _operational_warnings() + extra_response_warnings,
+        "settings_audit": app_settings.settings_audit_history(),
+    })
+
+
+def _record_model_settings_audit_if_changed(
+    handler,
+    previous_models: dict,
+    current_models: dict,
+) -> None:
+    """Append a settings-audit event when any per-role model changed.
+
+    Stamped with the REAL actor (request_actor) so "who changed which role to which
+    model" is recoverable -- unlike the generic ai_review audit which stamps "admin".
+    """
+
+    changes = []
+    for role in sorted(set(previous_models) | set(current_models)):
+        before = previous_models.get(role)
+        after = current_models.get(role)
+        if before != after:
+            changes.append({"setting": f"ai_models.{role}", "before": before, "after": after})
+    if not changes:
+        return
+    telemetry.increment("settings_audit_events")
+    app_settings.record_settings_audit_event({
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "actor": request_actor(handler),
+        "action": "ai_models_update",
+        "changes": changes,
     })
 
 

@@ -1085,6 +1085,19 @@ def verifier_enabled() -> bool:
     return _active_engine_is_ai_first() and bool(_verifier_api_key())
 
 
+def _configured_verifier_model() -> str:
+    """The effective verifier model via the central role resolver.
+
+    Precedence: persisted (ai_models.verifier) -> env (NDA_AI_VERIFIER_MODEL) ->
+    DEFAULT_VERIFIER_MODEL. Lazy import avoids the model_resolver<->ai_verifier
+    cycle (model_resolver reads this module's env/default constants).
+    """
+
+    from . import model_resolver
+
+    return model_resolver.resolve_model("verifier")
+
+
 def verifier_status() -> Dict[str, object]:
     """Expose the configured verifier resolver without making a live API call.
 
@@ -1094,7 +1107,7 @@ def verifier_status() -> Dict[str, object]:
     reviewer's decision stands untouched.
     """
     enabled = verifier_enabled()
-    model = str(os.environ.get(VERIFIER_ENV_MODEL, "")).strip() or DEFAULT_VERIFIER_MODEL
+    model = _configured_verifier_model()
     api_key_source = _verifier_api_key_source()
     api_key_configured = bool(api_key_source)
     override = _verifier_env_override()
@@ -1165,7 +1178,7 @@ def resolve_verifier() -> VerifierFn:
     try:
         return OpenRouterVerifier(
             api_key=api_key,
-            model=str(os.environ.get(VERIFIER_ENV_MODEL, "")).strip() or DEFAULT_VERIFIER_MODEL,
+            model=_configured_verifier_model(),
             timeout_seconds=_verifier_timeout(),
         )
     except VerifierError:

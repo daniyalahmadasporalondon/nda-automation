@@ -35,7 +35,12 @@ def test_ai_tool_registry_exposes_strict_major_app_capability_tools():
         assert schema["additionalProperties"] is False
 
 
-def test_configured_assistant_model_uses_existing_openrouter_ai_settings(monkeypatch):
+def test_configured_assistant_model_rides_ai_settings_but_decouples_model(monkeypatch):
+    # The assistant still inherits enable/provider/timeout/key from the shared AI
+    # settings, but its MODEL is now decoupled onto its own role
+    # (NDA_DASHBOARD_ASSISTANT_MODEL) which defaults to the reviewer's effective
+    # model. So even when the reviewer's stored model is opus-4.8 (non-fast), the
+    # assistant resolves to its own role default (opus-4.8-fast) until overridden.
     monkeypatch.setattr(
         dashboard_assistant_ai,
         "_ai_review_settings",
@@ -56,9 +61,34 @@ def test_configured_assistant_model_uses_existing_openrouter_ai_settings(monkeyp
 
     assert isinstance(model, dashboard_assistant_ai.OpenRouterDashboardAssistantModel)
     assert model.settings.provider == "openrouter"
-    assert model.settings.model == "anthropic/claude-opus-4.8"
+    # Decoupled: NOT the reviewer's opus-4.8, but the assistant role's own default.
+    assert model.settings.model == "anthropic/claude-opus-4.8-fast"
     assert model.settings.timeout_seconds == 17
     assert model.settings.api_key == "sk-or-test"
+
+
+def test_configured_assistant_model_honours_admin_role_override(monkeypatch):
+    # An admin model override on the dashboard_assistant role moves the assistant's
+    # model independently of the reviewer.
+    from nda_automation import model_resolver
+
+    monkeypatch.setattr(
+        dashboard_assistant_ai,
+        "_ai_review_settings",
+        lambda: {"enabled": True, "provider": "openrouter", "model": "", "timeout_seconds": 17},
+    )
+    monkeypatch.setattr(
+        dashboard_assistant_ai,
+        "_configured_api_key",
+        lambda provider: "sk-or-test" if provider == "openrouter" else "",
+    )
+    monkeypatch.setattr(
+        model_resolver, "_persisted_model",
+        lambda role: "vendor/cheap-assistant" if role == "dashboard_assistant" else "",
+    )
+
+    model = dashboard_assistant_ai.configured_dashboard_assistant_model()
+    assert model.settings.model == "vendor/cheap-assistant"
 
 
 def test_ai_orchestrator_uses_tool_results_to_answer_playbook_question():

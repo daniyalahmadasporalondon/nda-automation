@@ -504,8 +504,12 @@ def _default_linter() -> SemanticLinter | None:
 
 
 def _configured_model() -> str:
-    env_model = os.environ.get(SEMANTIC_LINT_MODEL_ENV, "").strip()
-    return _sanitize_model_name(env_model or SEMANTIC_LINT_MODEL)
+    # Central role resolver: persisted (ai_models.semantic_lint) -> env
+    # (NDA_PLAYBOOK_SEMANTIC_LINT_MODEL) -> SEMANTIC_LINT_MODEL. Lazy import avoids
+    # the model_resolver<->playbook_semantic_lint cycle.
+    from . import model_resolver
+
+    return _sanitize_model_name(model_resolver.resolve_model("semantic_lint"))
 
 
 class OpenRouterSemanticLinter:

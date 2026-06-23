@@ -957,6 +957,10 @@ class ServerTests(unittest.TestCase):
         # tripping the enable-requires-key gate (no key is configured in these
         # auth-focused tests), so the allow case asserts a clean 200 on the gate.
         ("POST", "/api/ai/settings", {"enabled": False}),
+        # Per-role model picker write. A null value CLEARS the role (falls back to
+        # env/default) and so takes the no-catalog-call path -- the allow case
+        # proves a clean 200 on the gate without any OpenRouter network round-trip.
+        ("POST", "/api/ai/models", {"models": {"reviewer": None}}),
         ("POST", "/api/admin/personalisation-settings", {"sign_off": "Best,"}),
         # Gmail settings writes (window/import-limit/search-terms/enable switches)
         # drive the inbound NDA intake fetch, so the whole route is admin-gated. A
@@ -5581,6 +5585,144 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(persisted["model"], "anthropic/claude-opus-4.8")
         warning_codes = [w.get("code") for w in payload.get("operational_warnings", [])]
         self.assertIn("ai_model_unverified", warning_codes)
+
+    # --- Per-role model picker (/api/ai/models) ------------------------------
+
+    def test_ai_settings_get_exposes_per_role_model_overview(self):
+        from nda_automation import model_resolver
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                status, payload = self.request("GET", "/api/ai/settings")
+        self.assertEqual(status, 200)
+        overview = payload["ai_models"]
+        self.assertEqual([e["role"] for e in overview], list(model_resolver.ROLES))
+        reviewer = next(e for e in overview if e["role"] == "reviewer")
+        # No persisted/env => effective is today's default, source=default, with a
+        # non-empty recommended allowlist for the FE dropdown.
+        self.assertEqual(reviewer["model"], "anthropic/claude-opus-4.8-fast")
+        self.assertEqual(reviewer["source"], "default")
+        self.assertEqual(reviewer["env_var"], "NDA_AI_MODEL")
+        self.assertTrue(reviewer["recommended"])
+
+    def test_ai_models_set_good_id_persists_and_audits(self):
+        from nda_automation import model_resolver
+
+        ai_review._reset_model_catalog_cache_for_tests()
+        self.addCleanup(ai_review._reset_model_catalog_cache_for_tests)
+        model_resolver._reset_caches_for_tests()
+        self.addCleanup(model_resolver._reset_caches_for_tests)
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(
+                    ai_review,
+                    "_fetch_openrouter_model_slugs",
+                    return_value=frozenset({"deepseek/deepseek-chat"}),
+                ):
+                    status, payload = self.request(
+                        "POST", "/api/ai/models", {"models": {"verifier": "deepseek/deepseek-chat"}}
+                    )
+                    persisted = app_settings.model_settings()
+                    effective = model_resolver.resolve_model("verifier")
+                    audit = app_settings.settings_audit_history()
+
+        self.assertEqual(status, 200)
+        self.assertEqual(persisted["models"]["verifier"], "deepseek/deepseek-chat")
+        self.assertEqual(effective, "deepseek/deepseek-chat")
+        verifier_entry = next(e for e in payload["ai_models"] if e["role"] == "verifier")
+        self.assertEqual(verifier_entry["model"], "deepseek/deepseek-chat")
+        self.assertEqual(verifier_entry["source"], "persisted")
+        # Audit records who-changed-which-role-to-which-model.
+        actions = [evt.get("action") for evt in audit]
+        self.assertIn("ai_models_update", actions)
+        latest = next(evt for evt in audit if evt["action"] == "ai_models_update")
+        settings_changed = [c["setting"] for c in latest["changes"]]
+        self.assertIn("ai_models.verifier", settings_changed)
+
+    def test_ai_models_set_bogus_id_rejected_and_not_persisted(self):
+        ai_review._reset_model_catalog_cache_for_tests()
+        self.addCleanup(ai_review._reset_model_catalog_cache_for_tests)
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(
+                    ai_review,
+                    "_fetch_openrouter_model_slugs",
+                    return_value=frozenset({"deepseek/deepseek-chat"}),
+                ):
+                    status, payload = self.request(
+                        "POST", "/api/ai/models", {"models": {"structure": "totally/made-up"}}
+                    )
+                    persisted = app_settings.model_settings()
+
+        self.assertEqual(status, 400)
+        self.assertIn("structure", payload["error"])
+        self.assertNotIn("structure", persisted["models"])
+
+    def test_ai_models_unverified_id_persists_with_warning(self):
+        from nda_automation import model_resolver
+
+        ai_review._reset_model_catalog_cache_for_tests()
+        self.addCleanup(ai_review._reset_model_catalog_cache_for_tests)
+        model_resolver._reset_caches_for_tests()
+        self.addCleanup(model_resolver._reset_caches_for_tests)
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(
+                    ai_review,
+                    "_fetch_openrouter_model_slugs",
+                    side_effect=urllib.error.URLError("no network"),
+                ):
+                    status, payload = self.request(
+                        "POST", "/api/ai/models", {"models": {"pdf_ocr": "vendor/new-vision"}}
+                    )
+                    persisted = app_settings.model_settings()
+
+        self.assertEqual(status, 200)
+        self.assertEqual(persisted["models"]["pdf_ocr"], "vendor/new-vision")
+        warning_codes = [w.get("code") for w in payload.get("operational_warnings", [])]
+        self.assertIn("ai_model_unverified", warning_codes)
+
+    def test_ai_models_unknown_role_rejected(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                status, payload = self.request(
+                    "POST", "/api/ai/models", {"models": {"not_a_role": "x/y"}}
+                )
+        self.assertEqual(status, 400)
+        self.assertIn("not_a_role", payload["error"])
+
+    def test_ai_models_decoupling_via_api(self):
+        # Setting dashboard_assistant via the API must NOT move the reviewer's
+        # effective model, proving the roles are independent end-to-end.
+        from nda_automation import model_resolver
+
+        ai_review._reset_model_catalog_cache_for_tests()
+        self.addCleanup(ai_review._reset_model_catalog_cache_for_tests)
+        model_resolver._reset_caches_for_tests()
+        self.addCleanup(model_resolver._reset_caches_for_tests)
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                with patch.object(
+                    ai_review,
+                    "_fetch_openrouter_model_slugs",
+                    return_value=frozenset({"deepseek/deepseek-chat"}),
+                ):
+                    status, _payload = self.request(
+                        "POST",
+                        "/api/ai/models",
+                        {"models": {"dashboard_assistant": "deepseek/deepseek-chat"}},
+                    )
+                    assistant = model_resolver.resolve_model("dashboard_assistant")
+                    reviewer = model_resolver.resolve_model("reviewer")
+        self.assertEqual(status, 200)
+        self.assertEqual(assistant, "deepseek/deepseek-chat")
+        self.assertEqual(reviewer, "anthropic/claude-opus-4.8-fast")
 
     def test_validate_model_slug_parses_catalog_and_caches(self):
         # Exercises the real fetch+parse+cache path (urlopen mocked, no key sent).

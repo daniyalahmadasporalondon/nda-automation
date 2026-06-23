@@ -1021,14 +1021,16 @@ def _configured_provider(stored: Dict[str, object]) -> str:
 
 
 def _configured_model(provider: str, stored: Dict[str, object]) -> str:
-    env_model = os.environ.get(AI_REVIEW_ENV_MODEL, "").strip()
-    if env_model:
-        return env_model
-    stored_provider = str(stored.get("provider") or "").strip().lower()
-    stored_model = str(stored.get("model") or "").strip() if stored_provider == provider else ""
-    if stored_model:
-        return stored_model
-    return default_model_for_provider(provider)
+    # Unified through the central role resolver so the reviewer model obeys the
+    # SAME precedence as every other AI role: persisted (ai_models.reviewer) ->
+    # legacy (the ai_review "model" the existing reviewer picker writes) -> env
+    # (NDA_AI_MODEL) -> built-in default. The legacy layer is the provider-matched
+    # stored-model logic that used to live here, so the existing reviewer admin
+    # picker keeps working with no split-brain. Lazy import: model_resolver imports
+    # ai_review for the default/env constants, so a top-level import is circular.
+    from . import model_resolver
+
+    return model_resolver.resolve_model("reviewer")
 
 
 def _summary(

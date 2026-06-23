@@ -99,6 +99,18 @@ services:
         value: openrouter
       - key: NDA_AI_MODEL
         value: anthropic/claude-opus-4.8-fast
+      # Three formerly-reviewer-riding features now have their OWN model knobs
+      # (dashboard assistant, dashboard search-intent, matter summary). Defaulting
+      # each to the reviewer's effective model (anthropic/claude-opus-4.8-fast)
+      # makes the decoupling behaviour-neutral: nothing changes until an admin
+      # overrides a role from the in-app model picker (which persists to the
+      # ai_models settings section and takes precedence over these env defaults).
+      - key: NDA_DASHBOARD_ASSISTANT_MODEL
+        value: anthropic/claude-opus-4.8-fast
+      - key: NDA_SEARCH_INTENT_MODEL
+        value: anthropic/claude-opus-4.8-fast
+      - key: NDA_MATTER_SUMMARY_MODEL
+        value: anthropic/claude-opus-4.8-fast
       # Per-request timeout for the single OpenRouter review call. The whole
       # review is ONE model call over the entire packet, so a large doc (120+
       # paragraphs) makes Opus take ~2 min. The previous 20s default timed out

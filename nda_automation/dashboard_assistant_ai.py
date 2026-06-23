@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .ai_review import (
-    DEFAULT_OPENROUTER_MODEL,
     OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
     _ai_review_settings,
     _configured_api_key,
@@ -133,13 +132,28 @@ def dashboard_assistant_ai_settings(settings: Mapping[str, Any] | None = None) -
     resolved = dict(settings or _ai_review_settings())
     provider = str(resolved.get("provider") or "openrouter").strip().lower()
     timeout = int(resolved.get("timeout_seconds") or 20)
+    # Model is now DECOUPLED from the reviewer: it has its own role/env knob
+    # (NDA_DASHBOARD_ASSISTANT_MODEL) whose default equals the reviewer's effective
+    # default, so behaviour is unchanged until an admin overrides it. An explicitly
+    # injected settings.model still wins (test seam / caller override); only the
+    # default path consults the role resolver. enable/provider/key/timeout still
+    # ride the shared AI settings.
+    explicit_model = str(resolved.get("model") or "").strip() if settings is not None else ""
+    model = explicit_model or _configured_assistant_model()
     return DashboardAssistantAISettings(
         enabled=bool(resolved.get("enabled")),
         provider=provider,
-        model=_sanitize_model_name(str(resolved.get("model") or DEFAULT_OPENROUTER_MODEL)),
+        model=_sanitize_model_name(model),
         timeout_seconds=max(1, timeout),
         api_key=_configured_api_key(provider) if provider == "openrouter" else "",
     )
+
+
+def _configured_assistant_model() -> str:
+    # Lazy import avoids the model_resolver<->dashboard_assistant_ai cycle.
+    from . import model_resolver
+
+    return model_resolver.resolve_model("dashboard_assistant")
 
 
 def configured_dashboard_assistant_model(

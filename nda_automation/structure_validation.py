@@ -566,8 +566,12 @@ def _default_validator() -> StructureValidator | None:
 
 
 def _configured_model() -> str:
-    env_model = os.environ.get(STRUCTURE_VALIDATION_MODEL_ENV, "").strip()
-    return _sanitize_model_name(env_model or STRUCTURE_VALIDATION_MODEL)
+    # Central role resolver: persisted (ai_models.structure) -> env
+    # (NDA_STRUCTURE_VALIDATION_MODEL) -> STRUCTURE_VALIDATION_MODEL. Lazy import
+    # avoids the model_resolver<->structure_validation cycle.
+    from . import model_resolver
+
+    return _sanitize_model_name(model_resolver.resolve_model("structure"))
 
 
 class OpenRouterStructureValidator:

@@ -312,7 +312,12 @@ def _configured_api_key() -> str:
 
 
 def _configured_model() -> str:
-    return os.environ.get(GMAIL_INTAKE_MODEL_ENV, "").strip() or DEFAULT_GMAIL_INTAKE_MODEL
+    # Central role resolver: persisted (ai_models.gmail_intake) -> env
+    # (NDA_GMAIL_INTAKE_MODEL) -> DEFAULT_GMAIL_INTAKE_MODEL. Lazy import avoids the
+    # model_resolver<->gmail_intake_classifier cycle.
+    from . import model_resolver
+
+    return model_resolver.resolve_model("gmail_intake")
 
 
 def _fallback_result(status: str, cause: BaseException | None = None) -> dict[str, Any]:

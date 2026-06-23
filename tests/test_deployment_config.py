@@ -87,6 +87,12 @@ class DeploymentConfigTests(unittest.TestCase):
         self.assertRegex(blueprint, r"key:\s+NDA_AI_REVIEW_ENABLED\s+value:\s+\"true\"")
         self.assertRegex(blueprint, r"key:\s+NDA_AI_PROVIDER\s+value:\s+openrouter")
         self.assertRegex(blueprint, r"key:\s+NDA_AI_MODEL\s+value:\s+anthropic/claude-opus-4.8-fast")
+        # The three formerly reviewer-riding features (dashboard assistant, search
+        # intent, matter summary) now have their own model knobs, pinned to the
+        # reviewer's effective model so the decoupling is behaviour-neutral on prod.
+        self.assertRegex(blueprint, r"key:\s+NDA_DASHBOARD_ASSISTANT_MODEL\s+value:\s+anthropic/claude-opus-4.8-fast")
+        self.assertRegex(blueprint, r"key:\s+NDA_SEARCH_INTENT_MODEL\s+value:\s+anthropic/claude-opus-4.8-fast")
+        self.assertRegex(blueprint, r"key:\s+NDA_MATTER_SUMMARY_MODEL\s+value:\s+anthropic/claude-opus-4.8-fast")
         # Generation uses a FAST model (DeepSeek V4 Flash), separate from the Opus
         # reviewer, so a synchronous generate stays well under the frontend's 45s
         # timeout. Flash is the faster of the two DeepSeek models we run.
