@@ -1,0 +1,9 @@
+# Bake-off run artifacts and inputs are never committed (large binaries /
+# client-confidential NDAs / generated DOCX). Only .gitkeep is tracked.
+outputs/*
+!outputs/.gitkeep
+corpus/*
+!corpus/.gitkeep
+# Local engine credentials — defense in depth on top of the root .gitignore.
+.env
+.env.*
