@@ -59,6 +59,14 @@ function createPdfMarkupController({
   let activeDrag = null;
   // The page element currently hosting an open inline comment composer, or null.
   let commentComposer = null;
+  // Observes each page image host so already-placed overlays re-position whenever
+  // the displayed page size changes — not just on window `resize`, but also on a
+  // zoom click (which mutates the page CSS width / `--review-page-width` and
+  // reflows the image WITHOUT firing a window resize event). Annotations are
+  // stored normalized, so a re-render is all that's needed to re-align them.
+  const hostResizeObserver = typeof ResizeObserver !== "undefined"
+    ? new ResizeObserver(() => reposition())
+    : null;
 
   function root() {
     return typeof getSurfaceRoot === "function" ? getSurfaceRoot() : null;
@@ -132,6 +140,9 @@ function createPdfMarkupController({
     closeCommentComposer();
     closePopover();
     activeDrag = null;
+    // Stop observing the (about-to-be-replaced) page hosts so a stale resize
+    // callback can't fire a reposition against detached nodes.
+    if (hostResizeObserver) hostResizeObserver.disconnect();
     if (toolbarNode && toolbarNode.parentNode) toolbarNode.parentNode.removeChild(toolbarNode);
     toolbarNode = null;
     // The page-image surface itself is owned by the rendering module and gets
@@ -241,6 +252,10 @@ function createPdfMarkupController({
         host.appendChild(layer);
         bindPagePointer(pageEl, host, layer);
       }
+      // Track the host's displayed size so a zoom (which reflows the image with
+      // no window resize) re-aligns already-placed overlays. observe() is
+      // idempotent per element, so re-mounting the same host is safe.
+      if (hostResizeObserver) hostResizeObserver.observe(host);
     });
     updatePageInteractivity();
   }
@@ -275,9 +290,28 @@ function createPdfMarkupController({
     });
   }
 
+  // The box that defines displayed page coordinates. The host
+  // (`.review-render-page-image`) has `min-height` + `overflow:hidden`, so on a
+  // short/wide (landscape) page it is TALLER than the `<img>` it contains (the
+  // image is `height:auto`, top-aligned). Measuring against the host would then
+  // map a click in the lower band below the real text. Measure against the
+  // image's own box instead. The image is the host's top-left child (block, no
+  // host padding), so the image's top-left coincides with the layer origin and
+  // the offsets stay consistent for both placement and rendering.
+  // Falls back to the host box while the image has no laid-out dimensions yet
+  // (e.g. an aspect-ratio image before load, or page.width/height missing).
+  function measureBox(host) {
+    const img = host ? host.querySelector("img") : null;
+    if (img) {
+      const imgRect = img.getBoundingClientRect();
+      if (imgRect.width && imgRect.height) return imgRect;
+    }
+    return host.getBoundingClientRect();
+  }
+
   // Normalized point (top-left origin) for a single pointer event.
   function pointFromEvent(host, event) {
-    const rect = host.getBoundingClientRect();
+    const rect = measureBox(host);
     return {
       x: rect.width ? clamp01((event.clientX - rect.left) / rect.width) : 0,
       y: rect.height ? clamp01((event.clientY - rect.top) / rect.height) : 0,
@@ -336,7 +370,7 @@ function createPdfMarkupController({
   }
 
   function positionPreview(drag, current) {
-    const rect = drag.host.getBoundingClientRect();
+    const rect = measureBox(drag.host);
     const box = rectFromPoints(drag.start, current);
     applyBoxStyle(drag.preview, box, rect, drag.tool);
   }
@@ -353,7 +387,7 @@ function createPdfMarkupController({
       // Drop previously-rendered annotations (keep an in-flight drag preview).
       layer.querySelectorAll("[data-annotation-id]").forEach((node) => node.remove());
       const pageNumber = pageNumberOf(pageEl);
-      const rect = host.getBoundingClientRect();
+      const rect = measureBox(host);
       markup.annotations
         .filter((annotation) => annotation.page === pageNumber)
         .forEach((annotation) => layer.appendChild(buildOverlayNode(annotation, rect)));
@@ -432,8 +466,9 @@ function createPdfMarkupController({
     const composer = document.createElement("div");
     composer.className = "pdf-markup-composer";
     composer.setAttribute("data-pdf-markup-composer", "");
-    composer.style.left = `${point.x * host.getBoundingClientRect().width}px`;
-    composer.style.top = `${point.y * host.getBoundingClientRect().height}px`;
+    const composerBox = measureBox(host);
+    composer.style.left = `${point.x * composerBox.width}px`;
+    composer.style.top = `${point.y * composerBox.height}px`;
     composer.innerHTML = `
       <textarea class="pdf-markup-composer-input" data-pdf-markup-comment-input rows="3"
         placeholder="Add a comment" aria-label="Comment text"></textarea>

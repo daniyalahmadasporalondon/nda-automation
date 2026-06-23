@@ -58,6 +58,7 @@ const tests = [
   ["loads page image preview from render-status", testRenderStatusPageImagePreviewFetch],
   ["toggles the Original page-image view and shows the graceful fallback", testOriginalViewToggle],
   ["marks up the Original PDF view with comments, highlights, and a download", testPdfMarkupOriginalView],
+  ["re-aligns PDF markup on zoom and maps coords to the image on short/wide pages", testPdfMarkupZoomAndShortPageCoords],
   ["renders rich document structure while preserving clause/redline/comment anchoring", testRichDocumentStructureRendering],
   ["renders the seven-section clause card schema", testStructuredEvidenceAndRationale],
   ["renders structured proposed changes in the review inspector", testStructuredProposedChangePanel],
@@ -2222,6 +2223,187 @@ async function testPdfMarkupOriginalView(page) {
   await page.unroute(`**/api/matters/${matterId}/pdf-annotations`);
   await page.unroute(`**/api/matters/${matterId}/pdf-annotations/*`);
   await page.unroute(`**/api/matters/${matterId}/marked-up-pdf`);
+}
+
+// PDF markup coordinate bugs:
+//  BUG 1 — a zoom click reflows the page image with no window `resize`, so a
+//          ResizeObserver on the page-image host must re-position already-placed
+//          overlays (normalized rect unchanged, rendered box tracks the image).
+//  BUG 2 — on a short/wide (landscape) page the host is floored by min-height +
+//          overflow:hidden and is TALLER than the top-aligned image; clicks and
+//          overlays must be measured against the image's own box, not the host.
+async function testPdfMarkupZoomAndShortPageCoords(page) {
+  const matterId = "markup_coords_matter";
+  // A wide + short source page — at the studio column width its displayed image
+  // height falls well below the host's 220px min-height, so the host (floored at
+  // 220px, overflow:hidden) is TALLER than the top-aligned image. The manifest
+  // omits page width/height so the host carries no aspect-ratio (which, combined
+  // with min-height, would otherwise blow the host out sideways) — the image
+  // just renders at its intrinsic ratio inside the constrained column.
+  const pagePng = testPngBuffer(120, 9);
+
+  await page.route(`**/api/matters/${matterId}/render-page/*`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "image/png", body: pagePng });
+  });
+
+  // One stored highlight occupying a band in the lower-middle of the page.
+  const storedAnnotations = [
+    { id: "ann-hl", page: 1, type: "highlight", rect: { x: 0.1, y: 0.55, w: 0.5, h: 0.2 } },
+  ];
+  const postedBodies = [];
+  let createdSeq = 0;
+
+  await page.route(`**/api/matters/${matterId}/pdf-annotations`, async (route) => {
+    const request = route.request();
+    if (request.method() === "POST") {
+      const body = request.postDataJSON();
+      postedBodies.push(body);
+      createdSeq += 1;
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          annotation: {
+            id: `ann-new-${createdSeq}`,
+            page: body.page,
+            type: body.type,
+            rect: body.rect,
+            text: body.text || "",
+            color: body.color || "",
+          },
+        }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ annotations: storedAnnotations }),
+    });
+  });
+
+  const reviewResult = {
+    checked_at: "2026-06-07T09:00:00+01:00",
+    clauses: [{
+      decision: "pass",
+      id: "mutuality",
+      issue_label: "Pass",
+      matched_paragraph_ids: ["p1"],
+      name: "Mutuality",
+      passes: true,
+      review_state: { state: "pass" },
+      status: "pass",
+    }],
+    document_render: {
+      // No page width/height -> no aspect-ratio style on the host; the wide/short
+      // image renders at its intrinsic ratio within the constrained column, and
+      // the host's min-height floor makes it taller than the image.
+      pages: [{
+        dpi: 180,
+        image_url: `/api/matters/${matterId}/render-page/1`,
+        page_number: 1,
+      }],
+      pdf_url: `/api/matters/${matterId}/render-pdf`,
+      source_label: "Original PDF",
+      status: "ready",
+    },
+    overall_status: "meets_requirements",
+    paragraphs: [{ id: "p1", index: 1, source_index: 1, text: "Short wide page paragraph." }],
+    redline_edits: [],
+    requirements_failed: 0,
+    requirements_needs_review: 0,
+    requirements_passed: 1,
+  };
+
+  await page.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Review" }).click();
+  await page.evaluate((payload) => {
+    state.selectedMatter = { id: payload.matterId, source_filename: "landscape.pdf" };
+    renderResult(payload.reviewResult, payload.reviewResult.paragraphs.map((p) => p.text).join("\n\n"));
+  }, { matterId, reviewResult });
+  await page.waitForSelector("#studioDocumentRender:not([hidden])");
+
+  await page.getByRole("button", { name: "Original", exact: true }).click();
+  await page.waitForSelector('[data-original-surface][data-render-status="ready"]');
+  await page.waitForSelector("[data-pdf-markup-toolbar]");
+  await page.waitForSelector('[data-annotation-id="ann-hl"]');
+  // Let the image lay out so its box (not the floored host) is measurable.
+  await page.locator('[data-review-render-page="1"] .review-render-page-image img').waitFor();
+
+  // The host is genuinely taller than the image (min-height floor + short image).
+  const boxes = async () => page.evaluate(() => {
+    const host = document.querySelector('[data-review-render-page="1"] .review-render-page-image');
+    const img = host.querySelector("img");
+    const overlay = document.querySelector('[data-annotation-id="ann-hl"]');
+    const h = host.getBoundingClientRect();
+    const i = img.getBoundingClientRect();
+    const o = overlay.getBoundingClientRect();
+    return {
+      host: { top: h.top, height: h.height },
+      img: { top: i.top, height: i.height },
+      overlay: { top: o.top, height: o.height },
+    };
+  });
+
+  let b = await boxes();
+  assert.ok(b.host.height > b.img.height + 20, `host (${b.host.height}) should overflow the short image (${b.img.height})`);
+
+  // BUG 2: the highlight is measured against the IMAGE box, not the taller host.
+  // rect.h = 0.2 -> overlay height ~ 0.2 * imageHeight (NOT 0.2 * hostHeight).
+  const hlFracOfImage = b.overlay.height / b.img.height;
+  const hlFracOfHost = b.overlay.height / b.host.height;
+  assert.ok(Math.abs(hlFracOfImage - 0.2) < 0.05, `overlay height should track the image (got ${hlFracOfImage.toFixed(3)} of image)`);
+  assert.ok(Math.abs(hlFracOfHost - 0.2) > 0.05, `overlay must NOT be sized to the floored host (got ${hlFracOfHost.toFixed(3)} of host)`);
+  // Overlay top tracks y=0.55 of the image, and the whole band stays inside it.
+  const overlayTopFrac = (b.overlay.top - b.img.top) / b.img.height;
+  assert.ok(Math.abs(overlayTopFrac - 0.55) < 0.05, `overlay top should track 0.55 of the image (got ${overlayTopFrac.toFixed(3)})`);
+  assert.ok(b.overlay.top + b.overlay.height <= b.img.top + b.img.height + 1, "overlay stays within the image band");
+
+  // BUG 2 (click): a Comment click in the image's lower band maps to the
+  // image-relative fraction, NOT a smaller fraction floored by the tall host.
+  await page.locator('[data-pdf-markup-tool="comment"]').click();
+  const clickYFrac = 0.7;
+  const imgRect = await page.locator('[data-review-render-page="1"] .review-render-page-image img').boundingBox();
+  await page.mouse.click(imgRect.x + imgRect.width * 0.4, imgRect.y + imgRect.height * clickYFrac);
+  await page.waitForSelector("[data-pdf-markup-composer]");
+  await page.locator("[data-pdf-markup-comment-input]").fill("Lower-band comment");
+  await page.locator("[data-pdf-markup-comment-confirm]").click();
+  await page.waitForSelector('[data-annotation-id="ann-new-1"]');
+  const commentPost = postedBodies.find((body) => body.type === "comment");
+  assert.ok(commentPost, "a comment was POSTed");
+  assert.ok(Math.abs(commentPost.rect.y - clickYFrac) < 0.06, `comment rect.y ${commentPost.rect.y} should track the image-relative click ${clickYFrac}`);
+  assert.ok(Math.abs(commentPost.rect.x - 0.4) < 0.06, `comment rect.x ${commentPost.rect.x} should track the click`);
+
+  // BUG 1: zoom in. The page width grows, the image reflows (no window resize),
+  // and the ResizeObserver must re-position the stored highlight so it still
+  // tracks y=0.55 / h=0.2 of the NEW (larger) image box.
+  const beforeZoom = await boxes();
+  const beforeImgWidth = await page.evaluate(() => document
+    .querySelector('[data-review-render-page="1"] .review-render-page-image img')
+    .getBoundingClientRect().width);
+  await page.locator("#studioZoomIn").click();
+  // Wait until the image has actually grown (page reflow, no window resize).
+  await page.waitForFunction((prevW) => {
+    const img = document.querySelector('[data-review-render-page="1"] .review-render-page-image img');
+    return img && img.getBoundingClientRect().width > prevW + 1;
+  }, beforeImgWidth);
+  // ...then until the ResizeObserver-driven re-render has grown the overlay.
+  await page.waitForFunction((prevH) => {
+    const o = document.querySelector('[data-annotation-id="ann-hl"]');
+    return o && o.getBoundingClientRect().height > prevH + 1;
+  }, beforeZoom.overlay.height);
+
+  const afterZoom = await boxes();
+  // The stored normalized rect is unchanged; the rendered overlay grew with the
+  // image and still tracks y=0.55 / h=0.2 of the (new) image box.
+  assert.ok(afterZoom.img.height > beforeZoom.img.height + 1, "image grew after zoom");
+  const afterFracOfImage = afterZoom.overlay.height / afterZoom.img.height;
+  assert.ok(Math.abs(afterFracOfImage - 0.2) < 0.05, `after zoom, overlay height still tracks the image (got ${afterFracOfImage.toFixed(3)})`);
+  const afterTopFrac = (afterZoom.overlay.top - afterZoom.img.top) / afterZoom.img.height;
+  assert.ok(Math.abs(afterTopFrac - 0.55) < 0.05, `after zoom, overlay top still tracks 0.55 of the image (got ${afterTopFrac.toFixed(3)})`);
+
+  await page.unroute(`**/api/matters/${matterId}/render-page/*`);
+  await page.unroute(`**/api/matters/${matterId}/pdf-annotations`);
 }
 
 async function testRichDocumentStructureRendering(page) {
