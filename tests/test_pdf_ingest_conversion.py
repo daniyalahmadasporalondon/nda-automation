@@ -335,5 +335,220 @@ def test_ingest_docx_does_not_convert(monkeypatch):
     assert artifact_registry.latest_artifact_for_role(stored, artifact_registry.ROLE_WORKING) is None
 
 
+# --------------------------------------------------------------------------- #
+# Empty-body guard: a scanned / text-empty reconstruction must NOT convert
+# --------------------------------------------------------------------------- #
+class _EmptyBodyConverter:
+    """A pdf2docx stand-in whose reconstructed DOCX has NO non-empty body text --
+    exactly what a scanned / image-only / text-empty PDF reconstructs to (a valid
+    DOCX package whose body is blank/spacing paragraphs only)."""
+
+    name = "stub-empty-body"
+
+    def is_available(self):
+        return True
+
+    def convert_pdf_to_docx(self, source_path: Path, output_path: Path):
+        # A structurally-valid DOCX (passes the 4-required-parts check) whose body is
+        # only blank paragraphs -> no anchorable text.
+        output_path.write_bytes(make_docx_with_blanks(["", "", ""]))
+
+
+def test_convert_refuses_when_reconstructed_body_has_no_text():
+    # P0 empty-body guard: a scanned/text-empty PDF reconstructs to a valid-but-empty
+    # DOCX. convert_pdf_matter_to_docx must REFUSE (raise the reconstruction-failed
+    # error) rather than return a useless empty working document, so neither ingest nor
+    # the retro path registers a "ready" working artifact with nothing to anchor to.
+    with pytest.raises(pdf_docx_reconstruction.PdfDocxReconstructionFailedError):
+        pdf_ingest_conversion.convert_pdf_matter_to_docx(
+            PDF_BYTES, "scanned.pdf", _pypdf_paragraphs(),
+            converter=_EmptyBodyConverter(),
+        )
+
+
+def test_convert_refuses_when_no_paragraph_maps():
+    # The reconstructed body HAS text, but none of the pypdf review paragraphs align to
+    # it (mapped_count == 0). That working DOCX is unanchorable for THIS matter's
+    # review, so the guard refuses it too (fail-open keeps the PDF source).
+    converter = _StubConverter(["Totally unrelated reconstructed prose number one.",
+                               "And a second unrelated reconstructed sentence here."])
+    pypdf = [
+        {"id": "p1", "text": "Mismatched clause alpha bravo charlie delta echo.",
+         "source_index": 1, "source_part": "pdf"},
+        {"id": "p2", "text": "Mismatched clause foxtrot golf hotel india juliet.",
+         "source_index": 2, "source_part": "pdf"},
+    ]
+    with pytest.raises(pdf_docx_reconstruction.PdfDocxReconstructionFailedError):
+        pdf_ingest_conversion.convert_pdf_matter_to_docx(
+            PDF_BYTES, "inbound.pdf", pypdf, converter=converter
+        )
+
+
+def test_ingest_pdf_empty_body_fails_open_no_working_artifact(monkeypatch):
+    # End-to-end: a scanned/text-empty PDF must ingest fine but stay a legacy PDF matter
+    # (no working artifact, no re-keyed paragraphs) so the FE keeps the page-image view.
+    repo = InMemoryMatterRepository()
+    converter = _EmptyBodyConverter()
+    monkeypatch.setattr(
+        ingestion_service, "extract_document",
+        lambda filename, document_bytes: ("pdf", _pypdf_paragraphs(), None),
+    )
+    real_convert = pdf_ingest_conversion.convert_pdf_matter_to_docx
+    monkeypatch.setattr(
+        ingestion_service.pdf_ingest_conversion, "convert_pdf_matter_to_docx",
+        lambda pdf_bytes, source_filename, paragraphs, **_: real_convert(
+            pdf_bytes, source_filename, paragraphs, converter=converter
+        ),
+    )
+    matter = ingestion_service.create_matter_from_document(
+        filename="scanned.pdf",
+        document_bytes=PDF_BYTES,
+        source_type="manual_upload",
+        board_column="in_review",
+        owner_user_id="owner-1",
+        repository=repo,
+        drive_sync_runner=lambda func: None,
+    )
+    stored = repo.get_matter(matter["id"], owner_user_id="owner-1")
+    assert artifact_registry.latest_artifact_for_role(stored, artifact_registry.ROLE_WORKING) is None
+    assert stored.get(ingestion_service.WORKING_DOCX_PARAGRAPHS_FIELD) is None
+    from nda_automation.matter_render_job import matter_has_working_docx
+    assert matter_has_working_docx(stored) is False
+
+
+# --------------------------------------------------------------------------- #
+# Retro-conversion: an already-stored pre-Approach-C PDF matter gains anchors
+# --------------------------------------------------------------------------- #
+def _store_legacy_pdf_matter(repo, owner_user_id="owner-1"):
+    """Create a PDF matter as it looked BEFORE Approach C shipped: a role="original"
+    PDF artifact (via backfill) + the raw pypdf review paragraphs (source_part='pdf')
+    on review_result, and NO working DOCX."""
+    from nda_automation import artifact_service
+
+    review_result = {
+        "source": {"type": "pdf", "filename": "legacy.pdf"},
+        "paragraphs": _pypdf_paragraphs(),
+        "extracted_text": "\n\n".join(RECON_PARAGRAPHS),
+    }
+    matter = repo.create_matter(
+        source_filename="legacy.pdf",
+        document_bytes=PDF_BYTES,
+        extracted_text="\n\n".join(RECON_PARAGRAPHS),
+        review_result=review_result,
+        triage={},
+        source_type="manual_upload",
+        board_column="in_review",
+        owner_user_id=owner_user_id,
+    )
+    # Backfill so the matter carries the role="original" artifact a real legacy matter
+    # has (the retro path reads original bytes; backfill reuses stored_filename bytes).
+    artifact_service.backfill_matter(matter, repository=repo, owner_user_id=owner_user_id)
+    return repo.get_matter(matter["id"], owner_user_id=owner_user_id)
+
+
+def test_retro_convert_legacy_pdf_gains_working_docx_and_rekeyed_paragraphs(monkeypatch):
+    repo = InMemoryMatterRepository()
+    stored = _store_legacy_pdf_matter(repo)
+    # Sanity: it starts as a legacy PDF matter with a role="original" PDF artifact and
+    # NO working DOCX (the dead-anchor state).
+    assert artifact_registry.latest_artifact_for_role(stored, artifact_registry.ROLE_ORIGINAL) is not None
+    assert artifact_registry.latest_artifact_for_role(stored, artifact_registry.ROLE_WORKING) is None
+
+    converter = _StubConverter(RECON_PARAGRAPHS)
+    real_convert = pdf_ingest_conversion.convert_pdf_matter_to_docx
+    monkeypatch.setattr(
+        ingestion_service.pdf_ingest_conversion, "convert_pdf_matter_to_docx",
+        lambda pdf_bytes, source_filename, paragraphs, **_: real_convert(
+            pdf_bytes, source_filename, paragraphs, converter=converter
+        ),
+    )
+
+    ingestion_service.retro_convert_pdf_matter(stored, repository=repo, owner_user_id="owner-1")
+
+    refreshed = repo.get_matter(stored["id"], owner_user_id="owner-1")
+    from nda_automation.matter_render_job import matter_has_working_docx
+    # The matter now HAS a working DOCX -> working_docx_ready True.
+    assert matter_has_working_docx(refreshed) is True
+    working = artifact_registry.latest_artifact_for_role(refreshed, artifact_registry.ROLE_WORKING)
+    assert working is not None
+    working_bytes = repo.get_artifact_document(working.stored_filename)
+    assert working_bytes and working_bytes[:2] == b"PK"  # a real (zip) DOCX
+    # Re-keyed paragraphs are persisted, PDF marker dropped, anchored by index.
+    rekeyed = refreshed.get(ingestion_service.WORKING_DOCX_PARAGRAPHS_FIELD)
+    assert isinstance(rekeyed, list) and len(rekeyed) == 3
+    assert all("source_part" not in paragraph for paragraph in rekeyed)
+    for index, paragraph in enumerate(rekeyed, start=1):
+        assert paragraph["source_index"] == index
+
+
+def test_retro_convert_is_idempotent_noop_when_already_converted(monkeypatch):
+    repo = InMemoryMatterRepository()
+    stored = _store_legacy_pdf_matter(repo)
+    converter = _StubConverter(RECON_PARAGRAPHS)
+    real_convert = pdf_ingest_conversion.convert_pdf_matter_to_docx
+    monkeypatch.setattr(
+        ingestion_service.pdf_ingest_conversion, "convert_pdf_matter_to_docx",
+        lambda pdf_bytes, source_filename, paragraphs, **_: real_convert(
+            pdf_bytes, source_filename, paragraphs, converter=converter
+        ),
+    )
+    ingestion_service.retro_convert_pdf_matter(stored, repository=repo, owner_user_id="owner-1")
+    converted = repo.get_matter(stored["id"], owner_user_id="owner-1")
+
+    # Second run must be a no-op: the converter is never called again.
+    def _should_not_run(*_args, **_kwargs):
+        raise AssertionError("retro conversion must be a no-op once a working DOCX exists")
+
+    monkeypatch.setattr(
+        ingestion_service.pdf_ingest_conversion, "convert_pdf_matter_to_docx", _should_not_run
+    )
+    ingestion_service.retro_convert_pdf_matter(converted, repository=repo, owner_user_id="owner-1")
+
+
+def test_retro_convert_skips_docx_source_matter(monkeypatch):
+    repo = InMemoryMatterRepository()
+    matter = repo.create_matter(
+        source_filename="native.docx",
+        document_bytes=make_docx(RECON_PARAGRAPHS),
+        extracted_text="\n\n".join(RECON_PARAGRAPHS),
+        review_result={"source": {"type": "docx"}, "paragraphs": []},
+        triage={},
+        source_type="manual_upload",
+        board_column="in_review",
+        owner_user_id="owner-1",
+    )
+    stored = repo.get_matter(matter["id"], owner_user_id="owner-1")
+
+    def _should_not_run(*_args, **_kwargs):
+        raise AssertionError("DOCX matters must not be retro-converted")
+
+    monkeypatch.setattr(
+        ingestion_service.pdf_ingest_conversion, "convert_pdf_matter_to_docx", _should_not_run
+    )
+    ingestion_service.retro_convert_pdf_matter(stored, repository=repo, owner_user_id="owner-1")
+    refreshed = repo.get_matter(matter["id"], owner_user_id="owner-1")
+    assert artifact_registry.latest_artifact_for_role(refreshed, artifact_registry.ROLE_WORKING) is None
+
+
+def test_retro_convert_fail_open_when_empty_body(monkeypatch):
+    # A scanned/text-empty legacy PDF matter: retro conversion refuses (empty body) and
+    # leaves it on the page-image view (no working artifact) -- never a useless empty DOCX.
+    repo = InMemoryMatterRepository()
+    stored = _store_legacy_pdf_matter(repo)
+    converter = _EmptyBodyConverter()
+    real_convert = pdf_ingest_conversion.convert_pdf_matter_to_docx
+    monkeypatch.setattr(
+        ingestion_service.pdf_ingest_conversion, "convert_pdf_matter_to_docx",
+        lambda pdf_bytes, source_filename, paragraphs, **_: real_convert(
+            pdf_bytes, source_filename, paragraphs, converter=converter
+        ),
+    )
+    ingestion_service.retro_convert_pdf_matter(stored, repository=repo, owner_user_id="owner-1")
+    refreshed = repo.get_matter(stored["id"], owner_user_id="owner-1")
+    from nda_automation.matter_render_job import matter_has_working_docx
+    assert matter_has_working_docx(refreshed) is False
+    assert refreshed.get(ingestion_service.WORKING_DOCX_PARAGRAPHS_FIELD) is None
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -3975,7 +3975,20 @@ function selectFaithfulRenderPlan(matter, renderState, capability, viewMode) {
   const matterId = matter && matter.id;
   const mode = String(viewMode || VIEW_MODE_ORIGINAL);
 
-  if (flagEnabled && libraryAvailable && matterId) {
+  // AUTO-ON for a CONVERTED PDF matter. A PDF source that has a canonical working
+  // DOCX (Approach C, incl. the retro-conversion backfill) is exactly the matter
+  // whose anchors only bind on the faithful DOCX surface -- the page-image view emits
+  // no per-paragraph data-paragraph-id targets, so the clause navigator is dead there.
+  // PREFER faithful for it regardless of the off-by-default nda.faithfulDocxRender
+  // flag. The flag default still governs every other matter: a DOCX source and a PDF
+  // source WITHOUT a working DOCX (workingDocxReady !== true) keep the flag's default,
+  // because workingDocxAutoOn is false for them.
+  const workingDocxAutoOn = Boolean(
+    matterIsPdfSource(matter) && renderState && renderState.workingDocxReady === true
+  );
+  const faithfulEnabled = flagEnabled || workingDocxAutoOn;
+
+  if (faithfulEnabled && libraryAvailable && matterId) {
     const encodedId = encodeURIComponent(matterId);
     // Non-Original (redline/clean): render the REVIEWED docx so tracked changes /
     // accepted changes match the chosen view. Works for both DOCX-source and a

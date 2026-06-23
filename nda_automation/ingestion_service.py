@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from types import ModuleType
 from typing import Any
 
-from . import artifact_service, generation_priority, pdf_ingest_conversion
+from . import artifact_service, generation_priority, matter_render_job, pdf_ingest_conversion
 from .checker import ParagraphAlignmentError
 from .document_limits import ensure_document_size
 from .docx_text import DocxExtractionError, detect_docx_tracked_changes, extract_docx_paragraphs
@@ -1364,6 +1364,37 @@ def _convert_pdf_matter_at_ingest(
     source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "")
     if not matter_id:
         return matter
+    return _persist_pdf_working_conversion(
+        matter,
+        matter_id=matter_id,
+        source_filename=source_filename,
+        document_bytes=document_bytes,
+        extracted_paragraphs=extracted_paragraphs,
+        repository=repository,
+        owner_user_id=owner_user_id,
+    )
+
+
+def _persist_pdf_working_conversion(
+    matter: dict[str, Any],
+    *,
+    matter_id: str,
+    source_filename: str,
+    document_bytes: bytes,
+    extracted_paragraphs: list[dict[str, Any]],
+    repository: MatterRepository,
+    owner_user_id: str,
+) -> dict[str, Any]:
+    """Run the SAME PDF→working-DOCX conversion + persistence both ingest and the
+    retro-conversion path use.
+
+    Reconstructs the PDF, re-keys the review paragraphs (``source_index`` re-stamped /
+    ``source_part:"pdf"`` dropped) inside ``convert_pdf_matter_to_docx``, persists the
+    re-keyed paragraphs, then registers the role="working" artifact. FAIL-OPEN with the
+    half-persist rollback: on ANY error the matter is returned as-passed and the caller
+    proceeds. The empty-body guard inside ``convert_pdf_matter_to_docx`` means a
+    scanned / text-empty PDF raises here and is left on the PDF page-image view.
+    """
     try:
         working = pdf_ingest_conversion.convert_pdf_matter_to_docx(
             document_bytes,
@@ -1432,6 +1463,108 @@ def _convert_pdf_matter_at_ingest(
         working.unmapped_count,
     )
     return updated if isinstance(updated, dict) else matter
+
+
+def _matter_is_pdf_source(matter: dict[str, Any]) -> bool:
+    """True when this matter was ingested from a PDF.
+
+    Two independent signals, either is sufficient: the source/stored filename ends
+    ``.pdf`` (matches the filename-derived ``document_type`` ingest keys on), OR the
+    stored review result recorded ``source.type == "pdf"``. A native DOCX matter has
+    neither.
+    """
+    for key in ("source_filename", "stored_filename"):
+        name = str(matter.get(key) or "")
+        if name.lower().endswith(".pdf"):
+            return True
+    review_result = matter.get("review_result")
+    if isinstance(review_result, dict):
+        source = review_result.get("source")
+        if isinstance(source, dict) and str(source.get("type") or "").lower() == "pdf":
+            return True
+    return False
+
+
+def retro_convert_pdf_matter(
+    matter: dict[str, Any],
+    *,
+    repository: MatterRepository,
+    owner_user_id: str = "",
+) -> dict[str, Any]:
+    """Retro-convert an ALREADY-STORED PDF matter that lacks a working DOCX.
+
+    PDF matters ingested before Approach C shipped carry only a role="original" PDF
+    artifact and the raw pypdf review paragraphs (``source_part:"pdf"``) -- no working
+    DOCX -- so the Review tab renders the page-image annotation view (no per-paragraph
+    ``data-paragraph-id`` targets) and the clause-navigator anchors are dead. This runs
+    the SAME conversion logic as ``_convert_pdf_matter_at_ingest`` over the stored
+    matter: it reads the original PDF bytes + the stored review paragraphs, reconstructs
+    the working DOCX, re-keys the paragraphs by index, persists ``working_docx_paragraphs``,
+    and registers the role="working" artifact (reusing the shared persistence + the
+    half-persist rollback + the FAIL-OPEN guard).
+
+    IDEMPOTENT: a matter that already has a working DOCX (or is not a PDF source) is
+    returned untouched. FAIL-OPEN: any failure returns the matter as-passed so the
+    caller (the on-demand Review path) is NEVER blocked by a conversion error. The
+    empty-body guard inside the shared path means a scanned / text-empty PDF is left on
+    the page-image view rather than converted to a useless empty DOCX.
+
+    NOTE on index reconciliation: the stored ``review_result`` keeps its OLD pypdf
+    ``source_index`` values after this runs. That is intentional and safe because the
+    on-demand Review path RE-RUNS the AI engine over the freshly persisted re-keyed
+    ``working_docx_paragraphs`` (see the WORKING_DOCX_PARAGRAPHS_FIELD preference in
+    ``_run_inbound_ai_review``) and OVERWRITES the stored review with one whose indices
+    match the working DOCX. The retro conversion is therefore fired on the review path
+    precisely so the converted matter's anchors are reconciled by the re-review that
+    follows it -- never leaving a converted body anchored to stale pre-conversion
+    indices.
+    """
+    if not isinstance(matter, dict):
+        return matter
+    matter_id = str(matter.get("id") or "")
+    if not matter_id:
+        return matter
+    # Idempotent: already converted -> no-op.
+    if matter_render_job.matter_has_working_docx(matter):
+        return matter
+    if not _matter_is_pdf_source(matter):
+        return matter
+    source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "")
+    # The stored review paragraphs ARE the raw pypdf paragraphs captured at ingest
+    # (still carrying source_part:"pdf"); convert_pdf_matter_to_docx re-keys a COPY.
+    extracted_paragraphs = review_result_paragraphs(matter.get("review_result"))
+    if not extracted_paragraphs:
+        LOGGER.info(
+            "Retro PDF->working-DOCX conversion skipped for matter %s: no stored review paragraphs",
+            matter_id,
+        )
+        return matter
+    try:
+        document_bytes = repository.get_source_document_bytes(matter)
+    except Exception:
+        LOGGER.warning(
+            "Retro PDF->working-DOCX conversion: reading original PDF bytes failed for matter %s; "
+            "keeping legacy PDF matter",
+            matter_id,
+            exc_info=True,
+        )
+        return matter
+    if not document_bytes:
+        LOGGER.info(
+            "Retro PDF->working-DOCX conversion skipped for matter %s: no original PDF bytes",
+            matter_id,
+        )
+        return matter
+    LOGGER.info("Retro PDF->working-DOCX conversion starting for matter %s", matter_id)
+    return _persist_pdf_working_conversion(
+        matter,
+        matter_id=matter_id,
+        source_filename=source_filename,
+        document_bytes=document_bytes,
+        extracted_paragraphs=list(extracted_paragraphs),
+        repository=repository,
+        owner_user_id=owner_user_id,
+    )
 
 
 def extract_document_paragraphs(filename: str, document_bytes: bytes) -> tuple[str, list[dict[str, Any]]]:

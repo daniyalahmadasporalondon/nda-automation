@@ -74,6 +74,10 @@ def convert_pdf_matter_to_docx(
     Raises the same ``PdfDocxReconstructionError`` subclasses ``reconstruct_pdf_to_docx``
     raises when the engine is unavailable or fails -- the caller decides whether to fall
     back to the legacy (un-converted) PDF matter so ingest is never hard-blocked.
+
+    Also raises ``PdfDocxReconstructionFailedError`` when the reconstructed DOCX has NO
+    anchorable body text (a scanned / image-only / text-empty PDF), so an empty working
+    DOCX is never registered. The caller's fail-open path keeps the PDF page-image view.
     """
     reconstructed = pdf_docx_reconstruction.reconstruct_pdf_to_docx(
         pdf_bytes, source_filename, converter=converter
@@ -82,6 +86,24 @@ def convert_pdf_matter_to_docx(
     mapped, mapped_count, unmapped_count = map_paragraphs_to_reconstruction(
         pypdf_paragraphs, indexed
     )
+    # EMPTY-BODY GUARD (fail-open, shared by ingest AND retro-conversion). A
+    # scanned / image-only / text-empty PDF reconstructs to a structurally-valid
+    # DOCX (the 4 required zip parts) that has NO anchorable body text. Registering
+    # that as the role="working" artifact would flip ``matter_has_working_docx`` to
+    # True (presence-only), light up the faithful DOCX render + a "Reconstructed
+    # Word" download of an EMPTY document, and leave every redline/anchor with
+    # nothing to bind to. Refuse the conversion when the reconstructed body has no
+    # non-empty paragraph OR not a single pypdf review paragraph mapped onto it, so
+    # the caller's fail-open path keeps the matter on the PDF page-image view. This
+    # is raised as the standard reconstruction-failed error precisely because both
+    # call sites already treat that as "keep the legacy un-converted PDF matter".
+    has_body_text = any(norm for (_index, _text, norm) in indexed)
+    if not has_body_text or mapped_count <= 0:
+        raise pdf_docx_reconstruction.PdfDocxReconstructionFailedError(
+            "PDF reconstruction produced no anchorable body text "
+            f"(body_paragraphs_with_text={'yes' if has_body_text else 'no'}, "
+            f"mapped_paragraphs={mapped_count}); keeping the PDF source."
+        )
     return PdfWorkingDocument(
         docx_bytes=reconstructed.data,
         docx_filename=reconstructed.filename,

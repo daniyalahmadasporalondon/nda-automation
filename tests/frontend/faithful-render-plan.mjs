@@ -63,10 +63,34 @@ assert.equal(selectFaithfulRenderPlan(pdfMatter, { workingDocxReady: false }, ON
   assert.equal(plan.url, "/api/matters/m-pdf/working-docx");
 }
 
-// Even with workingDocxReady true, flag OFF keeps it page_image (capability gates first).
+// AUTO-ON (Approach C retro-conversion): a PDF matter with a working DOCX PREFERS the
+// faithful render even when the off-by-default nda.faithfulDocxRender flag is OFF -- the
+// converted matter's anchors only bind on the faithful DOCX surface. The library must
+// still be available (rendering it needs the vendored lib).
+{
+  const plan = selectFaithfulRenderPlan(
+    pdfMatter, { workingDocxReady: true }, { flagEnabled: false, libraryAvailable: true },
+  );
+  assert.equal(plan.render, "faithful_docx", "PDF + workingDocxReady auto-ons faithful regardless of flag");
+  assert.equal(plan.url, "/api/matters/m-pdf/working-docx");
+}
+// Library missing still gates the auto-on (cannot render faithful without the lib).
 assert.equal(
-  selectFaithfulRenderPlan(pdfMatter, { workingDocxReady: true }, { flagEnabled: false, libraryAvailable: true }).render,
+  selectFaithfulRenderPlan(pdfMatter, { workingDocxReady: true }, { flagEnabled: false, libraryAvailable: false }).render,
   "page_image",
+);
+// The flag default still governs matters WITHOUT a working DOCX: a DOCX source with the
+// flag OFF stays page_image (auto-on is PDF+workingDocxReady only).
+assert.equal(
+  selectFaithfulRenderPlan(docxMatter, null, { flagEnabled: false, libraryAvailable: true }).render,
+  "page_image",
+  "DOCX source keeps the flag default (no auto-on)",
+);
+// And a PDF source WITHOUT a working DOCX with the flag OFF stays page_image.
+assert.equal(
+  selectFaithfulRenderPlan(pdfMatter, { workingDocxReady: false }, { flagEnabled: false, libraryAvailable: true }).render,
+  "page_image",
+  "PDF without a working DOCX keeps the flag default (no auto-on)",
 );
 
 // normalizeReviewDocumentRender: working_docx_ready (snake) -> workingDocxReady true.
