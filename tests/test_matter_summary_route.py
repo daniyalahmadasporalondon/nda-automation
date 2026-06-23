@@ -165,7 +165,15 @@ class MatterSummaryRouteTests(unittest.TestCase):
     def test_successful_summary_is_grounded_in_real_matter_data(self):
         with tempfile.TemporaryDirectory() as data_dir:
             p = self.matter_store_patches(data_dir)
-            with p[0], p[1], p[2], patch.dict(os.environ, self.auth_env()), patch.object(
+            # The matter-summary model is DECOUPLED from the reviewer: on the
+            # default path it resolves via resolve_model("matter_summary") and the
+            # ``model`` field of _ai_review_settings is no longer consulted (only
+            # enable/provider/timeout ride shared AI settings). So pin the model
+            # through its real knob, NDA_MATTER_SUMMARY_MODEL, and assert that
+            # configured model is what reaches the response — the same role-resolver
+            # path production uses.
+            summary_env = {**self.auth_env(), "NDA_MATTER_SUMMARY_MODEL": "anthropic/claude-opus-4.8"}
+            with p[0], p[1], p[2], patch.dict(os.environ, summary_env), patch.object(
                 matter_summary, "_OpenRouterSummaryTransport", _StubSummaryTransport
             ), patch.object(
                 matter_summary,
