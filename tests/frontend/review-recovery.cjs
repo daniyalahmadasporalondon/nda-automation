@@ -73,6 +73,10 @@ function bootScript() {
     var studioResultMeta = document.querySelector("#studioResultMeta");
     var studioNdaText = document.querySelector("#studioNdaText");
     var studioDocumentRender = document.querySelector("#studioDocumentRender");
+    // Not in this minimal DOM: declared null so the viewer's guarded early-return
+    // (if not studioUndoEditButton, return) short-circuits instead of throwing a
+    // ReferenceError when resetReviewResults() -> updateReviewUndoButtonState() runs.
+    var studioUndoEditButton = null;
     var DEFAULT_DOCUMENT_TITLE = "Untitled";
     var SOURCE_PLACEHOLDER = "";
 
@@ -117,6 +121,14 @@ function bootScript() {
     function resizeSourceEditors() {}
     var RepositoryView = { sourceTypeLabel: () => "Inbound" };
     var repositoryController = { loadMatters: () => {} };
+    // Minimal AppState so the REAL clearReview()/resetReviewResults() teardown path runs
+    // (app-state.js normally provides these). The toast-dismissal assertions don't care
+    // about the state mutation — only that the real stopReviewPoll() inside
+    // resetReviewResults() now clears the persistent progress notice.
+    var AppState = {
+      resetReviewResults: () => {},
+      clearSourceSelection: () => {},
+    };
     // notificationsController records calls so we can assert the interrupted path
     // NEVER fires a failure toast, and that the persistent progress notice is raised on
     // review-start and dismissed on every terminal/abort path.
@@ -410,6 +422,82 @@ async function main() {
     process.stdout.write("  ok 5b - exit only clears the in-flight meta, never an unrelated message\n");
     await page.close();
   } catch (error) { failures.push(["5b exit preserves unrelated meta", error]); }
+
+  // --- Case 6 (P0 regression): the CLEAR button path dismisses the progress notice -
+  //     resetReviewResults() (reached via clearReview() <- the #studioClearButton click)
+  //     tears the poll down via stopReviewPoll() but does NOT call exitReviewInFlightUi().
+  //     Before the fix, stopReviewPoll() set stopped=true + nulled the controller WITHOUT
+  //     dismissing the toast, and since no further tick could run, exitReviewInFlightUi()
+  //     (the only other dismisser) became UNREACHABLE — the "Reviewing with AI…" toast was
+  //     ORPHANED on screen forever. This drives the REAL teardown (resetReviewResults, NOT
+  //     a hand-called dismiss) and asserts the toast is cleared. Would have caught the P0.
+  try {
+    const page = await loadPage(browser);
+    await page.evaluate(() => {
+      state.selectedMatter = { id: "m-clear", review_status: "in_progress", ai_review_ran: false };
+      // A live in-flight review: enter the UI (raises the persistent toast) + a real poll.
+      enterReviewInFlightUi();
+      __realStartReviewPoll("m-clear");
+    });
+    const before = await page.evaluate(() => ({
+      inFlight: reviewPollInFlight(),
+      raised: window.__spy.notifyInProgress.slice(),
+      dismissedSoFar: window.__spy.dismissInProgress.slice(),
+    }));
+    assert.ok(before.inFlight, "setup: a poll should be in flight before Clear");
+    assert.ok(
+      before.raised.some((c) => c[0] === "review-in-progress"),
+      "setup: the persistent progress toast should have been raised",
+    );
+    // Drive the REAL Clear-button teardown (resetReviewResults), NOT a hand-called dismiss.
+    await page.evaluate(() => { resetReviewResults(); });
+    const after = await page.evaluate(() => ({
+      inFlight: reviewPollInFlight(),
+      dismissed: window.__spy.dismissInProgress.slice(),
+    }));
+    assert.equal(after.inFlight, false, "Clear/resetReviewResults did not stop the poll");
+    assert.ok(
+      after.dismissed.includes("review-in-progress"),
+      "Clear/resetReviewResults left the 'Reviewing with AI…' toast ORPHANED (P0): stopReviewPoll did not dismiss it",
+    );
+    process.stdout.write("  ok 6 - Clear button (resetReviewResults) dismisses the persistent progress toast (P0 regression)\n");
+    await page.close();
+  } catch (error) { failures.push(["6 Clear path dismisses progress toast (P0)", error]); }
+
+  // --- Case 6b (P0 regression): a MATTER-SWITCH mid-poll clears the toast ----------
+  //     The reviewer switches to a different matter while a review polls. The next tick
+  //     sees state.selectedMatter.id != controller.matterId and tears the poll down via
+  //     stopReviewPoll() (+ exitReviewInFlightUi). Either way the persistent toast for
+  //     the abandoned review must NOT linger over the newly-selected matter. Driven via
+  //     the REAL poll tick (the nav-away branch), not a hand-called dismiss.
+  try {
+    const page = await loadPage(browser);
+    await page.evaluate(() => {
+      state.selectedMatter = { id: "m-A", review_status: "in_progress", ai_review_ran: false };
+      enterReviewInFlightUi();
+      __realStartReviewPoll("m-A");
+      // The user switches to matter B mid-poll.
+      state.selectedMatter = { id: "m-B", review_status: "idle", ai_review_ran: true };
+    });
+    // Reset the dismiss spy so we measure ONLY the matter-switch teardown (the supersede
+    // teardown inside __realStartReviewPoll already fired one dismiss during setup).
+    await page.evaluate(() => { window.__spy.dismissInProgress.length = 0; });
+    const inFlightPreSwitch = await page.evaluate(() => reviewPollInFlight());
+    assert.ok(inFlightPreSwitch, "setup: a poll for the abandoned matter should be in flight before the switch tick");
+    // Run the REAL poll tick: it detects the matter switched and tears down.
+    await page.evaluate(async () => { await runReviewPollTick(reviewPollController); });
+    const after = await page.evaluate(() => ({
+      inFlight: reviewPollInFlight(),
+      dismissed: window.__spy.dismissInProgress.slice(),
+    }));
+    assert.equal(after.inFlight, false, "matter-switch did not stop the abandoned poll");
+    assert.ok(
+      after.dismissed.includes("review-in-progress"),
+      "matter-switch mid-poll left the abandoned review's 'Reviewing with AI…' toast lingering over the new matter (P0)",
+    );
+    process.stdout.write("  ok 6b - matter-switch mid-poll clears the abandoned review's progress toast (P0 regression)\n");
+    await page.close();
+  } catch (error) { failures.push(["6b matter-switch clears progress toast (P0)", error]); }
 
   await browser.close();
 

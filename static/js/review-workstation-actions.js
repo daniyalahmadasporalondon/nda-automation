@@ -132,7 +132,19 @@ function reviewPollInFlightForMatter(matterId) {
 
 // Tear down the active poll: clear its timer and mark it stopped so any pending
 // async tick is a no-op. Idempotent.
+//
+// This is the SINGLE CHOKE POINT every abort/teardown path routes through (terminal
+// completed/failed/interrupted, stalled-timeout, nav-away, matter-switch, supersede,
+// poll-error, AND the Clear button via resetReviewResults -> clearReview). Some of
+// those callers — notably resetReviewResults() — do NOT also call exitReviewInFlightUi(),
+// so once stopped=true the poll can never tick again and exitReviewInFlightUi() (the only
+// other dismisser) becomes unreachable, orphaning the persistent "Reviewing with AI…"
+// toast on screen forever. We therefore dismiss the progress notification HERE so it is
+// torn down on EVERY path. clearReviewProgressNotification()/dismissInProgress() is fully
+// idempotent — dismissing when no toast is live is a safe no-op — so the paths that ALSO
+// call exitReviewInFlightUi() simply double-clear harmlessly.
 function stopReviewPoll() {
+  clearReviewProgressNotification();
   if (!reviewPollController) return;
   reviewPollController.stopped = true;
   if (reviewPollController.timer !== null && reviewPollController.timer !== undefined) {
@@ -223,6 +235,15 @@ function startReviewPoll(matterId) {
     startedAt: Date.now(),
     stopped: false,
   };
+  // stopReviewPoll() above (the supersede teardown) dismissed the progress toast as
+  // part of its single-choke-point cleanup. A poll is now genuinely in flight again,
+  // so re-raise the persistent "Reviewing with AI…" notification. This keeps the
+  // toast anchored to "a poll is active": it lives exactly as long as the poll and is
+  // torn down on every stop. (enterReviewInFlightUi() raised it optimistically on the
+  // click; this re-raise covers the supersede dismissal so the start path never loses
+  // its progress notice.) notifyInProgress is idempotent — re-raising an already-live
+  // toast updates it in place rather than stacking.
+  raiseReviewProgressNotification();
   scheduleReviewPollTick(reviewPollController);
 }
 

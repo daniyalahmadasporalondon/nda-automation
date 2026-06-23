@@ -14431,13 +14431,18 @@ label.is-hidden {
   color: var(--brand);
 }
 
-/* Send Redline — the toolbar's primary action gets the brand fill. */
-#reviewView #studioSendButton:not(:disabled) {
+/* Send Redline — the toolbar's primary action gets the brand fill. The stateful
+   modifiers are EXCLUDED so they keep their own affordance: `.blocked` (muted ghost
+   — still clickable to surface the block reason) and `.confirming` (brand-text
+   confirm step) must not be overridden into a solid brand primary, which would
+   defeat the "not ready" signal. The two-ID specificity (0,2,0,1) of this rule
+   otherwise wins over the single-class .blocked/.confirming base rules. */
+#reviewView #studioSendButton:not(:disabled):not(.blocked):not(.confirming) {
   background: var(--brand);
   color: #fff;
 }
 
-#reviewView #studioSendButton:hover:not(:disabled) {
+#reviewView #studioSendButton:hover:not(:disabled):not(.blocked):not(.confirming) {
   background: var(--brand-bright);
   box-shadow: none;
   color: #fff;
