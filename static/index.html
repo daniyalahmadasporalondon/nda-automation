@@ -110,7 +110,7 @@
           </section>
 
           <section class="dashboard-metrics" aria-label="Repository overview">
-            <button class="dashboard-metric-card" type="button" data-dashboard-metric-column="gmail_demo">
+            <div class="dashboard-metric-card" data-dashboard-metric="gmail_demo">
               <span class="dashboard-metric-icon inbox" aria-hidden="true">
                 <svg viewBox="0 0 24 24" focusable="false">
                   <path d="M4.75 6.75h14.5v10.5H4.75z"/>
@@ -123,8 +123,8 @@
                 <span class="dashboard-metric-number" data-dashboard-repository-count="gmail_demo">0</span>
                 <span class="dashboard-metric-label">Inbox</span>
               </span>
-            </button>
-            <button class="dashboard-metric-card" type="button" data-dashboard-metric-column="in_review">
+            </div>
+            <div class="dashboard-metric-card" data-dashboard-metric="in_review">
               <span class="dashboard-metric-icon review" aria-hidden="true">
                 <svg viewBox="0 0 24 24" focusable="false">
                   <path d="M20.2 12a8.2 8.2 0 1 1-2.4-5.8"/>
@@ -136,15 +136,15 @@
                 <span class="dashboard-metric-number" data-dashboard-repository-count="in_review">0</span>
                 <span class="dashboard-metric-label">In Review</span>
               </span>
-            </button>
-            <button class="dashboard-metric-card" type="button" data-dashboard-metric-column="reviewed">
+            </div>
+            <div class="dashboard-metric-card" data-dashboard-metric="reviewed">
               <span class="dashboard-metric-icon reviewed" aria-hidden="true">✓</span>
               <span class="dashboard-metric-copy">
                 <span class="dashboard-metric-number" data-dashboard-repository-count="reviewed">0</span>
                 <span class="dashboard-metric-label">Reviewed</span>
               </span>
-            </button>
-            <button class="dashboard-metric-card" type="button" data-dashboard-metric-column="sent">
+            </div>
+            <div class="dashboard-metric-card" data-dashboard-metric="sent">
               <span class="dashboard-metric-icon sent" aria-hidden="true">
                 <svg viewBox="0 0 24 24" focusable="false">
                   <path d="M21 3 10.8 13.2"/>
@@ -155,7 +155,7 @@
                 <span class="dashboard-metric-number" data-dashboard-repository-count="sent">0</span>
                 <span class="dashboard-metric-label">Sent</span>
               </span>
-            </button>
+            </div>
           </section>
 
           <section class="dashboard-search" aria-label="Search documents" data-dashboard-search>

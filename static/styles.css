@@ -1702,21 +1702,12 @@ h3 {
   border-radius: 14px;
   box-shadow: none;
   color: var(--ink);
-  cursor: pointer;
+  cursor: default;
   display: flex;
   gap: 13px;
   min-height: 82px;
   padding: 16px 18px;
   text-align: left;
-  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
-}
-
-.dashboard-metric-card:hover,
-.dashboard-metric-card:focus-visible {
-  background: rgba(255, 255, 255, 0.78);
-  border-color: rgba(91, 54, 209, 0.32);
-  outline: none;
-  transform: translateY(-1px);
 }
 
 .dashboard-metric-icon {

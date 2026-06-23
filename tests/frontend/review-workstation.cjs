@@ -6452,6 +6452,9 @@ async function testDashboardSmartSearch(page) {
   const dashboardMetrics = page.locator(".dashboard-metrics");
   await dashboardMetrics.waitFor({ state: "visible" });
   assert.equal(await page.locator(".dashboard-metric-card").count(), 4);
+  assert.equal(await page.locator("button.dashboard-metric-card, a.dashboard-metric-card").count(), 0);
+  assert.equal(await page.locator("[data-dashboard-metric-column]").count(), 0);
+  assert.equal(await dashboardMetrics.locator("button, a, [tabindex]").count(), 0);
   assert.equal(await page.locator(".dashboard-metric-icon[aria-hidden='true']").count(), 4);
   assert.equal(await page.locator(".dashboard-metric-icon[tabindex]").count(), 0);
   assert.equal(await page.locator(".dashboard-metric-icon.inbox svg[focusable='false']").count(), 1);
@@ -6488,10 +6491,12 @@ async function testDashboardSmartSearch(page) {
   assert.ok(metricLayout.metricsBottom <= metricLayout.searchTop);
   assert.ok(Math.abs(metricLayout.heroLeft - metricLayout.metricsLeft) <= 1);
   assert.ok(Math.abs(metricLayout.heroWidth - metricLayout.metricsWidth) <= 1);
-  await page.locator('[data-dashboard-metric-column="sent"]').click();
-  await page.waitForFunction(() => document.querySelector('[data-view="repository"]')?.classList.contains("active"));
-  await page.waitForFunction(() => document.querySelector('[data-repository-list="sent"]')?.closest(".repository-column")?.classList.contains("is-dashboard-target"));
-  await page.locator('[data-tab="dashboard"]').click();
+  await page.locator('[data-dashboard-metric="sent"]').click();
+  assert.equal(await page.locator('[data-view="dashboard"]').evaluate((node) => node.classList.contains("active")), true);
+  assert.equal(
+    await page.locator('[data-repository-list="sent"]').evaluate((node) => node.closest(".repository-column")?.classList.contains("is-dashboard-target")),
+    false,
+  );
 
   // Regression guard: the dashboard view owns its own vertical scroll, so a long
   // results list scrolls instead of being clipped by the fixed app-shell frame.

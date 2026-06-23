@@ -448,22 +448,6 @@ document.querySelector("[data-dashboard-send-document]")?.addEventListener("clic
   sendDocumentController.openModal();
 });
 
-document.querySelectorAll("[data-dashboard-metric-column]").forEach((button) => {
-  button.addEventListener("click", () => {
-    const columnId = button.dataset.dashboardMetricColumn;
-    activateTab("repository");
-    requestAnimationFrame(() => {
-      const list = Array.from(document.querySelectorAll("[data-repository-list]"))
-        .find((node) => node.dataset.repositoryList === columnId);
-      const column = list?.closest(".repository-column");
-      column?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
-      if (!column) return;
-      column.classList.add("is-dashboard-target");
-      window.setTimeout(() => column.classList.remove("is-dashboard-target"), 1400);
-    });
-  });
-});
-
 document.querySelector("[data-dashboard-inbox]")?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-dashboard-inbox-open]");
   if (!button) return;
