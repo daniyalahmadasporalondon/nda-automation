@@ -1520,10 +1520,17 @@ def retro_convert_pdf_matter(
     DOCX -- so the Review tab renders the page-image annotation view (no per-paragraph
     ``data-paragraph-id`` targets) and the clause-navigator anchors are dead. This runs
     the SAME conversion logic as ``_convert_pdf_matter_at_ingest`` over the stored
-    matter: it reads the original PDF bytes + the stored review paragraphs, reconstructs
+    matter: it reads the original PDF bytes + the pypdf review paragraphs, reconstructs
     the working DOCX, re-keys the paragraphs by index, persists ``working_docx_paragraphs``,
     and registers the role="working" artifact (reusing the shared persistence + the
     half-persist rollback + the FAIL-OPEN guard).
+
+    The pypdf paragraphs come from a PRIOR successful review when one exists; otherwise
+    they are RE-EXTRACTED from the PDF bytes (the same deterministic pypdf pass ingest
+    runs). The re-extraction is what makes a FIRST-ever successful review of a
+    never-reviewed PDF produce a working DOCX in the SAME pass: this conversion runs in
+    the review worker BEFORE the current review persists its paragraphs, so there is
+    nothing on ``review_result`` to read yet on a first review.
 
     IDEMPOTENT: a matter that already has a working DOCX (or is not a PDF source) is
     returned untouched. FAIL-OPEN: any failure returns the matter as-passed so the
@@ -1552,15 +1559,6 @@ def retro_convert_pdf_matter(
     if not _matter_is_pdf_source(matter):
         return matter
     source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "")
-    # The stored review paragraphs ARE the raw pypdf paragraphs captured at ingest
-    # (still carrying source_part:"pdf"); convert_pdf_matter_to_docx re-keys a COPY.
-    extracted_paragraphs = review_result_paragraphs(matter.get("review_result"))
-    if not extracted_paragraphs:
-        LOGGER.info(
-            "Retro PDF->working-DOCX conversion skipped for matter %s: no stored review paragraphs",
-            matter_id,
-        )
-        return matter
     try:
         document_bytes = repository.get_source_document_bytes(matter)
     except Exception:
@@ -1574,6 +1572,41 @@ def retro_convert_pdf_matter(
     if not document_bytes:
         LOGGER.info(
             "Retro PDF->working-DOCX conversion skipped for matter %s: no original PDF bytes",
+            matter_id,
+        )
+        return matter
+    # The pypdf review paragraphs that get re-keyed onto the reconstructed DOCX body.
+    # PREFER the ones captured on a PRIOR successful review (they still carry
+    # source_part:"pdf"); convert_pdf_matter_to_docx re-keys a COPY. FALL BACK to
+    # re-extracting them from the original PDF bytes when NO prior review paragraphs
+    # exist -- the never-successfully-reviewed PDF case (e.g. a matter whose every
+    # prior review FAILED, so review_result is None). Without this fallback the
+    # conversion skipped with "no stored review paragraphs" and the on-demand review
+    # NEVER produced a working DOCX for such a matter: the retro conversion runs
+    # BEFORE the current review persists its paragraphs, so on a first-ever successful
+    # review there is nothing on review_result to read yet. Re-extraction is the SAME
+    # deterministic pypdf pass ingest runs (extract_document), so the re-keyed body
+    # matches what a freshly-ingested PDF would carry. FAIL-OPEN: a re-extraction error
+    # leaves the legacy PDF matter intact.
+    extracted_paragraphs = review_result_paragraphs(matter.get("review_result"))
+    if not extracted_paragraphs:
+        try:
+            _document_type, reextracted, _quality = extract_document(
+                source_filename or "document.pdf", document_bytes
+            )
+        except Exception:
+            LOGGER.warning(
+                "Retro PDF->working-DOCX conversion: re-extracting pypdf paragraphs failed "
+                "for matter %s; keeping legacy PDF matter",
+                matter_id,
+                exc_info=True,
+            )
+            return matter
+        extracted_paragraphs = reextracted
+    if not extracted_paragraphs:
+        LOGGER.info(
+            "Retro PDF->working-DOCX conversion skipped for matter %s: no review paragraphs "
+            "and none could be re-extracted from the PDF (scanned/image-only/empty)",
             matter_id,
         )
         return matter

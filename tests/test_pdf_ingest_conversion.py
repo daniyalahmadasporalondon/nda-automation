@@ -446,6 +446,196 @@ def _store_legacy_pdf_matter(repo, owner_user_id="owner-1"):
     return repo.get_matter(matter["id"], owner_user_id=owner_user_id)
 
 
+def _store_never_reviewed_pdf_matter(repo, owner_user_id="owner-1"):
+    """A PDF matter whose every prior review FAILED: review_result is None, so it has
+    NO stored review paragraphs at all -- the Pismo case. role="original" PDF artifact
+    (via backfill) + extracted_text, but no working DOCX and no review_result."""
+    from nda_automation import artifact_service
+
+    matter = repo.create_matter(
+        source_filename="pismo.pdf",
+        document_bytes=PDF_BYTES,
+        extracted_text="\n\n".join(RECON_PARAGRAPHS),
+        review_result=None,
+        triage={},
+        source_type="manual_upload",
+        board_column="in_review",
+        owner_user_id=owner_user_id,
+    )
+    artifact_service.backfill_matter(matter, repository=repo, owner_user_id=owner_user_id)
+    return repo.get_matter(matter["id"], owner_user_id=owner_user_id)
+
+
+def test_retro_convert_never_reviewed_pdf_reextracts_paragraphs_and_gains_working_docx(monkeypatch):
+    # REGRESSION (Pismo): a PDF matter with NO prior successful review (review_result is
+    # None -> no stored review paragraphs) must STILL gain a working DOCX. Previously the
+    # retro conversion skipped with "no stored review paragraphs" and the on-demand review
+    # never produced a working DOCX for such a matter. The fix re-extracts the pypdf
+    # paragraphs from the PDF bytes when none are stored.
+    repo = InMemoryMatterRepository()
+    stored = _store_never_reviewed_pdf_matter(repo)
+    assert stored.get("review_result") is None
+    from nda_automation.matter_render_job import matter_has_working_docx
+    assert matter_has_working_docx(stored) is False
+
+    # Stub the PDF re-extraction (PDF_BYTES is a fake header) to return the pypdf
+    # paragraphs a real text-based PDF extractor would mint.
+    monkeypatch.setattr(
+        ingestion_service,
+        "extract_document",
+        lambda filename, document_bytes: ("pdf", _pypdf_paragraphs(), None),
+    )
+    converter = _StubConverter(RECON_PARAGRAPHS)
+    real_convert = pdf_ingest_conversion.convert_pdf_matter_to_docx
+    monkeypatch.setattr(
+        ingestion_service.pdf_ingest_conversion, "convert_pdf_matter_to_docx",
+        lambda pdf_bytes, source_filename, paragraphs, **_: real_convert(
+            pdf_bytes, source_filename, paragraphs, converter=converter
+        ),
+    )
+
+    ingestion_service.retro_convert_pdf_matter(stored, repository=repo, owner_user_id="owner-1")
+
+    refreshed = repo.get_matter(stored["id"], owner_user_id="owner-1")
+    # The conversion happened in THIS pass despite no prior review: working DOCX present.
+    assert matter_has_working_docx(refreshed) is True
+    working = artifact_registry.latest_artifact_for_role(refreshed, artifact_registry.ROLE_WORKING)
+    assert working is not None
+    rekeyed = refreshed.get(ingestion_service.WORKING_DOCX_PARAGRAPHS_FIELD)
+    assert isinstance(rekeyed, list) and len(rekeyed) == 3
+    assert all("source_part" not in paragraph for paragraph in rekeyed)
+
+
+def test_retro_convert_never_reviewed_pdf_fail_open_when_reextraction_empty(monkeypatch):
+    # A scanned/image-only never-reviewed PDF re-extracts to NO paragraphs: the
+    # conversion fails open (no working DOCX), leaving the page-image view.
+    repo = InMemoryMatterRepository()
+    stored = _store_never_reviewed_pdf_matter(repo)
+    monkeypatch.setattr(
+        ingestion_service,
+        "extract_document",
+        lambda filename, document_bytes: ("pdf", [], None),
+    )
+
+    def _should_not_run(*_args, **_kwargs):
+        raise AssertionError("conversion must not run with no re-extracted paragraphs")
+
+    monkeypatch.setattr(
+        ingestion_service.pdf_ingest_conversion, "convert_pdf_matter_to_docx", _should_not_run
+    )
+    ingestion_service.retro_convert_pdf_matter(stored, repository=repo, owner_user_id="owner-1")
+    refreshed = repo.get_matter(stored["id"], owner_user_id="owner-1")
+    from nda_automation.matter_render_job import matter_has_working_docx
+    assert matter_has_working_docx(refreshed) is False
+
+
+def _stub_ai_review_result(text, paragraphs=None):
+    """A minimal ai_first review result the persist layer accepts."""
+    return {
+        "extracted_text": text,
+        "paragraphs": list(paragraphs or []),
+        "clauses": [],
+        "review_state": {"state": "pass"},
+        "active_review_engine": {"executed_engine": "ai_first", "engine": "ai_first"},
+        "ai_first_review": {"status": "completed"},
+        "source": {"type": "pdf"},
+    }
+
+
+def test_on_demand_review_of_never_reviewed_pdf_yields_working_docx_in_same_pass(monkeypatch):
+    """END-TO-END (Pismo): a PDF matter with NO prior successful review, reviewed
+    on-demand, must END the pass with a working DOCX present -- the conversion happens
+    in the SAME review pass, not the next one and not never."""
+    from nda_automation import telemetry
+
+    repo = InMemoryMatterRepository()
+    stored = _store_never_reviewed_pdf_matter(repo)
+    matter_id = stored["id"]
+    from nda_automation.matter_render_job import matter_has_working_docx
+    assert matter_has_working_docx(stored) is False
+
+    # Re-extraction (PDF_BYTES is a fake header) returns realistic pypdf paragraphs.
+    monkeypatch.setattr(
+        ingestion_service,
+        "extract_document",
+        lambda filename, document_bytes: ("pdf", _pypdf_paragraphs(), None),
+    )
+    converter = _StubConverter(RECON_PARAGRAPHS)
+    real_convert = pdf_ingest_conversion.convert_pdf_matter_to_docx
+    monkeypatch.setattr(
+        ingestion_service.pdf_ingest_conversion, "convert_pdf_matter_to_docx",
+        lambda pdf_bytes, source_filename, paragraphs, **_: real_convert(
+            pdf_bytes, source_filename, paragraphs, converter=converter
+        ),
+    )
+
+    engine_calls: list[object] = []
+
+    def _engine(text, *, paragraphs=None, **_kwargs):
+        engine_calls.append(paragraphs)
+        return _stub_ai_review_result(text, paragraphs)
+
+    ingestion_service._perform_inbound_ai_review_body(
+        matter_id,
+        repository=repo,
+        owner_user_id="owner-1",
+        review_engine_func=_engine,
+        telemetry=telemetry,
+        is_on_demand=True,
+    )
+
+    refreshed = repo.get_matter(matter_id, owner_user_id="owner-1")
+    # The conversion ran in THIS pass: working DOCX present, anchoring ready next load.
+    assert matter_has_working_docx(refreshed) is True
+    assert refreshed.get(ingestion_service.WORKING_DOCX_PARAGRAPHS_FIELD)
+    # The review consumed the RE-KEYED working paragraphs (conversion ran before review).
+    assert engine_calls and engine_calls[0]
+    assert all("source_part" not in p for p in engine_calls[0])
+    # The review itself completed (status stamped completed).
+    assert str(refreshed.get("review_status") or "") == "completed"
+
+
+def test_on_demand_review_completes_fail_open_when_conversion_hangs(monkeypatch):
+    """The review must ALWAYS complete even if the retro conversion hangs/raises: the
+    guarded wrapper abandons it (fail-open) and the review proceeds on the PDF source."""
+    from nda_automation import telemetry
+
+    repo = InMemoryMatterRepository()
+    stored = _store_never_reviewed_pdf_matter(repo)
+    matter_id = stored["id"]
+
+    def _hang(*_args, **_kwargs):
+        import time
+        time.sleep(30)
+        raise AssertionError("should have been abandoned")
+
+    monkeypatch.setattr(ingestion_service, "retro_convert_pdf_matter", _hang)
+    # Tighten the wall-clock budget so the test is fast.
+    monkeypatch.setattr(ingestion_service, "RETRO_PDF_CONVERT_WALL_CLOCK_SECONDS", 0.5)
+
+    def _engine(text, *, paragraphs=None, **_kwargs):
+        return _stub_ai_review_result(text, paragraphs)
+
+    import time
+    started = time.monotonic()
+    ingestion_service._perform_inbound_ai_review_body(
+        matter_id,
+        repository=repo,
+        owner_user_id="owner-1",
+        review_engine_func=_engine,
+        telemetry=telemetry,
+        is_on_demand=True,
+    )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 10.0, "a hung conversion must NOT stall the review"
+    refreshed = repo.get_matter(matter_id, owner_user_id="owner-1")
+    # Review still completed (fail-open); the working DOCX was abandoned (PDF source).
+    assert str(refreshed.get("review_status") or "") == "completed"
+    from nda_automation.matter_render_job import matter_has_working_docx
+    assert matter_has_working_docx(refreshed) is False
+
+
 def test_retro_convert_legacy_pdf_gains_working_docx_and_rekeyed_paragraphs(monkeypatch):
     repo = InMemoryMatterRepository()
     stored = _store_legacy_pdf_matter(repo)
