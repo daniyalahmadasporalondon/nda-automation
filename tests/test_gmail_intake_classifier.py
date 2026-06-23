@@ -254,6 +254,105 @@ class IntakeClassifierUnitTests(unittest.TestCase):
         with patch.dict("os.environ", {intake.GMAIL_INTAKE_MODEL_ENV: "deepseek/deepseek-v4-pro"}):
             self.assertEqual(intake._configured_model(), "deepseek/deepseek-v4-pro")
 
+    # A7 -- the default criteria block encodes the primary-purpose distinction that
+    # stops adjacent commercial agreements (consultancy / R&D / MSA / services /
+    # licensing / employment) being mis-classified as NDAs purely on title.
+    #
+    # This is a PROMPT-CONSTRUCTION assertion, not a live-model assertion: the
+    # classifier is stub-based here, so we can only prove that the guidance the model
+    # receives now distinguishes a standalone NDA from a commercial agreement that
+    # merely contains a confidentiality clause. A full quality measurement of the
+    # behaviour change needs a live-model eval run (flagged in the PR).
+    def test_default_playbook_encodes_primary_purpose_distinction(self):
+        criteria = intake.DEFAULT_INTAKE_PLAYBOOK.lower()
+        # The decisive rule: judge on operative substance / primary purpose, not the
+        # filename or email subject (the "NDA for review" title trap).
+        self.assertIn("primary", criteria)
+        self.assertIn("operative", criteria)
+        self.assertIn("title", criteria)
+        # The adjacent commercial-agreement families that must be excluded even when
+        # they carry a confidentiality clause are named explicitly.
+        for kind in ("consultancy", "r&d", "services", "master services agreement", "licensing", "employment"):
+            self.assertIn(kind, criteria, kind)
+        # The "contains a confidentiality clause but is not an NDA" carve-out is
+        # explicit, so an embedded confidentiality clause cannot promote a services
+        # agreement to NDA.
+        self.assertIn("confidentiality clause", criteria)
+        # The HMRC / AML regulatory framing from the confirmed live miss is named as
+        # a commercial-services signal.
+        self.assertTrue("hmrc" in criteria or "aml" in criteria)
+
+    def test_default_playbook_prefers_uncertain_for_ambiguity(self):
+        # Genuine ambiguity must route to counsel review (UNCERTAIN), never a guessed
+        # NDA / NOT_NDA. The criteria states this preference so the safe default holds.
+        criteria = intake.DEFAULT_INTAKE_PLAYBOOK.lower()
+        self.assertIn("uncertain", criteria)
+        self.assertIn("ambiguity", criteria)
+
+    def test_default_playbook_still_recognizes_genuine_ndas(self):
+        # Over-tightening guard: the NDA-positive criteria must remain (a one-way or
+        # mutual NDA / CDA / confidentiality deed / DPA is still an NDA). If a future
+        # edit deletes the positive list while chasing false positives, genuine NDAs
+        # would be missed -- this asserts the positive guidance survives.
+        criteria = intake.DEFAULT_INTAKE_PLAYBOOK.lower()
+        for kind in ("mutual", "one-way", "mnda", "cda", "confidentiality agreement", "dpa"):
+            self.assertIn(kind, criteria, kind)
+
+    # A8 -- replay the confirmed-live miss and the over-tightening guards end-to-end
+    # through the stub transport. With a stub model we cannot prove the *model* now
+    # returns the right label, so we drive the model's label and assert the verdict
+    # -> lane reconciliation behaves correctly for each canonical case. These are the
+    # eval cases the criteria edit targets:
+    #   - R&D/consultancy "NDA for review" with an embedded confidentiality clause
+    #     that the model now labels NOT_NDA -> drops (skip).
+    #   - the same doc when the model is only confident enough for UNCERTAIN ->
+    #     routes to counsel review (triage), never a wrong NDA.
+    #   - a clean mutual NDA -> NDA -> ingest (confident).
+    #   - a one-way NDA -> NDA -> ingest (confident).
+    #   - an MSA-with-confidentiality -> NOT_NDA -> drops (skip).
+    def test_eval_cases_map_to_expected_lanes(self):
+        rnd_text = (
+            "R&D CONSULTANCY AGREEMENT. The Consultant shall perform the research and "
+            "development services described in Schedule 1 and deliver the work product. "
+            "Fees are payable monthly. The Consultant shall comply with HMRC anti-money "
+            "laundering (AML) regulations. Confidentiality: each party shall keep the "
+            "other's confidential information secret."
+        )
+        msa_text = (
+            "MASTER SERVICES AGREEMENT governing the supply of services and "
+            "deliverables, fees, SLAs and acceptance. Section 12 (Confidentiality): "
+            "the parties shall protect confidential information."
+        )
+        mutual_nda_text = (
+            "MUTUAL NON-DISCLOSURE AGREEMENT. The parties wish to exchange Confidential "
+            "Information. Each party shall use it solely to evaluate the Purpose, shall "
+            "not disclose it, and shall return or destroy it. Standard carve-outs apply."
+        )
+        oneway_nda_text = (
+            "ONE-WAY NON-DISCLOSURE AGREEMENT. The Recipient shall keep the Discloser's "
+            "Confidential Information secret, use it only for the Purpose, and return or "
+            "destroy it on request. Carve-outs for public/independently-developed info."
+        )
+        # (case_id, filename, text, model_label, deterministic_lane, expected_lane)
+        eval_cases = [
+            ("rnd_consultancy_titled_nda", "NDA for review.docx", rnd_text, "NOT_NDA", "skip", "skip"),
+            # If the model is honest that it cannot tell which purpose dominates, the
+            # doc goes to counsel rather than a wrong drop or ingest.
+            ("rnd_consultancy_uncertain", "NDA for review.docx", rnd_text, "UNCERTAIN", "triage", "triage"),
+            ("msa_with_confidentiality", "MSA.docx", msa_text, "NOT_NDA", "skip", "skip"),
+            ("clean_mutual_nda", "Mutual NDA.docx", mutual_nda_text, "NDA", "confident", "confident"),
+            ("one_way_nda", "One-Way NDA.docx", oneway_nda_text, "NDA", "confident", "confident"),
+        ]
+        for case_id, filename, text, label, det_lane, expected_lane in eval_cases:
+            metadata = {"subject": "NDA for review", "sender": "bd@example.com"}
+            reply = _model_reply({"label": label, "reason": case_id, "confidence": 0.9})
+            with patch.object(intake.urllib.request, "urlopen", reply):
+                result = intake.classify_intake_attachment(metadata, _candidate(filename, text), "")
+            self.assertEqual(result["status"], "ok", case_id)
+            self.assertEqual(result["verdict"], label, case_id)
+            lane, _reason = intake.resolve_intake_lane(det_lane, "", result)
+            self.assertEqual(lane, expected_lane, case_id)
+
 
 class ResolveIntakeLaneTests(unittest.TestCase):
     # B7 -- non-ok status returns the deterministic (lane, reason) verbatim.
