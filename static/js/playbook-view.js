@@ -2494,9 +2494,6 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
   function syncStructuredRules(clause, changedField) {
     if (!clause.rules || typeof clause.rules !== "object") return;
     clause.rules.clause_type = clause.type;
-    if (changedField === "preferred_position" && clause.preferred_position) {
-      clause.rules.acceptable_position = clause.preferred_position;
-    }
     if (isDynamicClause(clause)) {
       // Keep the structured rules.acceptable_position coherent with the authored
       // acceptable language / preferred position so the lint's referential checks
