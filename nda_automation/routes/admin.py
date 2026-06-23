@@ -127,6 +127,78 @@ def handle_personalisation_settings_update(handler) -> None:
     })
 
 
+def handle_my_personalisation_settings(handler, *, send_body: bool = True) -> None:
+    """GET /api/personalisation-settings -- the CALLER'S OWN personalisation.
+
+    NON-admin accessible: any authenticated user may read their own per-user
+    signature. The id is the session owner id (request_owner_user_id), never a
+    body value, so a user can only ever read their OWN entry. The response also
+    surfaces the resolved effective values (per-user -> global -> default) the
+    send/default-body path will actually use, plus the built-in defaults, so the
+    UI can show what will be sent even before the user customises anything.
+    """
+    owner_user_id = request_owner_user_id(handler)
+    if not owner_user_id:
+        handler._send_json(
+            {"error": "Sign in before reading personalisation settings."},
+            status=403,
+            send_body=send_body,
+        )
+        return
+    handler._send_json(
+        {
+            "personalisation": app_settings.personalisation_by_user_settings(owner_user_id),
+            "resolved": app_settings.resolve_personalisation(owner_user_id),
+            "has_custom": app_settings.user_has_personalisation(owner_user_id),
+            "defaults": app_settings.DEFAULT_PERSONALISATION_SETTINGS,
+        },
+        send_body=send_body,
+    )
+
+
+def handle_my_personalisation_settings_update(handler) -> None:
+    """POST /api/personalisation-settings -- write the CALLER'S OWN personalisation.
+
+    NON-admin accessible. Scoped strictly to the session owner id; a user can
+    never write another user's entry. Mirrors the global handler's validation.
+    """
+    owner_user_id = request_owner_user_id(handler)
+    if not owner_user_id:
+        handler._send_json(
+            {"error": "Sign in before updating personalisation settings."},
+            status=403,
+        )
+        return
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+    unsupported = sorted(set(payload) - {"sign_off", "signature", "signature_block"})
+    if unsupported:
+        handler._send_json({"error": f"Unsupported personalisation setting: {unsupported[0]}."}, status=400)
+        return
+    if not any(key in payload for key in ("sign_off", "signature", "signature_block")):
+        handler._send_json({"error": "Provide a sign_off, signature, or signature_block setting to update."}, status=400)
+        return
+    if any(not isinstance(payload.get(key), str) for key in ("sign_off", "signature", "signature_block") if key in payload):
+        handler._send_json({"error": "Personalisation settings must be text values."}, status=400)
+        return
+
+    personalisation = app_settings.update_personalisation_by_user_settings(
+        owner_user_id,
+        {
+            key: payload[key]
+            for key in ("sign_off", "signature", "signature_block")
+            if key in payload
+        },
+    )
+    handler._send_json({
+        "personalisation": personalisation,
+        "resolved": app_settings.resolve_personalisation(owner_user_id),
+        "has_custom": app_settings.user_has_personalisation(owner_user_id),
+        "defaults": app_settings.DEFAULT_PERSONALISATION_SETTINGS,
+    })
+
+
 def handle_ai_settings_update(handler) -> None:
     if not require_admin(handler):
         return

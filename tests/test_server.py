@@ -5399,6 +5399,240 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(non_text_status, 400)
         self.assertEqual(non_text_payload["error"], "Personalisation settings must be text values.")
 
+    # --- Per-user (non-admin) personalisation --------------------------------
+    # A non-admin must be able to set THEIR OWN signature and have generate/send
+    # use it; with NO custom value they fall back to the global/built-in default
+    # (never hard-blocked); and a user may never read or write another user's
+    # personalisation.
+
+    def test_non_admin_can_set_and_get_own_personalisation(self):
+        auth_env = self._google_oauth_auth_env(NDA_ADMIN_USERS="")
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                session_headers, user = self.google_session_headers(
+                    subject="non-admin-1", email="nonadmin1@example.com"
+                )
+                with patch.dict(os.environ, auth_env):
+                    # Default (no custom) read works for a non-admin.
+                    get0_status, get0 = self.request(
+                        "GET", "/api/personalisation-settings", headers=session_headers
+                    )
+                    # Non-admin writes their OWN signature.
+                    post_status, post = self.request(
+                        "POST",
+                        "/api/personalisation-settings",
+                        {
+                            "sign_off": "  Kind regards,  ",
+                            "signature": "  Nadia Non-Admin  ",
+                            "signature_block": "Kind regards,\r\nNadia Non-Admin\nLegal Ops",
+                        },
+                        headers=session_headers,
+                    )
+                    # And reads it back.
+                    get1_status, get1 = self.request(
+                        "GET", "/api/personalisation-settings", headers=session_headers
+                    )
+                    persisted = app_settings.personalisation_by_user_settings(user["id"])
+
+        self.assertEqual(get0_status, 200)
+        self.assertFalse(get0["has_custom"])
+        self.assertEqual(get0["personalisation"], app_settings.DEFAULT_PERSONALISATION_SETTINGS)
+
+        self.assertEqual(post_status, 200)
+        self.assertEqual(post["personalisation"], {
+            "sign_off": "Kind regards,",
+            "signature": "Nadia Non-Admin",
+            "signature_block": "Kind regards,\nNadia Non-Admin\nLegal Ops",
+        })
+        self.assertTrue(post["has_custom"])
+
+        self.assertEqual(get1_status, 200)
+        self.assertTrue(get1["has_custom"])
+        self.assertEqual(get1["personalisation"], post["personalisation"])
+        self.assertEqual(persisted, post["personalisation"])
+        # The global admin section is untouched by a per-user write.
+        # (resolved == the user's own value here.)
+        self.assertEqual(get1["resolved"], post["personalisation"])
+
+    def test_non_admin_personalisation_is_isolated_per_user(self):
+        auth_env = self._google_oauth_auth_env(NDA_ADMIN_USERS="")
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                headers_a, user_a = self.google_session_headers(
+                    subject="user-a", email="usera@example.com"
+                )
+                headers_b, user_b = self.google_session_headers(
+                    subject="user-b", email="userb@example.com"
+                )
+                self.assertNotEqual(user_a["id"], user_b["id"])
+                with patch.dict(os.environ, auth_env):
+                    # User A writes their own signature.
+                    self.request(
+                        "POST",
+                        "/api/personalisation-settings",
+                        {"signature": "Alice A", "signature_block": "Best,\nAlice A"},
+                        headers=headers_a,
+                    )
+                    # User B writes a DIFFERENT signature.
+                    self.request(
+                        "POST",
+                        "/api/personalisation-settings",
+                        {"signature": "Bob B", "signature_block": "Best,\nBob B"},
+                        headers=headers_b,
+                    )
+                    # Each user reads back ONLY their own (no cross-user leak).
+                    _sa, get_a = self.request(
+                        "GET", "/api/personalisation-settings", headers=headers_a
+                    )
+                    _sb, get_b = self.request(
+                        "GET", "/api/personalisation-settings", headers=headers_b
+                    )
+                    # The store itself is keyed per owner id and never crosses over.
+                    stored_a = app_settings.personalisation_by_user_settings(user_a["id"])
+                    stored_b = app_settings.personalisation_by_user_settings(user_b["id"])
+
+        self.assertEqual(get_a["personalisation"]["signature"], "Alice A")
+        self.assertEqual(get_b["personalisation"]["signature"], "Bob B")
+        self.assertEqual(stored_a["signature"], "Alice A")
+        self.assertEqual(stored_b["signature"], "Bob B")
+        # A read for A never returns B's value and vice-versa.
+        self.assertNotEqual(get_a["personalisation"], get_b["personalisation"])
+
+    def test_personalisation_settings_require_signed_in_user(self):
+        # On a host where auth is NOT required (127.0.0.1) the caller is anonymous
+        # (empty owner id) -- the self-serve endpoint must refuse rather than read
+        # or write a shared/empty-keyed entry.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                get_status, get_payload = self.request("GET", "/api/personalisation-settings")
+                post_status, post_payload = self.request(
+                    "POST", "/api/personalisation-settings", {"signature": "x"}
+                )
+        self.assertEqual(get_status, 403)
+        self.assertEqual(post_status, 403)
+
+    def test_resolve_personalisation_falls_back_global_then_default(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                # 1) No global, no per-user => built-in default.
+                default_resolved = app_settings.resolve_personalisation("user-z")
+                self.assertEqual(
+                    default_resolved, app_settings.DEFAULT_PERSONALISATION_SETTINGS
+                )
+
+                # 2) Admin sets a global; a user with NO custom inherits the global.
+                app_settings.update_personalisation_settings({
+                    "sign_off": "Regards,",
+                    "signature": "Aspora Global",
+                    "signature_block": "Regards,\nAspora Global",
+                })
+                self.assertFalse(app_settings.user_has_personalisation("user-z"))
+                global_resolved = app_settings.resolve_personalisation("user-z")
+                self.assertEqual(global_resolved["signature"], "Aspora Global")
+
+                # 3) The user sets only their signature => per-user signature wins,
+                #    but the unset sign_off falls back to the global value.
+                app_settings.update_personalisation_by_user_settings(
+                    "user-z", {"signature": "Zoe Personal"}
+                )
+                resolved = app_settings.resolve_personalisation("user-z")
+
+        self.assertEqual(resolved["signature"], "Zoe Personal")
+        self.assertEqual(resolved["sign_off"], "Regards,")
+
+    def test_default_outbound_body_uses_per_user_then_global_then_default(self):
+        matter = {"subject": "Partner NDA"}
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                # No settings at all => built-in default signature in the body.
+                body_default = gmail_matter_outbox.default_outbound_body(
+                    matter, owner_user_id="sender-1"
+                )
+
+                # Global admin signature is used when the sender has no custom one.
+                app_settings.update_personalisation_settings({
+                    "signature_block": "Best,\nAspora Legal Team",
+                })
+                body_global = gmail_matter_outbox.default_outbound_body(
+                    matter, owner_user_id="sender-1"
+                )
+
+                # The sender's OWN signature overrides the global one.
+                app_settings.update_personalisation_by_user_settings(
+                    "sender-1", {"signature_block": "Cheers,\nSammy Sender"}
+                )
+                body_user = gmail_matter_outbox.default_outbound_body(
+                    matter, owner_user_id="sender-1"
+                )
+                # A DIFFERENT sender (no custom) still gets the global block,
+                # proving the body is resolved per-sender, not globally.
+                body_other = gmail_matter_outbox.default_outbound_body(
+                    matter, owner_user_id="sender-2"
+                )
+
+        self.assertIn("Best,\nAspora Legal", body_default)
+        self.assertIn("Best,\nAspora Legal Team", body_global)
+        self.assertIn("Cheers,\nSammy Sender", body_user)
+        self.assertNotIn("Sammy Sender", body_other)
+        self.assertIn("Best,\nAspora Legal Team", body_other)
+
+    def test_send_redline_email_uses_sender_per_user_signature(self):
+        # End-to-end at the send seam: a sender's per-user signature lands in the
+        # actual base64 MIME body handed to the Gmail API. The send() -> execute()
+        # chain is mocked so no network/credentials are needed.
+        captured = {}
+
+        class _FakeSendRequest:
+            def __init__(self, body):
+                self._body = body
+
+            def execute(self):
+                captured["raw"] = self._body["raw"]
+                return {"id": "sent-1"}
+
+        class _FakeMessages:
+            def send(self, *, userId, body):
+                return _FakeSendRequest(body)
+
+        class _FakeUsers:
+            def messages(self):
+                return _FakeMessages()
+
+        class _FakeService:
+            def users(self):
+                return _FakeUsers()
+
+        matter = {"subject": "Partner NDA"}
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                app_settings.update_personalisation_by_user_settings(
+                    "sender-xyz", {"signature_block": "Warmly,\nThe Per-User Sender"}
+                )
+                with patch.object(
+                    gmail_matter_outbox,
+                    "outbound_send_context",
+                    return_value=("counterparty@partner.com", _FakeService(), "ops@aspora.com"),
+                ):
+                    gmail_matter_outbox.send_redline_email(
+                        matter,
+                        b"redline-docx-bytes",
+                        "redline.docx",
+                        transport=gmail_integration._gmail_outbox_transport(),
+                        confirmed_recipient="counterparty@partner.com",
+                        to="counterparty@partner.com",
+                        personalisation_owner_user_id="sender-xyz",
+                    )
+
+        decoded = base64.urlsafe_b64decode(captured["raw"]).decode("utf-8")
+        self.assertIn("Warmly,", decoded)
+        self.assertIn("The Per-User Sender", decoded)
+
     def test_ai_settings_endpoint_updates_runtime_review_engine(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)

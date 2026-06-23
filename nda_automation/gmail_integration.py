@@ -537,6 +537,7 @@ def send_redline_email(
     to: str | None = None,
     confirmed_recipient: str | None = None,
     owner_user_id: str = "",
+    personalisation_owner_user_id: str = "",
 ) -> dict[str, str]:
     return gmail_matter_outbox.send_redline_email(
         matter,
@@ -548,6 +549,7 @@ def send_redline_email(
         to=to,
         confirmed_recipient=confirmed_recipient,
         owner_user_id=owner_user_id,
+        personalisation_owner_user_id=personalisation_owner_user_id,
     )
 
 

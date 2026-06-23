@@ -251,6 +251,160 @@ def update_personalisation_settings(updates: dict[str, Any]) -> dict[str, Any]:
     return _repository().update_section("personalisation", personalisation_settings_from_payload, cleaned)
 
 
+# ---------------------------------------------------------------------------
+# Per-user personalisation
+#
+# The global ``personalisation`` section above is the deployment-wide default
+# (admin-set). Each user may ALSO set their OWN sign-off/signature, stored in a
+# ``personalisation_by_user`` map keyed by the caller's owner_user_id. A user
+# may only ever read/write their OWN entry -- the key is the request's
+# authenticated owner id, never a value taken from the request body -- so there
+# is no cross-user read or write path.
+#
+# Resolution order for the effective signature (see resolve_personalisation):
+#   per-user value (if the user has set one) -> global admin value -> built-in
+#   default. This means a non-admin who has never customised anything still
+#   sends/generates with a sane default and is never hard-blocked.
+# ---------------------------------------------------------------------------
+PERSONALISATION_BY_USER_SECTION = "personalisation_by_user"
+# Cap the number of stored per-user entries so a runaway/abusive create loop can
+# never balloon the settings blob (mirrors MAX_PERSISTED_ADMINS).
+MAX_PERSONALISATION_USERS = 1000
+MAX_PERSONALISATION_USER_ID_LENGTH = 256
+
+
+def _normalize_personalisation_user_id(user_id: object) -> str:
+    """Coerce an owner id to a safe storage key, or "" when unusable.
+
+    The key is always the authenticated caller's own id (never a body value), but
+    it is still normalized defensively: stripped, length-capped, and required to
+    be a plain token so it can only ever be a JSON object key.
+    """
+    token = str(user_id or "").strip()
+    if not token or len(token) > MAX_PERSONALISATION_USER_ID_LENGTH:
+        return ""
+    return token
+
+
+def personalisation_by_user_settings(user_id: str) -> dict[str, Any]:
+    """Return the caller's OWN per-user personalisation, normalized.
+
+    Falls back to the built-in defaults for any field the user has not set. When
+    the user has no stored entry at all, the defaults are returned. Returns the
+    bare defaults for an empty/invalid id rather than leaking another user's data.
+    """
+    key = _normalize_personalisation_user_id(user_id)
+    if not key:
+        return personalisation_settings_from_payload({})
+    settings = _repository().read_settings()
+    by_user = settings.get(PERSONALISATION_BY_USER_SECTION)
+    entry = by_user.get(key) if isinstance(by_user, dict) else None
+    if not isinstance(entry, dict):
+        entry = {}
+    return personalisation_settings_from_payload(entry)
+
+
+def user_has_personalisation(user_id: str) -> bool:
+    """True only when the caller has an explicitly stored per-user entry."""
+    key = _normalize_personalisation_user_id(user_id)
+    if not key:
+        return False
+    settings = _repository().read_settings()
+    by_user = settings.get(PERSONALISATION_BY_USER_SECTION)
+    return isinstance(by_user, dict) and isinstance(by_user.get(key), dict)
+
+
+def _raw_personalisation_by_user(user_id: str) -> dict[str, str]:
+    """The fields the user ACTUALLY saved (cleaned), with no default-fill.
+
+    Used by resolution so an unset field falls through to the global/default
+    instead of being masked by the per-user normalizer's default-fill. Only the
+    caller's own key is read.
+    """
+    key = _normalize_personalisation_user_id(user_id)
+    if not key:
+        return {}
+    settings = _repository().read_settings()
+    by_user = settings.get(PERSONALISATION_BY_USER_SECTION)
+    entry = by_user.get(key) if isinstance(by_user, dict) else None
+    if not isinstance(entry, dict):
+        return {}
+    raw: dict[str, str] = {}
+    for field in ("sign_off", "signature", "signature_block"):
+        if field in entry:
+            raw[field] = _clean_personalisation_setting(field, entry.get(field))
+    return raw
+
+
+def update_personalisation_by_user_settings(user_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+    """Merge ``updates`` into the caller's OWN per-user personalisation entry.
+
+    Strictly scoped to ``user_id`` (the authenticated caller): only that one key
+    in the ``personalisation_by_user`` map is read and rewritten, so a write can
+    never touch another user's entry. Invalid fields are dropped; unknown ids are
+    rejected (returns the defaults unchanged).
+    """
+    key = _normalize_personalisation_user_id(user_id)
+    if not key:
+        return personalisation_settings_from_payload({})
+    cleaned = {
+        field: _clean_personalisation_setting(field, value)
+        for field, value in updates.items()
+        if _valid_personalisation_setting(field, value)
+    }
+    if not cleaned:
+        return personalisation_by_user_settings(key)
+
+    def _updater(current: dict[str, Any]) -> dict[str, Any]:
+        by_user = dict(current) if isinstance(current, dict) else {}
+        existing = by_user.get(key)
+        existing_fields = existing if isinstance(existing, dict) else {}
+        # Store SPARSE fields (only what the user actually set) so an unset field
+        # later resolves to the global/default rather than being frozen to a
+        # default-filled value. Merge prior explicit fields with the new ones.
+        sparse: dict[str, str] = {}
+        for field in ("sign_off", "signature", "signature_block"):
+            if field in cleaned:
+                sparse[field] = cleaned[field]
+            elif field in existing_fields:
+                sparse[field] = _clean_personalisation_setting(field, existing_fields.get(field))
+        # Enforce the cap only when ADDING a brand-new user; an update to an
+        # existing key never trips it (so an established user can always save).
+        if key not in by_user and len(by_user) >= MAX_PERSONALISATION_USERS:
+            return by_user
+        by_user[key] = sparse
+        return by_user
+
+    updated = _repository().update_section_with(
+        PERSONALISATION_BY_USER_SECTION,
+        _personalisation_by_user_from_payload,
+        _updater,
+    )
+    entry = updated.get(key)
+    return personalisation_settings_from_payload(entry if isinstance(entry, dict) else {})
+
+
+def resolve_personalisation(user_id: str) -> dict[str, Any]:
+    """The effective personalisation for ``user_id``: per-user -> global -> default.
+
+    Each field independently prefers the user's own value, then the global admin
+    value, then the built-in default, so a user who set only ``signature`` still
+    inherits the global/default sign-off. Never raises and never hard-blocks.
+    """
+    global_settings = personalisation_settings()
+    user_settings = _raw_personalisation_by_user(user_id)
+    if not user_settings:
+        return dict(global_settings)
+    resolved: dict[str, Any] = {}
+    for field in ("sign_off", "signature", "signature_block"):
+        user_value = str(user_settings.get(field) or "").strip()
+        if user_value:
+            resolved[field] = user_settings[field]
+        else:
+            resolved[field] = global_settings.get(field, DEFAULT_PERSONALISATION_SETTINGS[field])
+    return resolved
+
+
 def update_admin_settings(updates: dict[str, Any]) -> dict[str, Any]:
     """Persist the admin grant list.
 
@@ -566,6 +720,36 @@ def personalisation_settings_from_payload(payload: dict[str, Any]) -> dict[str, 
             multiline=True,
         ),
     }
+
+
+def _personalisation_by_user_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the per-user personalisation map (runs on read and write).
+
+    Drops entries with an unusable key or a non-dict value, normalizes each
+    surviving entry through ``personalisation_settings_from_payload``, and caps
+    the map at ``MAX_PERSONALISATION_USERS``. The cap is applied last so a
+    corrupt/oversized stored blob is trimmed deterministically.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    result: dict[str, Any] = {}
+    for raw_key, raw_value in payload.items():
+        key = _normalize_personalisation_user_id(raw_key)
+        if not key or not isinstance(raw_value, dict):
+            continue
+        # Preserve SPARSE entries (only the fields the user actually set), each
+        # cleaned, with NO default-fill -- so an unset field still resolves to the
+        # global/default downstream. An empty entry is dropped.
+        entry: dict[str, str] = {}
+        for field in ("sign_off", "signature", "signature_block"):
+            if field in raw_value:
+                entry[field] = _clean_personalisation_setting(field, raw_value.get(field))
+        if not entry:
+            continue
+        result[key] = entry
+        if len(result) >= MAX_PERSONALISATION_USERS:
+            break
+    return result
 
 
 def admin_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:

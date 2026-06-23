@@ -312,6 +312,11 @@ class RepositoryMatterLifecycle:
             "confirmed_recipient": confirmed_recipient,
             "subject": subject,
             "to": to,
+            # The signature in the default body is the SENDER's (the requesting
+            # user), resolved per-user -> global -> built-in default. This is the
+            # request owner, NOT the Gmail token owner (which only selects the
+            # OAuth credentials used to send).
+            "personalisation_owner_user_id": owner_user_id,
         }
         if token_owner_user_id:
             send_kwargs["owner_user_id"] = token_owner_user_id

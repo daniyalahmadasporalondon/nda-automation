@@ -24,6 +24,7 @@ def send_redline_email(
     to: str | None = None,
     confirmed_recipient: str | None = None,
     owner_user_id: str = "",
+    personalisation_owner_user_id: str = "",
 ) -> dict[str, str]:
     recipient, service, outbound_account = outbound_send_context(
         matter,
@@ -37,7 +38,9 @@ def send_redline_email(
     message["To"] = recipient
     message["Subject"] = outbound_subject
     message["Date"] = formatdate(localtime=True)
-    message.set_content(body or default_outbound_body(matter))
+    message.set_content(
+        body or default_outbound_body(matter, owner_user_id=personalisation_owner_user_id)
+    )
     message.add_attachment(
         attachment_bytes,
         maintype="application",
@@ -215,17 +218,20 @@ def reply_subject(subject: str) -> str:
     return cleaned if cleaned.lower().startswith("re:") else f"Re: {cleaned}"
 
 
-def default_outbound_body(matter: dict[str, Any]) -> str:
+def default_outbound_body(matter: dict[str, Any], *, owner_user_id: str = "") -> str:
     subject = str(matter.get("subject") or matter.get("document_title") or "the NDA")
     return (
         f"Hi,\n\n"
         f"Please find attached the redlined version of {subject}.\n\n"
-        f"{personalisation_signature_block()}"
+        f"{personalisation_signature_block(owner_user_id=owner_user_id)}"
     )
 
 
-def personalisation_signature_block() -> str:
-    settings = app_settings.personalisation_settings()
+def personalisation_signature_block(*, owner_user_id: str = "") -> str:
+    # Resolve the SENDER's effective signature: their own per-user value if set,
+    # otherwise the global admin default, otherwise the built-in fallback below.
+    # An empty owner id collapses to the global/default (never another user's).
+    settings = app_settings.resolve_personalisation(owner_user_id)
     signature_block = str(settings.get("signature_block") or "").strip()
     if signature_block:
         return signature_block
