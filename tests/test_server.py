@@ -36,6 +36,7 @@ from nda_automation import gmail_integration
 from nda_automation import gmail_matter_outbox
 from nda_automation import google_connection
 from nda_automation import ingestion_service
+from nda_automation import matter_render_job
 from nda_automation import matter_store
 from nda_automation import matter_view
 from nda_automation import operational_settings_repository
@@ -2492,6 +2493,99 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(head_headers["Content-Type"], document_rendering.PDF_CONTENT_TYPE)
         self.assertEqual(head_headers["Content-Length"], str(len(source_pdf)))
         self.assertEqual(head_payload, b"")
+
+    def test_source_streams_stored_bytes_when_render_not_ready(self):
+        """/source serves the durable original bytes from the COLD state.
+
+        This is exactly the state the audit reported as an intermittent 503: a
+        freshly-created PDF matter whose render / working-docx have NEVER been
+        produced. The endpoint must NOT gate on render readiness -- the stored
+        original bytes are durable on disk, so the response is a plain 200 even
+        though no render/working-docx exists yet.
+        """
+        source_pdf = b"%PDF-1.7\ncold source pdf\n%%EOF\n"
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Cold NDA.pdf",
+                    document_bytes=source_pdf,
+                    extracted_text="PDF text.",
+                    review_result={"redline_edits": []},
+                    triage={
+                        "triage_status": "ready_to_sign",
+                        "next_action": "Ready to sign",
+                        "issue_count": 0,
+                    },
+                )
+                # No render-status / render-pdf call has been made: nothing is
+                # cached and matter_has_working_docx(matter) is False here.
+                self.assertFalse(matter_render_job.matter_has_working_docx(matter))
+                status, payload, headers = self.request_with_headers(
+                    "GET",
+                    f"/api/matters/{matter['id']}/source",
+                )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, source_pdf)
+        self.assertEqual(headers["Content-Type"], "application/pdf")
+
+    def test_source_returns_retryable_503_on_store_lock_timeout(self):
+        """A transient store lock-timeout is a retryable 503, not a hard 500.
+
+        Under contention (a render job / AI review holding the matter-store lock)
+        the read momentarily fails with a lock-timeout MatterStoreError. Because
+        the source bytes are durable and a retry succeeds, the handler surfaces a
+        503 + Retry-After so the client retries instead of treating the blip as a
+        server fault -- this is the fix for the intermittent /source failure.
+        """
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Busy NDA.pdf",
+                    document_bytes=b"%PDF-1.7\nbusy\n%%EOF\n",
+                    extracted_text="PDF text.",
+                    review_result={"redline_edits": []},
+                    triage={"triage_status": "ready_to_sign", "next_action": "Ready to sign", "issue_count": 0},
+                )
+                lock_error = matter_store.MatterStoreError(
+                    "Matter store could not be locked within the timeout (30s).",
+                    lock_timeout=True,
+                )
+                with patch.object(matter_store, "get_matter", side_effect=lock_error):
+                    status, payload, headers = self.request_with_headers(
+                        "GET",
+                        f"/api/matters/{matter['id']}/source",
+                    )
+
+        self.assertEqual(status, 503)
+        self.assertEqual(headers.get("Retry-After"), "1")
+        self.assertEqual(payload["error"], matter_store.MATTER_STORE_BUSY_MESSAGE)
+
+    def test_source_returns_500_on_genuine_store_failure(self):
+        """A non-lock-timeout store failure stays a 500 (fail-safe unchanged)."""
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter = matter_store.create_matter(
+                    source_filename="Broken NDA.pdf",
+                    document_bytes=b"%PDF-1.7\nbroken\n%%EOF\n",
+                    extracted_text="PDF text.",
+                    review_result={"redline_edits": []},
+                    triage={"triage_status": "ready_to_sign", "next_action": "Ready to sign", "issue_count": 0},
+                )
+                store_error = matter_store.MatterStoreError("record is not valid JSON")
+                with patch.object(matter_store, "get_matter", side_effect=store_error):
+                    status, payload, headers = self.request_with_headers(
+                        "GET",
+                        f"/api/matters/{matter['id']}/source",
+                    )
+
+        self.assertEqual(status, 500)
+        self.assertNotIn("Retry-After", headers)
+        self.assertEqual(payload["error"], matter_store.MATTER_STORE_UNAVAILABLE_MESSAGE)
 
     def test_reviewed_pdf_streams_approved_docx_conversion(self):
         class AvailableConverter:

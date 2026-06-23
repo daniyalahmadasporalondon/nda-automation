@@ -473,8 +473,49 @@ def refresh_stale_matter_review(matter: dict) -> dict:
     ).matter
 
 
+def _send_source_store_error(
+    handler,
+    error: MatterRepositoryError,
+    log_context: str,
+    *,
+    send_body: bool = True,
+) -> None:
+    """Map a store error from the source stream to the correct HTTP status.
+
+    The original source bytes are durable on disk, so the ONLY reason a load
+    momentarily fails is a transient matter-store lock-timeout (a long-running
+    write -- render job / AI review -- holding the lock). That is a *retryable*
+    busy condition, not a server fault: surface it as a 503 with ``Retry-After``
+    so the client (and the browser's document pane) retries instead of treating
+    the cold-state blip as a hard error and painting a blank pane. A genuine
+    load failure (corrupt record / unreadable store) is NOT a lock-timeout and
+    stays a 500. The handler never serves wrong/empty bytes on either path.
+    """
+    if getattr(error, "lock_timeout", False):
+        logger.info("%s (transient store lock-timeout, retryable): %s", log_context, error)
+        handler._send_json(
+            {"error": matter_store.friendly_matter_store_message(error)},
+            status=503,
+            headers={"Retry-After": "1"},
+            send_body=send_body,
+        )
+        return
+    logger.warning("%s: %s", log_context, error)
+    handler._send_json(
+        {"error": matter_store.friendly_matter_store_message(error)}, status=500, send_body=send_body
+    )
+
+
 def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:
-    """Stream a matter's stored original .docx/.pdf for faithful rendering."""
+    """Stream a matter's stored original .docx/.pdf for faithful rendering.
+
+    Always serves the durable, stored ORIGINAL bytes -- this endpoint NEVER
+    gates on render / working-docx / conversion readiness. The only non-2xx
+    outcomes are: 404 (matter or stored source genuinely missing), 503 (transient
+    store lock-timeout -- retry succeeds, see ``_send_source_store_error``), and
+    500 (a real load failure). Render-not-ready is the render pipeline's concern
+    (/render-status, /render-pdf, /working-docx), not this one.
+    """
     matter_id = parse_matter_id(path, suffix="/source")
     if matter_id is None:
         handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
@@ -483,10 +524,7 @@ def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:
     try:
         matter = repository.get_matter(matter_id, owner_user_id=request_owner_user_id(handler))
     except MatterRepositoryError as error:
-        logger.warning("Matter load failed (source stream): %s", error)
-        handler._send_json(
-            {"error": matter_store.friendly_matter_store_message(error)}, status=500, send_body=send_body
-        )
+        _send_source_store_error(handler, error, "Matter load failed (source stream)", send_body=send_body)
         return
     if matter is None:
         handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
@@ -495,10 +533,7 @@ def handle_matter_source(handler, path: str, *, send_body: bool = True) -> None:
     try:
         source_bytes = repository.get_source_document_bytes(matter)
     except MatterRepositoryError as error:
-        logger.warning("Source bytes load failed: %s", error)
-        handler._send_json(
-            {"error": matter_store.friendly_matter_store_message(error)}, status=500, send_body=send_body
-        )
+        _send_source_store_error(handler, error, "Source bytes load failed", send_body=send_body)
         return
     if source_bytes is None:
         handler._send_json({"error": "No source document for this NDA."}, status=404, send_body=send_body)
