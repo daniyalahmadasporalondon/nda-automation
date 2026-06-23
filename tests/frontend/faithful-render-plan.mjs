@@ -114,5 +114,41 @@ assert.equal(
   assert.ok(!rs.workingDocxReady);
 }
 
+// ---------------------------------------------------------------------------
+// Fallback-matrix plan selection (per-view).
+// ---------------------------------------------------------------------------
+// native DOCX, REDLINE view -> faithful_docx at the TRACKED reviewed-docx URL.
+{
+  const plan = selectFaithfulRenderPlan(docxMatter, null, ON, "redline");
+  assert.equal(plan.render, "faithful_docx", "native DOCX redline -> faithful surface");
+  assert.equal(plan.url, "/api/matters/m-docx/reviewed-docx?changes=tracked");
+}
+// native DOCX, CLEAN view -> faithful_docx at the ACCEPTED reviewed-docx URL.
+{
+  const plan = selectFaithfulRenderPlan(docxMatter, null, ON, "clean");
+  assert.equal(plan.render, "faithful_docx", "native DOCX clean -> faithful surface");
+  assert.equal(plan.url, "/api/matters/m-docx/reviewed-docx?changes=accepted");
+}
+// PDF-converted matter (workingDocxReady) -> faithful surface selected from the
+// converted DOCX, for the Original view AND the redline view (composed onto the
+// working DOCX), even with the off-by-default flag (auto-on).
+{
+  const original = selectFaithfulRenderPlan(pdfMatter, { workingDocxReady: true }, { flagEnabled: false, libraryAvailable: true });
+  assert.equal(original.render, "faithful_docx", "converted PDF original -> faithful (from working DOCX)");
+  assert.equal(original.url, "/api/matters/m-pdf/working-docx");
+
+  const redline = selectFaithfulRenderPlan(pdfMatter, { workingDocxReady: true }, ON, "redline");
+  assert.equal(redline.render, "faithful_docx", "converted PDF redline -> faithful (composed reviewed-docx)");
+  assert.equal(redline.url, "/api/matters/m-pdf/reviewed-docx?changes=tracked");
+}
+// A PDF source WITHOUT a working DOCX, redline view, flag ON: not eligible for the
+// reviewed-docx compose -> reconstruction (no faithful DOCX bytes exist at all).
+{
+  const plan = selectFaithfulRenderPlan(pdfMatter, { workingDocxReady: false }, ON, "redline");
+  assert.equal(plan.render, "reconstruction",
+    "PDF redline without a working DOCX has no faithful bytes -> reconstruction");
+}
+
 console.log("faithful-render-plan: all assertions passed "
-  + "(DOCX->/source; flag/library gate; PDF inert until working_docx_ready; working-docx URL).");
+  + "(DOCX->/source; flag/library gate; PDF inert until working_docx_ready; working-docx URL; "
+  + "redline/clean reviewed-docx URLs; converted-PDF faithful matrix).");

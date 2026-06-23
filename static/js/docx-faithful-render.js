@@ -8,9 +8,10 @@
 // docx-preview library, so the surface is byte-faithful.
 //
 // SCOPE & SAFETY CONTRACT (read before editing):
-//   * Default OFF behind a feature flag (faithfulDocxRenderEnabled()). SINGLE
-//     enable path: localStorage["nda.faithfulDocxRender"] = "1" (persists across
-//     reloads; see static/js/config.js). There is NO window flag.
+//   * Default ON behind a feature flag (faithfulDocxRenderEnabled()). SINGLE
+//     control path: localStorage["nda.faithfulDocxRender"]; only the explicit value
+//     "false" disables it (the kill-switch), every other value / absent key enables
+//     (persists across reloads; see static/js/config.js). There is NO window flag.
 //   * REUSABLE: renderFaithfulDocx(container, { bytes | url }) takes DOCX bytes
 //     (or a same-origin URL to fetch them) + a container element. It is NOT
 //     hardwired to one matter type, so a later PDF->canonical-DOCX effort can feed
@@ -28,12 +29,13 @@
 //     touch the structured/redline view, the overview panel or insert-into-blanks.
 
 // ---------------------------------------------------------------------------
-// Feature flag: localStorage-backed, default OFF.
+// Feature flag: localStorage-backed, default ON.
 // ---------------------------------------------------------------------------
-// The single enable path is localStorage["nda.faithfulDocxRender"]. config.js
+// The single control path is localStorage["nda.faithfulDocxRender"]. config.js
 // defines FAITHFUL_DOCX_RENDER_FLAG_KEY / FAITHFUL_DOCX_RENDER_DEFAULT; we read
 // them off window when present and fall back to literals so this module also
 // works in isolation (e.g. the headless vm test that loads only this file).
+// The flag now defaults ON: only an explicit "false" disables it (the kill-switch).
 const FAITHFUL_DOCX_FLAG_KEY_FALLBACK = "nda.faithfulDocxRender";
 
 function faithfulDocxFlagKey() {
@@ -51,13 +53,16 @@ function faithfulDocxFlagDefault() {
   if (typeof window !== "undefined" && typeof window.FAITHFUL_DOCX_RENDER_DEFAULT === "boolean") {
     return window.FAITHFUL_DOCX_RENDER_DEFAULT;
   }
-  return false;
+  return true;
 }
 
-// True when the localStorage flag is set to a truthy value ("1"/"true"/"on"/"yes").
-// Absent key -> the config default (OFF). Any localStorage access error -> default,
-// so a hardened/incognito context never throws. Kept a function (not a const) so a
-// late flip via localStorage takes effect on the next render without a reload.
+// Default ON: enabled unless the localStorage flag is explicitly "false" (the
+// ops/user kill-switch). Absent key -> the config default (ON). Any localStorage
+// access error -> default, so a hardened/incognito context never throws. The only
+// value that DISABLES is the literal "false" (case/space-insensitive); every other
+// value (incl. the legacy "1"/"true"/"on"/"yes" and an absent key) is ENABLED. Kept a
+// function (not a const) so a late flip via localStorage takes effect on the next
+// render without a reload.
 function faithfulDocxRenderEnabled() {
   let raw = null;
   try {
@@ -70,7 +75,7 @@ function faithfulDocxRenderEnabled() {
     return faithfulDocxFlagDefault();
   }
   if (raw == null) return faithfulDocxFlagDefault();
-  return ["1", "true", "on", "yes"].includes(String(raw).trim().toLowerCase());
+  return String(raw).trim().toLowerCase() !== "false";
 }
 
 // ---------------------------------------------------------------------------

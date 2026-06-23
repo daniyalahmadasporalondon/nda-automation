@@ -125,9 +125,10 @@ async function testTrackedChangesRender() {
 // ---------------------------------------------------------------------------
 // (B) Shipped module never-blank fallback contract + localStorage flag
 // ---------------------------------------------------------------------------
-// SINGLE enable path: localStorage["nda.faithfulDocxRender"] = "1". There is NO
-// window flag any more. We build a tiny localStorage stub so the headless test can
-// drive the flag exactly the way the browser would.
+// SINGLE control path: localStorage["nda.faithfulDocxRender"]. DEFAULT ON now --
+// only the explicit value "false" disables it (the kill-switch); the absent key and
+// any other value enable. There is NO window flag any more. We build a tiny
+// localStorage stub so the headless test can drive the flag exactly like the browser.
 function makeLocalStorage(initial) {
   const map = new Map(Object.entries(initial || {}));
   return {
@@ -172,8 +173,9 @@ function libraryReadyWindow(paint) {
 }
 
 async function testFallbackContract() {
-  // Flag OFF (no localStorage key) -> { ok:false, reason:"flag_off" }, never throws.
-  const offStore = makeLocalStorage({});
+  // Flag OFF (explicit "false" kill-switch) -> { ok:false, reason:"flag_off" }, never
+  // throws. The flag now DEFAULTS ON, so OFF must be set explicitly to "false".
+  const offStore = makeLocalStorage({ "nda.faithfulDocxRender": "false" });
   const mod1 = loadFaithfulModule(libraryReadyWindow(), offStore);
   const r1 = await mod1.renderFaithfulDocx({ innerHTML: "", childElementCount: 0, textContent: "" }, { url: "/x" });
   assert.equal(r1.ok, false, "flag OFF must resolve ok:false");
@@ -198,21 +200,31 @@ async function testFallbackContract() {
   assert.equal(r4.ok, false);
   assert.equal(r4.reason, "no_container");
 
-  // Flag string parsing: enabled() honours "1"/"true"/"on"/"yes", rejects "0"/""/absent.
+  // Flag string parsing (DEFAULT ON): enabled = (value !== "false"). Absent key,
+  // legacy "1"/"true"/"on"/"yes", and even "0" all ENABLE now; only the explicit
+  // kill-switch value "false" (case/space-insensitive) disables.
+  assert.equal(loadFaithfulModule({}, makeLocalStorage({})).faithfulDocxRenderEnabled(), true, "default must be ON (absent key)");
   assert.equal(loadFaithfulModule({}, makeLocalStorage({ "nda.faithfulDocxRender": "on" })).faithfulDocxRenderEnabled(), true);
   assert.equal(loadFaithfulModule({}, makeLocalStorage({ "nda.faithfulDocxRender": "yes" })).faithfulDocxRenderEnabled(), true);
-  assert.equal(loadFaithfulModule({}, makeLocalStorage({ "nda.faithfulDocxRender": "0" })).faithfulDocxRenderEnabled(), false);
-  assert.equal(loadFaithfulModule({}, makeLocalStorage({})).faithfulDocxRenderEnabled(), false, "default must be OFF (absent key)");
-  // The OLD window flag must NOT enable the feature any more (single enable path).
-  assert.equal(loadFaithfulModule({ NDA_FAITHFUL_DOCX_RENDER: true }, makeLocalStorage({})).faithfulDocxRenderEnabled(), false,
-    "the removed window flag must be inert");
+  assert.equal(loadFaithfulModule({}, makeLocalStorage({ "nda.faithfulDocxRender": "1" })).faithfulDocxRenderEnabled(), true);
+  assert.equal(loadFaithfulModule({}, makeLocalStorage({ "nda.faithfulDocxRender": "true" })).faithfulDocxRenderEnabled(), true);
+  // "0" no longer disables -- only the explicit "false" kill-switch does.
+  assert.equal(loadFaithfulModule({}, makeLocalStorage({ "nda.faithfulDocxRender": "0" })).faithfulDocxRenderEnabled(), true);
+  assert.equal(loadFaithfulModule({}, makeLocalStorage({ "nda.faithfulDocxRender": "false" })).faithfulDocxRenderEnabled(), false,
+    "explicit \"false\" is the kill-switch");
+  assert.equal(loadFaithfulModule({}, makeLocalStorage({ "nda.faithfulDocxRender": "FALSE " })).faithfulDocxRenderEnabled(), false,
+    "kill-switch is case/space-insensitive");
+  // The OLD window flag is inert: with the key absent the default-ON already governs,
+  // so the window flag neither enables nor disables -- it is simply ignored.
+  assert.equal(loadFaithfulModule({ NDA_FAITHFUL_DOCX_RENDER: false }, makeLocalStorage({})).faithfulDocxRenderEnabled(), true,
+    "the removed window flag must be inert (default-ON still governs)");
 
   // renderChanges:true is in the default options the module passes to docx-preview.
   assert.equal(mod3.faithfulDocxRenderOptions().renderChanges, true,
     "module must request tracked-change rendering");
 
   console.log("PASS (B) fallback contract: flag_off / library_unavailable / no_bytes / no_container "
-    + "all resolve ok:false without throwing; localStorage flag (default OFF); window flag inert; renderChanges default true.");
+    + "all resolve ok:false without throwing; localStorage flag (default ON, \"false\"=kill-switch); window flag inert; renderChanges default true.");
 }
 
 // ---------------------------------------------------------------------------

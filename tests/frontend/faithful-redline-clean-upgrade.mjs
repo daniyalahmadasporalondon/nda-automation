@@ -59,7 +59,15 @@ if (!JSDOM) {
 // fake whose render() captures the options it is called with, and whose libs are
 // already "loaded" (libraryAvailable true) so the upgrade reaches the render call
 // synchronously. Cross-file glue the upgrade touches is stubbed minimally.
-function buildSandbox({ redlineDraftDirty = false } = {}) {
+function buildSandbox({
+  redlineDraftDirty = false,
+  matter = { id: "m-rc", source_filename: "nda.docx" },
+  reviewDocumentRender = null,
+  // Optional per-URL render outcome override. Receives the requested URL and returns
+  // either "ok" (paints faithful content), "fail" (resolves { ok:false }), or
+  // an explicit { ok, reason }. Defaults to always-ok (the legacy behavior).
+  renderOutcome = () => "ok",
+} = {}) {
   const dom = new JSDOM("<!doctype html><html><body></body></html>");
   const { window } = dom;
   const documentRef = window.document;
@@ -71,7 +79,7 @@ function buildSandbox({ redlineDraftDirty = false } = {}) {
   studioDocumentRender.appendChild(reconstruction);
   documentRef.body.appendChild(studioDocumentRender);
 
-  const calls = { render: 0, lastOptions: undefined, lastSource: undefined };
+  const calls = { render: 0, lastOptions: undefined, lastSource: undefined, urls: [] };
   const faithful = {
     enabled: () => true,
     libraryAvailable: () => true, // libs already loaded: reach the render call directly
@@ -80,6 +88,11 @@ function buildSandbox({ redlineDraftDirty = false } = {}) {
       calls.render += 1;
       calls.lastOptions = options;
       calls.lastSource = source;
+      const url = String(source?.url || "");
+      calls.urls.push(url);
+      let outcome = renderOutcome(url);
+      if (outcome && typeof outcome === "object") outcome = outcome.ok ? "ok" : "fail";
+      if (outcome === "fail") return { ok: false, reason: "no_bytes" };
       const docNode = documentRef.createElement("div");
       docNode.className = "docx";
       docNode.textContent = "FAITHFUL CONTENT";
@@ -90,8 +103,8 @@ function buildSandbox({ redlineDraftDirty = false } = {}) {
   window.FaithfulDocxRender = faithful;
 
   const state = {
-    selectedMatter: { id: "m-rc", source_filename: "nda.docx" },
-    reviewDocumentRender: null,
+    selectedMatter: matter,
+    reviewDocumentRender,
     documentViewMode: "redline",
     redlineDraftDirty,
     // Empty review model so the real surface-level binders the upgrade re-runs
@@ -200,6 +213,90 @@ async function testDirtyDraftNotOverwritten() {
     + "persisted faithful re-fetch (reconstruction stands); re-engages once saved.");
 }
 
+// ---------------------------------------------------------------------------
+// (#4) REDLINE 409/error -> FAITHFUL fallback (Clean/Original), NOT the plain
+//      reconstruction. The tracked reviewed-docx fails (409 no-artifact); the
+//      surface must resolve to a faithful read-only document with an honest note,
+//      and the plain reconstruction must NOT be the final surface.
+// ---------------------------------------------------------------------------
+async function testRedline409FallsBackToFaithful() {
+  // The tracked reviewed-docx (changes=tracked) fails; the accepted (clean) AND the
+  // source bytes still paint -> the fallback should pick the FIRST that paints (clean).
+  {
+    const { sandbox, studioDocumentRender, calls } = buildSandbox({
+      renderOutcome: (url) => (url.includes("changes=tracked") ? "fail" : "ok"),
+    });
+    const upgrade = vm.runInContext("maybeUpgradeSurfaceToFaithfulDocx", sandbox);
+    upgrade("redline");
+    await flushMicrotasks();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    const surface = studioDocumentRender.querySelector("[data-faithful-docx]");
+    assert.ok(surface, "a FAITHFUL surface (not the plain reconstruction) must be swapped in on redline 409");
+    assert.ok(surface.hasAttribute("data-faithful-fallback"),
+      "the swapped-in surface must be the faithful FALLBACK (clean/original), tagged data-faithful-fallback");
+    assert.equal(surface.getAttribute("data-faithful-fallback"), "clean",
+      "the first painting fallback candidate (accepted/clean) must win");
+    assert.ok(studioDocumentRender.querySelector(".review-faithful-fallback-note"),
+      "an honest note must explain tracked redlines live on the Clean/Original tabs");
+    assert.ok(!studioDocumentRender.textContent.includes("EXISTING RECONSTRUCTION FLOOR"),
+      "the plain reconstruction must NOT be the final surface (faithful fallback replaces it)");
+    // tracked (failed primary) + accepted (clean fallback) were both requested.
+    assert.ok(calls.urls.some((u) => u.includes("changes=tracked")), "must have tried tracked first");
+    assert.ok(calls.urls.some((u) => u.includes("changes=accepted")), "must have fallen back to accepted/clean");
+  }
+
+  // Tracked AND accepted both fail (no reviewed artifact at all) -> the faithful
+  // ORIGINAL /source is the floor; it paints, so the surface is faithful (original).
+  {
+    const { sandbox, studioDocumentRender } = buildSandbox({
+      renderOutcome: (url) => (url.includes("/reviewed-docx") ? "fail" : "ok"),
+    });
+    const upgrade = vm.runInContext("maybeUpgradeSurfaceToFaithfulDocx", sandbox);
+    upgrade("redline");
+    await flushMicrotasks();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    const surface = studioDocumentRender.querySelector("[data-faithful-docx][data-faithful-fallback]");
+    assert.ok(surface, "with no reviewed artifact, the faithful ORIGINAL source must be the fallback floor");
+    assert.equal(surface.getAttribute("data-faithful-fallback"), "original",
+      "the original source document must be the fallback when no reviewed bytes exist");
+    assert.ok(!studioDocumentRender.textContent.includes("EXISTING RECONSTRUCTION FLOOR"),
+      "the faithful original replaces the plain reconstruction");
+  }
+
+  console.log("PASS (#4) redline 409 -> faithful fallback: clean wins when accepted paints; "
+    + "original is the floor when no reviewed artifact exists; never the plain reconstruction.");
+}
+
+// ---------------------------------------------------------------------------
+// (#5) NO docx bytes at all (every faithful render fails) -> the plain
+//      reconstruction stands (never blank). This is the only case that keeps the
+//      reconstruction.
+// ---------------------------------------------------------------------------
+async function testNoDocxBytesKeepsReconstruction() {
+  const { sandbox, studioDocumentRender } = buildSandbox({
+    renderOutcome: () => "fail", // tracked, accepted, AND source all yield no bytes.
+  });
+  const upgrade = vm.runInContext("maybeUpgradeSurfaceToFaithfulDocx", sandbox);
+  upgrade("redline");
+  await flushMicrotasks();
+  await flushMicrotasks();
+  await flushMicrotasks();
+
+  assert.equal(studioDocumentRender.querySelector("[data-faithful-docx]"), null,
+    "no faithful surface must be swapped in when there are no DOCX bytes at all");
+  assert.ok(studioDocumentRender.textContent.includes("EXISTING RECONSTRUCTION FLOOR"),
+    "the never-blank reconstruction floor must stand when even the faithful original is unavailable");
+
+  console.log("PASS (#5) no docx bytes: reconstruction floor stands (never blank) when even faithful original fails.");
+}
+
 await testCleanRendersAcceptedText();
 await testDirtyDraftNotOverwritten();
-console.log("\nALL PASS: faithful-redline-clean-upgrade (#2 clean accepted-text + #3 dirty-draft guard).");
+await testRedline409FallsBackToFaithful();
+await testNoDocxBytesKeepsReconstruction();
+console.log("\nALL PASS: faithful-redline-clean-upgrade (#2 clean accepted-text + #3 dirty-draft guard "
+  + "+ #4 redline-409 faithful fallback + #5 no-bytes reconstruction floor).");

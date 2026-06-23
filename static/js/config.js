@@ -8,17 +8,19 @@ const VIEW_MODE_ORIGINAL = "original";
 const DOCUMENT_VIEW_MODES = [VIEW_MODE_REDLINE, VIEW_MODE_CLEAN, VIEW_MODE_SIDE_BY_SIDE, VIEW_MODE_ORIGINAL];
 
 // Faithful-DOCX render feature flag (Review workstation "Original"/redline/clean/
-// sidebyside surfaces). SINGLE enable path: localStorage. Default OFF.
+// sidebyside surfaces). SINGLE control path: localStorage. Default ON.
 //
-//   ENABLE in a running app (persists across reloads):
-//     localStorage.setItem("nda.faithfulDocxRender", "1")   // then re-render the matter
-//   DISABLE:
-//     localStorage.removeItem("nda.faithfulDocxRender")     // or setItem(..., "0")
+//   DISABLE (ops/user kill-switch; persists across reloads):
+//     localStorage.setItem("nda.faithfulDocxRender", "false")  // then re-render the matter
+//   RE-ENABLE / clear the override (back to the ON default):
+//     localStorage.removeItem("nda.faithfulDocxRender")
 //
 // FAITHFUL_DOCX_RENDER_FLAG_KEY is the one localStorage key; FAITHFUL_DOCX_RENDER_DEFAULT
-// is the default used when the key is absent (false = OFF). There is no window flag.
+// is the default used when the key is absent (true = ON). The flag defaults ON now:
+// enabled = (value !== "false"), so only an explicit "false" disables it (the kill-switch).
+// There is no window flag.
 const FAITHFUL_DOCX_RENDER_FLAG_KEY = "nda.faithfulDocxRender";
-const FAITHFUL_DOCX_RENDER_DEFAULT = false;
+const FAITHFUL_DOCX_RENDER_DEFAULT = true;
 
 const REDLINE_DELETE_PARAGRAPH = "delete_paragraph";
 const REDLINE_INSERT_AFTER_PARAGRAPH = "insert_after_paragraph";

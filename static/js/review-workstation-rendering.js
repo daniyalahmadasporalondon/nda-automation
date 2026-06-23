@@ -4220,12 +4220,28 @@ function maybeUpgradeSurfaceToFaithfulDocx(viewMode) {
       if (state.selectedMatter?.id !== matterId) return;
       if ((state.documentViewMode || VIEW_MODE_REDLINE) !== viewMode) return;
       if (!studioDocumentRender) return;
-      if (!result || !result.ok) return; // fall back: keep the reconstruction
+      if (!result || !result.ok) {
+        // The reviewed-docx (tracked/accepted) bytes could not be obtained -- most
+        // commonly a 409 (no approved/reviewed-redline artifact for this matter yet,
+        // so the backend has nothing to compose) but also any 404 / parse / empty
+        // render. Rather than dropping all the way to the PLAIN reconstruction, fall
+        // back to the FAITHFUL Clean/Original surface so the reviewer still sees the
+        // true document. Never blank: if even that yields no bytes, the reconstruction
+        // floor stands.
+        faithfulMappingTelemetry(`redline_bytes_unavailable:${result?.reason || "unknown"}`);
+        attemptFaithfulRedlineFallback(faithful, viewMode, matterId, sequence);
+        return;
+      }
 
       // MAP the rendered .docx paragraphs onto the review model. Aborts (returns
-      // false) on any guard failure, leaving the reconstruction in place.
+      // false) on any guard failure, in which case we DON'T keep the plain
+      // reconstruction -- we fall back to the faithful Clean/Original surface (the
+      // overlay map is what is unsafe, not the faithful render itself).
       const mapped = bindFaithfulDocxInteractions(host, viewMode);
-      if (!mapped) return; // guard aborted -> reconstruction stands
+      if (!mapped) {
+        attemptFaithfulRedlineFallback(faithful, viewMode, matterId, sequence);
+        return; // guard aborted -> faithful Clean/Original (never the plain reconstruction)
+      }
 
       const wrapper = document.createElement("section");
       wrapper.className = "review-faithful-surface review-faithful-redline ready";
@@ -4245,15 +4261,141 @@ function maybeUpgradeSurfaceToFaithfulDocx(viewMode) {
     })
     .catch((error) => {
       // Belt-and-braces: render()/mapping are contracted never to throw, but if one
-      // somehow does we keep the reconstruction rather than blank or corrupt it.
+      // somehow does we still try the faithful Clean/Original fallback (and, failing
+      // that, keep the reconstruction) rather than blank or corrupt the pane.
       faithfulMappingTelemetry("upgrade_threw");
       try {
         // eslint-disable-next-line no-console
-        console.error("maybeUpgradeSurfaceToFaithfulDocx: faithful upgrade failed; keeping reconstruction", error);
+        console.error("maybeUpgradeSurfaceToFaithfulDocx: faithful upgrade failed; trying faithful fallback then reconstruction", error);
       } catch (_loggingError) {
         // ignore logging failure
       }
+      try {
+        attemptFaithfulRedlineFallback(faithful, viewMode, matterId, sequence);
+      } catch (_fallbackError) {
+        // never let the fallback itself break the never-blank floor
+      }
     });
+}
+
+// REDLINE/CLEAN -> FAITHFUL fallback. When the tracked/accepted reviewed-docx
+// surface can't be obtained (409 no-artifact / 404 / parse / empty / mapping abort),
+// we render the FAITHFUL document anyway -- read-only, no interactive redline
+// overlay -- rather than dropping to the PLAIN reconstruction/page-image. The
+// reviewer still sees the byte-faithful document (styles, tables, numbering); a small
+// honest note explains that tracked redlines live on the Clean/Original tabs.
+//
+// WHY read-only / no overlay: layering tracked-change redlines on top of the faithful
+// SOURCE surface is the known-unsafe path -- docx-preview surfaces tracked-DELETION
+// text that our review model has resolved away, so a 1:1 source_index overlay drifts
+// and could MIS-ATTACH redlines/comments. So the fallback NEVER runs
+// bindFaithfulDocxInteractions; it paints a faithful read-only surface only.
+//
+// Candidate order (first that paints wins):
+//   1. From REDLINE: the faithful CLEAN (accepted-changes) reviewed-docx -- if a
+//      reviewed artifact DOES exist but only the tracked composition failed, accepted
+//      bytes may still resolve. (Skipped when the failing view IS clean.)
+//   2. The faithful ORIGINAL source document (/source for DOCX, /working-docx for a
+//      converted PDF) -- always present for a native DOCX, so this is the reliable floor.
+// If NONE paint (no DOCX bytes at all -- a true empty/scanned case), we do nothing and
+// the already-painted reconstruction stands (never blank).
+//
+// `faithful` is the window.FaithfulDocxRender bridge; matterId + sequence are the
+// staleness keys captured by the caller so a view/matter change mid-flight drops the swap.
+function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequence) {
+  if (!faithful || typeof faithful.render !== "function") return;
+  if (!studioDocumentRender) return;
+
+  const matter = state.selectedMatter;
+  const renderState = state.reviewDocumentRender;
+  if (!matter || !matterId) return;
+  const encodedId = encodeURIComponent(matterId);
+
+  // Build the ordered candidate list. Each entry: { url, renderChanges, label }.
+  const candidates = [];
+  // (1) Faithful CLEAN (accepted) -- only when we failed on the REDLINE view.
+  if (failedViewMode !== VIEW_MODE_CLEAN) {
+    const cleanEligible = matterIsDocxSource(matter)
+      || (matterIsPdfSource(matter) && renderState && renderState.workingDocxReady === true);
+    if (cleanEligible) {
+      candidates.push({
+        url: `/api/matters/${encodedId}/reviewed-docx?changes=accepted`,
+        renderChanges: false,
+        label: "clean",
+      });
+    }
+  }
+  // (2) Faithful ORIGINAL source document -- the reliable floor for a native DOCX.
+  if (matterIsDocxSource(matter)) {
+    candidates.push({ url: `/api/matters/${encodedId}/source`, renderChanges: false, label: "original" });
+  } else if (matterIsPdfSource(matter) && renderState && renderState.workingDocxReady === true) {
+    candidates.push({ url: `/api/matters/${encodedId}/working-docx`, renderChanges: false, label: "original" });
+  }
+
+  if (!candidates.length) return; // no faithful bytes available -> reconstruction stands.
+
+  // Try the candidates in order; the first that paints into a detached host wins.
+  const tryCandidate = (index) => {
+    if (index >= candidates.length) return; // exhausted -> reconstruction stands (never blank).
+    // Staleness recheck before each attempt: the user may have moved on.
+    if (sequence !== reviewDocumentRenderRequestSequence) return;
+    if (state.selectedMatter?.id !== matterId) return;
+    if ((state.documentViewMode || VIEW_MODE_REDLINE) !== failedViewMode) return;
+
+    const candidate = candidates[index];
+    const host = document.createElement("div");
+    host.className = "review-faithful-docx-surface";
+
+    Promise.resolve(faithful.render(host, { url: candidate.url }, { renderChanges: candidate.renderChanges }))
+      .then((result) => {
+        // Re-check staleness AFTER the async render resolves.
+        if (sequence !== reviewDocumentRenderRequestSequence) return;
+        if (state.selectedMatter?.id !== matterId) return;
+        if ((state.documentViewMode || VIEW_MODE_REDLINE) !== failedViewMode) return;
+        if (!studioDocumentRender) return;
+        if (!result || !result.ok) {
+          tryCandidate(index + 1); // this candidate yielded no bytes -> try the next.
+          return;
+        }
+        // Painted. Swap in a READ-ONLY faithful surface (no interactive redline
+        // overlay) with an honest note that tracked redlines live on the other tabs.
+        const wrapper = document.createElement("section");
+        wrapper.className = "review-faithful-surface review-faithful-redline review-faithful-redline-fallback ready";
+        wrapper.setAttribute("data-review-render-surface", "");
+        wrapper.setAttribute("data-faithful-docx", "");
+        wrapper.setAttribute("data-faithful-view-mode", String(failedViewMode));
+        wrapper.setAttribute("data-faithful-fallback", candidate.label);
+        wrapper.setAttribute("data-render-status", "ready");
+        wrapper.setAttribute("aria-label", `Faithful document preview (tracked redlines unavailable; showing ${candidate.label})`);
+        wrapper.appendChild(faithfulRedlineFallbackNote(candidate.label));
+        wrapper.appendChild(host);
+        studioDocumentRender.innerHTML = "";
+        studioDocumentRender.appendChild(wrapper);
+        showStudioDocumentRender();
+        notifyFillHighlights();
+        highlightSelectedClauseRefs();
+        faithfulMappingTelemetry(`redline_faithful_fallback:${candidate.label}`);
+      })
+      .catch(() => {
+        // render() is contracted never to throw; if it somehow does, try the next
+        // candidate, and failing all of them the reconstruction floor stands.
+        tryCandidate(index + 1);
+      });
+  };
+  tryCandidate(0);
+}
+
+// Small, honest in-surface note for the faithful redline fallback: tracked redlines
+// could not be composed for this matter, so the true document is shown (clean /
+// original) instead -- the reviewer can see the real formatting, and the structured
+// redline view + the Clean/Original tabs carry the change detail.
+function faithfulRedlineFallbackNote(label) {
+  const note = document.createElement("div");
+  note.className = "review-faithful-fallback-note";
+  note.setAttribute("role", "note");
+  const showing = label === "clean" ? "the accepted (clean) document" : "the original document";
+  note.textContent = `Tracked redlines aren't available to render on this tab yet, so ${showing} is shown faithfully here. Switch to the structured Redline view for the change-by-change detail.`;
+  return note;
 }
 
 // Emits an abort/diagnostic reason for the faithful mapping. Console only today
