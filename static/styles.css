@@ -14356,27 +14356,73 @@ label.is-hidden {
   color: var(--ink-soft);
 }
 
-/* ---- Fill inspector: brand-filled apply, hairline inputs --------------- */
-#reviewView .fill-picker,
-#reviewView .fill-blank-row {
-  border-color: var(--border);
-  border-radius: var(--r-sm);
+/* ---- Fill inspector: de-boxed, airier (matches the flat hairline tab) ----
+   The shipped restyle only rounded these widgets' corners; they still read as
+   full-bordered cards nested inside the otherwise-flat inspector (box-in-box).
+   Here we shed the heavy borders: the ASPORA ENTITY picker becomes borderless
+   (the overview section already wraps it with a title + hairline), the blank
+   rows become a soft tint-fill instead of an outlined card, and the toggle
+   becomes a lighter pill. Whitespace + a single soft fill carry the structure
+   now — no nested outlines. */
+
+/* ASPORA ENTITY picker: no card. Just a flex stack the host section spaces. */
+#reviewView .fill-picker {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  margin-bottom: 20px;
+  padding: 0;
 }
 
+/* Entity / address dropdowns: lighter hairline so the field reads quiet. */
 #reviewView .fill-field select,
 #reviewView .fill-field input,
 #reviewView .review-comment-input {
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-soft);
   border-radius: var(--r-sm);
 }
 
+#reviewView .fill-field select:hover,
+#reviewView .fill-field input:hover {
+  border-color: var(--border);
+}
+
+/* Eyebrow labels: consistent muted small-caps across the picker + sections. */
 #reviewView .fill-field > span,
 #reviewView .fill-section-title {
   color: var(--ink-muted);
+  letter-spacing: 0.07em;
+}
+
+/* Blank rows: a very soft tint-fill with a roomy radius + generous padding
+   instead of an outlined card — airier, no box-in-box. */
+#reviewView .fill-blank-row {
+  background: var(--bg-softer);
+  border: 0;
+  border-radius: var(--r-lg);
+  padding: 14px 16px;
+}
+
+/* Applied summary: same soft-fill family, lighter + rounded (was a hard box). */
+#reviewView .fill-applied {
+  background: var(--bg-softer);
+  border: 0;
+  border-radius: var(--r-md);
+  margin-bottom: 16px;
+  padding: 10px 12px;
+}
+
+/* Vertical rhythm: let the blanks section + Apply button breathe. */
+#reviewView .fill-section {
+  margin-top: 20px;
+}
+
+#reviewView .fill-actions {
+  margin-top: 20px;
 }
 
 #reviewView .fill-clear {
-  border-color: var(--border);
+  border-color: var(--border-soft);
   border-radius: var(--r-sm);
 }
 
@@ -14392,9 +14438,20 @@ label.is-hidden {
   border-color: var(--brand-bright);
 }
 
+/* Clean / Tracked: a light pill segmented control, not a hard-edged box.
+   Soft hairline, a quiet inactive fill, and fully rounded outer ends. */
 #reviewView .fill-mode-toggle button {
-  border-color: var(--border);
+  background: var(--bg-soft);
+  border-color: var(--border-soft);
   color: var(--ink-soft);
+}
+
+#reviewView .fill-mode-toggle button:first-child {
+  border-radius: var(--r-md) 0 0 var(--r-md);
+}
+
+#reviewView .fill-mode-toggle button:last-child {
+  border-radius: 0 var(--r-md) var(--r-md) 0;
 }
 
 #reviewView .fill-mode-toggle button.active {
