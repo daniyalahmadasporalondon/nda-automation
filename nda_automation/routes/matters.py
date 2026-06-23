@@ -16,7 +16,6 @@ from ..ingestion_service import (
     create_matter_from_document,
     enqueue_on_demand_review,
     is_supported_document_filename,
-    retro_convert_pdf_matter,
 )
 from ..matter_lifecycle import (
     MatterNotFoundError,
@@ -200,24 +199,15 @@ def handle_matter_review_refresh(handler, path: str) -> None:
         handler._send_json(payload)
         return
 
-    # RETRO-CONVERSION (Approach C backfill). A PDF matter ingested BEFORE Approach C
-    # shipped has only a role="original" PDF artifact + the raw pypdf review paragraphs
-    # -- no working DOCX -- so the Review tab shows the page-image view and the
-    # clause-navigator anchors are dead. Re-reviewing such a matter is exactly the
-    # moment to convert it: reconstruct the working DOCX + re-key the paragraphs NOW so
-    # the review the worker is about to run reads the re-keyed working_docx_paragraphs
-    # and produces redlines that anchor by index into the working DOCX. Idempotent (a
-    # matter that already has a working DOCX is a no-op) and BEST-EFFORT / FAIL-OPEN: a
-    # conversion failure must NEVER block the review, so we swallow everything and fall
-    # through to the enqueue regardless.
-    try:
-        retro_convert_pdf_matter(matter, repository=_repository(handler), owner_user_id=owner_user_id)
-    except Exception:  # pragma: no cover - defensive; the helper is already fail-open
-        logger.warning(
-            "Retro PDF->working-DOCX conversion raised for matter %s; proceeding with review",
-            matter_id,
-            exc_info=True,
-        )
+    # RETRO-CONVERSION (Approach C backfill) is NO LONGER run on this request thread.
+    # It used to fire here SYNCHRONOUSLY (retro_convert_pdf_matter -> pdf2docx), which can
+    # take tens of seconds; on a single-worker box that blocked handle_matter_review_refresh
+    # BEFORE it returned its 202, so the Review spinner hung for minutes and no result ever
+    # landed. The conversion now runs INSIDE the background review worker
+    # (ingestion_service._perform_inbound_ai_review_body, gated on is_on_demand), wrapped in
+    # a hard wall-clock guard (retro_convert_pdf_matter_guarded) that abandons a slow/hung
+    # conversion fail-open. This request therefore returns its 202 IMMEDIATELY and the review
+    # ALWAYS completes whether or not the conversion succeeds.
 
     # Stale + AI available: ENQUEUE the async review on the shared pool and return
     # immediately. The route NEVER runs the engine inline.

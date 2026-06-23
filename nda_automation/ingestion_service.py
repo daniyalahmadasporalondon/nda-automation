@@ -1066,6 +1066,28 @@ def _perform_inbound_ai_review_body(
             matter_id,
             str(owner_user_id or ""),
         )
+        # RETRO-CONVERSION (Approach C backfill) -- runs HERE, in the review WORKER, NOT
+        # on the request thread. A PDF matter ingested before Approach C has only a
+        # role="original" PDF + raw pypdf paragraphs (no working DOCX). An ON-DEMAND
+        # review (a human clicked Review) is exactly the moment to reconstruct the
+        # working DOCX + re-key the paragraphs so the review below reads the re-keyed
+        # working_docx_paragraphs and anchors redlines into the DOCX. This MUST stay off
+        # the request thread: the conversion (pdf2docx) can take tens of seconds and used
+        # to block ``handle_matter_review_refresh`` before it returned its 202, hanging
+        # the single web worker so the Review spinner never resolved. It is wrapped in an
+        # OUTER wall-clock guard (retro_convert_pdf_matter_guarded) and is fully
+        # FAIL-OPEN: a slow/failing/timed-out conversion is abandoned and the review
+        # proceeds on the PDF source. Idempotent (a matter with a working DOCX is a
+        # no-op) and only for on-demand drives (inbound first-pass keeps importing fast).
+        if is_on_demand:
+            matter = retro_convert_pdf_matter_guarded(
+                matter, repository=repository, owner_user_id=owner_user_id
+            )
+            # The conversion's own field write moved ``updated_at``. Re-snapshot it so the
+            # guarded review persist below does not mistake the conversion's write for a
+            # concurrent HUMAN edit (which would needlessly preserve human_reviewed state).
+            if isinstance(matter, dict):
+                expected_updated_at = str(matter.get("updated_at") or expected_updated_at)
         # Approach C: a converted PDF matter carries re-keyed working-DOCX paragraphs
         # (source_index re-stamped to the reconstructed body, source_part:"pdf"
         # dropped). Prefer those so the redlines this review produces anchor by index
@@ -1565,6 +1587,83 @@ def retro_convert_pdf_matter(
         repository=repository,
         owner_user_id=owner_user_id,
     )
+
+
+# Hard wall-clock ceiling for the retro PDF->working-DOCX conversion when it runs on
+# the review worker. pdf2docx already has its own subprocess timeout
+# (NDA_PDF_DOCX_TIMEOUT_SECONDS, default 90s) + a semaphore queue-wait, but on a heavy
+# / pathological PDF those bounds can still stack into minutes. The review must ALWAYS
+# complete fast whether or not the conversion succeeds, so we wrap the whole conversion
+# in an OUTER wall-clock guard: if it does not finish within this budget we ABANDON it
+# (fail-open -- the matter stays a PDF with no working DOCX) and let the AI review
+# proceed. Conservatively shorter than the inner pdf2docx timeout so a single hung
+# conversion can never dominate the review latency.
+def _retro_pdf_convert_timeout_seconds() -> float:
+    try:
+        value = float(os.environ.get("NDA_RETRO_PDF_CONVERT_TIMEOUT_SECONDS", "25") or 25)
+    except (TypeError, ValueError):
+        return 25.0
+    return value if value >= 1.0 else 1.0
+
+
+RETRO_PDF_CONVERT_WALL_CLOCK_SECONDS = _retro_pdf_convert_timeout_seconds()
+
+
+def retro_convert_pdf_matter_guarded(
+    matter: dict[str, Any],
+    *,
+    repository: MatterRepository,
+    owner_user_id: str = "",
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Run ``retro_convert_pdf_matter`` under an OUTER wall-clock guard, fail-open.
+
+    Returns the (possibly converted) matter on success within the budget, or the
+    matter AS-PASSED when the conversion raises OR exceeds the wall-clock budget. The
+    conversion never blocks the caller (the review worker) longer than
+    ``timeout_seconds``: on timeout we ABANDON it (the daemon thread is left to finish
+    on its own and its result is discarded) and return the un-converted matter so the
+    review proceeds immediately on the PDF source. NEVER raises.
+    """
+
+    budget = (
+        RETRO_PDF_CONVERT_WALL_CLOCK_SECONDS if timeout_seconds is None else float(timeout_seconds)
+    )
+    result: dict[str, list[dict[str, Any]] | dict[str, Any]] = {}
+
+    def _run() -> None:
+        try:
+            result["matter"] = retro_convert_pdf_matter(
+                matter, repository=repository, owner_user_id=owner_user_id
+            )
+        except Exception:  # pragma: no cover - retro_convert_pdf_matter is already fail-open
+            LOGGER.warning(
+                "Retro PDF->working-DOCX conversion raised in worker; proceeding with review",
+                exc_info=True,
+            )
+
+    worker = threading.Thread(
+        target=_run, name="retro-pdf-convert", daemon=True
+    )
+    worker.start()
+    worker.join(timeout=budget)
+    if worker.is_alive():
+        # Timed out: abandon the conversion (the daemon thread will finish + discard its
+        # work; the inner pdf2docx subprocess is independently bounded + killed by its
+        # own timeout). Fail-open: return the un-converted matter so the review runs now.
+        from . import telemetry  # noqa: PLC0415 - keep the import light/local.
+
+        telemetry.increment("retro_pdf_convert_timeout")
+        matter_id = str(matter.get("id") or "") if isinstance(matter, dict) else ""
+        LOGGER.warning(
+            "Retro PDF->working-DOCX conversion exceeded %.0fs wall-clock budget for matter %s; "
+            "abandoning conversion and proceeding with the review on the PDF source",
+            budget,
+            matter_id,
+        )
+        return matter
+    converted = result.get("matter")
+    return converted if isinstance(converted, dict) else matter
 
 
 def extract_document_paragraphs(filename: str, document_bytes: bytes) -> tuple[str, list[dict[str, Any]]]:

@@ -550,5 +550,65 @@ def test_retro_convert_fail_open_when_empty_body(monkeypatch):
     assert refreshed.get(ingestion_service.WORKING_DOCX_PARAGRAPHS_FIELD) is None
 
 
+def test_retro_convert_guarded_abandons_a_slow_conversion_fail_open(monkeypatch):
+    # REGRESSION: a slow/hung pdf2docx conversion must NEVER stall the review. The
+    # guarded wrapper enforces an OUTER wall-clock budget; on timeout it ABANDONS the
+    # conversion and returns the un-converted matter (fail-open) so the review proceeds.
+    import time
+
+    repo = InMemoryMatterRepository()
+    stored = _store_legacy_pdf_matter(repo)
+
+    def _hang(*_args, **_kwargs):
+        time.sleep(30)  # far beyond the test budget below
+        raise AssertionError("should have been abandoned before completing")
+
+    monkeypatch.setattr(ingestion_service, "retro_convert_pdf_matter", _hang)
+
+    started = time.monotonic()
+    result = ingestion_service.retro_convert_pdf_matter_guarded(
+        stored, repository=repo, owner_user_id="owner-1", timeout_seconds=0.5
+    )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 5.0, "guarded conversion must abandon a hung conversion fast"
+    # Fail-open: returns the matter as-passed (un-converted) so the review proceeds.
+    assert result is stored
+    from nda_automation.matter_render_job import matter_has_working_docx
+    assert matter_has_working_docx(result) is False
+
+
+def test_retro_convert_guarded_returns_converted_matter_on_success(monkeypatch):
+    # On a fast successful conversion the guarded wrapper returns the converted matter.
+    repo = InMemoryMatterRepository()
+    stored = _store_legacy_pdf_matter(repo)
+
+    sentinel = {"id": stored["id"], "converted": True}
+    monkeypatch.setattr(
+        ingestion_service, "retro_convert_pdf_matter", lambda *a, **k: sentinel
+    )
+
+    result = ingestion_service.retro_convert_pdf_matter_guarded(
+        stored, repository=repo, owner_user_id="owner-1", timeout_seconds=5.0
+    )
+    assert result is sentinel
+
+
+def test_retro_convert_guarded_fail_open_when_conversion_raises(monkeypatch):
+    # A raising conversion is swallowed; the un-converted matter is returned.
+    repo = InMemoryMatterRepository()
+    stored = _store_legacy_pdf_matter(repo)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("pdf2docx exploded")
+
+    monkeypatch.setattr(ingestion_service, "retro_convert_pdf_matter", _boom)
+
+    result = ingestion_service.retro_convert_pdf_matter_guarded(
+        stored, repository=repo, owner_user_id="owner-1", timeout_seconds=5.0
+    )
+    assert result is stored
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

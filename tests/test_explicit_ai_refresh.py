@@ -405,6 +405,75 @@ class ReviewTabIsAIOnly(unittest.TestCase):
         self.assertNotIn("ai_review_unavailable", handler.json)
 
 
+class ReviewRefreshNeverBlocksOnRetroConversion(unittest.TestCase):
+    """REGRESSION: the retro PDF->working-DOCX conversion (pdf2docx, tens of seconds)
+    used to run SYNCHRONOUSLY inside handle_matter_review_refresh, BEFORE the 202. On a
+    single-worker box that hung the Review spinner for minutes. The conversion now runs
+    in the background review worker; this route must return its 202 promptly and must NOT
+    invoke any conversion on the request thread -- even a conversion that hangs forever or
+    raises must never affect the route."""
+
+    def setUp(self):
+        from nda_automation import ingestion_service
+
+        self._ingestion = ingestion_service
+        self._orig_pool = ingestion_service._INBOUND_REVIEW_POOL
+        self._pool = ingestion_service._InboundReviewWorkerPool()
+        self._pool.configure(lambda mid, owner: None)  # never actually run
+        ingestion_service._INBOUND_REVIEW_POOL = self._pool
+        with ingestion_service._ON_DEMAND_REVIEW_LOCK:
+            ingestion_service._ON_DEMAND_REVIEW_MATTERS.clear()
+        self._orig_ai_enabled = matters_routes._ai_first_review_enabled
+        matters_routes._ai_first_review_enabled = lambda: True
+
+    def tearDown(self):
+        self._ingestion._INBOUND_REVIEW_POOL = self._orig_pool
+        with self._ingestion._ON_DEMAND_REVIEW_LOCK:
+            self._ingestion._ON_DEMAND_REVIEW_MATTERS.clear()
+        matters_routes._ai_first_review_enabled = self._orig_ai_enabled
+
+    def test_route_returns_202_fast_and_never_calls_retro_convert_on_request_thread(self):
+        import time
+
+        repository = InMemoryMatterRepository()
+        text = "Confidential information clause that needs an AI review."
+        deterministic_review = _fresh_ai_review_result(text)
+        deterministic_review["active_review_engine"] = {"executed_engine": "deterministic"}
+        deterministic_review.pop("ai_first_review", None)
+        matter_id = _seed_matter(repository, extracted_text=text, review_result=deterministic_review)
+
+        # A retro-convert that would HANG for minutes IF the route ever called it. The
+        # route no longer imports/calls it, so this must never be hit -- but if a future
+        # change reintroduces the synchronous call, this test fails on the wall clock.
+        called = {"hit": False}
+
+        def _never_call_me_slow(*args, **kwargs):  # pragma: no cover - must never run
+            called["hit"] = True
+            time.sleep(120)
+            return args[0] if args else {}
+
+        # matters_routes no longer references retro_convert_pdf_matter at all; assert that.
+        self.assertFalse(
+            hasattr(matters_routes, "retro_convert_pdf_matter"),
+            "the route module must not import retro_convert_pdf_matter (sync call removed)",
+        )
+        # Guard the underlying helper too, in case a future edit re-imports it.
+        orig = self._ingestion.retro_convert_pdf_matter
+        self._ingestion.retro_convert_pdf_matter = _never_call_me_slow
+        try:
+            handler = _FakeHandler(repository=repository)
+            started = time.monotonic()
+            matters_routes.handle_matter_review_refresh(
+                handler, f"/api/matters/{matter_id}/review-refresh"
+            )
+            elapsed = time.monotonic() - started
+        finally:
+            self._ingestion.retro_convert_pdf_matter = orig
+
+        self.assertFalse(called["hit"], "the route must NOT run the conversion on the request thread")
+        self.assertLess(elapsed, 5.0, "the route must return its 202 promptly, never blocking on conversion")
+        self.assertEqual(handler.status, 202)
+        self.assertEqual(handler.json["review_status"], "in_progress")
 
 
 if __name__ == "__main__":
