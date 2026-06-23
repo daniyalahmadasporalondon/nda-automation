@@ -14,7 +14,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.12"]
+        # 3.11 is the PROD interpreter (Dockerfile: FROM python:3.11-slim).
+        # Keep it in the matrix so the exact deployed interpreter is gated,
+        # alongside the supported floor (3.9) and ceiling (3.12).
+        python-version: ["3.9", "3.11", "3.12"]
 
     steps:
       - name: Check out repository
@@ -134,3 +137,33 @@ jobs:
 
       - name: Run faithful redline/clean upgrade test
         run: npm run test:frontend:faithful-redline-clean
+
+  docker-build:
+    # PROD runs the repo Dockerfile (python:3.11-slim + the FULL
+    # `.[pdf,gmail,tables]` set), which the `test`/`frontend` jobs never
+    # exercise — they install only `.[pdf,gmail]` on 3.9/3.11/3.12. Past prod
+    # breaks (the camelot resolution war, the PyMuPDF ABI -> blank PDF pages)
+    # passed CI green yet failed the Render build. This job resolves the full
+    # dependency set in the exact deployed image and runs the Dockerfile's
+    # build-time smoke assert (`import fitz; fitz.open(); import pdf2docx`),
+    # turning a silent prod build break into a red PR. Build-only — no push,
+    # no registry creds.
+    name: Docker build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build prod image (resolves full deps + runs fitz/pdf2docx assert)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
