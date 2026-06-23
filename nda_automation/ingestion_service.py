@@ -1379,6 +1379,16 @@ WORKING_DOCX_STATUS_TIMED_OUT = "timed_out"
 WORKING_DOCX_STATUS_FAILED = "failed"
 WORKING_DOCX_STATUS_EMPTY_BODY = "empty_body"
 WORKING_DOCX_STATUS_SKIPPED = "skipped"
+# The two formerly-SILENT no-op exits of ``retro_convert_pdf_matter`` -- the matter
+# ALREADY has a working DOCX (idempotent re-entry) or it is NOT a PDF source (a native
+# DOCX matter). These exits used to record NOTHING and emit NO log, so when an on-demand
+# Review of a legacy PDF (e.g. Pismo) silently produced no working DOCX, prod had no
+# signal which gate short-circuited the conversion -- the review re-ran and completed
+# with no conversion log line at all. Recording these (benign INFO) closes that blind
+# spot: the NEXT Review click TELLS us whether the conversion was a no-op because the
+# matter was (wrongly) seen as already-converted or as not-a-PDF.
+WORKING_DOCX_STATUS_ALREADY_PRESENT = "already_present"
+WORKING_DOCX_STATUS_NOT_PDF_SOURCE = "not_pdf_source"
 
 
 def _record_working_docx_status(
@@ -1401,7 +1411,13 @@ def _record_working_docx_status(
     elapsed_repr = f"{elapsed_seconds:.1f}" if elapsed_seconds is not None else "n/a"
     level = (
         logging.INFO
-        if status in (WORKING_DOCX_STATUS_CONVERTED, WORKING_DOCX_STATUS_SKIPPED)
+        if status
+        in (
+            WORKING_DOCX_STATUS_CONVERTED,
+            WORKING_DOCX_STATUS_SKIPPED,
+            WORKING_DOCX_STATUS_ALREADY_PRESENT,
+            WORKING_DOCX_STATUS_NOT_PDF_SOURCE,
+        )
         else logging.WARNING
     )
     LOGGER.log(
@@ -1677,10 +1693,32 @@ def retro_convert_pdf_matter(
     matter_id = str(matter.get("id") or "")
     if not matter_id:
         return matter
-    # Idempotent: already converted -> no-op.
+    # Idempotent: already converted -> no-op. RECORD it (benign) so an on-demand Review
+    # that finds a working DOCX already present is no longer a SILENT exit -- the prod
+    # log + status field tell us the conversion was skipped because the DOCX exists,
+    # rather than the review completing with no conversion trace at all.
     if matter_render_job.matter_has_working_docx(matter):
+        _record_working_docx_status(
+            matter_id,
+            WORKING_DOCX_STATUS_ALREADY_PRESENT,
+            repository=repository,
+            owner_user_id=owner_user_id,
+            reason="working_docx_already_present",
+        )
         return matter
+    # Not a PDF source (native DOCX, or a legacy PDF whose source signals were lost) ->
+    # no-op. RECORD it (benign) so this formerly-SILENT exit is visible: if a legacy PDF
+    # ever lands here it means BOTH the ``.pdf`` filename signal AND the stored
+    # ``review_result.source.type == "pdf"`` signal were absent, which is exactly the
+    # mis-detection we could not otherwise see in prod.
     if not _matter_is_pdf_source(matter):
+        _record_working_docx_status(
+            matter_id,
+            WORKING_DOCX_STATUS_NOT_PDF_SOURCE,
+            repository=repository,
+            owner_user_id=owner_user_id,
+            reason="not_detected_as_pdf_source",
+        )
         return matter
     source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "")
     try:

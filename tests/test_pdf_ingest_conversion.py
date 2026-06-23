@@ -718,6 +718,97 @@ def test_retro_convert_skips_docx_source_matter(monkeypatch):
     ingestion_service.retro_convert_pdf_matter(stored, repository=repo, owner_user_id="owner-1")
     refreshed = repo.get_matter(matter["id"], owner_user_id="owner-1")
     assert artifact_registry.latest_artifact_for_role(refreshed, artifact_registry.ROLE_WORKING) is None
+    # OBSERVABILITY: a non-PDF no-op exit is no longer SILENT -- it records a status so
+    # a legacy PDF that ever mis-detects as not-a-PDF is visible in prod.
+    assert (
+        refreshed.get(ingestion_service.WORKING_DOCX_STATUS_FIELD)
+        == ingestion_service.WORKING_DOCX_STATUS_NOT_PDF_SOURCE
+    )
+
+
+def test_retro_convert_records_status_when_working_docx_already_present(monkeypatch):
+    # OBSERVABILITY (Pismo blind spot): the idempotent already-converted no-op used to
+    # exit SILENTLY -- no status, no log -- so an on-demand Review that found a working
+    # DOCX already present completed with NO conversion trace at all. It must now RECORD
+    # a benign ``already_present`` status so the next Review click TELLS us the
+    # conversion was skipped because the DOCX exists (not mis-reached/mis-detected).
+    repo = InMemoryMatterRepository()
+    stored = _store_legacy_pdf_matter(repo)
+    converter = _StubConverter(RECON_PARAGRAPHS)
+    real_convert = pdf_ingest_conversion.convert_pdf_matter_to_docx
+    monkeypatch.setattr(
+        ingestion_service.pdf_ingest_conversion, "convert_pdf_matter_to_docx",
+        lambda pdf_bytes, source_filename, paragraphs, **_: real_convert(
+            pdf_bytes, source_filename, paragraphs, converter=converter
+        ),
+    )
+    # First pass converts (status -> converted, working DOCX present).
+    ingestion_service.retro_convert_pdf_matter(stored, repository=repo, owner_user_id="owner-1")
+    converted = repo.get_matter(stored["id"], owner_user_id="owner-1")
+    from nda_automation.matter_render_job import matter_has_working_docx
+    assert matter_has_working_docx(converted) is True
+
+    # Second pass is the idempotent no-op: the converter must NOT run again, and the
+    # exit must RECORD a status (not exit silently).
+    def _should_not_run(*_args, **_kwargs):
+        raise AssertionError("retro conversion must be a no-op once a working DOCX exists")
+
+    monkeypatch.setattr(
+        ingestion_service.pdf_ingest_conversion, "convert_pdf_matter_to_docx", _should_not_run
+    )
+    ingestion_service.retro_convert_pdf_matter(converted, repository=repo, owner_user_id="owner-1")
+    refreshed = repo.get_matter(stored["id"], owner_user_id="owner-1")
+    assert (
+        refreshed.get(ingestion_service.WORKING_DOCX_STATUS_FIELD)
+        == ingestion_service.WORKING_DOCX_STATUS_ALREADY_PRESENT
+    )
+    # The working DOCX is still present -- the status write never disturbs it.
+    assert matter_has_working_docx(refreshed) is True
+
+
+def test_on_demand_review_of_legacy_pdf_reaches_conversion_and_records_status(monkeypatch):
+    # END-TO-END (Pismo): a legacy PDF matter that is ALREADY reviewed, driven through
+    # the on-demand review WORKER body (is_on_demand=True), must REACH the guarded
+    # conversion -- gaining a working DOCX -- and the conversion must RECORD a
+    # working_docx_status. This nails the reported symptom: on-demand Review of a legacy
+    # PDF reliably reaches the conversion guard and is observable (never a silent no-op).
+    repo = InMemoryMatterRepository()
+    stored = _store_legacy_pdf_matter(repo)
+    from nda_automation.matter_render_job import matter_has_working_docx
+    assert matter_has_working_docx(stored) is False
+
+    converter = _StubConverter(RECON_PARAGRAPHS)
+    real_convert = pdf_ingest_conversion.convert_pdf_matter_to_docx
+    monkeypatch.setattr(
+        ingestion_service.pdf_ingest_conversion, "convert_pdf_matter_to_docx",
+        lambda pdf_bytes, source_filename, paragraphs, **_: real_convert(
+            pdf_bytes, source_filename, paragraphs, converter=converter
+        ),
+    )
+
+    # A trivial AI engine stand-in so the review body completes without OpenRouter.
+    def _fake_engine(text, paragraphs=None, **_kwargs):
+        return {"summary": {"overall": "review"}, "clauses": [], "paragraphs": paragraphs or []}
+
+    from nda_automation import telemetry as telemetry_module
+
+    ingestion_service._perform_inbound_ai_review_body(
+        stored["id"],
+        repository=repo,
+        owner_user_id="owner-1",
+        review_engine_func=_fake_engine,
+        telemetry=telemetry_module,
+        is_on_demand=True,
+    )
+
+    refreshed = repo.get_matter(stored["id"], owner_user_id="owner-1")
+    # The conversion was REACHED on the on-demand path: working DOCX now present and the
+    # outcome recorded (converted), so prod is never blind to this path again.
+    assert matter_has_working_docx(refreshed) is True
+    assert (
+        refreshed.get(ingestion_service.WORKING_DOCX_STATUS_FIELD)
+        == ingestion_service.WORKING_DOCX_STATUS_CONVERTED
+    )
 
 
 def test_retro_convert_fail_open_when_empty_body(monkeypatch):
