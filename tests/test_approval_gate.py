@@ -569,11 +569,84 @@ class ApprovalEndpointTests(unittest.TestCase):
         self.assertEqual(stored["matter_timeline"][0]["type"], "matter_approved")
 
     # --- reviewed-docx -----------------------------------------------------
-    def test_reviewed_docx_requires_approved_status(self):
+    def test_reviewed_docx_preview_serves_reviewed_but_unapproved_without_registering(self):
+        # A reviewed-but-unapproved matter (status "in_review", review_result
+        # present) serves the faithful redline pre-approval (200) WITHOUT minting
+        # a durable role="reviewed" artifact -- approval is what registers it.
+        from nda_automation import artifact_service
+
         matter_id, _ = self._seed_matter(resolve_all=True)
+        self.assertEqual(matter_store.get_matter(matter_id)["status"], "in_review")
+
+        def fake_build(mid, payload=None, *, persist=False, repository=None, owner_user_id=""):
+            return RedlineExport(data=b"PK\x03\x04reviewed-docx", filename="mutual-nda-redlined.docx")
+
+        with patch.object(redline_export_service, "build_matter_redline", side_effect=fake_build), \
+                patch.object(
+                    artifact_service, "register_reviewed_docx", return_value=None
+                ) as register_spy:
+            status, body, headers = self.request("GET", f"/api/matters/{matter_id}/reviewed-docx")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b"PK\x03\x04reviewed-docx")
+        self.assertEqual(headers.get("Content-Type"), server_module.DOCX_MIME)
+        # Preview path: nothing registered, no reviewed artifact on the matter.
+        register_spy.assert_not_called()
+        self.assertNotIn("X-Reviewed-Artifact-ID", headers)
+        stored = matter_store.get_matter(matter_id)
+        self.assertEqual(stored.get("artifacts", []), [])
+
+    def test_reviewed_docx_preview_accepted_mode_serves_unapproved(self):
+        from nda_automation.routes import approval as approval_routes
+
+        matter_id, _ = self._seed_matter(resolve_all=True)
+
+        def fake_build(mid, payload=None, *, persist=False, repository=None, owner_user_id=""):
+            return RedlineExport(data=b"PK\x03\x04reviewed-docx", filename="mutual-nda-redlined.docx")
+
+        # The accepted path flattens revisions; stub it since the fake export bytes
+        # above are not a real DOCX archive.
+        with patch.object(redline_export_service, "build_matter_redline", side_effect=fake_build), \
+                patch.object(approval_routes, "accept_all_revisions", side_effect=lambda b: b), \
+                patch.object(approval_routes, "normalize_docx_emf_wmf_images", side_effect=lambda b: b):
+            status, _body, headers = self.request(
+                "GET", f"/api/matters/{matter_id}/reviewed-docx?changes=accepted"
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("X-Reviewed-Changes"), "accepted")
+
+    def test_reviewed_docx_without_completed_review_is_409(self):
+        # Strip the review_result -> no completed review -> still gated (don't
+        # serve garbage). Status stays "in_review" (not approved).
+        matter_id, _ = self._seed_matter(resolve_all=True)
+        with matter_store._locked_store():
+            record = matter_store._load_matter_record_by_id(matter_id)
+            record.pop("review_result", None)
+            matter_store._save_matter_record(record)
         status, payload, _ = self.request("GET", f"/api/matters/{matter_id}/reviewed-docx")
         self.assertEqual(status, 409)
-        self.assertIn("approved", payload["error"])
+        self.assertIn("reviewed", payload["error"])
+
+    def test_reviewed_docx_approved_registers_durable_artifact(self):
+        # The approved path STILL persists/registers the reviewed artifact.
+        from nda_automation import artifact_service
+
+        matter_id, _ = self._seed_matter(resolve_all=True, with_redline=True)
+        approve_status, _, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
+        self.assertEqual(approve_status, 200)
+
+        def fake_build(mid, payload=None, *, persist=False, repository=None, owner_user_id=""):
+            return RedlineExport(data=b"PK\x03\x04reviewed-docx-approved", filename="mutual-nda-redlined.docx")
+
+        with patch.object(redline_export_service, "build_matter_redline", side_effect=fake_build), \
+                patch.object(
+                    artifact_service, "register_reviewed_docx", return_value=None
+                ) as register_spy:
+            status, _body, _headers = self.request("GET", f"/api/matters/{matter_id}/reviewed-docx")
+
+        self.assertEqual(status, 200)
+        register_spy.assert_called_once()
 
     def test_reviewed_docx_builds_from_decisions_when_approved(self):
         matter_id, flagged = self._seed_matter(resolve_all=True)

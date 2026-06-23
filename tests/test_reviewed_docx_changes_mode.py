@@ -199,7 +199,10 @@ def test_reviewed_docx_owner_scoped_404_on_mismatch():
     assert handler.download is None
 
 
-def test_reviewed_docx_409_when_not_approved():
+def test_reviewed_docx_preview_when_reviewed_but_not_approved():
+    # A reviewed-but-unapproved matter (status "in_review", review_result present)
+    # serves the faithful redline as a PREVIEW (200) without minting the durable
+    # role="reviewed" artifact -- approval is what registers it.
     review_result = review_nda_with_active_engine("\n\n".join(NDA_PARAGRAPHS))
     matter = matter_store.create_matter(
         source_filename="mutual-nda.docx",
@@ -212,6 +215,37 @@ def test_reviewed_docx_409_when_not_approved():
         owner_user_id="owner-1",
     )
     matter_store.update_matter_fields(matter["id"], {"status": "in_review"})
+    handler = _FakeHandler(
+        current_user_id="owner-1",
+        path=f"/api/matters/{matter['id']}/reviewed-docx",
+    )
+    approval_routes.handle_matter_reviewed_docx(handler, f"/api/matters/{matter['id']}/reviewed-docx")
+    assert handler.status == 200, handler.json
+    assert handler.download is not None
+    # Preview: no durable reviewed artifact registered.
+    stored = matter_store.get_matter(matter["id"], owner_user_id="owner-1")
+    assert artifact_registry.latest_artifact_for_role(stored, artifact_registry.ROLE_REVIEWED) is None
+    assert (handler.download_headers or {}).get("X-Reviewed-Artifact-ID") is None
+
+
+def test_reviewed_docx_409_when_no_completed_review():
+    # No review_result on the matter -> nothing reviewed to serve -> 409.
+    review_result = review_nda_with_active_engine("\n\n".join(NDA_PARAGRAPHS))
+    matter = matter_store.create_matter(
+        source_filename="mutual-nda.docx",
+        document_bytes=_docx(NDA_PARAGRAPHS),
+        extracted_text="\n\n".join(NDA_PARAGRAPHS),
+        review_result=review_result,
+        triage=triage_review_result(review_result),
+        source_type="manual_upload",
+        board_column="in_review",
+        owner_user_id="owner-1",
+    )
+    matter_store.update_matter_fields(matter["id"], {"status": "in_review"})
+    with matter_store._locked_store():
+        record = matter_store._load_matter_record_by_id(matter["id"])
+        record.pop("review_result", None)
+        matter_store._save_matter_record(record)
     handler = _FakeHandler(
         current_user_id="owner-1",
         path=f"/api/matters/{matter['id']}/reviewed-docx",

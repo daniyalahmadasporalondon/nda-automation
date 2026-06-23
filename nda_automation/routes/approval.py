@@ -171,9 +171,18 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
     if matter is None:
         handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
         return
-    if str(matter.get("status") or "") != approval.MATTER_STATUS_APPROVED:
+    # Governance: serving the faithful tracked-changes redline only requires a
+    # COMPLETED review (review_result present), NOT approval -- consistent with
+    # the on-demand export route (handle_review_docx_export) which builds the
+    # identical redline pre-approval. Approval still governs minting the durable
+    # reviewed artifact: an APPROVED matter persists/registers the reviewed DOCX,
+    # while a reviewed-but-unapproved matter gets a PREVIEW (persist=False) that
+    # serves the same bytes without registering anything.
+    is_approved = str(matter.get("status") or "") == approval.MATTER_STATUS_APPROVED
+    has_completed_review = isinstance(matter.get("review_result"), dict)
+    if not is_approved and not has_completed_review:
         handler._send_json(
-            {"error": "Reviewed DOCX is available only after the NDA is approved."},
+            {"error": "Reviewed DOCX is available only after the NDA has been reviewed."},
             status=409,
             send_body=send_body,
         )
@@ -184,6 +193,7 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
             matter_id,
             matter,
             owner_user_id=owner_user_id,
+            persist=is_approved,
         )
     except redline_export_service.StaleMatterReviewError as error:
         handler._send_json(
