@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import unittest
 
-from nda_automation import pdf_markup, telemetry
+from nda_automation import annotated_pdf_export, pdf_markup, telemetry
 from nda_automation.matter_repository import InMemoryMatterRepository
 from nda_automation.routes import pdf_markup as pdf_markup_routes
+from nda_automation.routes.common import parse_matter_id
 
 
 def _fitz():
@@ -453,6 +454,147 @@ class PdfMarkupRouteTests(unittest.TestCase):
             after.get("marked_up_pdf_export_requests", 0),
             before.get("marked_up_pdf_export_requests", 0) + 1,
         )
+
+
+class AnnotatedPdfRecoveryRouteTests(unittest.TestCase):
+    """The recovery route wired for ``PdfSourceRedlineUnavailableError``.
+
+    The error payload (redline_export_service) points users at
+    ``/api/matters/{matter_id}/annotated-pdf`` after the DOCX redline path fails
+    closed. These tests pin that the route resolves (no 404 dead-link), is
+    owner-gated, returns the review-redline-on-PDF export, and -- crucially --
+    still returns a usable PDF when the highlights cannot be produced.
+    """
+
+    def setUp(self):
+        if _fitz() is None:
+            self.skipTest("PyMuPDF is not installed")
+        self.repo = InMemoryMatterRepository()
+
+    def _seed_reviewed_pdf(self, *, owner_user_id="owner-1"):
+        fitz = _fitz()
+        document = fitz.open()
+        page = document.new_page()
+        page.insert_text(
+            (72, 72),
+            "This Agreement shall be governed by the laws of Abu Dhabi.",
+        )
+        pdf_bytes = document.write()
+        document.close()
+        return self.repo.create_matter(
+            source_filename="Recovery NDA.pdf",
+            document_bytes=pdf_bytes,
+            extracted_text="This Agreement shall be governed by the laws of Abu Dhabi.",
+            review_result={
+                "clauses": [
+                    {
+                        "id": "governing_law",
+                        "name": "Governing Law",
+                        "decision": "fail",
+                        "reason": "Abu Dhabi is outside the approved governing-law list.",
+                        "structured_evidence": [
+                            {
+                                "paragraph_id": "p1",
+                                "text": "This Agreement shall be governed by the laws of Abu Dhabi.",
+                                "matched_text": "laws of Abu Dhabi",
+                            }
+                        ],
+                    }
+                ],
+            },
+            triage={"triage_status": "review", "headline": "Recovery NDA"},
+            source_type="manual_upload",
+            board_column="in_review",
+            owner_user_id=owner_user_id,
+        )
+
+    def test_recovery_payload_endpoint_string_matches_route(self):
+        # The exact string the failure payload advertises must resolve to this
+        # handler -- prove there is no template/route mismatch (the 404 bug).
+        from nda_automation.redline_export_service import PdfSourceRedlineUnavailableError
+
+        error = PdfSourceRedlineUnavailableError.for_unplaceable_anchors(
+            3, source_filename="Recovery NDA.pdf"
+        )
+        endpoint_template = error.payload["recovery"]["endpoint"]
+        self.assertEqual(endpoint_template, "/api/matters/{matter_id}/annotated-pdf")
+
+        matter = self._seed_reviewed_pdf()
+        resolved = endpoint_template.format(matter_id=matter["id"])
+        self.assertEqual(parse_matter_id(resolved, suffix="/annotated-pdf"), matter["id"])
+
+    def test_returns_annotated_pdf_for_reviewed_pdf_matter(self):
+        fitz = _fitz()
+        # The review here is intentionally not playbook-fresh; force the
+        # staleness gate open so we exercise the real annotation path.
+        original = annotated_pdf_export.review_result_staleness
+        annotated_pdf_export.review_result_staleness = lambda *_args, **_kwargs: {
+            "stale": False,
+            "stale_reasons": [],
+        }
+        try:
+            matter = self._seed_reviewed_pdf()
+            handler = _FakeHandler(self.repo)
+            pdf_markup_routes.handle_annotated_pdf(
+                handler, f"/api/matters/{matter['id']}/annotated-pdf"
+            )
+        finally:
+            annotated_pdf_export.review_result_staleness = original
+
+        self.assertEqual(handler.status, 200, handler.json)
+        self.assertIsNotNone(handler.download)
+        self.assertEqual(handler.download["content_type"], "application/pdf")
+        self.assertTrue(handler.download["filename"].endswith("-annotated-review.pdf"))
+        self.assertTrue(handler.download["data"].startswith(b"%PDF"))
+        self.assertEqual(handler.download_headers["X-PDF-Annotation-Fallback"], "none")
+        self.assertGreaterEqual(int(handler.download_headers["X-PDF-Annotation-Count"]), 1)
+        annotated = fitz.open(stream=handler.download["data"], filetype="pdf")
+        try:
+            self.assertGreaterEqual(len(list(annotated[0].annots() or [])), 1)
+        finally:
+            annotated.close()
+
+    def test_fallback_returns_source_pdf_when_highlights_cannot_be_built(self):
+        # A naively-seeded review is stale (no playbook runtime), so the builder
+        # raises -- the recovery route must still hand back a usable source PDF
+        # rather than a 4xx/5xx dead-end.
+        matter = self._seed_pdf_matter_with_source()
+        handler = _FakeHandler(self.repo)
+        pdf_markup_routes.handle_annotated_pdf(
+            handler, f"/api/matters/{matter['id']}/annotated-pdf"
+        )
+        self.assertEqual(handler.status, 200, handler.json)
+        self.assertIsNotNone(handler.download)
+        self.assertEqual(handler.download["content_type"], "application/pdf")
+        self.assertTrue(handler.download["data"].startswith(b"%PDF"))
+        self.assertEqual(
+            handler.download_headers["X-PDF-Annotation-Fallback"], "source-original"
+        )
+        self.assertEqual(handler.download_headers["X-PDF-Annotation-Count"], "0")
+        # The returned bytes are the preserved source document.
+        source_bytes = self.repo.get_source_document_bytes(matter)
+        self.assertEqual(handler.download["data"], source_bytes)
+
+    def _seed_pdf_matter_with_source(self, *, owner_user_id="owner-1"):
+        return _seed_pdf_matter(self.repo, owner_user_id=owner_user_id)
+
+    def test_owner_scope_blocks_other_owner(self):
+        matter = self._seed_reviewed_pdf()
+        other = _FakeHandler(self.repo, owner_user_id="intruder")
+        pdf_markup_routes.handle_annotated_pdf(
+            other, f"/api/matters/{matter['id']}/annotated-pdf"
+        )
+        self.assertEqual(other.status, 404)
+        self.assertIsNone(other.download)
+
+    def test_400_for_docx_matter(self):
+        docx_matter = _seed_docx_matter(self.repo)
+        handler = _FakeHandler(self.repo)
+        pdf_markup_routes.handle_annotated_pdf(
+            handler, f"/api/matters/{docx_matter['id']}/annotated-pdf"
+        )
+        self.assertEqual(handler.status, 400)
+        self.assertIsNone(handler.download)
 
 
 if __name__ == "__main__":
