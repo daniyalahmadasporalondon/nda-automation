@@ -264,6 +264,10 @@ _GET_EXACT_ROUTES = {
     # options). Admin-gated inside the handler, like the other admin GET routes.
     "/api/admin/signing-entities": entity_routes.handle_admin_signing_entities,
     "/api/telemetry": admin_routes.handle_telemetry,
+    # One-time PDF->working-DOCX backfill status (counts/last-summary). Admin-gated
+    # inside the handler, like the other admin GET routes. The POST trigger is in
+    # _POST_EXACT_ROUTES below.
+    "/api/admin/pdf-docx-backfill": admin_routes.handle_pdf_docx_backfill_status,
 }
 
 _PUBLIC_GET_EXACT_ROUTES = {
@@ -314,6 +318,11 @@ _POST_EXACT_ROUTES = {
     "/api/playbook/discard-draft": _handle_playbook_draft_discard_post,
     "/api/playbook/publish": _handle_playbook_publish_post,
     "/api/playbook/restore": _handle_playbook_restore_post,
+    # One-time, admin-triggered, CONVERT-ONLY PDF->working-DOCX backfill. Starts the
+    # serial converter on a background daemon thread and returns 202 immediately (the
+    # request never blocks on conversions). NEVER triggers an AI review. Admin-gated
+    # inside the handler; CSRF enforced by do_POST before dispatch.
+    "/api/admin/pdf-docx-backfill": admin_routes.handle_pdf_docx_backfill_start,
 }
 
 _PUBLIC_POST_EXACT_ROUTES = {

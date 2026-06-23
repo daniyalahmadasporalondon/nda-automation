@@ -899,5 +899,201 @@ def test_retro_pdf_convert_timeout_default_is_sixty_seconds(monkeypatch):
     assert ingestion_service._retro_pdf_convert_timeout_seconds() == 45.0
 
 
+# --------------------------------------------------------------------------- #
+# One-time, admin-triggered, CONVERT-ONLY PDF->working-DOCX backfill.
+# --------------------------------------------------------------------------- #
+def _stub_converter_patch(monkeypatch, paragraphs=RECON_PARAGRAPHS):
+    """Route convert_pdf_matter_to_docx through a fixed-body stub converter so the
+    backfill conversions succeed deterministically without a real pdf2docx."""
+    converter = _StubConverter(paragraphs)
+    real_convert = pdf_ingest_conversion.convert_pdf_matter_to_docx
+    monkeypatch.setattr(
+        ingestion_service.pdf_ingest_conversion,
+        "convert_pdf_matter_to_docx",
+        lambda pdf_bytes, source_filename, paras, **_: real_convert(
+            pdf_bytes, source_filename, paras, converter=converter
+        ),
+    )
+
+
+def test_selector_picks_only_pdf_no_docx_non_emptybody_matters(monkeypatch):
+    repo = InMemoryMatterRepository()
+    # 1) A legacy PDF with no working DOCX -> SELECTED.
+    pdf_needs = _store_legacy_pdf_matter(repo, owner_user_id="owner-1")
+    # 2) A native DOCX matter -> NOT selected (not a PDF source).
+    repo.create_matter(
+        source_filename="native.docx",
+        document_bytes=make_docx(RECON_PARAGRAPHS),
+        extracted_text="\n\n".join(RECON_PARAGRAPHS),
+        review_result={"source": {"type": "docx"}, "paragraphs": []},
+        triage={},
+        source_type="manual_upload",
+        board_column="in_review",
+        owner_user_id="owner-1",
+    )
+    # 3) A PDF previously recorded empty_body -> NOT selected (don't retry forever).
+    empty_body = _store_legacy_pdf_matter(repo, owner_user_id="owner-1")
+    repo.update_matter_fields(
+        empty_body["id"],
+        {ingestion_service.WORKING_DOCX_STATUS_FIELD: ingestion_service.WORKING_DOCX_STATUS_EMPTY_BODY},
+        owner_user_id="owner-1",
+    )
+    # 4) A PDF that already has a working DOCX -> NOT selected (idempotent skip).
+    already = _store_legacy_pdf_matter(repo, owner_user_id="owner-1")
+    _stub_converter_patch(monkeypatch)
+    ingestion_service.retro_convert_pdf_matter(
+        repo.get_matter(already["id"], owner_user_id="owner-1"),
+        repository=repo,
+        owner_user_id="owner-1",
+    )
+
+    selected = ingestion_service.select_pdf_docx_backfill_matter_ids(repository=repo)
+    assert pdf_needs["id"] in selected
+    assert empty_body["id"] not in selected
+    assert already["id"] not in selected
+    assert len(selected) == 1
+
+
+def test_runner_converts_a_stub_matter_and_tallies(monkeypatch):
+    from nda_automation.matter_render_job import matter_has_working_docx
+
+    repo = InMemoryMatterRepository()
+    stored = _store_legacy_pdf_matter(repo)
+    _stub_converter_patch(monkeypatch)
+    monkeypatch.setenv("NDA_PDF_DOCX_BACKFILL_SLEEP_SECONDS", "0")
+
+    tally = ingestion_service.run_pdf_docx_backfill(repository=repo)
+
+    assert tally["converted"] == 1
+    assert tally["processed"] == 1
+    assert tally["total"] == 1
+    refreshed = repo.get_matter(stored["id"], owner_user_id="owner-1")
+    assert matter_has_working_docx(refreshed) is True
+
+
+def test_runner_skips_already_converted_and_empty_body(monkeypatch):
+    repo = InMemoryMatterRepository()
+    _stub_converter_patch(monkeypatch)
+    monkeypatch.setenv("NDA_PDF_DOCX_BACKFILL_SLEEP_SECONDS", "0")
+    # Already-converted matter.
+    already = _store_legacy_pdf_matter(repo)
+    ingestion_service.retro_convert_pdf_matter(
+        repo.get_matter(already["id"], owner_user_id="owner-1"),
+        repository=repo,
+        owner_user_id="owner-1",
+    )
+    # empty_body matter.
+    empty_body = _store_legacy_pdf_matter(repo)
+    repo.update_matter_fields(
+        empty_body["id"],
+        {ingestion_service.WORKING_DOCX_STATUS_FIELD: ingestion_service.WORKING_DOCX_STATUS_EMPTY_BODY},
+        owner_user_id="owner-1",
+    )
+
+    tally = ingestion_service.run_pdf_docx_backfill(repository=repo)
+
+    # Neither was a candidate, so nothing is processed (total 0).
+    assert tally["total"] == 0
+    assert tally["converted"] == 0
+    assert tally["processed"] == 0
+
+
+def test_runner_never_calls_the_review_pipeline(monkeypatch):
+    """SAFETY: the backfill is CONVERT-ONLY. Spy every review entry point in the
+    ingestion service and assert ZERO calls -- the backfill must never trigger / enqueue
+    an AI review or hit the review pipeline."""
+    repo = InMemoryMatterRepository()
+    _store_legacy_pdf_matter(repo)
+    _stub_converter_patch(monkeypatch)
+    monkeypatch.setenv("NDA_PDF_DOCX_BACKFILL_SLEEP_SECONDS", "0")
+
+    review_calls: list[str] = []
+
+    def _spy(name):
+        def _inner(*_a, **_k):
+            review_calls.append(name)
+            raise AssertionError(f"backfill must NEVER call the review pipeline: {name}")
+
+        return _inner
+
+    # Patch every plausible review trigger that exists on the ingestion service so a
+    # regression that wired a review into the backfill would FAIL loudly here.
+    for attr in (
+        "_run_inbound_ai_review",
+        "run_inbound_ai_review",
+        "enqueue_review",
+        "review_nda",
+        "run_review",
+    ):
+        if hasattr(ingestion_service, attr):
+            monkeypatch.setattr(ingestion_service, attr, _spy(attr), raising=False)
+
+    tally = ingestion_service.run_pdf_docx_backfill(repository=repo)
+
+    assert review_calls == []
+    assert tally["converted"] == 1
+
+
+def test_runner_fail_open_when_one_matter_conversion_raises(monkeypatch):
+    """Fail-open: a per-matter conversion error is caught and the loop continues; the
+    summary is still returned. One bad PDF never aborts the run."""
+    repo = InMemoryMatterRepository()
+    good = _store_legacy_pdf_matter(repo)
+    bad = _store_legacy_pdf_matter(repo)
+    monkeypatch.setenv("NDA_PDF_DOCX_BACKFILL_SLEEP_SECONDS", "0")
+
+    real_guarded = ingestion_service.retro_convert_pdf_matter_guarded
+
+    def _guarded(matter, **kwargs):
+        if matter.get("id") == bad["id"]:
+            raise RuntimeError("conversion exploded for this matter")
+        return real_guarded(matter, **kwargs)
+
+    _stub_converter_patch(monkeypatch)
+    monkeypatch.setattr(ingestion_service, "retro_convert_pdf_matter_guarded", _guarded)
+
+    tally = ingestion_service.run_pdf_docx_backfill(repository=repo)
+
+    # Both matters were processed; the good one converted, the bad one counted failed.
+    assert tally["processed"] == 2
+    assert tally["converted"] == 1
+    assert tally["failed"] == 1
+    from nda_automation.matter_render_job import matter_has_working_docx
+    assert matter_has_working_docx(repo.get_matter(good["id"], owner_user_id="owner-1")) is True
+
+
+def test_runner_respects_limit(monkeypatch):
+    repo = InMemoryMatterRepository()
+    for _ in range(3):
+        _store_legacy_pdf_matter(repo)
+    _stub_converter_patch(monkeypatch)
+    monkeypatch.setenv("NDA_PDF_DOCX_BACKFILL_SLEEP_SECONDS", "0")
+
+    tally = ingestion_service.run_pdf_docx_backfill(repository=repo, limit=2)
+
+    assert tally["total"] == 3  # full candidate count
+    assert tally["processed"] == 2  # bounded by limit this run
+    assert tally["converted"] == 2
+
+
+def test_rerun_is_safe_and_resumes(monkeypatch):
+    repo = InMemoryMatterRepository()
+    for _ in range(2):
+        _store_legacy_pdf_matter(repo)
+    _stub_converter_patch(monkeypatch)
+    monkeypatch.setenv("NDA_PDF_DOCX_BACKFILL_SLEEP_SECONDS", "0")
+
+    first = ingestion_service.run_pdf_docx_backfill(repository=repo, limit=1)
+    assert first["converted"] == 1
+    # A re-run picks up exactly the remaining one and converts it -- no duplication.
+    second = ingestion_service.run_pdf_docx_backfill(repository=repo)
+    assert second["total"] == 1
+    assert second["converted"] == 1
+    # A third run has nothing left to do.
+    third = ingestion_service.run_pdf_docx_backfill(repository=repo)
+    assert third["total"] == 0
+    assert third["converted"] == 0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -675,6 +675,59 @@ def _operational_warnings() -> list[dict[str, str]]:
     return warnings
 
 
+def handle_pdf_docx_backfill_start(handler) -> None:
+    """POST: start the one-time PDF->working-DOCX backfill on a background thread.
+
+    CONVERT ONLY -- this NEVER triggers an AI review (see ingestion_service.
+    run_pdf_docx_backfill, which calls only the guarded PDF->DOCX converter). Admin-gated
+    + CSRF-protected (do_POST enforces CSRF before dispatch). Returns 202 immediately; the
+    serial conversion loop runs off the request thread so the request never blocks.
+    """
+    if not require_admin(handler):
+        return
+    from .. import ingestion_service  # noqa: PLC0415 - keep the import local/light.
+
+    # Optional {"limit": N} to bound a single run. An absent body (Content-Length 0)
+    # yields {}; a malformed body sends its own 400 (payload is None) and we stop.
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+    limit = None
+    raw_limit = payload.get("limit")
+    if raw_limit is not None:
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            handler._send_json({"error": "limit must be a non-negative integer."}, status=400)
+            return
+        if limit < 0:
+            handler._send_json({"error": "limit must be a non-negative integer."}, status=400)
+            return
+    telemetry.increment("pdf_docx_backfill_requests")
+    result = ingestion_service.start_pdf_docx_backfill_async(limit=limit)
+    handler._send_json(
+        {
+            "started": bool(result.get("started")),
+            "already_running": bool(result.get("already_running")),
+            "run_id": result.get("run_id", ""),
+            "status": ingestion_service.pdf_docx_backfill_status(),
+        },
+        status=202,
+    )
+
+
+def handle_pdf_docx_backfill_status(handler, *, send_body: bool = True) -> None:
+    """GET: the latest / in-flight PDF->DOCX backfill tally (cheap; no re-scan)."""
+    if not require_admin(handler, send_body=send_body):
+        return
+    from .. import ingestion_service  # noqa: PLC0415 - keep the import local/light.
+
+    handler._send_json(
+        {"status": ingestion_service.pdf_docx_backfill_status()},
+        send_body=send_body,
+    )
+
+
 def handle_matter_backup(handler, *, send_body: bool = True) -> None:
     # The backup dumps full extracted NDA text and matter metadata, so it is an
     # admin-only endpoint on top of the per-owner scoping applied below.

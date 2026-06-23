@@ -975,6 +975,73 @@ class ServerTests(unittest.TestCase):
         env.update(overrides)
         return env
 
+    # --- One-time, admin-triggered, CONVERT-ONLY PDF->DOCX backfill -----------
+    def test_pdf_docx_backfill_start_denies_non_admin(self):
+        # A per-user Google account is authenticated but not an admin: the convert-only
+        # backfill trigger (a global, all-tenant operation) must be refused with 403.
+        auth_env = self._google_oauth_auth_env(NDA_ADMIN_USERS="")
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                session_headers, _user = self.google_session_headers()
+                with patch.dict(os.environ, auth_env):
+                    status, payload = self.request(
+                        "POST", "/api/admin/pdf-docx-backfill", {}, headers=session_headers
+                    )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"], server_module.ADMIN_REQUIRED_MESSAGE)
+
+    def test_pdf_docx_backfill_start_allows_admin_and_returns_202(self):
+        from nda_automation import ingestion_service
+
+        auth_env = self._google_oauth_auth_env()
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                session_headers, user = self.google_session_headers()
+                admin_env = {**auth_env, "NDA_ADMIN_USERS": user["id"]}
+                # Stub the async starter so the test never spins a real conversion
+                # thread; we are asserting the route returns 202 + delegates to it.
+                with patch.dict(os.environ, admin_env), patch.object(
+                    ingestion_service,
+                    "start_pdf_docx_backfill_async",
+                    return_value={"started": True, "run_id": "backfill-test", "already_running": False},
+                ) as starter:
+                    status, payload = self.request(
+                        "POST", "/api/admin/pdf-docx-backfill", {}, headers=session_headers
+                    )
+        self.assertEqual(status, 202)
+        self.assertTrue(payload["started"])
+        self.assertEqual(payload["run_id"], "backfill-test")
+        starter.assert_called_once()
+
+    def test_pdf_docx_backfill_status_allows_admin(self):
+        auth_env = self._google_oauth_auth_env()
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                session_headers, user = self.google_session_headers()
+                admin_env = {**auth_env, "NDA_ADMIN_USERS": user["id"]}
+                with patch.dict(os.environ, admin_env):
+                    status, payload = self.request(
+                        "GET", "/api/admin/pdf-docx-backfill", headers=session_headers
+                    )
+        self.assertEqual(status, 200)
+        self.assertIn("status", payload)
+
+    def test_pdf_docx_backfill_status_denies_non_admin(self):
+        auth_env = self._google_oauth_auth_env(NDA_ADMIN_USERS="")
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                session_headers, _user = self.google_session_headers()
+                with patch.dict(os.environ, auth_env):
+                    status, payload = self.request(
+                        "GET", "/api/admin/pdf-docx-backfill", headers=session_headers
+                    )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"], server_module.ADMIN_REQUIRED_MESSAGE)
+
     def test_ai_settings_mutators_deny_non_admin_google_user(self):
         # NDA_ADMIN_USERS empty + Google OAuth caller => authenticated, not admin.
         auth_env = self._google_oauth_auth_env(NDA_ADMIN_USERS="")

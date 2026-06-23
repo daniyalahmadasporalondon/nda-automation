@@ -1858,6 +1858,274 @@ def retro_convert_pdf_matter_guarded(
     return converted if isinstance(converted, dict) else matter
 
 
+# --------------------------------------------------------------------------- #
+# One-time, admin-triggered, CONVERT-ONLY PDF->working-DOCX backfill.
+#
+# Legacy PDF matters ingested before Approach C carry only a role="original" PDF
+# artifact (no working DOCX), so their FIRST on-demand review pays the full pdf2docx
+# reconstruction cost inline. This backfill runs that conversion AHEAD of time, one
+# matter at a time, so the first review is fast.
+#
+# ABSOLUTE SAFETY: this NEVER triggers an AI review, never enqueues a review, never
+# calls the review pipeline, and never touches OpenRouter. It calls ONLY the guarded
+# PDF->DOCX converter (``retro_convert_pdf_matter_guarded``), which is itself bounded
+# by the inner pdf2docx semaphore + subprocess timeout + the OUTER 60s wall-clock
+# guard. Concurrency is 1 (serial), with a small inter-item sleep so it never starves
+# live reviews or OOMs the box. Idempotent + resumable + fail-open: an already-converted
+# matter, an ``empty_body`` (scanned/no-text) matter, and a per-matter failure are all
+# skipped/swallowed so a single bad PDF never aborts the run and a re-run is safe.
+# --------------------------------------------------------------------------- #
+
+# Small pause between conversions so the serial backfill yields the box to live
+# reviews / the request loop. Env-overridable; floored at 0 (no negative sleeps).
+def _backfill_inter_item_sleep_seconds() -> float:
+    try:
+        value = float(os.environ.get("NDA_PDF_DOCX_BACKFILL_SLEEP_SECONDS", "1") or 1)
+    except (TypeError, ValueError):
+        return 1.0
+    return value if value >= 0.0 else 0.0
+
+
+# How often (every Nth matter) to emit a running-tally progress line.
+_BACKFILL_PROGRESS_EVERY = 5
+
+# Module-level snapshot of the most recent / in-flight run so a cheap GET status can
+# surface counts without re-scanning. Guarded by a lock because the runner mutates it
+# from a background daemon thread while the status reader reads it from a request thread.
+_BACKFILL_STATUS_LOCK = threading.Lock()
+_BACKFILL_LAST_STATUS: dict[str, Any] = {"state": "idle"}
+# At most one backfill runs at a time (it is serial by design); a second trigger while
+# one is in flight is a no-op that returns the in-flight run id.
+_BACKFILL_RUN_LOCK = threading.Lock()
+_BACKFILL_RUNNING = False
+
+
+def _matter_needs_pdf_docx_backfill(matter: dict[str, Any]) -> bool:
+    """A PDF-source matter that has NO working DOCX and was NOT previously recorded as
+    ``empty_body`` (scanned / no anchorable text -- retrying it forever is pointless).
+
+    This is the selector predicate. It reuses the SAME signals the converter keys on:
+    ``_matter_is_pdf_source`` + ``matter_has_working_docx`` + ``working_docx_status``.
+    """
+    if not isinstance(matter, dict):
+        return False
+    if matter_render_job.matter_has_working_docx(matter):
+        return False
+    if not _matter_is_pdf_source(matter):
+        return False
+    if str(matter.get(WORKING_DOCX_STATUS_FIELD) or "") == WORKING_DOCX_STATUS_EMPTY_BODY:
+        return False
+    return True
+
+
+def select_pdf_docx_backfill_matter_ids(
+    *,
+    repository: MatterRepository | None = None,
+) -> list[str]:
+    """List the matter ids that NEED a PDF->working-DOCX backfill.
+
+    Memory-careful: it iterates the matter dicts the repository already holds and keeps
+    only the IDS (it does NOT load any document bytes here -- the per-matter PDF bytes
+    are loaded one at a time inside the runner). Global scope (empty owner) so the
+    admin backfill sees every tenant's legacy PDF matters.
+    """
+    repo = repository or DiskMatterRepository()
+    try:
+        matters = repo.list_matters(owner_user_id="")
+    except Exception:  # pragma: no cover - defensive; never let listing abort the run
+        LOGGER.warning("PDF->DOCX backfill: listing matters failed", exc_info=True)
+        return []
+    ids: list[str] = []
+    for matter in matters:
+        if not isinstance(matter, dict):
+            continue
+        if _matter_needs_pdf_docx_backfill(matter):
+            matter_id = str(matter.get("id") or "")
+            if matter_id:
+                ids.append(matter_id)
+    return ids
+
+
+def run_pdf_docx_backfill(
+    *,
+    limit: int | None = None,
+    repository: MatterRepository | None = None,
+) -> dict[str, Any]:
+    """Convert legacy PDF matters (no working DOCX) to DOCX, ONE AT A TIME.
+
+    CONVERT ONLY: this calls ``retro_convert_pdf_matter_guarded`` per matter and NOTHING
+    in the review pipeline -- zero AI / OpenRouter cost. Serial (concurrency 1) with a
+    small inter-item sleep. Idempotent + resumable: it re-derives the candidate ids from
+    the live store on every run and skips matters that already have a working DOCX or were
+    recorded ``empty_body``, so a re-run picks up exactly what is still outstanding (no
+    duplication, no thrash). Fail-open: a per-matter conversion error is caught and the
+    loop continues; one bad PDF never aborts the run.
+
+    ``limit`` bounds a single run (process at most ``limit`` matters this pass; a later
+    re-run resumes the rest). Returns a tally dict
+    ``{converted, skipped, empty_body, timed_out, failed, total, processed}``.
+    """
+    repo = repository or DiskMatterRepository()
+    candidate_ids = select_pdf_docx_backfill_matter_ids(repository=repo)
+    total = len(candidate_ids)
+    if limit is not None and limit >= 0:
+        candidate_ids = candidate_ids[: int(limit)]
+    sleep_seconds = _backfill_inter_item_sleep_seconds()
+
+    tally = {
+        "converted": 0,
+        "skipped": 0,
+        "empty_body": 0,
+        "timed_out": 0,
+        "failed": 0,
+        "total": total,
+        "processed": 0,
+    }
+    LOGGER.info(
+        "PDF->DOCX backfill starting: %d candidate matter(s)%s",
+        total,
+        f" (limited to {len(candidate_ids)} this run)" if limit is not None else "",
+    )
+    _publish_backfill_status({**tally, "state": "running"})
+
+    for position, matter_id in enumerate(candidate_ids, start=1):
+        # Re-read each matter fresh (global scope) right before converting so a matter
+        # converted by a concurrent path / a prior partial run is skipped here -- the
+        # idempotency re-check that makes re-runs safe.
+        try:
+            matter = repo.get_matter(matter_id, owner_user_id="")
+        except Exception:
+            LOGGER.warning(
+                "PDF->DOCX backfill: re-reading matter %s failed; skipping", matter_id, exc_info=True
+            )
+            tally["failed"] += 1
+            tally["processed"] += 1
+            continue
+        if not isinstance(matter, dict) or not _matter_needs_pdf_docx_backfill(matter):
+            tally["skipped"] += 1
+            tally["processed"] += 1
+            continue
+        owner_user_id = str(matter.get("owner_user_id") or "")
+        before_status = str(matter.get(WORKING_DOCX_STATUS_FIELD) or "")
+        try:
+            # CONVERT ONLY. retro_convert_pdf_matter_guarded runs the pdf2docx
+            # reconstruction under its own semaphore + subprocess timeout + outer
+            # wall-clock guard and NEVER calls any review function. It NEVER raises.
+            converted = retro_convert_pdf_matter_guarded(
+                matter, repository=repo, owner_user_id=owner_user_id
+            )
+        except Exception:  # pragma: no cover - guarded converter is already fail-open
+            LOGGER.warning(
+                "PDF->DOCX backfill: conversion raised for matter %s; continuing", matter_id, exc_info=True
+            )
+            tally["failed"] += 1
+            tally["processed"] += 1
+            continue
+        # Classify the outcome from the durable working_docx_status the converter wrote,
+        # falling back to the working-DOCX presence (the converter records a status on
+        # every path, but stay defensive so one un-statused matter never breaks the loop).
+        if isinstance(converted, dict) and matter_render_job.matter_has_working_docx(converted):
+            tally["converted"] += 1
+        else:
+            status = (
+                str(converted.get(WORKING_DOCX_STATUS_FIELD) or "")
+                if isinstance(converted, dict)
+                else before_status
+            )
+            if status == WORKING_DOCX_STATUS_EMPTY_BODY:
+                tally["empty_body"] += 1
+            elif status == WORKING_DOCX_STATUS_TIMED_OUT:
+                tally["timed_out"] += 1
+            else:
+                tally["failed"] += 1
+        tally["processed"] += 1
+        if position % _BACKFILL_PROGRESS_EVERY == 0:
+            LOGGER.info(
+                "PDF->DOCX backfill progress: %d/%d processed "
+                "(converted=%d skipped=%d empty_body=%d timed_out=%d failed=%d)",
+                position,
+                len(candidate_ids),
+                tally["converted"],
+                tally["skipped"],
+                tally["empty_body"],
+                tally["timed_out"],
+                tally["failed"],
+            )
+            _publish_backfill_status({**tally, "state": "running"})
+        # Yield the box to live reviews between conversions (skip after the last item).
+        if sleep_seconds and position < len(candidate_ids):
+            time.sleep(sleep_seconds)
+
+    LOGGER.info(
+        "PDF->DOCX backfill complete: processed=%d/%d "
+        "(converted=%d skipped=%d empty_body=%d timed_out=%d failed=%d)",
+        tally["processed"],
+        total,
+        tally["converted"],
+        tally["skipped"],
+        tally["empty_body"],
+        tally["timed_out"],
+        tally["failed"],
+    )
+    _publish_backfill_status({**tally, "state": "done"})
+    return tally
+
+
+def _publish_backfill_status(status: dict[str, Any]) -> None:
+    """Best-effort snapshot of the latest backfill tally for the GET status route."""
+    try:
+        with _BACKFILL_STATUS_LOCK:
+            _BACKFILL_LAST_STATUS.clear()
+            _BACKFILL_LAST_STATUS.update(status)
+    except Exception:  # pragma: no cover - status snapshot is best-effort
+        pass
+
+
+def pdf_docx_backfill_status() -> dict[str, Any]:
+    """Snapshot of the most recent / in-flight backfill tally (cheap, no re-scan)."""
+    with _BACKFILL_STATUS_LOCK:
+        return dict(_BACKFILL_LAST_STATUS)
+
+
+def start_pdf_docx_backfill_async(
+    *,
+    limit: int | None = None,
+    repository: MatterRepository | None = None,
+) -> dict[str, Any]:
+    """Start ``run_pdf_docx_backfill`` on a background daemon thread; return immediately.
+
+    The HTTP trigger never blocks on conversions. Returns
+    ``{"started": bool, "run_id": str, "already_running": bool}``. At most one backfill
+    runs at a time (it is serial by design): a second trigger while one is in flight is a
+    no-op that reports the in-flight run.
+    """
+    global _BACKFILL_RUNNING
+    with _BACKFILL_RUN_LOCK:
+        if _BACKFILL_RUNNING:
+            with _BACKFILL_STATUS_LOCK:
+                run_id = str(_BACKFILL_LAST_STATUS.get("run_id") or "")
+            return {"started": False, "run_id": run_id, "already_running": True}
+        _BACKFILL_RUNNING = True
+    run_id = datetime.now(timezone.utc).strftime("backfill-%Y%m%dT%H%M%SZ")
+    _publish_backfill_status({"state": "running", "run_id": run_id, "processed": 0})
+
+    def _run() -> None:
+        global _BACKFILL_RUNNING
+        try:
+            tally = run_pdf_docx_backfill(limit=limit, repository=repository)
+            _publish_backfill_status({**tally, "state": "done", "run_id": run_id})
+        except Exception:  # pragma: no cover - run_pdf_docx_backfill is already fail-open
+            LOGGER.warning("PDF->DOCX backfill thread crashed", exc_info=True)
+            _publish_backfill_status({"state": "error", "run_id": run_id})
+        finally:
+            with _BACKFILL_RUN_LOCK:
+                _BACKFILL_RUNNING = False
+
+    thread = threading.Thread(target=_run, name="pdf-docx-backfill", daemon=True)
+    thread.start()
+    return {"started": True, "run_id": run_id, "already_running": False}
+
+
 def extract_document_paragraphs(filename: str, document_bytes: bytes) -> tuple[str, list[dict[str, Any]]]:
     document_type, paragraphs, _quality = extract_document(filename, document_bytes)
     return document_type, paragraphs
