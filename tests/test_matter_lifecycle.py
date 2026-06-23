@@ -1,6 +1,7 @@
 """Tests for the deeper Repository matter lifecycle module."""
 from __future__ import annotations
 
+import io
 from unittest.mock import patch
 
 from nda_automation import (
@@ -9,9 +10,18 @@ from nda_automation import (
     drive_integration,
     gmail_integration,
     redline_export_service,
+    source_document_policy,
     telemetry,
 )
-from nda_automation.matter_lifecycle import MatterSendBlockedError, RedlineDraftError, RepositoryMatterLifecycle
+from nda_automation.matter_lifecycle import (
+    PDF_RECONSTRUCTION_DOCX_COVER_NOTE,
+    PDF_RECONSTRUCTION_RECIPIENT_CAVEAT,
+    MatterSendBlockedError,
+    RedlineDraftError,
+    RepositoryMatterLifecycle,
+    _prepend_reconstruction_caveat,
+    _stamp_docx_reconstruction_notice,
+)
 from nda_automation.matter_repository import InMemoryMatterRepository
 
 
@@ -367,3 +377,142 @@ def test_send_gate_fail_state_cleared_by_recorded_approval():
         matter["id"], {"status": "approved", "approved_at": "2026-06-05T00:00:00+00:00"}
     )
     assert _attempt_send(repo, matter["id"]) is True
+
+
+# --- PDF-reconstruction recipient caveat (P1) ----------------------------------
+#
+# A PDF-source matter's redline is a pdf2docx RECONSTRUCTION whose formatting
+# differs from the executed PDF. The sender saw a caveat in the app, but the
+# COUNTERPARTY who opens the emailed Word file got no signal. These tests pin the
+# recipient-facing disclosure: the caveat lands in the outgoing email body (and a
+# best-effort cover note in the DOCX) for PDF-reconstruction sends, while
+# DOCX-source sends stay byte- and body-identical.
+
+def _capture_send(repo, matter_id, export, *, body="Please find the attached redline."):
+    """Drive a successful send and capture the (body, attachment) handed to Gmail."""
+    captured = {}
+
+    def _record(matter, attachment_bytes, attachment_filename, **kwargs):
+        captured["attachment"] = attachment_bytes
+        captured["body"] = kwargs.get("body")
+        return dict(_SENT_STUB)
+
+    with patch.object(app_settings, "gmail_role_enabled", return_value=True):
+        with patch.object(gmail_integration, "validate_outbound_send_ready"):
+            with patch.object(redline_export_service, "build_matter_redline", return_value=export):
+                with patch.object(gmail_integration, "send_redline_email", side_effect=_record):
+                    result = RepositoryMatterLifecycle(repo).send_redline(
+                        matter_id,
+                        {"matter_id": matter_id, "confirm_send": True},
+                        to="counterparty@example.com",
+                        confirmed_recipient="counterparty@example.com",
+                        body=body,
+                    )
+    return captured, result
+
+
+def _real_docx_bytes(text="This Agreement is mutual."):
+    from docx import Document
+
+    document = Document()
+    document.add_paragraph(text)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def _pdf_matter(repo):
+    """A PDF-source matter (pass review) so the reconstruction predicate fires."""
+    return repo.create_matter(
+        **_create_kwargs(
+            source_filename="Mutual NDA.pdf",
+            source_type="pdf",
+            intake_metadata={"reply_to": "counterparty@example.com"},
+            review_result={"clauses": [{"id": "mutuality", "decision": "pass"}]},
+        )
+    )
+
+
+def test_pdf_reconstruction_send_injects_recipient_caveat_into_body():
+    repo = InMemoryMatterRepository()
+    matter = _pdf_matter(repo)
+    assert source_document_policy.matter_source_is_pdf(repo.get_matter(matter["id"])) is True
+
+    export = redline_export_service.RedlineExport(data=_real_docx_bytes(), filename="Mutual-NDA-reviewed.docx")
+    captured, result = _capture_send(repo, matter["id"], export)
+
+    assert result.reconstructed_from_pdf is True
+    # Email body carries the recipient caveat, with the original body preserved below.
+    assert PDF_RECONSTRUCTION_RECIPIENT_CAVEAT in captured["body"]
+    assert "Please find the attached redline." in captured["body"]
+
+
+def test_pdf_reconstruction_send_stamps_cover_note_into_docx():
+    repo = InMemoryMatterRepository()
+    matter = _pdf_matter(repo)
+
+    original = _real_docx_bytes()
+    export = redline_export_service.RedlineExport(data=original, filename="Mutual-NDA-reviewed.docx")
+    captured, _ = _capture_send(repo, matter["id"], export)
+
+    # The attachment was rewritten and now opens cleanly with the cover note on top.
+    assert captured["attachment"] != original
+    from docx import Document
+
+    document = Document(io.BytesIO(captured["attachment"]))
+    paragraphs = [p.text for p in document.paragraphs]
+    assert PDF_RECONSTRUCTION_DOCX_COVER_NOTE in paragraphs
+    assert paragraphs[0] == PDF_RECONSTRUCTION_DOCX_COVER_NOTE
+    # Original content survives below the note.
+    assert "This Agreement is mutual." in paragraphs
+
+
+def test_pdf_reconstruction_detected_by_export_header_marker():
+    # Even when the matter-source predicate is false, the per-export reconstruction
+    # header marks the file as rebuilt and must trigger the caveat.
+    repo = InMemoryMatterRepository()
+    matter = _matter_with_review(repo, {"clauses": [{"id": "mutuality", "decision": "pass"}]})
+    assert source_document_policy.matter_source_is_pdf(repo.get_matter(matter["id"])) is False
+
+    export = redline_export_service.RedlineExport(
+        data=_real_docx_bytes(),
+        filename="Mutual-NDA-reviewed.docx",
+        headers={"X-PDF-DOCX-Reconstruction": "true"},
+    )
+    captured, result = _capture_send(repo, matter["id"], export)
+
+    assert result.reconstructed_from_pdf is True
+    assert PDF_RECONSTRUCTION_RECIPIENT_CAVEAT in captured["body"]
+
+
+def test_docx_source_send_is_body_and_byte_unchanged():
+    # DOCX-source sends must NOT be touched: no body caveat, attachment bytes
+    # identical to the export.
+    repo = InMemoryMatterRepository()
+    matter = _matter_with_review(repo, {"clauses": [{"id": "mutuality", "decision": "pass"}]})
+    assert source_document_policy.matter_source_is_pdf(repo.get_matter(matter["id"])) is False
+
+    original = _real_docx_bytes()
+    export = redline_export_service.RedlineExport(data=original, filename="Mutual-NDA-redlined.docx")
+    captured, result = _capture_send(repo, matter["id"], export, body="Original body only.")
+
+    assert result.reconstructed_from_pdf is False
+    assert captured["attachment"] == original
+    assert captured["body"] == "Original body only."
+    assert PDF_RECONSTRUCTION_RECIPIENT_CAVEAT not in (captured["body"] or "")
+
+
+def test_prepend_caveat_handles_empty_body_and_is_idempotent():
+    assert _prepend_reconstruction_caveat(None) == PDF_RECONSTRUCTION_RECIPIENT_CAVEAT
+    assert _prepend_reconstruction_caveat("") == PDF_RECONSTRUCTION_RECIPIENT_CAVEAT
+    once = _prepend_reconstruction_caveat("Body text.")
+    assert once.startswith(PDF_RECONSTRUCTION_RECIPIENT_CAVEAT)
+    assert "Body text." in once
+    # Idempotent: a second pass does not double-stamp.
+    assert _prepend_reconstruction_caveat(once) == once
+
+
+def test_stamp_docx_fails_open_on_invalid_bytes():
+    # A stamping failure must never block a send: garbage in -> same bytes out.
+    garbage = b"not a docx at all"
+    assert _stamp_docx_reconstruction_notice(garbage) == garbage
