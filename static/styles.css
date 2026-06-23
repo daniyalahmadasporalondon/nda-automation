@@ -9526,6 +9526,51 @@ label.is-hidden {
   border-color: var(--brand);
 }
 
+/* Header actions: the User⇄Developer toggle sits next to the open-in-new-tab link. */
+.admin-guide-actions {
+  align-items: center;
+  display: inline-flex;
+  flex: none;
+  gap: 10px;
+}
+
+/* Segmented pill toggle for the embedded guide (User vs Developer). */
+.guide-mode-toggle {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+}
+
+.guide-mode-btn {
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  color: var(--brand);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  transition: background 0.12s, color 0.12s;
+}
+
+.guide-mode-btn:hover {
+  background: var(--bg-panel);
+}
+
+.guide-mode-btn.active {
+  background: var(--brand);
+  color: #fff;
+}
+
+.guide-mode-btn:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
 .admin-user-guide-frame {
   background: var(--bg-panel);
   border: 0;
