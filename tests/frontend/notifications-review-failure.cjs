@@ -47,11 +47,18 @@ function makeElement() {
     },
     classList: {
       _set: new Set(),
+      _owner: null,
       add(c) {
         this._set.add(c);
       },
       contains(c) {
-        return this._set.has(c);
+        // Classes can arrive two ways in our stub: via classList.add (e.g.
+        // "toast--leaving") OR baked into the className string at creation
+        // (e.g. "toast toast--info toast--persistent"). Honor BOTH so a persistent
+        // toast set through className is still recognised by enforceStackCap.
+        if (this._set.has(c)) return true;
+        const cn = this._owner && typeof this._owner.className === "string" ? this._owner.className : "";
+        return cn.split(/\s+/).includes(c);
       },
     },
     addEventListener(type, fn) {
@@ -77,14 +84,21 @@ function makeElement() {
       }
       return null;
     },
-    querySelectorAll() {
-      // Used by enforceStackCap over the container; return current children that
-      // are not leaving. Children are plain toast elements we appended.
-      return container.children.filter(
-        (c) => !(c.classList && c.classList.contains("toast--leaving")),
-      );
+    querySelectorAll(sel) {
+      // Used by enforceStackCap over the container. The REAL selector is
+      // ".toast:not(.toast--leaving):not(.toast--persistent)" — honor BOTH exclusions
+      // so persistent (progress-notice) toasts are immune from the cap exactly as in
+      // the browser, otherwise this stub would let the cap evict them.
+      const excludePersistent = typeof sel === "string" && sel.includes("toast--persistent");
+      return container.children.filter((c) => {
+        if (c.classList && c.classList.contains("toast--leaving")) return false;
+        if (excludePersistent && c.classList && c.classList.contains("toast--persistent")) return false;
+        return true;
+      });
     },
   };
+  // Back-reference so classList.contains can also read the className string.
+  el.classList._owner = el;
   return el;
 }
 
@@ -119,6 +133,13 @@ function loadNotifications(sandbox) {
 function errorToasts() {
   return container.children.filter(
     (c) => typeof c.className === "string" && c.className.includes("toast--error"),
+  );
+}
+
+// The persistent INFO toasts currently mounted (the "Reviewing with AI…" progress notice).
+function persistentToasts() {
+  return container.children.filter(
+    (c) => typeof c.className === "string" && c.className.includes("toast--persistent"),
   );
 }
 
@@ -273,6 +294,75 @@ function run() {
     assert.match(toasts[0].innerHTML, /Real error/, "the genuine failure reason surfaces");
     passed += 1;
     console.log("ok 4 - stalled (timeout) review never toasts; a real failure after it still does");
+  }
+
+  // ---------------------------------------------------------------------------
+  // 6: the PERSISTENT progress notification mechanism (notifyInProgress /
+  //    dismissInProgress) used by the review workstation to move the verbose
+  //    "Reviewing with AI…" sentence out of the inline toolbar.
+  //    Contract:
+  //      a. notifyInProgress(id, …) raises ONE persistent INFO toast (no auto-dismiss,
+  //         immune to the stack cap).
+  //      b. re-calling with the SAME id UPDATES in place — never a second toast.
+  //      c. a flood of arrival toasts does NOT evict the persistent toast (cap-immune).
+  //      d. dismissInProgress(id) clears it (marks it leaving), and is a safe no-op
+  //         when nothing is live.
+  //      e. the red failure toast (keyed on review_status="failed") is unaffected.
+  // ---------------------------------------------------------------------------
+  {
+    container.children = [];
+    const sandbox = makeSandbox();
+    const create = loadNotifications(sandbox);
+    const controller = create({
+      container,
+      openMatter: () => {},
+      openRepository: () => {},
+      fetchMatters: undefined,
+    });
+
+    // a. raise -> exactly one persistent INFO toast, role=status (calm), not an alert.
+    controller.notifyInProgress("review-in-progress", "Reviewing with AI…", "This can take a couple of minutes.");
+    let persist = persistentToasts();
+    assert.equal(persist.length, 1, "notifyInProgress raised exactly one persistent toast");
+    assert.ok(persist[0].className.includes("toast--info"), "the progress toast is the calm INFO variant");
+    assert.equal(persist[0].getAttribute("role"), "status", "the progress toast is a polite status, not an alert");
+    assert.match(persist[0].innerHTML, /Reviewing with AI/, "the progress toast carries the title");
+    assert.equal(persist[0].dataset.toastPersistentId, "review-in-progress", "keyed by the supplied id");
+
+    // b. re-raise SAME id -> still one toast (update in place, no duplicate).
+    controller.notifyInProgress("review-in-progress", "Reviewing with AI…", "This document is taking a little longer than usual.");
+    assert.equal(persistentToasts().length, 1, "re-raising the same id must UPDATE in place, not stack a duplicate");
+
+    // c. a burst of inbound arrivals (which would normally cap the stack) must NOT
+    //    evict the persistent progress toast.
+    controller.observe([]); // seed empty so subsequent arrivals toast
+    controller.observe([
+      { id: "a1", source_type: "gmail_inbound", counterparty: "Co 1", created_at: "2026-06-22T10:00:01Z" },
+      { id: "a2", source_type: "gmail_inbound", counterparty: "Co 2", created_at: "2026-06-22T10:00:02Z" },
+    ]);
+    controller.observe([
+      { id: "a3", source_type: "gmail_inbound", counterparty: "Co 3", created_at: "2026-06-22T10:00:03Z" },
+      { id: "a4", source_type: "gmail_inbound", counterparty: "Co 4", created_at: "2026-06-22T10:00:04Z" },
+      { id: "a5", source_type: "gmail_inbound", counterparty: "Co 5", created_at: "2026-06-22T10:00:05Z" },
+    ]);
+    assert.equal(persistentToasts().length, 1, "a flood of arrival toasts evicted the persistent progress toast (cap must skip it)");
+
+    // e. the red failure toast still fires and is independent of the progress notice.
+    controller.observe([
+      { id: "fX", source_type: "gmail_inbound", counterparty: "Bad Co", review_status: "failed", review_error: "AI reviewer unavailable" },
+    ]);
+    assert.equal(errorToasts().length, 1, "the red failure toast must still fire alongside the progress notice");
+    assert.equal(persistentToasts().length, 1, "the failure toast must not disturb the persistent progress notice");
+
+    // d. dismiss -> the persistent toast is torn down (marked leaving); double-dismiss
+    //    and dismiss-of-unknown are safe no-ops.
+    controller.dismissInProgress("review-in-progress");
+    const live = persistentToasts().filter((c) => !c.className.includes("toast--leaving") && c.dataset.leaving !== "true");
+    assert.equal(live.length, 0, "dismissInProgress did not tear down the persistent progress toast");
+    controller.dismissInProgress("review-in-progress"); // no-op
+    controller.dismissInProgress("never-raised"); // no-op
+    passed += 1;
+    console.log("ok 5 - persistent progress notice: one toast, updates in place, cap-immune, dismissable, failure toast intact");
   }
 
   console.log(`\n# ${passed} test group(s) passed`);

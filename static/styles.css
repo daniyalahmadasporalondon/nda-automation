@@ -11549,6 +11549,25 @@ label.is-hidden {
   box-shadow: 0 18px 45px -18px rgba(132, 18, 12, 0.6);
 }
 
+/* Calm INFO variant for the persistent "Reviewing with AI…" progress notice — an
+   informational, non-urgent state. Kept ON-BRAND (a deeper brand-violet → lotus
+   gradient) rather than an off-brand blue: it reads as a quieter, richer violet that
+   is still visually distinct from the lighter brand-violet arrival toast, the green
+   success toast and the red failure toast. */
+.toast--info {
+  background: linear-gradient(135deg, var(--brand-strong) 0%, var(--lotus) 100%);
+  box-shadow: 0 18px 45px -18px rgba(43, 12, 110, 0.55);
+}
+
+/* Persistent toasts (e.g. the in-flight review progress notice) are cleared
+   explicitly by their owner rather than auto-dismissed; the subtitle carries a full
+   sentence, so let it wrap instead of truncating to one ellipsised line. */
+.toast--persistent .toast-subtitle {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
 /* The failure reason can run longer than a filename, so let the error toast's
    subtitle wrap instead of truncating the message to one ellipsised line. */
 .toast-subtitle--wrap {
@@ -14147,4 +14166,279 @@ label.is-hidden {
   stroke-linejoin: round;
   stroke-width: 1.8;
   width: 15px;
+}
+
+/* ===========================================================================
+   Aspora Design Language — Review tab.
+   Brings the Review workstation in line with the Admin / Playbook / Guide
+   surfaces using the CANONICAL :root tokens (--brand / --ink* / --border /
+   --bg-* / --r-* / --shadow-* / the green|amber|red pill triples) — NOT a
+   parallel --rv-* layer, and NOT Inter. The base body font is Roboto Flex
+   (--text-font); these rules deliberately do not set font-family, so the
+   right column and toolbars inherit Roboto Flex.
+
+   RESTYLE ONLY — every selector targets existing, behaviour-bearing markup
+   (studio* ids, JS-rendered detail blocks, fill controls). No id, class,
+   data-attribute, handler or payload is changed; no markup is added.
+
+   EVERY rule below is prefixed with `#reviewView` (the Review tab root,
+   <main id="reviewView">). That id is unique to this tab and gives these
+   rules higher specificity than the global .studio-* / .fill-* defaults, so
+   they win without `!important` and CANNOT leak into other tabs. The center
+   document render (.studio-document-render / .studio-page / #studioNdaText),
+   the .fmt-* format-toolbar structure and the Approve/Send footer are left
+   to their own rules — only colours/borders are touched here.
+   =========================================================================== */
+
+/* ---- Right column card + matter header: canonical card recipe ---------- */
+#reviewView .studio-playbook,
+#reviewView .studio-matter-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-sm);
+  color: var(--ink);
+}
+
+#reviewView .studio-playbook > h2,
+#reviewView #studioInspectorTitle {
+  background: var(--bg-panel);
+  color: var(--ink-muted);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+#reviewView .studio-matter-card h1 {
+  color: var(--ink);
+}
+
+#reviewView .studio-matter-meta dt,
+#reviewView .studio-counterparty-label {
+  color: var(--ink-muted);
+}
+
+#reviewView .studio-matter-meta dd,
+#reviewView .studio-counterparty-name {
+  color: var(--ink);
+}
+
+#reviewView .studio-matter-meta div,
+#reviewView .studio-counterparty-field {
+  border-left-color: var(--border);
+}
+
+/* ---- Inspector tabs: brand underline on the active tab ----------------- */
+#reviewView .studio-inspector-tabs {
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+}
+
+#reviewView .studio-inspector-tabs button {
+  color: var(--ink-soft);
+}
+
+#reviewView .studio-inspector-tabs button:hover {
+  color: var(--ink);
+}
+
+#reviewView .studio-inspector-tabs button.active {
+  border-bottom: 2px solid var(--brand);
+  color: var(--brand);
+}
+
+/* ---- Clause navigator: brand hover/selected accent; dots keep RAG ------- */
+#reviewView .studio-clause-item,
+#reviewView .studio-clause-title {
+  color: var(--ink);
+}
+
+#reviewView .studio-clause-item:hover,
+#reviewView .studio-clause-item.selected,
+#reviewView .studio-clause-item:hover .studio-clause-title,
+#reviewView .studio-clause-item.selected .studio-clause-title {
+  color: var(--brand);
+}
+
+/* Status dots keep their green / amber / red tones; only the hover/selected
+   ring picks up the brand. */
+#reviewView .studio-clause-item:hover .studio-clause-dot,
+#reviewView .studio-clause-item.selected .studio-clause-dot {
+  box-shadow: 0 0 0 1px var(--brand);
+}
+
+/* ---- Verdict header ---------------------------------------------------- */
+#reviewView .active-clause-heading,
+#reviewView .active-clause-heading.clause-verdict-header {
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+}
+
+#reviewView .active-clause-heading h3 {
+  color: var(--ink);
+}
+
+#reviewView .active-clause-heading small {
+  color: var(--ink-muted);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+/* ---- Status badges: bind to the :root semantic pill triples; uppercase
+   eyebrow label style. Default (no verdict class) = soft neutral chip. ---- */
+#reviewView .active-clause-status {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--ink-soft);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+#reviewView .active-clause-status.check {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  color: var(--red-ink);
+}
+
+#reviewView .active-clause-status.review {
+  background: var(--amber-bg);
+  border-color: var(--amber-border);
+  color: var(--amber-ink);
+}
+
+#reviewView .active-clause-status.pass,
+#reviewView .active-clause-status.reviewed {
+  background: var(--green-bg);
+  border-color: var(--green-border);
+  color: var(--green-ink);
+}
+
+/* ---- Detail blocks: hairline separators, ink body / muted labels ------- */
+#reviewView .studio-detail-stack {
+  background: var(--bg-panel);
+}
+
+#reviewView .studio-detail-block {
+  background: var(--bg-panel);
+  border-bottom-color: var(--border);
+  border-top-color: var(--border);
+}
+
+/* Carded detail variants get a soft radius (the flat stitched list rows stay
+   square; only the standalone cards round). */
+#reviewView .studio-detail-block.assessment-block,
+#reviewView .studio-detail-block.playbook-position-block,
+#reviewView .studio-detail-block.proposed-change-card,
+#reviewView .studio-detail-block.comment-block,
+#reviewView .studio-detail-block.redline-block,
+#reviewView .recommended-change-block,
+#reviewView .reasoning-trail-block {
+  border-color: var(--border);
+  border-radius: var(--r-sm);
+}
+
+#reviewView .studio-detail-block small,
+#reviewView .detail-field-label {
+  color: var(--ink-muted);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+}
+
+#reviewView .studio-detail-block p,
+#reviewView .studio-detail-block li {
+  color: var(--ink);
+}
+
+#reviewView .playbook-position-block .playbook-position-approved li {
+  color: var(--ink-soft);
+}
+
+/* ---- Fill inspector: brand-filled apply, hairline inputs --------------- */
+#reviewView .fill-picker,
+#reviewView .fill-blank-row {
+  border-color: var(--border);
+  border-radius: var(--r-sm);
+}
+
+#reviewView .fill-field select,
+#reviewView .fill-field input,
+#reviewView .review-comment-input {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+
+#reviewView .fill-field > span,
+#reviewView .fill-section-title {
+  color: var(--ink-muted);
+}
+
+#reviewView .fill-clear {
+  border-color: var(--border);
+  border-radius: var(--r-sm);
+}
+
+#reviewView .fill-apply {
+  background: var(--brand);
+  border: 1px solid var(--brand);
+  border-radius: var(--r-sm);
+  color: #fff;
+}
+
+#reviewView .fill-apply:hover:not(:disabled) {
+  background: var(--brand-bright);
+  border-color: var(--brand-bright);
+}
+
+#reviewView .fill-mode-toggle button {
+  border-color: var(--border);
+  color: var(--ink-soft);
+}
+
+#reviewView .fill-mode-toggle button.active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+
+/* ---- Secondary toolbars: view switch / viewer controls / format / send -
+   The .fmt-* TOOLBAR STRUCTURE is left alone — only the active/pressed
+   colour is normalised to the brand. ---- */
+#reviewView .studio-view-switch {
+  border-color: var(--border);
+}
+
+#reviewView .studio-view-switch .vs-btn.active {
+  background: var(--brand);
+  color: #fff;
+}
+
+#reviewView .studio-viewer-controls .vc-group,
+#reviewView .studio-viewer-controls .vc-solo {
+  border-color: var(--border);
+}
+
+#reviewView .studio-viewer-controls .vc-btn:hover:not(:disabled),
+#reviewView .studio-viewer-controls .vc-solo:hover:not(:disabled) {
+  color: var(--brand);
+}
+
+#reviewView .fmt-btn[aria-pressed="true"] {
+  background: var(--bg-soft);
+  border-color: var(--border);
+  color: var(--brand);
+}
+
+/* Send Redline — the toolbar's primary action gets the brand fill. */
+#reviewView #studioSendButton:not(:disabled) {
+  background: var(--brand);
+  color: #fff;
+}
+
+#reviewView #studioSendButton:hover:not(:disabled) {
+  background: var(--brand-bright);
+  box-shadow: none;
+  color: #fff;
 }

@@ -98,6 +98,11 @@ function bootScript() {
       stopReviewPoll: 0,
       setSkeleton: [],
       notify: [],
+      // Progress-notification spies: record raise (id,title,subtitle) and dismiss (id)
+      // so the test can assert the persistent "Reviewing with AI…" notice is raised on
+      // review-start and CLEARED on every terminal/abort path.
+      notifyInProgress: [],
+      dismissInProgress: [],
     };
     var setReviewWorkspaceSkeleton = (on) => { window.__spy.setSkeleton.push(Boolean(on)); };
     function updateExportButtonState() {}
@@ -113,8 +118,13 @@ function bootScript() {
     var RepositoryView = { sourceTypeLabel: () => "Inbound" };
     var repositoryController = { loadMatters: () => {} };
     // notificationsController records calls so we can assert the interrupted path
-    // NEVER fires a failure toast.
-    var notificationsController = { notify: (t, m) => { window.__spy.notify.push([t, m]); } };
+    // NEVER fires a failure toast, and that the persistent progress notice is raised on
+    // review-start and dismissed on every terminal/abort path.
+    var notificationsController = {
+      notify: (t, m) => { window.__spy.notify.push([t, m]); },
+      notifyInProgress: (id, t, s) => { window.__spy.notifyInProgress.push([id, t, s]); },
+      dismissInProgress: (id) => { window.__spy.dismissInProgress.push(id); },
+    };
   `;
 }
 
@@ -185,11 +195,17 @@ async function main() {
       enter: window.__spy.enterReviewInFlightUi,
       started: window.__spy.startReviewPoll.slice(),
       inFlight: reviewPollInFlight(),
+      raised: window.__spy.notifyInProgress.slice(),
     }));
     assert.ok(spy.enter >= 1, "opening in_progress did not enter the in-flight UI");
     assert.ok(spy.started.includes("m-inprogress"), "opening in_progress did not start/schedule the poll");
     assert.ok(spy.inFlight, "opening in_progress left no poll in flight (matter would strand)");
-    process.stdout.write("  ok 1 - open in_progress resumes the background-review poll\n");
+    // Resume-on-open (a fresh load of a live review) must also RAISE the progress notice.
+    assert.ok(
+      spy.raised.some((c) => c[0] === "review-in-progress" && /Reviewing with AI/i.test(c[1])),
+      "resuming an in-flight review on open did not raise the progress notification",
+    );
+    process.stdout.write("  ok 1 - open in_progress resumes the poll + raises the progress notification\n");
     await page.close();
   } catch (error) { failures.push(["1 open in_progress resumes poll", error]); }
 
@@ -245,6 +261,7 @@ async function main() {
       btnDisabled: studioRefreshReviewButton.disabled,
       btnLabel: studioRefreshReviewButton.textContent,
       notify: window.__spy.notify.slice(),
+      dismissed: window.__spy.dismissInProgress.slice(),
       hasRetryButton: Boolean(document.querySelector(".review-retry-button")),
     }));
     assert.equal(r.inFlight, false, "interrupted poll tick did not STOP polling (terminal)");
@@ -256,7 +273,8 @@ async function main() {
     assert.equal(r.btnDisabled, false, "interrupted left the Review button disabled");
     assert.equal(r.btnLabel, "Review", "interrupted button not labelled 'Review'");
     assert.equal(r.notify.length, 0, "interrupted fired a notification toast (must be silent — not a failure)");
-    process.stdout.write("  ok 2 - interrupted poll tick: terminal, calm header, enabled Review, no failure toast\n");
+    assert.ok(r.dismissed.includes("review-in-progress"), "interrupted terminal did NOT clear the progress notification (it would linger)");
+    process.stdout.write("  ok 2 - interrupted poll tick: terminal, calm header, enabled Review, no failure toast, progress notice cleared\n");
     await page.close();
   } catch (error) { failures.push(["2 interrupted poll terminal+calm", error]); }
 
@@ -273,13 +291,39 @@ async function main() {
       inFlight: reviewPollInFlight(),
       title: studioOverallTitle.textContent,
       mark: studioResultMark.textContent,
+      dismissed: window.__spy.dismissInProgress.slice(),
     }));
     assert.equal(r.inFlight, false, "failed poll tick did not stop polling");
     assert.equal(r.title, "Review failed", "a genuine failure must STILL render the red failure header");
     assert.equal(r.mark, "!", "a genuine failure must still render the '!' mark");
-    process.stdout.write("  ok 2b - a genuine 'failed' poll tick still renders the red failure (interrupted didn't weaken it)\n");
+    assert.ok(r.dismissed.includes("review-in-progress"), "a failed terminal did NOT clear the in-flight progress notification");
+    process.stdout.write("  ok 2b - a genuine 'failed' poll tick still renders the red failure + clears the progress notice\n");
     await page.close();
   } catch (error) { failures.push(["2b failed still red", error]); }
+
+  // --- Case 2c: a poll tick reading "completed" CLEARS the progress notice ----
+  try {
+    const page = await loadPage(browser);
+    await page.evaluate(() => {
+      state.selectedMatter = { id: "m-done", review_status: "in_progress", ai_review_ran: false };
+      __realStartReviewPoll("m-done");
+      window.pollReviewMatter = async () => ({ id: "m-done", review_status: "completed", ai_review_ran: true });
+      // applyCompletedReview reads the full review payload + refreshes the board; stub
+      // both so the terminal branch runs without a real network. The dismiss fires in
+      // exitReviewInFlightUi (before the payload load), so this isolates the clear.
+      window.fetchMatterReviewPayload = async () => ({ matter: { id: "m-done", review_status: "completed", ai_review_ran: true }, review_result: { clauses: [] } });
+      repositoryController.loadMatters = async () => {};
+    });
+    await page.evaluate(async () => { await runReviewPollTick(reviewPollController); });
+    const r = await page.evaluate(() => ({
+      inFlight: reviewPollInFlight(),
+      dismissed: window.__spy.dismissInProgress.slice(),
+    }));
+    assert.equal(r.inFlight, false, "completed poll tick did not stop polling");
+    assert.ok(r.dismissed.includes("review-in-progress"), "a completed review did NOT clear the progress notification (it would linger)");
+    process.stdout.write("  ok 2c - a 'completed' poll tick clears the in-flight progress notification\n");
+    await page.close();
+  } catch (error) { failures.push(["2c completed clears progress notice", error]); }
 
   // --- Case 3: stalled keeps the Review button ENABLED (retryable) ------------
   try {
@@ -324,22 +368,38 @@ async function main() {
     await page.close();
   } catch (error) { failures.push(["4 neutral reviewing indicator", error]); }
 
-  // --- Case 5 (Task 3): nav-away clears the stranded 'Reviewing…' file-meta ----
+  // --- Case 5 (Task 3): the verbose progress text moves to the NOTIFICATION; the
+  //     inline toolbar no longer carries it, and nav-away clears the notification ----
   try {
     const page = await loadPage(browser);
     await page.evaluate(() => {
       state.selectedMatter = { id: "m-nav", review_status: "in_progress" };
-      enterReviewInFlightUi(); // writes the optimistic "Reviewing with AI…" meta
+      enterReviewInFlightUi(); // raises the progress NOTIFICATION; clears the inline meta
     });
-    const before = await page.evaluate(() => studioFileMeta.textContent);
-    assert.match(before, /Reviewing with AI/i, "precondition: enterReviewInFlightUi should set the in-flight meta");
-    // Simulate the nav-away/supersede teardown path.
+    const before = await page.evaluate(() => ({
+      fileMeta: studioFileMeta.textContent,
+      btnLabel: studioRefreshReviewButton.textContent,
+      raised: window.__spy.notifyInProgress.slice(),
+    }));
+    // The verbose sentence is GONE from the inline toolbar — file-meta is blank (idle)
+    // and the compact "Reviewing…" button is the only in-toolbar indicator.
+    assert.equal(before.fileMeta, "", "in-flight must CLEAR the inline file-meta (verbose text moved to the notification)");
+    assert.ok(!/Reviewing with AI/i.test(before.fileMeta), "the verbose progress sentence must NOT be in the inline toolbar");
+    assert.equal(before.btnLabel, "Reviewing…", "the compact 'Reviewing…' button indicator must remain");
+    assert.equal(before.raised.length, 1, "review-start must raise exactly one progress notification");
+    assert.match(before.raised[0][1], /Reviewing with AI/i, "the progress notification carries the 'Reviewing with AI…' title");
+    assert.equal(before.raised[0][0], "review-in-progress", "the progress notification uses the fixed in-flight id");
+    // Simulate the nav-away/supersede teardown path: the notification must be cleared.
     await page.evaluate(() => { stopReviewPoll(); exitReviewInFlightUi(); });
-    const after = await page.evaluate(() => studioFileMeta.textContent);
-    assert.equal(after, "", "exitReviewInFlightUi left the stranded 'Reviewing…' meta frozen (incoherent header)");
-    process.stdout.write("  ok 5 - nav-away/abort clears the stranded 'Reviewing…' file-meta\n");
+    const after = await page.evaluate(() => ({
+      fileMeta: studioFileMeta.textContent,
+      dismissed: window.__spy.dismissInProgress.slice(),
+    }));
+    assert.equal(after.fileMeta, "", "exitReviewInFlightUi left a stranded inline meta (incoherent header)");
+    assert.ok(after.dismissed.includes("review-in-progress"), "nav-away/abort did NOT clear the progress notification (it would linger)");
+    process.stdout.write("  ok 5 - verbose text moved to the notification; nav-away/abort clears it\n");
     await page.close();
-  } catch (error) { failures.push(["5 stranded meta cleared", error]); }
+  } catch (error) { failures.push(["5 progress notification raised+cleared", error]); }
 
   // --- Case 5b: exit does NOT stomp an unrelated file-meta --------------------
   try {

@@ -77,6 +77,11 @@ const NotificationsView = (() => {
     // Matter ids whose review we've ALREADY toasted as failed, so a repeated poll
     // that keeps reporting review_status="failed" fires the toast only once.
     const failedReviewSeen = new Set();
+    // Persistent (non-auto-dismissing) INFO toasts keyed by a caller-supplied id, e.g.
+    // the "Reviewing with AI…" progress notice raised on review-start and cleared on
+    // every terminal/abort path. Keyed so the SAME id updates one toast in place rather
+    // than stacking duplicates, and so the caller can dismiss it explicitly.
+    const persistentToasts = new Map();
 
     function inboundMatters(matters) {
       return (Array.isArray(matters) ? matters : []).filter(
@@ -168,8 +173,13 @@ const NotificationsView = (() => {
       // Toasts already animating out (".toast--leaving") still linger in the DOM
       // until their leave animation ends. Counting them would inflate the visible
       // stack and prematurely evict toasts the user can still see, so cap only the
-      // not-yet-leaving toasts.
-      const toasts = container.querySelectorAll(".toast:not(.toast--leaving)");
+      // not-yet-leaving toasts. Persistent INFO toasts (".toast--persistent", e.g. the
+      // "Reviewing with AI…" progress notice) are owned by their caller and cleared
+      // explicitly on a terminal path — they must never be evicted by the cap, or a
+      // burst of arrival toasts would silently drop the live progress notice.
+      const toasts = container.querySelectorAll(
+        ".toast:not(.toast--leaving):not(.toast--persistent)",
+      );
       for (let index = 0; index < toasts.length - MAX_VISIBLE; index += 1) {
         removeToast(toasts[index]);
       }
@@ -182,21 +192,27 @@ const NotificationsView = (() => {
       window.setTimeout(() => toast.remove(), LEAVE_ANIMATION_MS);
     }
 
-    function mountToast(node, onActivate) {
+    function mountToast(node, onActivate, options) {
       if (!container) return;
+      // Persistent toasts (the progress notice) never auto-dismiss: they are cleared
+      // explicitly by the caller on a terminal path, so a long review keeps showing
+      // the live notice instead of vanishing after AUTO_DISMISS_MS.
+      const autoDismiss = !(options && options.autoDismiss === false);
       const dismiss = () => removeToast(node);
-      let dismissTimer = window.setTimeout(dismiss, AUTO_DISMISS_MS);
-      node.addEventListener("mouseenter", () => window.clearTimeout(dismissTimer));
+      let dismissTimer = autoDismiss ? window.setTimeout(dismiss, AUTO_DISMISS_MS) : null;
+      node.addEventListener("mouseenter", () => {
+        if (dismissTimer !== null) window.clearTimeout(dismissTimer);
+      });
       node.addEventListener("mouseleave", () => {
-        dismissTimer = window.setTimeout(dismiss, AUTO_DISMISS_MS);
+        if (autoDismiss) dismissTimer = window.setTimeout(dismiss, AUTO_DISMISS_MS);
       });
       node.querySelector("[data-toast-close]")?.addEventListener("click", (event) => {
         event.stopPropagation();
-        window.clearTimeout(dismissTimer);
+        if (dismissTimer !== null) window.clearTimeout(dismissTimer);
         dismiss();
       });
       node.querySelector("[data-toast-open]")?.addEventListener("click", () => {
-        window.clearTimeout(dismissTimer);
+        if (dismissTimer !== null) window.clearTimeout(dismissTimer);
         dismiss();
         onActivate();
       });
@@ -326,7 +342,54 @@ const NotificationsView = (() => {
       mountToast(node, () => {});
     }
 
-    return { observe, poll, notify, notifySuccess };
+    // Raise (or UPDATE in place) a persistent INFO toast keyed by `id`. Unlike notify()
+    // this toast does NOT auto-dismiss and is NOT evicted by the stack cap — it stays
+    // until the caller clears it with dismissInProgress(id). Re-calling with the same id
+    // rewrites the existing toast's text rather than stacking a duplicate, so a progress
+    // notice can swap its subtitle ("…taking a little longer…") without flicker. Used by
+    // the review workstation for the "Reviewing with AI…" progress notice (raised on
+    // review-start, cleared on every terminal/abort path). role="status" +
+    // aria-live="polite" so a screen reader announces it calmly without stealing focus.
+    function notifyInProgress(id, title, subtitle) {
+      const key = String(id == null ? "" : id);
+      const existing = persistentToasts.get(key);
+      if (existing && existing.isConnected !== false && existing.parentNode) {
+        // Update the live toast in place (no new mount, no re-trigger of the cap).
+        const titleNode = existing.querySelector?.("[data-toast-title]");
+        const subtitleNode = existing.querySelector?.("[data-toast-subtitle]");
+        if (titleNode) titleNode.innerHTML = esc(title);
+        if (subtitleNode) subtitleNode.innerHTML = subtitle ? esc(subtitle) : "";
+        return;
+      }
+      const node = document.createElement("div");
+      node.className = "toast toast--info toast--persistent";
+      node.setAttribute("role", "status");
+      node.setAttribute("aria-live", "polite");
+      node.dataset.toastPersistentId = key;
+      node.innerHTML = `
+        <button class="toast-close" type="button" data-toast-close aria-label="Dismiss notification">&times;</button>
+        <span class="toast-open toast-open--static">
+          <span class="toast-icon" aria-hidden="true">\u{1F50E}</span>
+          <span class="toast-body">
+            <span class="toast-title" data-toast-title>${esc(title)}</span>
+            ${subtitle ? `<span class="toast-subtitle" data-toast-subtitle>${esc(subtitle)}</span>` : '<span class="toast-subtitle" data-toast-subtitle hidden></span>'}
+          </span>
+        </span>
+      `;
+      persistentToasts.set(key, node);
+      mountToast(node, () => {}, { autoDismiss: false });
+    }
+
+    // Clear the persistent INFO toast raised under `id` (no-op if none is live). Called
+    // on EVERY terminal/abort path of the thing it tracks so the notice never lingers.
+    function dismissInProgress(id) {
+      const key = String(id == null ? "" : id);
+      const node = persistentToasts.get(key);
+      persistentToasts.delete(key);
+      if (node) removeToast(node);
+    }
+
+    return { observe, poll, notify, notifySuccess, notifyInProgress, dismissInProgress };
   }
 
   return { createController };

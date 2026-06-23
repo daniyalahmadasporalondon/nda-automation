@@ -35,7 +35,12 @@ const REVIEW_POLL_TTL_MS = 600000;
 // review does not look stuck. Purely cosmetic; it changes no failure logic.
 const REVIEW_POLL_STILL_WORKING_AFTER_MS = 240000;
 
-// User-facing copy shown on the matter while the background AI review runs.
+// User-facing copy shown while the background AI review runs. This NO LONGER goes into
+// the inline #studioFileMeta toolbar slot — the verbose progress sentence now lives in
+// the app's NOTIFICATION center (a calm, persistent INFO toast), keeping the toolbar to
+// the compact "Reviewing…" button state. The constants are still used as the
+// notification's title/subtitle copy and remain the markers the old in-flight-meta
+// reset guard recognised (now inert, kept defensive).
 const REVIEW_REFRESH_PROGRESS_MESSAGE =
   "Reviewing with AI… this runs in the background and can take a couple of minutes.";
 
@@ -43,6 +48,57 @@ const REVIEW_REFRESH_PROGRESS_MESSAGE =
 // still in progress (not failed) — just a heavier document taking longer.
 const REVIEW_REFRESH_STILL_WORKING_MESSAGE =
   "Still reviewing with AI… this document is taking a little longer than usual. Hang tight — it's still running in the background.";
+
+// The persistent progress NOTIFICATION (raised on review-start, updated to the
+// "taking longer" copy past the usual window, cleared on every terminal/abort path).
+// A single fixed id keys the one in-flight notice — only one review is tracked at a
+// time (the poll is single-in-flight), so a fixed key updates the live toast in place
+// rather than stacking duplicates, and lets the terminal paths clear it unambiguously.
+const REVIEW_PROGRESS_NOTIFICATION_ID = "review-in-progress";
+const REVIEW_PROGRESS_NOTIFICATION_TITLE = "Reviewing with AI…";
+const REVIEW_PROGRESS_NOTIFICATION_SUBTITLE =
+  "This can take a couple of minutes. It runs in the background.";
+const REVIEW_PROGRESS_NOTIFICATION_SUBTITLE_SLOW =
+  "This document is taking a little longer than usual — still running in the background.";
+
+// Raise (or update) the calm, persistent "Reviewing with AI…" INFO notification through
+// the app's ONE notification center, instead of writing the verbose sentence into the
+// inline toolbar. Defensive: in an isolated test harness without the controller this is
+// a silent no-op and never throws, so the review flow is unaffected.
+function raiseReviewProgressNotification(subtitle) {
+  try {
+    if (
+      typeof notificationsController !== "undefined" &&
+      notificationsController &&
+      typeof notificationsController.notifyInProgress === "function"
+    ) {
+      notificationsController.notifyInProgress(
+        REVIEW_PROGRESS_NOTIFICATION_ID,
+        REVIEW_PROGRESS_NOTIFICATION_TITLE,
+        subtitle || REVIEW_PROGRESS_NOTIFICATION_SUBTITLE,
+      );
+    }
+  } catch (error) {
+    // The notification is advisory; never let it break the review flow.
+  }
+}
+
+// Clear the persistent progress notification. MUST be called on EVERY terminal/abort
+// path (completed / failed / interrupted / stalled-timeout / nav-away / supersede) so a
+// finished review never leaves a stale "Reviewing…" notice lingering. Best-effort.
+function clearReviewProgressNotification() {
+  try {
+    if (
+      typeof notificationsController !== "undefined" &&
+      notificationsController &&
+      typeof notificationsController.dismissInProgress === "function"
+    ) {
+      notificationsController.dismissInProgress(REVIEW_PROGRESS_NOTIFICATION_ID);
+    }
+  } catch (error) {
+    // Best-effort dismissal; never let it break the review flow.
+  }
+}
 
 // ---------------------------------------------------------------------------
 // In-flight background-review poll controller.
@@ -97,7 +153,12 @@ function enterReviewInFlightUi() {
     studioRefreshReviewButton.classList.add("is-refreshing");
     studioRefreshReviewButton.setAttribute("aria-busy", "true");
   }
-  setFileMeta(REVIEW_REFRESH_PROGRESS_MESSAGE);
+  // The verbose "Reviewing with AI…" progress sentence now lives in the NOTIFICATION
+  // center, not the inline toolbar. Clear the file-meta slot (matching its idle/blank
+  // state) so the compact "Reviewing…" button is the only in-toolbar indicator, and
+  // raise the calm persistent INFO notification with the full explanation.
+  setFileMeta("");
+  raiseReviewProgressNotification();
   // Show the shimmer skeleton placeholders (document-pane paragraph stack +
   // inspector clause rows) PAIRED with the honest duration copy, replacing the
   // empty/stale split workspace while the background review runs. Guarded so a
@@ -124,6 +185,11 @@ const REVIEW_IN_FLIGHT_META_MESSAGES = [
 // meta). Button enable/label are re-derived from the now-current matter by
 // renderReviewRefreshNotice().
 function exitReviewInFlightUi() {
+  // Clear the persistent progress NOTIFICATION on EVERY terminal/abort path. This is the
+  // single choke point for tearing down the in-flight UI — completed, failed,
+  // interrupted, stalled-timeout, nav-away and supersede all route through here — so the
+  // "Reviewing with AI…" notice never lingers after the review settles or is abandoned.
+  clearReviewProgressNotification();
   if (studioRefreshReviewButton?.isConnected) {
     studioRefreshReviewButton.classList.remove("is-refreshing");
     studioRefreshReviewButton.removeAttribute("aria-busy");
@@ -219,12 +285,15 @@ async function runReviewPollTick(controller) {
     // a DISTINCT non-failure state — the worker may simply be running long or have
     // been interrupted). Either way the review has NOT durably failed, so we keep
     // polling and surface a calm "still processing" state rather than a red failure.
-    // Past the usual window, swap to the honest "taking longer than usual" copy.
+    // Past the usual window, swap the persistent progress NOTIFICATION to the honest
+    // "taking longer than usual" copy. The review is still live (in_progress/stalled is
+    // non-terminal in the poll), so we UPDATE the notice in place rather than clearing
+    // it or writing the verbose sentence back into the inline toolbar.
     if (status === "stalled" || Date.now() - controller.startedAt >= REVIEW_POLL_STILL_WORKING_AFTER_MS) {
-      const stalledMessage = status === "stalled"
-        ? String(matter.review_error || "").trim() || REVIEW_REFRESH_STILL_WORKING_MESSAGE
-        : REVIEW_REFRESH_STILL_WORKING_MESSAGE;
-      setFileMeta(stalledMessage);
+      const slowSubtitle = status === "stalled"
+        ? String(matter.review_error || "").trim() || REVIEW_PROGRESS_NOTIFICATION_SUBTITLE_SLOW
+        : REVIEW_PROGRESS_NOTIFICATION_SUBTITLE_SLOW;
+      raiseReviewProgressNotification(slowSubtitle);
     }
     if (typeof repositoryController?.loadMatters === "function") {
       repositoryController.loadMatters();
