@@ -800,5 +800,104 @@ def test_retro_convert_guarded_fail_open_when_conversion_raises(monkeypatch):
     assert result is stored
 
 
+# --------------------------------------------------------------------------- #
+# Observability: working_docx_status outcome signal (durable, surfaced)
+# --------------------------------------------------------------------------- #
+STATUS_FIELD = ingestion_service.WORKING_DOCX_STATUS_FIELD
+
+
+def test_retro_convert_sets_status_converted_on_success(monkeypatch):
+    # A successful retro conversion persists working_docx_status="converted" so the next
+    # re-run / an operator can SEE the outcome rather than inferring it from presence.
+    repo = InMemoryMatterRepository()
+    stored = _store_legacy_pdf_matter(repo)
+    converter = _StubConverter(RECON_PARAGRAPHS)
+    real_convert = pdf_ingest_conversion.convert_pdf_matter_to_docx
+    monkeypatch.setattr(
+        ingestion_service.pdf_ingest_conversion, "convert_pdf_matter_to_docx",
+        lambda pdf_bytes, source_filename, paragraphs, **_: real_convert(
+            pdf_bytes, source_filename, paragraphs, converter=converter
+        ),
+    )
+    ingestion_service.retro_convert_pdf_matter(stored, repository=repo, owner_user_id="owner-1")
+    refreshed = repo.get_matter(stored["id"], owner_user_id="owner-1")
+    assert refreshed.get(STATUS_FIELD) == ingestion_service.WORKING_DOCX_STATUS_CONVERTED
+
+
+def test_retro_convert_sets_status_failed_on_raising_conversion(monkeypatch):
+    # A reconstruction that raises a NON-empty-body error records status="failed" (with
+    # the exception class as the reason) and STILL fails open (matter unchanged).
+    repo = InMemoryMatterRepository()
+    stored = _store_legacy_pdf_matter(repo)
+
+    def _boom(pdf_bytes, source_filename, paragraphs, **_):
+        raise RuntimeError("pdf2docx exploded")
+
+    monkeypatch.setattr(
+        ingestion_service.pdf_ingest_conversion, "convert_pdf_matter_to_docx", _boom
+    )
+    ingestion_service.retro_convert_pdf_matter(stored, repository=repo, owner_user_id="owner-1")
+    refreshed = repo.get_matter(stored["id"], owner_user_id="owner-1")
+    from nda_automation.matter_render_job import matter_has_working_docx
+
+    assert matter_has_working_docx(refreshed) is False  # review still completes (fail-open)
+    assert refreshed.get(STATUS_FIELD) == ingestion_service.WORKING_DOCX_STATUS_FAILED
+    assert "RuntimeError" in str(refreshed.get(STATUS_FIELD + "_reason") or "")
+
+
+def test_retro_convert_sets_status_empty_body_on_scanned_pdf(monkeypatch):
+    # A scanned / text-empty PDF (reconstructs to a blank-body DOCX) records
+    # status="empty_body" -- the durable signal that there was nothing to anchor.
+    repo = InMemoryMatterRepository()
+    stored = _store_legacy_pdf_matter(repo)
+    converter = _EmptyBodyConverter()
+    real_convert = pdf_ingest_conversion.convert_pdf_matter_to_docx
+    monkeypatch.setattr(
+        ingestion_service.pdf_ingest_conversion, "convert_pdf_matter_to_docx",
+        lambda pdf_bytes, source_filename, paragraphs, **_: real_convert(
+            pdf_bytes, source_filename, paragraphs, converter=converter
+        ),
+    )
+    ingestion_service.retro_convert_pdf_matter(stored, repository=repo, owner_user_id="owner-1")
+    refreshed = repo.get_matter(stored["id"], owner_user_id="owner-1")
+    from nda_automation.matter_render_job import matter_has_working_docx
+
+    assert matter_has_working_docx(refreshed) is False
+    assert refreshed.get(STATUS_FIELD) == ingestion_service.WORKING_DOCX_STATUS_EMPTY_BODY
+
+
+def test_retro_convert_guarded_sets_status_timed_out_on_slow_conversion(monkeypatch):
+    # When the OUTER wall-clock guard abandons a slow conversion, it records
+    # status="timed_out" so the next re-run TELLS us the conversion was abandoned for
+    # exceeding the budget (not skipped, not failed) -- the core observability fix.
+    import time
+
+    repo = InMemoryMatterRepository()
+    stored = _store_legacy_pdf_matter(repo)
+
+    def _hang(*_args, **_kwargs):
+        time.sleep(30)
+
+    monkeypatch.setattr(ingestion_service, "retro_convert_pdf_matter", _hang)
+
+    result = ingestion_service.retro_convert_pdf_matter_guarded(
+        stored, repository=repo, owner_user_id="owner-1", timeout_seconds=0.5
+    )
+    # Fail-open: the review still proceeds on the un-converted matter.
+    assert result is stored
+    refreshed = repo.get_matter(stored["id"], owner_user_id="owner-1")
+    assert refreshed.get(STATUS_FIELD) == ingestion_service.WORKING_DOCX_STATUS_TIMED_OUT
+
+
+def test_retro_pdf_convert_timeout_default_is_sixty_seconds(monkeypatch):
+    # Part 3: the outer guard default is raised to 60s so a multi-page table-heavy PDF
+    # (pdf2docx ~30-60s) is no longer silently abandoned by a 25s guard shorter than the
+    # inner 90s subprocess timeout.
+    monkeypatch.delenv("NDA_RETRO_PDF_CONVERT_TIMEOUT_SECONDS", raising=False)
+    assert ingestion_service._retro_pdf_convert_timeout_seconds() == 60.0
+    monkeypatch.setenv("NDA_RETRO_PDF_CONVERT_TIMEOUT_SECONDS", "45")
+    assert ingestion_service._retro_pdf_convert_timeout_seconds() == 45.0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

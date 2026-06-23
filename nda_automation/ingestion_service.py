@@ -10,7 +10,13 @@ from datetime import datetime, timezone
 from types import ModuleType
 from typing import Any
 
-from . import artifact_service, generation_priority, matter_render_job, pdf_ingest_conversion
+from . import (
+    artifact_service,
+    generation_priority,
+    matter_render_job,
+    pdf_docx_reconstruction,
+    pdf_ingest_conversion,
+)
 from .checker import ParagraphAlignmentError
 from .document_limits import ensure_document_size
 from .docx_text import DocxExtractionError, detect_docx_tracked_changes, extract_docx_paragraphs
@@ -1362,6 +1368,63 @@ def create_matter_from_document(
 # paragraphs so the redlines it produces anchor into the working DOCX body.
 WORKING_DOCX_PARAGRAPHS_FIELD = "working_docx_paragraphs"
 
+# Persisted, surfaced outcome of the PDF->working-DOCX retro-conversion so the NEXT
+# re-run TELLS us what happened instead of silently failing open. Set by the guarded
+# conversion path to one of WORKING_DOCX_STATUS_* below. This closes the observability
+# gap: a converted PDF that ends without a working DOCX leaves a clear reason behind
+# (timed_out / failed / empty_body / skipped) rather than a silent no-op.
+WORKING_DOCX_STATUS_FIELD = "working_docx_status"
+WORKING_DOCX_STATUS_CONVERTED = "converted"
+WORKING_DOCX_STATUS_TIMED_OUT = "timed_out"
+WORKING_DOCX_STATUS_FAILED = "failed"
+WORKING_DOCX_STATUS_EMPTY_BODY = "empty_body"
+WORKING_DOCX_STATUS_SKIPPED = "skipped"
+
+
+def _record_working_docx_status(
+    matter_id: str,
+    status: str,
+    *,
+    repository: MatterRepository,
+    owner_user_id: str,
+    reason: str = "",
+    elapsed_seconds: float | None = None,
+) -> None:
+    """Persist + LOG the PDF->working-DOCX conversion outcome. FAIL-OPEN: a write/log
+    error here must NEVER break the review, so every failure is swallowed.
+
+    INFO for converted/skipped (expected, benign); WARNING for timed_out/failed/
+    empty_body (a converted PDF ended with no working DOCX -- the reason is the signal).
+    """
+    if not matter_id:
+        return
+    elapsed_repr = f"{elapsed_seconds:.1f}" if elapsed_seconds is not None else "n/a"
+    level = (
+        logging.INFO
+        if status in (WORKING_DOCX_STATUS_CONVERTED, WORKING_DOCX_STATUS_SKIPPED)
+        else logging.WARNING
+    )
+    LOGGER.log(
+        level,
+        "PDF->working-DOCX conversion outcome for matter %s: status=%s elapsed=%ss reason=%s",
+        matter_id,
+        status,
+        elapsed_repr,
+        reason or "-",
+    )
+    try:
+        fields: dict[str, Any] = {WORKING_DOCX_STATUS_FIELD: status}
+        if reason:
+            fields[WORKING_DOCX_STATUS_FIELD + "_reason"] = reason
+        repository.update_matter_fields(matter_id, fields, owner_user_id=owner_user_id)
+    except Exception:  # pragma: no cover - status persistence is best-effort
+        LOGGER.warning(
+            "Persisting working_docx_status=%s failed for matter %s (non-fatal)",
+            status,
+            matter_id,
+            exc_info=True,
+        )
+
 
 def _convert_pdf_matter_at_ingest(
     matter: dict[str, Any],
@@ -1417,17 +1480,46 @@ def _persist_pdf_working_conversion(
     proceeds. The empty-body guard inside ``convert_pdf_matter_to_docx`` means a
     scanned / text-empty PDF raises here and is left on the PDF page-image view.
     """
+    started = time.monotonic()
     try:
         working = pdf_ingest_conversion.convert_pdf_matter_to_docx(
             document_bytes,
             source_filename,
             extracted_paragraphs,
         )
-    except Exception:
+    except pdf_docx_reconstruction.PdfDocxReconstructionFailedError as exc:
+        # The empty-body guard inside convert_pdf_matter_to_docx raises this when the
+        # reconstructed DOCX has no anchorable body text (scanned / image-only /
+        # text-empty PDF). Distinct, expected outcome: record empty_body, keep the
+        # page-image view.
+        LOGGER.warning(
+            "PDF->working-DOCX conversion produced no anchorable body for matter %s; "
+            "keeping legacy PDF matter",
+            matter_id,
+            exc_info=True,
+        )
+        _record_working_docx_status(
+            matter_id,
+            WORKING_DOCX_STATUS_EMPTY_BODY,
+            repository=repository,
+            owner_user_id=owner_user_id,
+            reason=type(exc).__name__,
+            elapsed_seconds=time.monotonic() - started,
+        )
+        return matter
+    except Exception as exc:
         LOGGER.warning(
             "PDF->working-DOCX conversion failed for matter %s; keeping legacy PDF matter",
             matter_id,
             exc_info=True,
+        )
+        _record_working_docx_status(
+            matter_id,
+            WORKING_DOCX_STATUS_FAILED,
+            repository=repository,
+            owner_user_id=owner_user_id,
+            reason=type(exc).__name__,
+            elapsed_seconds=time.monotonic() - started,
         )
         return matter
     # ORDER MATTERS (half-persist guard): the working artifact is what makes the
@@ -1459,7 +1551,7 @@ def _persist_pdf_working_conversion(
             repository=repository,
             owner_user_id=owner_user_id,
         )
-    except Exception:
+    except Exception as exc:
         LOGGER.warning(
             "Registering PDF->working-DOCX artifact failed for matter %s; rolling back "
             "the re-keyed paragraphs and keeping legacy PDF matter",
@@ -1476,7 +1568,23 @@ def _persist_pdf_working_conversion(
             LOGGER.warning(
                 "Rolling back PDF->working-DOCX paragraphs failed for matter %s", matter_id, exc_info=True
             )
+            _record_working_docx_status(
+                matter_id,
+                WORKING_DOCX_STATUS_FAILED,
+                repository=repository,
+                owner_user_id=owner_user_id,
+                reason=f"artifact_register:{type(exc).__name__}",
+                elapsed_seconds=time.monotonic() - started,
+            )
             return updated if isinstance(updated, dict) else matter
+        _record_working_docx_status(
+            matter_id,
+            WORKING_DOCX_STATUS_FAILED,
+            repository=repository,
+            owner_user_id=owner_user_id,
+            reason=f"artifact_register:{type(exc).__name__}",
+            elapsed_seconds=time.monotonic() - started,
+        )
         return rolled_back if isinstance(rolled_back, dict) else matter
     LOGGER.info(
         "PDF->working-DOCX conversion stored for matter %s (mapped=%d unmapped=%d)",
@@ -1484,6 +1592,22 @@ def _persist_pdf_working_conversion(
         working.mapped_count,
         working.unmapped_count,
     )
+    _record_working_docx_status(
+        matter_id,
+        WORKING_DOCX_STATUS_CONVERTED,
+        repository=repository,
+        owner_user_id=owner_user_id,
+        reason=f"mapped={working.mapped_count} unmapped={working.unmapped_count}",
+        elapsed_seconds=time.monotonic() - started,
+    )
+    # Re-read so the returned matter carries the persisted status field (the status
+    # write happens AFTER the paragraphs write that produced ``updated``).
+    try:
+        refreshed = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+    except Exception:  # pragma: no cover - best-effort re-read
+        refreshed = None
+    if isinstance(refreshed, dict):
+        return refreshed
     return updated if isinstance(updated, dict) else matter
 
 
@@ -1561,18 +1685,28 @@ def retro_convert_pdf_matter(
     source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "")
     try:
         document_bytes = repository.get_source_document_bytes(matter)
-    except Exception:
+    except Exception as exc:
         LOGGER.warning(
             "Retro PDF->working-DOCX conversion: reading original PDF bytes failed for matter %s; "
             "keeping legacy PDF matter",
             matter_id,
             exc_info=True,
         )
+        _record_working_docx_status(
+            matter_id,
+            WORKING_DOCX_STATUS_FAILED,
+            repository=repository,
+            owner_user_id=owner_user_id,
+            reason=f"read_source_bytes:{type(exc).__name__}",
+        )
         return matter
     if not document_bytes:
-        LOGGER.info(
-            "Retro PDF->working-DOCX conversion skipped for matter %s: no original PDF bytes",
+        _record_working_docx_status(
             matter_id,
+            WORKING_DOCX_STATUS_SKIPPED,
+            repository=repository,
+            owner_user_id=owner_user_id,
+            reason="no_original_pdf_bytes",
         )
         return matter
     # The pypdf review paragraphs that get re-keyed onto the reconstructed DOCX body.
@@ -1594,20 +1728,29 @@ def retro_convert_pdf_matter(
             _document_type, reextracted, _quality = extract_document(
                 source_filename or "document.pdf", document_bytes
             )
-        except Exception:
+        except Exception as exc:
             LOGGER.warning(
                 "Retro PDF->working-DOCX conversion: re-extracting pypdf paragraphs failed "
                 "for matter %s; keeping legacy PDF matter",
                 matter_id,
                 exc_info=True,
             )
+            _record_working_docx_status(
+                matter_id,
+                WORKING_DOCX_STATUS_FAILED,
+                repository=repository,
+                owner_user_id=owner_user_id,
+                reason=f"reextract:{type(exc).__name__}",
+            )
             return matter
         extracted_paragraphs = reextracted
     if not extracted_paragraphs:
-        LOGGER.info(
-            "Retro PDF->working-DOCX conversion skipped for matter %s: no review paragraphs "
-            "and none could be re-extracted from the PDF (scanned/image-only/empty)",
+        _record_working_docx_status(
             matter_id,
+            WORKING_DOCX_STATUS_EMPTY_BODY,
+            repository=repository,
+            owner_user_id=owner_user_id,
+            reason="no_paragraphs_scanned_or_empty",
         )
         return matter
     LOGGER.info("Retro PDF->working-DOCX conversion starting for matter %s", matter_id)
@@ -1629,13 +1772,21 @@ def retro_convert_pdf_matter(
 # complete fast whether or not the conversion succeeds, so we wrap the whole conversion
 # in an OUTER wall-clock guard: if it does not finish within this budget we ABANDON it
 # (fail-open -- the matter stays a PDF with no working DOCX) and let the AI review
-# proceed. Conservatively shorter than the inner pdf2docx timeout so a single hung
-# conversion can never dominate the review latency.
+# proceed.
+#
+# DEFAULT 60s (was 25s). The previous 25s default was SHORTER than the inner pdf2docx
+# subprocess timeout (90s), so the OUTER guard -- not the subprocess -- was the binding
+# constraint: it silently abandoned any conversion that took 25-90s, which is exactly
+# the regime a multi-page TABLE-HEAVY text PDF (e.g. the Pismo NDA) lands in (pdf2docx
+# table reconstruction routinely runs 30-60s). 60s gives those legitimate conversions
+# room to finish while still bounding the worker: a true hang is still killed by the
+# inner 90s subprocess timeout, and the outer guard abandons at 60s so a single hung
+# conversion never dominates review latency. Env-overridable for tighter/looser bounds.
 def _retro_pdf_convert_timeout_seconds() -> float:
     try:
-        value = float(os.environ.get("NDA_RETRO_PDF_CONVERT_TIMEOUT_SECONDS", "25") or 25)
+        value = float(os.environ.get("NDA_RETRO_PDF_CONVERT_TIMEOUT_SECONDS", "60") or 60)
     except (TypeError, ValueError):
-        return 25.0
+        return 60.0
     return value if value >= 1.0 else 1.0
 
 
@@ -1693,6 +1844,14 @@ def retro_convert_pdf_matter_guarded(
             "abandoning conversion and proceeding with the review on the PDF source",
             budget,
             matter_id,
+        )
+        _record_working_docx_status(
+            matter_id,
+            WORKING_DOCX_STATUS_TIMED_OUT,
+            repository=repository,
+            owner_user_id=owner_user_id,
+            reason=f"outer_guard:{budget:.0f}s",
+            elapsed_seconds=budget,
         )
         return matter
     converted = result.get("matter")

@@ -144,6 +144,12 @@ MATTER_UPDATE_FIELDS = {
     # source_part:"pdf" marker. Stored at ingest so the on-demand review produces
     # redlines that anchor by index into the working DOCX, exactly like native DOCX.
     "working_docx_paragraphs",
+    # Approach C observability: the durable outcome of the PDF->working-DOCX retro
+    # conversion (converted/timed_out/failed/empty_body/skipped) + a short reason, so a
+    # converted PDF that ends with no working DOCX leaves a surfaced signal behind
+    # instead of silently failing open. Set by retro_convert_pdf_matter[_guarded].
+    "working_docx_status",
+    "working_docx_status_reason",
 }
 
 
