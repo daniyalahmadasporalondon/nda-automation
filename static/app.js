@@ -105,6 +105,7 @@ const REVIEW_INSPECTOR_TITLES = {
 let pendingReviewSendMatterId = null;
 let authSessionController;
 let adminAiController;
+let adminModelsController;
 let adminHealthController;
 let adminIntegrationsController;
 let adminDriveController;
@@ -376,6 +377,16 @@ adminAiController = createAdminAiController({
   aiFacts: document.querySelector("#adminAiFacts"),
   aiOverall: document.querySelector("#adminAiOverall"),
   aiRefreshButton: document.querySelector("#adminAiRefreshButton"),
+  reviewErrorFromPayload,
+});
+adminModelsController = createAdminModelsController({
+  card: document.querySelector("#adminModelsCard"),
+  overall: document.querySelector("#adminModelsOverall"),
+  refreshButton: document.querySelector("#adminModelsRefreshButton"),
+  rowsList: document.querySelector("#adminModelsList"),
+  saveButton: document.querySelector("#adminModelsSaveButton"),
+  message: document.querySelector("#adminModelsMessage"),
+  warningNote: document.querySelector("#adminModelsWarning"),
   reviewErrorFromPayload,
 });
 adminHealthController = createAdminHealthController({
@@ -2261,6 +2272,9 @@ function activateAdminSection(sectionName) {
   }
   if (sectionName === "ai") {
     adminAiController.load();
+  }
+  if (sectionName === "models") {
+    adminModelsController.load();
   }
   if (sectionName === "health") {
     adminHealthController.load();

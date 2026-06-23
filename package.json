@@ -13,6 +13,7 @@
     "test:frontend:docusign-send": "node tests/frontend/docusign-send.cjs",
     "test:frontend:admin": "node tests/frontend/admin-integrations.cjs",
     "test:frontend:admin-access": "node tests/frontend/admin-access.cjs",
+    "test:frontend:admin-models": "node tests/frontend/admin-models.cjs",
     "test:frontend:add-clause": "node tests/frontend/add-clause.cjs",
     "test:frontend:entities-in-playbook": "node tests/frontend/entities-in-playbook.cjs",
     "test:frontend:entity-court-coupling": "node tests/frontend/entity-court-coupling.cjs",

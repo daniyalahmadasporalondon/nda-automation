@@ -114,6 +114,9 @@ jobs:
       - name: Run frontend behavior tests
         run: npm run test:frontend
 
+      - name: Run admin AI model picker panel test
+        run: npm run test:frontend:admin-models
+
       - name: Run review-failure notification test
         run: npm run test:frontend:notifications
 

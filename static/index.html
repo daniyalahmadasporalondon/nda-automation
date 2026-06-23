@@ -906,6 +906,10 @@
                 <strong>AI Runtime</strong>
                 <span>Provider and model</span>
               </button>
+              <button class="admin-section-button" type="button" data-admin-section="models" data-admin-surface="admin" aria-pressed="false">
+                <strong>AI Models</strong>
+                <span>Model per AI role</span>
+              </button>
               <button class="admin-section-button" type="button" data-admin-section="health" data-admin-surface="admin" aria-pressed="false">
                 <strong>Health</strong>
                 <span>AI review monitoring</span>
@@ -1130,6 +1134,44 @@
                   </dl>
                 </article>
 
+              </section>
+            </section>
+
+            <section class="admin-section-panel" id="adminModelsPanel" data-admin-panel="models" hidden>
+              <header class="admin-section-head">
+                <div>
+                  <p class="eyebrow">runtime</p>
+                  <h1>AI models</h1>
+                </div>
+                <div class="admin-section-actions">
+                  <button class="secondary" id="adminModelsRefreshButton" type="button">Refresh</button>
+                  <button class="primary" id="adminModelsSaveButton" type="button">Save models</button>
+                </div>
+              </header>
+
+              <section class="admin-engine-shell">
+                <article class="integration-card admin-models-card" id="adminModelsCard" aria-live="polite">
+                  <header class="integration-card-head">
+                    <div>
+                      <p class="eyebrow">provider</p>
+                      <h2>Model per AI role</h2>
+                    </div>
+                    <span class="integration-status" id="adminModelsOverall">Checking</span>
+                  </header>
+
+                  <p class="admin-models-intro">
+                    Pick the OpenRouter model each AI role uses. Changes take effect on the next
+                    request &mdash; no restart needed. Precedence is admin override &rarr; environment
+                    variable &rarr; built-in default; <strong>Reset to default</strong> clears the
+                    admin override for a role.
+                  </p>
+
+                  <p class="admin-models-warning" id="adminModelsWarning" role="status" hidden></p>
+
+                  <ul class="admin-models-list" id="adminModelsList" aria-label="AI roles and their models"></ul>
+
+                  <p class="admin-models-message" id="adminModelsMessage" aria-live="polite">Checking</p>
+                </article>
               </section>
             </section>
 
@@ -2253,6 +2295,7 @@
     <script src="/static/js/draft-intake.js?v=20260621locklaw1"></script>
     <script src="/static/js/auth-session.js?v=20260618depstatus1"></script>
     <script src="/static/js/admin-ai.js?v=20260621humanize1"></script>
+    <script src="/static/js/admin-models.js?v=20260623modelpicker1"></script>
     <script src="/static/js/admin-health.js?v=20260621humanize1"></script>
     <script src="/static/js/admin-integrations.js?v=20260622syncwindow2"></script>
     <script src="/static/js/admin-drive.js?v=20260621nda1"></script>
