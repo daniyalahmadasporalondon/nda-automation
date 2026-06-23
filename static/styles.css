@@ -14442,3 +14442,33 @@ label.is-hidden {
   box-shadow: none;
   color: #fff;
 }
+
+/* --- Push-further polish (round 2) --- */
+
+/* Review button: the primary "run the review" action. The base amber-outline
+   read as a warning; make it a clean solid brand action instead. */
+#reviewView .studio-refresh-review {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+
+#reviewView .studio-refresh-review:hover:not(:disabled),
+#reviewView .studio-refresh-review:focus-visible {
+  background: var(--brand-bright);
+  border-color: var(--brand-bright);
+  color: #fff;
+}
+
+#reviewView .studio-refresh-review.is-refreshing::before {
+  border-color: rgba(255, 255, 255, 0.45);
+  border-top-color: #fff;
+}
+
+/* Centre the document page in its column so the slack becomes a balanced margin
+   on both sides (a real document-viewer look) instead of a lopsided grey gutter
+   dumped on the right. Base rule is `margin: 0 auto 0 0` (auto-right only). */
+#reviewView .studio-page {
+  margin-left: auto;
+  margin-right: auto;
+}
