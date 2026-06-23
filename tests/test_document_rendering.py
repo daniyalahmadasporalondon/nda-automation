@@ -391,11 +391,18 @@ class _FakePixmap:
         return b"\x89PNG\r\nfake\n"
 
 
+# Sentinel mirroring fitz.csRGB so tests can assert the renderer pins RGB.
+_FAKE_CSRGB = object()
+
+
 class _FakePage:
     def __init__(self, width_pts: float, height_pts: float) -> None:
         self.rect = _FakeRect(width_pts, height_pts)
+        # Records the colorspace passed at the last get_pixmap call.
+        self.last_colorspace: object = None
 
-    def get_pixmap(self, *, matrix, alpha=False):  # noqa: ANN001 - mirrors fitz signature
+    def get_pixmap(self, *, matrix, colorspace=None, alpha=False):  # noqa: ANN001 - mirrors fitz signature
+        self.last_colorspace = colorspace
         return _FakePixmap(self.rect.width, self.rect.height, matrix.scale)
 
 
@@ -420,14 +427,21 @@ class _FakeFitzModule:
     def __init__(self, pages: list[_FakePage]) -> None:
         self._pages = pages
         self.Matrix = _FakeMatrix
+        self.csRGB = _FAKE_CSRGB
 
     def open(self, _path: str) -> _FakeDocument:
         return _FakeDocument(self._pages)
 
 
 class BudgetedPageDpiTests(unittest.TestCase):
-    def test_default_page_image_dpi_is_high_fidelity(self):
-        self.assertEqual(DEFAULT_PAGE_IMAGE_DPI, 288)
+    def test_default_page_image_dpi_is_screen_legible(self):
+        # 200 DPI is the preview default: visually indistinguishable from 288 at
+        # display zoom, but ~48% cheaper to rasterize and cache. It must stay in
+        # the legible screen-preview band and within the clamp bounds.
+        self.assertEqual(DEFAULT_PAGE_IMAGE_DPI, 200)
+        self.assertGreaterEqual(DEFAULT_PAGE_IMAGE_DPI, 150)
+        self.assertLessEqual(DEFAULT_PAGE_IMAGE_DPI, document_rendering.MAX_PAGE_IMAGE_DPI)
+        self.assertGreaterEqual(DEFAULT_PAGE_IMAGE_DPI, document_rendering.MIN_PAGE_IMAGE_DPI)
 
     def test_letter_and_a4_pages_fit_default_dpi_budget(self):
         for width_pts, height_pts in ((612, 792), (595, 842)):
@@ -484,6 +498,99 @@ class PyMuPdfRasterizationBoundsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as out_name:
             pages = renderer.render_pdf_to_page_images(Path(out_name), Path(out_name), dpi=288)
         self.assertEqual(pages[0].dpi, 288)
+
+    def test_render_produces_valid_image_at_default_dpi(self):
+        # The default DPI must still render a valid (PNG-magic) page image.
+        page = _FakePage(612, 792)
+        renderer = PyMuPdfPageRenderer(fitz_module=_FakeFitzModule([page]))
+        with tempfile.TemporaryDirectory() as out_name:
+            pages = renderer.render_pdf_to_page_images(
+                Path(out_name), Path(out_name), dpi=DEFAULT_PAGE_IMAGE_DPI
+            )
+            self.assertEqual(len(pages), 1)
+            self.assertEqual(pages[0].dpi, DEFAULT_PAGE_IMAGE_DPI)
+            self.assertGreater(pages[0].width, 0)
+            self.assertGreater(pages[0].height, 0)
+            self.assertTrue(pages[0].image_path.exists())
+            self.assertTrue(pages[0].image_path.read_bytes().startswith(b"\x89PNG"))
+
+    def test_pixmap_is_rendered_in_rgb_colorspace(self):
+        # The colorspace must be pinned to fitz.csRGB so the 3-channel byte budget
+        # is enforced rather than merely assumed.
+        page = _FakePage(612, 792)
+        fitz = _FakeFitzModule([page])
+        renderer = PyMuPdfPageRenderer(fitz_module=fitz)
+        with tempfile.TemporaryDirectory() as out_name:
+            renderer.render_pdf_to_page_images(Path(out_name), Path(out_name), dpi=288)
+        self.assertIs(page.last_colorspace, fitz.csRGB)
+        # The budget assumes 3 channels (RGB), matching the pinned colorspace.
+        self.assertEqual(document_rendering.RASTERIZED_PIXMAP_CHANNELS, 3)
+
+
+class DefaultPageImageDpiResolutionTests(unittest.TestCase):
+    """The preview DPI default is overridable via NDA_PAGE_IMAGE_DPI."""
+
+    def _resolve_with_env(self, value: str | None) -> int:
+        prior = os.environ.get(document_rendering.PAGE_IMAGE_DPI_ENV_VAR)
+        try:
+            if value is None:
+                os.environ.pop(document_rendering.PAGE_IMAGE_DPI_ENV_VAR, None)
+            else:
+                os.environ[document_rendering.PAGE_IMAGE_DPI_ENV_VAR] = value
+            return document_rendering._resolve_default_page_image_dpi()
+        finally:
+            if prior is None:
+                os.environ.pop(document_rendering.PAGE_IMAGE_DPI_ENV_VAR, None)
+            else:
+                os.environ[document_rendering.PAGE_IMAGE_DPI_ENV_VAR] = prior
+
+    def test_unset_env_uses_fallback(self):
+        self.assertEqual(
+            self._resolve_with_env(None),
+            document_rendering.DEFAULT_PAGE_IMAGE_DPI_FALLBACK,
+        )
+
+    def test_blank_env_uses_fallback(self):
+        self.assertEqual(
+            self._resolve_with_env("   "),
+            document_rendering.DEFAULT_PAGE_IMAGE_DPI_FALLBACK,
+        )
+
+    def test_valid_override_is_respected(self):
+        self.assertEqual(self._resolve_with_env("150"), 150)
+
+    def test_garbage_env_falls_back(self):
+        self.assertEqual(
+            self._resolve_with_env("not-a-number"),
+            document_rendering.DEFAULT_PAGE_IMAGE_DPI_FALLBACK,
+        )
+
+    def test_nonpositive_env_falls_back(self):
+        self.assertEqual(
+            self._resolve_with_env("0"),
+            document_rendering.DEFAULT_PAGE_IMAGE_DPI_FALLBACK,
+        )
+        self.assertEqual(
+            self._resolve_with_env("-50"),
+            document_rendering.DEFAULT_PAGE_IMAGE_DPI_FALLBACK,
+        )
+
+    def test_override_is_clamped_into_bounds(self):
+        self.assertEqual(self._resolve_with_env("99999"), document_rendering.MAX_PAGE_IMAGE_DPI)
+        self.assertEqual(
+            self._resolve_with_env(str(document_rendering.MIN_PAGE_IMAGE_DPI - 1)),
+            document_rendering.MIN_PAGE_IMAGE_DPI,
+        )
+
+    def test_override_dpi_is_honored_end_to_end(self):
+        # An overridden DPI must flow through to the realized page image.
+        page = _FakePage(612, 792)
+        renderer = PyMuPdfPageRenderer(fitz_module=_FakeFitzModule([page]))
+        override = self._resolve_with_env("180")
+        self.assertEqual(override, 180)
+        with tempfile.TemporaryDirectory() as out_name:
+            pages = renderer.render_pdf_to_page_images(Path(out_name), Path(out_name), dpi=override)
+        self.assertEqual(pages[0].dpi, 180)
 
     def test_page_count_over_cap_is_rejected(self):
         pages = [_FakePage(612, 792) for _ in range(MAX_RASTERIZED_PAGES + 1)]

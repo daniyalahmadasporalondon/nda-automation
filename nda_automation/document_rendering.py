@@ -41,8 +41,22 @@ PAGE_IMAGE_CONTENT_TYPE = "image/png"
 PAGE_IMAGE_DIRNAME = "pages"
 PAGE_IMAGE_MANIFEST_FILENAME = "manifest.json"
 PAGE_IMAGE_METADATA_VERSION = 1
-DEFAULT_PAGE_IMAGE_DPI = 288
 PDF_POINTS_PER_INCH = 72
+
+# On-screen preview page-image DPI. 200 DPI is visually indistinguishable from
+# 288 at display zoom for a screen preview, while cutting the rasterized pixmap
+# area — and therefore the rasterize-phase cost and on-disk page-image cache —
+# by ~(200/288)**2 ~= 52% (a ~48% reduction). This is purely a raster-resolution
+# knob and does NOT affect export or evidence fidelity: the marked-up-PDF EXPORT
+# bakes annotations onto the ORIGINAL PDF bytes in PDF coordinate space (see
+# annotated_pdf_export.build_annotated_pdf, which opens the source PDF and calls
+# page.add_highlight_annot on rects), and the AI-evidence-highlight path maps via
+# fitz TEXT SEARCH (page.search_for / get_text("words")) — neither reads the
+# rasterized PNGs. Deploy-time override: NDA_PAGE_IMAGE_DPI (clamped to
+# [MIN_PAGE_IMAGE_DPI, MAX_PAGE_IMAGE_DPI]).
+DEFAULT_PAGE_IMAGE_DPI_FALLBACK = 200
+PAGE_IMAGE_DPI_ENV_VAR = "NDA_PAGE_IMAGE_DPI"
+MAX_PAGE_IMAGE_DPI = 600
 
 # Rasterization resource bounds. A pixmap costs width_px * height_px * channels
 # bytes, and width_px = mediabox_pts / 72 * dpi. An attacker-controlled MediaBox
@@ -55,7 +69,32 @@ PDF_POINTS_PER_INCH = 72
 MAX_RASTERIZED_PAGES = 200
 MAX_PAGE_PIXMAP_BYTES = 96 * 1024 * 1024
 MIN_PAGE_IMAGE_DPI = 36
-RASTERIZED_PIXMAP_CHANNELS = 3  # RGB, alpha=False
+RASTERIZED_PIXMAP_CHANNELS = 3  # RGB, alpha=False; pinned via fitz.csRGB at render
+
+
+def _resolve_default_page_image_dpi() -> int:
+    """Preview DPI default, overridable via NDA_PAGE_IMAGE_DPI.
+
+    Garbage or out-of-range values fall back to / are clamped into
+    [MIN_PAGE_IMAGE_DPI, MAX_PAGE_IMAGE_DPI] so a bad env value can never request
+    a zero/negative DPI (which the budget math rejects) or an unbounded pixmap.
+    """
+    raw = os.environ.get(PAGE_IMAGE_DPI_ENV_VAR)
+    if raw is None or raw.strip() == "":
+        return DEFAULT_PAGE_IMAGE_DPI_FALLBACK
+    try:
+        dpi = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_PAGE_IMAGE_DPI_FALLBACK
+    if dpi <= 0:
+        return DEFAULT_PAGE_IMAGE_DPI_FALLBACK
+    return max(MIN_PAGE_IMAGE_DPI, min(dpi, MAX_PAGE_IMAGE_DPI))
+
+
+# Resolved once at import. The preview DPI is a deploy-time knob, not a per-request
+# one, so reading the env at module load keeps the ~15 default-arg call sites
+# consistent within a process.
+DEFAULT_PAGE_IMAGE_DPI = _resolve_default_page_image_dpi()
 
 # LibreOffice/soffice conversion bounds. soffice runs inline on the request
 # thread, so N concurrent viewers would otherwise spawn N heavyweight processes
@@ -432,7 +471,13 @@ class PyMuPdfPageRenderer:
                     effective_dpi = _budgeted_page_dpi(width_pts, height_pts, requested_dpi=dpi)
                     scale = _page_image_scale(effective_dpi)
                     matrix = self._fitz.Matrix(scale, scale)
-                    pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+                    # Pin RGB (3 channels, no alpha) explicitly so the pixmap's
+                    # byte cost matches RASTERIZED_PIXMAP_CHANNELS=3 that the
+                    # budget math (_budgeted_page_dpi) assumes. Without this the
+                    # colorspace is fitz's default, which a future build could
+                    # change to 4-channel RGBA — silently under-counting the
+                    # budget by 33% and letting an out-of-budget pixmap through.
+                    pixmap = page.get_pixmap(matrix=matrix, colorspace=self._fitz.csRGB, alpha=False)
                     image_path = output_dir / _page_image_filename(page_index + 1)
                     _write_bytes_atomic(image_path, pixmap.tobytes("png"))
                     pages.append(
