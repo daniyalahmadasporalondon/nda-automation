@@ -1,7 +1,11 @@
 import unittest
 import json
+import os
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from nda_automation import app_settings, ai_review, matter_store, model_resolver
 from nda_automation.ai_assessment_prompt import AI_ASSESSMENT_TASK
 from nda_automation.ai_assessor import (
     AI_FIRST_ASSESSOR_MODE,
@@ -469,6 +473,85 @@ class AIAssessorProviderAdapterTests(unittest.TestCase):
                     "model": "legacy-model",
                     "timeout_seconds": 20,
                 })
+
+
+class AssessorHonoursPersistedReviewerOverrideTests(unittest.TestCase):
+    """The model the picker DISPLAYS for the reviewer == the model the assessor USES.
+
+    The AI Models admin picker renders the reviewer row from
+    ``model_resolver.resolve_model_detail("reviewer")``. The live assessor builds
+    its OpenRouter request from ``_ai_review_settings()["model"]``, which is
+    ``_configured_model`` -> ``model_resolver.resolve_model("reviewer")``. These
+    tests pin BOTH paths to the SAME resolver so a persisted reviewer override
+    (legacy ``ai_review.model`` OR new ``ai_models.reviewer``) is provably the
+    model the assessor actually sends -- closing the "picker shows opus-4.8 but
+    reviews run on opus-4.8-fast" divergence at the seam where it would regress.
+    """
+
+    def setUp(self):
+        model_resolver._reset_caches_for_tests()
+        self.addCleanup(model_resolver._reset_caches_for_tests)
+        # Strip NDA_*_MODEL env so the env layer never leaks into the override proof.
+        env_patch = patch.dict("os.environ", {"NDA_AI_ASSESSMENT_STUB": ""}, clear=False)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        for key in [k for k in list(os.environ) if k.endswith("_MODEL") and k.startswith("NDA")]:
+            os.environ.pop(key, None)
+        # Isolate the settings store to a temp dir (matter_store.DATA_DIR is a Path).
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        data_patch = patch.object(matter_store, "DATA_DIR", Path(tmp.name))
+        data_patch.start()
+        self.addCleanup(data_patch.stop)
+        # Avoid a real key lookup when the reviewer adapter is constructed.
+        key_patch = patch(
+            "nda_automation.ai_assessor._configured_api_key",
+            side_effect=lambda provider: f"{provider}-key",
+        )
+        key_patch.start()
+        self.addCleanup(key_patch.stop)
+
+    def test_legacy_reviewer_override_is_the_model_the_assessor_sends(self):
+        # Simulate the EXISTING reviewer admin picker writing the legacy
+        # ai_review "model" (this is the persisted value the picker badges as
+        # ADMIN OVERRIDE for the reviewer row).
+        app_settings.update_ai_settings(
+            {"enabled": True, "model": "anthropic/claude-opus-4.8", "provider": "openrouter"}
+        )
+
+        # 1) Picker path: what the admin AI Models overview shows for the reviewer.
+        picker = model_resolver.resolve_model_detail("reviewer")
+        self.assertEqual(picker.model, "anthropic/claude-opus-4.8")
+        self.assertEqual(picker.source, "persisted")  # -> "ADMIN OVERRIDE" badge
+
+        # 2) Assessor path: the model the live review settings resolve to AND the
+        #    model the constructed OpenRouter reviewer would actually send/log.
+        settings = ai_review._ai_review_settings()
+        self.assertEqual(settings["model"], "anthropic/claude-opus-4.8")
+        reviewer = configured_ai_assessment_reviewer(settings)
+        self.assertIsInstance(reviewer, OpenRouterAIAssessmentReviewer)
+        self.assertEqual(reviewer.model, "anthropic/claude-opus-4.8")
+        body = openrouter_ai_assessment_request_body(
+            {"task": AI_ASSESSMENT_TASK, "paragraphs": []}, model=reviewer.model
+        )
+        self.assertEqual(body["model"], "anthropic/claude-opus-4.8")
+
+        # Picker-displayed model == assessor-used model. No divergence.
+        self.assertEqual(picker.model, reviewer.model)
+
+    def test_new_ai_models_reviewer_override_is_the_model_the_assessor_sends(self):
+        # The newer per-role picker writes ai_models.reviewer, which outranks the
+        # legacy layer and the env default.
+        app_settings.update_ai_settings({"enabled": True})
+        app_settings.update_model_settings({"reviewer": "z-ai/glm-5.2"})
+
+        picker = model_resolver.resolve_model_detail("reviewer")
+        self.assertEqual((picker.model, picker.source), ("z-ai/glm-5.2", "persisted"))
+
+        settings = ai_review._ai_review_settings()
+        reviewer = configured_ai_assessment_reviewer(settings)
+        self.assertEqual(reviewer.model, "z-ai/glm-5.2")
+        self.assertEqual(picker.model, reviewer.model)
 
 
 def _mock_urlopen(response_bytes, captured_requests):
