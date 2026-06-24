@@ -8,6 +8,7 @@ from .. import (
     artifact_service,
     matter_document_artifacts,
     matter_view,
+    pdf_docx_reconstruction,
     pdf_export_service,
     redline_export_service,
     telemetry,
@@ -188,6 +189,19 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
         )
         return
 
+    # The except-chain below mirrors the sibling on-demand export route
+    # (routes/review.py :: handle_review_docx_export) so the two redline producers
+    # return CONSISTENT statuses for the same failure. Two structural rules:
+    #   * MatterSourceTextChangedError / StaleMatterReviewError / PdfSourceRedlineUnavailableError
+    #     are all DocxExportError subclasses, so each MUST be caught BEFORE the
+    #     generic ``except DocxExportError`` or it would be miscategorised as a 400.
+    #   * PdfDocxReconstructionBusy is a RuntimeError (NOT a DocxExportError); after
+    #     the gate relaxation (c114b5a9) a reviewed-but-unapproved PDF-source matter
+    #     reaches the reconstruction chain, where this escapes _build_redline_export
+    #     (which only catches Unavailable/Failed). Map it to a retryable 503.
+    # A final top-level guard turns ANY unexpected exception into a LOGGED, clean
+    # JSON error so the FE always receives an actionable status -- never a bare 500
+    # / stack escape. (The FE's faithful-fallback fires on any non-2xx response.)
     try:
         reviewed_docx = matter_document_artifacts.build_reviewed_docx(
             matter_id,
@@ -195,6 +209,19 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
             owner_user_id=owner_user_id,
             persist=is_approved,
         )
+    except redline_export_service.DocxOpenHealthError as error:
+        # Drop the OOXML internals (error.details) from the response; log them.
+        logger.error("Reviewed DOCX failed integrity check (approval): %s | details=%s", error, error.details)
+        handler._send_json(
+            {"error": redline_export_service.DOCX_HEALTH_CLIENT_MESSAGE}, status=500, send_body=send_body
+        )
+        return
+    except redline_export_service.MatterSourceTextChangedError as error:
+        # Parity with handle_review_docx_export: the saved source text drifted from
+        # the reviewed text, so the redline can no longer be composed safely -> 409
+        # (a stale-state conflict the client resolves by reloading), NOT a 400.
+        handler._send_json({"error": str(error)}, status=409, send_body=send_body)
+        return
     except redline_export_service.StaleMatterReviewError as error:
         handler._send_json(
             {"error": str(error), "stale_reasons": error.reasons, "review_refresh": error.summary},
@@ -204,13 +231,6 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
         return
     except redline_export_service.MatterNotFoundError as error:
         handler._send_json({"error": str(error)}, status=404, send_body=send_body)
-        return
-    except redline_export_service.DocxOpenHealthError as error:
-        # Drop the OOXML internals (error.details) from the response; log them.
-        logger.error("Reviewed DOCX failed integrity check (approval): %s | details=%s", error, error.details)
-        handler._send_json(
-            {"error": redline_export_service.DOCX_HEALTH_CLIENT_MESSAGE}, status=500, send_body=send_body
-        )
         return
     except redline_export_service.PdfSourceRedlineUnavailableError as error:
         handler._send_json(error.payload, status=error.status, send_body=send_body)
@@ -228,8 +248,41 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
     except DocxExportError as error:
         handler._send_json({"error": str(error)}, status=400, send_body=send_body)
         return
+    except pdf_docx_reconstruction.PdfDocxReconstructionBusy as error:
+        # PDF-to-Word reconstruction is at capacity (no free conversion slot within
+        # the queue wait window). This is a transient load/contention condition, not
+        # a server fault: surface a retryable 503 with Retry-After so the client (and
+        # the faithful-render fetch) backs off and retries instead of treating it as
+        # a hard failure -- consistent with the busy/contention 503 convention used
+        # elsewhere in the route layer (routes/matters.py source-stream lane).
+        logger.info("Reviewed DOCX reconstruction busy (approval) for matter %s: %s", matter_id, error)
+        handler._send_json(
+            {"error": str(error)},
+            status=503,
+            headers={"Retry-After": "1"},
+            send_body=send_body,
+        )
+        return
     except artifact_service.ArtifactRegistryError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
+        return
+    except Exception as error:  # noqa: BLE001 -- top-level guard: never leak a bare 500
+        # Anything not classified above (KeyError/AttributeError/TypeError/OSError,
+        # an unforeseen reconstruction RuntimeError, etc.) would otherwise escape the
+        # handler as an unhandled, unlogged, bare HTTP 500 with a stack trace. Catch
+        # it, LOG it with the matter id + exception type for diagnosis, and return a
+        # clean 500 JSON body the FE can act on (its faithful-fallback fires on any
+        # non-2xx, so the reviewer still sees the faithful document + toast).
+        logger.exception(
+            "Reviewed DOCX build failed unexpectedly for matter %s (%s)",
+            matter_id,
+            type(error).__name__,
+        )
+        handler._send_json(
+            {"error": "The reviewed document could not be produced. Please try again."},
+            status=500,
+            send_body=send_body,
+        )
         return
 
     telemetry.increment("reviewed_docx_exports")

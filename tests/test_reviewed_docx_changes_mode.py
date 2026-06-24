@@ -366,5 +366,102 @@ def test_p0_converted_pdf_with_blank_paragraph_before_redline_exports():
     assert _has_tracked_markup(data) is True
 
 
+# --------------------------------------------------------------------------- #
+# 500-handling regression: the reviewed-docx route must NEVER leak a bare 500.
+#
+# After the gate relaxation (c114b5a9) a reviewed-but-unapproved (esp. PDF-source)
+# matter reaches the redline producer chain that the old 409 gate short-circuited.
+# Several exceptions could escape the handler as an unhandled bare HTTP 500:
+#   * PdfDocxReconstructionBusy (a RuntimeError) -> must map to a retryable 503.
+#   * MatterSourceTextChangedError -> must map to 409 (parity with the export route),
+#     not the 400 the generic DocxExportError clause used to give it.
+#   * Any unexpected exception -> must be caught, logged, and returned as a clean
+#     handled error, never a bare stack-escape 500.
+# We inject these at the route's call site (matter_document_artifacts.build_reviewed_docx)
+# so the route's except-chain + top-level guard are exercised directly.
+# --------------------------------------------------------------------------- #
+from nda_automation import pdf_docx_reconstruction  # noqa: E402
+from nda_automation import redline_export_service  # noqa: E402
+
+
+def _seed_reviewed_unapproved_pdf_matter():
+    """A reviewed-but-UNAPPROVED PDF-source matter (status in_review, review_result
+    present) -- the exact class the relaxed gate now lets reach the redline producer."""
+    review_result = review_nda_with_active_engine("\n\n".join(NDA_PARAGRAPHS))
+    matter = matter_store.create_matter(
+        source_filename="mutual-nda.pdf",
+        document_bytes=b"%PDF-1.7\nsource pdf\n%%EOF\n",
+        extracted_text="\n\n".join(NDA_PARAGRAPHS),
+        review_result=review_result,
+        triage=triage_review_result(review_result),
+        source_type="manual_upload",
+        board_column="in_review",
+        owner_user_id="owner-1",
+    )
+    matter_store.update_matter_fields(matter["id"], {"status": "in_review"})
+    return matter["id"]
+
+
+@pytest.mark.parametrize("changes", ["tracked", "accepted"])
+def test_reviewed_docx_reconstruction_busy_returns_503_not_500(monkeypatch, changes):
+    matter_id = _seed_reviewed_unapproved_pdf_matter()
+
+    def _raise_busy(*_args, **_kwargs):
+        raise pdf_docx_reconstruction.PdfDocxReconstructionBusy()
+
+    monkeypatch.setattr(approval_routes.matter_document_artifacts, "build_reviewed_docx", _raise_busy)
+    handler = _FakeHandler(
+        current_user_id="owner-1",
+        path=f"/api/matters/{matter_id}/reviewed-docx?changes={changes}",
+    )
+    approval_routes.handle_matter_reviewed_docx(handler, f"/api/matters/{matter_id}/reviewed-docx")
+    # Retryable 503 with Retry-After -- NOT a bare 500.
+    assert handler.status == 503, handler.json
+    assert handler.download is None
+    assert "error" in (handler.json or {})
+
+
+@pytest.mark.parametrize("changes", ["tracked", "accepted"])
+def test_reviewed_docx_source_text_changed_returns_409_matching_export_route(monkeypatch, changes):
+    matter_id = _seed_reviewed_unapproved_pdf_matter()
+
+    def _raise_source_changed(*_args, **_kwargs):
+        raise redline_export_service.MatterSourceTextChangedError("source text drifted")
+
+    monkeypatch.setattr(approval_routes.matter_document_artifacts, "build_reviewed_docx", _raise_source_changed)
+    handler = _FakeHandler(
+        current_user_id="owner-1",
+        path=f"/api/matters/{matter_id}/reviewed-docx?changes={changes}",
+    )
+    approval_routes.handle_matter_reviewed_docx(handler, f"/api/matters/{matter_id}/reviewed-docx")
+    # 409 (stale-state conflict) -- matches handle_review_docx_export, NOT 400.
+    assert handler.status == 409, handler.json
+    assert handler.download is None
+
+
+@pytest.mark.parametrize("changes", ["tracked", "accepted"])
+def test_reviewed_docx_unexpected_exception_is_handled_and_logged(monkeypatch, caplog, changes):
+    matter_id = _seed_reviewed_unapproved_pdf_matter()
+
+    def _raise_unexpected(*_args, **_kwargs):
+        raise KeyError("unexpected internal key")
+
+    monkeypatch.setattr(approval_routes.matter_document_artifacts, "build_reviewed_docx", _raise_unexpected)
+    handler = _FakeHandler(
+        current_user_id="owner-1",
+        path=f"/api/matters/{matter_id}/reviewed-docx?changes={changes}",
+    )
+    with caplog.at_level("ERROR"):
+        approval_routes.handle_matter_reviewed_docx(handler, f"/api/matters/{matter_id}/reviewed-docx")
+    # Handled clean error with a JSON body -- the FE gets an actionable status, never
+    # a bare unhandled stack-escape. (500 here, but the point is "handled + logged".)
+    assert handler.status == 500, handler.json
+    assert handler.download is None
+    assert "error" in (handler.json or {})
+    # And it was LOGGED with the matter id + exception type for diagnosis.
+    assert any(matter_id in record.getMessage() for record in caplog.records)
+    assert any("KeyError" in record.getMessage() for record in caplog.records)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
