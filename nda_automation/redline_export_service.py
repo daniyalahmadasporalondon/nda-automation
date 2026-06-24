@@ -175,14 +175,79 @@ def build_matter_redline(
 ) -> RedlineExport:
     payload = {**(payload or {}), "matter_id": matter_id}
     title = str(payload.get("title") or "NDA Review")
-    return _build_redline_export(
-        payload,
-        "",
-        title=title,
-        persist=persist,
-        repository=repository or DiskMatterRepository(),
-        owner_user_id=owner_user_id,
-    )
+    repository = repository or DiskMatterRepository()
+    try:
+        return _build_redline_export(
+            payload,
+            "",
+            title=title,
+            persist=persist,
+            repository=repository,
+            owner_user_id=owner_user_id,
+        )
+    except DocxExportError:
+        # Already a typed redline-export error (PdfSourceRedlineUnavailableError /
+        # MatterSourceTextChangedError / StaleMatterReviewError / MatterNotFoundError /
+        # DocxOpenHealthError / PdfRedlineAnchorError / the plain DocxExportError 400s).
+        # The route layer maps each to its own status; leave it untouched.
+        raise
+    except (DocxExtractionError, pdf_docx_reconstruction.PdfDocxReconstructionBusy):
+        # Classified upstream (extraction -> 400; reconstruction-busy -> retryable 503).
+        # Pass through so the route's existing mappings keep their meaning.
+        raise
+    except Exception as exc:  # noqa: BLE001 -- producer-boundary translation
+        # An UNCLASSIFIED exception escaped the producer (e.g. a KeyError/TypeError/
+        # IndexError/AttributeError/ValueError, or an OSError, raised deep in the
+        # PDF-source reconstruction-and-anchor path). For a PDF-source matter this is
+        # not a server fault -- the lossy PDF->Word reconstruction simply could not
+        # produce a faithful tracked redline -- so translate it into the typed
+        # PdfSourceRedlineUnavailableError (-> 503 + the source-PDF annotation recovery
+        # payload), CONSISTENT with the other PDF-source failure modes that already
+        # surface as that error. Non-PDF (native DOCX) matters keep raising the raw
+        # exception so the route's top-level guard still turns a genuinely-unforeseen
+        # fault into its logged clean 500.
+        source_filename = _matter_source_filename(
+            matter_id, repository=repository, owner_user_id=owner_user_id
+        )
+        if source_filename_is_pdf(source_filename):
+            telemetry.increment("pdf_reviewed_docx_unexpected_translated")
+            raise PdfSourceRedlineUnavailableError(
+                PDF_SOURCE_REDLINE_UNEXPECTED_MESSAGE,
+                source_filename=source_filename,
+                reason="reconstruction_failed",
+            ) from exc
+        raise
+
+
+# User-facing message for the catch-all PDF-source producer failure (the
+# reconstruction-and-anchor pipeline raised something we did not anticipate). The
+# recovery path is identical to the other PdfSourceRedlineUnavailableError reasons:
+# mark up the preserved source PDF rather than ship an incomplete reconstructed Word
+# doc.
+PDF_SOURCE_REDLINE_UNEXPECTED_MESSAGE = (
+    "The reviewed Word document could not be produced from this PDF source. "
+    "Use the marked-up source PDF for the proposed changes."
+)
+
+
+def _matter_source_filename(
+    matter_id: str, *, repository: MatterRepository, owner_user_id: str = ""
+) -> str:
+    """Best-effort lookup of a matter's ORIGINAL source filename.
+
+    Reads the matter's stored ``source_filename`` (the original upload -- NOT the
+    Approach-C working-DOCX substitution that ``_review_result_for_export`` swaps in
+    internally), so PDF-source detection keys on what the user actually uploaded.
+    Returns ``""`` if the matter is missing or the lookup itself fails, in which case
+    the caller treats it as non-PDF and re-raises the original exception.
+    """
+    try:
+        matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+    except Exception:  # noqa: BLE001 -- never let the diagnostic lookup mask the real error
+        return ""
+    if not isinstance(matter, dict):
+        return ""
+    return str(matter.get("source_filename") or "")
 
 
 def _build_redline_export(

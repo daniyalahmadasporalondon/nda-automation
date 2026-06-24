@@ -463,5 +463,75 @@ def test_reviewed_docx_unexpected_exception_is_handled_and_logged(monkeypatch, c
     assert any("KeyError" in record.getMessage() for record in caplog.records)
 
 
+def _seed_reviewed_unapproved_docx_matter():
+    """A reviewed-but-UNAPPROVED *native DOCX* matter -- the control for the producer-
+    boundary translation (only PDF-source failures get translated)."""
+    review_result = review_nda_with_active_engine("\n\n".join(NDA_PARAGRAPHS))
+    matter = matter_store.create_matter(
+        source_filename="mutual-nda.docx",
+        document_bytes=_docx(NDA_PARAGRAPHS),
+        extracted_text="\n\n".join(NDA_PARAGRAPHS),
+        review_result=review_result,
+        triage=triage_review_result(review_result),
+        source_type="manual_upload",
+        board_column="in_review",
+        owner_user_id="owner-1",
+    )
+    matter_store.update_matter_fields(matter["id"], {"status": "in_review"})
+    return matter["id"]
+
+
+@pytest.mark.parametrize("changes", ["tracked", "accepted"])
+def test_reviewed_docx_pdf_producer_unclassified_error_returns_503_not_500(monkeypatch, changes):
+    """The live regression: a PDF-source, reviewed-but-unapproved matter whose redline
+    PRODUCER raises an UNCLASSIFIED exception (a raw KeyError/TypeError deep in the
+    reconstruction-and-anchor path, NOT a DocxExportError) must surface as a CLEAN
+    classified 503 (PdfSourceRedlineUnavailableError + the source-PDF annotation
+    recovery payload) -- never the generic catch-all 500."""
+    matter_id = _seed_reviewed_unapproved_pdf_matter()
+
+    def _raise_unclassified(*_args, **_kwargs):
+        # A raw exception that is NOT a DocxExportError -- exactly the class that fell
+        # through to the generic-500 catch-all before the producer-boundary translation.
+        raise KeyError("source_index")
+
+    # Patch the inner producer so the translation wrapper in build_matter_redline runs.
+    monkeypatch.setattr(redline_export_service, "_build_redline_export", _raise_unclassified)
+    handler = _FakeHandler(
+        current_user_id="owner-1",
+        path=f"/api/matters/{matter_id}/reviewed-docx?changes={changes}",
+    )
+    approval_routes.handle_matter_reviewed_docx(handler, f"/api/matters/{matter_id}/reviewed-docx")
+    # Classified 503 (PdfSourceRedlineUnavailableError), NOT a generic 500.
+    assert handler.status == 503, handler.json
+    assert handler.download is None
+    body = handler.json or {}
+    assert "error" in body
+    # The typed PDF-source payload: recovery points at the marked-up source PDF.
+    assert body.get("reason") == "reconstruction_failed"
+    assert (body.get("recovery") or {}).get("path") == "annotated_pdf"
+
+
+@pytest.mark.parametrize("changes", ["tracked", "accepted"])
+def test_reviewed_docx_native_docx_producer_unclassified_error_stays_clean_500(monkeypatch, changes):
+    """The safety net: the SAME unclassified producer exception for a NATIVE DOCX matter
+    is NOT translated (it is not a PDF reconstruction failure) -- it still reaches the
+    handler's top-level guard and returns a LOGGED clean 500."""
+    matter_id = _seed_reviewed_unapproved_docx_matter()
+
+    def _raise_unclassified(*_args, **_kwargs):
+        raise KeyError("source_index")
+
+    monkeypatch.setattr(redline_export_service, "_build_redline_export", _raise_unclassified)
+    handler = _FakeHandler(
+        current_user_id="owner-1",
+        path=f"/api/matters/{matter_id}/reviewed-docx?changes={changes}",
+    )
+    approval_routes.handle_matter_reviewed_docx(handler, f"/api/matters/{matter_id}/reviewed-docx")
+    assert handler.status == 500, handler.json
+    assert handler.download is None
+    assert "error" in (handler.json or {})
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
