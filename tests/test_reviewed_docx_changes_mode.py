@@ -533,5 +533,129 @@ def test_reviewed_docx_native_docx_producer_unclassified_error_stays_clean_500(m
     assert "error" in (handler.json or {})
 
 
+# --------------------------------------------------------------------------- #
+# The LIVE prod regression (matter_a014c4ffeb07 "Pismo UK 2"): a PDF-source matter
+# whose Approach-C working-DOCX redline reconstruction covers only N of M source
+# paragraphs. The strong DOCX content-coverage gate CORRECTLY rejects the dropped
+# content, raising DocxOpenHealthError(kind="content_coverage"). Before this fix that
+# typed error mapped to a generic 500 ("integrity check (approval)" -> 500). It must
+# now surface as a CLEAN classified 503 (PdfSourceRedlineUnavailableError + the source-
+# PDF annotation recovery payload) so the FE faithful-fallback fires instead of a crash.
+#
+# These tests exercise the REAL coverage-check exception: render_source_redline_package
+# is patched to return a DocxPackageRenderResult whose ``content_errors`` carry the exact
+# prod "N vs M" sequence-mismatch detail, so the REAL _raise_for_package_result raises the
+# REAL DocxOpenHealthError and the producer-boundary translation runs end-to-end. (NOT a
+# synthetic KeyError -- the prior fix chased that wrong path.)
+# --------------------------------------------------------------------------- #
+from nda_automation import docx_package_renderer  # noqa: E402
+
+# The exact prod log detail (33 of 114 paragraphs covered).
+_PROD_COVERAGE_ERROR = (
+    "Exported accepted-change paragraph sequence does not match the expected source/redline "
+    "sequence (33 paragraph(s); expected 114). The redline may have misplaced, duplicated, "
+    "or dropped source content."
+)
+
+
+def _coverage_failing_render(*_args, **_kwargs):
+    """Stand-in for render_source_redline_package that reproduces the prod content-
+    coverage shortfall: a well-formed package (no health errors) whose content gate
+    reports the 33-vs-114 sequence mismatch. _raise_for_package_result then raises the
+    REAL DocxOpenHealthError(kind="content_coverage")."""
+    return docx_package_renderer.DocxPackageRenderResult(
+        data=_docx(NDA_PARAGRAPHS),
+        health_errors=[],
+        content_errors=[_PROD_COVERAGE_ERROR],
+    )
+
+
+@pytest.mark.parametrize("changes", ["tracked", "accepted"])
+def test_reviewed_docx_pdf_coverage_failure_returns_503_not_500(monkeypatch, changes):
+    """LIVE regression: a PDF-source matter whose redline reconstruction FAILS the
+    content-coverage gate (33 vs 114) must return a CLEAN 503, NOT a 500 -- for both
+    changes=tracked and changes=accepted."""
+    matter_id = _seed_approved_matter_with_redline(source_docx=False, working_docx=True)
+    stored = matter_store.get_matter(matter_id, owner_user_id="owner-1")
+    assert stored["source_filename"].endswith(".pdf")  # original upload is a PDF
+
+    # Force the REAL coverage gate to fail (the prod 33-vs-114 mismatch).
+    monkeypatch.setattr(
+        redline_export_service.docx_package_renderer,
+        "render_source_redline_package",
+        _coverage_failing_render,
+    )
+    handler = _FakeHandler(
+        current_user_id="owner-1",
+        path=f"/api/matters/{matter_id}/reviewed-docx?changes={changes}",
+    )
+    approval_routes.handle_matter_reviewed_docx(handler, f"/api/matters/{matter_id}/reviewed-docx")
+
+    # CLEAN classified 503 (PdfSourceRedlineUnavailableError), NOT a generic 500.
+    assert handler.status == 503, handler.json
+    assert handler.download is None
+    body = handler.json or {}
+    assert "error" in body
+    # The coverage-shortfall reason + the source-PDF annotation recovery path.
+    assert body.get("reason") == "reconstruction_coverage_shortfall"
+    assert (body.get("recovery") or {}).get("path") == "annotated_pdf"
+
+
+def test_reviewed_docx_pdf_coverage_failure_raises_typed_error_at_producer(monkeypatch):
+    """White-box: build_matter_redline translates the REAL content-coverage
+    DocxOpenHealthError into PdfSourceRedlineUnavailableError for a PDF-source matter,
+    AND the underlying gate exception is preserved as the cause."""
+    matter_id = _seed_approved_matter_with_redline(source_docx=False, working_docx=True)
+    stored = matter_store.get_matter(matter_id, owner_user_id="owner-1")
+
+    monkeypatch.setattr(
+        redline_export_service.docx_package_renderer,
+        "render_source_redline_package",
+        _coverage_failing_render,
+    )
+    with pytest.raises(redline_export_service.PdfSourceRedlineUnavailableError) as caught:
+        redline_export_service.build_matter_redline(
+            matter_id,
+            approval.reviewed_docx_payload(stored),
+            persist=False,
+            owner_user_id="owner-1",
+        )
+
+    assert caught.value.status == 503
+    assert caught.value.reason == "reconstruction_coverage_shortfall"
+    # The underlying coverage gate exception is preserved as the cause (real path,
+    # NOT a synthetic raise): a REAL DocxOpenHealthError(kind="content_coverage").
+    cause = caught.value.__cause__
+    assert isinstance(cause, redline_export_service.DocxOpenHealthError)
+    assert cause.kind == "content_coverage"
+    assert any("expected 114" in d for d in cause.details)
+
+
+@pytest.mark.parametrize("changes", ["tracked", "accepted"])
+def test_reviewed_docx_native_docx_coverage_failure_stays_500(monkeypatch, changes):
+    """Control: the SAME content-coverage failure on a NATIVE DOCX matter is NOT
+    translated (it is not a PDF reconstruction) -- it stays a logged, leak-free 500.
+    This proves the coverage gate is NOT weakened; only PDF-source falls back to 503."""
+    matter_id = _seed_approved_matter_with_redline(source_docx=True, working_docx=False)
+    stored = matter_store.get_matter(matter_id, owner_user_id="owner-1")
+    assert stored["source_filename"].endswith(".docx")
+
+    monkeypatch.setattr(
+        redline_export_service.docx_package_renderer,
+        "render_source_redline_package",
+        _coverage_failing_render,
+    )
+    handler = _FakeHandler(
+        current_user_id="owner-1",
+        path=f"/api/matters/{matter_id}/reviewed-docx?changes={changes}",
+    )
+    approval_routes.handle_matter_reviewed_docx(handler, f"/api/matters/{matter_id}/reviewed-docx")
+    # Native DOCX coverage failure stays a clean 500 (the gate is intact, leak-free body).
+    assert handler.status == 500, handler.json
+    assert handler.download is None
+    body = handler.json or {}
+    assert body.get("error") == redline_export_service.DOCX_HEALTH_CLIENT_MESSAGE
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

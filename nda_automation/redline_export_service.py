@@ -71,9 +71,20 @@ DOCX_HEALTH_CLIENT_MESSAGE = (
 
 
 class DocxOpenHealthError(DocxExportError):
-    def __init__(self, message: str, details: list[str]):
+    # ``kind`` distinguishes the two integrity failures that share this type:
+    #   * "open_health"     -- the OOXML package itself is malformed (corrupt zip,
+    #                          missing w:body, unreadable styles). A genuine fault.
+    #   * "content_coverage" -- the package is well-formed but the redline
+    #                          reconstruction dropped/reordered/duplicated source
+    #                          paragraphs (the "33 vs 114" sequence mismatch). For a
+    #                          PDF-source matter this is the EXPECTED imperfect-
+    #                          reconstruction case, not a server fault -- the producer
+    #                          boundary translates it to PdfSourceRedlineUnavailableError
+    #                          (503 + annotated-PDF recovery) rather than a 500.
+    def __init__(self, message: str, details: list[str], *, kind: str = "open_health"):
         super().__init__(message)
         self.details = details
+        self.kind = kind
 
 
 class MatterSourceTextChangedError(DocxExportError):
@@ -185,6 +196,30 @@ def build_matter_redline(
             repository=repository,
             owner_user_id=owner_user_id,
         )
+    except DocxOpenHealthError as exc:
+        # A content-coverage failure (the redline reconstruction dropped/reordered
+        # source paragraphs -- the "N vs M" sequence mismatch) on a PDF-SOURCE matter
+        # is NOT a server fault: the Approach-C working-DOCX substitution routes the
+        # PDF through the native-DOCX index-anchored branch + strong sequence gate, and
+        # an imperfect PDF->DOCX reconstruction can legitimately fail that gate. The gate
+        # is RIGHT to reject it (dropped content must never ship), but the caller should
+        # fall back to the marked-up source PDF, not crash. Translate it to the typed
+        # PdfSourceRedlineUnavailableError (-> 503 + annotated-PDF recovery payload),
+        # consistent with the other PDF-source failure modes. Open-health failures
+        # (corrupt OOXML) and ALL native-DOCX matters keep raising DocxOpenHealthError
+        # untouched so the route's existing mapping (logged, leak-free 500) is preserved.
+        if exc.kind == "content_coverage":
+            source_filename = _matter_source_filename(
+                matter_id, repository=repository, owner_user_id=owner_user_id
+            )
+            if source_filename_is_pdf(source_filename):
+                telemetry.increment("pdf_reviewed_docx_coverage_translated")
+                raise PdfSourceRedlineUnavailableError(
+                    PDF_SOURCE_REDLINE_UNEXPECTED_MESSAGE,
+                    source_filename=source_filename,
+                    reason="reconstruction_coverage_shortfall",
+                ) from exc
+        raise
     except DocxExportError:
         # Already a typed redline-export error (PdfSourceRedlineUnavailableError /
         # MatterSourceTextChangedError / StaleMatterReviewError / MatterNotFoundError /
@@ -537,7 +572,11 @@ def _validate_export(
     if content_errors:
         telemetry.increment("docx_export_content_failures")
         print(f"DOCX export content check failed: {len(content_errors)} issue(s)")
-        raise DocxOpenHealthError("The exported Word document failed its content-coverage check.", content_errors)
+        raise DocxOpenHealthError(
+            "The exported Word document failed its content-coverage check.",
+            content_errors,
+            kind="content_coverage",
+        )
 
 
 def _has_pending_export_changes(review_result: dict, clean_mode_fills: object) -> bool:
@@ -626,4 +665,5 @@ def _raise_for_package_result(package_result: docx_package_renderer.DocxPackageR
         raise DocxOpenHealthError(
             "The exported Word document failed its content-coverage check.",
             package_result.content_errors,
+            kind="content_coverage",
         )
