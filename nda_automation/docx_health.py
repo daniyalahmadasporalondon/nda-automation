@@ -10,7 +10,12 @@ from typing import Dict, List, Set, Tuple
 from zipfile import BadZipFile, ZipFile
 
 from .docx_xml import UnsafeDocxXmlError, parse_docx_xml
-from .docx_text import DocxExtractionError, validate_docx_archive, validate_docx_bytes_before_open
+from .docx_text import (
+    DocxExtractionError,
+    iter_indexed_body_paragraphs,
+    validate_docx_archive,
+    validate_docx_bytes_before_open,
+)
 from .inline_diff import diff_text_operations, tokenize_inline_diff
 from .redline_actions import (
     REDLINE_DELETE_PARAGRAPH,
@@ -196,18 +201,38 @@ def verify_export_content_coverage(
             f"Exported text covers only {len(export_normalized)} of {len(source_normalized)} "
             "source characters; the redline may have dropped source content."
         ]
-    source_paragraphs = _apply_clean_fills_to_source_paragraphs(
-        _source_paragraphs_from_text(source_text), clean_fills
-    )
     if source_docx:
         structural_errors = _verify_structural_counts(docx_bytes, source_docx)
         if structural_errors:
             return structural_errors
-    if source_paragraphs:
-        expected_accepted_paragraphs, expected_errors = _expected_accepted_source_paragraphs(
-            source_paragraphs,
+    # When the raw source bytes are available, build the expected accepted sequence from
+    # the source's OWN accepted view (the same w:ins-keep/w:del-drop polarity the export
+    # uses), not from the in-force baseline text. The baseline (source_text, via
+    # docx_text) DROPS the source's pre-existing counterparty tracked insertions, but the
+    # export RETAINS them verbatim -- so a string-base comparison diverges on every
+    # counterparty-redlined NDA even when the export is faithful. Aligning both sides to
+    # the accepted-view extractor measures only the AI-redline delta. Falls back to the
+    # string base when source_docx is None (e.g. PDF reconstruction, diagnostic callers).
+    if source_docx:
+        expected_accepted_paragraphs, expected_errors = _expected_accepted_paragraphs_from_source_docx(
+            source_docx,
             expected_redline_edits,
+            clean_fills,
         )
+        have_expected = expected_accepted_paragraphs is not None or bool(expected_errors)
+    else:
+        source_paragraphs = _apply_clean_fills_to_source_paragraphs(
+            _source_paragraphs_from_text(source_text), clean_fills
+        )
+        if source_paragraphs:
+            expected_accepted_paragraphs, expected_errors = _expected_accepted_source_paragraphs(
+                source_paragraphs,
+                expected_redline_edits,
+            )
+            have_expected = True
+        else:
+            expected_accepted_paragraphs, expected_errors, have_expected = [], [], False
+    if have_expected:
         if expected_errors:
             return expected_errors
         accepted_paragraphs = [record["accepted"] for record in export_paragraphs if record["accepted"]]
@@ -879,6 +904,208 @@ def _expected_accepted_source_paragraphs(
             accepted.append(paragraph)
         accepted.extend(expected_insertions_by_source_index.get(source_index, []))
     return accepted, []
+
+
+def _expected_physical_source_index(redline: Dict[str, object]) -> int | None:
+    """The physical ``<w:p>`` ``source_index`` a redline anchors to, for the
+    source-bytes expected base.
+
+    Mirrors the export's anchor key (``redline_edit_contract.redline_source_index``):
+    prefer ``source_index`` -- the physical body-paragraph ordinal the export numbers and
+    anchors into -- over ``paragraph_index`` (the review-list ordinal). The source-bytes
+    base is numbered in this SAME physical space (``iter_indexed_body_paragraphs``), so
+    keying on ``source_index`` lands a redline on the same paragraph it edits in the
+    export, including the pre-existing inserted paragraphs that are not review paragraphs.
+    Falls back to ``paragraph_index`` only when a redline carries no ``source_index``."""
+    for key in ("source_index", "paragraph_index"):
+        value = redline.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+    return None
+
+
+def _expected_accepted_paragraphs_from_source_docx(
+    source_docx: bytes,
+    expected_redline_edits: object,
+    clean_fills: object,
+) -> Tuple[List[str] | None, List[str]]:
+    """The expected accepted-change paragraph sequence built from the SOURCE bytes' own
+    accepted view, mirroring the export's anchoring.
+
+    Both sides of the coverage comparison must use the identical
+    ``_paragraph_revision_text(accepted=True)`` polarity over the source's tracked
+    markup. The exported bytes keep the source's pre-existing (counterparty) ``w:ins``
+    insertions and drop its ``w:del`` deletions; building the expected base from the same
+    accepted extractor -- rather than the in-force baseline text, which DROPS those
+    pre-existing insertions -- keeps the pre-existing tracked changes on BOTH sides so
+    they cannot diverge. The gate then measures only the AI-redline delta.
+
+    The base is numbered in the export's physical ``<w:p>`` ``source_index`` space (the
+    same single canonical walk, ``iter_indexed_body_paragraphs``, the export anchors a
+    redline into), so a redline's ``source_index`` lands on the same paragraph here that
+    it edits in the export -- including the pre-existing inserted paragraphs that have no
+    in-force baseline text and so are NOT review paragraphs. Each physical paragraph's
+    accepted view is split on internal blank lines into the same logical blocks the export
+    re-emits, so a redline targeting one block of a split paragraph reconciles. Returns
+    ``(accepted_paragraphs, errors)``; ``(None, [])`` when the source body is empty (the
+    caller skips the sequence check, as for the empty string base). On any structural
+    error reading the source, returns ``(None, [])`` so the gate falls through to the
+    length-ratio guarantee rather than false-rejecting on an unreadable source.
+    """
+    physical = _source_accepted_blocks_by_physical_paragraph(source_docx)
+    if physical is None:
+        return None, []
+    if not any(blocks for _index, blocks in physical):
+        return None, []
+    max_source_index = physical[-1][0] if physical else 0
+    clean_fill_by_index = _clean_fills_by_physical_index(physical, clean_fills)
+
+    replace_delete_by_index: Dict[int, List[Dict[str, object]]] = {}
+    insertions_by_index: Dict[int, List[str]] = {}
+    errors: List[str] = []
+    if isinstance(expected_redline_edits, list):
+        for redline in expected_redline_edits:
+            if not isinstance(redline, dict):
+                continue
+            action = str(redline.get("action") or "")
+            source_index = _expected_physical_source_index(redline)
+            if source_index is None:
+                continue
+            if source_index < 1 or source_index > max_source_index:
+                errors.append(
+                    f"Redline {_redline_label(redline)} targets missing source paragraph {source_index}."
+                )
+                continue
+            if action == REDLINE_INSERT_AFTER_PARAGRAPH:
+                insertions_by_index.setdefault(source_index, []).extend(
+                    _redline_text_blocks(redline.get("insert_text") or redline.get("replacement_text") or "")
+                )
+            elif action in (REDLINE_REPLACE_PARAGRAPH, REDLINE_DELETE_PARAGRAPH):
+                replace_delete_by_index.setdefault(source_index, []).append(redline)
+    if errors:
+        return None, errors
+
+    accepted: List[str] = []
+    for source_index, blocks in physical:
+        result_blocks = list(blocks)
+        # Clean-mode fills are baked into the exported base (not redline edits); apply them
+        # to this paragraph's blocks so a filled export is not read as a divergence.
+        for find, value in clean_fill_by_index.get(source_index, []):
+            result_blocks = [_normalize_export_text(block.replace(find, value)) for block in result_blocks]
+        consumed_owner: Dict[int, str] = {}
+        for redline in replace_delete_by_index.get(source_index, []):
+            action = str(redline.get("action") or "")
+            original = _normalize_export_text(str(redline.get("original_text") or ""))
+            target = _match_block_index(result_blocks, original, consumed_owner)
+            if target is None:
+                # A second destructive edit collided with the block a prior one already
+                # rewrote: the clause's same-paragraph spans were not coalesced before
+                # export. Fail closed (mirrors _expected_accepted_source_paragraphs) rather
+                # than silently keep one survivor and possibly pass an export that dropped
+                # the other.
+                previous_owner = next(iter(consumed_owner.values()), "unknown")
+                errors.append(
+                    f"Redlines {previous_owner} and {_redline_label(redline)} both rewrite source "
+                    f"paragraph {source_index}; the clause's edits were not coalesced, so the export "
+                    "may have silently dropped one of them."
+                )
+                continue
+            consumed_owner[target] = _redline_label(redline)
+            if action == REDLINE_REPLACE_PARAGRAPH:
+                result_blocks[target] = _normalize_export_text(redline.get("replacement_text"))
+            else:  # REDLINE_DELETE_PARAGRAPH
+                result_blocks[target] = ""
+        if errors:
+            return None, errors
+        for block in result_blocks:
+            if block:
+                accepted.append(block)
+        accepted.extend(insertions_by_index.get(source_index, []))
+    return accepted, []
+
+
+def _match_block_index(
+    blocks: List[str], original_normalized: str, consumed_owner: Dict[int, str]
+) -> int | None:
+    """The index of the (unconsumed) block a replace/delete redline targets.
+
+    For a SINGLE-block paragraph the redline anchors to that whole ``<w:p>`` by
+    source_index, so it claims the sole block when unclaimed -- WITHOUT requiring the
+    redline's ``original_text`` to text-match the block. That tolerance is essential: when
+    the paragraph also carries a pre-existing counterparty tracked change, its accepted
+    block here differs from the redline's ``original_text`` (which the AI computed against
+    the in-force baseline), yet the export still rewrites the whole paragraph. For a
+    MULTI-block (split) paragraph the edit must land on the specific sub-block, so we match
+    by ``original_text`` there. Returns ``None`` only when no unclaimed block remains (the
+    collision/duplicate case the caller fails closed on)."""
+    if len(blocks) == 1:
+        return 0 if 0 not in consumed_owner else None
+    for index, block in enumerate(blocks):
+        if index in consumed_owner:
+            continue
+        if original_normalized and block == original_normalized:
+            return index
+    return None
+
+
+def _source_accepted_blocks_by_physical_paragraph(
+    source_docx: bytes,
+) -> List[Tuple[int, List[str]]] | None:
+    """``(source_index, accepted_blocks)`` for every physical body ``<w:p>`` of the source,
+    numbered through the canonical export walk.
+
+    ``accepted_blocks`` is the paragraph's accepted view (pre-existing ``w:ins`` kept,
+    ``w:del`` dropped) split on internal blank lines into the logical blocks the export
+    re-emits, each whitespace-normalized; an empty paragraph yields ``[]``. Returns
+    ``None`` when the source bytes cannot be read as a DOCX (the caller then falls through
+    to the length-ratio guarantee)."""
+    try:
+        validate_docx_bytes_before_open(source_docx)
+        with ZipFile(BytesIO(source_docx)) as archive:
+            validate_docx_archive(archive)
+            document_root = parse_docx_xml(archive.read("word/document.xml"), part_name="word/document.xml")
+    except (BadZipFile, DocxExtractionError, KeyError, ET.ParseError, UnsafeDocxXmlError):
+        return None
+    paragraphs: List[Tuple[int, List[str]]] = []
+    for indexed in iter_indexed_body_paragraphs(document_root):
+        raw_accepted = _paragraph_revision_text(indexed.paragraph, accepted=True)
+        blocks = [
+            normalized
+            for block in re.split(r"\n\s*\n+", raw_accepted)
+            if (normalized := _normalize_export_text(block))
+        ]
+        paragraphs.append((indexed.source_index, blocks))
+    return paragraphs
+
+
+def _clean_fills_by_physical_index(
+    physical: List[Tuple[int, List[str]]], clean_fills: object
+) -> Dict[int, List[Tuple[str, str]]]:
+    """Map each clean-mode fill (keyed by its ``p<N>`` review-block ordinal) onto the
+    physical ``source_index`` it belongs to.
+
+    A review block is a physical ``<w:p>`` whose accepted view is non-empty, in document
+    order, so ``p<N>`` is the N-th non-empty physical paragraph here. Resolving fills to
+    the physical index space keeps them applied to the correct paragraph even when
+    pre-existing inserted paragraphs shift the review-block ordinal away from the physical
+    ordinal."""
+    fills_by_index: Dict[int, List[Tuple[str, str]]] = {}
+    if not isinstance(clean_fills, list) or not clean_fills:
+        return fills_by_index
+    non_empty_source_indexes = [source_index for source_index, blocks in physical if blocks]
+    for fill in clean_fills:
+        if not isinstance(fill, dict):
+            continue
+        ordinal = _fill_source_index(fill.get("paragraph_id"))
+        find = fill.get("find")
+        value = fill.get("value")
+        if ordinal is None or not isinstance(find, str) or not find or not isinstance(value, str):
+            continue
+        if 1 <= ordinal <= len(non_empty_source_indexes):
+            fills_by_index.setdefault(non_empty_source_indexes[ordinal - 1], []).append((find, value))
+    return fills_by_index
 
 
 def _expected_redline_source_index(redline: Dict[str, object]) -> int | None:

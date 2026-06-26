@@ -435,6 +435,105 @@ def make_source_docx_with_table(before_paragraphs, table_cells, after_paragraphs
     )
 
 
+def make_source_docx_with_tracked_changes(
+    leading_paragraphs,
+    inline_insertion,
+    whole_inserted_paragraph,
+    inline_deletion,
+    trailing_paragraphs,
+):
+    """A counterparty-redlined source DOCX: its body already carries PRE-EXISTING tracked
+    changes, exactly like a real NDA returned with the other side's edits.
+
+    Mirrors the Moorwand shape that tripped the coverage gate:
+
+    * ``leading_paragraphs`` -- plain paragraphs before the redlined region.
+    * ``inline_insertion`` -- ``(prefix, inserted, suffix)``: one paragraph with an inline
+      counterparty ``<w:ins>`` (e.g. "Vance Inc") between two plain runs. Its in-force
+      baseline text DROPS the insertion; its accepted view KEEPS it.
+    * ``whole_inserted_paragraph`` -- a whole paragraph that exists ONLY inside ``<w:ins>``
+      (empty baseline; present in the accepted view). It is not a review paragraph.
+    * ``inline_deletion`` -- ``(prefix, deleted, suffix)``: one paragraph with a
+      counterparty ``<w:del>``/``<w:delText>`` between two plain runs. Its baseline keeps
+      the deleted text; its accepted view drops it.
+    * ``trailing_paragraphs`` -- plain paragraphs after the redlined region.
+
+    Reuses ``make_source_docx``'s Content_Types/rels scaffolding via ``replace_docx_parts``
+    (``make_source_docx`` emits only plain runs, so the tracked markup is layered here)."""
+    ins_prefix, ins_text, ins_suffix = inline_insertion
+    del_prefix, del_text, del_suffix = inline_deletion
+    parts = []
+    for paragraph in leading_paragraphs:
+        parts.append(f"<w:p><w:r><w:t>{escape_xml(paragraph)}</w:t></w:r></w:p>")
+    parts.append(
+        "<w:p>"
+        f"<w:r><w:t>{escape_xml(ins_prefix)}</w:t></w:r>"
+        '<w:ins w:id="9001" w:author="Counterparty" w:date="2026-01-01T00:00:00Z">'
+        f"<w:r><w:t>{escape_xml(ins_text)}</w:t></w:r>"
+        "</w:ins>"
+        f"<w:r><w:t>{escape_xml(ins_suffix)}</w:t></w:r>"
+        "</w:p>"
+    )
+    parts.append(
+        "<w:p>"
+        '<w:ins w:id="9002" w:author="Counterparty" w:date="2026-01-01T00:00:00Z">'
+        f"<w:r><w:t>{escape_xml(whole_inserted_paragraph)}</w:t></w:r>"
+        "</w:ins>"
+        "</w:p>"
+    )
+    parts.append(
+        "<w:p>"
+        f"<w:r><w:t>{escape_xml(del_prefix)}</w:t></w:r>"
+        '<w:del w:id="9003" w:author="Counterparty" w:date="2026-01-01T00:00:00Z">'
+        f"<w:r><w:delText>{escape_xml(del_text)}</w:delText></w:r>"
+        "</w:del>"
+        f"<w:r><w:t>{escape_xml(del_suffix)}</w:t></w:r>"
+        "</w:p>"
+    )
+    for paragraph in trailing_paragraphs:
+        parts.append(f"<w:p><w:r><w:t>{escape_xml(paragraph)}</w:t></w:r></w:p>")
+    document_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{''.join(parts)}</w:body>"
+        "</w:document>"
+    )
+    # The plain-run scaffold paragraph count only needs to be non-empty; the real body is
+    # replaced wholesale with the tracked-markup document above.
+    return replace_docx_parts(
+        make_source_docx([*leading_paragraphs, "placeholder", *trailing_paragraphs]),
+        {"word/document.xml": document_xml},
+    )
+
+
+def _drop_body_paragraph(docx_bytes, substring):
+    """Return ``docx_bytes`` with the first body ``<w:p>`` whose ACCEPTED text contains
+    ``substring`` removed -- simulating a redline that silently dropped that paragraph.
+
+    Parses word/document.xml, finds the matching ``<w:p>`` by its accept-all view (so it
+    matches inserted-only paragraphs too), removes it, and rewrites the part. Raises if no
+    paragraph matches, so a typo in the test cannot silently pass."""
+    from nda_automation.docx_health import _paragraph_revision_text, _w_tag
+
+    ET.register_namespace("w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
+    with ZipFile(BytesIO(docx_bytes), "r") as archive:
+        document_xml = archive.read("word/document.xml")
+    root = ET.fromstring(document_xml)
+    body = root.find(_w_tag("body"))
+    target = None
+    for paragraph in list(body):
+        if paragraph.tag != _w_tag("p"):
+            continue
+        if substring in _paragraph_revision_text(paragraph, accepted=True):
+            target = paragraph
+            break
+    if target is None:
+        raise AssertionError(f"no body paragraph contained {substring!r}")
+    body.remove(target)
+    rewritten = ET.tostring(root, encoding="unicode")
+    return replace_docx_parts(docx_bytes, {"word/document.xml": rewritten})
+
+
 def replace_docx_parts(docx_bytes, replacements):
     with ZipFile(BytesIO(docx_bytes), "r") as source_archive:
         with BytesIO() as output:
@@ -2618,6 +2717,180 @@ class DocxExportTests(unittest.TestCase):
 
         self.assertEqual(len(errors), 1)
         self.assertIn("paragraph sequence does not match", errors[0])
+
+    def test_export_content_coverage_passes_for_counterparty_redlined_source(self):
+        # FULL-PIPELINE repro (the index-misalignment guard): a counterparty-redlined
+        # source whose body ALREADY carries pre-existing tracked changes (inline
+        # insertion, a whole inserted paragraph, an inline deletion) is reviewed by the
+        # REAL review_nda, exported, and content-gated. The export RETAINS the source's
+        # pre-existing tracked changes verbatim while the in-force baseline text DROPS the
+        # pre-existing insertions; before the fix the expected base (built from the
+        # baseline) lacked them, so the accepted-sequence gate false-rejected a faithful
+        # export of any counterparty-redlined NDA. Building the expected base from the
+        # source bytes' own accepted view -- in the export's physical-paragraph index
+        # space -- makes both sides carry the pre-existing changes, so the gate measures
+        # only the real AI-redline delta and passes.
+        source_docx = make_source_docx_with_tracked_changes(
+            leading_paragraphs=[
+                "Mutual Non-Disclosure Agreement.",
+                "This Agreement shall be governed by the laws of California.",
+            ],
+            inline_insertion=(
+                "This Agreement is entered into by ",
+                "Vance Inc",
+                " and the Receiving Party.",
+            ),
+            whole_inserted_paragraph="This entire clause was inserted by the counterparty.",
+            inline_deletion=(
+                "The term shall be ",
+                "five",
+                " three years.",
+            ),
+            trailing_paragraphs=[
+                "The confidentiality obligations survive after termination.",
+            ],
+        )
+        paragraphs = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraphs)
+        result = review_nda(source_text, paragraphs=paragraphs)
+        # Sanity: the review actually produced redline edits to anchor end-to-end.
+        self.assertTrue(result["redline_edits"], "review must emit redlines to exercise anchoring")
+
+        redlined_docx = source_redline_docx.build_source_redline_docx(source_docx, result)
+
+        self.assertEqual(
+            verify_export_content_coverage(
+                redlined_docx,
+                source_text,
+                expected_redline_edits=result["redline_edits"],
+                source_docx=source_docx,
+            ),
+            [],
+        )
+
+    def test_export_content_coverage_flags_dropped_paragraph_on_redlined_source(self):
+        # DROP-STILL-FAILS on a counterparty-redlined source: a real body paragraph is
+        # genuinely absent from the exported accepted sequence. The gate must still catch
+        # the drop even though the source carries pre-existing tracked changes -- the fix
+        # aligns the polarity, it does NOT relax the exact-equality sequence check.
+        source_docx = make_source_docx_with_tracked_changes(
+            leading_paragraphs=[
+                "Mutual Non-Disclosure Agreement.",
+                "This Agreement shall be governed by the laws of California.",
+            ],
+            inline_insertion=(
+                "This Agreement is entered into by ",
+                "Vance Inc",
+                " and the Receiving Party.",
+            ),
+            whole_inserted_paragraph="This entire clause was inserted by the counterparty.",
+            inline_deletion=("The term shall be ", "five", " three years."),
+            trailing_paragraphs=["The confidentiality obligations survive after termination."],
+        )
+        paragraphs = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraphs)
+        result = review_nda(source_text, paragraphs=paragraphs)
+        redlined_docx = source_redline_docx.build_source_redline_docx(source_docx, result)
+
+        # Mutate the export so one ORDINARY (plain) body paragraph is dropped from the
+        # accepted sequence.
+        dropped_export = _drop_body_paragraph(redlined_docx, "survive after termination")
+
+        errors = verify_export_content_coverage(
+            dropped_export,
+            source_text,
+            expected_redline_edits=result["redline_edits"],
+            source_docx=source_docx,
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("paragraph sequence does not match", errors[0])
+
+    def test_export_content_coverage_flags_dropped_preexisting_inserted_paragraph(self):
+        # Twin of the drop test: the dropped paragraph is the PRE-EXISTING counterparty
+        # INSERTED whole paragraph (present only inside <w:ins>). It is part of the
+        # faithful export's accepted sequence, so dropping it must also fail the gate.
+        source_docx = make_source_docx_with_tracked_changes(
+            leading_paragraphs=[
+                "Mutual Non-Disclosure Agreement.",
+                "This Agreement shall be governed by the laws of California.",
+            ],
+            inline_insertion=(
+                "This Agreement is entered into by ",
+                "Vance Inc",
+                " and the Receiving Party.",
+            ),
+            whole_inserted_paragraph="This entire clause was inserted by the counterparty.",
+            inline_deletion=("The term shall be ", "five", " three years."),
+            trailing_paragraphs=["The confidentiality obligations survive after termination."],
+        )
+        paragraphs = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraphs)
+        result = review_nda(source_text, paragraphs=paragraphs)
+        redlined_docx = source_redline_docx.build_source_redline_docx(source_docx, result)
+
+        dropped_export = _drop_body_paragraph(redlined_docx, "inserted by the counterparty")
+
+        errors = verify_export_content_coverage(
+            dropped_export,
+            source_text,
+            expected_redline_edits=result["redline_edits"],
+            source_docx=source_docx,
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("paragraph sequence does not match", errors[0])
+
+    def test_export_content_coverage_source_docx_base_matches_string_base_for_clean(self):
+        # CLEAN-SOURCE invariant: for a clean source (no pre-existing tracked changes),
+        # the new source_docx-derived expected base equals the old string base for the
+        # same content (byte-identity), the full-source-redline gate still passes, and the
+        # source_docx=None fallback still uses the string base.
+        source_docx = make_source_docx([
+            "Intro paragraph.",
+            "This Agreement shall be governed by the laws of California.",
+            "The confidentiality obligations survive for three years.",
+        ])
+        paragraphs = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraphs)
+
+        # Byte-identity of the two expected BASES with no edits applied.
+        string_base, string_errors = docx_health._expected_accepted_source_paragraphs(
+            docx_health._source_paragraphs_from_text(source_text), []
+        )
+        docx_base, docx_errors = docx_health._expected_accepted_paragraphs_from_source_docx(
+            source_docx, [], None
+        )
+        self.assertEqual(string_errors, [])
+        self.assertEqual(docx_errors, [])
+        self.assertEqual(docx_base, string_base)
+
+        # The existing full-source-redline gate still returns [] on the source_docx path.
+        result = review_nda(source_text, paragraphs=paragraphs)
+        redlined_docx = build_source_redline_docx(source_docx, result)
+        self.assertEqual(
+            verify_export_content_coverage(
+                redlined_docx,
+                source_text,
+                expected_redline_edits=result["redline_edits"],
+                source_docx=source_docx,
+            ),
+            [],
+        )
+
+        # The source_docx=None fallback still uses the string base: it passes the same
+        # faithful export and the source-bytes builder is not consulted.
+        with patch.object(
+            docx_health,
+            "_expected_accepted_paragraphs_from_source_docx",
+            side_effect=AssertionError("source-bytes builder must not run when source_docx is None"),
+        ):
+            self.assertEqual(
+                verify_export_content_coverage(
+                    redlined_docx,
+                    source_text,
+                    expected_redline_edits=result["redline_edits"],
+                ),
+                [],
+            )
 
     def test_export_content_coverage_passes_paragraph_with_tab_separator(self):
         # Regression: a native-DOCX paragraph whose words are separated by a
