@@ -2598,6 +2598,82 @@ class DocxExportTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("paragraph sequence does not match", errors[0])
 
+    def test_export_content_coverage_passes_paragraph_with_tab_separator(self):
+        # Regression: a native-DOCX paragraph whose words are separated by a
+        # <w:tab/> (pervasive in legal NDAs: section-number/title separators,
+        # indentation, signature blocks) must NOT trip the accepted-paragraph
+        # sequence gate. The exported-side extractor previously dropped the tab
+        # entirely ("Section 1.Confidential...") while the expected side mapped
+        # it to whitespace ("Section 1. Confidential..."), so the equal-count
+        # sequences mismatched and a correct redline raised content_coverage.
+        tabbed_document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body>"
+            "<w:p><w:r><w:t>Section 1.</w:t></w:r><w:r><w:tab/></w:r>"
+            "<w:r><w:t>Confidential Information means all data.</w:t></w:r></w:p>"
+            "<w:p><w:r><w:t>The obligations survive for three years.</w:t></w:r></w:p>"
+            "</w:body></w:document>"
+        )
+        docx = replace_docx_parts(
+            make_source_docx(["placeholder one", "placeholder two"]),
+            {"word/document.xml": tabbed_document_xml},
+        )
+        # Source text carries the tab as real whitespace (extractors collapse any
+        # whitespace run to a single space), so a faithful export matches.
+        source_text = (
+            "Section 1.\tConfidential Information means all data."
+            "\n\nThe obligations survive for three years."
+        )
+
+        self.assertEqual(verify_export_content_coverage(docx, source_text), [])
+
+    def test_export_content_coverage_passes_paragraph_with_carriage_return(self):
+        # Regression sibling: a soft line break expressed as <w:cr/> inside a
+        # paragraph was also dropped by the exported-side extractor while the
+        # expected side mapped it to "\n", causing a spurious mismatch.
+        cr_document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body>"
+            "<w:p><w:r><w:t>First line</w:t><w:cr/><w:t>second line.</w:t></w:r></w:p>"
+            "</w:body></w:document>"
+        )
+        docx = replace_docx_parts(
+            make_source_docx(["placeholder one"]),
+            {"word/document.xml": cr_document_xml},
+        )
+        source_text = "First line\nsecond line."
+
+        self.assertEqual(verify_export_content_coverage(docx, source_text), [])
+
+    def test_export_content_coverage_still_flags_drop_in_tabbed_paragraph(self):
+        # The tab/cr alignment must NOT weaken the gate: genuinely dropped
+        # content in a tab-bearing document is still caught. Here the export is
+        # missing the entire second source paragraph.
+        tabbed_document_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body>"
+            "<w:p><w:r><w:t>Section 1.</w:t></w:r><w:r><w:tab/></w:r>"
+            "<w:r><w:t>Confidential Information means all data.</w:t></w:r></w:p>"
+            "</w:body></w:document>"
+        )
+        docx = replace_docx_parts(
+            make_source_docx(["placeholder one"]),
+            {"word/document.xml": tabbed_document_xml},
+        )
+        source_text = (
+            "Section 1.\tConfidential Information means all data."
+            "\n\nThe obligations survive for three years."
+        )
+
+        errors = verify_export_content_coverage(docx, source_text)
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("paragraph sequence does not match", errors[0])
+        self.assertNotIn("Confidential Information", errors[0])
+
     def test_export_content_coverage_ignores_missing_source_text(self):
         docx = make_source_docx(["Some body text."])
         self.assertEqual(verify_export_content_coverage(docx, ""), [])

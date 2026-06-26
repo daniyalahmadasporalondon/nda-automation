@@ -676,7 +676,13 @@ def _paragraph_revision_text(node: ET.Element, *, accepted: bool) -> str:
         return "".join(_paragraph_revision_text(child, accepted=True) for child in list(node)) if accepted else ""
     if tag in {"t", "delText"}:
         return node.text or ""
-    if tag == "br":
+    if tag == "tab":
+        # A tab separates words/columns; emit whitespace so adjacent runs do not
+        # fuse. Mirrors docx_text._collect_revision_aware_text (expected side),
+        # which maps w:tab -> "\t"; both sides are then collapsed to a single
+        # space by _normalize_export_text, so the two extractors agree.
+        return "\t"
+    if tag in {"br", "cr"}:
         return "\n"
     return "".join(_paragraph_revision_text(child, accepted=accepted) for child in list(node))
 
