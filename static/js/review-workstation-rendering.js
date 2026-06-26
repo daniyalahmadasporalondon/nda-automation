@@ -818,17 +818,156 @@ function applyDraftTemplateSelections(selections) {
   });
 }
 
+// Replay a saved format_paragraph redline's `format_ops` back onto a paragraph so a
+// FORMAT-ONLY edit (alignment/font/size, or inline run bold/italic/etc.) survives
+// Save Draft + reload. Previously applyDraftManualRedlines only restored TEXT, so
+// every format-only edit was silently dropped on rehydrate. Paragraph-scope ops set
+// the paragraph-level alignment/font/fontSize; run-scope ops are rebuilt into a run
+// model tiling the paragraph text. Returns a NEW paragraph (input is not mutated).
+function replayFormatOpsOntoParagraph(paragraph, formatOps) {
+  if (!Array.isArray(formatOps) || !formatOps.length) return paragraph;
+  const next = { ...paragraph };
+  const text = String(next.text || "");
+  // Per-character property arrays seeded from the paragraph's CURRENT runs (so an
+  // already-formatted paragraph keeps its formatting where an op does not touch it).
+  const charProps = runCharPropertiesForReplay(next.runs, text);
+  let runOpsSeen = false;
+  formatOps.forEach((op) => {
+    if (!op || typeof op !== "object") return;
+    if (op.scope === "paragraph") {
+      if (op.property === "alignment") {
+        if (op.to === null || op.to === undefined || op.to === "") delete next.alignment;
+        else next.alignment = op.to;
+      } else if (op.property === "font") {
+        if (op.to === null || op.to === undefined || op.to === "") delete next.font;
+        else next.font = op.to;
+      } else if (op.property === "size") {
+        const size = Number(op.to);
+        if (Number.isFinite(size) && size > 0) next.fontSize = size;
+        else delete next.fontSize;
+      }
+      return;
+    }
+    if (op.scope === "run" && charProps) {
+      const property = String(op.property || "");
+      if (!Object.prototype.hasOwnProperty.call(charProps, property)) return;
+      const start = Math.max(0, Math.min(text.length, Number(op.start) || 0));
+      const end = Math.max(start, Math.min(text.length, Number(op.end) || 0));
+      for (let i = start; i < end; i += 1) charProps[property][i] = op.to;
+      runOpsSeen = true;
+    }
+  });
+  if (runOpsSeen && charProps) {
+    const rebuilt = runsFromCharProperties(charProps, text);
+    if (rebuilt) next.runs = rebuilt;
+  }
+  return next;
+}
+
+// Build per-character property arrays for a paragraph's existing runs (or a plain
+// baseline when runs are absent), so run-scope format_ops can be replayed onto them.
+// Mirrors runCharProperties in redline-rendering.js; defined locally so the draft
+// rehydrate does not depend on that module's load order.
+function runCharPropertiesForReplay(runs, text) {
+  const blank = () => ({
+    bold: new Array(text.length).fill(false),
+    italic: new Array(text.length).fill(false),
+    underline: new Array(text.length).fill(false),
+    strike: new Array(text.length).fill(false),
+    font: new Array(text.length).fill(""),
+    size: new Array(text.length).fill(0),
+    color: new Array(text.length).fill(""),
+    highlight: new Array(text.length).fill(""),
+    vertAlign: new Array(text.length).fill(""),
+  });
+  if (!Array.isArray(runs) || !runs.length) return blank();
+  if (runs.map((run) => String(run?.text || "")).join("") !== text) return blank();
+  const props = blank();
+  let cursor = 0;
+  runs.forEach((run) => {
+    const runText = String(run?.text || "");
+    for (let i = 0; i < runText.length && cursor < text.length; i += 1, cursor += 1) {
+      props.bold[cursor] = Boolean(run?.bold);
+      props.italic[cursor] = Boolean(run?.italic);
+      props.underline[cursor] = Boolean(run?.underline);
+      props.strike[cursor] = Boolean(run?.strike);
+      props.font[cursor] = String(run?.font || "");
+      props.size[cursor] = Number(run?.size) > 0 ? Number(run?.size) : 0;
+      props.color[cursor] = String(run?.color || "").replace(/^#/, "").toUpperCase();
+      props.highlight[cursor] = String(run?.highlight || "");
+      props.vertAlign[cursor] = String(run?.vertAlign || "").toLowerCase();
+    }
+  });
+  return props;
+}
+
+// Collapse per-character property arrays back into a tidy run array. Adjacent chars
+// with identical formatting coalesce into one run. Returns null when the text is
+// empty (caller leaves runs untouched).
+function runsFromCharProperties(props, text) {
+  if (!text.length) return null;
+  const runs = [];
+  let current = null;
+  const sig = (i) => [
+    props.bold[i] ? "b" : "",
+    props.italic[i] ? "i" : "",
+    props.underline[i] ? "u" : "",
+    props.strike[i] ? "s" : "",
+    props.font[i] || "",
+    props.size[i] || 0,
+    props.color[i] || "",
+    props.highlight[i] || "",
+    props.vertAlign[i] || "",
+  ].join("");
+  for (let i = 0; i < text.length; i += 1) {
+    const signature = sig(i);
+    if (current && current.signature === signature) {
+      current.text += text[i];
+      continue;
+    }
+    const run = { text: text[i] };
+    if (props.bold[i]) run.bold = true;
+    if (props.italic[i]) run.italic = true;
+    if (props.underline[i]) run.underline = true;
+    if (props.strike[i]) run.strike = true;
+    if (props.font[i]) run.font = props.font[i];
+    if (Number(props.size[i]) > 0) run.size = Number(props.size[i]);
+    if (props.color[i]) run.color = props.color[i];
+    if (props.highlight[i]) run.highlight = props.highlight[i];
+    if (props.vertAlign[i]) run.vertAlign = props.vertAlign[i];
+    run.signature = signature;
+    runs.push(run);
+    current = run;
+  }
+  return runs.map(({ signature, ...run }) => run);
+}
+
 function applyDraftManualRedlines(manualRedlines) {
   if (!Array.isArray(manualRedlines) || !manualRedlines.length) return;
   const redlineByParagraph = new Map();
   manualRedlines.forEach((redline) => {
     if (redline?.paragraph_id) redlineByParagraph.set(String(redline.paragraph_id), redline);
   });
+  const formatAction = typeof redlineFormatParagraphAction === "function"
+    ? redlineFormatParagraphAction()
+    : "format_paragraph";
   state.reviewParagraphs = state.reviewParagraphs.map((paragraph) => {
     const redline = redlineByParagraph.get(String(paragraph.id));
     if (!redline) return paragraph;
+    // A FORMAT-ONLY redline carries the paragraph's text unchanged plus format_ops:
+    // keep the existing text and replay the formatting (bug 2). It must NOT be
+    // treated as a text replace (that would wipe runs and reset format to baseline).
+    if (redline.action === formatAction && Array.isArray(redline.format_ops) && redline.format_ops.length) {
+      return replayFormatOpsOntoParagraph(paragraph, redline.format_ops);
+    }
     const replacement = redline.action === REDLINE_DELETE_PARAGRAPH ? "" : String(redline.replacement_text || "");
-    return { ...paragraph, text: replacement };
+    // A text replace can also carry format_ops (formatting applied to the edited
+    // text); set the new text first, then replay the formatting onto it.
+    const replaced = { ...paragraph, text: replacement };
+    if (Array.isArray(redline.format_ops) && redline.format_ops.length && replacement) {
+      return replayFormatOpsOntoParagraph(replaced, redline.format_ops);
+    }
+    return replaced;
   });
   syncReviewSourceFromParagraphs();
 }

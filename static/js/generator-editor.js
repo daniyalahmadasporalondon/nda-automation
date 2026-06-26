@@ -302,6 +302,14 @@ window.generatorEditor = (function () {
       generatorDraftTouched: false,
       generatorHistory: [],
     });
+    // Rehydrate any DURABLY-SAVED manual edits (bug 3): the baseline
+    // (generatorOriginalParagraphs) was just snapshotted from the un-edited generated
+    // doc, so replaying the saved redlines onto generatorParagraphs restores the
+    // user's edits while exportRedlines() still diffs against the clean baseline.
+    const savedDraft = matter.redline_draft || result.redline_draft || null;
+    if (savedDraft && Array.isArray(savedDraft.manual_redline_edits)) {
+      rehydrateManualRedlines(savedDraft.manual_redline_edits);
+    }
     render();
     return true;
   }
@@ -492,6 +500,114 @@ window.generatorEditor = (function () {
 
   function markTouched() {
     Object.assign(state, model()?.generatorTouchedState(state) || (state.generatorMode !== "generated" ? { generatorDraftTouched: true } : {}));
+    // A GENERATED-matter edit must DURABLY persist (reload / Send / Download were
+    // using the un-edited file because the edit lived only in memory). Mark the
+    // generated editor dirty too and schedule a debounced save to the matter's
+    // redline_draft (the same mechanism the Review editor uses).
+    if (state.generatorMode === "generated" && state.generatorMatterId) {
+      state.generatorDraftTouched = true;
+      scheduleGeneratorDraftSave();
+    }
+  }
+
+  // ---- Durable persistence (generated matters) ----------------------------
+  // Generated-NDA manual edits are saved to the matter's redline_draft as
+  // manual_redline_edits, exactly like the Review editor. This makes reload restore
+  // the edits and keeps Send/Download (which export from the matter + redlines)
+  // consistent with what the user sees.
+  let generatorDraftSaveTimer = null;
+  let generatorDraftSaveInFlight = false;
+
+  function scheduleGeneratorDraftSave() {
+    if (typeof window === "undefined") return;
+    if (generatorDraftSaveTimer !== null) window.clearTimeout(generatorDraftSaveTimer);
+    generatorDraftSaveTimer = window.setTimeout(() => {
+      generatorDraftSaveTimer = null;
+      persistDraft({ quiet: true });
+    }, 600);
+  }
+
+  async function persistDraft({ quiet = true } = {}) {
+    if (state.generatorMode !== "generated" || !state.generatorMatterId) return false;
+    if (generatorDraftSaveInFlight) {
+      // Coalesce: a save is already running; ensure another fires after it.
+      scheduleGeneratorDraftSave();
+      return false;
+    }
+    generatorDraftSaveInFlight = true;
+    try {
+      const response = await fetch(`/api/matters/${encodeURIComponent(state.generatorMatterId)}/redline-draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ redline_draft: { manual_redline_edits: exportRedlines() } }),
+      });
+      if (!response.ok) return false;
+      // The edits are now durable; clear the dirty flag so an unsaved-changes warning
+      // does not fire after a successful save.
+      state.generatorDraftTouched = false;
+      return true;
+    } catch (error) {
+      return false;
+    } finally {
+      generatorDraftSaveInFlight = false;
+    }
+  }
+
+  // Replay saved manual_redline_edits onto freshly loaded generator paragraphs so a
+  // reload restores the user's edits. Mirrors applyDraftManualRedlines in the Review
+  // editor: text replace/delete by replacement_text, and format_paragraph ops
+  // replayed onto alignment/font/size/runs.
+  function rehydrateManualRedlines(manualRedlines) {
+    if (!Array.isArray(manualRedlines) || !manualRedlines.length) return;
+    const byParagraph = new Map();
+    manualRedlines.forEach((redline) => {
+      if (redline && redline.paragraph_id !== undefined && redline.paragraph_id !== null) {
+        byParagraph.set(String(redline.paragraph_id), redline);
+      }
+    });
+    if (!byParagraph.size) return;
+    state.generatorParagraphs = paragraphs().map((paragraph) => {
+      const redline = byParagraph.get(String(paragraph.id));
+      if (!redline) return paragraph;
+      if (redline.action === REDLINE_DELETE_PARAGRAPH) return { ...paragraph, text: "" };
+      if (redline.action === "format_paragraph"
+        && Array.isArray(redline.format_ops) && redline.format_ops.length) {
+        return replayGeneratorFormatOps(paragraph, redline.format_ops);
+      }
+      const replacement = String(redline.replacement_text || "");
+      const next = { ...paragraph, text: replacement };
+      // A replace can carry the edited run model directly (replacement_runs) — use it
+      // so inline formatting on the edited text survives reload.
+      if (Array.isArray(redline.replacement_runs) && redline.replacement_runs.length
+        && redline.replacement_runs.map((r) => String(r && r.text || "")).join("") === replacement) {
+        next.runs = redline.replacement_runs.map((r) => ({ ...r }));
+      } else if (Array.isArray(redline.format_ops) && redline.format_ops.length && replacement) {
+        return replayGeneratorFormatOps(next, redline.format_ops);
+      }
+      return next;
+    });
+  }
+
+  // Replay format_ops onto a generator paragraph. Reuses the Review editor's pure
+  // replay helper when available so the two editors stay in lockstep; otherwise
+  // applies the paragraph-scope ops directly (the common alignment/font/size case).
+  function replayGeneratorFormatOps(paragraph, formatOps) {
+    if (typeof replayFormatOpsOntoParagraph === "function") {
+      return replayFormatOpsOntoParagraph(paragraph, formatOps);
+    }
+    const next = { ...paragraph };
+    formatOps.forEach((op) => {
+      if (!op || op.scope !== "paragraph") return;
+      if (op.property === "alignment") {
+        if (op.to) next.alignment = op.to; else delete next.alignment;
+      } else if (op.property === "font") {
+        if (op.to) next.font = op.to; else delete next.font;
+      } else if (op.property === "size") {
+        const size = Number(op.to);
+        if (Number.isFinite(size) && size > 0) next.fontSize = size; else delete next.fontSize;
+      }
+    });
+    return next;
   }
 
   // ---- Run re-tiling on text edits ---------------------------------------

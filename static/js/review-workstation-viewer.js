@@ -500,6 +500,84 @@ async function refreshViewerReviewDetection(sequence) {
   }
 }
 
+// Structure/clause-mapping keys the live detection refresh is allowed to overlay
+// onto an existing (possibly user-edited) paragraph. These are the detector's
+// OUTPUT — heading/numbering/clause-anchoring metadata — and carry NO run-bearing
+// content. The run-bearing model (text/runs/alignment/font/fontSize) is owned by
+// the editor and is NEVER taken from the detection result (that was the data-loss
+// bug: a detection refresh after an edit clobbered the edited runs/text/format).
+const VIEWER_DETECTION_STRUCTURE_KEYS = [
+  "clause_id",
+  "clause_ids",
+  "heading_level",
+  "indent_left",
+  "numbering",
+  "outline_level",
+  "page_number",
+  "role",
+  "section_role",
+  "source_kind",
+  "structure",
+  "structure_label",
+  "structure_number",
+  "style_id",
+  "style_name",
+  "table",
+];
+
+// MERGE the live detection result onto the EXISTING run-bearing paragraphs by
+// stable identity, instead of replacing the model wholesale. We key on the unique
+// review id/index first (source_index is non-unique provenance and must not be the
+// primary key — split blocks share it). For each existing paragraph we overlay only
+// the detector's structure/clause tags (VIEWER_DETECTION_STRUCTURE_KEYS), preserving
+// the paragraph's edited text/runs/alignment/font/fontSize. Paragraphs the detector
+// added or dropped fall back to the detection copy so clause anchoring stays whole.
+function mergeViewerDetectionParagraphs(existingParagraphs, detectedParagraphs) {
+  const existing = Array.isArray(existingParagraphs) ? existingParagraphs : [];
+  const detected = Array.isArray(detectedParagraphs) ? detectedParagraphs : [];
+  if (!detected.length) return existing.map((paragraph) => ({ ...paragraph }));
+  if (!existing.length) return detected.map((paragraph) => ({ ...paragraph }));
+  const existingById = new Map();
+  existing.forEach((paragraph) => {
+    if (paragraph.id !== undefined && paragraph.id !== null) {
+      existingById.set(String(paragraph.id), paragraph);
+    }
+  });
+  const existingByIndex = new Map();
+  existing.forEach((paragraph) => {
+    if (paragraph.index !== undefined && paragraph.index !== null) {
+      existingByIndex.set(String(paragraph.index), paragraph);
+    }
+  });
+  return detected.map((detectedParagraph) => {
+    const key = detectedParagraph.id !== undefined && detectedParagraph.id !== null
+      ? String(detectedParagraph.id)
+      : null;
+    const indexKey = detectedParagraph.index !== undefined && detectedParagraph.index !== null
+      ? String(detectedParagraph.index)
+      : null;
+    const match = (key !== null && existingById.get(key))
+      || (indexKey !== null && existingByIndex.get(indexKey))
+      || null;
+    // No existing run-bearing paragraph to preserve (detector added it): take the
+    // detection copy verbatim so clause anchoring still has its paragraph.
+    if (!match) return { ...detectedParagraph };
+    // Start from the EXISTING paragraph (its edited text/runs/format wins) and
+    // overlay only the detector's structure/clause tags.
+    const merged = { ...match };
+    VIEWER_DETECTION_STRUCTURE_KEYS.forEach((tagKey) => {
+      if (Object.prototype.hasOwnProperty.call(detectedParagraph, tagKey)) {
+        merged[tagKey] = detectedParagraph[tagKey];
+      } else if (Object.prototype.hasOwnProperty.call(merged, tagKey)) {
+        // The detector no longer reports this tag for this paragraph — drop the
+        // stale tag so clause/structure mapping reflects the fresh detection.
+        delete merged[tagKey];
+      }
+    });
+    return merged;
+  });
+}
+
 function applyViewerReviewDetectionResult(result, reviewedText) {
   const previousSelectedClauseId = state.selectedReviewClauseId;
   const previousExportDecisions = { ...state.exportClauseDecisions };
@@ -507,7 +585,11 @@ function applyViewerReviewDetectionResult(result, reviewedText) {
   const editSelection = snapshotViewerEditSelection();
   state.latestReviewResult = result;
   state.reviewClauses = result.clauses || [];
-  state.reviewParagraphs = result.paragraphs || [];
+  // MERGE detection tags onto the existing edited paragraphs (bug 1+4): never
+  // replace the run-bearing model with `result.paragraphs` — that discarded the
+  // user's edited text/runs/format on every live detection refresh AND made a
+  // single edit strip formatting from the whole export.
+  state.reviewParagraphs = mergeViewerDetectionParagraphs(state.reviewParagraphs, result.paragraphs || []);
   state.reviewOriginalParagraphs = snapshotReviewParagraphs(state.reviewParagraphs);
   if (!paragraphsAlignWithBaseline(state.reviewParagraphs, state.reviewExportOriginalParagraphs)) {
     state.reviewExportOriginalParagraphs = snapshotReviewParagraphs(state.reviewParagraphs);
