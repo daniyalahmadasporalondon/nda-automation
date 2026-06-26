@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import logging
 import posixpath
 import re
 import xml.etree.ElementTree as ET
@@ -18,6 +19,15 @@ from .redline_actions import (
 )
 from .redline_edit_contract import confident_text_match, is_freeform_manual_replace_edit
 from .redline_xml import redline_replace_uses_whole_text_markup
+
+LOGGER = logging.getLogger(__name__)
+
+# Per-side truncation window for the coverage-gate diagnostic log. The error STRING
+# returned to the client stays count-only (never leaks NDA content); the server-side
+# WARNING log carries this bounded, whitespace-collapsed, single-line window of each
+# side so a future false-rejection is diagnosable from prod logs without dumping the
+# whole document.
+_COVERAGE_DIAGNOSTIC_WINDOW = 80
 
 # Tracked redlines only add text (insertions as w:t, deletions retained as
 # w:delText), so the exported visible text is always >= the source text. An
@@ -172,6 +182,16 @@ def verify_export_content_coverage(
     if not export_normalized:
         return ["Exported document body contains no text."]
     if len(export_normalized) < len(source_normalized) * EXPORT_CONTENT_COVERAGE_RATIO:
+        _log_coverage_divergence(
+            "ratio",
+            diverging_index=None,
+            expected=source_normalized,
+            exported=export_normalized,
+            detail=(
+                f"export_chars={len(export_normalized)} source_chars={len(source_normalized)} "
+                f"ratio_floor={EXPORT_CONTENT_COVERAGE_RATIO}"
+            ),
+        )
         return [
             f"Exported text covers only {len(export_normalized)} of {len(source_normalized)} "
             "source characters; the redline may have dropped source content."
@@ -192,12 +212,77 @@ def verify_export_content_coverage(
             return expected_errors
         accepted_paragraphs = [record["accepted"] for record in export_paragraphs if record["accepted"]]
         if accepted_paragraphs != expected_accepted_paragraphs:
+            diverging_index = _first_divergent_index(accepted_paragraphs, expected_accepted_paragraphs)
+            _log_coverage_divergence(
+                "sequence",
+                diverging_index=diverging_index,
+                expected=_sequence_item(expected_accepted_paragraphs, diverging_index),
+                exported=_sequence_item(accepted_paragraphs, diverging_index),
+                detail=(
+                    f"exported_paragraphs={len(accepted_paragraphs)} "
+                    f"expected_paragraphs={len(expected_accepted_paragraphs)}"
+                ),
+            )
             return [
                 "Exported accepted-change paragraph sequence does not match the expected source/redline "
                 f"sequence ({len(accepted_paragraphs)} paragraph(s); expected {len(expected_accepted_paragraphs)}). "
                 "The redline may have misplaced, duplicated, or dropped source content."
             ]
     return []
+
+
+def _first_divergent_index(exported: List[str], expected: List[str]) -> int:
+    """Index of the first position where the two accepted-paragraph sequences differ.
+
+    Returns the length of the shorter sequence when one is a prefix of the other (the
+    divergence is the first MISSING/EXTRA paragraph). Used only to point the diagnostic
+    log at the right paragraph; never affects the returned error."""
+    for index in range(min(len(exported), len(expected))):
+        if exported[index] != expected[index]:
+            return index
+    return min(len(exported), len(expected))
+
+
+def _sequence_item(sequence: List[str], index: int | None) -> str:
+    if index is None or index < 0 or index >= len(sequence):
+        return ""
+    return sequence[index]
+
+
+def _log_coverage_divergence(
+    check: str,
+    *,
+    diverging_index: int | None,
+    expected: str,
+    exported: str,
+    detail: str,
+) -> None:
+    """Emit ONE bounded, single-line WARNING describing a coverage-gate rejection.
+
+    Permanent diagnosability for the blind spot that made the supplemental-text false
+    rejection un-debuggable from prod logs. Each side is whitespace-collapsed and
+    truncated to a fixed window, so the line NEVER dumps the full document and cannot
+    leak more than the truncated context (the client-facing error string stays
+    count-only). Best-effort: a logging failure must never break the export."""
+    try:
+        LOGGER.warning(
+            "content-coverage gate rejected export: check=%s diverging_paragraph_index=%s %s "
+            "expected[:%d]=%r exported[:%d]=%r",
+            check,
+            "n/a" if diverging_index is None else diverging_index,
+            detail,
+            _COVERAGE_DIAGNOSTIC_WINDOW,
+            _coverage_diagnostic_window(expected),
+            _COVERAGE_DIAGNOSTIC_WINDOW,
+            _coverage_diagnostic_window(exported),
+        )
+    except Exception:  # noqa: BLE001 -- diagnostics must never break the export path.
+        pass
+
+
+def _coverage_diagnostic_window(value: str) -> str:
+    """A single-line, whitespace-collapsed, bounded slice of ``value`` for the log."""
+    return _normalize_export_text(value)[:_COVERAGE_DIAGNOSTIC_WINDOW]
 
 
 def verify_pdf_reconstruction_redline_coverage(

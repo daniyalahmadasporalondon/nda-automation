@@ -38,6 +38,12 @@ SUPPLEMENTAL_PART_PREFIXES = (
     "word/footnotes.xml",
     "word/endnotes.xml",
 )
+# ``source_kind`` marker for a paragraph extracted from a supplemental part
+# (header/footer/footnotes/endnotes) rather than the main document body. The
+# export reconstructs only ``word/document.xml`` (the body), so any gate that
+# compares the export against the extracted text must scope the expected side
+# to the body and exclude paragraphs carrying this marker.
+SUPPLEMENTAL_SOURCE_KIND = "supplemental"
 DocxParagraph = Dict[str, object]
 NumberingDefinitions = Dict[str, object]
 StyleDefinitions = Dict[str, Dict[str, object]]
@@ -413,7 +419,7 @@ def _paragraph_record(
         record["source_index"] = source_index
     if source_part:
         record["source_part"] = source_part
-    record["source_kind"] = "table_cell" if table_context else ("supplemental" if source_part else "paragraph")
+    record["source_kind"] = "table_cell" if table_context else (SUPPLEMENTAL_SOURCE_KIND if source_part else "paragraph")
     if table_context:
         record["table"] = dict(table_context)
 

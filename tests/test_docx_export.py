@@ -344,6 +344,27 @@ def make_source_docx(paragraphs, include_package_rels=True):
         return output.getvalue()
 
 
+def make_source_docx_with_footer(body_paragraphs, footer_paragraphs):
+    """A native-DOCX source whose body holds ``body_paragraphs`` and whose
+    ``word/footer1.xml`` part holds ``footer_paragraphs`` (e.g. a company-letterhead
+    footer). ``extract_docx_paragraphs`` tags the footer paragraphs
+    ``source_kind="supplemental"`` and appends them after the body, exactly like the
+    real Moorwand letterhead NDA whose footer tripped the content-coverage gate."""
+    footer_body = "".join(
+        f"<w:p><w:r><w:t>{escape_xml(paragraph)}</w:t></w:r></w:p>"
+        for paragraph in footer_paragraphs
+    )
+    footer_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"{footer_body}</w:ftr>"
+    )
+    return replace_docx_parts(
+        make_source_docx(body_paragraphs),
+        {"word/footer1.xml": footer_xml},
+    )
+
+
 def make_source_docx_with_internal_blank_line_paragraph(prefix_paragraphs, internal_blocks):
     """A source DOCX whose final paragraph is ONE physical <w:p> holding several
     logical blocks separated by a hard blank line (two <w:br/>), as the real
@@ -2673,6 +2694,239 @@ class DocxExportTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("paragraph sequence does not match", errors[0])
         self.assertNotIn("Confidential Information", errors[0])
+
+    def test_export_content_coverage_passes_for_letterhead_footer_native_docx(self):
+        # Regression for the Moorwand letterhead bug: a native-DOCX matter whose source
+        # has a non-empty footer. ``extracted_text`` joins BODY + footer (supplemental),
+        # but the reviewed-DOCX export reconstructs only the body (footer copied through
+        # verbatim), so the body-only export can never reproduce the footer text. Feeding
+        # the full supplemental-inclusive ``extracted_text`` to the body-only gate
+        # false-rejected a faithful export with HTTP 500. The fix passes the BODY-ONLY
+        # text instead, which the resolver derives from the source bytes.
+        from nda_automation import redline_export_service
+
+        source_docx = make_source_docx_with_footer(
+            [
+                "Confidential Information means all data disclosed under this Agreement.",
+                "The confidentiality obligations survive for three years.",
+            ],
+            [
+                "Moorwand Ltd | Registered office address: Fora, 3 Lloyds Avenue | "
+                "London | EC3N 3DS | Company No. 08491211",
+            ],
+        )
+        paragraphs = extract_docx_paragraphs(source_docx)
+        full_extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraphs)
+        # The footer text is in the supplemental-inclusive extracted_text...
+        self.assertIn("Company No. 08491211", full_extracted_text)
+        # A FAITHFUL reviewed export reconstructs the body and copies the footer through
+        # verbatim; here we model the faithful body-only export bytes (no body content
+        # dropped/reordered). The body text is unchanged from the source body.
+        faithful_export = make_source_docx_with_footer(
+            [
+                "Confidential Information means all data disclosed under this Agreement.",
+                "The confidentiality obligations survive for three years.",
+            ],
+            [
+                "Moorwand Ltd | Registered office address: Fora, 3 Lloyds Avenue | "
+                "London | EC3N 3DS | Company No. 08491211",
+            ],
+        )
+
+        # BUG (origin/main): the full extracted_text requires the footer text on the
+        # body-only export side. The export side reads word/document.xml only (the body),
+        # so the footer paragraph in the EXPECTED sequence has no counterpart -> the
+        # accepted-paragraph sequence diverges and the gate false-rejects.
+        full_text_errors = verify_export_content_coverage(faithful_export, full_extracted_text)
+        self.assertTrue(
+            full_text_errors,
+            "expected the full supplemental-inclusive text to trip the body-only gate "
+            "(this is the bug condition that must hold before the fix)",
+        )
+
+        # FIX: the body-only expected text the resolver derives from the source bytes
+        # excludes the footer, so the faithful export now PASSES.
+        body_only_text = redline_export_service._body_extracted_text_from_docx_bytes(
+            source_docx, "moorwand-nda.docx"
+        )
+        self.assertNotIn("Company No. 08491211", body_only_text)
+        self.assertIn("Confidential Information means all data", body_only_text)
+        self.assertEqual(
+            verify_export_content_coverage(faithful_export, body_only_text),
+            [],
+        )
+
+    def test_body_extracted_text_from_docx_bytes_strips_footer(self):
+        from nda_automation import redline_export_service
+
+        source_docx = make_source_docx_with_footer(
+            ["Body clause one.", "Body clause two."],
+            ["Footer: Company No. 99999999"],
+        )
+        body_only = redline_export_service._body_extracted_text_from_docx_bytes(
+            source_docx, "letterhead.docx"
+        )
+        self.assertEqual(body_only, "Body clause one.\n\nBody clause two.")
+
+    def test_body_extracted_text_from_docx_bytes_safe_on_non_docx_or_missing(self):
+        from nda_automation import redline_export_service
+
+        # Non-DOCX filename and missing bytes both return "" (caller falls back), never raise.
+        self.assertEqual(
+            redline_export_service._body_extracted_text_from_docx_bytes(b"%PDF-1.4", "scan.pdf"),
+            "",
+        )
+        self.assertEqual(
+            redline_export_service._body_extracted_text_from_docx_bytes(None, "x.docx"),
+            "",
+        )
+        # Corrupt DOCX bytes degrade to "" rather than propagating an extraction error.
+        self.assertEqual(
+            redline_export_service._body_extracted_text_from_docx_bytes(b"not a zip", "x.docx"),
+            "",
+        )
+
+    def test_body_expected_source_text_precedence(self):
+        from nda_automation import redline_export_service
+
+        field = redline_export_service.BODY_EXTRACTED_TEXT_FIELD
+        # 1. The explicit body-only field wins.
+        self.assertEqual(
+            redline_export_service._body_expected_source_text(
+                {field: "Body only.", "extracted_text": "Body only.\n\nFooter."}
+            ),
+            "Body only.",
+        )
+        # 2. With no field but marked paragraphs, supplemental paragraphs are filtered.
+        self.assertEqual(
+            redline_export_service._body_expected_source_text(
+                {
+                    "paragraphs": [
+                        {"text": "Body A", "source_kind": "paragraph"},
+                        {"text": "Footer", "source_kind": "supplemental"},
+                    ],
+                    "extracted_text": "Body A\n\nFooter",
+                }
+            ),
+            "Body A",
+        )
+        # 3. With unmarked paragraphs (the deferred path), fall back to extracted_text
+        #    verbatim -- the resolver does not silently drop body text it cannot classify.
+        self.assertEqual(
+            redline_export_service._body_expected_source_text(
+                {
+                    "paragraphs": [{"text": "Body A"}, {"text": "Footer"}],
+                    "extracted_text": "Body A\n\nFooter",
+                }
+            ),
+            "Body A\n\nFooter",
+        )
+
+    def test_export_content_coverage_still_flags_body_drop_with_footer_source(self):
+        # PROTECTION INTACT: with the footer excluded from the expected text, a genuine
+        # BODY paragraph drop is still caught. Three substantial clauses, one dropped --
+        # the surviving two keep the export above the 0.5 length ratio so the stronger
+        # accepted-paragraph SEQUENCE check (not just the ratio precheck) is what fires.
+        from nda_automation import redline_export_service
+
+        clause_one = "Confidential Information means all data disclosed under this Agreement."
+        clause_two = "The confidentiality obligations survive for a period of three years."
+        clause_three = "This Agreement shall be governed by the laws of England and Wales."
+        source_docx = make_source_docx_with_footer(
+            [clause_one, clause_two, clause_three],
+            ["Footer: Company No. 12345678"],
+        )
+        body_only_text = redline_export_service._body_extracted_text_from_docx_bytes(
+            source_docx, "letterhead.docx"
+        )
+        # A faithful body-only EXPORT missing the MIDDLE clause (clause_two dropped).
+        dropped_export = make_source_docx([clause_one, clause_three])
+
+        errors = verify_export_content_coverage(dropped_export, body_only_text)
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("misplaced, duplicated, or dropped source content", errors[0])
+        self.assertNotIn("confidentiality obligations", errors[0])
+
+    def test_export_content_coverage_still_flags_body_reorder_with_footer_source(self):
+        from nda_automation import redline_export_service
+
+        source_docx = make_source_docx_with_footer(
+            ["First body clause.", "Second body clause."],
+            ["Footer line."],
+        )
+        body_only_text = redline_export_service._body_extracted_text_from_docx_bytes(
+            source_docx, "letterhead.docx"
+        )
+        reordered_export = make_source_docx(["Second body clause.", "First body clause."])
+
+        errors = verify_export_content_coverage(reordered_export, body_only_text)
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("misplaced, duplicated, or dropped source content", errors[0])
+
+    def test_export_content_coverage_still_flags_body_duplication_with_footer_source(self):
+        from nda_automation import redline_export_service
+
+        source_docx = make_source_docx_with_footer(
+            ["Only body clause."],
+            ["Footer line."],
+        )
+        body_only_text = redline_export_service._body_extracted_text_from_docx_bytes(
+            source_docx, "letterhead.docx"
+        )
+        duplicated_export = make_source_docx(["Only body clause.", "Only body clause."])
+
+        errors = verify_export_content_coverage(duplicated_export, body_only_text)
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("expected 1", errors[0])
+
+    def test_export_content_coverage_logs_truncated_diff_on_sequence_failure(self):
+        # PERMANENT DIAGNOSABILITY: a coverage rejection emits ONE bounded WARNING
+        # carrying the failed check, the diverging paragraph index, and a truncated
+        # whitespace-collapsed window of each side -- never the full document. A REORDER
+        # keeps the total length identical (so the ratio precheck passes) and trips the
+        # stronger accepted-paragraph SEQUENCE check.
+        long_first = ("Alpha " * 200).strip() + "."  # ~1200 chars, far beyond 80.
+        long_second = ("Bravo " * 200).strip() + "."
+        source_text = f"{long_first}\n\n{long_second}"
+        reordered_export = make_source_docx([long_second, long_first])
+
+        with self.assertLogs("nda_automation.docx_health", level="WARNING") as captured:
+            errors = verify_export_content_coverage(reordered_export, source_text)
+
+        self.assertTrue(errors)
+        self.assertEqual(len(captured.records), 1)
+        message = captured.records[0].getMessage()
+        self.assertIn("content-coverage gate rejected export", message)
+        self.assertIn("check=sequence", message)
+        self.assertIn("diverging_paragraph_index=0", message)
+        # The whole 1200-char source paragraph must NOT appear; only a bounded window.
+        self.assertNotIn(long_first, message)
+        self.assertNotIn(long_second, message)
+        # The window is single-line (whitespace collapsed) and short.
+        self.assertNotIn("\n", message)
+        self.assertLessEqual(message.count("Alpha"), 20)
+        self.assertLessEqual(message.count("Bravo"), 20)
+        # The client-facing error string stays count-only (no document text leaked).
+        self.assertNotIn("Alpha", errors[0])
+        self.assertNotIn("Bravo", errors[0])
+
+    def test_export_content_coverage_logs_truncated_diff_on_ratio_failure(self):
+        tiny_docx = make_source_docx(["x"])
+        big_source = "Confidential disclosure obligations. " * 30
+
+        with self.assertLogs("nda_automation.docx_health", level="WARNING") as captured:
+            errors = verify_export_content_coverage(tiny_docx, big_source)
+
+        self.assertTrue(errors)
+        self.assertEqual(len(captured.records), 1)
+        message = captured.records[0].getMessage()
+        self.assertIn("check=ratio", message)
+        self.assertNotIn("\n", message)
+        # Bounded window: the repeated phrase appears at most a couple of times, never 30.
+        self.assertLessEqual(message.count("Confidential"), 3)
 
     def test_export_content_coverage_ignores_missing_source_text(self):
         docx = make_source_docx(["Some body text."])

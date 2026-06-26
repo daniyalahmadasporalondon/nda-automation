@@ -10,6 +10,7 @@ from .redline_actions import (
     REDLINE_INSERT_AFTER_PARAGRAPH,
     REDLINE_REPLACE_PARAGRAPH,
 )
+from .docx_text import SUPPLEMENTAL_SOURCE_KIND
 from .redline_edit_contract import normalize_redline_edits, redline_inserted_text, redline_replacement_text
 from .review_document import EvidenceProvenanceError, validate_clause_evidence_trust
 from .source_fidelity import source_fidelity_payload
@@ -414,6 +415,27 @@ def _clean_text(value: object) -> str:
 def extracted_text_from_paragraphs(paragraphs: Sequence[dict[str, Any]]) -> str:
     """Return the canonical text serialization for extracted review paragraphs."""
     return "\n\n".join(str(paragraph["text"]) for paragraph in paragraphs)
+
+
+def body_extracted_text_from_paragraphs(paragraphs: Sequence[dict[str, Any]]) -> str:
+    """Like ``extracted_text_from_paragraphs`` but EXCLUDING supplemental paragraphs
+    (headers/footers/footnotes/endnotes, tagged ``source_kind == "supplemental"``).
+
+    The reviewed-DOCX export reconstructs only ``word/document.xml`` (the body) and
+    copies header/footer parts through verbatim, so the content-coverage gate measures
+    only body text on the exported side. The full ``extracted_text`` joins body AND
+    supplemental paragraphs, so feeding it to that body-only gate as the EXPECTED text
+    makes a faithful letterhead/footer NDA look like it dropped content. Use this
+    body-only join for the gate's expected side; the supplemental-inclusive
+    ``extracted_text`` stays the canonical source text everywhere else (review,
+    fingerprinting, the assistant). Body order is preserved because body paragraphs are
+    extracted before supplemental ones, matching the body order in ``word/document.xml``.
+    """
+    return "\n\n".join(
+        str(paragraph["text"])
+        for paragraph in paragraphs
+        if str(paragraph.get("source_kind") or "") != SUPPLEMENTAL_SOURCE_KIND
+    )
 
 
 def attach_document_source(

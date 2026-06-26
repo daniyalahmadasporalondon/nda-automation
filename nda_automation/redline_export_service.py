@@ -31,10 +31,22 @@ from .docx_health import (
 )
 from .docx_text import DocxExtractionError, extract_docx_paragraphs
 from .matter_repository import DiskMatterRepository, MatterRepository
+from .review_result_contract import body_extracted_text_from_paragraphs
 from .review_staleness import review_result_staleness, stale_review_message
 from .source_document_policy import (
     source_filename_is_pdf,
 )
+
+# Review-result field carrying the BODY-ONLY extracted text (header/footer/footnote
+# paragraphs excluded) used as the expected side of the native-DOCX content-coverage
+# gate. Distinct from ``extracted_text`` (the canonical supplemental-INCLUSIVE source
+# text every other consumer reads). Stamped transiently by ``_review_result_for_export``
+# (it is never persisted on the matter -- it is re-derived per export from the source
+# paragraphs/bytes) and read by ``_body_expected_source_text``. A matter MAY also carry a
+# value under this key if a future ingest persists one; the resolver prefers it when
+# present, otherwise re-extracts the body from the source bytes (retroactive, so this
+# fixes already-ingested letterhead/footer matters with no migration).
+BODY_EXTRACTED_TEXT_FIELD = "body_extracted_text"
 
 VERIFIED_EXPORT_HEADER = "word-package; track-revisions"
 
@@ -381,7 +393,17 @@ def _build_redline_export(
             source_document_bytes,
             review_result,
             clean_fills=clean_mode_fills,
-            expected_source_text=str(review_result.get("extracted_text") or ""),
+            # The content-coverage gate measures only the EXPORTED BODY
+            # (word/document.xml); header/footer/footnote parts are copied through
+            # verbatim and never reconstructed. The full extracted_text joins body
+            # AND supplemental paragraphs, so handing it to that body-only gate
+            # false-rejects a faithful letterhead/footer NDA as having dropped
+            # content. Scope the expected side to the body so the comparison is
+            # body-against-body; a genuine BODY drop/reorder/duplication still
+            # fails. Falls back to the supplemental-inclusive extracted_text only
+            # when the paragraph records (which carry source_kind) are absent, so
+            # behaviour is unchanged on that degenerate path.
+            expected_source_text=_body_expected_source_text(review_result),
             expected_redline_edits=review_result.get("redline_edits", []),
         )
         _raise_for_package_result(package_result)
@@ -436,6 +458,63 @@ def _working_docx_for_matter(
     return working_bytes, filename
 
 
+def _body_expected_source_text(review_result: dict) -> str:
+    """The expected source text for the native-DOCX content-coverage gate, scoped to
+    the document BODY (header/footer/footnote/endnote paragraphs excluded).
+
+    The export reconstructs only the body (``word/document.xml``) and copies supplemental
+    parts through verbatim, so ``verify_export_content_coverage`` measures only body text
+    on the exported side. The matter's ``extracted_text`` is the canonical,
+    supplemental-INCLUSIVE serialization (body + header/footer/footnote text), which is
+    the WRONG scope for this body-only comparison: a company-letterhead/footer NDA tripped
+    the gate because the expected side required footer text the body-only export can never
+    produce. This resolves a body-only expected string, in precedence:
+
+    1. ``review_result[BODY_EXTRACTED_TEXT_FIELD]`` -- the body-only text stamped by
+       ``_review_result_for_export`` (from the persisted matter field, the submitted
+       viewer text, or a re-extraction of the source body). Authoritative when present.
+    2. ``body_extracted_text_from_paragraphs(review_result["paragraphs"])`` -- when the
+       paragraph records carry the ``source_kind`` marker (the direct-upload / eager
+       paths whose records came straight from ``extract_docx_paragraphs``).
+    3. ``extracted_text`` verbatim -- the prior behaviour, used only when neither
+       body-only source is available. For an NDA with no header/footer this equals the
+       body text, so the fallback is exact; the only residual is a pre-fix matter with a
+       header/footer AND no source bytes, which is strictly no worse than today.
+
+    Note (1)/(2) are body-only BASE text; the gate still layers ``clean_fills`` and the
+    tracked redline edits onto it, so filled/edited body paragraphs reconcile exactly as
+    before -- this change only removes the supplemental text from the expected side, it
+    does not touch how body edits are verified."""
+    body_text = review_result.get(BODY_EXTRACTED_TEXT_FIELD)
+    if isinstance(body_text, str) and body_text.strip():
+        return body_text
+    paragraphs = review_result.get("paragraphs")
+    if isinstance(paragraphs, list) and any(
+        isinstance(paragraph, dict) and paragraph.get("source_kind") for paragraph in paragraphs
+    ):
+        return body_extracted_text_from_paragraphs(paragraphs)
+    return str(review_result.get("extracted_text") or "")
+
+
+def _body_extracted_text_from_docx_bytes(source_document_bytes: bytes | None, source_filename: str) -> str:
+    """Best-effort body-only extracted text re-derived from the source DOCX bytes.
+
+    Used to recover a body-only expected string for matters whose stored review
+    paragraphs lost the ``source_kind`` marker (the deferred -> on-demand path rebuilds
+    paragraphs by splitting the supplemental-inclusive ``extracted_text`` string, which
+    carries no marker). Re-extracting the source bytes restores the marker, so the
+    supplemental tail can be dropped. Returns "" on any extraction failure or for a
+    non-DOCX source, leaving the caller on its existing fallback (never raises -- a
+    diagnostic re-extraction must not break the export)."""
+    if source_document_bytes is None or not source_filename.lower().endswith(".docx"):
+        return ""
+    try:
+        paragraphs = extract_docx_paragraphs(source_document_bytes)
+    except Exception:  # noqa: BLE001 -- a re-extraction failure must not break the export.
+        return ""
+    return body_extracted_text_from_paragraphs(paragraphs)
+
+
 def _review_result_for_export(
     payload: dict, fallback_text: str, *, repository: MatterRepository, owner_user_id: str = ""
 ) -> tuple[dict, bytes | None, str]:
@@ -476,6 +555,10 @@ def _review_result_for_export(
                 )
             review_result = review_nda(submitted_text)
             review_result["extracted_text"] = submitted_text
+            # The submitted/viewer text is the BODY the user edited (the viewer never
+            # renders header/footer), so it is already body-only -- use it verbatim as
+            # the body-only expected text for the coverage gate.
+            review_result[BODY_EXTRACTED_TEXT_FIELD] = submitted_text
         else:
             review_result = deepcopy(review_result)
             # Deferred-review matters store the engine result verbatim, and neither
@@ -493,6 +576,49 @@ def _review_result_for_export(
             # so stamp it on so the coverage gate actually runs. setdefault never
             # overwrites the eager path's already-present value.
             review_result.setdefault("extracted_text", str(matter.get("extracted_text") or ""))
+            # Stamp the BODY-ONLY expected text for the content-coverage gate. The
+            # gate compares the body-only export against this; the matter's
+            # extracted_text is supplemental-INCLUSIVE (body + header/footer/footnote),
+            # so using it directly false-rejects a faithful letterhead/footer NDA. Prefer
+            # the body-only text persisted on the matter at ingest (derived where the
+            # source_kind marker exists). For matters ingested before that field existed,
+            # re-extract the body from the source DOCX bytes (the deferred -> on-demand
+            # review rebuilds paragraphs from the supplemental-inclusive string, dropping
+            # the marker, so the stored paragraphs cannot be filtered). setdefault never
+            # clobbers a value an upstream path already stamped.
+            persisted_body_text = str(matter.get(BODY_EXTRACTED_TEXT_FIELD) or "")
+            if persisted_body_text.strip():
+                review_result.setdefault(BODY_EXTRACTED_TEXT_FIELD, persisted_body_text)
+            else:
+                # Conservative re-extraction: only override the expected text when the
+                # re-extracted body actually DIFFERS from the full extracted_text. The
+                # primary case this catches is supplemental (header/footer/footnote)
+                # content that was present and removed -- the letterhead/footer bug this
+                # fix targets. When the two match (a native DOCX with no supplemental
+                # parts -- the common case) we stamp nothing and the gate keeps using
+                # extracted_text byte-for-byte.
+                #
+                # NOTE the override ALSO fires for a converted-PDF matter, where
+                # source_document_bytes is the pdf2docx-built working DOCX but
+                # extracted_text is the pypdf-derived PDF text: those two bodies diverge
+                # in whitespace/run/paragraph segmentation, so the != check is true and we
+                # stamp the re-extracted working-DOCX body. This is INTENTIONAL and
+                # strictly safer, not a regression -- the redline and the export both
+                # render from that same working DOCX, so aligning the gate's expected side
+                # onto the working-DOCX body makes the comparison MORE self-consistent than
+                # the prior pypdf-vs-pdf2docx mismatch. (The working DOCX has no
+                # supplemental parts, so the body-only filter is a no-op on it; the change
+                # here is the pypdf->pdf2docx body source, not a content drop.)
+                full_extracted_text = str(review_result.get("extracted_text") or "")
+                reextracted_body_text = _body_extracted_text_from_docx_bytes(
+                    source_document_bytes, source_filename
+                )
+                if (
+                    reextracted_body_text.strip()
+                    and _normalize_document_text(reextracted_body_text)
+                    != _normalize_document_text(full_extracted_text)
+                ):
+                    review_result.setdefault(BODY_EXTRACTED_TEXT_FIELD, reextracted_body_text)
         return review_result, source_document_bytes, source_filename
 
     filename = payload.get("filename", "")
@@ -516,6 +642,10 @@ def _review_result_for_export(
         # expected_source_text is empty and the sequence check is skipped, so a
         # corrupted source redline would ship silently.
         review_result["extracted_text"] = extracted_text
+        # The freshly-extracted paragraphs carry the source_kind marker, so stamp the
+        # body-only expected text directly (the gate must not require header/footer
+        # text the body-only export cannot produce).
+        review_result[BODY_EXTRACTED_TEXT_FIELD] = body_extracted_text_from_paragraphs(extracted_paragraphs)
         return review_result, document_bytes, filename
 
     return review_nda(fallback_text), None, ""
