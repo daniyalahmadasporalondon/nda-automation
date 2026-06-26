@@ -989,28 +989,44 @@ def _expected_accepted_paragraphs_from_source_docx(
 
     accepted: List[str] = []
     for source_index, blocks in physical:
-        result_blocks = list(blocks)
+        # ``result_blocks[i]`` is the expected ACCEPTED text emitted for sub-block i:
+        # it starts as the block's accepted view (carrying any pre-existing tracked
+        # change) and is rewritten where an edit routes to it. Routing keys on the
+        # block's BASELINE text -- independent of the accepted output -- so a mis-routed
+        # export cannot be mirrored.
+        baseline_blocks = [baseline for baseline, _accepted in blocks]
+        result_blocks = [accepted_block for _baseline, accepted_block in blocks]
         # Clean-mode fills are baked into the exported base (not redline edits); apply them
-        # to this paragraph's blocks so a filled export is not read as a divergence.
+        # to this paragraph's accepted blocks so a filled export is not read as a divergence.
         for find, value in clean_fill_by_index.get(source_index, []):
             result_blocks = [_normalize_export_text(block.replace(find, value)) for block in result_blocks]
         consumed_owner: Dict[int, str] = {}
         for redline in replace_delete_by_index.get(source_index, []):
             action = str(redline.get("action") or "")
             original = _normalize_export_text(str(redline.get("original_text") or ""))
-            target = _match_block_index(result_blocks, original, consumed_owner)
+            target, reason = _match_block_index(baseline_blocks, original, consumed_owner)
             if target is None:
-                # A second destructive edit collided with the block a prior one already
-                # rewrote: the clause's same-paragraph spans were not coalesced before
-                # export. Fail closed (mirrors _expected_accepted_source_paragraphs) rather
-                # than silently keep one survivor and possibly pass an export that dropped
-                # the other.
-                previous_owner = next(iter(consumed_owner.values()), "unknown")
-                errors.append(
-                    f"Redlines {previous_owner} and {_redline_label(redline)} both rewrite source "
-                    f"paragraph {source_index}; the clause's edits were not coalesced, so the export "
-                    "may have silently dropped one of them."
-                )
+                if reason == "collision":
+                    # A destructive edit collided with a block a prior one already
+                    # rewrote: the clause's same-paragraph spans were not coalesced
+                    # before export. Fail closed (mirrors
+                    # _expected_accepted_source_paragraphs).
+                    previous_owner = next(iter(consumed_owner.values()), "unknown")
+                    errors.append(
+                        f"Redlines {previous_owner} and {_redline_label(redline)} both rewrite source "
+                        f"paragraph {source_index}; the clause's edits were not coalesced, so the export "
+                        "may have silently dropped one of them."
+                    )
+                else:
+                    # The redline's anchor text matches NO unconsumed block of this split
+                    # paragraph -- its target sub-block is absent. Never mirror the
+                    # export's own (possibly mis-routed) text-match guess: fail closed with
+                    # a true content-divergence so a corrupted export cannot pass.
+                    errors.append(
+                        f"Redline {_redline_label(redline)} could not be anchored to a block of source "
+                        f"paragraph {source_index}; the exported redline may have been misplaced onto the "
+                        "wrong block or dropped."
+                    )
                 continue
             consumed_owner[target] = _redline_label(redline)
             if action == REDLINE_REPLACE_PARAGRAPH:
@@ -1027,40 +1043,60 @@ def _expected_accepted_paragraphs_from_source_docx(
 
 
 def _match_block_index(
-    blocks: List[str], original_normalized: str, consumed_owner: Dict[int, str]
-) -> int | None:
-    """The index of the (unconsumed) block a replace/delete redline targets.
+    baseline_blocks: List[str], original_normalized: str, consumed_owner: Dict[int, str]
+) -> Tuple[int | None, str]:
+    """Route a replace/delete redline to the sub-block it targets, BY BASELINE POSITION.
 
-    For a SINGLE-block paragraph the redline anchors to that whole ``<w:p>`` by
-    source_index, so it claims the sole block when unclaimed -- WITHOUT requiring the
-    redline's ``original_text`` to text-match the block. That tolerance is essential: when
-    the paragraph also carries a pre-existing counterparty tracked change, its accepted
-    block here differs from the redline's ``original_text`` (which the AI computed against
-    the in-force baseline), yet the export still rewrites the whole paragraph. For a
-    MULTI-block (split) paragraph the edit must land on the specific sub-block, so we match
-    by ``original_text`` there. Returns ``None`` only when no unclaimed block remains (the
-    collision/duplicate case the caller fails closed on)."""
-    if len(blocks) == 1:
-        return 0 if 0 not in consumed_owner else None
-    for index, block in enumerate(blocks):
-        if index in consumed_owner:
-            continue
-        if original_normalized and block == original_normalized:
-            return index
-    return None
+    Returns ``(index, "")`` for the matched block, or ``(None, reason)`` where ``reason``
+    is ``"collision"`` (every block matching the anchor is already consumed -- a residual
+    uncoalesced same-block edit) or ``"unanchored"`` (no block's baseline matches the
+    anchor at all -- the target sub-block is absent). The caller fails closed on both.
+
+    Routing keys on each block's BASELINE text (the export's own split-block routing key:
+    it splits the baseline ``source_paragraph.text`` and matches the redline's
+    ``original_text``, also baseline), matched by POSITION/first-unconsumed -- NOT on the
+    accepted output. This is what makes the gate independent of the export's routing: when
+    the export mis-routes an edit onto the wrong block, the gate still routes by the
+    authoritative baseline anchor and emits a DIFFERENT accepted sequence, so the
+    divergence is caught rather than mirrored.
+
+    For a SINGLE-block paragraph the redline anchors to the whole ``<w:p>`` by source_index,
+    so it claims the sole block when unclaimed WITHOUT requiring a baseline text-match --
+    essential when the paragraph also carries a pre-existing tracked change, whose
+    baseline still differs from a freeform/normalized ``original_text`` yet the export
+    rewrites the whole paragraph regardless."""
+    if len(baseline_blocks) == 1:
+        return (0, "") if 0 not in consumed_owner else (None, "collision")
+    matched_any = False
+    for index, baseline in enumerate(baseline_blocks):
+        if original_normalized and baseline == original_normalized:
+            matched_any = True
+            if index not in consumed_owner:
+                return index, ""
+    if matched_any:
+        return None, "collision"
+    return None, "unanchored"
 
 
 def _source_accepted_blocks_by_physical_paragraph(
     source_docx: bytes,
-) -> List[Tuple[int, List[str]]] | None:
-    """``(source_index, accepted_blocks)`` for every physical body ``<w:p>`` of the source,
-    numbered through the canonical export walk.
+) -> List[Tuple[int, List[Tuple[str, str]]]] | None:
+    """``(source_index, blocks)`` for every physical body ``<w:p>`` of the source, numbered
+    through the canonical export walk, where each block is ``(baseline, accepted)``.
 
-    ``accepted_blocks`` is the paragraph's accepted view (pre-existing ``w:ins`` kept,
-    ``w:del`` dropped) split on internal blank lines into the logical blocks the export
-    re-emits, each whitespace-normalized; an empty paragraph yields ``[]``. Returns
-    ``None`` when the source bytes cannot be read as a DOCX (the caller then falls through
-    to the length-ratio guarantee)."""
+    ``baseline`` is the block's in-force view (pre-existing ``w:ins`` dropped, ``w:del``
+    restored) -- the SAME polarity the export routes a split-block edit by (it splits the
+    baseline ``source_paragraph.text`` and keys on the redline's ``original_text``, which is
+    also baseline). ``accepted`` is the block's accepted view (``w:ins`` kept, ``w:del``
+    dropped) -- the polarity the exported bytes carry and the gate compares against. Pairing
+    them per sub-block lets the gate ROUTE an edit by baseline position (independent of the
+    export's text-match) yet EMIT the correct accepted text, so a mis-routed export is
+    caught. A paragraph is split on internal blank lines into the same logical blocks the
+    export re-emits; the ``<w:br/><w:br/>`` separators sit outside ``w:ins``/``w:del``, so
+    the baseline and accepted views split at the SAME boundaries into the same block count.
+    Empty paragraphs yield ``[]``; whitespace-normalized throughout. Returns ``None`` when
+    the source bytes cannot be read as a DOCX (the caller falls through to the length-ratio
+    guarantee)."""
     try:
         validate_docx_bytes_before_open(source_docx)
         with ZipFile(BytesIO(source_docx)) as archive:
@@ -1068,20 +1104,33 @@ def _source_accepted_blocks_by_physical_paragraph(
             document_root = parse_docx_xml(archive.read("word/document.xml"), part_name="word/document.xml")
     except (BadZipFile, DocxExtractionError, KeyError, ET.ParseError, UnsafeDocxXmlError):
         return None
-    paragraphs: List[Tuple[int, List[str]]] = []
+    paragraphs: List[Tuple[int, List[Tuple[str, str]]]] = []
     for indexed in iter_indexed_body_paragraphs(document_root):
-        raw_accepted = _paragraph_revision_text(indexed.paragraph, accepted=True)
-        blocks = [
-            normalized
-            for block in re.split(r"\n\s*\n+", raw_accepted)
-            if (normalized := _normalize_export_text(block))
-        ]
+        baseline_blocks = _split_paragraph_blocks(_paragraph_revision_text(indexed.paragraph, accepted=False))
+        accepted_blocks = _split_paragraph_blocks(_paragraph_revision_text(indexed.paragraph, accepted=True))
+        if len(baseline_blocks) == len(accepted_blocks):
+            blocks = list(zip(baseline_blocks, accepted_blocks))
+        else:
+            # The baseline and accepted views split into a different number of blocks (a
+            # tracked change spanned a block boundary -- pathological for a blank-line
+            # split). Fall back to the accepted blocks for both routing and output so a
+            # single-block paragraph still anchors by source_index; multi-block routing
+            # then matches on accepted text. Rare; keeps the structure well-formed.
+            blocks = [(block, block) for block in accepted_blocks]
         paragraphs.append((indexed.source_index, blocks))
     return paragraphs
 
 
+def _split_paragraph_blocks(text: str) -> List[str]:
+    return [
+        normalized
+        for block in re.split(r"\n\s*\n+", text)
+        if (normalized := _normalize_export_text(block))
+    ]
+
+
 def _clean_fills_by_physical_index(
-    physical: List[Tuple[int, List[str]]], clean_fills: object
+    physical: List[Tuple[int, List[Tuple[str, str]]]], clean_fills: object
 ) -> Dict[int, List[Tuple[str, str]]]:
     """Map each clean-mode fill (keyed by its ``p<N>`` review-block ordinal) onto the
     physical ``source_index`` it belongs to.

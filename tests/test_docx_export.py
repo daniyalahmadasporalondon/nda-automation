@@ -534,6 +534,65 @@ def _drop_body_paragraph(docx_bytes, substring):
     return replace_docx_parts(docx_bytes, {"word/document.xml": rewritten})
 
 
+def make_source_docx_with_split_block_preexisting_insertion(
+    leading_paragraphs, first_block_prefix, first_block_insertion, first_block_suffix, second_block
+):
+    """A source whose final physical ``<w:p>`` is a split block (two logical blocks
+    separated by a hard blank line) where the FIRST block carries a pre-existing inline
+    ``<w:ins>``.
+
+    The first block's BASELINE text (insertion dropped) is
+    ``first_block_prefix + first_block_suffix``; its ACCEPTED text keeps the insertion. The
+    second block is plain. Used to reproduce the split-block routing defect: when the
+    first block's baseline coincides with the second block's accepted text, an export that
+    routes by ambiguous accepted-text equality mis-redlines the wrong block."""
+    leading = "".join(
+        f"<w:p><w:r><w:t>{escape_xml(paragraph)}</w:t></w:r></w:p>"
+        for paragraph in leading_paragraphs
+    )
+    split_paragraph = (
+        "<w:p>"
+        f"<w:r><w:t>{escape_xml(first_block_prefix)}</w:t></w:r>"
+        '<w:ins w:id="7001" w:author="Counterparty" w:date="2026-01-01T00:00:00Z">'
+        f"<w:r><w:t>{escape_xml(first_block_insertion)}</w:t></w:r>"
+        "</w:ins>"
+        f"<w:r><w:t>{escape_xml(first_block_suffix)}</w:t></w:r>"
+        "<w:br/><w:br/>"
+        f"<w:r><w:t>{escape_xml(second_block)}</w:t></w:r>"
+        "</w:p>"
+    )
+    document_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{leading}{split_paragraph}</w:body>"
+        "</w:document>"
+    )
+    return replace_docx_parts(
+        make_source_docx([*leading_paragraphs, "placeholder"]),
+        {"word/document.xml": document_xml},
+    )
+
+
+def make_export_with_accepted_paragraphs(template_docx, accepted_paragraphs):
+    """A reviewed-DOCX whose ACCEPTED-view body sequence equals ``accepted_paragraphs``.
+
+    The content-coverage gate compares accepted-view paragraph sequences; emitting plain
+    runs (whose accepted view is the run text) lets a test assert a faithful vs a
+    mis-routed export precisely without hand-crafting fragile tracked-change XML. Reuses
+    ``template_docx``'s package parts so health/structural checks stay satisfied."""
+    body = "".join(
+        f"<w:p><w:r><w:t>{escape_xml(paragraph)}</w:t></w:r></w:p>"
+        for paragraph in accepted_paragraphs
+    )
+    document_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{body}</w:body>"
+        "</w:document>"
+    )
+    return replace_docx_parts(template_docx, {"word/document.xml": document_xml})
+
+
 def replace_docx_parts(docx_bytes, replacements):
     with ZipFile(BytesIO(docx_bytes), "r") as source_archive:
         with BytesIO() as output:
@@ -2891,6 +2950,136 @@ class DocxExportTests(unittest.TestCase):
                 ),
                 [],
             )
+
+    def test_export_content_coverage_split_block_catches_misrouted_redline(self):
+        # SPLIT-BLOCK routing independence (the FINDING-1 false-pass): a split <w:p> whose
+        # FIRST block carries a pre-existing counterparty <w:ins> ("strictly ") so its
+        # baseline ("...shall be protected.") coincides with the SECOND block's accepted
+        # text. The AI replaces the first block. The gate must route the edit to the FIRST
+        # block by baseline POSITION -- independent of the export's ambiguous accepted-text
+        # match -- so a mis-routed export (edit landed on the wrong block) is CAUGHT and a
+        # correctly-routed faithful export PASSES.
+        source_docx = make_source_docx_with_split_block_preexisting_insertion(
+            leading_paragraphs=["Header paragraph."],
+            first_block_prefix="Confidential Information shall be ",
+            first_block_insertion="strictly ",
+            first_block_suffix="protected.",
+            second_block="Confidential Information shall be protected.",
+        )
+        extracted = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted)
+        aligned = align_document_paragraphs(extracted, source_text)
+        first_block = next(
+            paragraph
+            for paragraph in aligned
+            if str(paragraph["text"]) == "Confidential Information shall be protected."
+        )
+        edit = {
+            "id": "r1",
+            "action": REDLINE_REPLACE_PARAGRAPH,
+            "paragraph_id": first_block["id"],
+            "paragraph_index": first_block["index"],
+            "source_index": first_block["source_index"],
+            "original_text": "Confidential Information shall be protected.",
+            "replacement_text": "Confidential Information shall be protected at all times.",
+        }
+
+        # The CORRECT accepted sequence: header, first block redlined (its pre-existing
+        # insertion accepted away by the replacement), second block verbatim.
+        faithful = make_export_with_accepted_paragraphs(
+            source_docx,
+            [
+                "Header paragraph.",
+                "Confidential Information shall be protected at all times.",
+                "Confidential Information shall be protected.",
+            ],
+        )
+        self.assertEqual(
+            verify_export_content_coverage(
+                faithful, source_text, expected_redline_edits=[edit], source_docx=source_docx
+            ),
+            [],
+        )
+
+        # A MIS-ROUTED export: the redline landed on the SECOND block; the first block's
+        # accepted text ("...strictly protected.") survives un-redlined. The gate must NOT
+        # pass it.
+        misrouted = make_export_with_accepted_paragraphs(
+            source_docx,
+            [
+                "Header paragraph.",
+                "Confidential Information shall be strictly protected.",
+                "Confidential Information shall be protected at all times.",
+            ],
+        )
+        errors = verify_export_content_coverage(
+            misrouted, source_text, expected_redline_edits=[edit], source_docx=source_docx
+        )
+        self.assertTrue(errors, "the gate must catch a redline routed onto the wrong split block")
+        self.assertIn("paragraph sequence does not match", errors[0])
+
+    def test_export_content_coverage_split_block_edit_on_preexisting_changed_block(self):
+        # FINDING 2: the AI edits the SAME split sub-block that carries the pre-existing
+        # change (the second block is a distinct sentence, so no sibling collision). A
+        # faithful export PASSES; a corrupted export that drops the sibling block is
+        # CAUGHT with a clear content-divergence error -- NOT the misleading
+        # phantom-collision ("not coalesced") wording.
+        source_docx = make_source_docx_with_split_block_preexisting_insertion(
+            leading_paragraphs=["Header paragraph."],
+            first_block_prefix="Confidential Information shall be ",
+            first_block_insertion="strictly ",
+            first_block_suffix="protected.",
+            second_block="This Agreement is governed by California law.",
+        )
+        extracted = extract_docx_paragraphs(source_docx)
+        source_text = "\n\n".join(str(paragraph["text"]) for paragraph in extracted)
+        aligned = align_document_paragraphs(extracted, source_text)
+        first_block = next(
+            paragraph
+            for paragraph in aligned
+            if str(paragraph["text"]) == "Confidential Information shall be protected."
+        )
+        edit = {
+            "id": "r1",
+            "action": REDLINE_REPLACE_PARAGRAPH,
+            "paragraph_id": first_block["id"],
+            "paragraph_index": first_block["index"],
+            "source_index": first_block["source_index"],
+            "original_text": "Confidential Information shall be protected.",
+            "replacement_text": "Confidential Information shall be safeguarded.",
+        }
+
+        # Faithful: first block redlined, sibling block survives -> passes.
+        faithful = make_export_with_accepted_paragraphs(
+            source_docx,
+            [
+                "Header paragraph.",
+                "Confidential Information shall be safeguarded.",
+                "This Agreement is governed by California law.",
+            ],
+        )
+        self.assertEqual(
+            verify_export_content_coverage(
+                faithful, source_text, expected_redline_edits=[edit], source_docx=source_docx
+            ),
+            [],
+        )
+
+        # Corrupted: the sibling block was dropped (the export rebuilt the whole <w:p> from
+        # one block). A clear content-divergence error, never the phantom-collision wording.
+        corrupted = make_export_with_accepted_paragraphs(
+            source_docx,
+            [
+                "Header paragraph.",
+                "Confidential Information shall be safeguarded.",
+            ],
+        )
+        errors = verify_export_content_coverage(
+            corrupted, source_text, expected_redline_edits=[edit], source_docx=source_docx
+        )
+        self.assertTrue(errors, "dropping the sibling split block must be caught")
+        self.assertIn("paragraph sequence does not match", errors[0])
+        self.assertNotIn("not coalesced", " ".join(errors))
 
     def test_export_content_coverage_passes_paragraph_with_tab_separator(self):
         # Regression: a native-DOCX paragraph whose words are separated by a
