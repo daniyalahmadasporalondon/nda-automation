@@ -136,7 +136,23 @@ def extract_pdf_paragraphs(data: bytes) -> List[Paragraph]:
     return extract_pdf_document(data).paragraphs
 
 
-def extract_pdf_document(data: bytes) -> PdfExtraction:
+def extract_pdf_document(data: bytes, *, include_visual_profile: bool = True) -> PdfExtraction:
+    """Extract review paragraphs + a quality report from a PDF.
+
+    ``include_visual_profile`` defaults to ``True`` to preserve every existing
+    interactive caller's behavior (the visual profile feeds source-fidelity preview
+    signals in ``source_fidelity.py``). Pass ``False`` on the cost-sensitive Gmail
+    poll import path: that path only needs paragraphs to create a 'Not Reviewed'
+    matter, and computing the visual profile would pay a *second*, completely
+    independent full PyMuPDF parse (``fitz.open`` + per-page ``get_text('dict')``
+    span walk + ``get_drawings`` on up to ``MAX_PDF_PAGES`` pages) of C-level,
+    GIL-held CPU stacked on the earlier pypdf ``_extract_geo_lines`` pass. When
+    ``False`` the profile is not computed and a 'deferred' marker is recorded that
+    downstream (``_pdf_quality_report`` / ``source_fidelity``) treats exactly like
+    the existing 'unavailable' (not-yet-computed) case, so the data contract is
+    unchanged — the interactive fidelity request recomputes it later on demand.
+    """
+
     try:
         from io import BytesIO
         from pypdf import PdfReader
@@ -244,7 +260,16 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
             return ocr_extraction
         raise PdfExtractionError("No readable text was found in the PDF. Scanned PDFs need OCR before review.")
     extracted_text = "\n\n".join(str(paragraph["text"]) for paragraph in paragraphs)
-    visual_profile = _pdf_visual_profile(data)
+    if include_visual_profile:
+        visual_profile = _pdf_visual_profile(data)
+    else:
+        # LAZY skip: the visual profile is the second full PyMuPDF parse and is only
+        # needed for interactive source-fidelity preview signals, not for the poll
+        # import's 'Not Reviewed' matter. Record the SAME 'unavailable' contract
+        # shape that _pdf_visual_profile emits on its error branch (status +
+        # requires_source_preview) so _pdf_quality_report and source_fidelity treat
+        # this as 'not-yet-computed' — fail-open, and recomputed on demand later.
+        visual_profile = _deferred_visual_profile()
     quality = _pdf_quality_report(
         page_count=page_count,
         pages_with_text=pages_with_text,
@@ -259,6 +284,13 @@ def extract_pdf_document(data: bytes) -> PdfExtraction:
     # and the prose paragraphs above are never touched). When ON it attaches
     # recovered 2-column table cells under quality["visual_profile"], which the
     # one-dimensional prose splitter flattens. It NEVER raises.
+    #
+    # NOTE on include_visual_profile=False: the lazy skip above avoids the visual
+    # profile's second PyMuPDF parse. In the COMMON case (table-aug env flag OFF,
+    # the production default) this is a genuine net saving of that entire second
+    # parse. When the table-aug flag is ON, augment_quality_with_tables re-parses
+    # the PDF anyway, so the skip does not remove that separate parse — behavior of
+    # augment_quality_with_tables is unchanged either way.
     quality = augment_quality_with_tables(quality, data)
     return PdfExtraction(paragraphs=paragraphs, quality=quality)
 
@@ -1075,6 +1107,25 @@ def _pdf_quality_report(
     if visual_profile:
         quality["visual_profile"] = visual_profile
     return quality
+
+
+def _deferred_visual_profile() -> dict[str, object]:
+    """Marker for a visual profile that was intentionally NOT computed (lazy path).
+
+    Mirrors the ``status: "unavailable"`` contract that ``_pdf_visual_profile``
+    returns on its own failure branches, so every downstream consumer
+    (``_pdf_quality_report`` and ``source_fidelity``) treats a deferred profile as
+    'not-yet-computed' rather than as 'no visual signals present' — the fail-open
+    posture. ``requires_source_preview`` stays ``True`` so the source PDF/page
+    preview is offered until the profile is recomputed on demand. The distinct
+    ``reason`` lets callers tell a deferred profile apart from a runtime failure.
+    """
+
+    return {
+        "status": "unavailable",
+        "reason": "deferred",
+        "requires_source_preview": True,
+    }
 
 
 def _pdf_visual_profile(data: bytes) -> dict[str, object]:
