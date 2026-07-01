@@ -14,6 +14,7 @@ from nda_automation import document_rendering
 from nda_automation.document_rendering import (
     DEFAULT_PAGE_IMAGE_DPI,
     DOCX_CONTENT_TYPE,
+    MAX_CONCURRENT_RASTERIZATIONS,
     MAX_PAGE_PIXMAP_BYTES,
     MAX_RASTERIZED_PAGES,
     MIN_PAGE_IMAGE_DPI,
@@ -1165,6 +1166,189 @@ class StorageExhaustionClassifierTests(unittest.TestCase):
 
         exc = OSError(_errno.EACCES, os.strerror(_errno.EACCES))
         self.assertFalse(document_rendering._is_storage_exhaustion_error(exc))
+
+
+class _BlockingPage:
+    """A fake page whose get_pixmap blocks until released.
+
+    Signals ``entered`` when a thread reaches the pixmap phase (i.e. it is
+    holding a rasterize slot) and then waits on ``release`` before returning, so
+    a test can prove that a second concurrent rasterization cannot start its own
+    pixmap while the first is in-flight — the definition of the concurrency cap.
+    """
+
+    def __init__(self, width_pts: float, height_pts: float, entered, release) -> None:
+        self.rect = _FakeRect(width_pts, height_pts)
+        self._entered = entered
+        self._release = release
+
+    def get_pixmap(self, *, matrix, colorspace=None, alpha=False):  # noqa: ANN001
+        self._entered.set()
+        self._release.wait(timeout=5)
+        return _FakePixmap(self.rect.width, self.rect.height, matrix.scale)
+
+
+class _BlockingFitzModule:
+    def __init__(self, page: _BlockingPage) -> None:
+        self._page = page
+        self.Matrix = _FakeMatrix
+        self.csRGB = object()
+
+    def open(self, _path: str):
+        return _FakeDocument([self._page])
+
+
+class RasterizeConcurrencyCapTests(unittest.TestCase):
+    """The process-wide rasterize semaphore (the scale-hardening fix)."""
+
+    def setUp(self) -> None:
+        _FakePixmap.max_area_seen = 0
+        document_rendering._reset_rasterize_semaphore_for_tests()
+
+    def tearDown(self) -> None:
+        document_rendering._reset_rasterize_semaphore_for_tests()
+
+    def test_normal_single_render_is_unchanged(self):
+        # A single render still produces the same page at the requested DPI with
+        # a pixmap inside the byte budget — the cap must be invisible to it.
+        page = _FakePage(612, 792)
+        renderer = PyMuPdfPageRenderer(fitz_module=_FakeFitzModule([page]))
+        with tempfile.TemporaryDirectory() as out_name:
+            pages = renderer.render_pdf_to_page_images(Path(out_name), Path(out_name), dpi=288)
+        self.assertEqual(len(pages), 1)
+        self.assertEqual(pages[0].dpi, 288)
+        self.assertLessEqual(_FakePixmap.max_area_seen * 3, MAX_PAGE_PIXMAP_BYTES)
+
+    def test_render_acquires_and_releases_the_semaphore(self):
+        # After a normal render the semaphore is back to full capacity: every
+        # slot re-acquirable without blocking (acquired AND released).
+        page = _FakePage(612, 792)
+        renderer = PyMuPdfPageRenderer(fitz_module=_FakeFitzModule([page]))
+        with tempfile.TemporaryDirectory() as out_name:
+            renderer.render_pdf_to_page_images(Path(out_name), Path(out_name), dpi=288)
+        semaphore = document_rendering._RASTERIZE_SEMAPHORE
+        grabbed = [semaphore.acquire(blocking=False) for _ in range(MAX_CONCURRENT_RASTERIZATIONS)]
+        try:
+            self.assertTrue(all(grabbed), "rasterize slot leaked after a successful render")
+            # BoundedSemaphore is at its cap: one more acquire must fail.
+            self.assertFalse(semaphore.acquire(blocking=False))
+        finally:
+            for ok in grabbed:
+                if ok:
+                    semaphore.release()
+
+    def test_concurrent_rasterizations_are_serialized_by_the_cap(self):
+        # With the cap pinned to 1, a second render cannot enter its pixmap phase
+        # until the first releases its slot — proving concurrency is bounded.
+        with unittest.mock.patch.object(document_rendering, "MAX_CONCURRENT_RASTERIZATIONS", 1):
+            document_rendering._reset_rasterize_semaphore_for_tests()
+
+            first_entered = threading.Event()
+            first_release = threading.Event()
+            second_entered = threading.Event()
+            second_release = threading.Event()
+
+            first_page = _BlockingPage(612, 792, first_entered, first_release)
+            second_page = _BlockingPage(612, 792, second_entered, second_release)
+            first_renderer = PyMuPdfPageRenderer(fitz_module=_BlockingFitzModule(first_page))
+            second_renderer = PyMuPdfPageRenderer(fitz_module=_BlockingFitzModule(second_page))
+
+            errors: list[BaseException] = []
+
+            def _run(renderer):
+                try:
+                    with tempfile.TemporaryDirectory() as out_name:
+                        renderer.render_pdf_to_page_images(Path(out_name), Path(out_name), dpi=288)
+                except BaseException as exc:  # noqa: BLE001 - surfaced to the assert
+                    errors.append(exc)
+
+            t1 = threading.Thread(target=_run, args=(first_renderer,), daemon=True)
+            t1.start()
+            self.assertTrue(first_entered.wait(timeout=5), "first render never took the slot")
+
+            t2 = threading.Thread(target=_run, args=(second_renderer,), daemon=True)
+            t2.start()
+            # The single slot is held by the first render, so the second must NOT
+            # reach its pixmap phase yet.
+            self.assertFalse(
+                second_entered.wait(timeout=0.5),
+                "second rasterization started while the only slot was held (cap not enforced)",
+            )
+
+            # Release the first; its slot frees and the second can now proceed.
+            first_release.set()
+            self.assertTrue(second_entered.wait(timeout=5), "second render never got the freed slot")
+            second_release.set()
+
+            t1.join(timeout=5)
+            t2.join(timeout=5)
+            self.assertEqual(errors, [])
+
+    def test_render_fails_open_when_no_slot_is_available(self):
+        # Every slot drained: a render must still succeed (degrade to the prior
+        # unbounded behavior) rather than block forever or error out.
+        with unittest.mock.patch.object(document_rendering, "RASTERIZE_QUEUE_WAIT_SECONDS", 0.05):
+            semaphore = document_rendering._RASTERIZE_SEMAPHORE
+            drained = [semaphore.acquire(blocking=False) for _ in range(MAX_CONCURRENT_RASTERIZATIONS)]
+            try:
+                self.assertTrue(all(drained))
+                page = _FakePage(612, 792)
+                renderer = PyMuPdfPageRenderer(fitz_module=_FakeFitzModule([page]))
+                start = time.monotonic()
+                with tempfile.TemporaryDirectory() as out_name:
+                    pages = renderer.render_pdf_to_page_images(Path(out_name), Path(out_name), dpi=288)
+                # Proceeded without a slot; did not block near a real timeout.
+                self.assertLess(time.monotonic() - start, 2.0)
+                self.assertEqual(len(pages), 1)
+                self.assertEqual(pages[0].dpi, 288)
+            finally:
+                for ok in drained:
+                    if ok:
+                        semaphore.release()
+
+    def test_page_count_cap_is_checked_before_taking_a_slot(self):
+        # The cheap page-count guard must run OUTSIDE the slot: an over-cap PDF is
+        # rejected even while every rasterize slot is held (it holds no pixmap).
+        semaphore = document_rendering._RASTERIZE_SEMAPHORE
+        drained = [semaphore.acquire(blocking=False) for _ in range(MAX_CONCURRENT_RASTERIZATIONS)]
+        try:
+            self.assertTrue(all(drained))
+            pages = [_FakePage(612, 792) for _ in range(MAX_RASTERIZED_PAGES + 1)]
+            renderer = PyMuPdfPageRenderer(fitz_module=_FakeFitzModule(pages))
+            with tempfile.TemporaryDirectory() as out_name:
+                with self.assertRaises(PdfPageTooLargeToRasterize):
+                    renderer.render_pdf_to_page_images(Path(out_name), Path(out_name), dpi=192)
+        finally:
+            for ok in drained:
+                if ok:
+                    semaphore.release()
+
+    def test_slot_released_after_a_rasterize_error(self):
+        # A page that overflows the byte budget raises mid-loop; the slot must
+        # still be released so later renders are not starved.
+        page = _FakePage(200000, 200000)  # pathological MediaBox -> too-large
+        renderer = PyMuPdfPageRenderer(fitz_module=_FakeFitzModule([page]))
+        with tempfile.TemporaryDirectory() as out_name:
+            with self.assertRaises(PdfPageTooLargeToRasterize):
+                renderer.render_pdf_to_page_images(Path(out_name), Path(out_name), dpi=288)
+        semaphore = document_rendering._RASTERIZE_SEMAPHORE
+        grabbed = [semaphore.acquire(blocking=False) for _ in range(MAX_CONCURRENT_RASTERIZATIONS)]
+        try:
+            self.assertTrue(all(grabbed), "rasterize slot leaked after a rasterize error")
+        finally:
+            for ok in grabbed:
+                if ok:
+                    semaphore.release()
+
+    def test_default_concurrency_default_is_two_and_env_overridable(self):
+        self.assertGreaterEqual(MAX_CONCURRENT_RASTERIZATIONS, 1)
+        with unittest.mock.patch.dict(os.environ, {"NDA_RASTERIZE_CONCURRENCY": "5"}):
+            self.assertEqual(document_rendering._bounded_env_int("NDA_RASTERIZE_CONCURRENCY", 2, minimum=1), 5)
+        # Garbage falls back to the default; a sub-minimum value is clamped up.
+        with unittest.mock.patch.dict(os.environ, {"NDA_RASTERIZE_CONCURRENCY": "nonsense"}):
+            self.assertEqual(document_rendering._bounded_env_int("NDA_RASTERIZE_CONCURRENCY", 2, minimum=1), 2)
+        with unittest.mock.patch.dict(os.environ, {"NDA_RASTERIZE_CONCURRENCY": "0"}):
+            self.assertEqual(document_rendering._bounded_env_int("NDA_RASTERIZE_CONCURRENCY", 2, minimum=1), 1)
 
 
 if __name__ == "__main__":

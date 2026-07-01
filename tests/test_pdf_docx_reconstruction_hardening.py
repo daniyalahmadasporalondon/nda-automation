@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import time
 import unittest
+import unittest.mock
 
 from docx import Document
 
@@ -246,6 +247,73 @@ class CacheTests(unittest.TestCase):
         reconstruct_pdf_to_docx(pdf_bytes, "doc.pdf", converter=converter)
         # Legacy callers (no owner/cache) keep their prior non-caching behavior.
         self.assertEqual(converter.calls, 2)
+
+
+class SharedMemoryBudgetTests(unittest.TestCase):
+    """The pdf2docx per-child RLIMIT_AS default is bounded by box RAM.
+
+    The scale-hardening property: MAX_CONCURRENT_PDF_DOCX_CONVERSIONS children,
+    each authorized PDF_DOCX_MEMORY_LIMIT_BYTES of address space, must not be
+    able to authorize more than box RAM in aggregate (the old flat 2 GiB default
+    let 2 children authorize 4 GiB on a 2 GB box).
+    """
+
+    def test_effective_aggregate_authorization_stays_within_box_ram(self):
+        aggregate = (
+            pdf_docx_reconstruction.PDF_DOCX_MEMORY_LIMIT_BYTES
+            * pdf_docx_reconstruction.MAX_CONCURRENT_PDF_DOCX_CONVERSIONS
+        )
+        self.assertLessEqual(
+            aggregate,
+            pdf_docx_reconstruction.NDA_BOX_RAM_BYTES,
+            "concurrent pdf2docx children can authorize more than box RAM",
+        )
+
+    def test_default_is_derived_from_box_ram_and_concurrency(self):
+        # 2 GiB box, concurrency 2 -> floor(2 GiB * 0.75 / 2) = 768 MiB per child.
+        with unittest.mock.patch.multiple(
+            pdf_docx_reconstruction,
+            NDA_BOX_RAM_BYTES=2 * 1024 * 1024 * 1024,
+            MAX_CONCURRENT_PDF_DOCX_CONVERSIONS=2,
+        ):
+            self.assertEqual(
+                pdf_docx_reconstruction._default_pdf_docx_memory_limit_bytes(),
+                768 * 1024 * 1024,
+            )
+
+    def test_default_is_well_below_the_old_flat_two_gib(self):
+        # Regression guard: the per-child default must be smaller than the old
+        # flat 2 GiB so a single box cannot be over-committed by the pool.
+        self.assertLess(
+            pdf_docx_reconstruction.PDF_DOCX_MEMORY_LIMIT_BYTES,
+            2 * 1024 * 1024 * 1024,
+        )
+
+    def test_explicit_env_override_still_wins(self):
+        with unittest.mock.patch.dict(
+            os.environ, {"NDA_PDF_DOCX_MEMORY_LIMIT_BYTES": str(256 * 1024 * 1024)}
+        ):
+            self.assertEqual(
+                pdf_docx_reconstruction._bounded_env_int(
+                    "NDA_PDF_DOCX_MEMORY_LIMIT_BYTES",
+                    pdf_docx_reconstruction._default_pdf_docx_memory_limit_bytes(),
+                    minimum=128 * 1024 * 1024,
+                ),
+                256 * 1024 * 1024,
+            )
+
+    def test_per_child_default_respects_the_floor_on_a_tiny_box(self):
+        # A pathologically small box / high concurrency must not drop below the
+        # 128 MiB floor (below which pdf2docx cannot function at all).
+        with unittest.mock.patch.multiple(
+            pdf_docx_reconstruction,
+            NDA_BOX_RAM_BYTES=256 * 1024 * 1024,
+            MAX_CONCURRENT_PDF_DOCX_CONVERSIONS=8,
+        ):
+            self.assertEqual(
+                pdf_docx_reconstruction._default_pdf_docx_memory_limit_bytes(),
+                128 * 1024 * 1024,
+            )
 
 
 if __name__ == "__main__":  # pragma: no cover

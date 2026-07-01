@@ -53,7 +53,12 @@ PDF_DOCX_RECONSTRUCTION_HEADER = "pdf2docx"
 #   * MAX_PDF_DOCX_PAGES rejects a PDF with more pages than we will convert,
 #     measured cheaply (PyMuPDF page_count) BEFORE the heavy convert runs.
 #   * Each conversion runs in its own Python child process group with
-#     RLIMIT_AS/RLIMIT_CPU so a runaway convert cannot exhaust memory or CPU.
+#     RLIMIT_AS/RLIMIT_CPU so a runaway convert cannot exhaust memory or CPU. The
+#     RLIMIT_AS DEFAULT is derived from box RAM and the concurrency cap (see
+#     _default_pdf_docx_memory_limit_bytes) so the WHOLE pool — not just a single
+#     child — stays within the box: all concurrent children together authorize at
+#     most ~75% of NDA_BOX_RAM_BYTES, leaving headroom for the parent server,
+#     soffice, and PyMuPDF rasterization, which draw from the same box RAM.
 #   * A hard wall-clock timeout SIGKILLs the whole child process group.
 #   * An owner-keyed LRU cache so a repeat GET of the same source by the same
 #     tenant reuses the prior reconstruction instead of re-converting.
@@ -69,8 +74,39 @@ MAX_CONCURRENT_PDF_DOCX_CONVERSIONS = _bounded_env_int(
 )
 PDF_DOCX_QUEUE_WAIT_SECONDS = float(os.environ.get("NDA_PDF_DOCX_QUEUE_WAIT_SECONDS", "5") or 5)
 PDF_DOCX_TIMEOUT_SECONDS = _bounded_env_int("NDA_PDF_DOCX_TIMEOUT_SECONDS", 90, minimum=1)
+
+# Box RAM the process must live within (default 2 GiB, matching the prod
+# instance), overridable so a larger box can authorize larger conversions.
+NDA_BOX_RAM_BYTES = _bounded_env_int(
+    "NDA_BOX_RAM_BYTES", 2 * 1024 * 1024 * 1024, minimum=256 * 1024 * 1024
+)
+
+
+def _default_pdf_docx_memory_limit_bytes() -> int:
+    """Per-child RLIMIT_AS default derived from box RAM and the concurrency cap.
+
+    The old default (a flat 2 GiB) meant MAX_CONCURRENT_PDF_DOCX_CONVERSIONS
+    children could each authorize 2 GiB of address space — 2 children = 4 GiB,
+    double the 2 GB box — so RLIMIT_AS bounded a SINGLE runaway child but the
+    pool as a whole could still OOM the instance, and stacked additively on the
+    soffice(2, 1 GiB each) + rasterize pools with no shared budget. We instead
+    derive the per-child cap so that all concurrent children together authorize
+    at most ~75% of box RAM (the remaining ~25% is headroom for the parent
+    server, soffice, and PyMuPDF rasterization, which draw from the SAME box
+    RAM). Example: 2 GiB box, concurrency 2 -> floor(2 GiB * 0.75 / 2) = 768 MiB
+    per child (1.5 GiB authorized in aggregate, ~0.5 GiB headroom). An explicit
+    NDA_PDF_DOCX_MEMORY_LIMIT_BYTES still overrides this derivation.
+    """
+    concurrency = max(1, MAX_CONCURRENT_PDF_DOCX_CONVERSIONS)
+    shared_budget = int(NDA_BOX_RAM_BYTES * 0.75)
+    per_child = shared_budget // concurrency
+    return max(128 * 1024 * 1024, per_child)
+
+
 PDF_DOCX_MEMORY_LIMIT_BYTES = _bounded_env_int(
-    "NDA_PDF_DOCX_MEMORY_LIMIT_BYTES", 2 * 1024 * 1024 * 1024, minimum=128 * 1024 * 1024
+    "NDA_PDF_DOCX_MEMORY_LIMIT_BYTES",
+    _default_pdf_docx_memory_limit_bytes(),
+    minimum=128 * 1024 * 1024,
 )
 PDF_DOCX_CPU_LIMIT_SECONDS = _bounded_env_int("NDA_PDF_DOCX_CPU_LIMIT_SECONDS", 120, minimum=1)
 MAX_PDF_DOCX_PAGES = _bounded_env_int("NDA_PDF_DOCX_MAX_PAGES", 200, minimum=1)

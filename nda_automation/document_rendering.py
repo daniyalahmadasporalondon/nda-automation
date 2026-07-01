@@ -111,6 +111,44 @@ CONVERSION_QUEUE_WAIT_SECONDS = 5.0
 CONVERSION_MEMORY_LIMIT_BYTES = 1024 * 1024 * 1024  # 1 GiB address space per child
 CONVERSION_CPU_LIMIT_SECONDS = 60  # CPU-seconds; backstops the wall-clock timeout
 
+
+def _bounded_env_int(name: str, default: int, *, minimum: int) -> int:
+    """Read a positive int from the environment, clamped to ``minimum``.
+
+    A blank/garbage value falls back to ``default`` so a bad deploy-time knob can
+    never widen a resource bound below what the code assumes.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return max(minimum, int(raw))
+    except (TypeError, ValueError):
+        return default
+
+
+# PyMuPDF rasterization bounds (process-wide concurrency). Rasterizing a page to
+# a pixmap holds ~MAX_PAGE_PIXMAP_BYTES (96 MB) of decoded image bytes resident
+# for the duration of get_pixmap + PNG-encode, and the render runs on unbounded
+# ThreadingHTTPServer worker threads (and the MatterRenderCoordinator worker).
+# The per-page byte budget bounds ONE pixmap, but nothing bounded how many pages
+# rasterize AT ONCE — so a handful of concurrent large-PDF renders could hold
+# several hundred MB of pixmaps simultaneously and, stacked on the additive
+# soffice(2, 1 GiB each) and pdf2docx(2) pools, OOM a 2 GB box. This cap bounds
+# concurrent rasterizations process-wide, mirroring MAX_CONCURRENT_SOFFICE_
+# CONVERSIONS. Unlike the soffice/pdf2docx paths (which shed to a 503 on a full
+# queue), the rasterize phase runs on the background render worker and the
+# synchronous render path, so an excess render WAITS for a slot rather than
+# shedding — and fails OPEN (proceeds without the cap) if the wait is exhausted,
+# so a wedged slot can never permanently block previews.
+MAX_CONCURRENT_RASTERIZATIONS = _bounded_env_int("NDA_RASTERIZE_CONCURRENCY", 2, minimum=1)
+# Longest a render will wait for a rasterize slot before failing open. Generous
+# (a real rasterize is sub-second to a few seconds) so the cap bites under a
+# burst but a stuck slot degrades to "unbounded, as before" instead of a hang.
+RASTERIZE_QUEUE_WAIT_SECONDS = float(
+    os.environ.get("NDA_RASTERIZE_QUEUE_WAIT_SECONDS", "30") or 30
+)
+
 # Render-cache bounds. The cache was unbounded, never evicted, and keyed only on
 # document bytes — so two tenants uploading the same NDA shared one entry (a
 # cross-tenant leak) and a flood of distinct documents grew the cache without
@@ -288,6 +326,50 @@ class PdfPageRenderer(Protocol):
 # over-release is a programming error rather than silently widening the cap.
 _SOFFICE_CONVERSION_SEMAPHORE = threading.BoundedSemaphore(MAX_CONCURRENT_SOFFICE_CONVERSIONS)
 
+# Bounds concurrent PyMuPDF rasterizations process-wide (see
+# MAX_CONCURRENT_RASTERIZATIONS). BoundedSemaphore so an over-release is a
+# programming error rather than silently widening the cap.
+_RASTERIZE_SEMAPHORE = threading.BoundedSemaphore(MAX_CONCURRENT_RASTERIZATIONS)
+
+
+@contextlib.contextmanager
+def _rasterize_slot():
+    """Bound concurrent rasterizations; fail OPEN so rendering never wedges.
+
+    Acquires a slot from the process-wide rasterize semaphore (waiting up to
+    RASTERIZE_QUEUE_WAIT_SECONDS under a burst) and releases it on exit. If the
+    slot cannot be acquired within the wait, or the semaphore itself raises, we
+    proceed WITHOUT the cap rather than fail the render — the pre-existing
+    per-page byte budget + page-count cap still bound a single render's blast
+    radius, so degrading to the prior unbounded behavior is strictly safer than
+    turning a resource-contention event into a blank preview. Only a slot we
+    actually acquired is released, so a fail-open path can never over-release and
+    trip the BoundedSemaphore.
+    """
+    acquired = False
+    try:
+        acquired = _RASTERIZE_SEMAPHORE.acquire(timeout=RASTERIZE_QUEUE_WAIT_SECONDS)
+        if not acquired:
+            LOGGER.warning(
+                "Rasterize concurrency cap (%d) saturated for %.0fs; proceeding "
+                "without a slot (fail-open) to avoid wedging the render.",
+                MAX_CONCURRENT_RASTERIZATIONS,
+                RASTERIZE_QUEUE_WAIT_SECONDS,
+            )
+    except Exception:  # noqa: BLE001 - a limiter must never break rendering
+        acquired = False
+    try:
+        yield
+    finally:
+        if acquired:
+            with contextlib.suppress(Exception):
+                _RASTERIZE_SEMAPHORE.release()
+
+
+def _reset_rasterize_semaphore_for_tests() -> None:  # pragma: no cover - test helper
+    global _RASTERIZE_SEMAPHORE
+    _RASTERIZE_SEMAPHORE = threading.BoundedSemaphore(MAX_CONCURRENT_RASTERIZATIONS)
+
 
 def _soffice_resource_preexec() -> None:  # pragma: no cover - runs in the child
     """Constrain the soffice child before exec: own session + RLIMIT_AS/CPU.
@@ -461,35 +543,44 @@ class PyMuPdfPageRenderer:
                         f"PDF has {page_count} pages, exceeding the {MAX_RASTERIZED_PAGES}-page rasterization cap."
                     )
                 pages: list[RenderedPdfPageImage] = []
-                for page_index in range(page_count):
-                    page = document.load_page(page_index)
-                    # Clamp the DPI per page so the pixmap stays within the byte
-                    # budget; an attacker-sized MediaBox is rendered at a reduced
-                    # DPI rather than blowing up the pixmap, and is rejected
-                    # outright if even MIN_PAGE_IMAGE_DPI would not fit.
-                    width_pts, height_pts = _page_rect_points(page)
-                    effective_dpi = _budgeted_page_dpi(width_pts, height_pts, requested_dpi=dpi)
-                    scale = _page_image_scale(effective_dpi)
-                    matrix = self._fitz.Matrix(scale, scale)
-                    # Pin RGB (3 channels, no alpha) explicitly so the pixmap's
-                    # byte cost matches RASTERIZED_PIXMAP_CHANNELS=3 that the
-                    # budget math (_budgeted_page_dpi) assumes. Without this the
-                    # colorspace is fitz's default, which a future build could
-                    # change to 4-channel RGBA — silently under-counting the
-                    # budget by 33% and letting an out-of-budget pixmap through.
-                    pixmap = page.get_pixmap(matrix=matrix, colorspace=self._fitz.csRGB, alpha=False)
-                    image_path = output_dir / _page_image_filename(page_index + 1)
-                    _write_bytes_atomic(image_path, pixmap.tobytes("png"))
-                    pages.append(
-                        RenderedPdfPageImage(
-                            page_number=page_index + 1,
-                            image_path=image_path,
-                            width=int(pixmap.width),
-                            height=int(pixmap.height),
-                            dpi=effective_dpi,
-                            scale=scale,
+                # Bound concurrent pixmap materialization process-wide: this is
+                # the phase that holds up to MAX_PAGE_PIXMAP_BYTES of decoded
+                # image bytes resident, so a burst of concurrent large-PDF
+                # renders is what would OOM the box. The cheap page-count guard
+                # above runs OUTSIDE the slot (it holds no pixmap), so an
+                # oversized PDF is still rejected without consuming a slot. Slot
+                # acquisition fails open (see _rasterize_slot): output bytes are
+                # identical whether or not a slot was held.
+                with _rasterize_slot():
+                    for page_index in range(page_count):
+                        page = document.load_page(page_index)
+                        # Clamp the DPI per page so the pixmap stays within the byte
+                        # budget; an attacker-sized MediaBox is rendered at a reduced
+                        # DPI rather than blowing up the pixmap, and is rejected
+                        # outright if even MIN_PAGE_IMAGE_DPI would not fit.
+                        width_pts, height_pts = _page_rect_points(page)
+                        effective_dpi = _budgeted_page_dpi(width_pts, height_pts, requested_dpi=dpi)
+                        scale = _page_image_scale(effective_dpi)
+                        matrix = self._fitz.Matrix(scale, scale)
+                        # Pin RGB (3 channels, no alpha) explicitly so the pixmap's
+                        # byte cost matches RASTERIZED_PIXMAP_CHANNELS=3 that the
+                        # budget math (_budgeted_page_dpi) assumes. Without this the
+                        # colorspace is fitz's default, which a future build could
+                        # change to 4-channel RGBA — silently under-counting the
+                        # budget by 33% and letting an out-of-budget pixmap through.
+                        pixmap = page.get_pixmap(matrix=matrix, colorspace=self._fitz.csRGB, alpha=False)
+                        image_path = output_dir / _page_image_filename(page_index + 1)
+                        _write_bytes_atomic(image_path, pixmap.tobytes("png"))
+                        pages.append(
+                            RenderedPdfPageImage(
+                                page_number=page_index + 1,
+                                image_path=image_path,
+                                width=int(pixmap.width),
+                                height=int(pixmap.height),
+                                dpi=effective_dpi,
+                                scale=scale,
+                            )
                         )
-                    )
                 return pages
             finally:
                 close = getattr(document, "close", None)
