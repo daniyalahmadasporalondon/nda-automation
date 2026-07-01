@@ -7,6 +7,8 @@ import logging
 import math
 import mimetypes
 import os
+import re
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -114,6 +116,44 @@ REQUEST_BODY_TOO_LARGE_MESSAGE = "Request body is larger than the 16 MB limit."
 MAX_GMAIL_SYNC_IDLE_SECONDS = 30
 _GMAIL_SYNC_LOCK = threading.Lock()
 _GMAIL_SYNC_BACKOFF_UNTIL = 0.0
+
+
+def _http_request_timeout_seconds() -> int:
+    """Socket read timeout for the request handler (fail-open to 120s).
+
+    Kept ABOVE legitimate long AI-review/generation durations so real work is
+    never cut off, but finite so a slow-loris / half-open client that trickles
+    (or never finishes) a ``Content-Length`` body raises ``socket.timeout`` on
+    ``rfile.read`` instead of parking the worker thread + its fd forever.
+    """
+    try:
+        return int(os.environ.get("NDA_HTTP_REQUEST_TIMEOUT_SECONDS", "120"))
+    except ValueError:
+        return 120
+
+
+# /healthz degradation bounds. queue cap is 256 (ingestion_service
+# _INBOUND_REVIEW_QUEUE_MAXSIZE); 200 leaves headroom before the queue is full.
+HEALTHZ_QUEUE_DEGRADED_DEPTH = 200
+# Per-request latency line above this (ms) is additionally logged at WARN.
+SLOW_REQUEST_WARN_MS = 5000
+
+# Collapse per-matter path segments (matter_<id> / bare uuids) to <id> so the
+# structured request log aggregates by route instead of exploding per matter.
+_MATTER_ID_PATH_RE = re.compile(r"/matter_[^/]+")
+_UUID_PATH_RE = re.compile(
+    r"/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+
+
+def _templatize_request_path(path: str) -> str:
+    """Replace matter ids / uuids in ``path`` with ``/<id>`` for log aggregation."""
+    try:
+        templated = _MATTER_ID_PATH_RE.sub("/<id>", path)
+        templated = _UUID_PATH_RE.sub("/<id>", templated)
+        return templated
+    except Exception:  # pragma: no cover - defensive; templating never blocks logging
+        return path
 
 
 def _parse_matter_id(path: str, *, suffix: str = "") -> str | None:
@@ -343,20 +383,80 @@ _DELETE_EXACT_ROUTES = {
 
 class NdaAutomationHandler(SimpleHTTPRequestHandler):
     server_version = "nda-automation/0.1"
+    # Socket read timeout on the single worker. Without this,
+    # BaseHTTPRequestHandler.timeout stays None and a client that announces a
+    # Content-Length then stalls parks the worker thread on rfile.read forever
+    # (thread + fd leak). See _http_request_timeout_seconds for the default.
+    timeout = _http_request_timeout_seconds()
+
+    # Real HTTP status of the response being sent, captured from send_response so
+    # the structured request log records the actual status (not just method/path).
+    _response_status: int | None = None
+
+    def send_response(self, code, message=None):  # type: ignore[override]
+        # Chokepoint for every _send_* helper; record the status for the request
+        # log. Never let bookkeeping disturb the response itself.
+        try:
+            self._response_status = int(code)
+        except Exception:  # pragma: no cover - defensive
+            self._response_status = None
+        super().send_response(code, message)
 
     def log_message(self, format: str, *args: object) -> None:
         return
 
     def do_GET(self) -> None:
-        self._handle_get(send_body=True)
+        self._time_request("GET", lambda: self._handle_get(send_body=True))
 
     def do_HEAD(self) -> None:
-        self._handle_get(send_body=False)
+        self._time_request("HEAD", lambda: self._handle_get(send_body=False))
+
+    def _time_request(self, method: str, dispatch) -> None:
+        """Run ``dispatch`` and emit one structured latency line for the request.
+
+        Timing + logging are fully exception-guarded so observability never
+        disrupts the request; the dispatched work runs regardless.
+        """
+        self._response_status = None
+        start = time.perf_counter()
+        try:
+            dispatch()
+        finally:
+            try:
+                elapsed_ms = (time.perf_counter() - start) * 1000.0
+                self._log_request_latency(method, elapsed_ms)
+            except Exception:  # pragma: no cover - logging must never break a request
+                pass
+
+    def _log_request_latency(self, method: str, elapsed_ms: float) -> None:
+        try:
+            path = _templatize_request_path(urlparse(self.path).path)
+        except Exception:  # pragma: no cover - defensive
+            path = ""
+        rounded = round(elapsed_ms, 3)
+        event: dict[str, object] = {
+            "event": "http_request",
+            "method": method,
+            "path": path,
+            "elapsed_ms": rounded,
+        }
+        status = self._response_status
+        if isinstance(status, int):
+            event["status"] = status
+        try:
+            print(json.dumps(event), file=sys.stdout, flush=True)
+            if elapsed_ms > SLOW_REQUEST_WARN_MS:
+                slow = dict(event)
+                slow["event"] = "slow_request"
+                slow["level"] = "warn"
+                print(json.dumps(slow), file=sys.stdout, flush=True)
+        except Exception:  # pragma: no cover - logging must never break a request
+            pass
 
     def _handle_get(self, *, send_body: bool) -> None:
         path = urlparse(self.path).path
         if path == "/healthz":
-            self._send_json({"status": "ok"}, send_body=send_body)
+            self._send_healthz(send_body=send_body)
             return
         if not self._authorize_host(send_body=send_body):
             return
@@ -447,7 +547,68 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
         self._send_json({"error": "Not found"}, status=404, send_body=send_body)
 
+    def _send_healthz(self, *, send_body: bool) -> None:
+        """Cheap, unauthenticated, in-memory-only liveness + load probe.
+
+        Reads only in-memory counters (no store I/O): the inbound review queue
+        depth, process memory used-fraction, and in-flight generation count.
+        Returns 503 {"status":"degraded", ...} when the queue is backed up past
+        HEALTHZ_QUEUE_DEGRADED_DEPTH or memory pressure crosses the deployment
+        warn fraction; otherwise 200 {"status":"ok", ...}. Every probe read is
+        guarded so a probe bug can never take /healthz down (fail-open to the
+        static ok payload). Helpers are imported lazily to avoid import cycles.
+        """
+        try:
+            queue_depth = None
+            used_fraction = None
+            generation_in_flight = None
+            try:
+                from . import ingestion_service
+
+                queue_depth = int(ingestion_service._INBOUND_REVIEW_POOL.queue_depth())
+            except Exception:
+                queue_depth = None
+            try:
+                from . import process_memory
+
+                raw_fraction = process_memory.memory_usage().get("used_fraction")
+                used_fraction = float(raw_fraction) if raw_fraction is not None else None
+            except Exception:
+                used_fraction = None
+            try:
+                from . import generation_priority
+
+                generation_in_flight = int(generation_priority.active_generation_count())
+            except Exception:
+                generation_in_flight = None
+            try:
+                from . import deployment
+
+                warn_fraction = deployment.MEMORY_HEADROOM_WARN_FRACTION
+            except Exception:
+                warn_fraction = 0.85
+
+            degraded = False
+            if queue_depth is not None and queue_depth > HEALTHZ_QUEUE_DEGRADED_DEPTH:
+                degraded = True
+            if used_fraction is not None and used_fraction >= warn_fraction:
+                degraded = True
+
+            payload: dict[str, object] = {
+                "status": "degraded" if degraded else "ok",
+                "queue_depth": queue_depth,
+                "used_fraction": used_fraction,
+                "generation_in_flight": generation_in_flight,
+            }
+            status = 503 if degraded else 200
+            self._send_json(payload, status=status, send_body=send_body)
+        except Exception:  # fail-open: a probe bug must never take healthz down
+            self._send_json({"status": "ok"}, send_body=send_body)
+
     def do_POST(self) -> None:
+        self._time_request("POST", self._handle_post)
+
+    def _handle_post(self) -> None:
         path = urlparse(self.path).path
         if not self._authorize_host():
             return
