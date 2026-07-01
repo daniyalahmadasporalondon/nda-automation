@@ -514,8 +514,9 @@ class ServerTests(unittest.TestCase):
             delete_status, delete_payload = self.request("DELETE", "/api/matters/matter_missing")
 
         self.assertEqual(health_status, 200)
-        # /healthz is now a load-aware, pre-auth probe: still 200 "ok" under low
-        # load, but the payload carries in-memory load numbers alongside status.
+        # /healthz is a pre-auth PURE-LIVENESS probe: always 200 "ok" while the
+        # process is alive. It carries in-memory load numbers alongside status
+        # for info, but never 503s on load (readiness lives on /readyz).
         self.assertEqual(health_payload["status"], "ok")
         self.assertEqual(matter_status, 503)
         self.assertEqual(matter_payload["error"], server_module.AUTH_NOT_CONFIGURED_MESSAGE)

@@ -2,8 +2,14 @@
 
 Covers three additive, server.py-local fixes:
 1. Socket read timeout on NdaAutomationHandler (slow-loris / half-open guard).
-2. Load-aware, in-memory-only /healthz that returns 503 under load and
-   fail-opens to a static ok payload on any probe error.
+2. Split liveness/readiness probes:
+   - /healthz is PURE LIVENESS: always 200 {"status":"ok", ...} while the
+     process is alive. It carries the in-memory load fields for info, but it
+     NEVER returns 503 on load -- so Render's deploy gate (healthCheckPath:
+     /healthz) is never tripped by transient load.
+   - /readyz is the in-memory-only load/readiness probe that returns 503
+     {"status":"degraded", ...} under load and fail-opens to a static ok
+     payload on any probe error.
 3. Per-request structured latency logging + a slow-request WARN line, with the
    matter/uuid path segment templated to <id> for aggregation.
 """
@@ -79,7 +85,7 @@ class TemplatizePathTests(unittest.TestCase):
         )
 
 
-class HealthzAndLatencyTests(unittest.TestCase):
+class HealthzReadyzAndLatencyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), QuietNdaAutomationHandler)
@@ -107,7 +113,7 @@ class HealthzAndLatencyTests(unittest.TestCase):
         finally:
             connection.close()
 
-    # -- /healthz load-awareness ------------------------------------------- #
+    # -- /healthz is PURE LIVENESS (never 503 on load) --------------------- #
 
     def test_healthz_ok_under_low_load(self):
         with patch.object(
@@ -124,8 +130,11 @@ class HealthzAndLatencyTests(unittest.TestCase):
         self.assertEqual(payload["used_fraction"], 0.1)
         self.assertEqual(payload["generation_in_flight"], 0)
 
-    def test_healthz_degraded_on_deep_queue(self):
-        deep = server_module.HEALTHZ_QUEUE_DEGRADED_DEPTH + 5
+    def test_healthz_stays_200_when_queue_is_deep(self):
+        # Liveness must not depend on load: a deep queue would make /readyz go
+        # 503, but /healthz stays 200 "ok" so Render's deploy gate is never
+        # tripped by transient load. Load fields are still reported for info.
+        deep = server_module.READYZ_QUEUE_DEGRADED_DEPTH + 5
         with patch.object(
             ingestion_service._INBOUND_REVIEW_POOL, "queue_depth", return_value=deep
         ), patch.object(
@@ -134,23 +143,24 @@ class HealthzAndLatencyTests(unittest.TestCase):
             generation_priority, "active_generation_count", return_value=3
         ):
             status, payload = self.request("GET", "/healthz")
-        self.assertEqual(status, 503)
-        self.assertEqual(payload["status"], "degraded")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["queue_depth"], deep)
         self.assertEqual(payload["generation_in_flight"], 3)
 
-    def test_healthz_degraded_on_memory_pressure(self):
+    def test_healthz_stays_200_under_memory_pressure(self):
+        # High memory would make /readyz go 503, but /healthz stays 200 "ok".
         with patch.object(
             ingestion_service._INBOUND_REVIEW_POOL, "queue_depth", return_value=0
         ), patch.object(
-            process_memory, "memory_usage", return_value={"used_fraction": 0.9}
+            process_memory, "memory_usage", return_value={"used_fraction": 0.99}
         ), patch.object(
             generation_priority, "active_generation_count", return_value=0
         ):
             status, payload = self.request("GET", "/healthz")
-        self.assertEqual(status, 503)
-        self.assertEqual(payload["status"], "degraded")
-        self.assertEqual(payload["used_fraction"], 0.9)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["used_fraction"], 0.99)
 
     def test_healthz_fails_open_when_probe_raises(self):
         def _boom():
@@ -160,7 +170,64 @@ class HealthzAndLatencyTests(unittest.TestCase):
             ingestion_service._INBOUND_REVIEW_POOL, "queue_depth", side_effect=_boom
         ):
             status, payload = self.request("GET", "/healthz")
-        # A probe bug must never take healthz down: static ok, 200.
+        # A probe bug must never take liveness down: static ok, 200.
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "ok")
+
+    # -- /readyz carries the load/readiness signal (503 under load) -------- #
+
+    def test_readyz_ok_under_low_load(self):
+        with patch.object(
+            ingestion_service._INBOUND_REVIEW_POOL, "queue_depth", return_value=0
+        ), patch.object(
+            process_memory, "memory_usage", return_value={"used_fraction": 0.1}
+        ), patch.object(
+            generation_priority, "active_generation_count", return_value=0
+        ):
+            status, payload = self.request("GET", "/readyz")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["queue_depth"], 0)
+        self.assertEqual(payload["used_fraction"], 0.1)
+        self.assertEqual(payload["generation_in_flight"], 0)
+
+    def test_readyz_degraded_on_deep_queue(self):
+        deep = server_module.READYZ_QUEUE_DEGRADED_DEPTH + 5
+        with patch.object(
+            ingestion_service._INBOUND_REVIEW_POOL, "queue_depth", return_value=deep
+        ), patch.object(
+            process_memory, "memory_usage", return_value={"used_fraction": 0.1}
+        ), patch.object(
+            generation_priority, "active_generation_count", return_value=3
+        ):
+            status, payload = self.request("GET", "/readyz")
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["status"], "degraded")
+        self.assertEqual(payload["queue_depth"], deep)
+        self.assertEqual(payload["generation_in_flight"], 3)
+
+    def test_readyz_degraded_on_memory_pressure(self):
+        with patch.object(
+            ingestion_service._INBOUND_REVIEW_POOL, "queue_depth", return_value=0
+        ), patch.object(
+            process_memory, "memory_usage", return_value={"used_fraction": 0.9}
+        ), patch.object(
+            generation_priority, "active_generation_count", return_value=0
+        ):
+            status, payload = self.request("GET", "/readyz")
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["status"], "degraded")
+        self.assertEqual(payload["used_fraction"], 0.9)
+
+    def test_readyz_fails_open_when_probe_raises(self):
+        def _boom():
+            raise RuntimeError("probe exploded")
+
+        with patch.object(
+            ingestion_service._INBOUND_REVIEW_POOL, "queue_depth", side_effect=_boom
+        ):
+            status, payload = self.request("GET", "/readyz")
+        # A probe bug must never take readyz down: static ok, 200.
         self.assertEqual(status, 200)
         self.assertEqual(payload["status"], "ok")
 
