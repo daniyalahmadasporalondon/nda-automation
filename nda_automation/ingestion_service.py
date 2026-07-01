@@ -1299,6 +1299,7 @@ def create_matter_from_document(
     owner_user_id: str = "",
     repository: MatterRepository | None = None,
     defer_ai_review: bool = True,
+    defer_pdf_conversion: bool = False,
     drive_sync_runner: BackgroundRunner = run_in_daemon_thread,
     playbook_runtime_func: PlaybookRuntimeFn | None = None,
 ) -> dict[str, Any]:
@@ -1346,14 +1347,43 @@ def create_matter_from_document(
     # that DOCX (so a converted PDF thereafter behaves exactly like a native DOCX
     # matter). FAIL-OPEN: any conversion error leaves the legacy un-converted PDF
     # matter intact -- ingest NEVER hard-blocks on the conversion.
-    matter = _convert_pdf_matter_at_ingest(
-        matter,
-        document_type=document_type,
-        document_bytes=document_bytes,
-        extracted_paragraphs=extracted_paragraphs,
-        repository=repository,
-        owner_user_id=owner_user_id,
-    )
+    #
+    # defer_pdf_conversion (set True ONLY on the Gmail-poll ingest path, exactly like
+    # defer_ai_review) SKIPS this reconstruction so the single worker is not monopolized
+    # by pdf2docx / PyMuPDF / DOCX-unzip work while a poll churns imports. The matter is
+    # left as a legacy PDF with NO working DOCX -- a normal, handled state that renders as
+    # the page-image PDF view. The deferred reconstruction is materialized LATER, off the
+    # request thread, by the on-demand/retro conversion: the moment a human clicks Review,
+    # _run_inbound_ai_review runs with is_on_demand=True and calls
+    # retro_convert_pdf_matter_guarded (see ~line 1088), which reconstructs the working
+    # DOCX for any PDF matter that lacks one. MANUAL uploads leave defer_pdf_conversion at
+    # its False default, so they KEEP converting at ingest -- unchanged. FAIL-OPEN: even
+    # the deferred status write is best-effort (a failure there never blocks ingest).
+    if defer_pdf_conversion and document_type == "pdf":
+        matter_id = str(matter.get("id") or "")
+        if matter_id:
+            _record_working_docx_status(
+                matter_id,
+                WORKING_DOCX_STATUS_DEFERRED,
+                repository=repository,
+                owner_user_id=owner_user_id,
+                reason="pdf_conversion_deferred_off_ingest",
+            )
+            try:
+                refreshed = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+            except Exception:  # pragma: no cover - best-effort re-read
+                refreshed = None
+            if isinstance(refreshed, dict):
+                matter = refreshed
+    else:
+        matter = _convert_pdf_matter_at_ingest(
+            matter,
+            document_type=document_type,
+            document_bytes=document_bytes,
+            extracted_paragraphs=extracted_paragraphs,
+            repository=repository,
+            owner_user_id=owner_user_id,
+        )
     RepositoryMatterLifecycle(repository).complete_intake(
         matter,
         owner_user_id=owner_user_id,
@@ -1389,6 +1419,17 @@ WORKING_DOCX_STATUS_SKIPPED = "skipped"
 # matter was (wrongly) seen as already-converted or as not-a-PDF.
 WORKING_DOCX_STATUS_ALREADY_PRESENT = "already_present"
 WORKING_DOCX_STATUS_NOT_PDF_SOURCE = "not_pdf_source"
+# The PDF->working-DOCX reconstruction was intentionally DEFERRED off this ingest --
+# set ONLY on the Gmail-poll ingest path (defer_pdf_conversion=True), NEVER on a manual
+# upload. A deferred matter is a normal legacy-PDF state: it has NO working DOCX yet and
+# is viewable as a page-image PDF until the on-demand/retro conversion materializes the
+# working DOCX. That retro conversion fires in the review WORKER (off the request thread)
+# the moment a human clicks Review: _run_inbound_ai_review runs with is_on_demand=True and
+# calls retro_convert_pdf_matter_guarded (see ingestion_service ~line 1088), which is a
+# no-op for a matter that already has a working DOCX and reconstructs one for a deferred /
+# legacy PDF that lacks one. This status exists so the deferred state is OBSERVABLE (an
+# expected, benign INFO) rather than a silent no-conversion at ingest.
+WORKING_DOCX_STATUS_DEFERRED = "deferred"
 
 
 def _record_working_docx_status(
@@ -1417,6 +1458,7 @@ def _record_working_docx_status(
             WORKING_DOCX_STATUS_SKIPPED,
             WORKING_DOCX_STATUS_ALREADY_PRESENT,
             WORKING_DOCX_STATUS_NOT_PDF_SOURCE,
+            WORKING_DOCX_STATUS_DEFERRED,
         )
         else logging.WARNING
     )

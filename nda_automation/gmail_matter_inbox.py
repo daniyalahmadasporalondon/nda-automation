@@ -1117,6 +1117,18 @@ def create_matter_from_prepared_attachment(
             # This removes the Opus+Pro storm and the biggest per-poll memory spike
             # that was OOM-crash-looping the single prod worker.
             defer_ai_review=True,
+            # DEFER the PDF->working-DOCX reconstruction off the poll thread too. The
+            # pdf2docx reconstruction + in-process PyMuPDF page open + DOCX unzip
+            # (which runs INLINE per PDF at ingest) monopolizes the single worker
+            # during a poll and makes the app UNRESPONSIVE for users while an import
+            # churns -- even a fast empty_body failure still spawns the child + holds
+            # bytes. Mirroring defer_ai_review: the poll leaves each PDF as a legacy
+            # PDF (page-image view, no working DOCX yet) and the reconstruction is
+            # materialized later OFF the request thread by the on-demand/retro
+            # conversion (retro_convert_pdf_matter_guarded) that fires when a human
+            # clicks Review. Manual uploads keep converting at ingest (they never set
+            # this flag). Storm-safe + fully fail-open.
+            defer_pdf_conversion=True,
         )
     except (
         transport.ActiveReviewEngineError,
