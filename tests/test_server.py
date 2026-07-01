@@ -7997,6 +7997,246 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(captured["limit"], 37)
 
+    def test_gmail_total_import_limit_env_parses_and_fails_open(self):
+        # The global per-poll ceiling defaults to the single-user clamp (40) so it
+        # never shrinks normal single-user operation, and fails OPEN (falls back to
+        # the default) on any missing/blank/non-numeric/non-positive override rather
+        # than wedging the drain at zero.
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("NDA_GMAIL_TOTAL_IMPORT_LIMIT", None)
+            self.assertEqual(
+                server_module._gmail_total_import_limit(),
+                gmail_integration._MAX_GMAIL_IMPORT_LIMIT_CLAMP,
+            )
+        # Default equals the single-user clamp (40) so a lone raised import_limit (37)
+        # is never clamped by the ceiling.
+        self.assertEqual(
+            server_module._DEFAULT_GMAIL_TOTAL_IMPORT_LIMIT,
+            gmail_integration._MAX_GMAIL_IMPORT_LIMIT_CLAMP,
+        )
+        self.assertEqual(server_module._DEFAULT_GMAIL_TOTAL_IMPORT_LIMIT, 40)
+        # A valid positive override is honoured verbatim (NOT re-clamped to 40 — the
+        # total budget is deliberately allowed to exceed the single-user clamp).
+        for raw, expected in (("100", 100), ("7", 7), ("40", 40)):
+            with patch.dict(os.environ, {"NDA_GMAIL_TOTAL_IMPORT_LIMIT": raw}, clear=False):
+                self.assertEqual(server_module._gmail_total_import_limit(), expected, raw)
+        # Fail-open: junk / blank / non-positive all fall back to the default.
+        for raw in ("", "   ", "abc", "0", "-5", "3.5"):
+            with patch.dict(os.environ, {"NDA_GMAIL_TOTAL_IMPORT_LIMIT": raw}, clear=False):
+                self.assertEqual(
+                    server_module._gmail_total_import_limit(),
+                    server_module._DEFAULT_GMAIL_TOTAL_IMPORT_LIMIT,
+                    raw,
+                )
+
+    def test_scheduled_user_gmail_sync_single_user_unaffected_by_default_ceiling(self):
+        # A single connected user with a raised per-user import_limit (37) must be
+        # granted its FULL 37 -- the default cross-user ceiling (40) does NOT clamp a
+        # lone user. This is the same guarantee the pre-existing
+        # test_scheduled_user_gmail_sync_uses_configured_import_limit relies on.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                user = user_store.upsert_google_user({
+                    "sub": "google-solo",
+                    "email": "solo@example.com",
+                    "name": "Solo",
+                    "picture": "",
+                })
+                token_dir = matter_store.DATA_DIR / "users" / "gmail" / user["id"]
+                token_dir.mkdir(parents=True, exist_ok=True)
+                (token_dir / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["inbound"]).write_text(
+                    "{}\n",
+                    encoding="utf-8",
+                )
+
+                granted: list[int] = []
+
+                def import_side_effect(*, limit, query=None, owner_user_id=""):
+                    granted.append(limit)
+                    # Import a full batch of 37 heavy items to prove even a
+                    # completely-full single-user poll is not clamped by the ceiling.
+                    return {
+                        "account": f"{owner_user_id}@example.com",
+                        "imported": [{"id": f"m-{i}"} for i in range(37)],
+                        "query": "in:inbox has:attachment",
+                        "skipped": [],
+                    }
+
+                # Default ceiling in effect (env unset).
+                with patch.dict(os.environ, {}, clear=False):
+                    os.environ.pop("NDA_GMAIL_TOTAL_IMPORT_LIMIT", None)
+                    with patch.object(
+                        server_module.app_settings, "gmail_import_limit", return_value=37
+                    ):
+                        with patch.object(
+                            server_module.gmail_integration,
+                            "import_inbound_matters",
+                            side_effect=import_side_effect,
+                        ):
+                            with patch.object(
+                                server_module.matter_store,
+                                "deduplicate_gmail_matters",
+                                return_value=0,
+                            ):
+                                with patch.object(server_module.app_settings, "record_gmail_sync"):
+                                    server_module._run_scheduled_gmail_sync()
+
+        # The single user received its full configured limit, unclamped.
+        self.assertEqual(granted, [37])
+
+    def test_scheduled_user_gmail_sync_caps_total_imports_across_users(self):
+        # THE CORE GUARANTEE: with N connected users each requesting a full per-user
+        # import_limit, the TOTAL heavy imports in one poll is bounded by the global
+        # ceiling -- it is NOT import_limit * N. Here N=5 users x per-user 40 would be
+        # 200 uncapped; the ceiling (40) holds the sum to <= 40.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                users = []
+                for i in range(5):
+                    user = user_store.upsert_google_user({
+                        "sub": f"google-cap-{i}",
+                        "email": f"cap{i}@example.com",
+                        "name": f"Cap{i}",
+                        "picture": "",
+                    })
+                    users.append(user)
+                    token_dir = matter_store.DATA_DIR / "users" / "gmail" / user["id"]
+                    token_dir.mkdir(parents=True, exist_ok=True)
+                    (token_dir / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["inbound"]).write_text(
+                        "{}\n",
+                        encoding="utf-8",
+                    )
+
+                granted: list[int] = []
+
+                def import_side_effect(*, limit, query=None, owner_user_id=""):
+                    granted.append(limit)
+                    # Each user has plenty of new mail: it imports exactly as many
+                    # heavy items as it was granted (a full batch every time).
+                    return {
+                        "account": f"{owner_user_id}@example.com",
+                        "imported": [{"id": f"{owner_user_id}-{i}"} for i in range(limit)],
+                        "query": "in:inbox has:attachment",
+                        "skipped": [],
+                    }
+
+                # Per-user limit clamped at 40; default total ceiling also 40.
+                with patch.dict(os.environ, {}, clear=False):
+                    os.environ.pop("NDA_GMAIL_TOTAL_IMPORT_LIMIT", None)
+                    with patch.object(
+                        server_module.app_settings,
+                        "gmail_import_limit",
+                        return_value=gmail_integration._MAX_GMAIL_IMPORT_LIMIT_CLAMP,
+                    ):
+                        with patch.object(
+                            server_module.gmail_integration,
+                            "import_inbound_matters",
+                            side_effect=import_side_effect,
+                        ):
+                            with patch.object(
+                                server_module.matter_store,
+                                "deduplicate_gmail_matters",
+                                return_value=0,
+                            ):
+                                with patch.object(
+                                    server_module.app_settings, "record_gmail_sync"
+                                ) as record_sync:
+                                    server_module._run_scheduled_gmail_sync()
+
+        ceiling = gmail_integration._MAX_GMAIL_IMPORT_LIMIT_CLAMP
+        # Total heavy imports granted across ALL users is bounded by the ceiling, NOT
+        # per_user_limit * N (which would be 40 * 5 == 200).
+        self.assertEqual(sum(granted), ceiling)
+        self.assertLess(sum(granted), ceiling * len(users))
+        # The first user is served fully (nothing else has drawn on the budget yet).
+        self.assertEqual(granted[0], ceiling)
+        # The recorded aggregate imported count is capped at the ceiling too.
+        recorded = record_sync.call_args.args[0]
+        self.assertEqual(len(recorded["imported"]), ceiling)
+
+    def test_scheduled_user_gmail_sync_defers_leftover_users_to_next_poll(self):
+        # When the shared budget is exhausted mid-fan-out, the remaining users are
+        # DEFERRED (not imported this poll) rather than dropped -- their mail is
+        # untouched and drains next poll via the persistent cursor. Simulate a small
+        # ceiling so the first user consumes it entirely.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                users = []
+                for i in range(3):
+                    user = user_store.upsert_google_user({
+                        "sub": f"google-defer-{i}",
+                        "email": f"defer{i}@example.com",
+                        "name": f"Defer{i}",
+                        "picture": "",
+                    })
+                    users.append(user)
+                    token_dir = matter_store.DATA_DIR / "users" / "gmail" / user["id"]
+                    token_dir.mkdir(parents=True, exist_ok=True)
+                    (token_dir / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["inbound"]).write_text(
+                        "{}\n",
+                        encoding="utf-8",
+                    )
+
+                called_for: list[str] = []
+
+                def import_side_effect(*, limit, query=None, owner_user_id=""):
+                    called_for.append(owner_user_id)
+                    # First user imports a full batch that consumes the whole budget.
+                    return {
+                        "account": f"{owner_user_id}@example.com",
+                        "imported": [{"id": f"{owner_user_id}-{i}"} for i in range(limit)],
+                        "query": "in:inbox has:attachment",
+                        "skipped": [],
+                    }
+
+                # Ceiling of 5; per-user limit also 5 -> first user consumes it all.
+                with patch.dict(
+                    os.environ, {"NDA_GMAIL_TOTAL_IMPORT_LIMIT": "5"}, clear=False
+                ):
+                    with patch.object(
+                        server_module.app_settings, "gmail_import_limit", return_value=5
+                    ):
+                        with patch.object(
+                            server_module.gmail_integration,
+                            "import_inbound_matters",
+                            side_effect=import_side_effect,
+                        ):
+                            with patch.object(
+                                server_module.matter_store,
+                                "deduplicate_gmail_matters",
+                                return_value=0,
+                            ):
+                                with patch.object(
+                                    server_module.app_settings, "record_gmail_sync"
+                                ) as record_sync:
+                                    server_module._run_scheduled_gmail_sync()
+
+        # Only the first user actually did heavy import work; the other two were
+        # deferred WITHOUT ever calling import_inbound_matters (no download/extract).
+        self.assertEqual(called_for, [users[0]["id"]])
+        recorded = record_sync.call_args.args[0]
+        # Total imports bounded by the ceiling (5).
+        self.assertEqual(len(recorded["imported"]), 5)
+        # Deferred users are recorded (drain next poll) -- mail is never dropped.
+        deferred = [
+            entry for entry in recorded["per_user"] if entry.get("deferred")
+        ]
+        self.assertEqual(
+            {entry["owner_user_id"] for entry in deferred},
+            {users[1]["id"], users[2]["id"]},
+        )
+        # The deferred users surface as skipped-with-reason so the next poll resumes
+        # them via the existing persistent drain cursor (nothing dropped).
+        defer_reasons = {
+            entry.get("reason")
+            for entry in recorded["skipped"]
+            if entry.get("reason") == "total_import_limit_reached"
+        }
+        self.assertEqual(defer_reasons, {"total_import_limit_reached"})
+
     def test_gmail_settings_endpoint_accepts_sync_enabled_and_import_limit(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
