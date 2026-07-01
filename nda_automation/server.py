@@ -1084,6 +1084,42 @@ def _gmail_server_inbound_fallback_enabled() -> bool:
     return _env_flag_enabled(GMAIL_SERVER_INBOUND_ENV)
 
 
+# GLOBAL per-poll ceiling on heavy inbound imports, summed ACROSS every connected
+# user in one scheduled sync. Without it, N connected inboxes each get a fresh
+# per-user import_limit (clamped at gmail_integration._MAX_GMAIL_IMPORT_LIMIT_CLAMP
+# == 40) and a fresh intake budget, so one poll could stack N x 40 heavy downloads/
+# extractions onto the single worker. This cap bounds the TOTAL heavy imports per
+# poll regardless of user count; leftover messages resume next poll via the existing
+# persistent drain cursor, so nothing is dropped.
+#
+# DEFAULT is the single-user clamp (40), NOT smaller: a lone user with a raised
+# gmail_import_limit (e.g. 37) is therefore NEVER clamped by this ceiling
+# (min(37, 40) == 37) and single-user behavior is byte-for-byte unchanged. The cap
+# only bites once the cross-user SUM would exceed the ceiling. Override with
+# NDA_GMAIL_TOTAL_IMPORT_LIMIT (a larger value trades a faster multi-user drain for a
+# larger per-poll burst on the worker).
+GMAIL_TOTAL_IMPORT_LIMIT_ENV = "NDA_GMAIL_TOTAL_IMPORT_LIMIT"
+_DEFAULT_GMAIL_TOTAL_IMPORT_LIMIT = gmail_integration._MAX_GMAIL_IMPORT_LIMIT_CLAMP
+
+
+def _gmail_total_import_limit() -> int:
+    """Resolve the global per-poll import ceiling across all connected users.
+
+    Fail-open: a missing/blank/non-numeric/non-positive override falls back to the
+    default (the single-user clamp), so a misconfigured env value can never wedge
+    the drain by pinning the total budget to zero.
+    """
+
+    raw = os.environ.get(GMAIL_TOTAL_IMPORT_LIMIT_ENV, "")
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return _DEFAULT_GMAIL_TOTAL_IMPORT_LIMIT
+    if value < 1:
+        return _DEFAULT_GMAIL_TOTAL_IMPORT_LIMIT
+    return value
+
+
 def _gmail_inbound_configured_for_scheduled_sync() -> bool:
     if gmail_integration.gmail_sync_owner_user_ids():
         return True
@@ -1182,12 +1218,42 @@ def _run_scheduled_user_gmail_sync(
     effective_import_limit = (
         import_limit if import_limit is not None else app_settings.gmail_import_limit()
     )
+    # GLOBAL per-poll ceiling, shared across the fan-out below so N connected inboxes
+    # can't stack N x per_user_limit heavy imports onto the single worker in one poll.
+    # `remaining` starts at the total ceiling and is decremented by the heavy imports
+    # each user actually performs; every user is granted min(per_user_limit, remaining)
+    # and once the budget is exhausted the loop stops issuing further heavy work.
+    # Leftover users/messages resume next poll via the persistent drain cursor.
+    #
+    # The default ceiling equals the single-user clamp, so a lone user (or the first
+    # user) is granted its full per-user limit unchanged — the cap only ever bites the
+    # cross-user SUM.
+    remaining_import_budget = _gmail_total_import_limit()
 
     for owner_user_id in owner_user_ids:
         user_started_at = datetime.now(timezone.utc).isoformat()
+        # Grant this user the smaller of its own per-user limit and whatever remains of
+        # the shared cross-user budget. When the budget is spent, skip the remaining
+        # users' heavy import work; their mail is untouched and drains next poll.
+        user_import_limit = min(effective_import_limit, remaining_import_budget)
+        if user_import_limit < 1:
+            skipped.append({
+                "owner_user_id": owner_user_id,
+                "reason": "total_import_limit_reached",
+                "detail": "Per-poll cross-user import ceiling reached; drains next poll.",
+            })
+            per_user.append({
+                "owner_user_id": owner_user_id,
+                "account": "",
+                "imported_count": 0,
+                "skipped_count": 1,
+                "deduplicated_count": 0,
+                "deferred": True,
+            })
+            continue
         try:
             result = gmail_integration.import_inbound_matters(
-                limit=effective_import_limit,
+                limit=user_import_limit,
                 owner_user_id=owner_user_id,
             )
             owner_deduplicated_count = DiskMatterRepository().deduplicate_gmail_matters(
@@ -1240,6 +1306,10 @@ def _run_scheduled_user_gmail_sync(
 
         result_imported = result.get("imported") if isinstance(result.get("imported"), list) else []
         result_skipped = result.get("skipped") if isinstance(result.get("skipped"), list) else []
+        # Charge the shared budget for the heavy imports this user actually performed
+        # (deduped/short-circuited messages never download+extract, so they aren't
+        # charged — later users still get served when an earlier one had no new work).
+        remaining_import_budget = max(0, remaining_import_budget - len(result_imported))
         account = str(result.get("account") or "")
         query = str(result.get("query") or "")
         if account and account not in accounts:
