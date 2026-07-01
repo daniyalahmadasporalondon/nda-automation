@@ -594,6 +594,104 @@ class PdfTextTests(unittest.TestCase):
         self.assertFalse(visual_profile["drawings_count_capped"])
         self.assertGreaterEqual(visual_profile["drawing_count"], 1)
 
+    # --- Lazy visual-profile opt-out (poll-thread double-parse fix) ---
+
+    @requires_pypdf
+    @requires_pymupdf
+    def test_default_still_computes_visual_profile_once(self):
+        # DEFAULT (include_visual_profile omitted -> True) preserves every existing
+        # interactive caller: _pdf_visual_profile is called exactly once and the
+        # populated profile lands in the quality block just as before.
+        data = make_visual_pdf()
+
+        with patch.object(
+            pdf_text, "_pdf_visual_profile", wraps=pdf_text._pdf_visual_profile
+        ) as spy:
+            extraction = extract_pdf_document(data)
+
+        spy.assert_called_once_with(data)
+        visual_profile = extraction.quality["visual_profile"]
+        self.assertEqual(visual_profile["status"], "ready")
+        self.assertTrue(visual_profile["requires_source_preview"])
+
+    @requires_pypdf
+    def test_lazy_skip_does_not_call_visual_profiler(self):
+        # include_visual_profile=False must NOT trigger the second PyMuPDF parse.
+        # Patch the profiler to blow up if invoked so any call fails the test loudly.
+        data = make_pdf("This Agreement shall be governed by the laws of California.")
+
+        def _explode(*args, **kwargs):
+            raise AssertionError("_pdf_visual_profile must not be called on the lazy path")
+
+        eager = extract_pdf_document(data)
+        with patch.object(pdf_text, "_pdf_visual_profile", side_effect=_explode):
+            lazy = extract_pdf_document(data, include_visual_profile=False)
+
+        # Paragraphs are identical to the eager call -- only the profile is deferred.
+        self.assertEqual(
+            [p["text"] for p in lazy.paragraphs],
+            [p["text"] for p in eager.paragraphs],
+        )
+        # The deferred profile mirrors the 'unavailable' (not-yet-computed) contract.
+        visual_profile = lazy.quality["visual_profile"]
+        self.assertEqual(visual_profile["status"], "unavailable")
+        self.assertEqual(visual_profile["reason"], "deferred")
+        self.assertTrue(visual_profile["requires_source_preview"])
+
+    @requires_pypdf
+    def test_lazy_quality_report_does_not_raise_and_flags_source_preview(self):
+        # _pdf_quality_report must tolerate the deferred profile exactly like the
+        # existing unavailable case: fail-open, source-preview warning present.
+        data = make_pdf("This Agreement shall be governed by the laws of California.")
+
+        extraction = extract_pdf_document(data, include_visual_profile=False)
+
+        warning_types = {warning["type"] for warning in extraction.quality["warnings"]}
+        self.assertIn("pdf_visual_fidelity_requires_source_preview", warning_types)
+
+    @requires_pypdf
+    def test_lazy_profile_treated_as_not_yet_computed_by_source_fidelity(self):
+        # The downstream source-fidelity consumer must treat the deferred profile as
+        # 'not-yet-computed' (unavailable) without error -- not as 'no visual signals'.
+        from nda_automation.source_fidelity import source_fidelity_payload
+
+        data = make_pdf("This Agreement shall be governed by the laws of California.")
+        extraction = extract_pdf_document(data, include_visual_profile=False)
+
+        review_result = {
+            "paragraphs": [dict(p) for p in extraction.paragraphs],
+        }
+        source = {"kind": "pdf", "extraction_quality": extraction.quality}
+
+        payload = source_fidelity_payload(review_result, source=source)
+
+        self.assertEqual(payload["source_type"], "pdf")
+        limitation_codes = {item["code"] for item in payload["limitations"]}
+        self.assertIn("pdf_visual_profile_unavailable", limitation_codes)
+
+    @requires_pypdf
+    def test_lazy_path_skips_second_parse_when_table_aug_flag_off(self):
+        # With NDA_TABLE_AUGMENTATION_ENABLED unset (the production default), the lazy
+        # path removes the entire second parse: neither the visual profiler nor the
+        # table-augmentation re-parse runs. augment_quality_with_tables still no-ops.
+        import os
+
+        data = make_pdf("This Agreement shall be governed by the laws of California.")
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("NDA_TABLE_AUGMENTATION_ENABLED", None)
+
+            def _explode(*args, **kwargs):
+                raise AssertionError("visual profiler ran despite lazy skip")
+
+            with patch.object(pdf_text, "_pdf_visual_profile", side_effect=_explode):
+                extraction = extract_pdf_document(data, include_visual_profile=False)
+
+        # Quality block is intact and the deferred marker is present (table-aug no-op
+        # left visual_profile untouched).
+        self.assertEqual(extraction.quality["visual_profile"]["reason"], "deferred")
+        self.assertEqual(extraction.quality["extracted_paragraphs"], len(extraction.paragraphs))
+
 
 class PdfVisualProfileMemoryGuardTests(unittest.TestCase):
     """Behavioral-contract guard for the PDF visual-profile memory fix.
