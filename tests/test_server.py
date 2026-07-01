@@ -8237,6 +8237,104 @@ class ServerTests(unittest.TestCase):
         }
         self.assertEqual(defer_reasons, {"total_import_limit_reached"})
 
+    def test_scheduled_user_gmail_sync_rate_limited_user_does_not_abort_others(self):
+        # RESILIENCE GUARANTEE: one rate-limited user must NOT abort the whole
+        # multi-user poll. With 3 connected users where the MIDDLE one raises
+        # GmailRateLimitError, users 1 AND 3 are still polled (their
+        # import_inbound_matters IS called) -- i.e. the middle user's rate-limit
+        # no longer unwinds the fan-out and stalls the other tenants' import.
+        server_module._clear_gmail_sync_backoff_for_tests()
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                users = []
+                for i in range(3):
+                    user = user_store.upsert_google_user({
+                        "sub": f"google-rl-{i}",
+                        "email": f"rl{i}@example.com",
+                        "name": f"RL{i}",
+                        "picture": "",
+                    })
+                    users.append(user)
+                    token_dir = matter_store.DATA_DIR / "users" / "gmail" / user["id"]
+                    token_dir.mkdir(parents=True, exist_ok=True)
+                    (token_dir / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["inbound"]).write_text(
+                        "{}\n",
+                        encoding="utf-8",
+                    )
+
+                middle_user_id = users[1]["id"]
+                called_for: list[str] = []
+                rate_limit_error = gmail_integration.GmailRateLimitError(
+                    "Gmail API rate limit exceeded. Retry after 2026-06-04T14:06:26.379Z.",
+                    retry_after_epoch=1000.0,
+                )
+
+                def import_side_effect(*, limit, query=None, owner_user_id=""):
+                    called_for.append(owner_user_id)
+                    if owner_user_id == middle_user_id:
+                        # The MIDDLE user is rate-limited: previously this raised out
+                        # of the loop and users 1 & 3 were never polled.
+                        raise rate_limit_error
+                    return {
+                        "account": f"{owner_user_id}@example.com",
+                        "imported": [{"id": f"{owner_user_id}-0"}],
+                        "query": "in:inbox has:attachment",
+                        "skipped": [],
+                    }
+
+                # Generous ceiling so the cross-user cap never bites -- we are
+                # isolating the rate-limit behaviour, not the budget.
+                with patch.dict(
+                    os.environ, {"NDA_GMAIL_TOTAL_IMPORT_LIMIT": "100"}, clear=False
+                ):
+                    with patch.object(
+                        server_module.app_settings, "gmail_import_limit", return_value=10
+                    ):
+                        with patch.object(
+                            server_module.gmail_integration,
+                            "import_inbound_matters",
+                            side_effect=import_side_effect,
+                        ):
+                            with patch.object(
+                                server_module.matter_store,
+                                "deduplicate_gmail_matters",
+                                return_value=0,
+                            ):
+                                with patch.object(
+                                    server_module.app_settings, "record_gmail_sync"
+                                ) as record_sync:
+                                    with patch.object(server_module, "_log_background_error"):
+                                        server_module._run_scheduled_gmail_sync()
+
+        # ALL THREE users were attempted -- the middle user's rate-limit did not
+        # short-circuit the fan-out. Users 1 and 3 (before/after the failure) were
+        # both polled.
+        self.assertEqual(
+            called_for,
+            [users[0]["id"], users[1]["id"], users[2]["id"]],
+        )
+        self.assertIn(users[0]["id"], called_for)
+        self.assertIn(users[2]["id"], called_for)
+
+        recorded = record_sync.call_args.args[0]
+        # Users 1 and 3 imported successfully (2 heavy imports total); the middle
+        # user's rate-limit contributed none.
+        self.assertEqual(len(recorded["imported"]), 2)
+        # The rate-limited middle user is surfaced as skipped-with-reason so its
+        # next-cycle cursor/backoff retries it (nothing dropped).
+        rate_limited = [
+            entry for entry in recorded["skipped"]
+            if entry.get("reason") == "user_rate_limited"
+        ]
+        self.assertEqual(
+            {entry["owner_user_id"] for entry in rate_limited},
+            {middle_user_id},
+        )
+        # A per-user rate-limit is NOT a global signal: the shared scheduler
+        # backoff must stay clear so the very next poll still runs for everyone.
+        self.assertFalse(server_module._gmail_sync_backoff_active())
+
     def test_gmail_settings_endpoint_accepts_sync_enabled_and_import_limit(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)

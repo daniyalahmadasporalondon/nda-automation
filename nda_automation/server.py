@@ -1271,6 +1271,14 @@ def _run_scheduled_user_gmail_sync(
                 finished_at=user_finished_at,
             )
         except gmail_integration.GmailRateLimitError as error:
+            # One user's Gmail rate-limit must NOT abort the whole multi-user
+            # fan-out. Record it as this user's own sync error (per-user backoff:
+            # their next-cycle cursor/backoff handles the retry) and CONTINUE to
+            # the next user so the other tenants are still polled this cycle. We
+            # deliberately do NOT re-raise (which previously unwound the loop and
+            # set a GLOBAL backoff, stalling every other tenant) and do NOT set
+            # the shared _GMAIL_SYNC_BACKOFF_UNTIL here — global backoff is
+            # reserved for the genuine all-users signal in _run_scheduled_gmail_sync.
             user_finished_at = datetime.now(timezone.utc).isoformat()
             user_store.record_user_gmail_sync_error(
                 owner_user_id,
@@ -1279,7 +1287,22 @@ def _run_scheduled_user_gmail_sync(
                 finished_at=user_finished_at,
                 query=gmail_integration._default_inbound_query(),
             )
-            raise
+            telemetry.increment("gmail_sync_user_rate_limit_failures")
+            skipped.append({
+                "owner_user_id": owner_user_id,
+                "reason": "user_rate_limited",
+                "detail": str(error),
+            })
+            per_user.append({
+                "owner_user_id": owner_user_id,
+                "account": "",
+                "imported_count": 0,
+                "skipped_count": 1,
+                "deduplicated_count": 0,
+                "error": str(error),
+                "rate_limited": True,
+            })
+            continue
         except gmail_integration.GmailIntegrationError as error:
             user_finished_at = datetime.now(timezone.utc).isoformat()
             user_store.record_user_gmail_sync_error(
