@@ -1328,6 +1328,72 @@ class G3CoherentCacheUpdateTests(unittest.TestCase):
                 self.assertEqual(reparses, 0, "a delete dropped the cache instead of pruning it")
                 self.assertEqual({m["id"] for m in after}, {keep["id"]})
 
+    def test_delete_of_dirty_id_matter_leaves_no_cache_ghost(self):
+        # Regression: a matter whose STORED "id" contains a character outside
+        # [A-Za-z0-9_-] is filed under its CLEANED name (dirty-id.json), but the
+        # cached-list entry is keyed by the RAW id ("dirty id!"). The delete path
+        # must prune the cached blob on the SAME raw id the write path stored under.
+        #
+        # The latent bug: delete pruned the blob on the CLEANED id, so the raw-id
+        # entry survived while the file AND its fingerprint entry were removed. The
+        # cached fingerprint then matched the (now file-less) disk fingerprint, so
+        # the next list_matters was a cache HIT that served the DELETED matter
+        # forever. Every id generated today is already clean, so this cannot fire in
+        # production -- but the write/delete key asymmetry was a real hole.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                dirty_id = "dirty id!"  # cleaned -> "dirty-id" -> dirty-id.json
+                self.assertNotEqual(
+                    matter_store._clean_matter_record_id(dirty_id),
+                    dirty_id,
+                    "test premise broken: id must differ from its cleaned form",
+                )
+
+                # Persist the crafted matter through the REAL write path so the file
+                # lands at dirty-id.json and the blob (once warmed) is keyed on the
+                # raw id exactly as production would key it.
+                dirty_matter = {
+                    "id": dirty_id,
+                    "created_at": "2026-06-01T00:00:00+00:00",
+                    "updated_at": "2026-06-01T00:00:00+00:00",
+                    "source_filename": "Dirty.docx",
+                    "stored_filename": "dirty-id-Dirty.docx",
+                    "board_column": "intake",
+                    "status": "active",
+                }
+                matter_store._matter_records_dir().mkdir(parents=True, exist_ok=True)
+                matter_store._write_matter_record(dirty_matter)
+
+                record_path = matter_store._matter_records_dir() / "dirty-id.json"
+                self.assertTrue(
+                    record_path.is_file(),
+                    "crafted record was not filed under its cleaned name",
+                )
+
+                # Warm the cache from disk: the blob now holds an entry keyed on the
+                # raw id ("dirty id!") and a fingerprint entry for dirty-id.json.
+                primed = matter_store.list_matters()
+                self.assertEqual({m["id"] for m in primed}, {dirty_id})
+
+                # Delete it through the real delete path (loads by cleaned filename,
+                # unlinks the file, runs the coherent cache prune).
+                deleted = matter_store.delete_matter(dirty_id)
+                self.assertIsNotNone(deleted, "delete_matter failed to find the crafted matter")
+                self.assertFalse(record_path.exists(), "delete did not remove the record file")
+
+                # The ghost check: list_matters must NOT resurrect the deleted matter.
+                # With the asymmetric (pre-fix) prune this is a cache HIT that serves
+                # the stale blob entry; with the symmetric prune the blob no longer
+                # contains it, so disk and cache agree on the empty set.
+                after = matter_store.list_matters()
+                self.assertEqual(
+                    [m["id"] for m in after],
+                    [],
+                    "a deleted dirty-id matter was resurrected from the cached list "
+                    "(blob pruned on the wrong key -- cache HIT served the ghost)",
+                )
+
     def test_external_write_to_other_record_still_reloads(self):
         # (b) external-write safety: our own write keeps the cache warm, but an
         # EXTERNAL write to a DIFFERENT record (another process) must still be

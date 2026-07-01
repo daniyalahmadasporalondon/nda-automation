@@ -1401,21 +1401,32 @@ def _coherent_cache_update_after_write(matter: dict[str, Any]) -> None:
         _invalidate_list_cache()
 
 
-def _coherent_cache_update_after_delete(matter_id: str) -> None:
+def _coherent_cache_update_after_delete(raw_id: object) -> None:
     """Drop the ONE just-deleted matter from the cached list in place (G3).
 
     The delete counterpart to ``_coherent_cache_update_after_write``: we removed
-    this record file under the store lock, so we drop its entry from both the cached
-    list and the cached fingerprint, leaving every other file's fingerprint entry in
-    place. External-change detection is preserved for the same reason as the write
-    path, and every uncertainty (the file still existing, an unexpected cache/
-    fingerprint shape, any exception) falls back to a full invalidation.
+    this record file, so we drop its entry from both the cached list and the cached
+    fingerprint, leaving every other file's fingerprint entry in place. External-
+    change detection is preserved for the same reason as the write path, and every
+    uncertainty (the file still existing, an unexpected cache/fingerprint shape, any
+    exception) falls back to a full invalidation.
 
-    MUST be called under ``_locked_store()`` (as ``_delete_matter_record`` is).
+    The blob entry is matched on the RAW stored ``id`` (``raw_id``) -- exactly the
+    key ``_coherent_cache_update_after_write`` stores under -- so create/update/
+    delete are all symmetric on the raw id even when a stored ``id`` differs from its
+    cleaned/filename form. The fingerprint entry is dropped on the CLEANED filename,
+    because record files on disk are named by the cleaned id.
+
+    Holds ``_LIST_CACHE_LOCK`` for the blob read-modify-write; it does NOT require
+    ``_locked_store()``. The blob mutation is serialized by ``_LIST_CACHE_LOCK``, and
+    coherence against a concurrent (out-of-store-lock) delete is enforced on the READ
+    side by ``_load_matters_cached``: it re-stats every file via
+    ``_records_dir_fingerprint`` and only serves the blob when that fingerprint still
+    matches, so any concurrent change is caught as a mismatch and forces a reload.
     """
     global _list_cache_fingerprint, _list_cache_blob, _list_cache_dir
     try:
-        cleaned_id = _clean_matter_record_id(matter_id)
+        cleaned_id = _clean_matter_record_id(raw_id)
         if not cleaned_id:
             _invalidate_list_cache()
             return
@@ -1450,7 +1461,7 @@ def _coherent_cache_update_after_delete(matter_id: str) -> None:
             pruned_list = [
                 existing
                 for existing in cached_list
-                if not (isinstance(existing, dict) and existing.get("id") == cleaned_id)
+                if not (isinstance(existing, dict) and existing.get("id") == raw_id)
             ]
             fingerprint = tuple(
                 entry
@@ -1561,7 +1572,11 @@ def _write_matter_record(matter: dict[str, Any]) -> None:
 
 
 def _delete_matter_record(matter: dict[str, Any] | str) -> None:
-    matter_id = _clean_matter_record_id(matter.get("id") if isinstance(matter, dict) else matter)
+    # Keep the RAW stored id (before cleaning): the record FILE is named by the
+    # cleaned id, but the cached-list entry is keyed by the raw id (that is what the
+    # write path stores under), so the cache-prune below must match on the raw form.
+    raw_id = matter.get("id") if isinstance(matter, dict) else matter
+    matter_id = _clean_matter_record_id(raw_id)
     if not matter_id:
         raise MatterStoreError("Matter record must include an id.")
     record_path = _matter_records_dir() / f"{matter_id}.json"
@@ -1573,8 +1588,10 @@ def _delete_matter_record(matter: dict[str, Any] | str) -> None:
     # Write-through cache maintenance: a record file was removed. We drop this one
     # matter (and its fingerprint entry) from the cached list in place (G3) rather
     # than blowing the whole cache away, keeping the next list_matters a hit. Falls
-    # back to a full invalidation on any uncertainty. Runs under the caller's lock.
-    _coherent_cache_update_after_delete(matter_id)
+    # back to a full invalidation on any uncertainty. The prune matches the cached
+    # entry on the RAW id (symmetric with the write path) and the fingerprint entry
+    # on the cleaned filename.
+    _coherent_cache_update_after_delete(raw_id)
 
 
 def _ensure_matter_records_from_legacy() -> None:
