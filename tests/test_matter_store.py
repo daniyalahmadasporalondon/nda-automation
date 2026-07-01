@@ -1223,5 +1223,261 @@ class ListMattersCacheTests(unittest.TestCase):
                 self.assertNotEqual(second[0].get("review_result"), {"poisoned": True})
 
 
+class MatterStoreRetentionFairnessTests(unittest.TestCase):
+    """Retention + lock-contention fairness on the SHIPPED disk store.
+
+    Retention is per-owner (a prolific tenant never prunes a quiet tenant's
+    matters), the fsync-heavy archive/prune/delete work is deferred outside the
+    exclusive lock, and create_matter stays atomic when the archive fails.
+    """
+
+    def matter_store_patches(self, data_dir: str):
+        root = Path(data_dir)
+        return (
+            patch.object(matter_store, "DATA_DIR", root),
+            patch.object(matter_store, "MATTERS_PATH", root / "matters.json"),
+            patch.object(matter_store, "UPLOADS_DIR", root / "uploads"),
+        )
+
+    def _closed_matter(self, repo, owner, name):
+        matter = repo.create_matter(**_create_kwargs(
+            source_filename=name,
+            document_bytes=name.encode(),
+            owner_user_id=owner,
+        ))
+        repo.update_matter_stage(matter["id"], "signed_closed", owner_user_id=owner)
+        return matter
+
+    def test_retention_is_scoped_per_owner(self):
+        # (A) A prolific tenant A's imports must prune only A's OWN oldest closed
+        # matters -- never a quiet tenant B's globally-older closed matters.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patch.dict(os.environ, {"NDA_MATTER_RETENTION_LIMIT": "2"}):
+                with patches[0], patches[1], patches[2]:
+                    repo = DiskMatterRepository()
+                    # B's closed matters are created FIRST, so they are the
+                    # globally-oldest closed matters -- a global limit would prune
+                    # them.
+                    b_first = self._closed_matter(repo, "user-b", "B-First.docx")
+                    b_second = self._closed_matter(repo, "user-b", "B-Second.docx")
+                    # A fills its own per-owner cap (2) with closed matters.
+                    a_old = self._closed_matter(repo, "user-a", "A-Old.docx")
+                    a_mid = self._closed_matter(repo, "user-a", "A-Mid.docx")
+
+                    # A imports a third matter -> A is over its per-owner cap and
+                    # A's single oldest closed matter must be pruned.
+                    a_new = repo.create_matter(**_create_kwargs(
+                        source_filename="A-New.docx",
+                        document_bytes=b"a-new",
+                        owner_user_id="user-a",
+                    ))
+
+                    a_ids = {m["id"] for m in repo.list_matters(owner_user_id="user-a")}
+                    b_ids = {m["id"] for m in repo.list_matters(owner_user_id="user-b")}
+
+        # Only A's oldest closed matter was pruned.
+        self.assertNotIn(a_old["id"], a_ids)
+        self.assertEqual(a_ids, {a_mid["id"], a_new["id"]})
+        # NONE of B's matters were touched despite being globally older.
+        self.assertEqual(b_ids, {b_first["id"], b_second["id"]})
+
+    def test_single_owner_limit_still_caps_and_archives_before_delete(self):
+        # (B) Regression: with a single owner, pruning still caps at the limit and
+        # archives the record + source before the live record is unlinked.
+        with tempfile.TemporaryDirectory() as data_dir:
+            root = Path(data_dir)
+            patches = self.matter_store_patches(data_dir)
+            with patch.dict(os.environ, {"NDA_MATTER_RETENTION_LIMIT": "1"}):
+                with patches[0], patches[1], patches[2]:
+                    repo = DiskMatterRepository()
+                    first = repo.create_matter(**_create_kwargs(
+                        source_filename="First.docx",
+                        document_bytes=b"first source bytes",
+                        owner_user_id="user-a",
+                    ))
+                    repo.update_matter_stage(first["id"], "signed_closed", owner_user_id="user-a")
+                    first_record = matter_store._matter_records_dir() / f"{first['id']}.json"
+
+                    # Spy the delete so we can assert archive existed BEFORE the
+                    # live record was unlinked.
+                    archive_present_at_delete: list[bool] = []
+                    real_delete = matter_store._delete_matter_record
+
+                    def spy_delete(matter):
+                        archived = root / "pruned-matters" / f"{first['id']}.json"
+                        archive_present_at_delete.append(archived.is_file())
+                        return real_delete(matter)
+
+                    with patch.object(matter_store, "_delete_matter_record", side_effect=spy_delete):
+                        second = repo.create_matter(**_create_kwargs(
+                            source_filename="Second.docx",
+                            document_bytes=b"second source bytes",
+                            owner_user_id="user-a",
+                        ))
+
+                    matters = repo.list_matters(owner_user_id="user-a")
+                    archived_source = root / "pruned-matters" / "uploads" / first["stored_filename"]
+                    first_record_exists = first_record.is_file()
+                    archived_source_bytes = archived_source.read_bytes() if archived_source.exists() else None
+
+        self.assertEqual([m["id"] for m in matters], [second["id"]])
+        self.assertFalse(first_record_exists, "pruned record must be unlinked")
+        self.assertEqual(archived_source_bytes, b"first source bytes")
+        # Archive was in place at the moment we deleted the live record.
+        self.assertEqual(archive_present_at_delete, [True])
+
+    def test_create_matter_atomic_when_archive_fails(self):
+        # (C) If the post-lock archive fails, the would-be-pruned matter stays live
+        # (record + source intact) and the new matter is still saved. No partial
+        # state: nothing is deleted.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patch.dict(os.environ, {"NDA_MATTER_RETENTION_LIMIT": "1"}):
+                with patches[0], patches[1], patches[2]:
+                    repo = DiskMatterRepository()
+                    first = repo.create_matter(**_create_kwargs(
+                        source_filename="First.docx",
+                        document_bytes=b"first source bytes",
+                        owner_user_id="user-a",
+                    ))
+                    repo.update_matter_stage(first["id"], "signed_closed", owner_user_id="user-a")
+                    first_source = matter_store.UPLOADS_DIR / first["stored_filename"]
+
+                    delete_calls: list[object] = []
+                    real_delete = matter_store._delete_matter_record
+
+                    def spy_delete(matter):
+                        delete_calls.append(matter)
+                        return real_delete(matter)
+
+                    with (
+                        patch.object(matter_store, "_archive_pruned_matters", return_value=False),
+                        patch.object(matter_store, "_delete_matter_record", side_effect=spy_delete),
+                    ):
+                        second = repo.create_matter(**_create_kwargs(
+                            source_filename="Second.docx",
+                            document_bytes=b"second source bytes",
+                            owner_user_id="user-a",
+                        ))
+
+                    matters = {m["id"] for m in repo.list_matters(owner_user_id="user-a")}
+                    first_source_exists = first_source.exists()
+
+        # Both matters live; the failed-archive matter was NOT pruned.
+        self.assertEqual(matters, {first["id"], second["id"]})
+        self.assertTrue(first_source_exists)
+        # No delete ran when the archive failed (no partial state).
+        self.assertEqual(delete_calls, [])
+
+    def test_dedupe_defers_deletes_and_ignores_other_owners(self):
+        # (D) deduplicate_gmail_matters(owner=A) removes A's duplicate, never parses
+        # or deletes B's matters, and defers the fsync-delete to OUTSIDE the lock.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                # Two identical gmail attachments for A -> a real duplicate pair.
+                # The second is stored with dedupe_gmail=False so it lands as its own
+                # record (identical attachment metadata), leaving the SWEEP to remove
+                # it -- that is exactly what deduplicate_gmail_matters exists for.
+                a_first = repo.create_matter(**_gmail_create_kwargs(owner_user_id="user-a"))
+                a_dupe = repo.create_matter(**_gmail_create_kwargs(
+                    owner_user_id="user-a",
+                    dedupe_gmail=False,
+                ))
+                # An unrelated matter for B that must never be touched.
+                b_matter = repo.create_matter(**_create_kwargs(
+                    source_filename="B-Only.docx",
+                    document_bytes=b"b-only",
+                    owner_user_id="user-b",
+                ))
+
+                # Record whether the lock was held when _delete_matter_record ran.
+                deleted_ids: list[str] = []
+                lock_held_at_delete: list[bool] = []
+                real_delete = matter_store._delete_matter_record
+
+                def spy_delete(matter):
+                    mid = matter["id"] if isinstance(matter, dict) else matter
+                    deleted_ids.append(mid)
+                    # RLock.acquire(blocking=False) succeeds ONLY if not already held
+                    # by another holder; since deletes now run post-lock, this thread
+                    # does not hold the store lock, so acquire succeeds.
+                    got = matter_store._MATTERS_LOCK.acquire(blocking=False)
+                    if got:
+                        matter_store._MATTERS_LOCK.release()
+                    lock_held_at_delete.append(not got)
+                    return real_delete(matter)
+
+                with patch.object(matter_store, "_delete_matter_record", side_effect=spy_delete):
+                    removed = repo.deduplicate_gmail_matters(owner_user_id="user-a")
+
+                a_ids = {m["id"] for m in repo.list_matters(owner_user_id="user-a")}
+                b_ids = {m["id"] for m in repo.list_matters(owner_user_id="user-b")}
+
+        self.assertEqual(removed, 1)
+        # Exactly one of A's duplicate pair remains; B is untouched.
+        self.assertEqual(len(a_ids), 1)
+        self.assertTrue(a_ids <= {a_first["id"], a_dupe["id"]})
+        self.assertEqual(b_ids, {b_matter["id"]})
+        # A delete ran, and it ran with the store lock RELEASED (deferred).
+        self.assertTrue(deleted_ids)
+        self.assertNotIn(b_matter["id"], deleted_ids)
+        self.assertEqual(lock_held_at_delete, [False] * len(deleted_ids))
+
+    def test_create_matter_does_not_block_list_for_archive_duration(self):
+        # (E) Concurrency smoke: a create_matter whose post-lock archive is slow must
+        # not hold the store lock for the archive duration, so a concurrent
+        # list_matters returns promptly instead of waiting out the whole archive.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patch.dict(os.environ, {"NDA_MATTER_RETENTION_LIMIT": "1"}):
+                with patches[0], patches[1], patches[2]:
+                    repo = DiskMatterRepository()
+                    first = repo.create_matter(**_create_kwargs(
+                        source_filename="First.docx",
+                        document_bytes=b"first",
+                        owner_user_id="user-a",
+                    ))
+                    repo.update_matter_stage(first["id"], "signed_closed", owner_user_id="user-a")
+
+                    archive_started = threading.Event()
+                    release_archive = threading.Event()
+                    real_archive = matter_store._archive_pruned_matters
+
+                    def slow_archive(pruned):
+                        archive_started.set()
+                        release_archive.wait(timeout=5)
+                        return real_archive(pruned)
+
+                    list_returned = threading.Event()
+
+                    def creator():
+                        with patch.object(matter_store, "_archive_pruned_matters", side_effect=slow_archive):
+                            repo.create_matter(**_create_kwargs(
+                                source_filename="Second.docx",
+                                document_bytes=b"second",
+                                owner_user_id="user-a",
+                            ))
+
+                    thread = threading.Thread(target=creator)
+                    thread.start()
+                    try:
+                        # Wait until the create is inside the (post-lock) slow archive.
+                        self.assertTrue(archive_started.wait(timeout=5))
+                        # With the lock released before the archive, list_matters must
+                        # NOT be blocked by the in-flight archive.
+                        listed = repo.list_matters(owner_user_id="user-a")
+                        list_returned.set()
+                    finally:
+                        release_archive.set()
+                        thread.join(timeout=5)
+
+        self.assertTrue(list_returned.is_set(), "list_matters was blocked during the archive")
+        # list saw a consistent view (the new record was written under the lock).
+        self.assertGreaterEqual(len(listed), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

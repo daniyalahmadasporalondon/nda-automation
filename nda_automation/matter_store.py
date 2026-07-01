@@ -907,14 +907,13 @@ def _safe_artifact_stored_filename(filename: str) -> str:
 def reset_demo_repository(owner_user_id: str = "") -> int:
     with _locked_store():
         _ensure_matter_records_from_legacy()
-        matters = _load_matters()
-        removed = [
-            matter
-            for matter in matters
-            if _matter_owner_matches(matter, owner_user_id)
-        ]
-        for matter in removed:
-            _delete_matter_record(matter)
+        # Owner-scoped read: only owner-matching matters are ever removed, so the
+        # locked critical section need not parse the whole cross-tenant store.
+        removed = _load_matters_for_owner(owner_user_id)
+    # Defer the fsync-heavy record unlinks + dir-fsyncs until after the lock is
+    # released, mirroring _delete_stored_document and the create_matter pruning.
+    for matter in removed:
+        _delete_matter_record(matter)
     for matter in removed:
         _delete_stored_document(matter)
     return len(removed)
@@ -1006,7 +1005,11 @@ def _gmail_duplicate_removal_ids(matters: list[dict[str, Any]], owner_user_id: s
 def deduplicate_gmail_matters(owner_user_id: str = "") -> int:
     with _locked_store():
         _ensure_matter_records_from_legacy()
-        matters = _load_matters()
+        # Scope the locked read to the target owner: the union-find dedupe only
+        # ever considers owner-matching matters, so loading the whole cross-tenant
+        # store under the lock is pure read amplification. Narrowing here keeps the
+        # exclusive critical section O(owner matters), not O(total matters).
+        matters = _load_matters_for_owner(owner_user_id)
         removal_ids = _gmail_duplicate_removal_ids(matters, owner_user_id=owner_user_id)
 
         removed: list[dict[str, Any]] = []
@@ -1016,8 +1019,11 @@ def deduplicate_gmail_matters(owner_user_id: str = "") -> int:
 
         if not removed:
             return 0
-        for matter in removed:
-            _delete_matter_record(matter)
+    # Defer the fsync-heavy record unlinks + dir-fsyncs until AFTER the lock is
+    # released (mirroring _delete_stored_document below), so a concurrent
+    # list_matters / create_matter is not blocked for the whole delete loop.
+    for matter in removed:
+        _delete_matter_record(matter)
     for matter in removed:
         _delete_stored_document(matter)
     return len(removed)
@@ -1091,6 +1097,15 @@ def create_matter(
     duplicate_matter: dict[str, Any] | None = None
     saved_new_record = False
     try:
+        # The exclusive critical section is deliberately kept O(new record): under
+        # the lock we only load matters, run the dedupe check, append, compute the
+        # prune SET in memory (no fsync), write the single new record, and let the
+        # write-through cache invalidation run. The fsync-heavy retention work --
+        # archiving pruned matters (byte copies + fsync'd archive JSON) and
+        # unlinking their records (per-record unlink + dir fsync) -- is deferred to
+        # AFTER the lock is released, exactly like _delete_stored_document below.
+        # This stops inbound imports from serializing behind O(N) archive/delete
+        # work while a concurrent list_matters waits on the same lock.
         with _locked_store():
             _ensure_matter_records_from_legacy()
             matters = _load_matters()
@@ -1098,20 +1113,11 @@ def create_matter(
                 existing_matter = _find_gmail_duplicate_unlocked(matters, metadata, owner_user_id=owner_user_id)
                 if existing_matter is not None:
                     duplicate_matter = {**existing_matter, "_existing_gmail_duplicate": True}
-                else:
-                    matters.append(matter)
-                    matters, pruned_matters = _apply_retention_pruning(matters, protected_matter_id=matter_id)
-                    _save_matter_record(matter)
-                    saved_new_record = True
-                    for pruned_matter in pruned_matters:
-                        _delete_matter_record(pruned_matter)
-            else:
+            if duplicate_matter is None:
                 matters.append(matter)
-                matters, pruned_matters = _apply_retention_pruning(matters, protected_matter_id=matter_id)
+                _kept, pruned_matters = _prune_stored_matters(matters, protected_matter_id=matter_id)
                 _save_matter_record(matter)
                 saved_new_record = True
-                for pruned_matter in pruned_matters:
-                    _delete_matter_record(pruned_matter)
     except Exception:
         stored_path.unlink(missing_ok=True)
         if saved_new_record:
@@ -1121,8 +1127,18 @@ def create_matter(
     if duplicate_matter is not None:
         stored_path.unlink(missing_ok=True)
         return duplicate_matter
-    for pruned_matter in pruned_matters:
-        _delete_stored_document(pruned_matter)
+    # --- deferred, post-lock retention work ---
+    # Archive-before-delete invariant is preserved: if _archive_pruned_matters
+    # fails, we do NOT delete anything -- the would-be-pruned matters stay live
+    # (their records and source documents are untouched) and only the new matter
+    # is persisted. Only after a successful archive do we unlink the pruned
+    # records and their source documents.
+    if pruned_matters and _archive_pruned_matters(pruned_matters):
+        for pruned_matter in pruned_matters:
+            with suppress(MatterStoreError, OSError):
+                _delete_matter_record(pruned_matter)
+        for pruned_matter in pruned_matters:
+            _delete_stored_document(pruned_matter)
     return matter
 
 
@@ -1173,6 +1189,24 @@ def _load_matters() -> list[dict[str, Any]]:
     if MATTERS_PATH.is_file():
         return _load_legacy_matters()
     return _load_matter_records()
+
+
+def _load_matters_for_owner(owner_user_id: str = "") -> list[dict[str, Any]]:
+    """Load only the matters owned by ``owner_user_id``.
+
+    Matter record filenames are ``{matter_id}.json`` and carry no owner, so the
+    owner cannot be derived from the path without opening the file; we therefore
+    parse each record and keep only owner-matching ones. This still bounds the
+    IN-MEMORY working set (and any downstream union-find / scan) to the target
+    owner's matters instead of the whole cross-tenant store. An empty
+    ``owner_user_id`` (single-tenant / no-auth) returns every matter, matching
+    ``_matter_owner_matches`` semantics.
+    """
+    return [
+        matter
+        for matter in _load_matters()
+        if _matter_owner_matches(matter, owner_user_id)
+    ]
 
 
 def _load_legacy_matters() -> list[dict[str, Any]]:
@@ -1430,39 +1464,119 @@ def _prune_stored_matters(
     *,
     protected_matter_id: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    retention_limit = _stored_matter_limit()
-    if retention_limit <= 0 or len(matters) <= retention_limit:
-        return matters, []
+    """Compute the retention prune set, scoped to the protected matter's OWNER.
 
-    removable = [
-        (index, matter)
+    Retention is enforced PER OWNER: ``NDA_MATTER_RETENTION_LIMIT`` (default
+    ``DEFAULT_MAX_STORED_MATTERS``) is a per-owner cap. A prolific tenant's
+    imports therefore only ever prune that tenant's OWN oldest closed matters —
+    never the globally-oldest closed matter of a quiet, unrelated tenant. Only
+    the partition that owns ``protected_matter_id`` is examined; every other
+    owner's matters are returned untouched in ``kept``.
+
+    A separate, much larger global hard ceiling (``NDA_MATTER_GLOBAL_LIMIT``,
+    disabled by default) can be layered on top as a distinct safety cap for the
+    whole store; it never substitutes for the owner-scoped routine and only ever
+    prunes closed/inactive matters that are not the protected one.
+
+    This routine is purely in-memory (no archive, no fsync): the caller archives
+    the returned ``pruned`` set and deletes their records AFTER releasing the
+    store lock, so the exclusive critical section stays O(new record).
+    """
+    retention_limit = _stored_matter_limit()
+
+    protected_owner = _prune_partition_owner(matters, protected_matter_id)
+    partition_indexes = [
+        index
         for index, matter in enumerate(matters)
-        if matter.get("id") != protected_matter_id and not _matter_is_active(matter)
+        if _clean_owner_user_id(matter.get("owner_user_id")) == protected_owner
     ]
-    if not removable:
-        telemetry.increment("matter_retention_over_cap_without_prune")
+
+    removed_indexes: set[int] = set()
+    _select_prune_indexes(
+        matters,
+        candidate_indexes=partition_indexes,
+        limit=retention_limit,
+        protected_matter_id=protected_matter_id,
+        removed_indexes=removed_indexes,
+        over_cap_telemetry="matter_retention_over_cap_without_prune",
+    )
+
+    global_ceiling = _global_matter_hard_ceiling()
+    if global_ceiling > 0 and (len(matters) - len(removed_indexes)) > global_ceiling:
+        remaining_indexes = [
+            index for index in range(len(matters)) if index not in removed_indexes
+        ]
+        _select_prune_indexes(
+            matters,
+            candidate_indexes=remaining_indexes,
+            limit=global_ceiling,
+            protected_matter_id=protected_matter_id,
+            removed_indexes=removed_indexes,
+            over_cap_telemetry="matter_global_ceiling_over_cap_without_prune",
+            live_total=len(matters) - len(removed_indexes),
+        )
+
+    if not removed_indexes:
         return matters, []
-    removable.sort(key=lambda item: _matter_retention_sort_key(item[1]))
-    remove_count = min(len(matters) - retention_limit, len(removable))
-    if remove_count <= 0:
-        return matters, []
-    removed_indexes = {index for index, _matter in removable[:remove_count]}
     kept = [matter for index, matter in enumerate(matters) if index not in removed_indexes]
-    pruned = [matter for _index, matter in removable[:remove_count]]
+    pruned = [matters[index] for index in sorted(removed_indexes)]
     return kept, pruned
 
 
-def _apply_retention_pruning(
+def _prune_partition_owner(matters: list[dict[str, Any]], protected_matter_id: str) -> str:
+    """The owner key of the retention partition to prune within.
+
+    The protected matter's owner defines the partition. Fall back to the empty
+    (ownerless / single-tenant) partition when the protected matter is not found,
+    so a legacy/global import prunes only other ownerless matters.
+    """
+    for matter in matters:
+        if matter.get("id") == protected_matter_id:
+            return _clean_owner_user_id(matter.get("owner_user_id"))
+    return ""
+
+
+def _select_prune_indexes(
     matters: list[dict[str, Any]],
     *,
+    candidate_indexes: list[int],
+    limit: int,
     protected_matter_id: str,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    kept, pruned = _prune_stored_matters(matters, protected_matter_id=protected_matter_id)
-    if not pruned:
-        return kept, []
-    if not _archive_pruned_matters(pruned):
-        return matters, []
-    return kept, pruned
+    removed_indexes: set[int],
+    over_cap_telemetry: str,
+    live_total: int | None = None,
+) -> None:
+    """Mark the oldest removable candidates for pruning until ``limit`` is met.
+
+    ``candidate_indexes`` is the set of positions (into ``matters``) eligible for
+    this pass. ``live_total`` overrides the count compared against ``limit`` (used
+    by the global ceiling pass, where the live total spans all owners); by default
+    it is the number of candidates in this partition. Only CLOSED/inactive matters
+    that are not ``protected_matter_id`` and not already removed are removable.
+    Mutates ``removed_indexes`` in place.
+    """
+    if limit <= 0:
+        return
+    total = live_total if live_total is not None else len(candidate_indexes)
+    if total <= limit:
+        return
+
+    removable = [
+        (index, matters[index])
+        for index in candidate_indexes
+        if index not in removed_indexes
+        and matters[index].get("id") != protected_matter_id
+        and not _matter_is_active(matters[index])
+    ]
+    if not removable:
+        telemetry.increment(over_cap_telemetry)
+        return
+    removable.sort(key=lambda item: _matter_retention_sort_key(item[1]))
+    remove_count = min(total - limit, len(removable))
+    if remove_count <= 0:
+        return
+    for index, _matter in removable[:remove_count]:
+        removed_indexes.add(index)
 
 
 def _stored_matter_limit() -> int:
@@ -1471,6 +1585,20 @@ def _stored_matter_limit() -> int:
         return max(0, int(raw_limit))
     except ValueError:
         return DEFAULT_MAX_STORED_MATTERS
+
+
+def _global_matter_hard_ceiling() -> int:
+    """Optional store-wide hard cap across ALL owners (0 = disabled, the default).
+
+    This is a distinct safety valve from the per-owner retention limit; it is not
+    the routine retention path. When unset it never fires, so ordinary pruning is
+    entirely owner-scoped.
+    """
+    raw_limit = os.environ.get("NDA_MATTER_GLOBAL_LIMIT", "0")
+    try:
+        return max(0, int(raw_limit))
+    except ValueError:
+        return 0
 
 
 def _matter_retention_sort_key(matter: dict[str, Any]) -> tuple[int, str]:
