@@ -26,6 +26,8 @@ fully testable without HTTP or a live Drive.
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import threading
 from datetime import datetime, timezone
@@ -738,14 +740,33 @@ _CACHE_LOCK = threading.Lock()
 #                   "drive_orphans": [ {...} ]}
 _DRIVE_CACHE: dict[str, dict[str, Any]] = {}
 
+# --- per-owner app-state build cache --------------------------------------
+# The app-state pass (list_matters + per-matter facet/state build + the dup-document
+# fingerprint resolve) runs on EVERY Corpus/assistant request and is the request's
+# dominant cost at scale. It is a pure function of the owner's stored matters, so it
+# is cached keyed on (owner, records-fingerprint): a content hash over the owner's
+# matters (see _records_fingerprint). The fingerprint changes IFF any matter's content
+# changed, so an unchanged store serves the cached build and skips the rebuild; a
+# changed store misses and rebuilds. Values are stored PRE-group/wrap (the boundary
+# _build_app_state_matters returns at) because _group_and_wrap mutates matters in
+# place; each hit hands back a deep copy so the caller can mutate freely.
+#   owner_user_id -> {"fingerprint": str, "matters": {matter_id: {...}}}
+_APP_STATE_CACHE: dict[str, dict[str, Any]] = {}
+# Guard against a pathological unbounded-growth cache if this were ever driven with a
+# huge number of distinct owners in one process; the corpus is a per-request read so
+# a small cap is ample and keeps a single stale entry per owner, not per fingerprint.
+_APP_STATE_CACHE_MAX_OWNERS = 256
+
 
 def invalidate_cache(owner_user_id: str = "") -> None:
     """Drop the cached Drive listing for one owner, or the whole cache when empty."""
     with _CACHE_LOCK:
         if owner_user_id:
             _DRIVE_CACHE.pop(owner_user_id, None)
+            _APP_STATE_CACHE.pop(owner_user_id, None)
         else:
             _DRIVE_CACHE.clear()
+            _APP_STATE_CACHE.clear()
 
 
 class _DriveCrawlTimeout(Exception):
@@ -890,15 +911,87 @@ def _resolve_fingerprint(
     return fingerprint
 
 
+def _records_fingerprint(matters: list[dict[str, Any]]) -> str:
+    """A content change-signal over a matter list: sha256 of every matter's content.
+
+    Hashes each matter's canonical JSON (``sort_keys`` so field order is irrelevant),
+    then combines them in ``id`` order (so a pure list re-order never invalidates), so
+    the digest changes IFF the CONTENT any matter carries changed -- independent of
+    ``updated_at`` granularity or whether a given field-write happens to bump it. Used
+    to key the app-state build cache: a hit means "no matter the build reads has
+    changed since it was cached", so the cached build is still exactly correct. Hashing
+    already-in-memory data is far cheaper than the per-matter build it gates (workflow
+    state, facet derivation, artifact enumeration, fingerprint compute). Raises only if
+    a matter is not JSON-serializable, which the caller treats as a cache miss.
+    """
+    per_matter = sorted(
+        (
+            str(matter.get("id") or ""),
+            hashlib.sha256(
+                json.dumps(matter, sort_keys=True, default=str, ensure_ascii=False).encode("utf-8")
+            ).hexdigest(),
+        )
+        for matter in matters
+    )
+    digest = hashlib.sha256()
+    for matter_id, content_hash in per_matter:
+        # Length-prefix the id so two matters cannot pun across the id|hash boundary.
+        digest.update(f"{len(matter_id)}:{matter_id}|{content_hash}\n".encode("utf-8"))
+    return digest.hexdigest()
+
+
 def _build_app_state_matters(repository, owner_user_id: str) -> dict[str, dict[str, Any]]:
-    """Map matter_id -> a partially-built CorpusMatter from app-state."""
+    """Map matter_id -> a partially-built CorpusMatter for the owner (cache-fronted).
+
+    Reads the owner's matters once, then returns the cached build when the store is
+    unchanged since the last build (keyed on ``owner`` + a records-fingerprint over
+    the matters' content, see :func:`_records_fingerprint`), else rebuilds from the
+    fresh snapshot and caches it. The cached value is deep-copied on hand-back because
+    the downstream ``_group_and_wrap`` mutates matters in place. Fail-open: any hiccup
+    reading the cache or fingerprinting falls straight through to a full uncached
+    rebuild, so the payload can never be stale or wrong -- only recomputed.
+    """
+    matters = list(repository.list_matters(owner_user_id=owner_user_id))
+    try:
+        fingerprint = _records_fingerprint(matters)
+    except Exception:  # noqa: BLE001 -- fingerprint is an optimisation; degrade to uncached.
+        return _build_app_state_matters_from(repository, owner_user_id, matters)
+
+    with _CACHE_LOCK:
+        entry = _APP_STATE_CACHE.get(owner_user_id)
+        if entry is not None and entry.get("fingerprint") == fingerprint:
+            return copy.deepcopy(entry["matters"])
+
+    built = _build_app_state_matters_from(repository, owner_user_id, matters)
+
+    # Cache under the PRE-build fingerprint: on a cold store _resolve_fingerprint
+    # persists a lazily-computed content fingerprint onto matters, which changes their
+    # content and thus what the NEXT list_matters returns. Storing a POST-build
+    # fingerprint would key the entry under content the next read can never reproduce;
+    # keying on the pre-build snapshot means the first post-cold build simply misses
+    # again until the stored fingerprints settle (one extra rebuild), then stays warm.
+    # Never serve a stale build -- correctness over one extra rebuild.
+    with _CACHE_LOCK:
+        if len(_APP_STATE_CACHE) >= _APP_STATE_CACHE_MAX_OWNERS and owner_user_id not in _APP_STATE_CACHE:
+            _APP_STATE_CACHE.clear()  # simple bound; per-owner staleness, not per-fingerprint growth.
+        _APP_STATE_CACHE[owner_user_id] = {
+            "fingerprint": fingerprint,
+            "matters": copy.deepcopy(built),
+        }
+    return built
+
+
+def _build_app_state_matters_from(
+    repository, owner_user_id: str, source_matters: list[dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """Build the CorpusMatter map from an already-read matter snapshot (uncached)."""
     matters: dict[str, dict[str, Any]] = {}
     # Resolve the active playbook runtime ONCE per build and thread the constant
     # resolvers through every matter's workflow_state, instead of paying a
     # playbook.json flock+read+validate per matter in the approval-gate staleness
     # check.
     runtime_func, hash_func = _resolve_playbook_resolvers()
-    for matter in repository.list_matters(owner_user_id=owner_user_id):
+    for matter in source_matters:
         matter_id = str(matter.get("id") or "")
         if not matter_id:
             continue
@@ -1497,69 +1590,220 @@ def _is_duplicate_pair(
     return score
 
 
+# --- duplicate-document detection: candidate bucketing (scale) -------------
+#
+# Naive dup detection is an all-pairs O(n²) scan over every fingerprinted matter
+# (see _stamp_duplicate_document_full, retained as the authoritative fallback).
+# That is fine at hundreds of matters but goes quadratic at 10-20k, and it re-runs
+# uncached on every Corpus/assistant request. To keep the SAME flagged result while
+# only comparing PLAUSIBLE pairs, candidates are bucketed and each matter is scored
+# ONLY against the union of matters sharing one of its buckets:
+#
+# * Exact-dup  -- an exact match means identical ``exact`` sha256 (regardless of
+#   counterparty), so two candidates can be an exact-dup pair IFF they share an
+#   ``exact`` value. Bucketing on ``exact`` therefore never drops an exact pair.
+# * Near-dup   -- a near-dup requires SAME non-empty counterparty AND SimHash
+#   similarity >= NEAR_DUPLICATE_SIMILARITY_THRESHOLD (0.93), i.e. Hamming distance
+#   <= 4 over the 64-bit SimHash (1 - 4/64 = 0.9375 >= 0.93; 1 - 5/64 < 0.93). By the
+#   pigeonhole principle, two 64-bit values within Hamming distance 4 must agree
+#   EXACTLY on at least one of _SIMHASH_BANDS = 5 disjoint bit-bands (k differing
+#   bits cannot touch more than k of k+1 bands). Bucketing near candidates on
+#   (counterparty_key, band_index, band_bits) therefore co-locates every true
+#   near-dup pair in at least one bucket, so none is dropped.
+#
+# The reduced candidate set for a matter is a SUPERSET of its true matches, and the
+# exact same scoring (_is_duplicate_pair) + deterministic earliest-match tie-break
+# is applied over it, so the stamped result is byte-identical to the all-pairs path.
+# A matter that lands in no shared bucket has no possible match and is stamped None
+# without any comparison. Fail-open: any bucketing hiccup falls back to the full
+# all-pairs path (see _stamp_duplicate_document).
+
+# Number of disjoint SimHash bit-bands. Must be >= (max Hamming distance that still
+# passes the near-dup threshold) + 1 so two near-dup fingerprints are guaranteed to
+# share at least one bit-identical band. Threshold 0.93 => max Hamming 4 => 5 bands.
+_SIMHASH_BANDS = 5
+
+
+def _simhash_band_keys(simhash_value: int) -> tuple[int, ...]:
+    """The per-band (band_index, band_bits) fingerprints of a 64-bit SimHash.
+
+    Splits the 64 bits into ``_SIMHASH_BANDS`` disjoint contiguous bands (sizes
+    [13,13,13,13,12] for 5 bands) and returns one packed key per band. Two SimHashes
+    within Hamming distance 4 are guaranteed to share at least one of these keys
+    (pigeonhole), which is exactly the near-dup gate's bound, so bucketing on these
+    keys never drops a near-dup pair.
+    """
+    bits = content_fingerprint._SIMHASH_BITS  # noqa: SLF001 -- module-private constant reuse
+    base, rem = divmod(bits, _SIMHASH_BANDS)
+    keys: list[int] = []
+    offset = 0
+    for band_index in range(_SIMHASH_BANDS):
+        width = base + (1 if band_index < rem else 0)
+        band_bits = (simhash_value >> offset) & ((1 << width) - 1)
+        # Pack (band_index, band_bits) into one hashable int key; band_index in the
+        # high bits keeps band-0 bits from ever colliding with band-1 bits, etc.
+        keys.append((band_index << bits) | band_bits)
+        offset += width
+    return tuple(keys)
+
+
 def _stamp_duplicate_document(matters: list[dict[str, Any]]) -> int:
     """Stamp each matter's ``duplicate_document`` signal; return the flagged count.
 
     Resolves the cross-matter duplicate signal now the whole corpus is known (a
-    per-matter facet builder cannot see other matters). For every matter carrying a
-    fingerprint, find the OTHER matters it duplicates per :func:`_is_duplicate_pair`
-    (exact-dup = cross-counterparty sha256 ``==``; near-dup = SAME-counterparty SimHash
-    >= ``NEAR_DUPLICATE_SIMILARITY_THRESHOLD`` -- scalar only, NEVER a live text diff),
-    and point at a DETERMINISTIC match: the earliest other matter (by ``created_at``
-    then ``matter_id``), with its title + the similarity.
+    per-matter facet builder cannot see other matters). Produces the IDENTICAL result
+    to the all-pairs scan (:func:`_stamp_duplicate_document_full`) -- the earliest
+    deterministic match per matter -- but compares each matter only against the
+    matters sharing one of its dup buckets (see the module comment above), turning the
+    O(n²) all-pairs scan into an O(n · bucket-fanout) one that scales to 10-20k matters
+    and is safe to run per request. Fail-open: any hiccup building/using the buckets
+    reverts to the authoritative all-pairs path, so the flagged set can never change.
 
     "Same matter from app + Drive counts once": app+Drive records merge by matter_id
     into one corpus-matter BEFORE this runs, and matters sharing a matter_id are
     skipped as self-matches here, so a matter is never flagged a duplicate of itself.
-
-    Complexity note: this is O(n²) SCALAR comparisons over n fingerprinted matters
-    (each comparison is a hex ``==`` plus, on the same-counterparty near path, two
-    64-bit int ops), NOT an O(n²) text diff. The expensive work (extraction,
-    fingerprint compute) already happened once at cache time. The counterparty key is
-    normalized ONCE per candidate here (not per pair), so the gate adds no per-pair
-    cost beyond a string ``==``.
     """
-    # Only matters with a real fingerprint can match. Capture (index, matter, fp,
-    # normalized-counterparty-key). The key is computed ONCE per candidate (not per
-    # pair) so the same-counterparty gate stays a cheap scalar string compare inside
-    # the O(n²) loop.
+    try:
+        return _stamp_duplicate_document_bucketed(matters)
+    except Exception:  # noqa: BLE001 -- bucketing is an optimisation; never change the result.
+        return _stamp_duplicate_document_full(matters)
+
+
+def _dedup_sort_key(
+    item: tuple[int, dict[str, Any], dict[str, Any], str],
+) -> tuple[str, str, int]:
+    """Deterministic match-ordering key: (created_at, matter_id, corpus index).
+
+    The single ordering the earliest-match tie-break uses, shared by the bucketed
+    and full paths so both pick the byte-identical winner.
+    """
+    index, matter, _fp, _cp = item
+    return (str(matter.get("created_at") or ""), str(matter.get("matter_id") or ""), index)
+
+
+def _dedup_candidates(
+    matters: list[dict[str, Any]],
+) -> list[tuple[int, dict[str, Any], dict[str, Any], str]]:
+    """(index, matter, fingerprint, counterparty_key) for each fingerprinted matter.
+
+    Only matters carrying a valid fingerprint can match. The counterparty key is
+    normalized ONCE per candidate here (not per pair) so the same-counterparty near
+    gate stays a cheap scalar string compare.
+    """
     candidates: list[tuple[int, dict[str, Any], dict[str, Any], str]] = []
     for index, matter in enumerate(matters):
         fingerprint = matter.get(_FINGERPRINT_KEY)
         if content_fingerprint.is_valid_fingerprint(fingerprint):
             cp_key = _normalized_entity_key(str(matter.get("counterparty") or ""))
             candidates.append((index, matter, fingerprint, cp_key))
+    return candidates
 
-    def _sort_key(item: tuple[int, dict[str, Any], dict[str, Any], str]) -> tuple[str, str, int]:
-        index, matter, _fp, _cp = item
-        return (str(matter.get("created_at") or ""), str(matter.get("matter_id") or ""), index)
+
+def _stamp_best_match(
+    self_item: tuple[int, dict[str, Any], dict[str, Any], str],
+    others: list[tuple[int, dict[str, Any], dict[str, Any], str]],
+) -> bool:
+    """Score ``self`` against every candidate in ``others`` and stamp its dup signal.
+
+    Applies the SAME per-pair oracle (:func:`_is_duplicate_pair`) and deterministic
+    earliest-match tie-break (:func:`_dedup_sort_key`) the all-pairs path uses, over
+    whatever candidate list is supplied (the full list, or a bucket-reduced superset
+    of the true matches). Returns True when a match was stamped (for the flagged
+    count). ``others`` may include ``self``; the self-match is skipped by matter_id.
+    """
+    index, matter, fingerprint, self_key = self_item
+    self_id = str(matter.get("matter_id") or "") or f"__idx_{index}"
+    best_match: tuple[tuple[str, str, int], dict[str, Any], float] | None = None
+    for other_item in others:
+        other_index, other, other_fp, other_key = other_item
+        other_id = str(other.get("matter_id") or "") or f"__idx_{other_index}"
+        if other_id == self_id:
+            continue  # never a duplicate of itself (incl. the merged app+Drive record)
+        score = _is_duplicate_pair(fingerprint, self_key, other_fp, other_key)
+        if score is None:
+            continue
+        candidate_key = _dedup_sort_key(other_item)
+        if best_match is None or candidate_key < best_match[0]:
+            best_match = (candidate_key, other, score)
+    if best_match is None:
+        matter["duplicate_document"] = None
+        return False
+    _key, matched, score = best_match
+    matter["duplicate_document"] = {
+        "matched_matter_id": str(matched.get("matter_id") or ""),
+        "matched_title": str(matched.get("title") or "") or "NDA",
+        # Round to 4 dp so the stored similarity is stable/JSON-clean; the FE
+        # renders it as a percentage (e.g. 0.9231 -> "92% match").
+        "similarity": round(float(score), 4),
+    }
+    return True
+
+
+def _stamp_duplicate_document_full(matters: list[dict[str, Any]]) -> int:
+    """All-pairs O(n²) dup resolution -- the authoritative reference/fallback.
+
+    For every fingerprinted matter, scan EVERY other fingerprinted matter for the
+    earliest deterministic duplicate. Pure scalar work per pair (a hex ``==`` plus,
+    on the same-counterparty near path, an XOR+popcount) -- never a live text diff.
+    Kept as the correctness oracle the bucketed fast path must match byte-for-byte,
+    and as the fail-open path when bucketing hits any snag.
+    """
+    candidates = _dedup_candidates(matters)
+    count = 0
+    for self_item in candidates:
+        if _stamp_best_match(self_item, candidates):
+            count += 1
+    return count
+
+
+def _stamp_duplicate_document_bucketed(matters: list[dict[str, Any]]) -> int:
+    """Bucketed dup resolution: score each matter only against plausible candidates.
+
+    Builds two bucket indexes over the fingerprinted candidates and, for each matter,
+    unions the candidates sharing one of its buckets into a reduced set that is a
+    SUPERSET of its true matches (see the module comment for the pigeonhole proof),
+    then defers to :func:`_stamp_best_match` -- the SAME oracle + tie-break as the
+    all-pairs path -- so the stamped result is byte-identical. A matter with no shared
+    bucket is stamped None with zero comparisons.
+    """
+    candidates = _dedup_candidates(matters)
+    # Exact bucket: exact-sha256 -> candidate positions. Near bucket: per-band packed
+    # key, scoped to the counterparty, -> candidate positions. Positions index into
+    # ``candidates`` so a shared-bucket union can be de-duplicated cheaply.
+    exact_buckets: dict[str, list[int]] = {}
+    near_buckets: dict[tuple[str, int], list[int]] = {}
+    for position, (_index, _matter, fingerprint, cp_key) in enumerate(candidates):
+        exact_buckets.setdefault(str(fingerprint["exact"]), []).append(position)
+        # Near-dup only ever fires within a non-empty counterparty and needs a real
+        # SimHash; skip banding when either is absent (that matter can still exact-dup
+        # via the exact bucket, matching the full path's gating exactly).
+        if not cp_key:
+            continue
+        sim_value = content_fingerprint._coerce_simhash(  # noqa: SLF001 -- reuse the canonical coercion
+            fingerprint.get("simhash")
+        )
+        if sim_value is None:
+            continue
+        for band_key in _simhash_band_keys(sim_value):
+            near_buckets.setdefault((cp_key, band_key), []).append(position)
 
     count = 0
-    for index, matter, fingerprint, self_key in candidates:
-        self_id = str(matter.get("matter_id") or "") or f"__idx_{index}"
-        best_match: tuple[tuple[str, str, int], dict[str, Any], float] | None = None
-        for other_index, other, other_fp, other_key in candidates:
-            other_id = str(other.get("matter_id") or "") or f"__idx_{other_index}"
-            if other_id == self_id:
-                continue  # never a duplicate of itself (incl. the merged app+Drive record)
-            score = _is_duplicate_pair(fingerprint, self_key, other_fp, other_key)
-            if score is None:
-                continue
-            candidate_key = _sort_key((other_index, other, other_fp, other_key))
-            if best_match is None or candidate_key < best_match[0]:
-                best_match = (candidate_key, other, score)
-        if best_match is None:
-            matter["duplicate_document"] = None
-            continue
-        _key, matched, score = best_match
-        matter["duplicate_document"] = {
-            "matched_matter_id": str(matched.get("matter_id") or ""),
-            "matched_title": str(matched.get("title") or "") or "NDA",
-            # Round to 4 dp so the stored similarity is stable/JSON-clean; the FE
-            # renders it as a percentage (e.g. 0.9231 -> "92% match").
-            "similarity": round(float(score), 4),
-        }
-        count += 1
+    for self_position, self_item in enumerate(candidates):
+        _index, _matter, fingerprint, cp_key = self_item
+        # Union the positions sharing any of this matter's buckets. ``self`` is in its
+        # own buckets; _stamp_best_match skips the self-match by matter_id.
+        related: set[int] = set(exact_buckets.get(str(fingerprint["exact"]), ()))
+        if cp_key:
+            sim_value = content_fingerprint._coerce_simhash(  # noqa: SLF001
+                fingerprint.get("simhash")
+            )
+            if sim_value is not None:
+                for band_key in _simhash_band_keys(sim_value):
+                    related.update(near_buckets.get((cp_key, band_key), ()))
+        related.discard(self_position)
+        others = [candidates[pos] for pos in related]
+        if _stamp_best_match(self_item, others):
+            count += 1
     return count
 
 
