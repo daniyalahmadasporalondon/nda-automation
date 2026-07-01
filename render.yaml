@@ -158,6 +158,17 @@ services:
       # empty. Raise to drain faster at the cost of a larger per-poll burst.
       - key: NDA_GMAIL_IMPORT_LIMIT
         value: "20"
+      # Global per-poll ceiling on TOTAL heavy inbound imports across ALL connected
+      # users. Each user otherwise gets its own NDA_GMAIL_IMPORT_LIMIT budget, so N
+      # users could stack N x limit heavy downloads/extractions onto the single 2 GB
+      # worker in one poll. This cap bounds the cross-user SUM; leftover messages
+      # resume next poll via the persistent drain cursor, so nothing is dropped.
+      # Declared here at the code default (the single-user clamp = 40): a lone user
+      # is therefore never clamped by this ceiling and single-user behavior is
+      # unchanged. Raise for a faster multi-user drain at the cost of a larger
+      # per-poll burst on the worker.
+      - key: NDA_GMAIL_TOTAL_IMPORT_LIMIT
+        value: "40"
       # ADDITIVE table recovery for borderless 2-column signature/notice/term
       # blocks that the one-dimensional pypdf prose splitter flattens (e.g.
       # "Signature: Signature: / Name: Name:"). The code default is FALSE so local
@@ -172,7 +183,7 @@ services:
       # Requires the [tables] extra (installed by the Dockerfile); if camelot is
       # ever missing the feature no-ops with a clear log. Set "false" to disable.
       - key: NDA_TABLE_AUGMENTATION_ENABLED
-        value: "true"
+        value: "false"
       # Independent adversarial second-opinion verifier on OpenRouter. It uses a
       # different model family from the main reviewer on purpose.
       - key: NDA_AI_VERIFIER
