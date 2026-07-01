@@ -252,6 +252,30 @@ MAX_GMAIL_IMPORT_LIMIT = _gmail_import_limit_from_env()
 GMAIL_BODY_PREVIEW_LIMIT = 5000
 GMAIL_PROFILE_CACHE_SECONDS = 15 * 60
 
+# Bound every Google API round-trip with a socket deadline. Without this the
+# googleapiclient default transport (httplib2.Http() with timeout=None) can park
+# the single daemon poller thread forever on a hung Gmail backend, with no
+# self-recovery (server._set_gmail_sync_backoff only advances on an explicit
+# rate-limit error, never on a silent hang). A bounded deadline converts an
+# infinite hang into a normal socket.timeout the existing except-handlers catch.
+# The default sits comfortably above a normal list/get round-trip yet releases a
+# wedged thread well within one poll cadence.
+NDA_GOOGLE_API_TIMEOUT_ENV = "NDA_GOOGLE_API_TIMEOUT_SECONDS"
+_DEFAULT_GOOGLE_API_TIMEOUT_SECONDS = 30
+
+
+def _google_api_timeout_from_env() -> int:
+    raw = os.environ.get(NDA_GOOGLE_API_TIMEOUT_ENV, "")
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return _DEFAULT_GOOGLE_API_TIMEOUT_SECONDS
+    # A non-positive deadline would disable the bound (or hang); clamp to >=1s.
+    return max(value, 1)
+
+
+GMAIL_API_TIMEOUT_SECONDS = _google_api_timeout_from_env()
+
 ROLE_TOKEN_ENV = google_connection.ROLE_TOKEN_ENV
 ROLE_LOCAL_TOKEN_FILENAME = google_connection.ROLE_LOCAL_TOKEN_FILENAME
 GMAIL_OAUTH_REDIRECT_URI_ENV = "NDA_GMAIL_OAUTH_REDIRECT_URI"
@@ -705,7 +729,20 @@ def _gmail_service(role: str, owner_user_id: str = "") -> Any:
     except ImportError as exc:
         raise GmailIntegrationError("Google API packages are not installed.") from exc
     try:
-        return build("gmail", "v1", credentials=creds, cache_discovery=False)
+        # Bound the transport with a socket deadline so a hung Gmail backend can
+        # never wedge the poller thread forever. googleapiclient rejects passing
+        # BOTH credentials= and http=, so when we supply an authorized transport we
+        # drop the credentials= kwarg. If google_auth_httplib2 is unavailable, fall
+        # OPEN to the plain credentials-based build so service construction never
+        # breaks in environments lacking the transport lib (behavior unchanged).
+        try:
+            import httplib2
+            from google_auth_httplib2 import AuthorizedHttp
+
+            authed = AuthorizedHttp(creds, http=httplib2.Http(timeout=GMAIL_API_TIMEOUT_SECONDS))
+            return build("gmail", "v1", http=authed, cache_discovery=False)
+        except ImportError:
+            return build("gmail", "v1", credentials=creds, cache_discovery=False)
     except Exception as exc:
         raise GmailIntegrationError(f"Gmail {role} service could not start.") from exc
 

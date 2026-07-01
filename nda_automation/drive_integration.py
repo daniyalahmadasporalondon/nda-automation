@@ -50,6 +50,7 @@ from __future__ import annotations
 import hashlib
 from io import BytesIO
 import logging
+import os
 from typing import Any
 
 from . import artifact_registry, artifact_service, gmail_integration, google_connection
@@ -65,6 +66,25 @@ FOLDER_MIME = "application/vnd.google-apps.folder"
 DEFAULT_ROOT_FOLDER_NAME = "NDAs"
 METADATA_FOLDER_NAME = "metadata"
 MATTER_SUMMARY_FILENAME = "matter_summary.json"
+
+# Bound every Drive API round-trip with a socket deadline so a hung Drive backend
+# can never wedge the caller (e.g. the poller/request thread) forever. Mirrors the
+# Gmail client's transport bound; reads the same env knob but is redefined locally
+# to keep this file's dependency boundary disjoint from gmail_integration.
+NDA_GOOGLE_API_TIMEOUT_ENV = "NDA_GOOGLE_API_TIMEOUT_SECONDS"
+_DEFAULT_DRIVE_API_TIMEOUT_SECONDS = 30
+
+
+def _drive_api_timeout_from_env() -> int:
+    raw = os.environ.get(NDA_GOOGLE_API_TIMEOUT_ENV, "")
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return _DEFAULT_DRIVE_API_TIMEOUT_SECONDS
+    return max(value, 1)
+
+
+DRIVE_API_TIMEOUT_SECONDS = _drive_api_timeout_from_env()
 
 # Drive filenames use the chronological lifecycle grammar ``{NN}_{stage}[_v{N}]``.
 # The ``stage`` is derived from each artifact's ``(role, actor)`` pair by
@@ -107,7 +127,20 @@ def _drive_service(owner_user_id: str = "") -> Any:
     except ImportError as exc:
         raise DriveIntegrationError("Google API packages are not installed.") from exc
     try:
-        return build("drive", "v3", credentials=creds, cache_discovery=False)
+        # Bound the transport with a socket deadline so a hung Drive backend can
+        # never wedge the calling thread forever. googleapiclient rejects passing
+        # BOTH credentials= and http=, so when we supply an authorized transport we
+        # drop the credentials= kwarg. If google_auth_httplib2 is unavailable, fall
+        # OPEN to the plain credentials-based build so service construction never
+        # breaks in environments lacking the transport lib (behavior unchanged).
+        try:
+            import httplib2
+            from google_auth_httplib2 import AuthorizedHttp
+
+            authed = AuthorizedHttp(creds, http=httplib2.Http(timeout=DRIVE_API_TIMEOUT_SECONDS))
+            return build("drive", "v3", http=authed, cache_discovery=False)
+        except ImportError:
+            return build("drive", "v3", credentials=creds, cache_discovery=False)
     except Exception as exc:
         raise DriveIntegrationError("Drive service could not start.") from exc
 
