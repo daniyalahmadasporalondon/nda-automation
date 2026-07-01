@@ -1305,7 +1305,19 @@ def create_matter_from_document(
 ) -> dict[str, Any]:
     repository = repository or DiskMatterRepository()
     ensure_document_size(document_bytes)
-    document_type, extracted_paragraphs, extraction_quality = extract_document(filename, document_bytes)
+    # Skip the PDF visual profile (a second full PyMuPDF parse) on the SAME poll/inbound
+    # context that defers the PDF->DOCX conversion. defer_pdf_conversion is set True ONLY
+    # on the Gmail-poll ingest path (gmail_matter_inbox, mirroring defer_ai_review), so
+    # mirroring that exact signal keeps MANUAL uploads (defer_pdf_conversion=False)
+    # computing the profile at ingest -- unchanged. The profile only feeds source-fidelity
+    # preview signals, not AI review or redline (both anchor on paragraphs/indices), and it
+    # is recomputed on demand for the source preview, so the skip is fail-open. The kwarg is
+    # a no-op for DOCX uploads (no visual profile there).
+    document_type, extracted_paragraphs, extraction_quality = extract_document(
+        filename,
+        document_bytes,
+        include_visual_profile=not defer_pdf_conversion,
+    )
     extracted_text = extracted_text_from_paragraphs(extracted_paragraphs)
     # defer_ai_review DEFAULTS TO TRUE: a matter is created UN-REVIEWED and no review
     # runs at create. This is the storm-safe default -- NO caller can accidentally
@@ -2211,7 +2223,22 @@ def extract_document_paragraphs(filename: str, document_bytes: bytes) -> tuple[s
     return document_type, paragraphs
 
 
-def extract_document(filename: str, document_bytes: bytes) -> tuple[str, list[dict[str, Any]], dict[str, object] | None]:
+def extract_document(
+    filename: str,
+    document_bytes: bytes,
+    *,
+    include_visual_profile: bool = True,
+) -> tuple[str, list[dict[str, Any]], dict[str, object] | None]:
+    """Extract (document_type, review paragraphs, extraction quality) from a document.
+
+    ``include_visual_profile`` defaults to ``True`` to preserve EVERY existing caller
+    (manual upload, retro re-extraction, ``extract_document_paragraphs``). It is
+    forwarded ONLY to the PDF path -- the DOCX path has no visual profile, so the flag
+    is a no-op there. Pass ``False`` on the cost-sensitive Gmail-poll ingest path to
+    skip the visual profile's second full PyMuPDF parse (see
+    ``pdf_text.extract_pdf_document``); paragraphs and extracted text are byte-identical
+    either way, and the deferred profile is recomputed on demand for the source preview.
+    """
     lower_filename = filename.lower()
     if lower_filename.endswith(".docx"):
         paragraphs = extract_docx_paragraphs(document_bytes)
@@ -2222,7 +2249,9 @@ def extract_document(filename: str, document_bytes: bytes) -> tuple[str, list[di
         tracked_changes = detect_docx_tracked_changes(document_bytes)
         return "docx", paragraphs, tracked_changes
     if lower_filename.endswith(".pdf"):
-        extraction = extract_pdf_document(document_bytes)
+        extraction = extract_pdf_document(
+            document_bytes, include_visual_profile=include_visual_profile
+        )
         return "pdf", extraction.paragraphs, extraction.quality
     raise ValueError("Upload a .docx Word document or text-based PDF.")
 

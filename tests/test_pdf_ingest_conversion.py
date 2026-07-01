@@ -201,7 +201,11 @@ def test_ingest_pdf_persists_working_docx_and_rekeyed_paragraphs(monkeypatch):
 
     monkeypatch.setattr(
         ingestion_service, "extract_document",
-        lambda filename, document_bytes: ("pdf", _pypdf_paragraphs(), None),
+        lambda filename, document_bytes, *, include_visual_profile=True: (
+            "pdf",
+            _pypdf_paragraphs(),
+            None,
+        ),
     )
     # Route the conversion through the stub converter.
     real_convert = pdf_ingest_conversion.convert_pdf_matter_to_docx
@@ -239,7 +243,11 @@ def test_ingest_pdf_fails_open_when_conversion_unavailable(monkeypatch):
     repo = InMemoryMatterRepository()
     monkeypatch.setattr(
         ingestion_service, "extract_document",
-        lambda filename, document_bytes: ("pdf", _pypdf_paragraphs(), None),
+        lambda filename, document_bytes, *, include_visual_profile=True: (
+            "pdf",
+            _pypdf_paragraphs(),
+            None,
+        ),
     )
 
     def _boom(*_args, **_kwargs):
@@ -275,7 +283,11 @@ def test_ingest_artifact_failure_rolls_back_no_half_persist(monkeypatch):
     converter = _StubConverter(RECON_PARAGRAPHS)
     monkeypatch.setattr(
         ingestion_service, "extract_document",
-        lambda filename, document_bytes: ("pdf", _pypdf_paragraphs(), None),
+        lambda filename, document_bytes, *, include_visual_profile=True: (
+            "pdf",
+            _pypdf_paragraphs(),
+            None,
+        ),
     )
     real_convert = pdf_ingest_conversion.convert_pdf_matter_to_docx
     monkeypatch.setattr(
@@ -391,7 +403,11 @@ def test_ingest_pdf_empty_body_fails_open_no_working_artifact(monkeypatch):
     converter = _EmptyBodyConverter()
     monkeypatch.setattr(
         ingestion_service, "extract_document",
-        lambda filename, document_bytes: ("pdf", _pypdf_paragraphs(), None),
+        lambda filename, document_bytes, *, include_visual_profile=True: (
+            "pdf",
+            _pypdf_paragraphs(),
+            None,
+        ),
     )
     real_convert = pdf_ingest_conversion.convert_pdf_matter_to_docx
     monkeypatch.setattr(
@@ -483,7 +499,11 @@ def test_retro_convert_never_reviewed_pdf_reextracts_paragraphs_and_gains_workin
     monkeypatch.setattr(
         ingestion_service,
         "extract_document",
-        lambda filename, document_bytes: ("pdf", _pypdf_paragraphs(), None),
+        lambda filename, document_bytes, *, include_visual_profile=True: (
+            "pdf",
+            _pypdf_paragraphs(),
+            None,
+        ),
     )
     converter = _StubConverter(RECON_PARAGRAPHS)
     real_convert = pdf_ingest_conversion.convert_pdf_matter_to_docx
@@ -514,7 +534,7 @@ def test_retro_convert_never_reviewed_pdf_fail_open_when_reextraction_empty(monk
     monkeypatch.setattr(
         ingestion_service,
         "extract_document",
-        lambda filename, document_bytes: ("pdf", [], None),
+        lambda filename, document_bytes, *, include_visual_profile=True: ("pdf", [], None),
     )
 
     def _should_not_run(*_args, **_kwargs):
@@ -558,7 +578,11 @@ def test_on_demand_review_of_never_reviewed_pdf_yields_working_docx_in_same_pass
     monkeypatch.setattr(
         ingestion_service,
         "extract_document",
-        lambda filename, document_bytes: ("pdf", _pypdf_paragraphs(), None),
+        lambda filename, document_bytes, *, include_visual_profile=True: (
+            "pdf",
+            _pypdf_paragraphs(),
+            None,
+        ),
     )
     converter = _StubConverter(RECON_PARAGRAPHS)
     real_convert = pdf_ingest_conversion.convert_pdf_matter_to_docx
