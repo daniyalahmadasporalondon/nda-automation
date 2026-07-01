@@ -95,10 +95,18 @@ def _route_conversion_through_stub(monkeypatch, spy):
 
 
 def _stub_pdf_extraction(monkeypatch):
+    # NOTE: accepts the keyword-only ``include_visual_profile`` that
+    # create_matter_from_document now forwards (True on manual, False on the poll
+    # path). This stub returns fixed paragraphs regardless -- the visual-profile
+    # wiring itself is covered by tests/test_ingest_visual_profile_deferral.py.
     monkeypatch.setattr(
         ingestion_service,
         "extract_document",
-        lambda filename, document_bytes: ("pdf", _pypdf_paragraphs(), None),
+        lambda filename, document_bytes, *, include_visual_profile=True: (
+            "pdf",
+            _pypdf_paragraphs(),
+            None,
+        ),
     )
 
 
