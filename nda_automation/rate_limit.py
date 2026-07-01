@@ -24,18 +24,28 @@ RENDER_GET_BUCKET = "render-bytes"
 DEFAULT_RENDER_GET_RATE_LIMIT_PER_MINUTE = 240
 RENDER_GET_RATE_LIMIT_ENV = "NDA_RENDER_GET_RATE_LIMIT_PER_MINUTE"
 
-# AI-spend POST endpoints (review, second-opinion, draft-validation, generate,
+# Pure-AI-spend POST endpoints (second-opinion, draft-validation, generate,
 # dashboard-assistant) each drive synchronous Opus assessor+verifier / generation
 # passes on the single GIL-bound worker. Left on the shared 300/min default, one
 # authenticated identity (a buggy refresh loop or a malicious caller) could drive
 # up to 300 AI passes/min -- a cost-storm + starvation exposure this app has hit
 # before. They get their OWN configurable, tight per-caller cap: generous enough
-# for a normal interactive review burst (a real user triggers a handful of AI
-# reviews/min) while hard-bounding a runaway loop. Each bucket keeps its own
+# for a normal interactive burst (a real user triggers a handful of these/min)
+# while hard-bounding a runaway loop. Each bucket keeps its own
 # per-(client,bucket) counter; only the cap changes.
+#
+# NOTE: ``review`` (POST /api/review) is deliberately NOT in this set. It is
+# DUAL-USE: besides the explicit "Review with AI" click, the review-workstation
+# viewer re-POSTs /api/review with ``offline:true`` (deterministic clause
+# detection, NO AI spend) on a ~650ms debounce after every edit. An actively
+# editing user makes ~10+ of those a minute, so a 10/min (method, path) cap would
+# 429 live editing -- and the limiter throttles by (method, path) BEFORE the body
+# is parsed, so it cannot tell the offline poll from a real AI click. It
+# therefore stays on the general default (300/min), same as base main. The
+# residual on-demand-AI cost is user-gated, and the historical cost-storm vector
+# (the Gmail poll) is separately capped via NDA_GMAIL_TOTAL_IMPORT_LIMIT.
 AI_ENDPOINT_BUCKETS = frozenset(
     {
-        "review",
         "ai-second-opinion",
         "ai-draft-validation",
         "generate-nda",
