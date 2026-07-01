@@ -1287,6 +1287,183 @@ def _invalidate_list_cache() -> None:
         _list_cache_dir = None
 
 
+def _record_fingerprint_entry(record_path: Path) -> tuple[str, int, int] | None:
+    """The single ``(name, st_mtime_ns, st_size)`` fingerprint entry for one record.
+
+    Mirrors exactly the per-file tuple ``_records_dir_fingerprint`` builds, so an
+    entry produced here is byte-for-byte substitutable into the cached fingerprint.
+    Returns ``None`` when the file cannot be stat-ed (vanished / permission), which
+    the callers treat as "uncertain" and fall back to a full invalidation.
+    """
+    try:
+        stat = record_path.stat()
+    except OSError:
+        return None
+    return (record_path.name, stat.st_mtime_ns, stat.st_size)
+
+
+def _coherent_cache_update_after_write(matter: dict[str, Any]) -> None:
+    """Patch the ONE just-written matter into the cached list in place (G3).
+
+    ``_write_matter_record`` previously always dropped the whole cached
+    ``list_matters`` blob, so the very next ``list_matters`` (the 15s board poll,
+    notifications poll, corpus, assistant) suffered a full cache miss and re-opened
+    + re-parsed EVERY record file. Because we just wrote this record under the store
+    lock we know its exact new value, so we can update the cache entry for THIS
+    matter alone and advance the fingerprint entry for THIS file alone, leaving the
+    next ``list_matters`` a cache HIT (zero record re-parses) instead of an O(N)
+    reload.
+
+    Coherence is preserved by construction:
+
+    * EXTERNAL-CHANGE DETECTION IS UNTOUCHED. Only this file's fingerprint entry is
+      refreshed to its post-write stat; every other file keeps its prior stat entry.
+      ``_records_dir_fingerprint`` re-stats ALL files on the next read, so if another
+      process wrote a DIFFERENT record its stat won't match our carried-over entry ->
+      fingerprint mismatch -> full reload -> the external change is seen. The
+      incremental path only ever makes OUR OWN write a hit; it never suppresses
+      anyone else's write.
+    * FAIL-SAFE. On ANY uncertainty -- no live cache to patch, a directory mismatch,
+      the cached blob or fingerprint being an unexpected shape, the file's post-write
+      stat being unreadable, or any exception -- we fall back to a full
+      ``_invalidate_list_cache``. A wrong cache is data corruption; a dropped cache
+      is only a slower next read, so we always prefer the drop.
+
+    MUST be called under ``_locked_store()`` (as ``_write_matter_record`` is), so the
+    on-disk file and the fingerprint we snapshot describe the same committed write.
+    """
+    global _list_cache_fingerprint, _list_cache_blob, _list_cache_dir
+    try:
+        matter_id = _clean_matter_record_id(matter.get("id"))
+        if not matter_id:
+            _invalidate_list_cache()
+            return
+        # The legacy monolithic file is never cached (see _load_matters_cached); if
+        # it is present we are in the migration window -- just drop the cache.
+        if MATTERS_PATH.is_file():
+            _invalidate_list_cache()
+            return
+        record_path = _matter_records_dir() / f"{matter_id}.json"
+        new_entry = _record_fingerprint_entry(record_path)
+        if new_entry is None:
+            _invalidate_list_cache()
+            return
+        current_dir = str(_matter_records_dir())
+        # A JSON round-trip yields a fresh, fully-isolated dict -- the cached blob
+        # must never alias a live matter dict the caller may mutate afterwards.
+        patched_matter = json.loads(json.dumps(matter))
+        with _LIST_CACHE_LOCK:
+            if (
+                _list_cache_blob is None
+                or _list_cache_fingerprint is None
+                or _list_cache_dir != current_dir
+            ):
+                # No live, same-dir cache to patch: nothing to keep warm. Leave the
+                # cache dropped so the next read parses fresh.
+                _list_cache_fingerprint = None
+                _list_cache_blob = None
+                _list_cache_dir = None
+                return
+            cached_list = json.loads(_list_cache_blob)
+            if not isinstance(cached_list, list):
+                _list_cache_fingerprint = None
+                _list_cache_blob = None
+                _list_cache_dir = None
+                return
+            replaced = False
+            for index, existing in enumerate(cached_list):
+                if isinstance(existing, dict) and existing.get("id") == matter.get("id"):
+                    cached_list[index] = patched_matter
+                    replaced = True
+                    break
+            if not replaced:
+                # A create (new record). Append it; list_matters re-sorts by
+                # created_at per call, so cache order is not load-bearing.
+                cached_list.append(patched_matter)
+            # Rebuild the fingerprint: swap in THIS file's new entry (or add it for a
+            # create), carrying every other file's prior entry unchanged.
+            fingerprint_map = {
+                entry[0]: entry
+                for entry in _list_cache_fingerprint
+                if isinstance(entry, tuple) and len(entry) == 3
+            }
+            if len(fingerprint_map) != len(_list_cache_fingerprint):
+                # Unexpected fingerprint shape -- do not trust it; drop the cache.
+                _list_cache_fingerprint = None
+                _list_cache_blob = None
+                _list_cache_dir = None
+                return
+            fingerprint_map[new_entry[0]] = new_entry
+            _list_cache_blob = json.dumps(cached_list)
+            _list_cache_fingerprint = tuple(sorted(fingerprint_map.values()))
+            _list_cache_dir = current_dir
+    except Exception:  # noqa: BLE001 -- correctness beats the optimization; drop the cache.
+        _invalidate_list_cache()
+
+
+def _coherent_cache_update_after_delete(matter_id: str) -> None:
+    """Drop the ONE just-deleted matter from the cached list in place (G3).
+
+    The delete counterpart to ``_coherent_cache_update_after_write``: we removed
+    this record file under the store lock, so we drop its entry from both the cached
+    list and the cached fingerprint, leaving every other file's fingerprint entry in
+    place. External-change detection is preserved for the same reason as the write
+    path, and every uncertainty (the file still existing, an unexpected cache/
+    fingerprint shape, any exception) falls back to a full invalidation.
+
+    MUST be called under ``_locked_store()`` (as ``_delete_matter_record`` is).
+    """
+    global _list_cache_fingerprint, _list_cache_blob, _list_cache_dir
+    try:
+        cleaned_id = _clean_matter_record_id(matter_id)
+        if not cleaned_id:
+            _invalidate_list_cache()
+            return
+        if MATTERS_PATH.is_file():
+            _invalidate_list_cache()
+            return
+        record_path = _matter_records_dir() / f"{cleaned_id}.json"
+        record_name = record_path.name
+        # The record must be gone for the incremental drop to be sound. If it still
+        # exists (unlink was a no-op / raced), fall back so we never claim a delete
+        # the disk did not make.
+        if record_path.exists():
+            _invalidate_list_cache()
+            return
+        current_dir = str(_matter_records_dir())
+        with _LIST_CACHE_LOCK:
+            if (
+                _list_cache_blob is None
+                or _list_cache_fingerprint is None
+                or _list_cache_dir != current_dir
+            ):
+                _list_cache_fingerprint = None
+                _list_cache_blob = None
+                _list_cache_dir = None
+                return
+            cached_list = json.loads(_list_cache_blob)
+            if not isinstance(cached_list, list):
+                _list_cache_fingerprint = None
+                _list_cache_blob = None
+                _list_cache_dir = None
+                return
+            pruned_list = [
+                existing
+                for existing in cached_list
+                if not (isinstance(existing, dict) and existing.get("id") == cleaned_id)
+            ]
+            fingerprint = tuple(
+                entry
+                for entry in _list_cache_fingerprint
+                if not (isinstance(entry, tuple) and len(entry) == 3 and entry[0] == record_name)
+            )
+            _list_cache_blob = json.dumps(pruned_list)
+            _list_cache_fingerprint = fingerprint
+            _list_cache_dir = current_dir
+    except Exception:  # noqa: BLE001 -- correctness beats the optimization; drop the cache.
+        _invalidate_list_cache()
+
+
 def _load_matters_cached() -> list[dict[str, Any]]:
     """``_load_matters`` with an mtime/size-fingerprinted in-memory cache.
 
@@ -1372,9 +1549,15 @@ def _write_matter_record(matter: dict[str, Any]) -> None:
     if not matter_id:
         raise MatterStoreError("Matter record must include an id.")
     _write_json_atomic(_matter_records_dir() / f"{matter_id}.json", matter)
-    # Write-through cache invalidation: a record file changed, so the cached list
-    # (if any) is now stale. Runs while the store lock is held by the caller.
-    _invalidate_list_cache()
+    # Write-through cache maintenance: a record file changed. We just wrote this
+    # exact record under the store lock, so instead of dropping the whole cached
+    # list (which forces the next list_matters to re-parse EVERY record) we patch
+    # the single changed entry in place and advance only this file's fingerprint
+    # (G3). This preserves external-change detection -- every other file keeps its
+    # prior stat entry, so a concurrent write to a different record is still caught
+    # on the next read -- and falls back to a full invalidation on any uncertainty.
+    # Runs while the store lock is held by the caller.
+    _coherent_cache_update_after_write(matter)
 
 
 def _delete_matter_record(matter: dict[str, Any] | str) -> None:
@@ -1387,8 +1570,11 @@ def _delete_matter_record(matter: dict[str, Any] | str) -> None:
         _fsync_directory(record_path.parent)
     except OSError as exc:
         raise MatterStoreError("Matter record could not be deleted.") from exc
-    # Write-through cache invalidation: a record file was removed.
-    _invalidate_list_cache()
+    # Write-through cache maintenance: a record file was removed. We drop this one
+    # matter (and its fingerprint entry) from the cached list in place (G3) rather
+    # than blowing the whole cache away, keeping the next list_matters a hit. Falls
+    # back to a full invalidation on any uncertainty. Runs under the caller's lock.
+    _coherent_cache_update_after_delete(matter_id)
 
 
 def _ensure_matter_records_from_legacy() -> None:

@@ -1223,6 +1223,245 @@ class ListMattersCacheTests(unittest.TestCase):
                 self.assertNotEqual(second[0].get("review_result"), {"poisoned": True})
 
 
+class G3CoherentCacheUpdateTests(unittest.TestCase):
+    """G3 — an in-process write patches the cached list in place instead of
+    dropping it, so the next list_matters is a cache HIT (zero record re-parses),
+    while external writes and any uncertainty still force a full reload.
+    """
+
+    def setUp(self):
+        matter_store._invalidate_list_cache()
+        self.addCleanup(matter_store._invalidate_list_cache)
+
+    def matter_store_patches(self, data_dir: str):
+        root = Path(data_dir)
+        return (
+            patch.object(matter_store, "DATA_DIR", root),
+            patch.object(matter_store, "MATTERS_PATH", root / "matters.json"),
+            patch.object(matter_store, "UPLOADS_DIR", root / "uploads"),
+        )
+
+    def _count_reparses(self, fn):
+        """Run ``fn`` and return how many record files were opened+parsed."""
+        parse_calls = {"count": 0}
+        real_parse = matter_store._load_matter_record_path
+
+        def counting_parse(path):
+            parse_calls["count"] += 1
+            return real_parse(path)
+
+        with patch.object(matter_store, "_load_matter_record_path", side_effect=counting_parse):
+            result = fn()
+        return result, parse_calls["count"]
+
+    def test_field_update_keeps_cache_warm_no_reload(self):
+        # (a) coherence: after an in-process update, the next list_matters returns
+        # the new value WITHOUT re-parsing any record file (the incremental patch
+        # made it a hit, not a full reload).
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                for index in range(6):
+                    repo.create_matter(**_create_kwargs(
+                        source_filename=f"NDA {index}.docx",
+                        document_bytes=f"bytes-{index}".encode(),
+                    ))
+                target = repo.create_matter(**_create_kwargs(
+                    source_filename="Target.docx", document_bytes=b"target"
+                ))
+
+                # Prime the cache (this parses; that's fine).
+                primed = repo.list_matters()
+                self.assertEqual(len(primed), 7)
+
+                # An in-process field update.
+                repo.update_matter_fields(target["id"], {"last_outbound_subject": "PATCHED"})
+
+                # The very next list_matters must re-parse ZERO record files and yet
+                # reflect the new value: the cache was patched in place, not dropped.
+                (after, reparses) = self._count_reparses(repo.list_matters)
+                self.assertEqual(
+                    reparses,
+                    0,
+                    "an in-process update forced a full record re-parse instead of an "
+                    "incremental cache patch (G3 optimization did not fire)",
+                )
+                observed = next(m for m in after if m["id"] == target["id"])
+                self.assertEqual(observed.get("last_outbound_subject"), "PATCHED")
+
+    def test_create_keeps_cache_warm_no_reload(self):
+        # A create appends into the warm cache: the next list_matters includes the
+        # new matter with zero record re-parses.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                repo.create_matter(**_create_kwargs(source_filename="First.docx"))
+                primed = repo.list_matters()
+                self.assertEqual(len(primed), 1)
+
+                created = repo.create_matter(**_create_kwargs(
+                    source_filename="Second.docx", document_bytes=b"second"
+                ))
+                (after, reparses) = self._count_reparses(repo.list_matters)
+                self.assertEqual(reparses, 0, "a create dropped the cache instead of appending")
+                self.assertEqual(len(after), 2)
+                self.assertIn(created["id"], {m["id"] for m in after})
+
+    def test_delete_keeps_cache_warm_no_reload(self):
+        # A delete drops the one matter from the warm cache: the next list_matters
+        # omits it with zero record re-parses.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                keep = repo.create_matter(**_create_kwargs(source_filename="Keep.docx"))
+                drop = repo.create_matter(**_create_kwargs(
+                    source_filename="Drop.docx", document_bytes=b"drop"
+                ))
+                primed = repo.list_matters()
+                self.assertEqual(len(primed), 2)
+
+                repo.delete_matter(drop["id"])
+                (after, reparses) = self._count_reparses(repo.list_matters)
+                self.assertEqual(reparses, 0, "a delete dropped the cache instead of pruning it")
+                self.assertEqual({m["id"] for m in after}, {keep["id"]})
+
+    def test_external_write_to_other_record_still_reloads(self):
+        # (b) external-write safety: our own write keeps the cache warm, but an
+        # EXTERNAL write to a DIFFERENT record (another process) must still be
+        # caught -- the next read reloads and sees the external change, never serving
+        # the patched-but-stale cache.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                mine = repo.create_matter(**_create_kwargs(source_filename="Mine.docx"))
+                other = repo.create_matter(**_create_kwargs(
+                    source_filename="Other.docx", document_bytes=b"other"
+                ))
+                repo.list_matters()  # prime
+
+                # Our own in-process write (patches the cache in place).
+                repo.update_matter_fields(mine["id"], {"last_outbound_subject": "MINE"})
+
+                # An EXTERNAL process rewrites the OTHER record out-of-band and bumps
+                # its mtime past coarse-resolution granularity.
+                other_path = matter_store._matter_records_dir() / f"{other['id']}.json"
+                payload = json.loads(other_path.read_text(encoding="utf-8"))
+                payload["last_outbound_subject"] = "EXTERNAL"
+                other_path.write_text(json.dumps(payload), encoding="utf-8")
+                stat = other_path.stat()
+                os.utime(other_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+
+                # The next read MUST reload (fingerprint mismatch on the other file)
+                # and reflect BOTH the external edit and our own patch.
+                (after, reparses) = self._count_reparses(repo.list_matters)
+                self.assertGreater(
+                    reparses,
+                    0,
+                    "an external write to another record was NOT caught -- the stale "
+                    "patched cache was served (lost external write)",
+                )
+                by_id = {m["id"]: m for m in after}
+                self.assertEqual(by_id[other["id"]].get("last_outbound_subject"), "EXTERNAL")
+                self.assertEqual(by_id[mine["id"]].get("last_outbound_subject"), "MINE")
+
+    def test_external_write_to_same_record_still_reloads(self):
+        # Even a same-RECORD external overwrite after our write is caught: the file's
+        # post-external stat differs from the fingerprint entry we snapshotted, so
+        # the next read reloads and serves the external bytes, not our patch.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                created = repo.create_matter(**_create_kwargs(source_filename="Same.docx"))
+                repo.list_matters()  # prime
+
+                # Our own write patches the cache.
+                repo.update_matter_fields(created["id"], {"last_outbound_subject": "OURS"})
+
+                # External overwrite of the SAME record with different content.
+                record_path = matter_store._matter_records_dir() / f"{created['id']}.json"
+                payload = json.loads(record_path.read_text(encoding="utf-8"))
+                payload["last_outbound_subject"] = "EXTERNAL-SAME"
+                record_path.write_text(json.dumps(payload), encoding="utf-8")
+                stat = record_path.stat()
+                os.utime(record_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+
+                refreshed = repo.list_matters()
+                self.assertEqual(
+                    refreshed[0].get("last_outbound_subject"),
+                    "EXTERNAL-SAME",
+                    "a same-record external overwrite was served stale from the patched cache",
+                )
+
+    def test_malformed_cache_blob_falls_back_to_full_reload(self):
+        # (c) fail-safe: if the cached blob is an unexpected shape when a write
+        # patches it, the write must fall back to a full invalidation, and the next
+        # read must reload from disk and be correct (never serve corruption).
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                created = repo.create_matter(**_create_kwargs(source_filename="Fs.docx"))
+                repo.list_matters()  # prime the cache
+
+                # Corrupt the in-memory cache blob to an unexpected (non-list) shape.
+                matter_store._list_cache_blob = json.dumps({"not": "a list"})
+
+                # A write with a malformed cache present must not raise and must not
+                # trust the bad blob -- it falls back to invalidation.
+                repo.update_matter_fields(created["id"], {"last_outbound_subject": "SAFE"})
+                self.assertIsNone(
+                    matter_store._list_cache_blob,
+                    "a malformed cache blob was not dropped on write (fail-safe skipped)",
+                )
+
+                # The next read reloads from disk and is correct.
+                after = repo.list_matters()
+                self.assertEqual(after[0].get("last_outbound_subject"), "SAFE")
+
+    def test_write_stat_failure_falls_back_to_invalidation(self):
+        # If the just-written record's stat cannot be read (uncertain fingerprint),
+        # the write falls back to a full invalidation rather than caching an entry
+        # it cannot fingerprint.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                created = repo.create_matter(**_create_kwargs(source_filename="Stat.docx"))
+                repo.list_matters()  # prime
+
+                # Force the post-write fingerprint stat to be unreadable.
+                with patch.object(matter_store, "_record_fingerprint_entry", return_value=None):
+                    repo.update_matter_fields(created["id"], {"last_outbound_subject": "Z"})
+
+                self.assertIsNone(
+                    matter_store._list_cache_blob,
+                    "an unreadable post-write stat did not fall back to invalidation",
+                )
+                # And the store is still coherent on the next (uncached) read.
+                after = repo.list_matters()
+                self.assertEqual(after[0].get("last_outbound_subject"), "Z")
+
+    def test_patched_cache_is_isolated_from_caller_mutation(self):
+        # The incrementally-patched entry must be a fresh dict, not an alias of the
+        # live matter -- a caller mutating a returned matter cannot corrupt the cache.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                created = repo.create_matter(**_create_kwargs(source_filename="Iso2.docx"))
+                repo.list_matters()  # prime
+                repo.update_matter_fields(created["id"], {"last_outbound_subject": "A"})
+                first = repo.list_matters()
+                first[0]["review_result"] = {"poisoned": True}
+                second = repo.list_matters()
+                self.assertNotEqual(second[0].get("review_result"), {"poisoned": True})
+
+
 class MatterStoreRetentionFairnessTests(unittest.TestCase):
     """Retention + lock-contention fairness on the SHIPPED disk store.
 
