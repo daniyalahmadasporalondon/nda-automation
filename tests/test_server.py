@@ -514,7 +514,9 @@ class ServerTests(unittest.TestCase):
             delete_status, delete_payload = self.request("DELETE", "/api/matters/matter_missing")
 
         self.assertEqual(health_status, 200)
-        self.assertEqual(health_payload, {"status": "ok"})
+        # /healthz is now a load-aware, pre-auth probe: still 200 "ok" under low
+        # load, but the payload carries in-memory load numbers alongside status.
+        self.assertEqual(health_payload["status"], "ok")
         self.assertEqual(matter_status, 503)
         self.assertEqual(matter_payload["error"], server_module.AUTH_NOT_CONFIGURED_MESSAGE)
         self.assertEqual(matter_detail_status, 503)
@@ -11327,7 +11329,10 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("details", payload)
         self.assertNotEqual(headers.get("Content-Type"), DOCX_MIME)
         self.assertEqual(saved_files, [])
-        mocked_print.assert_called_once_with("DOCX export health check failed: 1 issue(s)")
+        # The health-check diagnostic must be printed. (The per-request latency
+        # log line is now an additional expected print, so match by call rather
+        # than asserting print was the ONLY thing emitted.)
+        mocked_print.assert_any_call("DOCX export health check failed: 1 issue(s)")
         self.assertEqual(telemetry.snapshot()["counters"]["docx_export_health_failures"], 1)
 
     def test_review_docx_export_rejects_text_that_differs_from_reviewed_text(self):
