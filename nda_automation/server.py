@@ -132,9 +132,13 @@ def _http_request_timeout_seconds() -> int:
         return 120
 
 
-# /healthz degradation bounds. queue cap is 256 (ingestion_service
+# /readyz degradation bounds. queue cap is 256 (ingestion_service
 # _INBOUND_REVIEW_QUEUE_MAXSIZE); 200 leaves headroom before the queue is full.
-HEALTHZ_QUEUE_DEGRADED_DEPTH = 200
+# NB: this governs /readyz (readiness) ONLY. /healthz is pure liveness and never
+# returns 503 on load, so Render's deploy gate (healthCheckPath: /healthz) is
+# never tripped by transient load -- a fix can always be promoted, even when the
+# box is hot. /readyz carries the load/degraded signal for load-balancer / ops.
+READYZ_QUEUE_DEGRADED_DEPTH = 200
 # Per-request latency line above this (ms) is additionally logged at WARN.
 SLOW_REQUEST_WARN_MS = 5000
 
@@ -458,6 +462,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if path == "/healthz":
             self._send_healthz(send_body=send_body)
             return
+        if path == "/readyz":
+            self._send_readyz(send_body=send_body)
+            return
         if not self._authorize_host(send_body=send_body):
             return
         public_handler = _PUBLIC_GET_EXACT_ROUTES.get(path)
@@ -547,49 +554,92 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return
         self._send_json({"error": "Not found"}, status=404, send_body=send_body)
 
-    def _send_healthz(self, *, send_body: bool) -> None:
-        """Cheap, unauthenticated, in-memory-only liveness + load probe.
+    def _read_load_probe(self) -> tuple[int | None, float | None, int | None, float]:
+        """Read the cheap, in-memory-only load counters used by /healthz+/readyz.
 
-        Reads only in-memory counters (no store I/O): the inbound review queue
-        depth, process memory used-fraction, and in-flight generation count.
-        Returns 503 {"status":"degraded", ...} when the queue is backed up past
-        HEALTHZ_QUEUE_DEGRADED_DEPTH or memory pressure crosses the deployment
-        warn fraction; otherwise 200 {"status":"ok", ...}. Every probe read is
-        guarded so a probe bug can never take /healthz down (fail-open to the
-        static ok payload). Helpers are imported lazily to avoid import cycles.
+        Returns ``(queue_depth, used_fraction, generation_in_flight,
+        warn_fraction)``. Reads only in-memory counters (no store I/O): the
+        inbound review queue depth, process memory used-fraction, and in-flight
+        generation count, plus the deployment memory warn fraction. Every probe
+        read is individually guarded (a missing/broken probe yields ``None`` for
+        that field, never an exception) and all helpers are imported lazily to
+        avoid import cycles.
+        """
+        queue_depth: int | None = None
+        used_fraction: float | None = None
+        generation_in_flight: int | None = None
+        warn_fraction = 0.85
+        try:
+            from . import ingestion_service
+
+            queue_depth = int(ingestion_service._INBOUND_REVIEW_POOL.queue_depth())
+        except Exception:
+            queue_depth = None
+        try:
+            from . import process_memory
+
+            raw_fraction = process_memory.memory_usage().get("used_fraction")
+            used_fraction = float(raw_fraction) if raw_fraction is not None else None
+        except Exception:
+            used_fraction = None
+        try:
+            from . import generation_priority
+
+            generation_in_flight = int(generation_priority.active_generation_count())
+        except Exception:
+            generation_in_flight = None
+        try:
+            from . import deployment
+
+            warn_fraction = deployment.MEMORY_HEADROOM_WARN_FRACTION
+        except Exception:
+            warn_fraction = 0.85
+        return queue_depth, used_fraction, generation_in_flight, warn_fraction
+
+    def _send_healthz(self, *, send_body: bool) -> None:
+        """Cheap, unauthenticated, in-memory-only LIVENESS probe.
+
+        ALWAYS returns 200 {"status":"ok", ...} whenever the process is alive.
+        It carries the same in-memory load fields as /readyz (queue depth,
+        memory used-fraction, in-flight generation count) purely for info, but
+        it NEVER returns 503 on load. This is deliberate: render.yaml points
+        Render's deploy gate at healthCheckPath: /healthz, and Render refuses to
+        promote a new instance whose health check is failing -- so if /healthz
+        went 503 under load, you could not ship a fix precisely when the box is
+        loaded. Readiness/degraded lives on /readyz instead. Every probe read is
+        guarded and helpers are imported lazily to avoid import cycles.
         """
         try:
-            queue_depth = None
-            used_fraction = None
-            generation_in_flight = None
-            try:
-                from . import ingestion_service
+            queue_depth, used_fraction, generation_in_flight, _ = self._read_load_probe()
+            payload: dict[str, object] = {
+                "status": "ok",
+                "queue_depth": queue_depth,
+                "used_fraction": used_fraction,
+                "generation_in_flight": generation_in_flight,
+            }
+            self._send_json(payload, status=200, send_body=send_body)
+        except Exception:  # fail-open: a probe bug must never take liveness down
+            self._send_json({"status": "ok"}, send_body=send_body)
 
-                queue_depth = int(ingestion_service._INBOUND_REVIEW_POOL.queue_depth())
-            except Exception:
-                queue_depth = None
-            try:
-                from . import process_memory
+    def _send_readyz(self, *, send_body: bool) -> None:
+        """Cheap, unauthenticated, in-memory-only READINESS probe.
 
-                raw_fraction = process_memory.memory_usage().get("used_fraction")
-                used_fraction = float(raw_fraction) if raw_fraction is not None else None
-            except Exception:
-                used_fraction = None
-            try:
-                from . import generation_priority
-
-                generation_in_flight = int(generation_priority.active_generation_count())
-            except Exception:
-                generation_in_flight = None
-            try:
-                from . import deployment
-
-                warn_fraction = deployment.MEMORY_HEADROOM_WARN_FRACTION
-            except Exception:
-                warn_fraction = 0.85
+        Returns 503 {"status":"degraded", ...} when the inbound review queue is
+        backed up past READYZ_QUEUE_DEGRADED_DEPTH or process memory pressure
+        crosses the deployment warn fraction; otherwise 200 {"status":"ok", ...}.
+        This is the load/readiness signal (for load balancers / ops), kept OFF
+        the deploy-gating /healthz path so transient load can't block a deploy.
+        Every probe read is guarded so a probe bug can never take /readyz down
+        (fail-open to a static ok/200). Helpers are imported lazily to avoid
+        import cycles.
+        """
+        try:
+            queue_depth, used_fraction, generation_in_flight, warn_fraction = (
+                self._read_load_probe()
+            )
 
             degraded = False
-            if queue_depth is not None and queue_depth > HEALTHZ_QUEUE_DEGRADED_DEPTH:
+            if queue_depth is not None and queue_depth > READYZ_QUEUE_DEGRADED_DEPTH:
                 degraded = True
             if used_fraction is not None and used_fraction >= warn_fraction:
                 degraded = True
@@ -602,7 +652,7 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             }
             status = 503 if degraded else 200
             self._send_json(payload, status=status, send_body=send_body)
-        except Exception:  # fail-open: a probe bug must never take healthz down
+        except Exception:  # fail-open: a probe bug must never take readyz down
             self._send_json({"status": "ok"}, send_body=send_body)
 
     def do_POST(self) -> None:
@@ -697,6 +747,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": str(error)}, status=500)
 
     def do_DELETE(self) -> None:
+        self._time_request("DELETE", self._handle_delete)
+
+    def _handle_delete(self) -> None:
         path = urlparse(self.path).path
         if not self._authorize_host():
             return
