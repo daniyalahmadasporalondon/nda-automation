@@ -24,6 +24,27 @@ RENDER_GET_BUCKET = "render-bytes"
 DEFAULT_RENDER_GET_RATE_LIMIT_PER_MINUTE = 240
 RENDER_GET_RATE_LIMIT_ENV = "NDA_RENDER_GET_RATE_LIMIT_PER_MINUTE"
 
+# AI-spend POST endpoints (review, second-opinion, draft-validation, generate,
+# dashboard-assistant) each drive synchronous Opus assessor+verifier / generation
+# passes on the single GIL-bound worker. Left on the shared 300/min default, one
+# authenticated identity (a buggy refresh loop or a malicious caller) could drive
+# up to 300 AI passes/min -- a cost-storm + starvation exposure this app has hit
+# before. They get their OWN configurable, tight per-caller cap: generous enough
+# for a normal interactive review burst (a real user triggers a handful of AI
+# reviews/min) while hard-bounding a runaway loop. Each bucket keeps its own
+# per-(client,bucket) counter; only the cap changes.
+AI_ENDPOINT_BUCKETS = frozenset(
+    {
+        "review",
+        "ai-second-opinion",
+        "ai-draft-validation",
+        "generate-nda",
+        "dashboard-assistant",
+    }
+)
+DEFAULT_AI_ENDPOINT_RATE_LIMIT_PER_MINUTE = 10
+AI_ENDPOINT_RATE_LIMIT_ENV = "NDA_AI_ENDPOINT_RATE_LIMIT_PER_MINUTE"
+
 _RATE_LIMIT_LOCK = threading.Lock()
 _RATE_LIMIT_BUCKETS: dict[tuple[str, str], tuple[float, int]] = {}
 
@@ -155,10 +176,15 @@ def _rate_limit_per_window_for_bucket(bucket_name: str) -> int:
     Most buckets share the global NDA_RATE_LIMIT_PER_MINUTE cap. The byte/render
     GET bucket has its OWN configurable cap (NDA_RENDER_GET_RATE_LIMIT_PER_MINUTE)
     so the expensive render routes can be throttled independently of (and more
-    generously than) the general API, without breaking an interactive review.
+    generously than) the general API, without breaking an interactive review. The
+    AI-spend POST buckets share their OWN tight cap
+    (NDA_AI_ENDPOINT_RATE_LIMIT_PER_MINUTE) so a runaway loop or malicious caller
+    cannot drive an unbounded synchronous-AI cost storm on the single worker.
     """
     if bucket_name == RENDER_GET_BUCKET:
         return _render_get_rate_limit_per_window()
+    if bucket_name in AI_ENDPOINT_BUCKETS:
+        return _ai_endpoint_rate_limit_per_window()
     return _rate_limit_per_window()
 
 
@@ -174,6 +200,20 @@ def _render_get_rate_limit_per_window() -> int:
         )
     except ValueError:
         return DEFAULT_RENDER_GET_RATE_LIMIT_PER_MINUTE
+
+
+def _ai_endpoint_rate_limit_per_window() -> int:
+    try:
+        return max(
+            0,
+            int(
+                os.environ.get(
+                    AI_ENDPOINT_RATE_LIMIT_ENV, str(DEFAULT_AI_ENDPOINT_RATE_LIMIT_PER_MINUTE)
+                )
+            ),
+        )
+    except ValueError:
+        return DEFAULT_AI_ENDPOINT_RATE_LIMIT_PER_MINUTE
 
 
 def _rate_limit_per_window() -> int:
