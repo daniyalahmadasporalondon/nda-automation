@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import re
 from io import BytesIO
+from unittest.mock import patch
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from nda_automation import docx_package_renderer
+from nda_automation.docx_export import SourceRedlinePackage
 from nda_automation.docx_text import extract_docx_paragraphs
 from nda_automation.docx_xml import _escape_xml
 from nda_automation.redline_actions import REDLINE_REPLACE_PARAGRAPH
@@ -33,21 +36,80 @@ def test_source_redline_renderer_returns_validated_package_result():
 
 
 def test_source_redline_renderer_reports_content_validation_errors():
+    # Behavior change (commit 44bf3fef, "Fix reviewed-DOCX coverage gate false-reject on
+    # counterparty-redlined NDAs"): when the raw source bytes are available -- which they
+    # always are through render_source_redline_package -- verify_export_content_coverage
+    # now builds the EXPECTED accepted-paragraph sequence from the source docx's OWN
+    # accepted view, not from the expected_source_text string. That string is no longer the
+    # sequence authority (it only feeds the length-ratio floor). This test predated that
+    # refactor and used to force a mismatch by passing a REVERSED expected_source_text; that
+    # trick is now (correctly) ignored, so it stopped detecting anything.
+    #
+    # The gate's fail-closed contract is intact, so this asserts it against a REAL
+    # divergence: the renderer builds a faithful export from the source, so to exercise the
+    # content gate we patch the build seam to physically reorder the exported paragraphs
+    # (health-valid, same char count so the ratio floor passes). The renderer must surface
+    # the accepted-change-sequence content error and mark the package invalid -- proving a
+    # reordered/misplaced/dropped redline cannot ship.
     source_docx = _source_docx(["First source paragraph.", "Second source paragraph."])
     paragraphs = extract_docx_paragraphs(source_docx)
     review_result = {"paragraphs": paragraphs, "redline_edits": []}
+    expected_source_text = "\n\n".join(paragraph["text"] for paragraph in paragraphs)
 
-    result = docx_package_renderer.render_source_redline_package(
-        source_docx,
-        review_result,
-        expected_source_text="\n\n".join(paragraph["text"] for paragraph in reversed(paragraphs)),
-        expected_redline_edits=[],
-    )
+    real_builder = docx_package_renderer.build_source_redline_docx
+
+    def reordering_builder(source_docx_arg, rr, **kwargs):
+        package = real_builder(source_docx_arg, rr, **kwargs)
+        data = package.data if isinstance(package, SourceRedlinePackage) else package
+        return SourceRedlinePackage(
+            data=_reorder_body_paragraphs(data), anchor_uncertain_redlines=[]
+        )
+
+    with patch.object(
+        docx_package_renderer,
+        "build_source_redline_docx",
+        side_effect=reordering_builder,
+    ):
+        result = docx_package_renderer.render_source_redline_package(
+            source_docx,
+            review_result,
+            expected_source_text=expected_source_text,
+            expected_redline_edits=[],
+        )
 
     assert result.health_errors == []
     assert result.content_errors
     assert "accepted-change paragraph sequence" in result.content_errors[0]
     assert result.valid is False
+
+
+def _reorder_body_paragraphs(docx_bytes: bytes) -> bytes:
+    """Reverse the order of the body <w:p> paragraphs while preserving every other
+    package part (rels/content-types/sectPr) so the result stays HEALTH-valid but
+    CONTENT-diverged. Isolates the content-coverage sequence check from the open-health
+    check (health is verified first and short-circuits coverage)."""
+    with ZipFile(BytesIO(docx_bytes)) as archive:
+        parts = {name: archive.read(name) for name in archive.namelist()}
+    document = parts["word/document.xml"].decode("utf-8")
+    body = re.search(r"(<w:body>)(.*)(</w:body>)", document, re.S)
+    assert body is not None, "rendered DOCX has no w:body"
+    inner = body.group(2)
+    body_paragraphs = re.findall(r"<w:p\b.*?</w:p>", inner, re.S)
+    sect = re.search(r"<w:sectPr\b.*?</w:sectPr>", inner, re.S)
+    new_inner = "".join(reversed(body_paragraphs)) + (sect.group(0) if sect else "")
+    new_document = (
+        document[: body.start()]
+        + body.group(1)
+        + new_inner
+        + body.group(3)
+        + document[body.end() :]
+    )
+    parts["word/document.xml"] = new_document.encode("utf-8")
+    output = BytesIO()
+    with ZipFile(output, "w", ZIP_DEFLATED) as archive:
+        for name, data in parts.items():
+            archive.writestr(name, data)
+    return output.getvalue()
 
 
 def _review_result(paragraphs: list[dict]) -> dict:
