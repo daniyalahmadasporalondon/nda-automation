@@ -652,9 +652,12 @@ def _clause_threshold_for_ai(clause: Mapping[str, Any]) -> dict[str, Any] | None
     Currently only ``term_and_survival`` carries a numeric cap (``max_term_years``). The
     derived prose already states it ("up to five (5) years"); this surfaces the SAME cap
     as a machine-explicit structured field — ``{"limit": 5, "unit": "years",
-    "direction": "max", "inclusive": true}`` — so the integer reaches a weaker model
-    without it having to parse the number back out of the sentence. ``inclusive`` is true
-    because the cap is "up to N years" (N years is allowed; longer than N fails).
+    "limit_months": 60, "direction": "max", "inclusive": true}`` — so the integer reaches
+    a weaker model without it having to parse the number back out of the sentence.
+    ``limit_months`` is the SAME cap expressed in months (limit * 12) so a document that
+    states its term in months can be compared directly against the cap, without the model
+    having to convert. ``inclusive`` is true because the cap is "up to N years" (N years
+    is allowed; longer than N fails).
     """
     clause_id = str(clause.get("id") or "")
     if clause_id != "term_and_survival":
@@ -665,6 +668,7 @@ def _clause_threshold_for_ai(clause: Mapping[str, Any]) -> dict[str, Any] | None
     return {
         "limit": limit,
         "unit": "years",
+        "limit_months": limit * 12,
         "direction": "max",
         "inclusive": True,
     }
@@ -854,19 +858,26 @@ def _normalize_term_survival_clause(clause: dict[str, Any]) -> None:
     # numeral (e.g. "five (5) years") so the cap is uniformly salient to a weaker model
     # across the configurable 1-25 range, rather than reaching it as a spelled phrase only.
     cap_label = _year_count_label(max_years, parenthetical=True)
+    # ...and the SAME cap in months (max_years * 12, derived — never hardcoded), so a
+    # document that states its term in months ("24 months", "60 months") reads against
+    # the cap with the month framing already visible in the prose the model is handed,
+    # instead of the model having to convert years<->months itself.
+    cap_months = max_years * 12
+    cap_month_gloss = f"{cap_months} months"
 
     clause["requirement"] = (
         "The NDA term and ordinary confidentiality survival must be fixed at up to "
-        f"{cap_label}."
+        f"{cap_label} ({cap_month_gloss})."
     )
     clause["preferred_position"] = (
         "Ordinary confidentiality obligations survive for a fixed period of up to "
-        f"{cap_label}. Narrow trade-secret, legal/regulatory, and data-protection obligations may survive "
-        "for as long as the protected status or law requires."
+        f"{cap_label} ({cap_month_gloss}). Narrow trade-secret, legal/regulatory, and data-protection obligations "
+        "may survive for as long as the protected status or law requires."
     )
     clause["check_trigger"] = (
         "Ordinary confidentiality is perpetual, indefinite, relationship-based, tied to information remaining "
-        f"confidential, longer than {cap_label}, or missing a clear fixed term or survival period."
+        f"confidential, longer than {cap_label} (i.e., more than {cap_month_gloss}), or missing a clear fixed "
+        "term or survival period."
     )
     clause["acceptable_language"] = (
         "The confidentiality obligations survive for a fixed period of up to "

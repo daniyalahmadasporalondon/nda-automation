@@ -368,6 +368,11 @@ class PlaybookRulesTests(unittest.TestCase):
         self.assertIn("three (3) years", term_rules["rules"]["acceptable_position"])
         self.assertIn("three (3) years", term_rules["rules"]["pass_conditions"][0]["description"])
         self.assertIn("longer than three (3) years", term_rules["rules"]["fail_conditions"][1]["description"])
+        # Month equivalence is derived (cap * 12 = 36 months) and rides alongside the
+        # year prose so a document stated in months is compared with the framing visible.
+        self.assertIn("(36 months)", term_rules["requirement"])
+        self.assertIn("(36 months)", term_rules["preferred_position"])
+        self.assertIn("more than 36 months", term_rules["check_trigger"])
 
     def test_ai_packet_carries_structured_term_threshold(self):
         """FIX 3: the term cap reaches the model as STRUCTURED data, not prose only.
@@ -385,7 +390,13 @@ class PlaybookRulesTests(unittest.TestCase):
 
         self.assertEqual(
             term_rules["threshold"],
-            {"limit": 7, "unit": "years", "direction": "max", "inclusive": True},
+            {
+                "limit": 7,
+                "unit": "years",
+                "limit_months": 84,
+                "direction": "max",
+                "inclusive": True,
+            },
         )
         # The prose form must remain alongside the structured field (both, not either).
         self.assertIn("seven (7) years", term_rules["requirement"])
@@ -395,6 +406,31 @@ class PlaybookRulesTests(unittest.TestCase):
             clause for clause in packet["clauses"] if clause["clause_id"] == "governing_law"
         )
         self.assertNotIn("threshold", govlaw_rules)
+
+    def test_ai_packet_term_carries_month_equivalence(self):
+        """Term-review lever #2: the month framing reaches the model.
+
+        The default 5-year cap is surfaced to the model with its month equivalent both
+        as prose ("(60 months)" / "more than 60 months") in the derived requirement /
+        preferred_position / check_trigger, AND as a derived ``limit_months`` on the
+        structured threshold. This lets a document that states its term in months
+        ("24 months", "60 months") be compared against the cap with the month framing
+        already visible, instead of the model having to convert years<->months itself.
+        """
+        packet = playbook_rules_for_ai(deepcopy(load_playbook()))
+        term_rules = next(
+            clause for clause in packet["clauses"] if clause["clause_id"] == "term_and_survival"
+        )
+        # Prose month gloss on the default cap (5 years -> 60 months).
+        self.assertIn("(60 months)", term_rules["requirement"])
+        self.assertIn("(60 months)", term_rules["preferred_position"])
+        self.assertIn("more than 60 months", term_rules["check_trigger"])
+        # Structured month equivalent alongside the year cap, DERIVED as limit * 12.
+        self.assertEqual(term_rules["threshold"]["limit_months"], 60)
+        self.assertEqual(
+            term_rules["threshold"]["limit_months"],
+            term_rules["threshold"]["limit"] * 12,
+        )
 
     # ---------- Sweep: item A (governing-law forum split) ----------
     def test_governing_law_has_forum_alignment_fail_condition(self):

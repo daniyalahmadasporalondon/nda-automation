@@ -477,10 +477,10 @@
     {
       "id": "term_and_survival",
       "name": "Term and Survival",
-      "requirement": "The NDA term and ordinary confidentiality survival must be fixed at up to five years.",
+      "requirement": "The NDA term and ordinary confidentiality survival must be fixed at up to five years (60 months).",
       "type": "required",
-      "preferred_position": "Ordinary confidentiality obligations survive for a fixed period of up to five years. Narrow trade-secret, legal/regulatory, and data-protection obligations may survive for as long as the protected status or law requires.",
-      "check_trigger": "Ordinary confidentiality is perpetual, indefinite, relationship-based, tied to information remaining confidential, longer than five years, or missing a clear fixed term or survival period.",
+      "preferred_position": "Ordinary confidentiality obligations survive for a fixed period of up to five years (60 months). Narrow trade-secret, legal/regulatory, and data-protection obligations may survive for as long as the protected status or law requires.",
+      "check_trigger": "Ordinary confidentiality is perpetual, indefinite, relationship-based, tied to information remaining confidential, longer than five years (i.e., more than 60 months), or missing a clear fixed term or survival period.",
       "max_term_years": 5,
       "redline_template": "The confidentiality obligations survive for a fixed period of up to {max_term_years_label}, except that trade secrets, legally required confidentiality, and personal data protected by data-protection law survive for as long as the protected status or law requires.",
       "search_terms": [

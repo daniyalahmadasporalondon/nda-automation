@@ -123,6 +123,21 @@ def test_clean_playbook_lints_clean() -> None:
     assert lint_playbook(_clean_playbook()) == []
 
 
+def test_shipped_playbook_lints_clean_with_term_month_equivalence() -> None:
+    """The shipped playbook.json still lints clean after the term month-gloss edit,
+    and its stored term_and_survival prose carries the month equivalence (lever #2)."""
+    shipped = load_playbook()
+    assert lint_playbook(shipped) == []
+
+    term = next(c for c in shipped["clauses"] if c["id"] == "term_and_survival")
+    # The cap number is unchanged; only the month framing was added to the prose.
+    assert term["max_term_years"] == 5
+    assert "60 months" in term["requirement"]
+    assert "more than 60 months" in term["check_trigger"]
+    # The term-cap fix's indefinite_terms front-inserts must remain intact.
+    assert term["indefinite_terms"][:2] == ["whichever is later", "whichever is the later"]
+
+
 def test_lint_violation_default_severity_is_error() -> None:
     v = LintViolation("c", "decision_space_coverage", "msg")
     assert v.severity == "error"

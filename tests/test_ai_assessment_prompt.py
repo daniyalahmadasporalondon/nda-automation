@@ -77,6 +77,39 @@ class AIAssessmentPromptTests(unittest.TestCase):
         self.assertIn("rules", non_circumvention)
         self.assertIn("review_triggers", non_circumvention["rules"])
 
+    def test_live_packet_term_carries_cap_number_and_month_conversion(self):
+        """Term-review lever #2, on the LIVE (assess_nda_with_ai) packet path.
+
+        ``build_ai_assessment_packet`` is the packet json.dumps'd verbatim into the live
+        prompt. It must hand the model the numeric cap (5 years / 60 months) as
+        structured ``threshold`` data AND state the month conversion in the derived
+        requirement/check_trigger prose, so a term stated in months is compared against
+        the cap without the model having to convert. It must NOT inject any
+        document-detected term into this scored packet (that would collapse the
+        independent AI vote into a deterministic echo).
+        """
+        packet = build_ai_assessment_packet(SOURCE_TEXT, playbook=load_playbook())
+        term = next(
+            clause for clause in packet["playbook"]["clauses"]
+            if clause["clause_id"] == "term_and_survival"
+        )
+        # Numeric cap as structured data, in BOTH years and months.
+        self.assertEqual(term["threshold"]["limit"], 5)
+        self.assertEqual(term["threshold"]["limit_months"], 60)
+        self.assertEqual(term["threshold"]["direction"], "max")
+        # Month conversion is stated in the prose the model reads.
+        self.assertIn("60 months", term["requirement"])
+        self.assertIn("more than 60 months", term["check_trigger"])
+        # The whole packet is serialized into the prompt; the month framing survives it.
+        serialized = json.dumps(packet, ensure_ascii=False)
+        self.assertIn("60 months", serialized)
+        self.assertIn('"limit_months":60', serialized.replace(" ", ""))
+        # ADDITIVE-ONLY guard: no document-detected term is injected into the scored
+        # per-clause packet (independence preserved; arbiter stays authoritative).
+        self.assertNotIn("detected_term", term)
+        self.assertNotIn("detected_term_years", term)
+        self.assertNotIn("detected_term_months", term)
+
     def test_packet_instructions_cover_missing_absent_and_verdict_choices(self):
         packet = build_ai_assessment_packet(SOURCE_TEXT, playbook=load_playbook())
         instructions = " ".join(packet["instructions"])
