@@ -214,6 +214,13 @@ def handle_review_docx_export(handler) -> None:
     # path (routes/approval.py): set X-Export-Verified to the reconstruction marker
     # when present, and merge the reconstruction headers (X-PDF-DOCX-Reconstruction)
     # through so the client can show the honest "best-effort from PDF" message.
+    #
+    # X-Export-Verified is a FORMAT/coverage signal (the export is a track-changes Word
+    # package / a best-effort PDF reconstruction) -- it is NOT an AI-review claim, so it is
+    # unchanged here. The separate X-Export-Deterministic-Only marker (set by the export
+    # service on the no-matter direct-upload / bare-text paths, merged through below) is
+    # what honestly signals "no AI review backed this redline", so the client never mistakes
+    # a deterministic-only redline for the AI Review-tab result.
     headers = {
         "X-Export-Verified": (
             redline_export.headers.get("X-PDF-DOCX-Reconstruction")
