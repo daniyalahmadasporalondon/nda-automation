@@ -618,6 +618,64 @@ class ApprovalEndpointTests(unittest.TestCase):
         self.assertEqual(stored["status"], "approved")
         self.assertIsNone(latest_artifact_for_role(stored, ROLE_REVIEWED))
 
+    def test_reverting_edit_after_approval_reverts_to_reapproval_and_wont_sign_stale(self):
+        # P1 (stale-after-reversal), end-to-end through the real approve + decision
+        # routes: approve an EDITED matter (mints a role=reviewed artifact baking in
+        # c1's redline), then REVERSE c1 post-approval. The matter must un-clear (back
+        # to in_review, approved_at cleared), and the now-no-edits matter must NEVER
+        # resolve the stale reviewed artifact for signing.
+        from nda_automation import artifact_service, docusign_workflow
+        from nda_automation.artifact_registry import ROLE_REVIEWED, latest_artifact_for_role
+        from nda_automation.matter_repository import DiskMatterRepository
+
+        matter_id, flagged = self._seed_matter(resolve_all=True, with_redline=True)
+        clause_id = flagged[0]
+
+        # Approve. Stub the builder so the synthetic redline registers a reviewed
+        # artifact (the real content-coverage gate rejects this test-only redline;
+        # that gate is exercised elsewhere).
+        def fake_build(mid, payload=None, *, persist=False, repository=None, owner_user_id=""):
+            data = b"PK\x03\x04stale-reviewed-with-c1-redline"
+            if persist:
+                artifact_service.register_reviewed_docx(
+                    mid, data, repository=repository, owner_user_id=owner_user_id
+                )
+            return RedlineExport(data=data, filename="mutual-nda-redlined.docx")
+
+        with patch.object(redline_export_service, "build_matter_redline", side_effect=fake_build):
+            approve_status, _, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
+        self.assertEqual(approve_status, 200)
+        approved = matter_store.get_matter(matter_id)
+        self.assertEqual(approved["status"], "approved")
+        self.assertIsNotNone(latest_artifact_for_role(approved, ROLE_REVIEWED))
+
+        # Reviewer REVERSES c1 (reject) after approval.
+        rev_status, _rev_payload, _ = self.request(
+            "POST",
+            f"/api/matters/{matter_id}/clauses/{clause_id}/decision",
+            {"action": "reject"},
+        )
+        self.assertEqual(rev_status, 200)
+
+        # Un-cleared: forced back to in_review, approval stamps cleared.
+        reverted = matter_store.get_matter(matter_id)
+        self.assertEqual(reverted["status"], "in_review")
+        self.assertFalse(reverted.get("approved_at"))
+        self.assertFalse(reverted.get("human_reviewed"))
+        self.assertFalse(docusign_workflow.matter_cleared_for_signature(reverted))
+        # An approval_reset event was recorded.
+        self.assertTrue(
+            any(e.get("type") == "approval_reset" for e in reverted.get("matter_timeline", []))
+        )
+
+        # BACKSTOP: even resolving the signable doc directly (no-edits branch) must
+        # NOT return the stale reviewed artifact — it falls through to the source.
+        self.assertFalse(docusign_workflow._matter_has_reviewer_edits(reverted))
+        data, _filename = docusign_workflow._resolve_signable_document(
+            reverted, matter_id, "", DiskMatterRepository()
+        )
+        self.assertNotIn(b"stale-reviewed-with-c1-redline", data)
+
     # --- reviewed-docx -----------------------------------------------------
     def test_reviewed_docx_preview_serves_reviewed_but_unapproved_without_registering(self):
         # A reviewed-but-unapproved matter (status "in_review", review_result

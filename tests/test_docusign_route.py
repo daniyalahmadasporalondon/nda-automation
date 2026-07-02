@@ -407,6 +407,82 @@ def test_send_for_signature_owner_mismatch_is_404_noop(repo, connected, fake_cli
     assert docusign_routes.docusign_workflow.SIGNATURE_FIELD not in stored
 
 
+def _matter_edited_human_reviewed_blank_source(repo, *, owner=OWNER):
+    """An EDITED matter cleared via the board 'mark reviewed' path (human_reviewed)
+    whose source text is BLANK. The board path (set_reviewed) applies no coverage
+    pre-flight, so this shape can reach send with a reviewed doc that could not be
+    coverage-verified (the docx_health gate is skipped without expected source text).
+    """
+    matter = repo.create_matter(
+        source_filename="acme-nda.docx",
+        document_bytes=b"original",
+        extracted_text="",  # BLANK -> content-coverage gate would be skipped
+        review_result={"redline_edits": [{"id": "r1", "clause_id": "c1", "paragraph_id": "p1", "action": "replace_paragraph"}]},
+        triage={},
+        owner_user_id=owner,
+        intake_metadata={"reply_to": "cp@acme.com", "sender": "cp@acme.com", "subject": "Acme NDA"},
+    )
+    matter_id = matter["id"]
+    # An accepted decision on c1 => the matter HAS edits (needs a reviewed doc).
+    repo.set_clause_reviewer_decision(
+        matter_id, "c1", {"action": "accept", "actor": "reviewer"}, owner_user_id=owner
+    )
+    # Board 'mark reviewed' clears for signature with NO coverage check.
+    repo.update_matter_fields(matter_id, {"human_reviewed": True}, owner_user_id=owner)
+    return matter_id
+
+
+def test_send_blocks_edited_matter_with_unverifiable_blank_source_409(repo, connected, fake_client):
+    """P2 (coverage-gate symmetry): an EDITED + human_reviewed matter with BLANK
+    extracted_text is refused at the SEND path — the same guard the approval route
+    applies — so a coverage-UNVERIFIED reviewed doc can never be signed via the
+    board 'mark reviewed' clear-for-signature route. No envelope is created."""
+    matter_id = _matter_edited_human_reviewed_blank_source(repo)
+    # Sanity: it IS cleared for signature (board path) and DOES carry edits.
+    stored = repo.get_matter(matter_id, owner_user_id=OWNER)
+    assert docusign_routes.docusign_workflow.matter_cleared_for_signature(stored) is True
+    assert docusign_routes.docusign_workflow._matter_has_reviewer_edits(stored) is True
+
+    handler = _FakeHandler(repo, payload={})
+    docusign_routes.handle_send_for_signature(handler, f"/api/matters/{matter_id}/send-for-signature")
+
+    assert handler.status == 409
+    assert "content coverage" in handler.response["error"]
+    # Fail-closed: no envelope was ever created.
+    stored = repo.get_matter(matter_id, owner_user_id=OWNER)
+    assert docusign_routes.docusign_workflow.SIGNATURE_FIELD not in stored
+
+
+def test_send_allows_no_edits_matter_with_blank_source(repo, connected, fake_client):
+    """The P2 guard is scoped to EDITED matters: a NO-edits matter (nothing to
+    redline) signs the original and has no coverage concern, so a blank source text
+    must NOT block it."""
+    matter = repo.create_matter(
+        source_filename="acme-nda.docx",
+        document_bytes=b"original",
+        extracted_text="",  # blank, but no edits => original is signed, no coverage gate
+        review_result={},
+        triage={},
+        owner_user_id=OWNER,
+        intake_metadata={"reply_to": "cp@acme.com", "sender": "cp@acme.com", "subject": "Acme NDA"},
+    )
+    matter_id = matter["id"]
+    artifact_service.add_artifact(
+        matter_id,
+        source=SOURCE_GENERATED,
+        actor=ACTOR_HUMAN,
+        role=ROLE_REVIEWED,
+        document_bytes=PDF_BYTES,
+        repository=repo,
+        owner_user_id=OWNER,
+    )
+    repo.update_matter_fields(matter_id, {"human_reviewed": True}, owner_user_id=OWNER)
+    handler = _FakeHandler(repo, payload={})
+    docusign_routes.handle_send_for_signature(handler, f"/api/matters/{matter_id}/send-for-signature")
+    assert handler.status == 201
+    assert handler.response["envelope_id"]
+
+
 def test_send_for_signature_not_connected_is_409(repo, monkeypatch):
     matter_id = _matter_with_reviewed(repo)
     # get_client raises NotConnected (no token for this owner).

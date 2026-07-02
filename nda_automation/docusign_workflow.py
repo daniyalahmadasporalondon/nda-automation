@@ -566,9 +566,17 @@ def _resolve_signable_document(
             "Refresh the review (or use the marked-up source PDF) before sending."
         )
 
-    # No edits: the original/generated document is faithful. Walk precedence.
+    # No edits: the original/generated document is faithful. Walk precedence, but
+    # NEVER trust a role=reviewed artifact here (BACKSTOP for the stale-after-reversal
+    # race): a matter whose CURRENT decisions yield no applied edits should not have a
+    # reviewed document at all -- if one lingers, it was minted against a now-reversed
+    # decision set (e.g. accept c1 -> approve -> reject c1). Signing it would ship a
+    # change the reviewer explicitly undid. Excluding ROLE_REVIEWED falls through to
+    # the correct source (generated for a generated NDA, else original). The primary
+    # fix (un-clear on any post-approval decision change) means an honest send re-runs
+    # approval first; this backstop holds even if that reset were ever bypassed.
     artifact, file_bytes, _role = _latest_artifact_with_bytes(
-        matter, matter_id, owner_user_id, repository
+        matter, matter_id, owner_user_id, repository, exclude_roles=(ROLE_REVIEWED,)
     )
     if artifact is None or not file_bytes:
         # Empty registry: fall back to the matter's raw source document.
@@ -677,8 +685,12 @@ def _latest_artifact_with_bytes(
     matter_id: str,
     owner_user_id: str,
     repository: MatterRepository,
+    *,
+    exclude_roles: tuple[str, ...] = (),
 ):
     for role in _DOCUMENT_PRECEDENCE:
+        if role in exclude_roles:
+            continue
         artifact = latest_artifact_for_role(matter, role)
         if artifact is None:
             continue

@@ -1214,3 +1214,81 @@ def test_send_for_edited_matter_signs_reviewed_bytes_end_to_end(in_memory_matter
     sent_bytes = fake._envelopes[result.envelope_id].document_bytes
     assert sent_bytes == REVIEWED_PDF
     assert sent_bytes != ORIGINAL_PDF
+
+
+def test_no_edits_branch_never_signs_stale_reviewed_artifact(in_memory_matters):
+    """BACKSTOP (P1 stale-after-reversal): a matter whose CURRENT decisions yield NO
+    edits, yet still carries a lingering role=reviewed artifact (minted against a
+    since-reversed decision), must NOT sign that reviewed copy — it falls through to
+    the ORIGINAL. Signing the reviewed artifact would ship a change the reviewer
+    undid."""
+    matter = in_memory_matters.create_matter(
+        source_filename="acme-nda.pdf",
+        document_bytes=b"src",
+        extracted_text="text",
+        review_result={},
+        triage={},
+        owner_user_id=OWNER,
+        intake_metadata={"reply_to": "cp@acme.com", "sender": "cp@acme.com"},
+    )
+    matter_id = matter["id"]
+    # The ORIGINAL and a STALE reviewed artifact both exist; current decisions are
+    # empty (no edits) — the reviewed artifact is contradictory and must be ignored.
+    artifact_service.add_artifact(
+        matter_id,
+        source=SOURCE_GENERATED,
+        actor=ACTOR_HUMAN,
+        role=ROLE_ORIGINAL,
+        document_bytes=ORIGINAL_PDF,
+        repository=in_memory_matters,
+        owner_user_id=OWNER,
+    )
+    artifact_service.add_artifact(
+        matter_id,
+        source=SOURCE_GENERATED,
+        actor=ACTOR_HUMAN,
+        role=ROLE_REVIEWED,
+        document_bytes=REVIEWED_PDF,  # the stale, reverted-edit reviewed copy
+        repository=in_memory_matters,
+        owner_user_id=OWNER,
+    )
+    stored = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
+    assert docusign_workflow._matter_has_reviewer_edits(stored) is False
+    data, _filename = docusign_workflow._resolve_signable_document(
+        stored, matter_id, OWNER, in_memory_matters
+    )
+    # Falls through to the ORIGINAL, never the stale reviewed artifact.
+    assert data == ORIGINAL_PDF
+    assert data != REVIEWED_PDF
+
+
+def test_post_approval_decision_change_unclears_matter(in_memory_matters):
+    """PRIMARY (P1): reversing a clause decision AFTER approval un-clears the matter
+    (back to in_review, approved_at/human_reviewed cleared) so it must be
+    re-approved — the send gate then blocks until re-approval re-mints the correct
+    reviewed artifact."""
+    matter, matter_id = _edited_matter(in_memory_matters)
+    # Simulate approval (the pre-flight/lifecycle would set these).
+    in_memory_matters.update_matter_fields(
+        matter_id,
+        {"status": "approved", "approved_at": "2026-07-02T00:00:00+00:00"},
+        owner_user_id=OWNER,
+    )
+    approved = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
+    assert docusign_workflow.matter_cleared_for_signature(approved) is True
+
+    # Reviewer now REVERSES c1 (reject) post-approval.
+    in_memory_matters.set_clause_reviewer_decision(
+        matter_id, "c1", {"action": "reject", "actor": "reviewer"}, owner_user_id=OWNER
+    )
+    reverted = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
+    # Un-cleared: no longer approved / human_reviewed.
+    assert reverted["status"] == "in_review"
+    assert not reverted.get("approved_at")
+    assert not reverted.get("human_reviewed")
+    assert docusign_workflow.matter_cleared_for_signature(reverted) is False
+    # The send gate now refuses until re-approval.
+    with pytest.raises(docusign_workflow.MatterNotApprovedError):
+        docusign_workflow.send_for_signature(
+            reverted, matter_id, OWNER, repository=in_memory_matters, client=FakeDocuSignClient()
+        )

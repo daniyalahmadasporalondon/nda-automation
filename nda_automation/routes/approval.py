@@ -139,27 +139,14 @@ def handle_matter_approve(handler, path: str) -> None:
         )
         return
 
-    # Re-mint after the approval commit so the reviewed artifact's lineage/current
-    # markers reflect the approved state. Idempotent (content-hash dedupe), so this
-    # does not double-register the artifact the pre-flight already produced. Any
-    # failure here is truly best-effort: the pre-flight already proved the reviewed
-    # DOCX builds cleanly and (for an edited matter) registered it, and the SEND path
-    # rebuilds-or-fails-closed regardless, so a hiccup here can never degrade to
-    # signing the original.
-    try:
-        matter_document_artifacts.build_reviewed_docx(
-            approved.matter["id"],
-            approved.matter,
-            owner_user_id=owner_user_id,
-            persist=_matter_has_reviewer_edits(approved.matter),
-        )
-    except Exception as error:  # noqa: BLE001 -- post-approval re-mint is best-effort.
-        logger.warning(
-            "Post-approval reviewed-DOCX re-mint failed for matter %s (%s); "
-            "send-for-signature rebuilds-or-fails-closed regardless.",
-            approved.matter.get("id"),
-            type(error).__name__,
-        )
+    # P3 (cost): NO post-approval re-mint. For an edited matter the pre-flight above
+    # already built+registered the reviewed artifact (content-hash idempotent), and
+    # the pre-flight runs BEFORE the lifecycle commit so its lineage (based_on
+    # redline/original) is already correct -- approval status does not change the
+    # artifact bytes or lineage. A no-edits matter deliberately mints nothing. And the
+    # SEND path rebuilds-or-fails-closed from CURRENT state regardless, so it is the
+    # authoritative staleness backstop. Re-minting here would rebuild the expensive
+    # redline/coverage/pdf2docx path a redundant time for zero correctness gain.
 
     telemetry.increment("matter_approvals")
     # Re-read the matter so the response reflects the reviewed artifact just minted
