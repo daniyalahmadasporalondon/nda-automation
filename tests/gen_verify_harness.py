@@ -629,25 +629,40 @@ def check_term_bounded(text: str, report: VerificationReport) -> None:
                 f"{term_clause[:200]!r}",
             )
     # POSITIVE: a fixed numeric duration must be present AND within the cap. The
-    # ordinary term is written as "for a fixed period of <word> (N) year(s)"; we
-    # read the digit in parentheses and require 0 < N <= cap. A clause with NO
+    # ordinary term is written either as "for a fixed period of <word> (N) year(s)"
+    # (years unit) OR, when the user chose MONTHS for a sub-year term, as "for a
+    # fixed period of N months". A months term is equally bounded when 0 < N <=
+    # cap * 12 (the months cap is derived from the years cap). A clause with NO
     # such bounded figure (or one over the cap) is not properly capped.
+    cap_months = cap_years * 12
     bounded_years = [
         int(m.group(1))
         for m in re.finditer(r"\((\d{1,2})\)\s*years?\b", term_clause)
     ]
-    if not bounded_years:
+    bounded_months = [
+        int(m.group(1))
+        for m in re.finditer(r"\bfixed period of\s+(\d{1,3})\s*months?\b", term_clause)
+    ]
+    if not bounded_years and not bounded_months:
         report.defect(
             "term.cap_missing",
             f"term clause states no fixed numeric duration (expected a capped "
-            f"'(N) year(s)' figure <= {cap_years}): {term_clause[:200]!r}",
+            f"'(N) year(s)' figure <= {cap_years} or 'N months' <= {cap_months}): "
+            f"{term_clause[:200]!r}",
         )
-    elif not any(0 < n <= cap_years for n in bounded_years):
-        report.defect(
-            "term.over_cap",
-            f"term clause's fixed period {bounded_years} exceeds the {cap_years}-year "
-            f"cap: {term_clause[:200]!r}",
-        )
+    else:
+        years_ok = any(0 < n <= cap_years for n in bounded_years)
+        months_ok = any(0 < n <= cap_months for n in bounded_months)
+        # If a years figure is present it must be within cap; likewise months.
+        years_over = bool(bounded_years) and not years_ok
+        months_over = bool(bounded_months) and not months_ok
+        if years_over or months_over:
+            report.defect(
+                "term.over_cap",
+                f"term clause's fixed period exceeds the cap "
+                f"(years={bounded_years} <= {cap_years}? months={bounded_months} "
+                f"<= {cap_months}?): {term_clause[:200]!r}",
+            )
 
 
 def _term_clause_text(text: str) -> str:

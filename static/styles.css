@@ -835,7 +835,7 @@ h3 {
   align-items: stretch;
   display: flex;
   gap: 8px;
-  max-width: 220px;
+  max-width: 280px;
 }
 
 .term-stepper-btn {
@@ -886,6 +886,30 @@ h3 {
   flex: 0 0 auto;
   font-size: 12px;
   font-weight: 700;
+}
+
+/* Years/Months unit selector — matches the stepper's button styling so the
+   dropdown reads as part of the same control. The selector is deliberately more
+   specific than `.upload-field select { width: 100% }` (via the `select`
+   qualifier) so the unit box keeps a FIXED width and never grows to swallow the
+   row (a bare <select> in a flex row stretches to 100% otherwise). */
+.term-stepper select.term-stepper-unit-select {
+  appearance: auto;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  cursor: pointer;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 700;
+  min-height: 38px;
+  padding: 0 8px;
+  width: 84px;
+}
+
+.term-stepper select.term-stepper-unit-select:hover {
+  border-color: var(--accent, var(--border-strong));
 }
 
 .term-stepper-hint {

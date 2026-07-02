@@ -268,7 +268,14 @@ export function createInitialIntake() {
     counterpartyName: "",
     counterpartyEmail: "",
     projectPurpose: "",
+    // `term` carries the term as text ("2 years" / "18 months"); `termUnit` names
+    // the chosen unit so the backend never has to guess it from the string. The
+    // Years/Months selector drives both (static/js/draft-intake.js). The backend
+    // term parse (nda_generation_workflow.term_years/term_months) reads the unit,
+    // converts months->years for the Playbook cap, and preserves a sub-year months
+    // figure into the generated wording.
     term: "",
+    termUnit: "years",
     ndaType: DEFAULT_NDA_TYPE,
     entityId: null,
     addressId: null,
@@ -416,6 +423,12 @@ export function buildDraftPayload(intake = {}, entities = SIGNING_ENTITIES, lawO
     },
     project_purpose: String(intake.projectPurpose || "").trim(),
     term: String(intake.term || "").trim(),
+    // The chosen term unit ("years" | "months"). Sent alongside `term` so the
+    // backend (nda_generation_workflow.term_years/term_months) reads the unit
+    // explicitly rather than inferring it from the term string — a months value is
+    // converted to years for the Playbook cap while a sub-year months figure is
+    // preserved into the generated wording ("18 months").
+    term_unit: intake.termUnit === "months" ? "months" : "years",
     nda_type: intake.ndaType || DEFAULT_NDA_TYPE,
     // First-party recital + identity fields the preview already shows and the
     // generator reads (mapped to the template's [BUSINESS DESCRIPTION] /

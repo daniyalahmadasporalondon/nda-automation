@@ -35,6 +35,21 @@ _BAD_CLAUSE_NO_CAP = (
     "the completion of the Purpose."
 )
 
+# A MONTHS-unit term (sub-year: 18 months) is equally bounded: it names a fixed
+# numeric duration under the derived months cap (max_term_years * 12 = 60mo) and
+# still ends on "whichever is earlier". The Years/Months feature must not trip the
+# term-bounded gate for a valid months clause.
+_GOOD_CLAUSE_MONTHS = (
+    "TERM OF THE AGREEMENT: This Agreement shall become effective on the date of "
+    "signing and shall remain in force, and the confidentiality obligations shall "
+    "survive, for a fixed period of 18 months from the date of this Agreement "
+    "or until the completion of the Purpose, whichever is earlier. Notwithstanding "
+    "the foregoing, trade secrets survive for as long as the law requires."
+)
+
+# A months figure OVER the derived cap (72 months > 60) is not properly bounded.
+_BAD_CLAUSE_MONTHS_OVER = _GOOD_CLAUSE_MONTHS.replace("18 months", "72 months")
+
 
 def test_check_term_bounded_passes_whichever_is_earlier():
     report = VerificationReport(label="term-good")
@@ -63,3 +78,17 @@ def test_check_term_bounded_fails_when_clause_missing():
     check_term_bounded("GOVERNING LAW: This Agreement is governed by English law.", report)
     assert not report.clear
     assert any(f.check == "term.clause_missing" for f in _defects(report))
+
+
+def test_check_term_bounded_passes_bounded_months():
+    report = VerificationReport(label="term-months-good")
+    check_term_bounded(_GOOD_CLAUSE_MONTHS, report)
+    assert report.clear, [f.detail for f in report.findings]
+    assert not _defects(report)
+
+
+def test_check_term_bounded_fails_months_over_cap():
+    report = VerificationReport(label="term-months-over")
+    check_term_bounded(_BAD_CLAUSE_MONTHS_OVER, report)
+    assert not report.clear
+    assert any(f.check == "term.over_cap" for f in _defects(report))

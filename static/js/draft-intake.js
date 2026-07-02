@@ -210,73 +210,130 @@ function createDraftIntakeController({
     updateSendState();
   });
 
-  // ── Term stepper ──────────────────────────────────────────────────────────
-  // The Term field is an integer-years +/- stepper. The minimum is 1 year and the
-  // MAXIMUM is the playbook's term cap (maxTermYears, sourced live from the
-  // /api/signing-entities feed's playbook_meta.max_term_years; falls back to the
-  // hardcoded DEFAULT_MAX_TERM_YEARS only when the feed is unavailable). The value
-  // is always clamped to [1, maxTermYears] — the same window generation enforces
-  // (nda_generation._resolve_term_years) — so the form can never request a term the
-  // generated NDA won't honour. intake.term carries "N years" text, which the
-  // backend term_years() parser reads as its leading integer.
-  const TERM_MIN_YEARS = 1;
+  // ── Term stepper (Years / Months) ─────────────────────────────────────────
+  // The Term field is an integer +/- stepper with a Years/Months unit selector.
+  // The MINIMUM is 1 (in whichever unit) and the MAXIMUM is the playbook's term
+  // cap: maxTermYears in years, or maxTermYears * 12 in months (the months cap is
+  // DERIVED, never a separate playbook field). maxTermYears rides the
+  // /api/signing-entities feed's playbook_meta.max_term_years and falls back to
+  // DEFAULT_MAX_TERM_YEARS only when the feed is unavailable. The value is always
+  // clamped to its unit window — the same window generation enforces
+  // (nda_generation._resolve_term_years / _resolve_term_months) — so the form can
+  // never request a term the generated NDA won't honour. intake.term carries
+  // "N years" / "N months" text and intake.termUnit names the unit; the backend
+  // term_years()/term_months() parsers read both.
+  const TERM_MIN = 1;
 
-  // The current integer term, derived from intake.term (mirrors the backend's
-  // leading-token parse). Falls back to the default when blank/unparseable.
-  function currentTermYears() {
+  // The current unit ("years" | "months"), from the intake (default years).
+  function currentUnit() {
+    return intake.termUnit === "months" ? "months" : "years";
+  }
+
+  // The cap (max value) for a unit: maxTermYears years, or maxTermYears*12 months.
+  function maxForUnit(unit) {
+    return unit === "months" ? maxTermYears * 12 : maxTermYears;
+  }
+
+  // The default value for a unit (2 years, or its 24-month equivalent).
+  function defaultForUnit(unit) {
+    return unit === "months" ? DEFAULT_TERM_YEARS * 12 : DEFAULT_TERM_YEARS;
+  }
+
+  // The current integer term value in the CURRENT unit, derived from intake.term
+  // (mirrors the backend's leading-token parse). Falls back to the default when
+  // blank/unparseable.
+  function currentTermValue() {
     const token = String(intake.term || "").trim().split(/\s+/)[0];
     const parsed = Number.parseInt(token, 10);
-    return Number.isFinite(parsed) ? parsed : DEFAULT_TERM_YEARS;
+    return Number.isFinite(parsed) ? parsed : defaultForUnit(currentUnit());
   }
 
-  // Clamp to [1, playbook max].
-  function clampTermYears(value) {
-    const n = Number.isFinite(value) ? Math.floor(value) : DEFAULT_TERM_YEARS;
-    return Math.min(Math.max(n, TERM_MIN_YEARS), maxTermYears);
+  // Clamp an integer value into [1, cap] for the given unit.
+  function clampTerm(value, unit) {
+    const cap = maxForUnit(unit);
+    const n = Number.isFinite(value) ? Math.floor(value) : defaultForUnit(unit);
+    return Math.min(Math.max(n, TERM_MIN), cap);
   }
 
-  // Commit an integer term into the intake (as "N years" text), reflect it in the
-  // input, update the +/- disabled state + cap hint, and re-render the dependents.
-  function setTermYears(value, { flash = false } = {}) {
-    const years = clampTermYears(value);
-    const unit = years === 1 ? "year" : "years";
-    intake = { ...intake, term: `${years} ${unit}` };
-    if (termInput && Number(termInput.value) !== years) termInput.value = String(years);
-    if (termUnitNode) termUnitNode.textContent = unit;
-    renderTermControls();
+  // Singular/plural unit word for a value.
+  function unitWord(value, unit) {
+    if (unit === "months") return value === 1 ? "month" : "months";
+    return value === 1 ? "year" : "years";
+  }
+
+  // Commit an integer term (in the current unit) into the intake (as "N years" /
+  // "N months" text + termUnit), reflect it in the input, update the +/- disabled
+  // state + cap hint, surface a note when the cap adjusted the value, and re-render
+  // the dependents. `requested` (pre-clamp) drives the adjustment note.
+  function setTerm(value, { flash = false, requested = null } = {}) {
+    const unit = currentUnit();
+    const clamped = clampTerm(value, unit);
+    intake = { ...intake, term: `${clamped} ${unitWord(clamped, unit)}`, termUnit: unit };
+    if (termInput && Number(termInput.value) !== clamped) termInput.value = String(clamped);
+    const wasAdjusted = Number.isFinite(requested) && Math.floor(requested) !== clamped;
+    renderTermControls({ adjustedTo: wasAdjusted ? clamped : null });
     renderSidePanel();
     if (flash) flashField("term");
   }
 
-  // Disable +/- at the bounds and surface the playbook cap once the live value is
-  // known (so the user understands why the plus button stops at the max).
-  function renderTermControls() {
-    const years = currentTermYears();
+  // Disable +/- at the bounds and surface the playbook cap in the ACTIVE unit (so
+  // the user understands why the plus button stops). When `adjustedTo` is set, the
+  // hint also notes that the value was just snapped to the cap (no silent clamp).
+  function renderTermControls({ adjustedTo = null } = {}) {
+    const unit = currentUnit();
+    const value = currentTermValue();
+    const cap = maxForUnit(unit);
     if (termInput) {
-      termInput.min = String(TERM_MIN_YEARS);
-      termInput.max = String(maxTermYears);
+      termInput.min = String(TERM_MIN);
+      termInput.max = String(cap);
     }
-    if (termDecrementButton) termDecrementButton.disabled = years <= TERM_MIN_YEARS;
-    if (termIncrementButton) termIncrementButton.disabled = years >= maxTermYears;
+    if (termUnitNode && termUnitNode.value !== unit) termUnitNode.value = unit;
+    if (termDecrementButton) termDecrementButton.disabled = value <= TERM_MIN;
+    if (termIncrementButton) termIncrementButton.disabled = value >= cap;
     if (termHintNode) {
-      const unit = maxTermYears === 1 ? "year" : "years";
-      termHintNode.textContent = `Playbook caps the term at ${maxTermYears} ${unit}.`;
+      let hint = `Playbook caps the term at ${cap} ${unitWord(cap, unit)}.`;
+      if (adjustedTo !== null) {
+        hint = `Adjusted to ${adjustedTo} ${unitWord(adjustedTo, unit)} — ${hint}`;
+      }
+      termHintNode.textContent = hint;
     }
   }
 
   termDecrementButton?.addEventListener("click", () => {
-    setTermYears(currentTermYears() - 1, { flash: true });
+    setTerm(currentTermValue() - 1, { flash: true });
   });
 
   termIncrementButton?.addEventListener("click", () => {
-    setTermYears(currentTermYears() + 1, { flash: true });
+    setTerm(currentTermValue() + 1, { flash: true });
   });
 
   // Typing directly into the box: re-clamp on every input so an out-of-range value
-  // (e.g. 99) is corrected to the cap immediately and the +/- state stays honest.
+  // (e.g. 99) is corrected to the cap immediately (with a visible note) and the
+  // +/- state stays honest. The typed value is passed as `requested` so the note
+  // fires only when the cap actually changed it.
   termInput?.addEventListener("input", () => {
     const parsed = Number.parseInt(termInput.value, 10);
-    setTermYears(Number.isFinite(parsed) ? parsed : DEFAULT_TERM_YEARS);
+    const requested = Number.isFinite(parsed) ? parsed : defaultForUnit(currentUnit());
+    setTerm(requested, { requested });
+  });
+
+  // Switching Years <-> Months converts the current value sensibly and re-clamps
+  // in the new unit: years -> months multiplies by 12, months -> years divides by
+  // 12 (rounded up so a sub-year term keeps at least 1 year), each capped to the
+  // new unit's window. The conversion itself can hit the cap (e.g. 5 years -> 60
+  // months == cap), which the note surfaces when it changes the value.
+  termUnitNode?.addEventListener("change", () => {
+    const fromUnit = currentUnit();
+    const toUnit = termUnitNode.value === "months" ? "months" : "years";
+    if (toUnit === fromUnit) return;
+    const current = currentTermValue();
+    const converted =
+      fromUnit === "years" && toUnit === "months"
+        ? current * 12
+        : Math.max(1, Math.ceil(current / 12));
+    // Flip the unit first so setTerm clamps against the NEW unit's window.
+    intake = { ...intake, termUnit: toUnit };
+    setTerm(converted, { flash: true, requested: converted });
   });
 
   projectPurposeInput?.addEventListener("input", () => {
@@ -370,7 +427,7 @@ function createDraftIntakeController({
     populateNdaTypeOptions();
     // loadRegistry() may have refreshed maxTermYears from the live playbook feed;
     // seed the stepper to the default term, re-clamped against the live cap.
-    setTermYears(currentTermYears());
+    setTerm(currentTermValue());
     initialized = true;
   }
 
@@ -540,31 +597,39 @@ function createDraftIntakeController({
     // OVERRIDDEN law on an override, so the preview is what-you-see = what-you-get.
     const forum = intakeApi.effectiveForum(intake);
 
-    // Term clamp preview. Generation parses the typed term to a year count exactly
-    // like nda_generation_workflow.term_years (first whitespace token -> int, else
-    // a default) and then clamps to [1, max_term_years] (_resolve_term_years). The
-    // raw preview echoed intake.term verbatim, so "10 years" previewed as 10 but
-    // generates as the cap. We mirror that parse+clamp here and, when the typed
-    // term was actually reduced, show an inline note so the cap is visible.
+    // Term clamp preview (unit-aware). Generation parses the typed term + unit
+    // exactly like nda_generation_workflow.term_years/term_months (first whitespace
+    // token -> int; the unit from intake.termUnit) and clamps in that unit
+    // ([1, max_term_years] years or [1, max_term_years * 12] months). A whole
+    // number of years renders as "N years"; a non-whole-year MONTHS value renders
+    // as "N months" (matching _align_term_and_survival) so a sub-year term (18) is
+    // preserved. We mirror that here and, when the value was reduced by the cap,
+    // show an inline note so the cap is visible. The cap is always expressed in
+    // years (it is defined in years: max_term_years).
     const rawTerm = String(intake.term || "").trim();
-    const parseTermYears = (value) => {
-      // Mirror nda_generation_workflow.term_years: first whitespace-delimited
-      // token, parsed as an integer; non-numeric/blank falls back to null here so
-      // the preview leaves the user's wording untouched (we only clamp a term we
-      // can actually read as a number, e.g. "10" or "10 years").
+    const previewUnit = intake.termUnit === "months" ? "months" : "years";
+    const parseLeadingInt = (value) => {
       const token = value.split(/\s+/)[0];
       if (!/^\d+$/.test(token)) return null;
       const parsed = Number.parseInt(token, 10);
       return Number.isFinite(parsed) ? parsed : null;
     };
-    const typedYears = parseTermYears(rawTerm);
-    let termDisplay = rawTerm; // verbatim when not a plain number of years
+    const typedValue = parseLeadingInt(rawTerm);
+    let termDisplay = rawTerm; // verbatim when not a plain number
     let termClampNote = "";
-    if (typedYears !== null) {
-      const clamped = Math.min(Math.max(typedYears, 1), maxTermYears);
-      const unit = clamped === 1 ? "year" : "years";
-      termDisplay = `${clamped} ${unit}`;
-      if (clamped !== typedYears) {
+    if (typedValue !== null) {
+      const capUnits = previewUnit === "months" ? maxTermYears * 12 : maxTermYears;
+      const clamped = Math.min(Math.max(typedValue, 1), capUnits);
+      const wasCapped = clamped !== typedValue;
+      // A months value that lands on a whole number of years renders as years
+      // (24 -> "two (2) years"); otherwise it stays "N months".
+      if (previewUnit === "months" && clamped % 12 !== 0) {
+        termDisplay = `${clamped} ${clamped === 1 ? "month" : "months"}`;
+      } else {
+        const years = previewUnit === "months" ? clamped / 12 : clamped;
+        termDisplay = `${years} ${years === 1 ? "year" : "years"}`;
+      }
+      if (wasCapped) {
         termClampNote = ` <span class="nda-doc-note" style="color:var(--ink-muted);font-size:0.85em;font-style:italic;">(capped to ${maxTermYears} ${
           maxTermYears === 1 ? "year" : "years"
         } per playbook)</span>`;
@@ -774,7 +839,9 @@ function createDraftIntakeController({
     if (ndaTypeSelect) ndaTypeSelect.value = intake.ndaType;
     // Re-seed the term stepper to the default (form.reset() restores the input's
     // value but not the intake's term text, which createInitialIntake blanked).
-    setTermYears(DEFAULT_TERM_YEARS);
+    // createInitialIntake() resets termUnit to "years", so the default seeds in
+    // years; the unit <select> is restored to "years" by form.reset() above.
+    setTerm(DEFAULT_TERM_YEARS);
     renderEntityBundle();
     renderGoverningLaw();
     setStagedActions(null);
