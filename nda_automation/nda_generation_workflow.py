@@ -176,7 +176,14 @@ def intake_from_payload(payload: dict[str, Any]) -> tuple[str, CounterpartyIntak
         business_description=field("business_description"),
         purpose=field("project", "project_purpose", "purpose")
         or "the proposed business relationship between the parties",
-        term_years=term_years(_first(intake_block, payload, "term_years", "term")),
+        term_years=term_years(
+            _first(intake_block, payload, "term_years", "term"),
+            _first(intake_block, payload, "term_unit"),
+        ),
+        term_months=term_months(
+            _first(intake_block, payload, "term_years", "term"),
+            _first(intake_block, payload, "term_unit"),
+        ),
         nda_type=field("nda_type") or nda_generation.NDA_TYPE_MUTUAL,
         agreement_date=agreement_date(_first(intake_block, payload, "effective_date", "agreement_date")),
     )
@@ -258,13 +265,81 @@ def option_id_from_law_block(block: object) -> str:
     return ""
 
 
-def term_years(value: object) -> int:
+def _term_unit(value: object, explicit_unit: object = None) -> str:
+    """Resolve the term unit ("years" | "months").
+
+    Prefers an EXPLICIT unit (the ``term_unit`` field the draft form now sends),
+    then falls back to a unit word embedded in the term text itself ("18 months"),
+    then defaults to years. Anything month-flavoured ("month", "months", "mo",
+    "mos") resolves to months; everything else to years.
+    """
+
+    def _classify(token: str) -> str | None:
+        token = token.strip().lower()
+        if token in {"month", "months", "mo", "mos"}:
+            return "months"
+        if token in {"year", "years", "yr", "yrs"}:
+            return "years"
+        return None
+
+    if isinstance(explicit_unit, str) and explicit_unit.strip():
+        classified = _classify(explicit_unit)
+        if classified:
+            return classified
+    text = str(value or "").strip()
+    for part in text.split()[1:]:
+        classified = _classify(part)
+        if classified:
+            return classified
+    return "years"
+
+
+def _term_number(value: object) -> int | None:
+    """The leading integer of a term value, or ``None`` when absent/unparseable."""
+
     if value is None or value == "":
-        return 2
+        return None
     try:
         return int(str(value).strip().split()[0])
     except (ValueError, IndexError):
+        return None
+
+
+def term_years(value: object, unit: object = None) -> int:
+    """The term expressed as a YEAR-equivalent integer, for the cap + manifest.
+
+    Unit-aware: when the unit resolves to months, the leading figure is converted
+    to a (ceil) year-equivalent so the Playbook year-cap comparison still holds; a
+    blank/unparseable value defaults to 2 years. The ORIGINAL months figure is
+    carried separately (:func:`term_months`) so sub-year wording is preserved.
+    """
+
+    number = _term_number(value)
+    if number is None:
         return 2
+    resolved_unit = _term_unit(value, unit)
+    if resolved_unit == "months":
+        # Ceil to the nearest year so a sub-year figure still maps to >= 1 year and
+        # a whole-year figure (e.g. 24 -> 2) maps exactly. Generation caps this.
+        months = max(number, 1)
+        return -(-months // 12)  # math.ceil(months / 12)
+    return number
+
+
+def term_months(value: object, unit: object = None) -> int | None:
+    """The ORIGINAL months figure when the user chose months, else ``None``.
+
+    Returns ``None`` for a years unit or a blank/unparseable value, so the years
+    path is used. The value is left UNCAPPED here; generation caps it against the
+    Playbook (``max_term_years * 12``).
+    """
+
+    if _term_unit(value, unit) != "months":
+        return None
+    number = _term_number(value)
+    if number is None:
+        return None
+    return max(number, 1)
 
 
 def agreement_date(value: object) -> datetime.date | None:

@@ -524,6 +524,104 @@ class TestClauseAlignment:
 
 
 # --------------------------------------------------------------------------- #
+# Term in Years OR Months (convert-and-cap)
+# --------------------------------------------------------------------------- #
+
+
+class TestTermUnits:
+    """The term may be entered in YEARS or MONTHS. Everything normalises against
+    the Playbook year cap (max_term_years); the months cap is DERIVED as
+    ``max_term_years * 12``. A sub-year months figure (18) is preserved into the
+    wording ("18 months"); a whole number of months renders as years; an over-cap
+    months figure snaps to the cap and renders in years."""
+
+    def test_months_sub_year_preserved_in_wording(self, playbook):
+        # 18 months < 60mo cap and NOT a whole year -> rendered verbatim as
+        # "18 months", never rounded up to a year.
+        result = _generate(playbook, intake=_intake(term_years=2, term_months=18))
+        text = extract_docx_text(result.docx_bytes).lower()
+        assert "for a fixed period of 18 months" in text
+        # Still bounded on the earlier leg (the term-cap fix must not regress).
+        assert "whichever is earlier" in text
+        assert "whichever is later" not in text
+        # Year-equivalent recorded on the manifest for provenance.
+        assert result.manifest.term_years == 2
+
+    def test_months_over_cap_clamps_to_five_years(self, playbook):
+        # 72 months == 6 years > cap -> clamp to 60mo == 5 years, expressed in
+        # years (the cap is defined in years).
+        result = _generate(playbook, intake=_intake(term_years=6, term_months=72))
+        text = extract_docx_text(result.docx_bytes).lower()
+        assert "five (5) years" in text
+        assert "72 months" not in text
+        assert result.manifest.term_years == 5
+
+    def test_months_at_cap_renders_years(self, playbook):
+        # 60 months == exactly 5 years (the cap) -> whole-year multiple renders as
+        # "five (5) years", not "60 months".
+        result = _generate(playbook, intake=_intake(term_years=5, term_months=60))
+        text = extract_docx_text(result.docx_bytes).lower()
+        assert "five (5) years" in text
+        assert "60 months" not in text
+
+    def test_whole_year_months_renders_as_years(self, playbook):
+        # 24 months == exactly 2 years -> renders as "two (2) years" (whole-year
+        # multiples normalise to years per the confirmed design decision).
+        result = _generate(playbook, intake=_intake(term_years=2, term_months=24))
+        text = extract_docx_text(result.docx_bytes).lower()
+        assert "two (2) years" in text
+        assert "24 months" not in text
+
+    def test_years_path_unchanged(self, playbook):
+        # A plain years intake (no term_months) renders exactly as before.
+        result = _generate(playbook, intake=_intake(term_years=3))
+        text = extract_docx_text(result.docx_bytes).lower()
+        assert "three (3) years" in text
+        assert "months" not in text.split("term of the agreement")[1][:400]
+
+    def test_manifest_alignment_notes_months(self, playbook):
+        manifest = _generate(
+            playbook, intake=_intake(term_years=2, term_months=18)
+        ).manifest
+        assert any("18mo" in a for a in manifest.clause_alignments)
+
+
+class TestTermParse:
+    """The workflow term parse (nda_generation_workflow) is unit-aware: it reads
+    the unit, converts months->years for the cap, and preserves the original
+    months figure for the wording."""
+
+    def test_years_parse_unchanged(self):
+        from nda_automation import nda_generation_workflow as wf
+
+        assert wf.term_years("3 years", "years") == 3
+        assert wf.term_months("3 years", "years") is None
+
+    def test_months_converts_years_and_preserves_months(self):
+        from nda_automation import nda_generation_workflow as wf
+
+        # 18 months -> 2 years (ceil) for the cap; original 18 preserved.
+        assert wf.term_years(18, "months") == 2
+        assert wf.term_months(18, "months") == 18
+        # A whole-year multiple maps exactly.
+        assert wf.term_years(24, "months") == 2
+        assert wf.term_months(24, "months") == 24
+
+    def test_unit_inferred_from_text_when_no_explicit_unit(self):
+        from nda_automation import nda_generation_workflow as wf
+
+        assert wf.term_months("18 months") == 18
+        assert wf.term_years("18 months") == 2
+
+    def test_blank_defaults_to_two_years_even_in_months_mode(self):
+        from nda_automation import nda_generation_workflow as wf
+
+        assert wf.term_years("", "months") == 2
+        assert wf.term_months("", "months") is None
+        assert wf.term_years(None, "years") == 2
+
+
+# --------------------------------------------------------------------------- #
 # Governing law + court are LOCKED to the signing entity (no override path)
 # --------------------------------------------------------------------------- #
 

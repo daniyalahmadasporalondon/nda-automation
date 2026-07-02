@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260623cachefix1">
+    <link rel="stylesheet" href="/static/styles.css?v=20260702termunit1">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260621felayout1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260619onboard1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
@@ -275,10 +275,13 @@
                   <div class="upload-field upload-field-wide">
                     <span id="draftIntakeTermLabel">Term</span>
                     <div class="term-stepper" role="group" aria-labelledby="draftIntakeTermLabel">
-                      <button class="term-stepper-btn" id="draftIntakeTermDecrement" type="button" aria-label="Decrease term by one year" title="Decrease term">&minus;</button>
+                      <button class="term-stepper-btn" id="draftIntakeTermDecrement" type="button" aria-label="Decrease term" title="Decrease term">&minus;</button>
                       <input id="draftIntakeTerm" class="term-stepper-input" type="number" inputmode="numeric" min="1" step="1" value="2" autocomplete="off" aria-describedby="draftIntakeTermHint">
-                      <span class="term-stepper-unit" id="draftIntakeTermUnit" aria-hidden="true">years</span>
-                      <button class="term-stepper-btn" id="draftIntakeTermIncrement" type="button" aria-label="Increase term by one year" title="Increase term">+</button>
+                      <select id="draftIntakeTermUnit" class="term-stepper-unit-select" aria-label="Term unit">
+                        <option value="years">years</option>
+                        <option value="months">months</option>
+                      </select>
+                      <button class="term-stepper-btn" id="draftIntakeTermIncrement" type="button" aria-label="Increase term" title="Increase term">+</button>
                     </div>
                     <p class="term-stepper-hint" id="draftIntakeTermHint" aria-live="polite"></p>
                   </div>
@@ -2275,7 +2278,7 @@
       no divergent untested .js duplicate. Module scripts are deferred, so this
       runs before any user interaction; all consumers call these at runtime.
     -->
-    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260622redlineresilience1"></script>
+    <script type="module" src="/static/js/modules/global-bridge.mjs?v=20260702termunit1"></script>
     <script src="/static/js/redline-rendering.js?v=20260622redlineresilience1"></script>
     <!-- Global session-expiry handling + the shared ok-before-parse JSON guard.
          Must load before app.js (which registers the handler) and before any
@@ -2292,7 +2295,7 @@
     <script src="/static/js/corpus.js?v=20260621hum1"></script>
     <script src="/static/js/manual-upload.js?v=20260617hyg1"></script>
     <script src="/static/js/send-document.js?v=20260606i"></script>
-    <script src="/static/js/draft-intake.js?v=20260621locklaw1"></script>
+    <script src="/static/js/draft-intake.js?v=20260702termunit1"></script>
     <script src="/static/js/auth-session.js?v=20260618depstatus1"></script>
     <script src="/static/js/admin-ai.js?v=20260621humanize1"></script>
     <script src="/static/js/admin-models.js?v=20260623modelpicker1"></script>

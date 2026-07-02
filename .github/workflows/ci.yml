@@ -146,6 +146,9 @@ jobs:
       - name: Run editor format toolbar tests
         run: npm run test:frontend:editor-format
 
+      - name: Run generator term Years/Months selector test
+        run: npm run test:frontend:generator-term-unit
+
       - name: Run entity law/court coupling test
         run: npm run test:frontend:entity-court-coupling
 

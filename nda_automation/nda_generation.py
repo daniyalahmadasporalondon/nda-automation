@@ -406,6 +406,14 @@ class CounterpartyIntake:
     business_description: str
     purpose: str
     term_years: int = 2
+    # When the user entered the term in MONTHS, this carries the ORIGINAL months
+    # figure so a sub-year term (e.g. 18) is preserved into the wording as
+    # "18 months" rather than rounded to a year. ``None`` means the term was
+    # entered in years and the years path is used verbatim. A whole number of
+    # months (a multiple of 12, e.g. 24) still renders as years wording. The
+    # months figure is capped against the Playbook (``max_term_years * 12``) at
+    # generation time; ``term_years`` remains the year-equivalent for the manifest.
+    term_months: int | None = None
     nda_type: str = NDA_TYPE_MUTUAL
     agreement_date: _dt.date | None = None
 
@@ -718,6 +726,9 @@ def generate_nda(
     validate_intake_identity_fields(intake)
 
     term_years = _resolve_term_years(intake.term_years, playbook)
+    # When the user entered MONTHS, resolve+cap the months figure so a sub-year
+    # term (e.g. 18) survives into the wording; None means the years path is used.
+    term_months = _resolve_term_months(intake.term_months, playbook)
     agreement_date = intake.agreement_date or _dt.date.today()
 
     document = _load_template(template_path)
@@ -762,6 +773,7 @@ def generate_nda(
     _align_term_and_survival(
         document, playbook, term_years, clause_adapter, intake, manifest,
         adapted_text=adapted.get(CLAUSE_TERM),
+        term_months=term_months,
     )
 
     # Unassigned signatories render as blank fill-lines (not bracketed text), so
@@ -1708,6 +1720,18 @@ def _align_confidential_information(
     )
 
 
+def _month_count_label(months: int) -> str:
+    """A months-term label, e.g. "18 months" / "1 month".
+
+    Kept numeral-only (no spelled-word parenthetical) since months terms are read
+    as an explicit figure; gen-verify's term-bounded check reads the "N months"
+    numeral directly.
+    """
+
+    unit = "month" if months == 1 else "months"
+    return f"{months} {unit}"
+
+
 def _align_term_and_survival(
     document: DocxDocument,
     playbook: Mapping[str, Any],
@@ -1717,6 +1741,7 @@ def _align_term_and_survival(
     manifest: GenerationManifest,
     *,
     adapted_text: str | None = None,
+    term_months: int | None = None,
 ) -> None:
     """Rewrite the TERM clause to the Playbook term cap + survival carve-out.
 
@@ -1724,6 +1749,12 @@ def _align_term_and_survival(
     We rewrite the clause body to a fixed term of ``term_years`` (already capped
     at the Playbook ``max_term_years``) and append the Playbook's trade-secret /
     legal / data-protection survival carve-out so it passes ``term_and_survival``.
+
+    ``term_months`` (already capped at ``max_term_years * 12``) expresses the term
+    in MONTHS when the user chose that unit AND it is not a whole number of years —
+    e.g. "for a fixed period of 18 months" — so a sub-year term is preserved rather
+    than rounded up. A whole number of months (a multiple of 12) or ``None`` falls
+    through to the years wording unchanged.
 
     ``adapted_text`` carries the pre-resolved (parallel-prefetched) survival
     adaptation; when absent it is adapted inline, so the function is correct with
@@ -1735,10 +1766,17 @@ def _align_term_and_survival(
     else:
         survival = _survival_sentence(playbook, clause_adapter, intake)
 
+    # Express the fixed period in months only when the user chose months AND the
+    # figure is not a clean number of years; otherwise use the years wording.
+    if term_months is not None and term_months % 12 != 0:
+        period_label = _month_count_label(term_months)
+    else:
+        period_label = _year_count_label(term_years, parenthetical=True)
+
     body = (
         "This Agreement shall become effective on the date of signing of this Agreement and shall "
         f"remain in force, and the confidentiality obligations shall survive, for a fixed period of "
-        f"{_year_count_label(term_years, parenthetical=True)} from the date of this Agreement or until the completion of the "
+        f"{period_label} from the date of this Agreement or until the completion of the "
         f"Purpose, whichever is earlier. {survival}"
     )
 
@@ -1746,8 +1784,13 @@ def _align_term_and_survival(
         if paragraph.text.startswith("TERM OF THE AGREEMENT:"):
             # Preserve the bold title run; replace only the body run(s).
             _set_clause_body(paragraph, "TERM OF THE AGREEMENT: ", body)
+            fixed_at = (
+                f"{term_months}mo"
+                if term_months is not None and term_months % 12 != 0
+                else f"{term_years}y"
+            )
             manifest.clause_alignments.append(
-                f"term_and_survival: term fixed at {term_years}y (<= Playbook max) + survival carve-out injected"
+                f"term_and_survival: term fixed at {fixed_at} (<= Playbook max) + survival carve-out injected"
             )
             return
     raise NdaGenerationError(
@@ -1916,11 +1959,17 @@ def _approved_governing_law_options(playbook: Mapping[str, Any]) -> dict[str, st
     return resolved
 
 
+def _term_cap_years(playbook: Mapping[str, Any]) -> int:
+    """The Playbook term cap in years (``max_term_years``), defaulting to 5."""
+
+    clause = _playbook_clause(playbook, CLAUSE_TERM)
+    return int(clause.get("max_term_years") or 5)
+
+
 def _resolve_term_years(requested: int, playbook: Mapping[str, Any]) -> int:
     """Clamp the requested term to [1, Playbook max_term_years]."""
 
-    clause = _playbook_clause(playbook, CLAUSE_TERM)
-    max_years = int(clause.get("max_term_years") or 5)
+    max_years = _term_cap_years(playbook)
     try:
         years = int(requested)
     except (TypeError, ValueError):
@@ -1930,6 +1979,30 @@ def _resolve_term_years(requested: int, playbook: Mapping[str, Any]) -> int:
     if years > max_years:
         years = max_years
     return years
+
+
+def _resolve_term_months(requested: object, playbook: Mapping[str, Any]) -> int | None:
+    """Clamp a months term to [1, max_term_years * 12], or ``None`` if unset.
+
+    The months cap is DERIVED from the years cap (``max_term_years * 12``) — there
+    is no separate Playbook field. A ``None``/blank/unparseable value returns
+    ``None`` (the years path is used instead). A months figure that exceeds the cap
+    snaps to the cap (60 months == 5 years); a sub-year figure (e.g. 18) is
+    preserved so the wording can print "18 months".
+    """
+
+    if requested is None:
+        return None
+    try:
+        months = int(requested)
+    except (TypeError, ValueError):
+        return None
+    if months < 1:
+        months = 1
+    max_months = _term_cap_years(playbook) * 12
+    if months > max_months:
+        months = max_months
+    return months
 
 
 # --------------------------------------------------------------------------- #
