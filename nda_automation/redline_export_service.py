@@ -50,6 +50,22 @@ BODY_EXTRACTED_TEXT_FIELD = "body_extracted_text"
 
 VERIFIED_EXPORT_HEADER = "word-package; track-revisions"
 
+# Response header + honest value set on the NO-MATTER export paths (direct DOCX upload
+# and the bare-text fallback). Those paths have NO stored AI review to preserve, so the
+# redline is produced by the bare deterministic checker (``review_nda``) -- it must NOT
+# masquerade as the AI Review-tab result a reviewer approved. The marker lets the route /
+# client label it honestly as a deterministic-only redline. The MATTER export path never
+# sets this: it always carries (and now always preserves) the stored AI review_result.
+DETERMINISTIC_ONLY_EXPORT_MARKER_HEADER = "X-Export-Deterministic-Only"
+DETERMINISTIC_ONLY_EXPORT_HEADER = "deterministic-checker; no-ai-review"
+
+# Transient private marker key stamped on a review_result by ``_review_result_for_export``
+# for the no-matter deterministic paths, read by ``_build_redline_export`` to set the
+# ``DETERMINISTIC_ONLY_EXPORT_MARKER_HEADER`` on the produced ``RedlineExport``. Never
+# persisted (the no-matter paths build a throwaway review_result per request) and stripped
+# before the result reaches the renderer.
+_DETERMINISTIC_ONLY_EXPORT_FLAG = "_deterministic_only_export"
+
 # Honest "verified" value for the zero-change case: when a PDF-source matter has NO
 # accepted redlines (and no clean fills), the faithful reviewed output IS the original
 # document, served unchanged. There is no lossy reconstruction to content-check, so we
@@ -309,6 +325,10 @@ def _build_redline_export(
     review_result, source_document_bytes, source_filename = _review_result_for_export(
         payload, fallback_text, repository=repository, owner_user_id=owner_user_id
     )
+    # Pop the transient deterministic-only marker BEFORE the renderer/gate see the
+    # review_result (it is a private export-service flag, not a review field). Reattached
+    # as an honest response header on the produced export below.
+    deterministic_only = bool(review_result.pop(_DETERMINISTIC_ONLY_EXPORT_FLAG, False))
     export_service.apply_selected_export_redlines(review_result, payload.get("export_redline_edits"))
     export_service.apply_manual_export_redlines(review_result, payload.get("manual_redline_edits"))
     export_service.apply_review_comments(review_result, payload.get("review_comments"))
@@ -425,6 +445,13 @@ def _build_redline_export(
         data=report_bytes,
         filename=download_filename,
         saved_path=export_service.persist_export(report_bytes, download_filename) if (persist and not clean) else None,
+        # No-matter deterministic-only paths (direct DOCX upload / bare-text fallback):
+        # label the output honestly so it is never mistaken for the AI Review-tab result.
+        headers=(
+            {DETERMINISTIC_ONLY_EXPORT_MARKER_HEADER: DETERMINISTIC_ONLY_EXPORT_HEADER}
+            if deterministic_only
+            else None
+        ),
     )
 
 
@@ -553,11 +580,33 @@ def _review_result_for_export(
                     "NDA source text was edited after the source document was ingested. "
                     "Export or send after those viewer edits are represented as manual redlines."
                 )
-            review_result = review_nda(submitted_text)
+            # Option A (F4): the exported document must equal the AI review the reviewer
+            # APPROVED -- never let a second engine re-decide it. Previously this branch
+            # discarded the stored AI review and re-ran the BARE deterministic checker
+            # (``review_nda(submitted_text)``), which structurally emits ONLY the ~5
+            # native-check clauses and CANNOT emit AI-only DYNAMIC clauses (e.g.
+            # non_circumvention). Every dynamic-clause redline the reviewer approved was
+            # silently dropped from the counterparty-bound document, and native verdicts
+            # could contradict the AI Review tab.
+            #
+            # Keep the stored ``matter['review_result']`` (the exact object the Review tab
+            # renders) as the SINGLE source of truth for clauses/verdicts -- including
+            # dynamic clauses and their proposed/redline edits. Its ``redline_edits`` carry
+            # ``anchor_text``/``original_text``, so the renderer re-anchors them onto the
+            # EDITED body by TEXT match downstream; a redline whose anchor no longer exists
+            # after the edit is collected as ``unresolved`` and RAISES (fail closed) rather
+            # than shipping a document missing an approved strike. The user's viewer edits
+            # reach the document via ``manual_redline_edits`` (merged ON TOP of the stored
+            # AI edits by ``apply_manual_export_redlines``), so nothing is re-scored.
+            review_result = deepcopy(review_result)
+            # The coverage gate's char-ratio floor compares the exported body against this
+            # expected text. The submitted/viewer text IS the body the user edited (the
+            # viewer never renders header/footer), so it is already body-only -- use it
+            # verbatim so the ratio measures against what actually ships, not the pre-edit
+            # body. The gate's authoritative accepted-sequence check is driven by
+            # ``redline_edits`` against the source DOCX's own accepted view, so keeping the
+            # stored AI edits (plus the merged manual redline) is what it reconciles against.
             review_result["extracted_text"] = submitted_text
-            # The submitted/viewer text is the BODY the user edited (the viewer never
-            # renders header/footer), so it is already body-only -- use it verbatim as
-            # the body-only expected text for the coverage gate.
             review_result[BODY_EXTRACTED_TEXT_FIELD] = submitted_text
         else:
             review_result = deepcopy(review_result)
@@ -646,9 +695,18 @@ def _review_result_for_export(
         # body-only expected text directly (the gate must not require header/footer
         # text the body-only export cannot produce).
         review_result[BODY_EXTRACTED_TEXT_FIELD] = body_extracted_text_from_paragraphs(extracted_paragraphs)
+        # No stored AI review exists for a direct DOCX upload (no matter_id), so this
+        # redline is produced by the bare deterministic checker. Flag it so the produced
+        # export is labelled honestly (X-Export-Deterministic-Only) and never mistaken
+        # for the AI Review-tab result a reviewer approved.
+        review_result[_DETERMINISTIC_ONLY_EXPORT_FLAG] = True
         return review_result, document_bytes, filename
 
-    return review_nda(fallback_text), None, ""
+    # Bare-text fallback (no matter_id, no DOCX payload): likewise a deterministic-only
+    # redline with no stored AI review to preserve -- flag it honestly.
+    fallback_review = review_nda(fallback_text)
+    fallback_review[_DETERMINISTIC_ONLY_EXPORT_FLAG] = True
+    return fallback_review, None, ""
 
 
 def _apply_saved_redline_draft(payload: dict, matter: dict) -> None:

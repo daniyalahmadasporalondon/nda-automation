@@ -9740,10 +9740,16 @@ class ServerTests(unittest.TestCase):
             revision_states,
         )
 
-    def test_matter_export_rechecks_edited_source_text_with_manual_redline(self):
+    def test_matter_export_preserves_stored_review_on_edited_source_text_with_manual_redline(self):
+        # Option A (F4): a text-changed + manual-redline export must PRESERVE the stored
+        # AI review (the exact object the Review tab renders) rather than re-run the bare
+        # deterministic checker on the edited body -- otherwise AI-only dynamic clauses and
+        # AI verdicts are silently discarded from the counterparty-bound document. The
+        # user's edit reaches the document via the MERGED manual redline, not by re-scoring.
         source_docx = make_docx([
             "The confidentiality obligations survive for seven (7) years.",
         ])
+        stored_text = "The confidentiality obligations survive for seven (7) years."
         edited_text = "The confidentiality obligations survive for five (5) years."
         manual_redline = {
             "id": "manual-term",
@@ -9751,7 +9757,7 @@ class ServerTests(unittest.TestCase):
             "paragraph_id": "p1",
             "paragraph_index": 1,
             "source_index": 1,
-            "original_text": "The confidentiality obligations survive for seven (7) years.",
+            "original_text": stored_text,
             "replacement_text": edited_text,
         }
         captured = {}
@@ -9762,6 +9768,11 @@ class ServerTests(unittest.TestCase):
                 paragraph.get("text")
                 for paragraph in review_result.get("paragraphs", [])
                 if isinstance(paragraph, dict)
+            ]
+            captured["redline_replacements"] = [
+                edit.get("replacement_text")
+                for edit in review_result.get("redline_edits", [])
+                if isinstance(edit, dict)
             ]
             return source_docx
 
@@ -9788,7 +9799,261 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(export_status, 200)
         self.assertEqual(captured["source_bytes"], source_docx)
-        self.assertEqual(captured["paragraph_texts"], [edited_text])
+        # The review paragraphs are the STORED (pre-edit) ones -- NOT re-derived from the
+        # edited body. The bare deterministic re-review (which produced the edited-text
+        # paragraphs and dropped dynamic clauses) is gone.
+        self.assertEqual(captured["paragraph_texts"], [stored_text])
+        # The edit reaches the export via the merged manual redline, whose replacement is
+        # the edited text.
+        self.assertIn(edited_text, captured["redline_replacements"])
+
+    def _seed_matter_with_dynamic_clause_review(self, source_docx, prohibition_text, filename):
+        """Seed a reviewed DOCX matter and inject a stored review_result carrying an
+        AI-only DYNAMIC clause (non_circumvention) with an approved strike redline.
+
+        Returns (matter_id, seeded_matter). The dynamic clause + its redline are added on
+        top of the deterministic seed review WITHOUT disturbing its provenance fields, so
+        the review is not stale. This mirrors what an AI-first review produces: native
+        clause verdicts PLUS dynamic clauses the deterministic checker can never emit."""
+        seeded_matter = self.seed_reviewed_upload(source_docx, filename=filename)
+        seeded_review = dict(seeded_matter["review_result"])
+        clauses = list(seeded_review.get("clauses") or [])
+        clauses.append(
+            {
+                "id": "non_circumvention",
+                "clause_id": "non_circumvention",
+                "name": "Non-Circumvention",
+                "engine": "dynamic",
+                "decision": "fail",
+                "status": "check",
+                "requirement": "Non-circumvention clauses must be struck.",
+                # Per-clause review metadata the staleness gate requires (both must be
+                # dicts). An AI-first dynamic clause carries these; the fixture mirrors it.
+                "structure_context": {},
+                "review_state": {"overall_status": "does_not_meet_requirements"},
+            }
+        )
+        seeded_review["clauses"] = clauses
+        seeded_review["redline_edits"] = list(seeded_review.get("redline_edits") or []) + [
+            {
+                "id": "dyn-noncirc-1",
+                "clause_id": "non_circumvention",
+                "clause_name": "Non-Circumvention",
+                "paragraph_id": "p2",
+                "paragraph_index": 2,
+                "source_index": 2,
+                "action": "delete_paragraph",
+                "original_text": prohibition_text,
+                "replacement_text": "",
+            }
+        ]
+        matter_store.update_matter_review(
+            seeded_matter["id"], seeded_review, {"triage_status": "needs_review"}
+        )
+        return seeded_matter["id"], seeded_matter
+
+    def test_matter_export_preserves_dynamic_clause_redline_after_edit_and_manual_redline(self):
+        # F4: exporting a REVIEWED matter after the user edited the source text AND
+        # attached a manual redline must PRESERVE the AI-only dynamic-clause redline
+        # (non_circumvention) the reviewer approved -- the bare deterministic checker can
+        # never re-emit it, so re-running review_nda would silently drop it from the
+        # counterparty-bound document. The stored AI review is the single source of truth.
+        governing_para = "This Agreement shall be governed by the laws of California."
+        prohibition = (
+            "The Receiving Party shall not circumvent the Disclosing Party by dealing "
+            "directly with its introduced counterparties."
+        )
+        source_docx = make_docx([governing_para, prohibition])
+        edited_governing = "This Agreement shall be governed by the laws of New York."
+        manual_redline = {
+            "id": "manual-gl",
+            "action": "replace_paragraph",
+            "paragraph_id": "p1",
+            "paragraph_index": 1,
+            "source_index": 1,
+            "original_text": governing_para,
+            "replacement_text": edited_governing,
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter_id, _seeded = self._seed_matter_with_dynamic_clause_review(
+                    source_docx, prohibition, "Dynamic Clause NDA.docx"
+                )
+                export_status, export_payload, _headers = self.request_with_headers(
+                    "POST",
+                    "/api/export-review-docx",
+                    {
+                        "matter_id": matter_id,
+                        "text": f"{edited_governing}\n\n{prohibition}",
+                        "reviewed_text": f"{edited_governing}\n\n{prohibition}",
+                        # The reviewer ACCEPTED the dynamic non_circumvention strike. Its id
+                        # only exists in the STORED AI review -- a deterministic re-review
+                        # would not contain it, so selection intersection would drop it. This
+                        # is the exact contract Option A preserves.
+                        "export_redline_edits": [
+                            {
+                                "id": "dyn-noncirc-1",
+                                "clause_id": "non_circumvention",
+                                "paragraph_id": "p2",
+                                "action": "delete_paragraph",
+                            }
+                        ],
+                        "manual_redline_edits": [manual_redline],
+                    },
+                )
+
+        self.assertEqual(export_status, 200)
+        with ZipFile(BytesIO(export_payload)) as archive:
+            document_root = ET.fromstring(archive.read("word/document.xml"))
+        revision_states = [
+            (
+                revision_text_for_state(paragraph, accepted=False),
+                revision_text_for_state(paragraph, accepted=True),
+            )
+            for paragraph in document_root.findall(".//w:p", W_NS)
+        ]
+        # The dynamic-clause (non_circumvention) strike survived: the prohibition is a
+        # tracked deletion (present pre-accept, gone post-accept).
+        self.assertIn((prohibition, ""), revision_states)
+        # The user's edit (via the merged manual redline) is also present as a tracked
+        # replacement -- both the AI dynamic redline and the manual edit ship.
+        self.assertIn((governing_para, edited_governing), revision_states)
+
+    def test_matter_export_after_edit_fails_closed_when_dynamic_clause_anchor_lost(self):
+        # F4 fail-closed: when a reviewer-ACCEPTED dynamic-clause redline's anchor text no
+        # longer exists in the body being exported, the redline cannot be placed. The export
+        # must FAIL CLOSED (the renderer collects it as unresolved and RAISES) rather than
+        # silently ship a document missing an approved prohibited-clause strike.
+        governing_para = "This Agreement shall be governed by the laws of California."
+        prohibition = (
+            "The Receiving Party shall not circumvent the Disclosing Party by dealing "
+            "directly with its introduced counterparties."
+        )
+        source_docx = make_docx([governing_para, prohibition])
+        edited_governing = "This Agreement shall be governed by the laws of New York."
+        manual_redline = {
+            "id": "manual-gl",
+            "action": "replace_paragraph",
+            "paragraph_id": "p1",
+            "paragraph_index": 1,
+            "source_index": 1,
+            "original_text": governing_para,
+            "replacement_text": edited_governing,
+        }
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                matter_id, _seeded = self._seed_matter_with_dynamic_clause_review(
+                    source_docx, prohibition, "Dynamic Anchor Lost NDA.docx"
+                )
+                # Replace the dynamic redline with one whose anchor text (original_text) is
+                # NOT present in the source body -- the anchor is lost. This is the shape a
+                # stored AI redline takes when the reviewed paragraph no longer textually
+                # exists in the document being exported.
+                stored = matter_store.get_matter(matter_id)
+                review = dict(stored["review_result"])
+                review["redline_edits"] = [
+                    edit
+                    for edit in review.get("redline_edits") or []
+                    if edit.get("id") != "dyn-noncirc-1"
+                ] + [
+                    {
+                        "id": "dyn-noncirc-lost",
+                        "clause_id": "non_circumvention",
+                        "clause_name": "Non-Circumvention",
+                        # A paragraph the AI reviewed that no longer exists in the exported
+                        # body: its anchor text matches nothing AND its provenance index
+                        # points past the (2-paragraph) body, so neither the text anchor nor
+                        # the positional fallback can place it -> genuinely lost.
+                        "paragraph_id": "p99",
+                        "paragraph_index": 99,
+                        "source_index": 99,
+                        "action": "delete_paragraph",
+                        "original_text": (
+                            "A non-circumvention prohibition the reviewer struck that no "
+                            "longer textually exists in the exported body."
+                        ),
+                        "replacement_text": "",
+                    }
+                ]
+                matter_store.update_matter_review(
+                    matter_id, review, {"triage_status": "needs_review"}
+                )
+                export_status, export_payload = self.request(
+                    "POST",
+                    "/api/export-review-docx",
+                    {
+                        "matter_id": matter_id,
+                        "text": f"{edited_governing}\n\n{prohibition}",
+                        "reviewed_text": f"{edited_governing}\n\n{prohibition}",
+                        # The reviewer accepted the (now-unanchorable) dynamic strike.
+                        "export_redline_edits": [
+                            {
+                                "id": "dyn-noncirc-lost",
+                                "clause_id": "non_circumvention",
+                                "paragraph_id": "p99",
+                                "action": "delete_paragraph",
+                            }
+                        ],
+                        "manual_redline_edits": [manual_redline],
+                    },
+                )
+
+        # Fail closed: a redline whose anchor text no longer exists in the body is collected
+        # as unresolved and the build raises -> the route surfaces an error, never a 200 with
+        # the approved strike silently dropped.
+        self.assertNotEqual(export_status, 200)
+        self.assertIn("error", export_payload)
+
+    def test_matter_export_uploaded_docx_is_labelled_deterministic_only(self):
+        # F4 no-matter path: a direct DOCX upload (no matter_id) has NO stored AI review to
+        # preserve, so the redline is produced by the bare deterministic checker. It carries
+        # an honest, additive X-Export-Deterministic-Only marker so a client never mistakes
+        # it for the AI Review-tab result. The X-Export-Verified FORMAT signal is unchanged
+        # (it describes the track-changes Word package, not an AI verdict).
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+
+        export_status, _export_payload, export_headers = self.request_with_headers(
+            "POST",
+            "/api/export-review-docx",
+            {
+                "filename": "Uploaded NDA.docx",
+                "content_base64": base64.b64encode(source_docx).decode("ascii"),
+            },
+        )
+
+        self.assertEqual(export_status, 200)
+        self.assertEqual(
+            export_headers.get("X-Export-Deterministic-Only"),
+            server_module.redline_export_service.DETERMINISTIC_ONLY_EXPORT_HEADER,
+        )
+
+    def test_matter_export_matter_path_is_not_labelled_deterministic_only(self):
+        # Contrast with the no-matter path: a MATTER export carries the stored AI review, so
+        # it must NOT carry the deterministic-only marker.
+        source_docx = make_docx([
+            "This Agreement shall be governed by the laws of California.",
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                seeded_matter = self.seed_reviewed_upload(
+                    source_docx, filename="Matter NDA.docx"
+                )
+                export_status, _export_payload, export_headers = self.request_with_headers(
+                    "POST",
+                    "/api/export-review-docx",
+                    {"matter_id": seeded_matter["id"]},
+                )
+
+        self.assertEqual(export_status, 200)
+        self.assertNotIn("X-Export-Deterministic-Only", export_headers)
 
     @requires_pypdf
     def test_pdf_matter_export_reports_unavailable_reconstruction_and_preserves_pdf_source(self):
