@@ -100,6 +100,24 @@ def handle_matter_approve(handler, path: str) -> None:
 
     owner_user_id = request_owner_user_id(handler)
     actor = _request_actor(handler)
+    repository = _repository(handler)
+
+    # ATOMICITY (P0): approval and the reviewed-artifact mint must not diverge. If
+    # this matter carries reviewer edits, the reviewed/redlined DOCX is the document
+    # that will later be sent for signature -- so we build+register it BEFORE marking
+    # the matter approved (cleared-to-send). A build failure (stale review, a DOCX
+    # coverage-gate failure, a PDF-source reconstruction that would drop redlines, an
+    # un-coverage-verifiable matter) BLOCKS approval loud rather than leaving a
+    # cleared matter with no reviewed artifact -- which is exactly the state the send
+    # path would otherwise (silently) satisfy by signing the ORIGINAL. A matter with
+    # NO edits skips this entirely: there is nothing to redline, and we must NOT
+    # fabricate a "reviewed" artifact out of the original bytes (a later edit without
+    # re-register would then sign the original under a reviewed slot).
+    preflight = _preflight_reviewed_artifact(handler, matter_id, owner_user_id, repository)
+    if preflight is not None:
+        # A JSON error was already sent (blocked approval); stop here.
+        return
+
     try:
         approved = RepositoryMatterLifecycle(DiskMatterRepository()).approve_matter(
             matter_id,
@@ -121,15 +139,170 @@ def handle_matter_approve(handler, path: str) -> None:
         )
         return
 
+    # Re-mint after the approval commit so the reviewed artifact's lineage/current
+    # markers reflect the approved state. Idempotent (content-hash dedupe), so this
+    # does not double-register the artifact the pre-flight already produced. Any
+    # failure here is truly best-effort: the pre-flight already proved the reviewed
+    # DOCX builds cleanly and (for an edited matter) registered it, and the SEND path
+    # rebuilds-or-fails-closed regardless, so a hiccup here can never degrade to
+    # signing the original.
+    try:
+        matter_document_artifacts.build_reviewed_docx(
+            approved.matter["id"],
+            approved.matter,
+            owner_user_id=owner_user_id,
+            persist=_matter_has_reviewer_edits(approved.matter),
+        )
+    except Exception as error:  # noqa: BLE001 -- post-approval re-mint is best-effort.
+        logger.warning(
+            "Post-approval reviewed-DOCX re-mint failed for matter %s (%s); "
+            "send-for-signature rebuilds-or-fails-closed regardless.",
+            approved.matter.get("id"),
+            type(error).__name__,
+        )
+
     telemetry.increment("matter_approvals")
+    # Re-read the matter so the response reflects the reviewed artifact just minted
+    # (registration mutated the stored matter's artifact list). Fall back to the
+    # lifecycle's copy if the re-read is unavailable.
+    refreshed = repository.get_matter(approved.matter["id"], owner_user_id=owner_user_id)
     handler._send_json({
-        "matter": matter_view.public_matter(approved.matter),
+        "matter": matter_view.public_matter(refreshed or approved.matter),
         "status": "approved",
         "approved_at": approved.approved_at,
         "approver": approved.approver,
         "timeline_event": approved.timeline_event,
         "resolution": approved.resolution,
     })
+
+
+def _matter_has_reviewer_edits(matter: dict) -> bool:
+    """True when the matter has reviewer edits that change the source document.
+
+    Mirrors ``docusign_workflow._matter_has_reviewer_edits`` (same
+    ``approval.reviewed_docx_payload`` signal) so approval and send agree on which
+    matters need a reviewed document. A non-empty ``export_redline_edits`` or
+    ``manual_redline_edits`` means the reviewed doc differs from the original;
+    comment-only decisions leave the source intact. Fail-safe toward "has edits" so
+    a payload error routes through the reviewed (fail-closed) path.
+    """
+    try:
+        payload = approval.reviewed_docx_payload(matter)
+    except Exception:  # noqa: BLE001 -- fail closed toward the reviewed path.
+        return True
+    export_edits = payload.get("export_redline_edits")
+    manual_edits = payload.get("manual_redline_edits")
+    return bool(
+        (isinstance(export_edits, list) and export_edits)
+        or (isinstance(manual_edits, list) and manual_edits)
+    )
+
+
+def _preflight_reviewed_artifact(handler, matter_id, owner_user_id, repository):
+    """Build+register the reviewed DOCX BEFORE approval for an edited matter.
+
+    Returns a truthy sentinel when it sent a JSON error (approval must NOT proceed),
+    or None to let approval continue. For a no-edits matter it returns None without
+    building (nothing to redline; do not fabricate a reviewed artifact). For an
+    edited matter it:
+
+    * requires a coverage-VERIFIABLE source -- a non-empty ``extracted_text`` -- so
+      the DOCX content-coverage gate cannot be silently skipped (docx_health skips
+      the gate when the expected source text is empty, which would let a
+      clause-dropping redline register as an UNVERIFIED "reviewed" doc);
+    * builds+registers via the SAME build_reviewed_docx(persist=True) path, mapping a
+      build failure to the SAME statuses the download route returns, so the failure
+      is surfaced LOUD instead of silently degrading the send.
+    """
+    matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+    if matter is None:
+        handler._send_json({"error": "NDA not found."}, status=404)
+        return True
+    if not _matter_has_reviewer_edits(matter):
+        # No edits: the original/generated document is the faithful signable doc.
+        # Nothing to redline -- do not fabricate a reviewed artifact.
+        return None
+
+    # Coverage-gate hole (P1): the DOCX content-coverage gate is skipped when the
+    # expected source text is empty (docx_health), so a redline that dropped clauses
+    # would register as an UNVERIFIED "reviewed" doc and become signable. Refuse to
+    # mint a reviewed artifact we cannot coverage-verify.
+    if not str(matter.get("extracted_text") or "").strip():
+        handler._send_json(
+            {
+                "error": (
+                    "This NDA cannot be approved for signature: its source text is "
+                    "unavailable, so the reviewed document's content coverage cannot "
+                    "be verified. Re-extract the source before approving."
+                )
+            },
+            status=409,
+        )
+        return True
+
+    try:
+        matter_document_artifacts.build_reviewed_docx(
+            matter_id,
+            matter,
+            owner_user_id=owner_user_id,
+            persist=True,
+        )
+    except redline_export_service.DocxOpenHealthError as error:
+        logger.error(
+            "Reviewed DOCX failed integrity/coverage check at approval: %s | details=%s",
+            error,
+            error.details,
+        )
+        handler._send_json(
+            {"error": redline_export_service.DOCX_HEALTH_CLIENT_MESSAGE}, status=500
+        )
+        return True
+    except redline_export_service.MatterSourceTextChangedError as error:
+        handler._send_json({"error": str(error)}, status=409)
+        return True
+    except redline_export_service.StaleMatterReviewError as error:
+        handler._send_json(
+            {"error": str(error), "stale_reasons": error.reasons, "review_refresh": error.summary},
+            status=409,
+        )
+        return True
+    except redline_export_service.MatterNotFoundError as error:
+        handler._send_json({"error": str(error)}, status=404)
+        return True
+    except redline_export_service.PdfSourceRedlineUnavailableError as error:
+        handler._send_json(error.payload, status=error.status)
+        return True
+    except (DocxExtractionError, PdfExtractionError) as error:
+        handler._send_json({"error": str(error)}, status=400)
+        return True
+    except ParagraphAlignmentError:
+        handler._send_json(
+            {"error": "The extracted document paragraphs could not be aligned to the extracted text."},
+            status=400,
+        )
+        return True
+    except DocxExportError as error:
+        handler._send_json({"error": str(error)}, status=400)
+        return True
+    except pdf_docx_reconstruction.PdfDocxReconstructionBusy as error:
+        logger.info("Reviewed DOCX reconstruction busy at approval for matter %s: %s", matter_id, error)
+        handler._send_json({"error": str(error)}, status=503, headers={"Retry-After": "1"})
+        return True
+    except artifact_service.ArtifactRegistryError as error:
+        handler._send_json({"error": str(error)}, status=500)
+        return True
+    except Exception as error:  # noqa: BLE001 -- never leak a bare 500; block approval loud.
+        logger.exception(
+            "Reviewed DOCX build failed unexpectedly at approval for matter %s (%s)",
+            matter_id,
+            type(error).__name__,
+        )
+        handler._send_json(
+            {"error": "The reviewed document could not be produced. Please try again."},
+            status=500,
+        )
+        return True
+    return None
 
 
 def _reviewed_docx_changes_mode(handler) -> str | None:

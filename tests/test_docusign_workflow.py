@@ -991,3 +991,226 @@ def test_override_blank_role_non_aspora_defaults_to_counterparty():
     )
     assert signers[0].get("role") == "counterparty"
     assert signers[0]["email"] == "pranav@acme.com"
+
+
+# --------------------------------------------------------------------------- #
+# P0: a reviewed/edited matter can NEVER sign the un-redlined ORIGINAL or a
+# stale reviewed copy — it signs the CURRENT, coverage-verified reviewed doc or
+# it FAILS LOUD. These exercise _resolve_signable_document directly.
+# --------------------------------------------------------------------------- #
+from nda_automation import matter_document_artifacts, redline_export_service  # noqa: E402
+from nda_automation.artifact_registry import ROLE_ORIGINAL  # noqa: E402
+from nda_automation.matter_document_artifacts import ReviewedDocx  # noqa: E402
+from nda_automation.redline_export_service import RedlineExport  # noqa: E402
+
+ORIGINAL_PDF = b"%PDF-1.4 THE UNREDLINED ORIGINAL"
+REVIEWED_PDF = b"%PDF-1.4 the reviewed redlined document"
+
+
+def _edited_matter(in_memory_matters, *, source_filename="acme-nda.docx", source_bytes=b"orig"):
+    """A matter that HAS reviewer edits (accepted clause with a matching server
+    redline) and only an ORIGINAL artifact registered — the dangerous shape where a
+    naive precedence walk would sign the original and drop the reviewer's edits."""
+    matter = in_memory_matters.create_matter(
+        source_filename=source_filename,
+        document_bytes=source_bytes,
+        extracted_text="Clause one.\n\nClause two.",
+        review_result={"redline_edits": [{"id": "r1", "clause_id": "c1", "paragraph_id": "p1", "action": "replace_paragraph"}]},
+        triage={},
+        owner_user_id=OWNER,
+        intake_metadata={"reply_to": "cp@acme.com", "sender": "cp@acme.com", "subject": "Acme NDA"},
+    )
+    matter_id = matter["id"]
+    # Register the ORIGINAL artifact with distinctive bytes so a wrong fallback is
+    # detectable (signing these bytes == the bug).
+    artifact_service.add_artifact(
+        matter_id,
+        source=SOURCE_GENERATED,
+        actor=ACTOR_HUMAN,
+        role=ROLE_ORIGINAL,
+        document_bytes=ORIGINAL_PDF,
+        repository=in_memory_matters,
+        owner_user_id=OWNER,
+    )
+    # An accepted decision on the flagged clause => non-empty export_redline_edits
+    # => _matter_has_reviewer_edits is True. Use the canonical decision API (a plain
+    # update_matter_fields drops the reviewer_decisions field via the store
+    # whitelist). Mark human_reviewed so the send gate (matter_cleared_for_signature)
+    # is satisfied for the full-send tests.
+    in_memory_matters.set_clause_reviewer_decision(
+        matter_id, "c1", {"action": "accept", "actor": "reviewer"}, owner_user_id=OWNER
+    )
+    in_memory_matters.update_matter_fields(
+        matter_id, {"human_reviewed": True}, owner_user_id=OWNER
+    )
+    return in_memory_matters.get_matter(matter_id, owner_user_id=OWNER), matter_id
+
+
+def test_edited_matter_resolves_reviewed_not_original(in_memory_matters, monkeypatch):
+    """An edited matter signs the freshly-built REVIEWED doc, never the ORIGINAL."""
+    matter, matter_id = _edited_matter(in_memory_matters)
+    assert docusign_workflow._matter_has_reviewer_edits(matter) is True
+
+    def fake_build(mid, m, *, repository=None, owner_user_id="", persist=True):
+        # Reuse-the-same-path contract: persist=True at send.
+        assert persist is True
+        return ReviewedDocx(
+            export=RedlineExport(data=REVIEWED_PDF, filename="acme-nda-redlined.pdf"),
+            artifact=None,
+            payload={},
+        )
+
+    monkeypatch.setattr(matter_document_artifacts, "build_reviewed_docx", fake_build)
+    data, filename = docusign_workflow._resolve_signable_document(
+        matter, matter_id, OWNER, in_memory_matters
+    )
+    assert data == REVIEWED_PDF
+    assert data != ORIGINAL_PDF
+    assert filename.endswith(".pdf")
+
+
+def test_edited_matter_reviewed_unavailable_raises_never_signs_original(in_memory_matters, monkeypatch):
+    """Edits exist but the reviewed build fails => RAISE, never fall back to original."""
+    matter, matter_id = _edited_matter(in_memory_matters)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("reviewed build blew up")
+
+    monkeypatch.setattr(matter_document_artifacts, "build_reviewed_docx", boom)
+    with pytest.raises(docusign_workflow.ReviewedDocumentUnavailableError):
+        docusign_workflow._resolve_signable_document(
+            matter, matter_id, OWNER, in_memory_matters
+        )
+
+
+def test_edited_matter_stale_after_edit_raises(in_memory_matters, monkeypatch):
+    """A stale review (playbook drift / re-edit) => the guarded build raises
+    StaleMatterReviewError, so the send RAISES rather than signing a stale doc."""
+    matter, matter_id = _edited_matter(in_memory_matters)
+
+    def stale(*args, **kwargs):
+        raise redline_export_service.StaleMatterReviewError(
+            {"stale_reasons": ["playbook_changed"], "stale": True}
+        )
+
+    monkeypatch.setattr(matter_document_artifacts, "build_reviewed_docx", stale)
+    with pytest.raises(docusign_workflow.ReviewedDocumentUnavailableError):
+        docusign_workflow._resolve_signable_document(
+            matter, matter_id, OWNER, in_memory_matters
+        )
+
+
+def test_edited_pdf_source_reconstruction_shortfall_fails_closed(in_memory_matters, monkeypatch):
+    """PDF-source WITH edits whose reconstruction would drop redlines => the build
+    raises PdfSourceRedlineUnavailableError, so the send fails closed and NEVER
+    signs the original PDF."""
+    matter, matter_id = _edited_matter(
+        in_memory_matters, source_filename="acme-nda.pdf", source_bytes=ORIGINAL_PDF
+    )
+
+    def pdf_unavailable(*args, **kwargs):
+        raise redline_export_service.PdfSourceRedlineUnavailableError(
+            "reconstruction dropped a redline", source_filename="acme-nda.pdf"
+        )
+
+    monkeypatch.setattr(matter_document_artifacts, "build_reviewed_docx", pdf_unavailable)
+    with pytest.raises(docusign_workflow.ReviewedDocumentUnavailableError):
+        docusign_workflow._resolve_signable_document(
+            matter, matter_id, OWNER, in_memory_matters
+        )
+
+
+def test_edited_matter_build_collapsing_to_original_passthrough_fails_closed(in_memory_matters, monkeypatch):
+    """Belt-and-suspenders: if the reviewed build (impossibly, for an edited matter)
+    returned the ORIGINAL passthrough tagged X-Export-Original, we refuse it rather
+    than sign the original under a 'reviewed' guise."""
+    matter, matter_id = _edited_matter(in_memory_matters)
+
+    def original_passthrough(*args, **kwargs):
+        return ReviewedDocx(
+            export=RedlineExport(
+                data=ORIGINAL_PDF,
+                filename="acme-nda.pdf",
+                headers={
+                    redline_export_service.ORIGINAL_EXPORT_MARKER_HEADER:
+                        redline_export_service.ORIGINAL_UNCHANGED_EXPORT_HEADER
+                },
+            ),
+            artifact=None,
+            payload={},
+        )
+
+    monkeypatch.setattr(matter_document_artifacts, "build_reviewed_docx", original_passthrough)
+    with pytest.raises(docusign_workflow.ReviewedDocumentUnavailableError):
+        docusign_workflow._resolve_signable_document(
+            matter, matter_id, OWNER, in_memory_matters
+        )
+
+
+def test_no_edits_matter_resolves_original(in_memory_matters):
+    """A matter with NO reviewer edits (nothing to redline) signs the ORIGINAL — the
+    correct document, not a degraded fallback. The reviewed builder is never invoked."""
+    matter = in_memory_matters.create_matter(
+        source_filename="clean-nda.pdf",
+        document_bytes=b"src",
+        extracted_text="text",
+        review_result={},
+        triage={},
+        owner_user_id=OWNER,
+        intake_metadata={"reply_to": "cp@acme.com", "sender": "cp@acme.com"},
+    )
+    matter_id = matter["id"]
+    artifact_service.add_artifact(
+        matter_id,
+        source=SOURCE_GENERATED,
+        actor=ACTOR_HUMAN,
+        role=ROLE_ORIGINAL,
+        document_bytes=ORIGINAL_PDF,
+        repository=in_memory_matters,
+        owner_user_id=OWNER,
+    )
+    stored = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
+    assert docusign_workflow._matter_has_reviewer_edits(stored) is False
+    data, filename = docusign_workflow._resolve_signable_document(
+        stored, matter_id, OWNER, in_memory_matters
+    )
+    assert data == ORIGINAL_PDF
+    assert filename.endswith(".pdf")
+
+
+def test_generated_matter_resolves_generated_artifact(in_memory_matters):
+    """A generated-but-unreviewed NDA has no edits => precedence resolves the
+    GENERATED artifact (not a reviewed build, not the raw source)."""
+    matter, matter_id = _generated_unreviewed_matter(in_memory_matters)
+    stored = in_memory_matters.get_matter(matter_id, owner_user_id=OWNER)
+    assert docusign_workflow._matter_has_reviewer_edits(stored) is False
+    data, filename = docusign_workflow._resolve_signable_document(
+        stored, matter_id, OWNER, in_memory_matters
+    )
+    # The generated artifact's PDF bytes (PDF_BYTES) resolve, not the raw b"original".
+    assert data == PDF_BYTES
+    assert filename.endswith(".pdf")
+
+
+def test_send_for_edited_matter_signs_reviewed_bytes_end_to_end(in_memory_matters, monkeypatch):
+    """Full send: the envelope document is the REVIEWED bytes, and the persisted
+    filename is the reviewed one — the original bytes never reach DocuSign."""
+    matter, matter_id = _edited_matter(in_memory_matters)
+
+    def fake_build(mid, m, *, repository=None, owner_user_id="", persist=True):
+        return ReviewedDocx(
+            export=RedlineExport(data=REVIEWED_PDF, filename="acme-nda-redlined.pdf"),
+            artifact=None,
+            payload={},
+        )
+
+    monkeypatch.setattr(matter_document_artifacts, "build_reviewed_docx", fake_build)
+    fake = FakeDocuSignClient()
+    result = docusign_workflow.send_for_signature(
+        matter, matter_id, OWNER, repository=in_memory_matters, client=fake
+    )
+    assert result.envelope_id
+    # The document DocuSign received is the reviewed doc, never the original.
+    sent_bytes = fake._envelopes[result.envelope_id].document_bytes
+    assert sent_bytes == REVIEWED_PDF
+    assert sent_bytes != ORIGINAL_PDF
