@@ -53,7 +53,7 @@ import {
   isValidRecipientEmail,
   fileStem,
 } from "./send-document.mjs";
-import { createDraftIntake } from "./draft-intake.mjs";
+import { createDraftIntake } from "./draft-intake.mjs?v=20260702termunit1";
 import { GeneratorWorkstationModel } from "./generator-workstation-model.mjs";
 import { createGenerationApi, GenerationUnavailableError, GenerationTimeoutError } from "./generation-api.mjs";
 import { PdfMarkupWorkstation } from "./pdf-markup-workstation.mjs";
