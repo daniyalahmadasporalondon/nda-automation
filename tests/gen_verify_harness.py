@@ -553,6 +553,121 @@ def check_structural(text: str, report: VerificationReport) -> None:
         report.warn("structural.signature_blocks", "fewer than two signature blocks detected")
 
 
+# --------------------------------------------------------------------------- #
+# 5b. Term boundedness (the generator must never emit an open-ended term)
+# --------------------------------------------------------------------------- #
+# Open-ended survival connectors that make the ordinary confidentiality term
+# effectively unbounded even when a numeric cap is stated. "...for a fixed period
+# of five (5) years ... or until the completion of the Purpose, whichever is
+# LATER" takes the LONGER leg -- and a Purpose rarely formally completes -- so the
+# obligation is de facto perpetual, defeating the cap. The correct phrasing is
+# "whichever is EARLIER" (obligations end at the cap OR Purpose-completion,
+# whichever comes first, so the cap always binds). Matched over normalized text.
+# Scanned only over the extracted TERM clause of a GENERATED draft (a narrow,
+# controlled context), so these connectors are unambiguously open-ended there.
+# Deliberately conservative: "whichever is (the) later" / "whichever comes/occurs
+# later|last". The inverted "the later of X or Y" phrasing is NOT included -- it
+# risks false positives on benign "the later of two dates" business language and
+# the generator never emits it.
+_OPEN_ENDED_TERM_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("whichever_is_later", r"\bwhichever\s+is\s+(?:the\s+)?later\b"),
+    ("whichever_comes_later", r"\bwhichever\s+(?:comes|occurs)\s+(?:later|last)\b"),
+)
+
+
+def _term_cap_years() -> int:
+    """The Playbook's ordinary-confidentiality term cap in whole years."""
+    playbook = load_playbook()
+    for clause in playbook.get("clauses", []):
+        if clause.get("id") == "term_and_survival":
+            for key in ("max_term_years", "term_cap_years"):
+                value = clause.get(key)
+                if isinstance(value, (int, float)) and value > 0:
+                    return int(value)
+            rules = clause.get("rules", {})
+            if isinstance(rules, Mapping):
+                value = rules.get("max_term_years")
+                if isinstance(value, (int, float)) and value > 0:
+                    return int(value)
+            break
+    return 5
+
+
+def check_term_bounded(text: str, report: VerificationReport) -> None:
+    """The generated TERM clause must be BOUNDED by the Playbook cap.
+
+    Two independent assertions on the ``TERM OF THE AGREEMENT`` clause body:
+
+    * POSITIVE: the clause must state a fixed numeric duration ("N year(s)")
+      that is AT OR UNDER the cap, so the term is actually bounded and not
+      silently open-ended. (The generator writes the RESOLVED term -- 2, 3, or 5
+      years -- not always the cap value, so we require a bounded figure, not the
+      literal cap number.)
+    * NEGATIVE: the clause must NOT carry an open-ended connector
+      ("whichever is later") that would take the LONGER of the fixed period and
+      Purpose-completion, defeating the cap. This is the exact defect the
+      deterministic year-check cannot see: it reads "5 years" and passes while the
+      "whichever is later" tail makes the obligation de facto perpetual.
+
+    A missing/malformed TERM clause is a DEFECT (fail-safe: never pass silently).
+    """
+    cap_years = _term_cap_years()
+    term_clause = _term_clause_text(text)
+    if not term_clause:
+        report.defect(
+            "term.clause_missing",
+            "TERM OF THE AGREEMENT clause not found; cannot verify term is bounded",
+        )
+        return
+    norm = _normalize_sentence(term_clause)
+    for label, pattern in _OPEN_ENDED_TERM_PATTERNS:
+        if re.search(pattern, norm):
+            report.defect(
+                "term.open_ended",
+                f"term clause carries open-ended survival language ({label}): "
+                f"the term is not bounded by the {cap_years}-year cap -- "
+                f"{term_clause[:200]!r}",
+            )
+    # POSITIVE: a fixed numeric duration must be present AND within the cap. The
+    # ordinary term is written as "for a fixed period of <word> (N) year(s)"; we
+    # read the digit in parentheses and require 0 < N <= cap. A clause with NO
+    # such bounded figure (or one over the cap) is not properly capped.
+    bounded_years = [
+        int(m.group(1))
+        for m in re.finditer(r"\((\d{1,2})\)\s*years?\b", term_clause)
+    ]
+    if not bounded_years:
+        report.defect(
+            "term.cap_missing",
+            f"term clause states no fixed numeric duration (expected a capped "
+            f"'(N) year(s)' figure <= {cap_years}): {term_clause[:200]!r}",
+        )
+    elif not any(0 < n <= cap_years for n in bounded_years):
+        report.defect(
+            "term.over_cap",
+            f"term clause's fixed period {bounded_years} exceeds the {cap_years}-year "
+            f"cap: {term_clause[:200]!r}",
+        )
+
+
+def _term_clause_text(text: str) -> str:
+    """Extract the TERM OF THE AGREEMENT clause body from the draft text.
+
+    Returns the run from the TERM heading up to the next ALL-CAPS heading or a
+    blank line, or "" when the heading is absent. Robust to the heading appearing
+    mid-line (the generator keeps it on its own paragraph)."""
+    lowered = text.lower()
+    anchor = lowered.find("term of the agreement")
+    if anchor < 0:
+        return ""
+    tail = text[anchor:]
+    # Stop at the next clause heading / blank-line boundary.
+    stop = re.search(r"\n\s*\n|\n[A-Z][A-Z /]{3,}:", tail[len("term of the agreement"):])
+    if stop:
+        return tail[: len("term of the agreement") + stop.start()].strip()
+    return tail.strip()
+
+
 def template_authoritative_sentences(template_bytes: bytes) -> list[str]:
     """Authoritative-wording fragment set used by the drift check.
 
@@ -708,6 +823,7 @@ def verify_generated_draft(
     report = VerificationReport(label=label)
     text = docx_to_text(docx_bytes)
     check_structural(text, report)
+    check_term_bounded(text, report)
     check_playbook_native(text, report)
     check_non_circumvention(text, report)
     check_entity(text, entity, report)

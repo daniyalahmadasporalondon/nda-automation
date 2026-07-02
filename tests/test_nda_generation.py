@@ -406,6 +406,22 @@ class TestClauseAlignment:
         result = _generate(playbook, intake=_intake(term_years=10))
         assert result.manifest.term_years == 5  # Playbook max_term_years
 
+    def test_term_clause_is_bounded_whichever_is_earlier(self, playbook):
+        # The generated TERM clause must end obligations at the cap OR
+        # Purpose-completion, WHICHEVER IS EARLIER -- so the cap always binds.
+        # "whichever is LATER" takes the longer leg and, since a Purpose rarely
+        # formally completes, makes the obligation de facto perpetual, defeating
+        # the Playbook cap while the deterministic year-check still reads "5 years"
+        # and passes. Assert the correct connector is present and the open-ended
+        # one is absent.
+        # term_years=10 clamps to the Playbook max (5), so the clause reads
+        # "five (5) years" -- the cap value that must appear verbatim.
+        text = extract_docx_text(_generate(playbook, intake=_intake(term_years=10)).docx_bytes).lower()
+        assert "whichever is earlier" in text
+        assert "whichever is later" not in text
+        # And the term is still numerically capped at the Playbook max.
+        assert "five (5) years" in text
+
     def test_generate_for_entity_uses_active_bundle_snapshot(self, playbook):
         active_playbook = deepcopy(playbook)
         term = next(clause for clause in active_playbook["clauses"] if clause["id"] == "term_and_survival")

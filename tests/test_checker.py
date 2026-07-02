@@ -724,6 +724,36 @@ class CheckerTests(unittest.TestCase):
         self.assertFalse(term_clause["passes"])
         self.assertIn("indefinite or perpetual", term_clause["finding"])
 
+    def test_term_and_survival_flags_whichever_is_later_open_ended_term(self):
+        # A term clause that caps at five years OR Purpose-completion "whichever
+        # is LATER" is de facto perpetual (a Purpose rarely formally completes),
+        # so it defeats the cap even though a "5 years" figure is present. The
+        # playbook indefinite_terms cue list must flag this as indefinite rather
+        # than let the numeric-cap read pass it.
+        result = review_nda(
+            "The confidentiality obligations shall survive for a fixed period of "
+            "five (5) years from the date of this Agreement or until the completion "
+            "of the Purpose, whichever is later."
+        )
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertEqual(term_clause["status"], "check")
+        self.assertFalse(term_clause["passes"])
+        self.assertIn("indefinite or perpetual", term_clause["finding"])
+        self.assertIn("whichever is later", term_clause["matched_text"].lower())
+
+    def test_term_and_survival_allows_whichever_is_earlier_bounded_term(self):
+        # The corrected phrasing -- "whichever is EARLIER" -- bounds the term at
+        # the cap and must NOT trip the open-ended cue.
+        result = review_nda(
+            "The confidentiality obligations shall survive for a fixed period of "
+            "five (5) years from the date of this Agreement or until the completion "
+            "of the Purpose, whichever is earlier."
+        )
+
+        term_clause = next(clause for clause in result["clauses"] if clause["id"] == "term_and_survival")
+        self.assertTrue(term_clause["passes"])
+
     def test_term_and_survival_rejects_over_cap_ordinary_term_with_trade_secret_carve_out(self):
         result = review_nda(
             """

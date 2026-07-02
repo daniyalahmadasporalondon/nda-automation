@@ -1739,7 +1739,7 @@ def _align_term_and_survival(
         "This Agreement shall become effective on the date of signing of this Agreement and shall "
         f"remain in force, and the confidentiality obligations shall survive, for a fixed period of "
         f"{_year_count_label(term_years, parenthetical=True)} from the date of this Agreement or until the completion of the "
-        f"Purpose, whichever is later. {survival}"
+        f"Purpose, whichever is earlier. {survival}"
     )
 
     for paragraph in document.paragraphs:
