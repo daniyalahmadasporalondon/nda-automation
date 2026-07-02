@@ -317,6 +317,32 @@ def handle_send_for_signature(handler, path: str) -> None:
         )
         return
 
+    # COVERAGE-GATE SYMMETRY (P2): the approval route refuses to mint a reviewed
+    # artifact for an edited matter with BLANK extracted_text (the DOCX content-
+    # coverage gate is silently skipped without expected source text, so a clause-
+    # dropping redline could ship UNVERIFIED). But the board "mark reviewed" path
+    # (repository_board_workflow.set_reviewed) sets human_reviewed=True with no such
+    # check, so an edited + human_reviewed matter could reach send with no source
+    # text. Apply the SAME guard on the send path so BOTH clear-for-signature routes
+    # are symmetric. A no-edits matter signs the original (no reconstruction, no
+    # coverage concern), so this only gates matters that carry edits.
+    if docusign_workflow._matter_has_reviewer_edits(matter) and not str(
+        matter.get("extracted_text") or ""
+    ).strip():
+        telemetry.increment("docusign_send_unverifiable_source_rejected")
+        handler._send_json(
+            {
+                "error": (
+                    "This NDA cannot be sent for signature: its source text is "
+                    "unavailable, so the reviewed document's content coverage cannot "
+                    "be verified. Re-extract the source and re-approve before sending."
+                ),
+                "needs_review": True,
+            },
+            status=409,
+        )
+        return
+
     signers = payload.get("signers") if isinstance(payload.get("signers"), list) else None
     signing_order = str(payload.get("signing_order") or docusign_integration.DEFAULT_SIGNING_ORDER)
     email_subject = str(payload.get("email_subject") or "")

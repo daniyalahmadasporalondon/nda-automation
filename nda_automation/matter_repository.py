@@ -579,6 +579,25 @@ class InMemoryMatterRepository:
                     "reviewer_decisions": decisions,
                     "updated_at": now,
                 }
+                # RE-APPROVAL GATE (P1) — mirror matter_store.set_clause_reviewer_decision
+                # exactly (shared predicate): a decision changed AFTER the matter was
+                # cleared for signature must un-clear it (force re-approval), so a stale
+                # reviewed artifact minted against the OLD decisions can never be sent.
+                if matter_store._matter_was_cleared_for_signature(matter):
+                    updated_matter["status"] = "in_review"
+                    updated_matter["approved_at"] = None
+                    updated_matter["approver"] = None
+                    updated_matter["human_reviewed"] = False
+                    timeline = list(updated_matter.get("matter_timeline") or [])
+                    timeline.append({
+                        "type": "approval_reset",
+                        "at": now,
+                        "detail": (
+                            "Approval reset: a reviewer decision changed after approval; "
+                            "re-approve to refresh the document sent for signature."
+                        ),
+                    })
+                    updated_matter["matter_timeline"] = timeline
                 self._matters[index] = updated_matter
                 return copy.deepcopy(updated_matter)
         return None

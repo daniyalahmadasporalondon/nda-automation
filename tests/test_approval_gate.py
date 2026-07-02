@@ -568,6 +568,114 @@ class ApprovalEndpointTests(unittest.TestCase):
         self.assertEqual(len(stored["matter_timeline"]), 1)
         self.assertEqual(stored["matter_timeline"][0]["type"], "matter_approved")
 
+    def test_approve_atomicity_build_failure_blocks_approval(self):
+        # ATOMICITY (P0): an edited matter whose reviewed-DOCX build fails must NOT be
+        # marked approved (cleared-to-send). Otherwise the send path would find no
+        # reviewed artifact and could sign the un-redlined original. The pre-flight
+        # surfaces the failure LOUD and the matter stays in_review.
+        matter_id, _ = self._seed_matter(resolve_all=True, with_redline=True)
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("reviewed build blew up")
+
+        with patch.object(redline_export_service, "build_matter_redline", side_effect=boom):
+            status, payload, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
+
+        self.assertEqual(status, 500)
+        self.assertIn("reviewed document", payload["error"])
+        # Fail-closed: the matter was NOT approved.
+        self.assertEqual(matter_store.get_matter(matter_id)["status"], "in_review")
+
+    def test_approve_blocks_when_source_text_unverifiable(self):
+        # COVERAGE-GATE HOLE (P1): the DOCX content-coverage gate is skipped when the
+        # expected source text is empty, so a redline that dropped clauses could
+        # register as an UNVERIFIED "reviewed" doc. An edited matter with no
+        # extracted_text is refused at approval rather than minting an unverifiable
+        # reviewed doc that becomes signable.
+        matter_id, _ = self._seed_matter(resolve_all=True, with_redline=True)
+        with matter_store._locked_store():
+            record = matter_store._load_matter_record_by_id(matter_id)
+            record["extracted_text"] = ""
+            matter_store._save_matter_record(record)
+
+        status, payload, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
+
+        self.assertEqual(status, 409)
+        self.assertIn("content coverage", payload["error"])
+        self.assertEqual(matter_store.get_matter(matter_id)["status"], "in_review")
+
+    def test_approve_no_edits_does_not_fabricate_reviewed_artifact(self):
+        # DON'T FABRICATE REVIEWED (P1): a matter with NO reviewer edits (nothing to
+        # redline) approves without minting a reviewed artifact -- the original is the
+        # faithful signable doc, and a fabricated "reviewed" slot could later mask an
+        # edit-without-reregister. Approval succeeds; no reviewed artifact is added.
+        from nda_automation.artifact_registry import ROLE_REVIEWED, latest_artifact_for_role
+
+        matter_id, _ = self._seed_matter(resolve_all=True)  # no with_redline => no edits
+        status, _payload, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
+        self.assertEqual(status, 200)
+        stored = matter_store.get_matter(matter_id)
+        self.assertEqual(stored["status"], "approved")
+        self.assertIsNone(latest_artifact_for_role(stored, ROLE_REVIEWED))
+
+    def test_reverting_edit_after_approval_reverts_to_reapproval_and_wont_sign_stale(self):
+        # P1 (stale-after-reversal), end-to-end through the real approve + decision
+        # routes: approve an EDITED matter (mints a role=reviewed artifact baking in
+        # c1's redline), then REVERSE c1 post-approval. The matter must un-clear (back
+        # to in_review, approved_at cleared), and the now-no-edits matter must NEVER
+        # resolve the stale reviewed artifact for signing.
+        from nda_automation import artifact_service, docusign_workflow
+        from nda_automation.artifact_registry import ROLE_REVIEWED, latest_artifact_for_role
+        from nda_automation.matter_repository import DiskMatterRepository
+
+        matter_id, flagged = self._seed_matter(resolve_all=True, with_redline=True)
+        clause_id = flagged[0]
+
+        # Approve. Stub the builder so the synthetic redline registers a reviewed
+        # artifact (the real content-coverage gate rejects this test-only redline;
+        # that gate is exercised elsewhere).
+        def fake_build(mid, payload=None, *, persist=False, repository=None, owner_user_id=""):
+            data = b"PK\x03\x04stale-reviewed-with-c1-redline"
+            if persist:
+                artifact_service.register_reviewed_docx(
+                    mid, data, repository=repository, owner_user_id=owner_user_id
+                )
+            return RedlineExport(data=data, filename="mutual-nda-redlined.docx")
+
+        with patch.object(redline_export_service, "build_matter_redline", side_effect=fake_build):
+            approve_status, _, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
+        self.assertEqual(approve_status, 200)
+        approved = matter_store.get_matter(matter_id)
+        self.assertEqual(approved["status"], "approved")
+        self.assertIsNotNone(latest_artifact_for_role(approved, ROLE_REVIEWED))
+
+        # Reviewer REVERSES c1 (reject) after approval.
+        rev_status, _rev_payload, _ = self.request(
+            "POST",
+            f"/api/matters/{matter_id}/clauses/{clause_id}/decision",
+            {"action": "reject"},
+        )
+        self.assertEqual(rev_status, 200)
+
+        # Un-cleared: forced back to in_review, approval stamps cleared.
+        reverted = matter_store.get_matter(matter_id)
+        self.assertEqual(reverted["status"], "in_review")
+        self.assertFalse(reverted.get("approved_at"))
+        self.assertFalse(reverted.get("human_reviewed"))
+        self.assertFalse(docusign_workflow.matter_cleared_for_signature(reverted))
+        # An approval_reset event was recorded.
+        self.assertTrue(
+            any(e.get("type") == "approval_reset" for e in reverted.get("matter_timeline", []))
+        )
+
+        # BACKSTOP: even resolving the signable doc directly (no-edits branch) must
+        # NOT return the stale reviewed artifact — it falls through to the source.
+        self.assertFalse(docusign_workflow._matter_has_reviewer_edits(reverted))
+        data, _filename = docusign_workflow._resolve_signable_document(
+            reverted, matter_id, "", DiskMatterRepository()
+        )
+        self.assertNotIn(b"stale-reviewed-with-c1-redline", data)
+
     # --- reviewed-docx -----------------------------------------------------
     def test_reviewed_docx_preview_serves_reviewed_but_unapproved_without_registering(self):
         # A reviewed-but-unapproved matter (status "in_review", review_result
@@ -633,11 +741,18 @@ class ApprovalEndpointTests(unittest.TestCase):
         from nda_automation import artifact_service
 
         matter_id, _ = self._seed_matter(resolve_all=True, with_redline=True)
-        approve_status, _, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
-        self.assertEqual(approve_status, 200)
 
         def fake_build(mid, payload=None, *, persist=False, repository=None, owner_user_id=""):
             return RedlineExport(data=b"PK\x03\x04reviewed-docx-approved", filename="mutual-nda-redlined.docx")
+
+        # Approval now ATOMICALLY builds+registers the reviewed DOCX for an edited
+        # matter (the pre-flight): a real build failure would block approval loud.
+        # This edited matter's synthetic redline does not round-trip the content-
+        # coverage gate, so we stub the builder around BOTH approve and download to
+        # exercise the registration wiring rather than the (separately tested) gate.
+        with patch.object(redline_export_service, "build_matter_redline", side_effect=fake_build):
+            approve_status, _, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
+        self.assertEqual(approve_status, 200)
 
         with patch.object(redline_export_service, "build_matter_redline", side_effect=fake_build), \
                 patch.object(
@@ -735,47 +850,48 @@ class ApprovalEndpointTests(unittest.TestCase):
         self.assertEqual(status, 503)
         self.assertIn("LibreOffice/soffice", payload["error"])
 
-    def test_reviewed_docx_reports_unavailable_pdf_reconstruction_engine(self):
-        # WITH a redline (reconstruction IS attempted), an unavailable pdf2docx engine
-        # surfaces the recovery payload -- the with-redlines path is unchanged.
+    def test_approve_blocked_when_pdf_reconstruction_engine_unavailable(self):
+        # ATOMICITY (P0): a PDF-source matter WITH reviewer edits needs a faithful
+        # reviewed/redlined document to sign. When the pdf2docx reconstruction engine
+        # is unavailable (as in the test env) that reviewed DOCX cannot be built, so
+        # approval now FAILS CLOSED at the pre-flight -- surfacing the same recovery
+        # payload the download route returns -- rather than marking the matter
+        # cleared-to-send with no reviewed artifact (which the send path would satisfy
+        # by signing the un-redlined ORIGINAL). The matter stays in_review.
         matter_id, _flagged = self._seed_matter(
             resolve_all=True, source_docx=False, with_redline=True
         )
-        approve_status, _, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
-        self.assertEqual(approve_status, 200)
-
-        status, payload, _ = self.request("GET", f"/api/matters/{matter_id}/reviewed-docx")
+        status, payload, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
 
         self.assertEqual(status, 503)
         self.assertIn("pdf2docx", payload["error"])
         reconstruction = payload["pdf_docx_reconstruction"]
         self.assertEqual(reconstruction["status"], "unavailable")
-        self.assertEqual(reconstruction["filename"], "mutual-nda.docx")
         self.assertEqual(reconstruction["converter"]["mode"], "pdf_to_docx_reconstruction")
         self.assertEqual(reconstruction["fidelity"]["output"], "reviewed_docx")
         self.assertEqual(
             reconstruction["fidelity"]["message"],
             pdf_docx_reconstruction.PDF_DOCX_RECONSTRUCTION_FIDELITY_MESSAGE,
         )
+        # Fail-closed: not approved.
+        self.assertEqual(matter_store.get_matter(matter_id)["status"], "in_review")
 
     def test_reviewed_pdf_reports_unavailable_pdf_reconstruction_engine(self):
-        # WITH a redline (reconstruction IS attempted), an unavailable pdf2docx engine
-        # surfaces the recovery payload -- the with-redlines path is unchanged.
+        # Same fail-closed contract via the reviewed-PDF lens: with a redline the
+        # reviewed DOCX reconstruction is attempted, and an unavailable pdf2docx engine
+        # blocks approval before any reviewed artifact is minted.
         matter_id, _flagged = self._seed_matter(
             resolve_all=True, source_docx=False, with_redline=True
         )
-        approve_status, _, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
-        self.assertEqual(approve_status, 200)
-
-        status, payload, _ = self.request("GET", f"/api/matters/{matter_id}/reviewed-pdf")
+        status, payload, _ = self.request("POST", f"/api/matters/{matter_id}/approve")
 
         self.assertEqual(status, 503)
         self.assertIn("pdf2docx", payload["error"])
         reconstruction = payload["pdf_docx_reconstruction"]
         self.assertEqual(reconstruction["status"], "unavailable")
-        self.assertEqual(reconstruction["filename"], "mutual-nda.docx")
         self.assertEqual(reconstruction["converter"]["mode"], "pdf_to_docx_reconstruction")
         self.assertEqual(reconstruction["fidelity"]["output"], "reviewed_docx")
+        self.assertEqual(matter_store.get_matter(matter_id)["status"], "in_review")
 
     def test_reviewed_docx_zero_redline_pdf_serves_original_not_verified_reconstruction(self):
         # End-to-end through the real /reviewed-docx route: a PDF-source matter with NO

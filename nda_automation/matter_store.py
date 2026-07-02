@@ -588,6 +588,29 @@ def _coerce_counterparty_block(counterparty: object) -> dict[str, Any]:
         return block
 
 
+def _matter_was_cleared_for_signature(matter: dict[str, Any]) -> bool:
+    """True when a matter is (or was) cleared to send for signature.
+
+    A read-side mirror of ``docusign_workflow.matter_cleared_for_signature``'s
+    APPROVAL signals -- kept inline so the store never imports the workflow layer.
+    Any of these means the matter had been signed off and a reviewed artifact may
+    have been minted against a NOW-superseded decision set:
+
+    * ``status == "approved"`` (the canonical approve transition), OR
+    * an ``approved_at`` stamp, OR
+    * the board's ``human_reviewed`` flag.
+
+    (The workflow's fourth signal -- a clean auto-review -- is intentionally NOT
+    reset here: it reflects the review engine's own verdict, not a human sign-off
+    that a later decision edit would contradict.)
+    """
+    if str(matter.get("status") or "").strip().lower() == "approved":
+        return True
+    if matter.get("approved_at"):
+        return True
+    return bool(matter.get("human_reviewed"))
+
+
 def set_clause_reviewer_decision(
     matter_id: str,
     clause_id: str,
@@ -598,6 +621,18 @@ def set_clause_reviewer_decision(
 
     Decisions live in a matter-level ``reviewer_decisions`` map keyed by clause
     id; the review_result payload is never mutated here.
+
+    RE-APPROVAL GATE (P1): a reviewer decision changed AFTER the matter was cleared
+    for signature (approved / marked human-reviewed) must never leave the matter in
+    the cleared state -- the reviewed artifact minted at approval baked in the OLD
+    decisions, so sending now would sign a document reflecting a decision the
+    reviewer has since REVERSED or CHANGED (e.g. accept c1 -> approve -> reject c1;
+    the stale reviewed copy still carries c1's redline). We reset the matter OUT of
+    the cleared state (back to ``in_review``, clearing ``approved_at`` / ``approver``
+    / ``human_reviewed``) so it MUST be re-approved -- and re-approval re-mints the
+    correct reviewed artifact (or none, if the decisions now yield no edits, in which
+    case the original is signed). This runs on the SAME store-locked write as the
+    decision itself, so the un-clear can't be lost-updated by a concurrent send.
     """
     now = datetime.now(timezone.utc).isoformat()
     with _locked_store():
@@ -615,6 +650,24 @@ def set_clause_reviewer_decision(
             "reviewer_decisions": decisions,
             "updated_at": now,
         }
+        if _matter_was_cleared_for_signature(matter):
+            # Un-clear: force re-approval so the reviewed artifact is re-minted (or
+            # dropped) against the CURRENT decisions. Do not touch review_result /
+            # reviewer_decisions beyond the write above.
+            updated_matter["status"] = "in_review"
+            updated_matter["approved_at"] = None
+            updated_matter["approver"] = None
+            updated_matter["human_reviewed"] = False
+            timeline = list(updated_matter.get("matter_timeline") or [])
+            timeline.append({
+                "type": "approval_reset",
+                "at": now,
+                "detail": (
+                    "Approval reset: a reviewer decision changed after approval; "
+                    "re-approve to refresh the document sent for signature."
+                ),
+            })
+            updated_matter["matter_timeline"] = timeline
         _save_matter_record(updated_matter)
         return updated_matter
 

@@ -105,6 +105,19 @@ class NoSignableDocumentError(DocuSignWorkflowError):
     pass
 
 
+class ReviewedDocumentUnavailableError(NoSignableDocumentError):
+    """The matter has reviewer edits but no reviewed/redlined document is available.
+
+    Fail-closed guard: when a matter carries reviewer edits (accepted/modified
+    clause decisions that change the source), the document sent for signature MUST
+    be the reviewed/redlined version — NEVER the un-redlined original. If neither a
+    registered reviewed/generated artifact nor an on-demand reviewed build can
+    produce that document, we RAISE this rather than silently sign the original and
+    drop the reviewer's edits (the P0). Subclasses NoSignableDocumentError so the
+    route layer's existing mapping still catches it.
+    """
+
+
 class SignerResolutionError(DocuSignWorkflowError):
     pass
 
@@ -515,14 +528,58 @@ def _resolve_signable_document(
 ) -> tuple[bytes, str]:
     """The most-finalized NDA bytes + a filename, PDF-preferred for signing.
 
-    Walks the artifact precedence (reviewed -> generated -> sent -> original) for
-    the first artifact with retrievable bytes. DOCX is converted to PDF when a
-    converter is available (DocuSign tabs anchor reliably on a PDF); if conversion
-    is unavailable we send the bytes we have so the flow never hard-blocks.
+    THE INVARIANT (P0): a matter with reviewer edits can NEVER sign the un-redlined
+    original OR a stale reviewed copy — it signs the CURRENT, coverage-verified
+    reviewed document or it FAILS LOUD. Two cases:
+
+    * **Matter HAS reviewer edits** (accepted/modified clause decisions that change
+      the source). We do NOT trust a registered reviewed artifact by version — a
+      later edit/re-review or a playbook change could make it stale. Instead we
+      REBUILD the reviewed DOCX from the matter's CURRENT state via the SAME
+      ``build_reviewed_docx`` path the download + approval handlers use. That build
+      is the single choke point that enforces every guard at once:
+        - staleness (playbook drift / engine change) → ``StaleMatterReviewError``;
+        - reviewer decisions AS THEY ARE NOW (no stale-after-edit — the payload is
+          recomputed from ``reviewer_decisions``/``review_result``);
+        - the DOCX + PDF coverage gates (a redline that dropped clauses, or a
+          PDF-source reconstruction that lost edits) → raises, never registers.
+      It is content-hash idempotent, so a re-send with unchanged state does not
+      churn the registry. ANY failure RAISES (``ReviewedDocumentUnavailableError``
+      or the typed export error) — we never fall back to the original.
+
+    * **Matter has NO edits** (nothing to redline — comment-only or clean). The
+      original/generated document IS the faithful signable doc. We walk the artifact
+      precedence (reviewed → generated → sent → original), DOCX→PDF converting when
+      possible, exactly as before. A generated-but-unreviewed NDA lands on its
+      GENERATED artifact; a received-paper matter with no accepted changes lands on
+      its ORIGINAL — both correct.
     """
-    artifact, file_bytes = _latest_artifact_with_bytes(matter, matter_id, owner_user_id, repository)
+    if _matter_has_reviewer_edits(matter):
+        # Rebuild from current state — the guarded, staleness-checked, coverage-gated
+        # path. On any failure we RAISE rather than degrade to the original.
+        built = _build_reviewed_for_signature(matter, matter_id, owner_user_id, repository)
+        if built is not None:
+            return built
+        raise ReviewedDocumentUnavailableError(
+            "This NDA has reviewer edits but its reviewed/redlined document could not "
+            "be produced. Refusing to send the un-redlined original for signature. "
+            "Refresh the review (or use the marked-up source PDF) before sending."
+        )
+
+    # No edits: the original/generated document is faithful. Walk precedence, but
+    # NEVER trust a role=reviewed artifact here (BACKSTOP for the stale-after-reversal
+    # race): a matter whose CURRENT decisions yield no applied edits should not have a
+    # reviewed document at all -- if one lingers, it was minted against a now-reversed
+    # decision set (e.g. accept c1 -> approve -> reject c1). Signing it would ship a
+    # change the reviewer explicitly undid. Excluding ROLE_REVIEWED falls through to
+    # the correct source (generated for a generated NDA, else original). The primary
+    # fix (un-clear on any post-approval decision change) means an honest send re-runs
+    # approval first; this backstop holds even if that reset were ever bypassed.
+    artifact, file_bytes, _role = _latest_artifact_with_bytes(
+        matter, matter_id, owner_user_id, repository, exclude_roles=(ROLE_REVIEWED,)
+    )
     if artifact is None or not file_bytes:
-        # Fall back to the matter's raw source document if the registry is empty.
+        # Empty registry: fall back to the matter's raw source document.
         source_bytes = repository.get_source_document_bytes(matter)
         source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "NDA.docx")
         if not source_bytes:
@@ -536,13 +593,104 @@ def _resolve_signable_document(
     return _as_pdf(file_bytes, filename, owner_user_id)
 
 
+def _matter_has_reviewer_edits(matter: dict[str, Any]) -> bool:
+    """True when the matter has reviewer edits that change the source document.
+
+    Uses the SAME payload the reviewed-DOCX builder consumes
+    (``approval.reviewed_docx_payload``) so the "has edits" signal can never drift
+    from what actually gets redlined: a non-empty ``export_redline_edits`` (accepted
+    server redlines) or ``manual_redline_edits`` (modify-text overrides) means the
+    reviewed document differs from the original. Comment-only decisions do NOT count
+    — they add margin notes but leave the source text intact, so the original is
+    still the faithful signable document. Fail-safe: if the payload cannot be built,
+    treat it as HAVING edits (fail closed toward the reviewed path, never toward
+    silently signing the original).
+    """
+    from . import approval  # noqa: PLC0415 — avoid an import cycle at module load.
+
+    try:
+        payload = approval.reviewed_docx_payload(matter)
+    except Exception:  # noqa: BLE001 — a payload failure must fail closed, not open.
+        return True
+    export_edits = payload.get("export_redline_edits")
+    manual_edits = payload.get("manual_redline_edits")
+    has_export = isinstance(export_edits, list) and len(export_edits) > 0
+    has_manual = isinstance(manual_edits, list) and len(manual_edits) > 0
+    return has_export or has_manual
+
+
+def _build_reviewed_for_signature(
+    matter: dict[str, Any],
+    matter_id: str,
+    owner_user_id: str,
+    repository: MatterRepository,
+) -> tuple[bytes, str] | None:
+    """Build the CURRENT reviewed DOCX for signing (PDF-ready), or None on failure.
+
+    Reuses the SAME ``matter_document_artifacts.build_reviewed_docx(persist=True)``
+    path the download route + approval handler use — no forked redline logic — so it
+    inherits the staleness gate (``StaleMatterReviewError``) and both coverage gates
+    (a dropped-clause DOCX redline or a lossy PDF-source reconstruction RAISE inside
+    the builder). Building from the matter's CURRENT state means a stale-after-edit
+    reviewed artifact can never be signed: the payload is recomputed from the live
+    ``reviewer_decisions``/``review_result``, and a playbook drift trips the gate.
+    Content-hash idempotent registration keeps a re-send from churning the registry.
+
+    A build that (honestly) served the ORIGINAL bytes because there was genuinely
+    nothing to redline (the ``X-Export-Original`` marker) is treated as NO faithful
+    reviewed doc here and returns None — but that path is unreachable for an
+    edits-present matter (this helper is only called when edits exist), so reaching
+    it means the redline collapsed to a no-op and we fail closed rather than sign an
+    original mislabeled as reviewed. Any exception returns None so the caller RAISES
+    ``ReviewedDocumentUnavailableError``. Never raises."""
+    from . import matter_document_artifacts, redline_export_service  # noqa: PLC0415 — avoid an import cycle.
+
+    try:
+        reviewed = matter_document_artifacts.build_reviewed_docx(
+            matter_id,
+            matter,
+            repository=repository,
+            owner_user_id=owner_user_id,
+            persist=True,
+        )
+    except Exception as error:  # noqa: BLE001 — build is guarded; caller fails closed on None.
+        logger.warning(
+            "Reviewed-DOCX build for signature failed for matter %s (%s); "
+            "refusing to sign the original.",
+            matter_id,
+            type(error).__name__,
+        )
+        return None
+    export = reviewed.export
+    data = export.data
+    if not data:
+        return None
+    # Guard against an edits-present matter whose redline nonetheless collapsed to the
+    # honestly-tagged ORIGINAL passthrough: that is NOT a reviewed document, so refuse
+    # it (the caller then raises) rather than sign the original under a reviewed guise.
+    marker = (export.headers or {}).get(redline_export_service.ORIGINAL_EXPORT_MARKER_HEADER)
+    if marker:
+        logger.warning(
+            "Reviewed-DOCX build for matter %s returned the ORIGINAL passthrough despite "
+            "edits present; refusing to sign the original.",
+            matter_id,
+        )
+        return None
+    filename = export.filename or "NDA.docx"
+    return _as_pdf(data, filename, owner_user_id)
+
+
 def _latest_artifact_with_bytes(
     matter: dict[str, Any],
     matter_id: str,
     owner_user_id: str,
     repository: MatterRepository,
+    *,
+    exclude_roles: tuple[str, ...] = (),
 ):
     for role in _DOCUMENT_PRECEDENCE:
+        if role in exclude_roles:
+            continue
         artifact = latest_artifact_for_role(matter, role)
         if artifact is None:
             continue
@@ -550,8 +698,8 @@ def _latest_artifact_with_bytes(
             matter_id, artifact.id, repository=repository, owner_user_id=owner_user_id
         )
         if file_bytes:
-            return artifact, file_bytes
-    return None, b""
+            return artifact, file_bytes, role
+    return None, b"", ""
 
 
 def _as_pdf(file_bytes: bytes, filename: str, owner_user_id: str) -> tuple[bytes, str]:
