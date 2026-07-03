@@ -125,6 +125,14 @@ jobs:
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
+      - name: Guard browser-bundle syntax floor
+        # Acorn-parses every static/**/*.{js,mjs} at the old-webview ES floor
+        # (ES2021 parse + logical-assignment scan). One modern-syntax slip in a
+        # classic script kills the whole script chain on older iOS webviews at
+        # parse time, before any feature detection can run. Runs before the
+        # browser suites: a floor break fails fast and cheap.
+        run: npm run test:frontend:syntax-floor
+
       - name: Run frontend behavior tests
         run: npm run test:frontend
 
@@ -157,6 +165,9 @@ jobs:
 
       - name: Run faithful redline/clean upgrade test
         run: npm run test:frontend:faithful-redline-clean
+
+      - name: Run mobile tabbar scroll-affordance test
+        run: npm run test:frontend:tabbar-mobile
 
   docker-build:
     # PROD runs the repo Dockerfile (python:3.11-slim + the FULL

@@ -32,7 +32,16 @@ import {
   humanizeSettingKey,
   humanizeCounterKey,
 } from "./humanize.mjs?v=20260621humanize2";
-import { escapeHtml, joinClasses, mergeClauses } from "./html-utils.mjs";
+// Versioned specifiers on EVERY module import below: a bare relative import
+// resolves to a query-less URL that the server serves with no-cache+ETag, so
+// each warm visit paid a revalidation round-trip per module (~10 extra RTTs
+// before first render on high-latency mobile). With the token the server serves
+// them immutable, so a warm visit is fully cache-served. global-bridge.mjs is
+// the sole runtime importer of each (inline-diff.mjs / review-workstation-model
+// .mjs re-import html-utils.mjs / redline-edit-contract.mjs with the SAME token,
+// resolving to the same URL), so no duplicate module instances are created.
+// Keep each token in lockstep with its module's bytes.
+import { escapeHtml, joinClasses, mergeClauses } from "./html-utils.mjs?v=20260703cachebust1";
 import {
   fullReplacementOperations,
   renderDiffOperations,
@@ -46,19 +55,19 @@ import {
 // FE consumer reads window.renderDiffOperations / window.renderInlineToken via
 // this bridge, never re-importing), so versioning here cannot create a duplicate
 // module instance. Keep this token in lockstep with the inline-diff.mjs bytes.
-} from "./inline-diff.mjs?v=20260622redlineresilience1";
+} from "./inline-diff.mjs?v=20260703cachebust1";
 import { MatterUtils } from "./matter-utils.mjs?v=reviewrecovery1";
 import {
   isSupportedSendFilename,
   isValidRecipientEmail,
   fileStem,
-} from "./send-document.mjs";
+} from "./send-document.mjs?v=20260703cachebust1";
 import { createDraftIntake } from "./draft-intake.mjs?v=20260702termunit1";
-import { GeneratorWorkstationModel } from "./generator-workstation-model.mjs";
-import { createGenerationApi, GenerationUnavailableError, GenerationTimeoutError } from "./generation-api.mjs";
-import { PdfMarkupWorkstation } from "./pdf-markup-workstation.mjs";
-import { RedlineEditContract } from "./redline-edit-contract.mjs";
-import { ReviewWorkstationModel } from "./review-workstation-model.mjs";
+import { GeneratorWorkstationModel } from "./generator-workstation-model.mjs?v=20260703cachebust1";
+import { createGenerationApi, GenerationUnavailableError, GenerationTimeoutError } from "./generation-api.mjs?v=20260703cachebust1";
+import { PdfMarkupWorkstation } from "./pdf-markup-workstation.mjs?v=20260703cachebust1";
+import { RedlineEditContract } from "./redline-edit-contract.mjs?v=20260703cachebust1";
+import { ReviewWorkstationModel } from "./review-workstation-model.mjs?v=20260703cachebust1";
 // Versioned import so a returning browser re-fetches docusign-model.mjs when its
 // bytes change (a bare relative import resolves to a query-less URL the browser
 // caches independently of this file's ?v=, so a token bump on global-bridge alone
@@ -92,7 +101,7 @@ import {
   summaryEndpoint,
   summaryErrorMessage,
   validateFilterSpec,
-} from "./dashboard-search.mjs";
+} from "./dashboard-search.mjs?v=20260703cachebust1";
 
 Object.assign(window, {
   clauseStatus,

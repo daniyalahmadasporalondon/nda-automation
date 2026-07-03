@@ -926,6 +926,20 @@ window.setInterval(() => {
   }
 }, REPOSITORY_REFRESH_INTERVAL_MS);
 
+// REFRESH-ON-VISIBLE: mobile browsers/webviews throttle or suspend background
+// tabs, so the 15s poll can be minutes stale when the user switches back. One
+// immediate matters+notifications refresh on return restores freshness; the
+// same in-flight guard keeps it from stacking onto a poll already running.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible" || matterPollInFlight) return;
+  matterPollInFlight = true;
+  matterPollStartedAt = Date.now();
+  Promise.resolve(repositoryController.loadMatters()).then(() => {
+    renderDashboardInboxTable();
+    notificationsController.observe(state.matters);
+  }).catch(() => {}).finally(() => { matterPollInFlight = false; });
+});
+
 tabButtons.forEach((button) => {
   button.addEventListener("click", () => {
     activateTab(button.dataset.tab);

@@ -11364,6 +11364,22 @@ label.is-hidden {
     justify-content: flex-start;
     margin-left: 0;
     overflow-x: auto;
+    /* Scroll affordance: on narrow screens the tab row overflows with NO
+       visual hint that more tabs exist off-screen. Standard CSS scroll-shadow
+       trick — the inner soft shadows (attachment: scroll) pin to the visible
+       edges to signal hidden content in that direction, while the panel-colored
+       cover gradients (attachment: local) scroll WITH the content and hide the
+       shadow once that edge is fully scrolled into view. Pure background paint:
+       no extra DOM, no JS, degrades to plain overflow scrolling where
+       background-attachment: local is unsupported. */
+    background:
+      linear-gradient(to right, var(--bg-panel) 40%, rgba(255, 255, 255, 0)) left center,
+      linear-gradient(to left, var(--bg-panel) 40%, rgba(255, 255, 255, 0)) right center,
+      radial-gradient(farthest-side at 0 50%, rgba(23, 10, 51, 0.24), rgba(23, 10, 51, 0)) left center,
+      radial-gradient(farthest-side at 100% 50%, rgba(23, 10, 51, 0.24), rgba(23, 10, 51, 0)) right center;
+    background-attachment: local, local, scroll, scroll;
+    background-repeat: no-repeat;
+    background-size: 36px 100%, 36px 100%, 12px 100%, 12px 100%;
   }
 
   .session-strip {

@@ -34,9 +34,12 @@
     "test:frontend:faithful-coldstart": "node tests/frontend/faithful-coldstart.mjs",
     "test:frontend:faithful-redline-clean": "node tests/frontend/faithful-redline-clean-upgrade.mjs",
     "test:frontend:never-blank": "node tests/frontend/review-surface-never-blank.mjs",
-    "test:frontend:large-store": "node tests/frontend/repository-large-store.cjs"
+    "test:frontend:large-store": "node tests/frontend/repository-large-store.cjs",
+    "test:frontend:syntax-floor": "node tests/frontend/syntax-floor.cjs",
+    "test:frontend:tabbar-mobile": "node tests/frontend/tabbar-mobile-scroll.cjs"
   },
   "devDependencies": {
+    "acorn": "^8.17.0",
     "jsdom": "^24.1.0",
     "playwright": "^1.52.0",
     "pngjs": "^7.0.0"

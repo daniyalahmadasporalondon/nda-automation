@@ -1,7 +1,13 @@
+// Versioned specifier matching global-bridge.mjs's redline-edit-contract.mjs
+// token exactly: same token -> same resolved URL -> single module instance, AND
+// the browser can cache it immutably instead of revalidating a query-less URL on
+// every visit. Keep this token in lockstep with redline-edit-contract.mjs's
+// bytes (and with the token in global-bridge.mjs -- the manifest guard fails on
+// a conflicting pair).
 import {
   isInsertionRedlineEdit,
   redlineReplacementText,
-} from "./redline-edit-contract.mjs";
+} from "./redline-edit-contract.mjs?v=20260703cachebust1";
 
 export const REVIEW_VIEW_MODES = Object.freeze(["redline", "clean", "sidebyside", "original"]);
 export const REVIEW_INSPECTOR_VIEWS = Object.freeze(["clause", "structure", "fill"]);
