@@ -68,6 +68,13 @@ const RepositoryActions = (() => {
         // either — drop it before mutating anything. The current run's own
         // AuthExpired / generic-error handling below is unaffected.
         if (token !== loadMattersRunToken) return;
+        // A TIMED-OUT / ABORTED list fetch (AbortSignal.timeout in the api layer,
+        // capping a stalled-but-open connection) is TRANSIENT: keep the existing
+        // board exactly as it is — no wipe, no error banner — and let the next
+        // 15s poll tick retry. Only real failures fall through to the handling
+        // below. Settling here (instead of hanging) is what releases the poll's
+        // in-flight guard.
+        if (error?.name === "TimeoutError" || error?.name === "AbortError") return;
         // A 401 means the session expired, not that the repository is empty.
         // The shared API helper already fired the global auth-expired prompt;
         // do NOT wipe `state.matters` or deselect the open matter — that would

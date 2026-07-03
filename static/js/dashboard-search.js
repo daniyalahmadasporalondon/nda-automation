@@ -172,6 +172,12 @@ const DashboardSearchView = (() => {
       );
     }
 
+    // LARGE-STORE BOUND: a broad query over a Gmail-import-storm account can match
+    // thousands of matters; rendering them all froze the dashboard. The visible
+    // result list caps here -- the status line still reports the FULL match count
+    // (matching/filtering always runs over the full in-memory list).
+    const MAX_RENDERED_RESULTS = 50;
+
     function renderResults(results, { emptyMessage }) {
       assistantActions = new Map();
       if (!resultsList) return;
@@ -184,13 +190,16 @@ const DashboardSearchView = (() => {
         }
         return;
       }
+      const visibleResults = results.slice(0, MAX_RENDERED_RESULTS);
       if (resultsStatus) {
         resultsStatus.hidden = false;
         const noun = results.length === 1 ? "document" : "documents";
-        resultsStatus.textContent = `${results.length} ${noun}`;
+        resultsStatus.textContent = results.length > visibleResults.length
+          ? `${results.length} ${noun} — showing the first ${visibleResults.length}; refine the search to narrow down`
+          : `${results.length} ${noun}`;
       }
       resultsList.hidden = false;
-      resultsList.innerHTML = results.map((matter) => resultItemMarkup(matter)).join("");
+      resultsList.innerHTML = visibleResults.map((matter) => resultItemMarkup(matter)).join("");
     }
 
     function answerText(answer) {

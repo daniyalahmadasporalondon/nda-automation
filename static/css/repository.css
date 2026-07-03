@@ -314,6 +314,27 @@
   justify-content: center;
 }
 
+/* The per-column "Show more" affordance for large stores: the column renders a
+   bounded page of cards and this button reveals the next batch. */
+.repository-show-more {
+  background: transparent;
+  border: 1px dashed #d9c9f5;
+  border-radius: 12px;
+  color: var(--brand);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 10px 12px;
+  width: 100%;
+}
+
+.repository-show-more:hover,
+.repository-show-more:focus-visible {
+  background: rgba(91, 54, 209, 0.08);
+  border-color: var(--brand);
+  outline: none;
+}
+
 .repository-send-redline.confirming {
   border-color: var(--brand);
   color: var(--brand);

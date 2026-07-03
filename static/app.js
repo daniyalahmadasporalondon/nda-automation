@@ -261,7 +261,15 @@ const notificationsController = createNotificationsController({
   },
   openRepository: () => activateTab("repository"),
   fetchMatters: async () => {
-    const response = await fetch("/api/matters");
+    // 45s cap so a stalled-but-open connection can't hang this promise forever —
+    // the 15s poll's in-flight guard holds until it settles. The abort rejects,
+    // the poll's catch swallows it, and the next tick retries. Browsers without
+    // AbortSignal.timeout keep the old unbounded fetch (the poll watchdog still
+    // bounds the guard).
+    const signal = (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function")
+      ? AbortSignal.timeout(45_000)
+      : undefined;
+    const response = await fetch("/api/matters", { signal });
     if (!response.ok) return [];
     const payload = await response.json();
     return Array.isArray(payload.matters) ? payload.matters : [];
@@ -881,17 +889,40 @@ loadDashboardAiHealth();
 loadDashboardDriveHealth();
 loadDashboardDocuSignHealth();
 adminIntegrationsController.load();
+// IN-FLIGHT POLL GUARD (large stores): on a multi-thousand-matter account one
+// /api/matters response can take longer than the 15s poll interval. Without this
+// guard each tick started ANOTHER full-list download; the overlapping multi-MB
+// transfers saturated the browser's per-host connection pool (starving every
+// other /api request) while the stale-response run-token discarded almost every
+// body -- all cost, no render. One tick's fetch must fully settle before the next
+// tick may start a new one; ticks that would overlap are simply skipped.
+let matterPollInFlight = false;
+let matterPollStartedAt = 0;
+// WATCHDOG: the poll fetches carry a 45s AbortSignal.timeout, so they normally
+// settle (and release the guard) well before this. If a fetch ever hangs WITHOUT
+// aborting (no AbortSignal.timeout support, a black-holed request the browser
+// never fails), force the guard open after 60s so polling resumes instead of
+// dying until a page reload. A late stale response is defused by loadMatters'
+// run-token, so force-releasing is safe.
+const MATTER_POLL_WATCHDOG_MS = 60_000;
 window.setInterval(() => {
+  if (matterPollInFlight) {
+    if (Date.now() - matterPollStartedAt < MATTER_POLL_WATCHDOG_MS) return;
+    matterPollInFlight = false;
+  }
+  matterPollInFlight = true;
+  matterPollStartedAt = Date.now();
+  const releasePoll = () => { matterPollInFlight = false; };
   if (document.querySelector('[data-view="repository"]')?.classList.contains("active")) {
     Promise.resolve(repositoryController.loadMatters()).then(() => {
       renderDashboardInboxTable();
       notificationsController.observe(state.matters);
-    });
+    }).catch(() => {}).finally(releasePoll);
     repositoryController.loadGmailStatus();
   } else {
     // On any non-Repository tab the board isn't refreshed, so the notifier polls
     // the matter list itself to keep new-inbound toasts flowing app-wide.
-    notificationsController.poll();
+    Promise.resolve(notificationsController.poll()).catch(() => {}).finally(releasePoll);
   }
 }, REPOSITORY_REFRESH_INTERVAL_MS);
 
@@ -1603,6 +1634,13 @@ function initGuideToggle() {
   applyGuideMode(stored);
 }
 
+// LARGE-STORE BOUND: the dashboard intake table used to render EVERY Inbox matter;
+// a Gmail-import-storm account (thousands of inbound matters) froze the dashboard
+// on boot. The visible table caps at this many rows -- the count label and the
+// per-column stat chips still aggregate over the FULL list (cheap data-only pass),
+// and a truncation row points at the Repository board for the rest.
+const DASHBOARD_INBOX_MAX_ROWS = 30;
+
 function renderDashboardInboxTable() {
   if (!dashboardInboxTableBody) return;
   const inboxMatters = Array.isArray(state.matters)
@@ -1626,7 +1664,16 @@ function renderDashboardInboxTable() {
     dashboardInboxCount.textContent = `${inboxMatters.length} ${noun}`;
   }
   if (dashboardInboxEmpty) dashboardInboxEmpty.hidden = inboxMatters.length > 0;
-  dashboardInboxTableBody.innerHTML = inboxMatters.map((matter) => {
+  const visibleInboxMatters = inboxMatters.slice(0, DASHBOARD_INBOX_MAX_ROWS);
+  const truncatedCount = inboxMatters.length - visibleInboxMatters.length;
+  const truncationRow = truncatedCount > 0
+    ? (
+      `<tr class="dashboard-inbox-more-row" data-dashboard-inbox-truncated="${truncatedCount}">` +
+      `<td colspan="5">Showing ${visibleInboxMatters.length} of ${inboxMatters.length} Inbox NDAs — open the Repository to browse the rest.</td>` +
+      `</tr>`
+    )
+    : "";
+  dashboardInboxTableBody.innerHTML = visibleInboxMatters.map((matter) => {
     const id = htmlEscape(String(matter?.id || ""));
     const title = htmlEscape(RepositoryModel.matterSubject(matter));
     const counterparty = htmlEscape(matter?.counterparty || matter?.counterparty_name || "Unknown counterparty");
@@ -1649,7 +1696,7 @@ function renderDashboardInboxTable() {
       `<td><button class="dashboard-inbox-action" type="button" data-dashboard-inbox-open="${id}">Open review</button></td>` +
       `</tr>`
     );
-  }).join("");
+  }).join("") + truncationRow;
 }
 
 async function loadDashboardAiHealth() {

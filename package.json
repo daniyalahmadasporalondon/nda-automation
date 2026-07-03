@@ -33,7 +33,8 @@
     "test:frontend:faithful-mapping": "node tests/frontend/faithful-mapping.mjs",
     "test:frontend:faithful-coldstart": "node tests/frontend/faithful-coldstart.mjs",
     "test:frontend:faithful-redline-clean": "node tests/frontend/faithful-redline-clean-upgrade.mjs",
-    "test:frontend:never-blank": "node tests/frontend/review-surface-never-blank.mjs"
+    "test:frontend:never-blank": "node tests/frontend/review-surface-never-blank.mjs",
+    "test:frontend:large-store": "node tests/frontend/repository-large-store.cjs"
   },
   "devDependencies": {
     "jsdom": "^24.1.0",

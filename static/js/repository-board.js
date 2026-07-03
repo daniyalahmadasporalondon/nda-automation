@@ -1,4 +1,60 @@
 const RepositoryBoard = (() => {
+  // LARGE-STORE RENDER BOUNDS. A Gmail-import-storm account can hold thousands of
+  // matters; rendering every card synchronously froze the whole SPA on boot. Each
+  // column now renders at most its visible cap (INITIAL_CARDS_PER_COLUMN, grown by
+  // SHOW_MORE_STEP per "Show more" click) while the column COUNTS, the search, and
+  // every data pass still operate on the FULL in-memory list. When a column's
+  // visible slice exceeds RENDER_CHUNK_SIZE cards, the DOM work is batched through
+  // a DocumentFragment in requestAnimationFrame chunks so the main thread never
+  // blocks on one giant innerHTML parse.
+  const INITIAL_CARDS_PER_COLUMN = 30;
+  const SHOW_MORE_STEP = 50;
+  const RENDER_CHUNK_SIZE = 40;
+
+  // Per-column visible-card caps (columnId -> cap). Survives re-renders (polls,
+  // actions) so an expanded column stays expanded; reset when the search query
+  // changes so a new search starts from the bounded first page again.
+  const columnCardLimits = new Map();
+  let lastRenderedQuery = "";
+  // The args of the most recent renderBoard call, so a "Show more" click can
+  // re-render the board with the caller's own state/handlers without every caller
+  // having to learn a new callback.
+  let lastRenderArgs = null;
+  // Monotonic token guarding the async (rAF-chunked) card appends: a newer
+  // renderBoard invalidates any in-flight chunk continuation from an older one.
+  let boardRenderToken = 0;
+  // Signature of the last-performed card render. The 15s poll re-renders the board
+  // even when NOTHING visible changed; comparing a cheap signature of the visible
+  // slices (plus the render context) lets an unchanged poll skip the innerHTML
+  // rebuild entirely. lastRenderedFirstList anchors the signature to the actual
+  // container nodes, so a swapped/rebuilt DOM (tests, future re-mounts) can never
+  // be starved of a paint by a stale signature match.
+  let lastBoardSignature = null;
+  let lastRenderedFirstList = null;
+  // The handlers of the most recent render, read by the DELEGATED column listeners
+  // (one click + one keydown listener per column container, attached once) instead
+  // of re-attaching per-card listeners on every render.
+  let activeHandlers = null;
+  const delegatedLists = typeof WeakSet === "function" ? new WeakSet() : null;
+
+  // requestAnimationFrame is PAUSED entirely in occluded/backgrounded pages (a
+  // preview-driven browser, a hidden tab), which stranded a chunked render mid-way
+  // as a torn "first chunk only, no Show more" board. Race rAF against a setTimeout
+  // backstop so a chunk continuation ALWAYS runs: rAF wins in a visible tab
+  // (frame-aligned, no jank), the timer wins whenever rAF is stalled.
+  const CHUNK_BACKSTOP_MS = 200;
+
+  function scheduleFrame(callback) {
+    let invoked = false;
+    const invoke = () => {
+      if (invoked) return;
+      invoked = true;
+      callback();
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(invoke);
+    setTimeout(invoke, CHUNK_BACKSTOP_MS);
+  }
+
   function html(value) {
     if (typeof window !== "undefined" && typeof window.escapeHtml === "function") {
       return window.escapeHtml(value);
@@ -34,8 +90,24 @@ const RepositoryBoard = (() => {
     state,
   }) {
     if (!gmailDemoMatterList) return;
+    lastRenderArgs = {
+      errorMessage,
+      gmailDemoMatterList,
+      handlers,
+      pendingDeleteMatterId,
+      searchQuery,
+      selectedMatter,
+      state,
+    };
+    activeHandlers = handlers;
     const mattersByColumn = new Map(RepositoryModel.BOARD_COLUMNS.map((column) => [column.id, []]));
     const query = normalizeSearchText(searchQuery);
+    // A CHANGED search starts every column back at its bounded first page; the
+    // matches the user is looking for must not hide behind stale "Show more" depth.
+    if (query !== lastRenderedQuery) {
+      columnCardLimits.clear();
+      lastRenderedQuery = query;
+    }
     // The board is WIP only: an EXECUTED (fully-signed) matter is done and drops
     // off the board, so it is never bucketed into a column. The backend already
     // excludes it from the payload; this is the frontend backstop.
@@ -46,6 +118,8 @@ const RepositoryBoard = (() => {
         mattersByColumn.get(RepositoryModel.matterColumn(matter)).push(matter);
       });
     mattersByColumn.forEach((matters) => matters.sort(RepositoryModel.compareMatterRecency));
+    // Column counts always reflect the FULL (search-matched) totals, never the
+    // bounded rendered subset below.
     document.querySelectorAll("[data-repository-count]").forEach((count) => {
       count.textContent = String(mattersByColumn.get(count.dataset.repositoryCount)?.length || 0);
     });
@@ -56,15 +130,161 @@ const RepositoryBoard = (() => {
     // genuinely empty board with no active error and no active search (a search
     // that finds nothing is a different, already-handled state).
     renderBoardOnboarding({ state, errorMessage, searchActive: Boolean(query) });
-    document.querySelectorAll("[data-repository-list]").forEach((list) => {
-      const matters = mattersByColumn.get(list.dataset.repositoryList) || [];
-      list.innerHTML = errorMessage
-        ? `<div class="repository-dropzone">${html(errorMessage)}</div>`
-        : matters.length
-        ? matters.map((matter) => renderMatterCard(matter, { confirmingDelete: matter.id === pendingDeleteMatterId })).join("")
-        : `<div class="repository-dropzone">${query ? "No matching documents" : "No documents"}</div>`;
-      bindBoardEvents(list, { handlers, selectedMatter });
+    // SKIP-IF-UNCHANGED: the 15s poll re-renders even when nothing visible moved.
+    // If the signature of the would-be-rendered cards (plus the render context)
+    // matches the last performed render, leave the card DOM alone -- counts, sync
+    // status, and onboarding above still refreshed. Deliberately checked BEFORE
+    // bumping the render token so an identical render never aborts an in-flight
+    // chunked append.
+    const signature = boardRenderSignature({
+      errorMessage,
+      mattersByColumn,
+      pendingDeleteMatterId,
+      query,
+      selectedMatter,
     });
+    const lists = document.querySelectorAll("[data-repository-list]");
+    const firstList = lists[0] || null;
+    // The signature says what SHOULD be on the board; the DOM audit verifies the
+    // lists actually carry it. A torn render (a chunk continuation stranded by a
+    // paused rAF, or any future cancellation) fails the audit and forces a full
+    // repaint instead of being frozen in place by an "unchanged" signature.
+    if (
+      signature === lastBoardSignature
+      && firstList === lastRenderedFirstList
+      && boardDomMatchesExpectedRender({ errorMessage, lists, mattersByColumn })
+    ) {
+      return;
+    }
+    lastBoardSignature = signature;
+    lastRenderedFirstList = firstList;
+    const renderToken = ++boardRenderToken;
+    lists.forEach((list) => {
+      ensureBoardDelegation(list);
+      const matters = mattersByColumn.get(list.dataset.repositoryList) || [];
+      if (errorMessage) {
+        list.innerHTML = `<div class="repository-dropzone">${html(errorMessage)}</div>`;
+        return;
+      }
+      if (!matters.length) {
+        list.innerHTML = `<div class="repository-dropzone">${query ? "No matching documents" : "No documents"}</div>`;
+        return;
+      }
+      const columnId = list.dataset.repositoryList;
+      const cardLimit = columnCardLimits.get(columnId) || INITIAL_CARDS_PER_COLUMN;
+      const visible = matters.slice(0, cardLimit);
+      const hiddenCount = matters.length - visible.length;
+      const cardsHtml = visible.map((matter) => renderMatterCard(matter, { confirmingDelete: matter.id === pendingDeleteMatterId }));
+      const showMoreHtml = hiddenCount > 0 ? renderShowMoreControl(columnId, hiddenCount) : "";
+      if (cardsHtml.length <= RENDER_CHUNK_SIZE) {
+        // Small column: one synchronous parse is cheaper than scheduling frames.
+        list.innerHTML = cardsHtml.join("") + showMoreHtml;
+        syncBoardCardSelection(list, selectedMatter);
+        return;
+      }
+      // Big visible slice (after "Show more" growth): append in rAF-spaced
+      // DocumentFragment chunks so no single frame parses hundreds of cards.
+      list.innerHTML = "";
+      appendCardsChunked(list, cardsHtml, 0, { renderToken, selectedMatter, showMoreHtml });
+    });
+  }
+
+  // A cheap, change-sensitive signature of exactly what the card render would
+  // paint: the render context (error/search/pending-delete/selection) plus, per
+  // column, the full total, the PAGE DEPTH (the Show-more visible cap), and every
+  // VISIBLE matter's identity and card-affecting fields. O(rendered cards), not
+  // O(all matters). A matter edit bumps updated_at; the read-derived review
+  // lifecycle fields (review_status, staleness) are included explicitly because
+  // they can change without a store write. The signature describes the INTENDED
+  // render; boardDomMatchesExpectedRender audits the ACTUAL DOM before any skip.
+  function boardRenderSignature({ errorMessage, mattersByColumn, pendingDeleteMatterId, query, selectedMatter }) {
+    const parts = [errorMessage, query, pendingDeleteMatterId || "", selectedMatter?.id || ""];
+    mattersByColumn.forEach((matters, columnId) => {
+      const cardLimit = columnCardLimits.get(columnId) || INITIAL_CARDS_PER_COLUMN;
+      parts.push(`${columnId}#${matters.length}#${cardLimit}`);
+      matters.slice(0, cardLimit).forEach((matter) => {
+        parts.push([
+          matter.id,
+          matter.updated_at || "",
+          matter.review_status || "",
+          matter.issue_count || 0,
+          matter.ai_review_ran === true ? 1 : 0,
+          matterReviewStale(matter) ? 1 : 0,
+        ].join("|"));
+      });
+    });
+    return parts.join("\n");
+  }
+
+  // ACTUAL-DOM audit backing the skip-if-unchanged path: per column, the child
+  // element count must equal the expected rendered depth -- the visible card page
+  // plus the Show-more control when cards remain hidden, or the single dropzone
+  // for the error/empty states. O(#columns), no per-card work. Any mismatch means
+  // the DOM is torn/partial and the skip must not fire. (A mid-flight chunked
+  // append also reads as a mismatch; re-rendering restarts it with a fresh token,
+  // and the setTimeout backstop guarantees that restart completes well before the
+  // next 15s poll, so no livelock.)
+  function boardDomMatchesExpectedRender({ errorMessage, lists, mattersByColumn }) {
+    let matches = true;
+    lists.forEach((list) => {
+      if (!matches) return;
+      const childCount = typeof list.childElementCount === "number" ? list.childElementCount : -1;
+      const matters = mattersByColumn.get(list.dataset.repositoryList) || [];
+      if (errorMessage || !matters.length) {
+        matches = childCount === 1;
+        return;
+      }
+      const cardLimit = columnCardLimits.get(list.dataset.repositoryList) || INITIAL_CARDS_PER_COLUMN;
+      const visibleCount = Math.min(cardLimit, matters.length);
+      const expectedCount = visibleCount + (matters.length > visibleCount ? 1 : 0);
+      matches = childCount === expectedCount;
+    });
+    return matches;
+  }
+
+  // Guarded MatterUtils.reviewStale (same degrade-to-false contract as
+  // matterReviewInProgress above) for the signature pass.
+  function matterReviewStale(matter) {
+    if (typeof MatterUtils === "undefined" || typeof MatterUtils.reviewStale !== "function") {
+      return false;
+    }
+    return Boolean(MatterUtils.reviewStale(matter));
+  }
+
+  function appendCardsChunked(list, cardsHtml, start, { renderToken, selectedMatter, showMoreHtml }) {
+    // A newer render pass replaced this one (poll / action / newer search) or the
+    // list left the DOM: abandon the stale continuation without touching the DOM.
+    if (renderToken !== boardRenderToken || list.isConnected === false) return;
+    const template = document.createElement("template");
+    template.innerHTML = cardsHtml.slice(start, start + RENDER_CHUNK_SIZE).join("");
+    // template.content IS a DocumentFragment: the chunk's cards land in the live
+    // list in one append, not one reflow-provoking insert per card.
+    list.appendChild(template.content);
+    const next = start + RENDER_CHUNK_SIZE;
+    if (next < cardsHtml.length) {
+      scheduleFrame(() => appendCardsChunked(list, cardsHtml, next, { renderToken, selectedMatter, showMoreHtml }));
+      return;
+    }
+    if (showMoreHtml) list.insertAdjacentHTML("beforeend", showMoreHtml);
+    syncBoardCardSelection(list, selectedMatter);
+  }
+
+  function renderShowMoreControl(columnId, hiddenCount) {
+    const nextBatch = Math.min(SHOW_MORE_STEP, hiddenCount);
+    return `
+      <button class="repository-show-more" type="button" data-repository-show-more="${html(columnId)}" aria-label="Show ${nextBatch} more of ${hiddenCount} hidden documents in this column">
+        Show ${nextBatch} more (${hiddenCount} hidden)
+      </button>
+    `;
+  }
+
+  function expandColumn(columnId) {
+    if (!columnId) return;
+    columnCardLimits.set(
+      columnId,
+      (columnCardLimits.get(columnId) || INITIAL_CARDS_PER_COLUMN) + SHOW_MORE_STEP,
+    );
+    if (lastRenderArgs) renderBoard(lastRenderArgs);
   }
 
   function matterMatchesSearch(matter, query) {
@@ -91,38 +311,69 @@ const RepositoryBoard = (() => {
     return String(value || "").trim().toLowerCase();
   }
 
-  function bindBoardEvents(list, { handlers, selectedMatter }) {
+  // Reflect the open-inspector selection on the rendered cards. Runs per render
+  // over the bounded visible slice only.
+  function syncBoardCardSelection(list, selectedMatter) {
     list.querySelectorAll("[data-matter-id]").forEach((card) => {
       card.classList.toggle("active", card.dataset.matterId === selectedMatter?.id);
-      card.addEventListener("click", () => handlers.openMatter(card.dataset.matterId));
-      card.addEventListener("keydown", (event) => {
-        if (event.target !== card || (event.key !== "Enter" && event.key !== " ")) return;
-        event.preventDefault();
-        handlers.openMatter(card.dataset.matterId);
-      });
     });
-    list.querySelectorAll("[data-delete-matter-id]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        handlers.requestDeleteMatter(button.dataset.deleteMatterId);
-      });
+  }
+
+  // EVENT DELEGATION (large stores): one click + one keydown listener per column
+  // CONTAINER, attached exactly once, instead of five listeners per card
+  // re-attached on every 15s poll render. The handlers are resolved from
+  // activeHandlers at event time so the delegated listener always drives the
+  // current controller. Match order mirrors the old stopPropagation layering:
+  // innermost controls first, the card open last, and clicks inside the
+  // delete-confirmation strip never open the matter.
+  function ensureBoardDelegation(list) {
+    if (!list || typeof list.addEventListener !== "function") return;
+    if (delegatedLists) {
+      if (delegatedLists.has(list)) return;
+      delegatedLists.add(list);
+    } else if (list.__repositoryBoardDelegated) {
+      return;
+    } else {
+      list.__repositoryBoardDelegated = true;
+    }
+    list.addEventListener("click", (event) => {
+      const handlers = activeHandlers;
+      const target = event.target;
+      if (!handlers || !target || typeof target.closest !== "function") return;
+      const showMore = target.closest("[data-repository-show-more]");
+      if (showMore) {
+        expandColumn(showMore.dataset.repositoryShowMore);
+        return;
+      }
+      const confirmDelete = target.closest("[data-confirm-delete-matter-id]");
+      if (confirmDelete) {
+        handlers.deleteMatter(confirmDelete.dataset.confirmDeleteMatterId, confirmDelete);
+        return;
+      }
+      const cancelDelete = target.closest("[data-cancel-delete-matter-id]");
+      if (cancelDelete) {
+        handlers.cancelDeleteMatter(cancelDelete.dataset.cancelDeleteMatterId);
+        return;
+      }
+      const requestDelete = target.closest("[data-delete-matter-id]");
+      if (requestDelete) {
+        handlers.requestDeleteMatter(requestDelete.dataset.deleteMatterId);
+        return;
+      }
+      if (target.closest("[data-delete-confirmation-id]")) return;
+      const card = target.closest("[data-matter-id]");
+      if (card) handlers.openMatter(card.dataset.matterId);
     });
-    list.querySelectorAll("[data-delete-confirmation-id]").forEach((confirmation) => {
-      confirmation.addEventListener("click", (event) => {
-        event.stopPropagation();
-      });
-    });
-    list.querySelectorAll("[data-cancel-delete-matter-id]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        handlers.cancelDeleteMatter(button.dataset.cancelDeleteMatterId);
-      });
-    });
-    list.querySelectorAll("[data-confirm-delete-matter-id]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        handlers.deleteMatter(button.dataset.confirmDeleteMatterId, button);
-      });
+    list.addEventListener("keydown", (event) => {
+      const handlers = activeHandlers;
+      const target = event.target;
+      if (!handlers || !target || typeof target.matches !== "function") return;
+      // Only the card element itself (role="button") activates on Enter/Space --
+      // keystrokes inside its inner buttons keep their own semantics.
+      if (!target.matches("[data-matter-id]")) return;
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      handlers.openMatter(target.dataset.matterId);
     });
   }
 
@@ -277,7 +528,16 @@ const RepositoryBoard = (() => {
     `;
   }
 
-  return { renderBoard, renderBoardOnboarding, renderMatterCard, renderSyncStatus };
+  return {
+    INITIAL_CARDS_PER_COLUMN,
+    RENDER_CHUNK_SIZE,
+    SHOW_MORE_STEP,
+    expandColumn,
+    renderBoard,
+    renderBoardOnboarding,
+    renderMatterCard,
+    renderSyncStatus,
+  };
 })();
 
 if (typeof module !== "undefined" && module.exports) {
