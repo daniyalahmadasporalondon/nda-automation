@@ -183,6 +183,23 @@ def friendly_matter_store_message(error: "MatterStoreError") -> str:
     return MATTER_STORE_UNAVAILABLE_MESSAGE
 
 
+def store_change_token() -> Any | None:
+    """A cheap opaque change token over the record store, or None.
+
+    A stat scan of the matter record files — the same (name, mtime_ns, size)
+    per-file tuple the list cache keys on — so the token changes whenever ANY
+    record changes on disk, for the cost of one ``stat`` per file (no reads, no
+    parses, no lock). Read-only: never touches the cache itself. ``corpus_index``
+    uses it to serve its app-state cache without listing matters when the store
+    is untouched. ``None`` (on any error) means "unknown" and callers must fall
+    back to a real read.
+    """
+    try:
+        return ("records-dir-stat", _records_dir_fingerprint())
+    except Exception:  # noqa: BLE001 -- the token is an optimisation only.
+        return None
+
+
 def list_matters(owner_user_id: str = "") -> list[dict[str, Any]]:
     with _locked_store():
         matters = [
