@@ -1766,9 +1766,10 @@ def _write_matter_record(matter: dict[str, Any]) -> None:
 
 
 def _delete_matter_record(matter: dict[str, Any] | str) -> None:
-    # Keep the RAW stored id (before cleaning): the record FILE is named by the
-    # cleaned id, but the cached-list entry is keyed by the raw id (that is what the
-    # write path stores under), so the cache-prune below must match on the raw form.
+    # Pass the RAW stored id through to the cache prune: the cache entry (like the
+    # record FILE) is keyed by the CLEANED record filename, and the prune derives
+    # that same key from the raw id via _clean_matter_record_id -- exactly as the
+    # write path does -- so write and delete stay symmetric by construction.
     raw_id = matter.get("id") if isinstance(matter, dict) else matter
     matter_id = _clean_matter_record_id(raw_id)
     if not matter_id:
@@ -1782,9 +1783,10 @@ def _delete_matter_record(matter: dict[str, Any] | str) -> None:
     # Write-through cache maintenance: a record file was removed. We drop this one
     # matter (and its fingerprint entry) from the cached list in place (G3) rather
     # than blowing the whole cache away, keeping the next list_matters a hit. Falls
-    # back to a full invalidation on any uncertainty. The prune matches the cached
-    # entry on the RAW id (symmetric with the write path) and the fingerprint entry
-    # on the cleaned filename.
+    # back to a full invalidation on any uncertainty. Both the cached per-record
+    # blob entry and the fingerprint entry are keyed on the CLEANED record filename
+    # (derived from the raw id via _clean_matter_record_id, exactly as the write
+    # path derives its key), so write and delete prune the same entry by construction.
     _coherent_cache_update_after_delete(raw_id)
 
 
