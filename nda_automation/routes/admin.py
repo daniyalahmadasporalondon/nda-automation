@@ -1173,27 +1173,28 @@ def _append_bulk_archive_audit_line(entry: dict[str, Any]) -> bool:
         return False
 
 
-def _gmail_polling_active() -> bool:
-    """Whether the scheduled Gmail inbound poll can currently run.
+def _gmail_inbound_import_active() -> bool:
+    """Whether ANY Gmail inbound import path (scheduled OR manual) can run.
 
-    Mirrors the scheduler's own gate chain (server._gmail_sync_scheduler_step):
-    the env kill switch, the ``sync_enabled`` master pause, and the narrower
-    ``inbound_enabled`` toggle. Polling is "paused" when ANY gate is closed.
-    FAIL-CLOSED for the bulk-archive execute gate: if the check itself errors we
-    report polling as ACTIVE, so execute refuses rather than racing the ledger.
+    The bulk-archive execute mode must be exclusive with every writer of the
+    per-owner processed ledger. There are TWO: the scheduler's inbound step and
+    the manual ``POST /api/gmail/import`` route. Manual import while the
+    scheduler is paused is a DESIGNED workflow ("sync now" with scheduled
+    polling off — the sync_enabled master gate and the NDA_GMAIL_SYNC_ENABLED
+    env kill switch were introduced as scheduler-only gates and are deliberately
+    not consulted by the manual route), so scheduler-only pauses do NOT make the
+    ledger safe. The one toggle both paths obey is ``inbound_enabled``:
+    ``gmail_matter_inbox.import_inbound_matters`` — the engine behind both the
+    scheduled step and the manual route — refuses outright when it is false.
+
+    Therefore: inbound import is "active" unless ``inbound_enabled`` is false.
+    FAIL-CLOSED for the execute gate: if the settings read errors we report
+    ACTIVE, so execute refuses rather than racing the ledger.
     """
     try:
-        # Lazy: server imports this module at load time (cycle-safe at call time),
-        # and reusing its predicate keeps the env kill switch a single source of truth.
-        from .. import server  # noqa: PLC0415
-
-        if not server._gmail_sync_enabled():
-            return False
         settings = app_settings.gmail_settings()
-        if not app_settings.gmail_scheduler_enabled(settings):
-            return False
         return bool(settings.get("inbound_enabled", True))
-    except Exception:  # noqa: BLE001 - unknown polling state must read as ACTIVE (refuse).
+    except Exception:  # noqa: BLE001 - unknown inbound state must read as ACTIVE (refuse).
         return True
 
 
@@ -1221,17 +1222,20 @@ def handle_matters_bulk_archive(handler) -> None:
     store-based sha256 dedupe, so without the ledger mark the next poll would
     re-import every message.
 
-    LEDGER RACE (why execute REFUSES while Gmail polling is enabled): the poll's
-    ProcessedLedgerSession loads the whole per-owner ledger file at poll start
-    and its flush() REWRITES the whole file at poll end — a mark written here
-    mid-poll would be silently clobbered by that flush, and the read-back
-    verification below runs BEFORE the poll's flush so ``ledger_marked: true``
-    could not detect it. Mitigation: execute (never dry-run) checks the polling
-    gates (env kill switch + sync_enabled + inbound_enabled, the same chain the
-    scheduler obeys) and returns 409 while any poll could run; the success
-    response carries ``polling_paused_verified: true`` as the record of that
-    check. The operator must pause Gmail polling in Admin before executing and
-    may resume it after.
+    LEDGER RACE (why execute REFUSES until inbound Gmail import is disabled):
+    an inbound import's ProcessedLedgerSession loads the whole per-owner ledger
+    file at its start and its flush() REWRITES the whole file at the end — a
+    mark written here mid-import would be silently clobbered by that flush, and
+    the read-back verification below runs BEFORE that flush so
+    ``ledger_marked: true`` could not detect it. There are TWO such writers:
+    the scheduled poll AND the manual ``POST /api/gmail/import`` route, and the
+    manual route is a designed workflow gated ONLY by ``inbound_enabled``
+    (scheduler pauses — sync_enabled / the env kill switch — do not block it).
+    Mitigation: execute (never dry-run) requires ``inbound_enabled`` to be
+    FALSE, the one toggle that stops both writers, and returns 409 otherwise;
+    the success response carries ``polling_paused_verified: true`` as the
+    record of that check. The operator must disable inbound Gmail import in
+    Admin before executing and may re-enable it after.
     """
     if not require_admin(handler):
         return
@@ -1321,16 +1325,21 @@ def handle_matters_bulk_archive(handler) -> None:
         }, status=409)
         return
 
-    # LEDGER-RACE GUARD (see docstring): a concurrent poll's whole-file ledger
-    # flush would clobber the re-import marks written below, undetectably. Refuse
-    # to execute until Gmail polling is paused; dry-run stays always available.
-    if _gmail_polling_active():
+    # LEDGER-RACE GUARD (see docstring): a concurrent inbound import's
+    # whole-file ledger flush — from the scheduled poll OR the manual
+    # POST /api/gmail/import route — would clobber the re-import marks written
+    # below, undetectably. Only inbound_enabled=false stops BOTH writers
+    # (scheduler pauses don't block the manual route, by design). Refuse to
+    # execute until then; dry-run stays always available.
+    if _gmail_inbound_import_active():
         handler._send_json({
             "error": (
-                "Pause Gmail polling before executing bulk-archive; a concurrent "
-                "poll rewrites the processed-message ledger and could clobber the "
-                "re-import guard. Disable Gmail sync/inbound in Admin (or the "
-                "NDA_GMAIL_SYNC_ENABLED kill switch), execute, then re-enable."
+                "Disable inbound Gmail import (inbound_enabled) before executing "
+                "bulk-archive; both the scheduled poll and a manual Gmail sync "
+                "rewrite the processed-message ledger and could clobber the "
+                "re-import guard. Pausing the scheduler alone is not enough — "
+                "the manual sync route stays open. Disable inbound in Admin, "
+                "execute, then re-enable."
             ),
             "polling_paused_verified": False,
             "selection_hash": selection_hash,
@@ -1407,7 +1416,8 @@ def handle_matters_bulk_archive(handler) -> None:
         "archived": len(deleted_ids),
         "ledger_marked": ledger_marked,
         # Record of the ledger-race guard: execute only proceeds after verifying
-        # every Gmail polling gate is closed (see docstring).
+        # inbound Gmail import is disabled — the one toggle that stops BOTH
+        # ledger writers, the scheduled poll and the manual sync route.
         "polling_paused_verified": True,
         "audit_written": audit_written,
     })

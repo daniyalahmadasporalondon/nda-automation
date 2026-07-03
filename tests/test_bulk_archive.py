@@ -25,7 +25,14 @@ from datetime import datetime
 
 import pytest
 
-from nda_automation import document_rendering, gmail_processed_ledger, matter_store, telemetry
+from nda_automation import (
+    app_settings,
+    document_rendering,
+    gmail_matter_inbox,
+    gmail_processed_ledger,
+    matter_store,
+    telemetry,
+)
 from nda_automation.routes import admin as admin_routes
 
 OWNER = "google:111"
@@ -51,9 +58,15 @@ def _isolated_store(tmp_path, monkeypatch):
     # Real (non-loopback) admin gate: env-root admin only.
     monkeypatch.setenv("NDA_REQUIRE_AUTH", "1")
     monkeypatch.setenv("NDA_ADMIN_USERS", ADMIN_USER["id"])
-    # Gmail polling PAUSED via the env kill switch, so execute-mode tests pass
-    # the ledger-race guard by default; the polling tests flip this explicitly.
-    monkeypatch.setenv("NDA_GMAIL_SYNC_ENABLED", "off")
+    # Inbound Gmail import DISABLED (inbound_enabled=false) — the ONE toggle
+    # that stops BOTH ledger writers (the scheduled poll AND the manual
+    # POST /api/gmail/import route) — so execute-mode tests pass the
+    # ledger-race guard by default; the guard tests flip this explicitly.
+    monkeypatch.setattr(
+        admin_routes.app_settings,
+        "gmail_settings",
+        lambda: {**app_settings.DEFAULT_GMAIL_SETTINGS, "inbound_enabled": False},
+    )
     yield
     matter_store._invalidate_list_cache()
 
@@ -525,64 +538,107 @@ def test_limit_caps_the_batch(render_recorder):
     assert remaining["selected_count"] == 1
 
 
-# --- F2: ledger-race guard (execute refuses while Gmail polling is enabled) ---
-def test_execute_refuses_while_gmail_polling_enabled(monkeypatch, render_recorder):
+# --- F2: ledger-race guard (execute refuses until inbound import is disabled) --
+def test_execute_refuses_while_inbound_import_enabled(monkeypatch, render_recorder):
     pristine = _store_matter(_pristine_matter())
     dry = _run(_payload()).response
 
-    # Flip the env kill switch back ON: default admin settings (sync_enabled +
-    # inbound_enabled true) then make polling ACTIVE.
-    monkeypatch.setenv("NDA_GMAIL_SYNC_ENABLED", "1")
+    # inbound_enabled true => the manual sync route (and the poll) can write the
+    # ledger, regardless of any other toggle.
+    monkeypatch.setattr(
+        admin_routes.app_settings,
+        "gmail_settings",
+        lambda: {**app_settings.DEFAULT_GMAIL_SETTINGS, "inbound_enabled": True},
+    )
 
-    # Dry-run stays available while polling runs.
+    # Dry-run stays available while inbound import is enabled.
     assert _run(_payload()).status == 200
 
     handler = _run(_payload(dry_run=False, confirm=dry["selection_hash"]))
     assert handler.status == 409
     assert handler.response["polling_paused_verified"] is False
-    assert "Pause Gmail polling" in handler.response["error"]
+    assert "Disable inbound Gmail import" in handler.response["error"]
     # Nothing was deleted and the ledger was not touched.
     assert _record_path(pristine["id"]).is_file()
     assert not gmail_processed_ledger.is_message_processed(pristine["gmail_message_id"], OWNER)
 
-    # Pausing via the env kill switch lets the same confirm proceed.
-    monkeypatch.setenv("NDA_GMAIL_SYNC_ENABLED", "off")
+    # Disabling inbound (the one toggle both writers obey) lets the same confirm proceed.
+    monkeypatch.setattr(
+        admin_routes.app_settings,
+        "gmail_settings",
+        lambda: {**app_settings.DEFAULT_GMAIL_SETTINGS, "inbound_enabled": False},
+    )
     ok = _run(_payload(dry_run=False, confirm=dry["selection_hash"]))
     assert ok.status == 200
     assert ok.response["archived"] == 1
     assert ok.response["polling_paused_verified"] is True
 
 
-def test_execute_honours_admin_polling_settings(monkeypatch, render_recorder):
+def test_scheduler_pause_alone_is_not_enough(monkeypatch, render_recorder):
+    """THE HOLE, closed: the manual POST /api/gmail/import route is a designed
+    workflow gated ONLY by inbound_enabled — it checks neither sync_enabled nor
+    the NDA_GMAIL_SYNC_ENABLED env kill switch. So a scheduler-only pause
+    (either of those) must NOT satisfy the execute guard: a concurrent manual
+    sync could still clobber the ledger marks.
+    """
     pristine = _store_matter(_pristine_matter())
     dry = _run(_payload()).response
-    # Env switch open; the admin settings now decide.
-    monkeypatch.setenv("NDA_GMAIL_SYNC_ENABLED", "")
 
+    # Scheduler fully paused BOTH ways (env kill switch + sync_enabled master
+    # gate) — but inbound_enabled still true, so the manual route stays open.
+    monkeypatch.setenv("NDA_GMAIL_SYNC_ENABLED", "off")
     monkeypatch.setattr(
         admin_routes.app_settings,
         "gmail_settings",
-        lambda: {"sync_enabled": True, "inbound_enabled": True},
+        lambda: {
+            **app_settings.DEFAULT_GMAIL_SETTINGS,
+            "sync_enabled": False,
+            "inbound_enabled": True,
+        },
     )
     refused = _run(_payload(dry_run=False, confirm=dry["selection_hash"]))
     assert refused.status == 409
+    assert refused.response["polling_paused_verified"] is False
     assert _record_path(pristine["id"]).is_file()
 
-    # Master pause (sync_enabled false) => polling paused => execute proceeds.
+    # Flipping inbound_enabled off closes the manual route too => proceeds.
     monkeypatch.setattr(
         admin_routes.app_settings,
         "gmail_settings",
-        lambda: {"sync_enabled": False, "inbound_enabled": True},
+        lambda: {
+            **app_settings.DEFAULT_GMAIL_SETTINGS,
+            "sync_enabled": False,
+            "inbound_enabled": False,
+        },
     )
     ok = _run(_payload(dry_run=False, confirm=dry["selection_hash"]))
     assert ok.status == 200
     assert ok.response["archived"] == 1
 
 
-def test_unknown_polling_state_fails_closed(monkeypatch):
+def test_guard_paused_state_blocks_the_manual_import_route_too():
+    """The state the execute guard accepts (inbound_enabled=false) provably
+    stops the manual import engine: import_inbound_matters refuses outright.
+    This is the invariant the guard's sufficiency rests on.
+    """
+
+    class _Error(RuntimeError):
+        pass
+
+    class _Transport:
+        GmailIntegrationError = _Error
+
+        def gmail_role_enabled(self, role):
+            # Mirrors app_settings.gmail_role_enabled with inbound_enabled=false.
+            return role != "inbound"
+
+    with pytest.raises(_Error, match="Gmail inbound is disabled"):
+        gmail_matter_inbox.import_inbound_matters(transport=_Transport(), owner_user_id=OWNER)
+
+
+def test_unknown_inbound_state_fails_closed(monkeypatch):
     pristine = _store_matter(_pristine_matter())
     dry = _run(_payload()).response
-    monkeypatch.setenv("NDA_GMAIL_SYNC_ENABLED", "")
 
     def _boom():
         raise RuntimeError("settings store unreachable")
