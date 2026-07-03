@@ -1088,16 +1088,40 @@ def fingerprint_backfill_status(owner_user_id: str) -> dict[str, Any]:
         return dict(_FINGERPRINT_BACKFILL_STATUS.get(owner_user_id) or {"state": "idle"})
 
 
+def _fingerprint_backfill_sleep_seconds() -> float:
+    """Pause between backfill items (default 0.05s; env-tunable, >=0).
+
+    The sweep runs for minutes on a large store; each item takes the store lock
+    (read + persist) and burns CPU on the SimHash. A short yield between items
+    keeps the store lock and the GIL available to live request threads instead of
+    letting the sweep monopolize them — mirroring the pdf-docx backfill's pacing.
+    """
+    import os
+
+    try:
+        value = float(os.environ.get("NDA_CORPUS_FINGERPRINT_BACKFILL_SLEEP_SECONDS", "0.05") or 0.05)
+    except (TypeError, ValueError):
+        return 0.05
+    return max(0.0, value)
+
+
 def _run_fingerprint_backfill(repository, owner_user_id: str, matter_ids: list[str]) -> dict[str, Any]:
     """Compute + persist missing fingerprints for ``matter_ids`` (synchronous body).
 
     Re-reads each matter fresh (it may have changed -- or been deleted -- since the
     triggering build) and skips any that already carry a valid fingerprint, so a
     concurrent request's inline-budget compute is never duplicated. Per-matter
-    failures are counted and skipped; the sweep never raises.
+    failures are counted and skipped; the sweep never raises. Sleeps briefly
+    between items (see :func:`_fingerprint_backfill_sleep_seconds`) so the sweep
+    never monopolizes the store lock or the GIL.
     """
+    import time as _time
+
+    pause = _fingerprint_backfill_sleep_seconds()
     done = skipped = failed = 0
-    for matter_id in matter_ids:
+    for position, matter_id in enumerate(matter_ids):
+        if pause and position:
+            _time.sleep(pause)
         try:
             matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
             if matter is None:
