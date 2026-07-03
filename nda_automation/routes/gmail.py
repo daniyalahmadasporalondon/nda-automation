@@ -336,6 +336,47 @@ def handle_gmail_settings_update(handler) -> None:
                 warnings.append(
                     "Some Signal Terms won't be used for NDA detection and were skipped: " + skipped + "."
                 )
+    if "inbound_excluded_senders" in payload:
+        raw_excluded = payload.get("inbound_excluded_senders")
+        if not isinstance(raw_excluded, (list, str)):
+            handler._send_json(
+                {"error": "Gmail excluded senders must be a list of domains or addresses."},
+                status=400,
+            )
+            return
+        if isinstance(raw_excluded, str):
+            raw_entries: list[object] = [
+                part for part in raw_excluded.replace("\n", ",").split(",") if part.strip()
+            ]
+        else:
+            raw_entries = [entry for entry in raw_excluded if str(entry or "").strip()]
+        # Validate every entry the admin actually typed: an invalid one is a clear
+        # 400 (never silently dropped or silently applied). An EMPTY list is valid
+        # and means "no settings-level excludes" (the hard DocuSign floor in the
+        # code check still applies).
+        invalid_entries = [
+            str(entry).strip()
+            for entry in raw_entries
+            if not app_settings._clean_gmail_excluded_sender(entry)
+        ]
+        if invalid_entries:
+            preview = ", ".join(f'"{entry}"' for entry in invalid_entries[:5])
+            handler._send_json(
+                {
+                    "error": (
+                        "Invalid Gmail excluded sender entries (use a bare domain "
+                        f"like docusign.net or a full address): {preview}."
+                    )
+                },
+                status=400,
+            )
+            return
+        cleaned_excluded = app_settings.gmail_excluded_senders_from_payload(raw_entries, fallback=[])
+        updates["inbound_excluded_senders"] = cleaned_excluded
+        if len(raw_entries) > app_settings.MAX_GMAIL_EXCLUDED_SENDERS:
+            warnings.append(
+                f"Excluded senders capped at {app_settings.MAX_GMAIL_EXCLUDED_SENDERS} entries."
+            )
     if "intake_playbook" in payload:
         intake_playbook = payload.get("intake_playbook")
         if not isinstance(intake_playbook, str) or len(intake_playbook) > app_settings.MAX_GMAIL_INTAKE_PLAYBOOK_LENGTH:
@@ -372,6 +413,7 @@ _AUDITED_GMAIL_SETTINGS = (
     "import_limit",
     "inbound_window_days",
     "inbound_search_terms",
+    "inbound_excluded_senders",
     "intake_playbook",
 )
 

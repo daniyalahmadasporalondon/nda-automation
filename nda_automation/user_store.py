@@ -37,6 +37,12 @@ DEFAULT_USER_GMAIL_SYNC = {
     "last_sync_imported_count": 0,
     "last_sync_skipped_count": 0,
     "sync_history": [],
+    # First-sync backfill cursor (days of the inbound window already drained by
+    # the capped catch-up). 0 = unset: either a user who predates the cap (their
+    # sync history exempts them) or a brand-new user whose first poll has not
+    # completed yet. Grows by the cap step per successful poll until it reaches
+    # the configured window, then stays there (backfill complete).
+    "backfill_completed_through_days": 0,
 }
 _USER_STORE_LOCK = threading.RLock()
 
@@ -263,7 +269,38 @@ def gmail_sync_status_from_payload(payload: object) -> dict[str, Any]:
             DEFAULT_USER_GMAIL_SYNC["last_sync_skipped_count"],
         ),
         "sync_history": _sync_history_from_payload(payload.get("sync_history")),
+        "backfill_completed_through_days": _nonnegative_int(
+            payload.get("backfill_completed_through_days"),
+            DEFAULT_USER_GMAIL_SYNC["backfill_completed_through_days"],
+        ),
     }
+
+
+def record_gmail_backfill_progress(user_id: str, completed_through_days: int) -> None:
+    """Persist the first-sync backfill cursor on the user's gmail sync record.
+
+    The cursor only ever WIDENS (monotonic up): a stale/concurrent smaller write
+    can never shrink an already-drained band back into the capped window. A
+    missing user or a non-positive value is a silent no-op (best-effort -- the
+    poll must never fail on backfill bookkeeping).
+    """
+    user_id = str(user_id or "").strip()
+    try:
+        days = int(completed_through_days)
+    except (TypeError, ValueError):
+        return
+    if not user_id or days <= 0:
+        return
+    with _locked_user_store():
+        store = _load_store_unlocked()
+        user = store.setdefault("users", {}).get(user_id)
+        if not isinstance(user, dict):
+            return
+        current_sync = gmail_sync_status_from_payload(user.get("gmail_sync"))
+        if days <= int(current_sync.get("backfill_completed_through_days") or 0):
+            return
+        user["gmail_sync"] = {**current_sync, "backfill_completed_through_days": days}
+        _save_store_unlocked(store)
 
 
 def users_path() -> Path:

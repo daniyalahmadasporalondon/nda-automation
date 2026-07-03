@@ -81,6 +81,10 @@ GMAIL_METADATA_FIELDS = (
     "gmail_detection_excerpt",
     "gmail_detection_sources",
     "gmail_detection_terms",
+    # Provenance for e-sign platform notifications captured as likely executed
+    # NDAs (the matched exclude-list entry, e.g. "docusign.net") -- lets an
+    # operator filter these matters later (future Corpus/executed-NDA tagging).
+    "gmail_esign_notification",
     "gmail_message_id",
     "gmail_part_id",
     "gmail_thread_id",

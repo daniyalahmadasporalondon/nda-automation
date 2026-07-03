@@ -143,6 +143,35 @@ GMAIL_IMPORT_LIMIT_UNSET = 0
 DEFAULT_GMAIL_INBOUND_WINDOW_DAYS = 90
 MIN_GMAIL_INBOUND_WINDOW_DAYS = 1
 MAX_GMAIL_INBOUND_WINDOW_DAYS = 3650
+# Sender domains/addresses whose notification mail the inbound scan EXCLUDES.
+# These are e-signature platform envelope-notification senders (signature
+# requests/completions/reminders) plus Google Calendar's invite notifier: their
+# mail carries a PDF/DOCX (or ics+agenda) attachment so the structural fetch
+# envelope surfaces it, but it is never an inbound counterparty NDA to triage --
+# importing it spawns phantom matters and burns paid AI triage/intake calls.
+# The match is SENDER-ONLY (domain suffix, or full address for entries with an
+# "@"): a real NDA that merely MENTIONS DocuSign/HelloSign must still import.
+# Admin-editable via the gmail settings ``inbound_excluded_senders`` key; this
+# list is the default when nothing is stored. The docusign.net entry mirrors the
+# hard DOCUSIGN_NOTIFICATION_DOMAINS floor in gmail_integration (which always
+# applies even if an admin clears this list).
+DEFAULT_GMAIL_INBOUND_EXCLUDED_SENDERS = [
+    "docusign.net",
+    "docusign.com",
+    "adobesign.com",
+    "documents.adobe.com",
+    "echosign.com",
+    "hellosign.com",
+    "pandadoc.com",
+    "calendar-notification@google.com",
+]
+MAX_GMAIL_EXCLUDED_SENDERS = 50
+MAX_GMAIL_EXCLUDED_SENDER_LENGTH = 120
+# An exclude entry is either a bare domain ("docusign.net") or a full address
+# ("calendar-notification@google.com"). The charset is deliberately narrow --
+# these entries are interpolated into the Gmail fetch query as ``-from:{entry}``
+# tokens, so nothing that could carry whitespace/quotes/operators may pass.
+_GMAIL_EXCLUDED_SENDER_PATTERN = re.compile(r"[a-z0-9._+\-]+(?:@[a-z0-9.\-]+)?")
 DEFAULT_GMAIL_SETTINGS = {
     # Master kill-switch the scheduler obeys: when False the WHOLE scheduled sync
     # step is skipped (not just inbound). inbound_enabled stays the inbound-specific
@@ -157,6 +186,10 @@ DEFAULT_GMAIL_SETTINGS = {
     # How far back (in days) the inbound fetch scans. Feeds the query's
     # ``newer_than:{N}d`` clause; clamped to [1, 3650], defaults to 90.
     "inbound_window_days": DEFAULT_GMAIL_INBOUND_WINDOW_DAYS,
+    # Sender domains/addresses excluded from the inbound scan (e-sign platform
+    # notifications, calendar invites). Editable; [] means "no settings-level
+    # excludes" (the hard DocuSign floor in gmail_integration still applies).
+    "inbound_excluded_senders": DEFAULT_GMAIL_INBOUND_EXCLUDED_SENDERS,
     "intake_playbook": "",
     "last_sync_at": "",
     "last_sync_imported_count": 0,
@@ -653,6 +686,74 @@ def gmail_inbound_window_days(settings: dict[str, Any] | None = None) -> int:
     return gmail_inbound_window_days_from_payload(current.get("inbound_window_days"))
 
 
+def _clean_gmail_excluded_sender(value: object) -> str:
+    """Normalise one inbound sender-exclude entry (domain or full address).
+
+    Returns "" (drop) for anything empty/oversized, with more than one "@", with
+    a dot-less domain part, or containing any character outside the narrow
+    query-safe alphabet -- the entry is interpolated into the Gmail fetch query
+    as a ``-from:{entry}`` token, so it must never carry whitespace, quotes, or
+    query operators.
+    """
+    entry = str(value or "").strip().lower().lstrip("@").rstrip(".")
+    if not entry or len(entry) > MAX_GMAIL_EXCLUDED_SENDER_LENGTH:
+        return ""
+    if entry.count("@") > 1:
+        return ""
+    domain = entry.rsplit("@", 1)[-1]
+    if "." not in domain:
+        return ""
+    if not _GMAIL_EXCLUDED_SENDER_PATTERN.fullmatch(entry):
+        return ""
+    return entry
+
+
+def gmail_excluded_senders_from_payload(
+    value: object, *, fallback: list[str] | None = None
+) -> list[str]:
+    """Normalise the inbound sender-exclude list from raw payload/stored input.
+
+    ``fallback`` mirrors the search-terms honesty seam: ``None`` (read-time
+    normalization of a possibly-corrupt stored blob) revives the defaults for an
+    ABSENT/corrupt value, while a write gate passes ``fallback=[]`` so it can
+    reject invalid input with a clear 400 instead of silently reviving defaults.
+
+    Unlike the search terms, an EXPLICIT empty list is meaningful and preserved:
+    it is the admin saying "no settings-level sender excludes" (the hard DocuSign
+    floor in gmail_integration still applies), so ``[]`` stays ``[]``.
+    """
+    fallback_entries = (
+        DEFAULT_GMAIL_INBOUND_EXCLUDED_SENDERS if fallback is None else fallback
+    )
+    if value is None:
+        return list(fallback_entries)
+    if isinstance(value, str):
+        raw_entries: list[object] = list(value.replace("\n", ",").split(","))
+    elif isinstance(value, list):
+        raw_entries = list(value)
+    else:
+        # Corrupt stored shape (dict/int/...): treat as absent.
+        return list(fallback_entries)
+
+    entries: list[str] = []
+    seen: set[str] = set()
+    for raw_entry in raw_entries:
+        entry = _clean_gmail_excluded_sender(raw_entry)
+        if not entry or entry in seen:
+            continue
+        entries.append(entry)
+        seen.add(entry)
+        if len(entries) >= MAX_GMAIL_EXCLUDED_SENDERS:
+            break
+    return entries
+
+
+def gmail_inbound_excluded_senders(settings: dict[str, Any] | None = None) -> list[str]:
+    """The effective inbound sender-exclude list (validated at read time)."""
+    current = settings if isinstance(settings, dict) else gmail_settings()
+    return gmail_excluded_senders_from_payload(current.get("inbound_excluded_senders"))
+
+
 def record_gmail_sync(
     result: dict[str, Any],
     *,
@@ -731,6 +832,12 @@ def gmail_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "sync_frequency": sync_frequency,
         "import_limit": gmail_import_limit_from_payload(payload.get("import_limit")),
         "inbound_window_days": gmail_inbound_window_days_from_payload(payload.get("inbound_window_days")),
+        # Absent (a stored blob predating this key) => defaults at READ time, so
+        # existing users' stored settings are never rewritten by a migration; an
+        # explicitly-stored [] (admin cleared the list) is preserved.
+        "inbound_excluded_senders": gmail_excluded_senders_from_payload(
+            payload.get("inbound_excluded_senders")
+        ),
         "intake_playbook": _clamp_intake_playbook(payload.get("intake_playbook")),
         "last_sync_at": str(payload.get("last_sync_at") or DEFAULT_GMAIL_SETTINGS["last_sync_at"]),
         "last_sync_imported_count": _nonnegative_int(
@@ -955,6 +1062,11 @@ def _valid_gmail_setting(key: str, value: Any) -> bool:
         return True
     if key == "inbound_search_terms":
         return bool(gmail_search_terms_from_payload(value, fallback=[]))
+    if key == "inbound_excluded_senders":
+        # A list (possibly empty -- "no settings-level excludes") or a comma/
+        # newline separated string. Per-entry validation + the 400 for invalid
+        # entries lives in the route handler; the normalizer re-cleans on write.
+        return isinstance(value, (list, str))
     if key == "sync_frequency":
         return isinstance(value, str) and value in GMAIL_SYNC_FREQUENCIES
     if key == "intake_playbook":
