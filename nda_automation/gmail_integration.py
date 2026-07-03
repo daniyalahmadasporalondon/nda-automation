@@ -1243,6 +1243,70 @@ def _esign_notification_nda_hit(
     return any(term in EXPLICIT_NDA_TERMS for term in terms)
 
 
+def _excluded_message_content_probe(
+    service: Any,
+    message_id: str,
+    attachments: list[dict[str, str]],
+) -> bool:
+    """Deterministic CONTENT probe for an excluded-sender message (no AI).
+
+    The explicit-token capture above misses genuine NDA envelopes whose subject/
+    filename carries no English NDA token (Adobe Sign "Signature requested on
+    'Acme - Mutual Agreement'"); the base (pre-exclude) behaviour would have
+    imported those. Before the terminal drop, download + extract each reviewable
+    attachment and run the EXISTING deterministic scorer: True (capture, triage-
+    clamped) when any attachment reaches the triage band (a content basis or a
+    triage-band score) OR the scorer is language-blind on substantial text (zero
+    vocabulary hits -- mirrors the pre-gate's F1(a) exemption). Platform junk
+    (invoices, decks, receipts) engages the vocabulary and still drops.
+
+    NOTE: like ``_attachment_nda_detection`` this is an extra extraction site
+    whose result is discarded (prepare re-extracts on the capture path); it runs
+    at most once per message EVER (the drop ledger-marks) and the scan loop caps
+    probes per poll. A Gmail rate-limit at the download stage is re-raised so a
+    429 storm aborts the pass instead of terminal-dropping a real NDA.
+    """
+    if not gmail_esign_nda_capture_enabled():
+        return False
+    for attachment in attachments:
+        filename = str(attachment.get("filename") or "")
+        try:
+            document_bytes = _attachment_bytes(service, message_id, attachment)
+            ensure_document_size(document_bytes)
+            _document_type, paragraphs, _quality = extract_document(
+                filename,
+                document_bytes,
+                include_visual_profile=False,
+            )
+        except GmailIntegrationError as error:
+            if _gmail_retry_after_epoch(error):
+                raise  # provider throttling says nothing about this message
+            continue
+        except (DocumentSizeError, DocxExtractionError, PdfExtractionError):
+            continue
+        validation = _attachment_nda_validation(filename, paragraphs)
+        try:
+            score = int(validation.get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        if bool(validation.get("has_content_basis")) or score >= TRIAGE_MIN_NDA_SCORE:
+            return True
+        try:
+            hits = int(validation.get("detection_hits") or 0)
+        except (TypeError, ValueError):
+            hits = 0
+        if hits == 0:
+            # Zero vocabulary hits: the English scorer is blind here. Capture
+            # only when there is SUBSTANTIAL text (a thin/empty extraction gives
+            # the deterministic probe nothing to stand on either way).
+            total_text = 0
+            for paragraph in paragraphs:
+                total_text += len(" ".join(str(paragraph.get("text") or "").split()))
+                if total_text >= gmail_matter_inbox.MIN_PREGATE_EXTRACTED_TEXT_CHARS:
+                    return True
+    return False
+
+
 def _is_docusign_notification(message: dict[str, Any]) -> bool:
     """Return True iff the message is a DocuSign envelope-notification email.
 
@@ -1452,6 +1516,14 @@ def _attachment_nda_validation(
         "score": score,
         "sources": sources,
         "terms": terms,
+        # How many vocabulary signals (NDA filename/content + collateral) the
+        # scorer matched AT ALL. Zero over substantial text means the ENGLISH
+        # vocabulary is language-blind for this document (e.g. a Spanish
+        # "Acuerdo de Confidencialidad") -- the AI pre-gate treats that as
+        # blind-equivalent and keeps the multilingual AI overlay available,
+        # while junk that engages the vocabulary (a "confidential" filename, an
+        # invoice/proposal/deck collateral hit) still pre-gates.
+        "detection_hits": len(filename_reasons) + len(content_reasons) + len(collateral_reasons),
     }
 
 
@@ -1515,14 +1587,39 @@ def _attachment_explicit_nda_hit(metadata: dict[str, str] | None, filename: str)
     scanned/odd-extraction NDA announced in the email body ("Attached is our NDA"
     + "document (3).pdf") or named explicitly ("Mutual NDA.pdf" with image-only
     content) is never pre-gated away from the model.
+
+    ADMIN CUSTOM TERMS extend the hatch: when NDA_GMAIL_CUSTOM_TERMS_ENABLED is
+    on, a validated Signal Term matched in the subject/body/snippet detection
+    (the detection scan already includes custom terms) or appearing in the
+    FILENAME unlocks the AI exactly like the hardcoded English set -- an admin
+    adding "Acuerdo de Confidencialidad" must not be silently ignored by an
+    English-only hatch.
     """
     if _metadata_has_explicit_nda_signal(metadata):
         return True
+    custom_terms = _custom_detection_terms()
+    if custom_terms and metadata:
+        sources = _metadata_csv_values(metadata.get("gmail_detection_sources"))
+        if any(source in {"subject", "body", "snippet"} for source in sources):
+            detected = {
+                term.casefold()
+                for term in _metadata_csv_values(metadata.get("gmail_detection_terms"))
+            }
+            if any(term.casefold() in detected for term in custom_terms):
+                return True
     _score, _terms, _reasons, strong_filename = _attachment_signal_score(
         filename,
         ATTACHMENT_FILENAME_NDA_SIGNALS,
     )
-    return strong_filename
+    if strong_filename:
+        return True
+    if custom_terms:
+        # Custom terms are validated literal substrings (never regex); match them
+        # against the filename the same case-insensitive way the detector does.
+        cleaned_filename = str(filename or "").casefold()
+        if any(term.casefold() in cleaned_filename for term in custom_terms):
+            return True
+    return False
 
 
 def _attachment_validation_metadata(metadata: dict[str, str], validation: dict[str, object]) -> dict[str, str]:

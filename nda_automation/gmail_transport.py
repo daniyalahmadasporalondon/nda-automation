@@ -126,6 +126,20 @@ class GmailTransport:
         and must be captured for triage instead of terminally dropped."""
         return bool(_legacy()._esign_notification_nda_hit(message, attachments))
 
+    def excluded_message_capture_probe(
+        self,
+        service: Any,
+        message_id: str,
+        attachments: list[dict[str, str]],
+    ) -> bool:
+        """Deterministic content probe (no AI) run before terminally dropping an
+        excluded-sender message whose explicit-token capture missed: True when
+        any attachment looks agreement-shaped (triage band) or the scorer is
+        language-blind over substantial text."""
+        return bool(
+            _legacy()._excluded_message_content_probe(service, message_id, attachments)
+        )
+
     def reviewable_attachments(self, payload: dict[str, Any]) -> list[dict[str, str]]:
         return list(_legacy()._reviewable_attachments(payload))
 

@@ -117,11 +117,20 @@ _DETERMINISTIC_PERMANENT_SKIP_REASONS = frozenset(
 #   1. ESCAPE HATCH: an explicit NDA mention in the message metadata (subject/
 #      body/snippet via _metadata_has_explicit_nda_signal) or a strong NDA
 #      filename -- covers scanned/odd-extraction NDAs announced in the email.
-#   2. EXTRACTION-BLIND: extracted text empty or under ~200 chars. A blind
-#      det-skip means "couldn't judge", not "not an NDA" (image-only DOCX
-#      extracts EMPTY with no error; a partial-scan PDF extracts only its cover
-#      letter; every scoring regex is English so a foreign-language NDA scores
-#      ~0). Such candidates ALWAYS keep the AI overlay.
+#      Admin custom Signal Terms (NDA_GMAIL_CUSTOM_TERMS_ENABLED on) extend the
+#      hatch, so a configured non-English term ("Acuerdo de Confidencialidad")
+#      unlocks the AI exactly like the hardcoded English set.
+#   2. SCORER-BLIND, two forms -- a blind det-skip means "couldn't judge",
+#      never "not an NDA", so such candidates ALWAYS keep the AI overlay:
+#      (a) EXTRACTION-BLIND: extracted text empty or under ~200 chars
+#          (image-only DOCX extracts EMPTY with no error; a partial-scan PDF
+#          extracts only its cover letter);
+#      (b) LANGUAGE-BLIND: substantial text but ZERO vocabulary hits
+#          (validation detection_hits == 0). Every scoring regex is English, so
+#          a text-extractable foreign-language NDA scores ~0 while matching
+#          NOTHING -- whereas English junk engages the vocabulary somewhere (a
+#          "confidential"/"agreement"/"document" filename signal, an invoice/
+#          proposal/deck collateral hit) and still pre-gates.
 #   3. SEAM PRESENCE: the pre-gate only activates when the transport exposes the
 #      attachment_explicit_nda_signal escape-hatch seam. A transport that cannot
 #      answer the escape-hatch question must not pre-gate (fail-open toward
@@ -194,6 +203,33 @@ def _candidate_extraction_blind(candidate: dict[str, Any]) -> bool:
         total += len(" ".join(str(text or "").split()))
         if total >= MIN_PREGATE_EXTRACTED_TEXT_CHARS:
             return False
+    return True
+
+
+def _candidate_language_blind(candidate: dict[str, Any]) -> bool:
+    """True when the scorer matched ZERO vocabulary signals on this candidate.
+
+    The blind exemption's second form (module note, 2b): substantial text where
+    the English vocabulary found NOTHING to judge -- either genuinely alien
+    content or a non-English document -- so a det-skip is untrustworthy and the
+    multilingual AI overlay must stay available. Junk that engaged the
+    vocabulary anywhere (an NDA term OR a collateral invoice/proposal/deck hit)
+    is a TRUSTED skip and still pre-gates.
+    """
+    validation = candidate.get("validation") if isinstance(candidate.get("validation"), dict) else {}
+    if "detection_hits" in validation:
+        return _coerce_int(validation.get("detection_hits")) <= 0
+    # Legacy validation shape (no hit count, e.g. an older transport overriding
+    # attachment_nda_validation): derive conservatively. Any sign the scorer
+    # engaged -- a matched term, a positive score, a collateral reason -- means
+    # NOT blind; a fully silent validation is treated as blind so the safe bias
+    # stays "pay for the AI look" rather than "drop".
+    if validation.get("terms"):
+        return False
+    if _coerce_int(validation.get("score")) > 0:
+        return False
+    if "collateral" in str(validation.get("reason") or ""):
+        return False
     return True
 
 
@@ -526,6 +562,11 @@ class _ScanState:
         # entry here: they are ledger-marked in-memory immediately, so a second
         # encounter this poll already short-circuits on is_processed.)
         self.transient_attempted_ids: set[str] = set()
+        # Excluded-sender CONTENT probes run this poll (download + extraction, no
+        # AI). Capped at import_limit per poll so a backlog of excluded mail can
+        # never do more heavy extraction work than the budget allows for imports;
+        # overflow messages are deferred UNMARKED (they retry next poll).
+        self.capture_probes_used = 0
 
     def note_floor(self, internal_date_ms: int) -> None:
         if internal_date_ms <= 0:
@@ -764,17 +805,49 @@ def _scan_pass(
             esign_capture_entry = ""
             if matched_exclude_entry:
                 capture_probe = getattr(transport, "esign_nda_capture_hit", None)
-                if callable(capture_probe):
+                content_probe = getattr(transport, "excluded_message_capture_probe", None)
+                capture_attachments: list[dict[str, str]] = []
+                if callable(capture_probe) or callable(content_probe):
                     capture_attachments = list(
                         transport.reviewable_attachments(message.get("payload") or {})
                     )
-                    if capture_attachments:
-                        try:
-                            if capture_probe(message, capture_attachments):
-                                esign_capture_entry = matched_exclude_entry
-                                matched_exclude_entry = ""
-                        except Exception:  # pragma: no cover - probe must never break the poll
-                            esign_capture_entry = ""
+                # Stage 1 -- explicit-token capture (free: headers + filenames).
+                if capture_attachments and callable(capture_probe):
+                    try:
+                        if capture_probe(message, capture_attachments):
+                            esign_capture_entry = matched_exclude_entry
+                            matched_exclude_entry = ""
+                    except Exception:  # pragma: no cover - probe must never break the poll
+                        esign_capture_entry = ""
+                # Stage 2 -- deterministic CONTENT probe (download + extract, no
+                # AI) before the terminal drop: a genuine NDA envelope without an
+                # English NDA token (Adobe Sign "Signature requested on 'Acme -
+                # Mutual Agreement'") must not be silently dropped -- the base
+                # (pre-exclude) behaviour imported these. Capped per poll so a
+                # backlog of excluded mail cannot out-extract the import budget;
+                # over-cap messages are DEFERRED unmarked (no terminal drop, no
+                # cursor-floor advance) and retry next poll.
+                if matched_exclude_entry and capture_attachments and callable(content_probe):
+                    if state.capture_probes_used >= state.import_limit:
+                        context.skipped.append(
+                            {"message_id": message_id, "reason": "excluded_probe_deferred"}
+                        )
+                        continue
+                    state.capture_probes_used += 1
+                    try:
+                        if content_probe(service, message_id, capture_attachments):
+                            esign_capture_entry = matched_exclude_entry
+                            matched_exclude_entry = ""
+                    except Exception as probe_error:
+                        if _is_rate_limited(transport, probe_error):
+                            # Provider throttling says nothing about this message:
+                            # keep what was imported this poll and stop, exactly
+                            # like the download-stage 429 path -- never let a 429
+                            # storm terminal-drop a real NDA.
+                            state.rate_limited = True
+                            return
+                        # A broken probe fails toward the AI-era default for
+                        # excluded senders (the terminal drop), never a crash.
             if matched_exclude_entry:
                 # Keep the live fix's reason label for the DocuSign family so
                 # existing telemetry/greps stay continuous; other platforms get
@@ -1311,6 +1384,7 @@ def import_inbound_attachments(
             esign_capture
             or pre_lane != "skip"
             or _candidate_extraction_blind(candidate)
+            or _candidate_language_blind(candidate)
             or _candidate_explicit_nda_signal(transport, metadata, candidate)
         )
 
@@ -1396,6 +1470,15 @@ def import_inbound_attachments(
                     "non_nda_attachment",
                     detail=str(validation.get("reason") or ""),
                     score=str(validation.get("score") or "0"),
+                    # AUDITABILITY: distinguish "the AI was never consulted (the
+                    # pre-gate suppressed the call)" from "the AI agreed" in the
+                    # skipped[] telemetry. Reason stays within the terminal-stable
+                    # set; only the detail gains the marker.
+                    **(
+                        {"pregate": "suppressed"}
+                        if ai_result.get("status") == "skipped_pregate"
+                        else {}
+                    ),
                 ))
             continue
         # When the AI is what put this candidate into triage, surface the model's
@@ -1454,6 +1537,10 @@ class _IntakeTallies:
         self.ai_errors = 0
         self.ai_timeouts = 0
         self.ai_skipped_cap = 0
+        # Candidates whose Flash call the deterministic PRE-GATE suppressed
+        # (status "skipped_pregate"): surfaced so an operator can tell "the AI
+        # was never consulted" apart from "the AI agreed" per sync.
+        self.ai_skipped_pregate = 0
 
     def record(self, status: str) -> None:
         if status in ("ok", "error", "timeout"):
@@ -1464,14 +1551,21 @@ class _IntakeTallies:
             self.ai_timeouts += 1
         elif status == "skipped_cap":
             self.ai_skipped_cap += 1
+        elif status == "skipped_pregate":
+            self.ai_skipped_pregate += 1
 
     def as_dict(self) -> dict[str, int]:
-        return {
+        tallies = {
             "ai_calls": self.ai_calls,
             "ai_errors": self.ai_errors,
             "ai_timeouts": self.ai_timeouts,
             "ai_skipped_cap": self.ai_skipped_cap,
         }
+        # Included only when non-zero so the legacy tally shape stays
+        # byte-identical for every sync that never suppresses a call.
+        if self.ai_skipped_pregate:
+            tallies["ai_skipped_pregate"] = self.ai_skipped_pregate
+        return tallies
 
     def merge(self, other: "_IntakeTallies | dict[str, Any] | None") -> None:
         if other is None:
@@ -1481,6 +1575,7 @@ class _IntakeTallies:
         self.ai_errors += int(data.get("ai_errors") or 0)
         self.ai_timeouts += int(data.get("ai_timeouts") or 0)
         self.ai_skipped_cap += int(data.get("ai_skipped_cap") or 0)
+        self.ai_skipped_pregate += int(data.get("ai_skipped_pregate") or 0)
 
     def warn_if_degraded(self, logger: logging.Logger, scope: str, *, model: str = "") -> None:
         """Warn when failures are a high fraction of the calls actually attempted."""

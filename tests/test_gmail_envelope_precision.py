@@ -249,6 +249,25 @@ class _PrecisionTransport(_LedgerSpyTransport):
             metadata, str(candidate.get("filename") or "")
         )
 
+    def excluded_message_capture_probe(self, service, message_id, attachments) -> bool:
+        # Mirrors gmail_integration._excluded_message_content_probe but routes
+        # download/extraction/validation through this transport's own scripted
+        # seams (the production function has its own unit test below).
+        if not gmail_integration.gmail_esign_nda_capture_enabled():
+            return False
+        for attachment in attachments:
+            filename = str(attachment.get("filename") or "")
+            document_bytes = self.attachment_bytes(service, message_id, attachment)
+            _document_type, paragraphs = self.extract_document_paragraphs(filename, document_bytes)
+            validation = self.attachment_nda_validation(filename, paragraphs)
+            if bool(validation.get("has_content_basis")) or int(validation.get("score") or 0) >= 40:
+                return True
+            if int(validation.get("detection_hits") or 0) == 0:
+                total = sum(len(" ".join(str(p.get("text") or "").split())) for p in paragraphs)
+                if total >= gmail_matter_inbox.MIN_PREGATE_EXTRACTED_TEXT_CHARS:
+                    return True
+        return False
+
     # -- scripting --------------------------------------------------------- #
     def set_senders(self, senders: dict[str, str]) -> None:
         self.service.users_api.messages_api._senders = dict(senders)
@@ -275,6 +294,16 @@ class _PrecisionTransport(_LedgerSpyTransport):
         )
 
 
+# A text-extractable SPANISH NDA (~260 chars, over the blind threshold): the
+# English vocabulary matches NOTHING here (zero detection hits), so the scorer
+# is language-blind and the AI overlay must stay available (F1).
+SPANISH_NDA_TEXT = (
+    "Acuerdo de Confidencialidad entre las partes. La parte receptora se obliga a "
+    "mantener en estricta reserva toda la información revelada por la parte "
+    "divulgante y a no utilizarla para fines distintos de la evaluación de la "
+    "relación comercial propuesta entre ambas organizaciones."
+)
+
 # A long, clearly non-NDA text body (> the 200-char blind threshold) so the
 # deterministic skip is TRUSTED (not extraction-blind).
 LONG_COLLATERAL_TEXT = (
@@ -283,8 +312,22 @@ LONG_COLLATERAL_TEXT = (
     "questionnaire summarises the commercial rollout plan, invoice schedule and "
     "purchase order process for the vendor onboarding track across both regions."
 )
-SKIP_VALIDATION = {"accepted": False, "has_content_basis": False, "score": 0, "reason": "collateral"}
-TRIAGE_VALIDATION = {"accepted": False, "has_content_basis": True, "score": 55, "reason": "uncertain nda"}
+# detection_hits > 0: the scorer ENGAGED the vocabulary (collateral hits), so the
+# skip is TRUSTED (not language-blind) and the pre-gate applies.
+SKIP_VALIDATION = {
+    "accepted": False,
+    "has_content_basis": False,
+    "score": 0,
+    "reason": "collateral:proposal, collateral:invoice",
+    "detection_hits": 3,
+}
+TRIAGE_VALIDATION = {
+    "accepted": False,
+    "has_content_basis": True,
+    "score": 55,
+    "reason": "uncertain nda",
+    "detection_hits": 2,
+}
 
 
 def _neutral_metadata(message_id: str = "msg_x") -> dict[str, str]:
@@ -304,6 +347,10 @@ def test_platform_notification_without_nda_signal_is_terminally_dropped(settings
     transport = _PrecisionTransport(import_limit=import_limit_20)
     transport.set_senders({"msg_000": "PandaDoc <docs@pandadoc.com>"})
     transport.attachment_filenames = ["Invoice.pdf"]
+    # Genuine platform junk: substantial English collateral content, so BOTH the
+    # explicit-token capture and the deterministic content probe say drop.
+    transport.scripted_paragraphs["Invoice.pdf"] = [LONG_COLLATERAL_TEXT]
+    transport.scripted_validation["Invoice.pdf"] = dict(SKIP_VALIDATION)
 
     result = gmail_matter_inbox.import_inbound_matters(
         transport=transport, limit=999, owner_user_id="owner_1"
@@ -322,6 +369,8 @@ def test_docusign_notification_keeps_the_live_fix_reason_label(settings_data_dir
     transport = _PrecisionTransport(import_limit=import_limit_20)
     transport.set_senders({"msg_000": "DocuSign <dse@docusign.net>"})
     transport.attachment_filenames = ["Invoice.pdf"]
+    transport.scripted_paragraphs["Invoice.pdf"] = [LONG_COLLATERAL_TEXT]
+    transport.scripted_validation["Invoice.pdf"] = dict(SKIP_VALIDATION)
 
     result = gmail_matter_inbox.import_inbound_matters(
         transport=transport, limit=999, owner_user_id="owner_1"
@@ -382,6 +431,126 @@ def test_capture_flag_off_drops_all_platform_mail(settings_data_dir, import_limi
     assert {s.get("reason") for s in result["skipped"]} == {"docusign_notification"}
 
 
+def test_agreement_shaped_envelope_without_nda_token_is_captured_by_content_probe(
+    settings_data_dir, import_limit_20
+):
+    # F2: Adobe Sign "Signature requested on 'Acme - Mutual Agreement'" -- no
+    # English NDA token anywhere, but the attachment CONTENT reaches the triage
+    # band (the fixture is a real NDA), so the deterministic content probe routes
+    # it to the capture path instead of the terminal drop. The base
+    # (pre-exclude) behaviour imported these; the excludes must not lose them.
+    transport = _PrecisionTransport(import_limit=import_limit_20)
+    transport.set_senders({"msg_000": "Adobe Sign <echosign@echosign.com>"})
+    transport.attachment_filenames = ["Acme - Mutual Agreement.pdf"]
+
+    result = gmail_matter_inbox.import_inbound_matters(
+        transport=transport, limit=999, owner_user_id="owner_1"
+    )
+
+    assert len(result["imported"]) == 1
+    imported = result["imported"][0]
+    assert imported["needs_triage"] == "true"
+    assert imported["triage_reason"] == "esign_notification_nda"
+    assert imported["gmail_esign_notification"] == "echosign.com"
+
+
+def test_content_probe_captures_language_blind_platform_attachment(settings_data_dir, import_limit_20):
+    # F1(a) parity inside the F2 probe: a platform envelope whose attachment is a
+    # text-extractable NON-ENGLISH document (zero vocabulary hits, substantial
+    # text) is captured for triage rather than dropped.
+    transport = _PrecisionTransport(import_limit=import_limit_20)
+    transport.set_senders({"msg_000": "DocuSign <dse@docusign.net>"})
+    transport.attachment_filenames = ["Acuerdo.pdf"]
+    transport.scripted_paragraphs["Acuerdo.pdf"] = [SPANISH_NDA_TEXT]
+
+    result = gmail_matter_inbox.import_inbound_matters(
+        transport=transport, limit=999, owner_user_id="owner_1"
+    )
+
+    assert len(result["imported"]) == 1
+    assert result["imported"][0]["triage_reason"] == "esign_notification_nda"
+
+
+def test_content_probe_is_capped_per_poll_and_defers_overflow(settings_data_dir, monkeypatch):
+    # The content probe (download + extraction) is capped at import_limit per
+    # poll; overflow excluded messages are DEFERRED unmarked (no terminal drop)
+    # and retried next poll -- a backlog of platform mail can never out-extract
+    # the import budget nor be silently dropped unprobed.
+    monkeypatch.setenv(gmail_integration.NDA_GMAIL_IMPORT_LIMIT_ENV, "1")
+    monkeypatch.setattr(
+        gmail_integration,
+        "MAX_GMAIL_IMPORT_LIMIT",
+        gmail_integration._gmail_import_limit_from_env(),
+    )
+    transport = _PrecisionTransport(import_limit=1, inbox_size=2)
+    transport.set_senders({
+        "msg_000": "PandaDoc <docs@pandadoc.com>",
+        "msg_001": "PandaDoc <docs@pandadoc.com>",
+    })
+    transport.attachment_filenames = ["Invoice.pdf"]
+    transport.scripted_paragraphs["Invoice.pdf"] = [LONG_COLLATERAL_TEXT]
+    transport.scripted_validation["Invoice.pdf"] = dict(SKIP_VALIDATION)
+
+    result = gmail_matter_inbox.import_inbound_matters(
+        transport=transport, limit=999, owner_user_id="owner_1"
+    )
+
+    reasons = [str(s.get("reason") or "") for s in result["skipped"]]
+    assert reasons.count("excluded_sender_notification") == 1  # probed + dropped
+    assert reasons.count("excluded_probe_deferred") == 1       # over-cap, deferred
+    # Only the probed message is terminally ledger-marked; the deferred one
+    # stays unmarked so it retries next poll.
+    assert len(transport.ledger_ids()) == 1
+
+    # Next poll probes the deferred message and drops it too.
+    result2 = gmail_matter_inbox.import_inbound_matters(
+        transport=transport, limit=999, owner_user_id="owner_1"
+    )
+    reasons2 = [str(s.get("reason") or "") for s in result2["skipped"]]
+    assert reasons2.count("excluded_sender_notification") == 1
+    assert len(transport.ledger_ids()) == 2
+
+
+def test_production_content_probe_triage_band_and_language_blind(settings_data_dir, monkeypatch):
+    # Unit test of gmail_integration._excluded_message_content_probe with the
+    # download seam patched: agreement-shaped content (real NDA fixture) -> True;
+    # junk collateral -> False; language-blind substantial text -> True.
+    from tests.test_inbound_flow_e2e import _fixture_pdf_bytes
+
+    monkeypatch.setattr(
+        gmail_integration, "_attachment_bytes", lambda service, message_id, attachment: _fixture_pdf_bytes()
+    )
+    assert gmail_integration._excluded_message_content_probe(
+        None, "m1", [{"filename": "Acme - Mutual Agreement.pdf", "attachment_id": "a1"}]
+    ) is True
+
+    junk_paragraphs = [{"id": "p1", "text": LONG_COLLATERAL_TEXT}]
+    monkeypatch.setattr(
+        gmail_integration,
+        "extract_document",
+        lambda filename, document_bytes, include_visual_profile=True: ("pdf", junk_paragraphs, None),
+    )
+    assert gmail_integration._excluded_message_content_probe(
+        None, "m2", [{"filename": "Invoice.pdf", "attachment_id": "a1"}]
+    ) is False
+
+    spanish_paragraphs = [{"id": "p1", "text": SPANISH_NDA_TEXT}]
+    monkeypatch.setattr(
+        gmail_integration,
+        "extract_document",
+        lambda filename, document_bytes, include_visual_profile=True: ("pdf", spanish_paragraphs, None),
+    )
+    assert gmail_integration._excluded_message_content_probe(
+        None, "m3", [{"filename": "Acuerdo.pdf", "attachment_id": "a1"}]
+    ) is True
+
+    # Flag off => unconditional False (the caller falls back to the drop).
+    monkeypatch.setenv(gmail_integration.NDA_GMAIL_ESIGN_NDA_CAPTURE_ENV, "0")
+    assert gmail_integration._excluded_message_content_probe(
+        None, "m4", [{"filename": "Acuerdo.pdf", "attachment_id": "a1"}]
+    ) is False
+
+
 # =========================================================================== #
 # TIER 1 -- AI pre-gate
 # =========================================================================== #
@@ -414,6 +583,11 @@ def test_pregate_suppresses_both_ai_calls_for_trusted_deterministic_skip(setting
     assert transport.selector_calls == []
     # The suppressed call is not tallied as an AI call.
     assert result["ai_intake"]["ai_calls"] == 0
+    # AUDITABILITY (F3): the suppression is countable in the tallies and the
+    # skip record itself is marked, so "AI never consulted" is distinguishable
+    # from "AI agreed".
+    assert result["ai_intake"]["ai_skipped_pregate"] == 1
+    assert result["skipped"][0]["pregate"] == "suppressed"
     # The skip is still terminal-stable (ledger-markable), never a poison retry.
     assert result["stable_outcome"] is True
 
@@ -497,6 +671,64 @@ def test_pregate_extraction_blind_short_foreign_language_text(settings_data_dir)
 
     assert transport.intake_calls != []
     assert len(result["imported"]) == 1
+
+
+def test_pregate_language_blind_spanish_nda_keeps_ai(settings_data_dir):
+    # F1(a): a TEXT-EXTRACTABLE Spanish NDA (~277 chars, over the blind
+    # threshold) scores zero on the English vocabulary through the REAL scorer
+    # (detection_hits == 0) -- the pre-gate must treat that as blind-equivalent
+    # and keep both AI calls, so the multilingual Flash classifier rescues it
+    # exactly as it did pre-build.
+    transport = _PrecisionTransport()
+    transport.scripted_paragraphs["Acuerdo de Confidencialidad.pdf"] = [SPANISH_NDA_TEXT]
+    # NO scripted validation: the REAL deterministic scorer runs and reports
+    # detection_hits == 0 over substantial text.
+
+    result = _run_attachments(
+        transport,
+        [{"attachment_id": "att_1", "part_id": "1", "filename": "Acuerdo de Confidencialidad.pdf"}],
+        _neutral_metadata(),
+    )
+
+    assert transport.intake_calls != []
+    assert transport.selector_calls != []
+    assert len(result["imported"]) == 1
+    assert result["skipped"] == []
+
+
+def test_pregate_admin_custom_terms_unlock_escape_hatch(settings_data_dir, monkeypatch):
+    # F1(b): an admin adding "Acuerdo de Confidencialidad" as a Signal Term (with
+    # the custom-terms flag on) must unlock the AI for matching mail -- via the
+    # detection metadata (subject/body/snippet) AND via the filename.
+    monkeypatch.setenv(gmail_integration.NDA_GMAIL_CUSTOM_TERMS_ENABLED_ENV, "1")
+    app_settings.update_gmail_settings(
+        {"inbound_search_terms": ["Acuerdo de Confidencialidad", "NDA"]}
+    )
+
+    metadata_hit = {
+        **_neutral_metadata(),
+        "gmail_detection_sources": "subject",
+        "gmail_detection_terms": "Acuerdo de Confidencialidad",
+    }
+    assert gmail_integration._attachment_explicit_nda_hit(metadata_hit, "document (3).pdf") is True
+    assert gmail_integration._attachment_explicit_nda_hit(
+        _neutral_metadata(), "Acuerdo de Confidencialidad firmado.pdf"
+    ) is True
+    # A filename-only detection source does NOT satisfy the metadata half (the
+    # subject/body/snippet gate mirrors _metadata_has_explicit_nda_signal).
+    filename_only = {
+        **_neutral_metadata(),
+        "gmail_detection_sources": "attachment_filename",
+        "gmail_detection_terms": "Acuerdo de Confidencialidad",
+    }
+    assert gmail_integration._attachment_explicit_nda_hit(filename_only, "scan.pdf") is False
+
+    # With the custom-terms flag OFF the hatch is the hardcoded English set only.
+    monkeypatch.setenv(gmail_integration.NDA_GMAIL_CUSTOM_TERMS_ENABLED_ENV, "0")
+    assert gmail_integration._attachment_explicit_nda_hit(metadata_hit, "document (3).pdf") is False
+    assert gmail_integration._attachment_explicit_nda_hit(
+        _neutral_metadata(), "Acuerdo de Confidencialidad firmado.pdf"
+    ) is False
 
 
 def test_pregate_selector_runs_when_any_candidate_reaches_triage_band(settings_data_dir):
