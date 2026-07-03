@@ -319,7 +319,80 @@ async function main() {
       assert.equal(countChip, String(INBOX_MATTERS));
     });
 
+    await check("a torn card list is repaired by the next render (skip audit)", async () => {
+      // Simulate a stranded chunk continuation: surgically strip the column down
+      // to a partial page with no Show-more control, then drive the same
+      // renderBoard the 15s poll drives. The unchanged SIGNATURE must not freeze
+      // the torn DOM in place -- the actual-DOM audit forces a repaint.
+      await page.evaluate(() => {
+        const list = document.querySelector('[data-repository-list="gmail_demo"]');
+        while (list.childElementCount > 10) list.removeChild(list.lastElementChild);
+        repositoryController.renderBoard();
+      });
+      await page.waitForFunction(
+        (expected) => (
+          document.querySelectorAll('[data-repository-list="gmail_demo"] .repository-card').length === expected
+          && document.querySelectorAll('[data-repository-show-more="gmail_demo"]').length === 1
+        ),
+        INITIAL_CARDS_PER_COLUMN,
+        { timeout: 5000 },
+      );
+    });
+
     await context.close();
+
+    // ------------------------------------------------------------------
+    // OCCLUDED-PAGE REGRESSION (the live-preview torn Show-more bug): with
+    // requestAnimationFrame stalled -- exactly what browsers do to occluded /
+    // backgrounded pages -- a Show-more click must STILL complete its chunked
+    // render via the setTimeout backstop: the full new page of cards AND the
+    // Show-more control with the updated hidden count. Playwright's own
+    // waitForFunction polls via rAF by default, so every wait here pins
+    // { polling: <ms> }.
+    // ------------------------------------------------------------------
+    const stalledContext = await browser.newContext({ viewport: VIEWPORT });
+    const stalledPage = await stalledContext.newPage();
+    await stalledPage.addInitScript(() => {
+      window.requestAnimationFrame = () => 0;
+    });
+
+    await check("Show more completes under a stalled requestAnimationFrame (occluded page)", async () => {
+      await stalledPage.goto(`${BASE_URL}/?v=frontend-test`, { waitUntil: "domcontentloaded" });
+      await stalledPage.waitForFunction(
+        (expected) => document.querySelector('[data-repository-count="gmail_demo"]')?.textContent === String(expected),
+        INBOX_MATTERS,
+        { polling: 100, timeout: 30000 },
+      );
+      await stalledPage.getByRole("tab", { name: "Repository" }).click();
+      await stalledPage.waitForFunction(
+        (expected) => document.querySelectorAll('[data-repository-list="gmail_demo"] .repository-card').length === expected,
+        INITIAL_CARDS_PER_COLUMN,
+        { polling: 100, timeout: 5000 },
+      );
+      await stalledPage.locator('[data-repository-show-more="gmail_demo"]').click();
+      await stalledPage.waitForFunction(
+        (expected) => document.querySelectorAll('[data-repository-list="gmail_demo"] .repository-card').length === expected,
+        INITIAL_CARDS_PER_COLUMN + SHOW_MORE_STEP,
+        { polling: 100, timeout: 5000 },
+      );
+      // Settle past any further backstop timers, then assert the FINAL state:
+      // exactly one full new page of cards and the Show-more control intact.
+      await wait(600);
+      const settled = await stalledPage.evaluate(() => ({
+        cards: document.querySelectorAll('[data-repository-list="gmail_demo"] .repository-card').length,
+        buttons: document.querySelectorAll('[data-repository-show-more="gmail_demo"]').length,
+        label: (document.querySelector('[data-repository-show-more="gmail_demo"]')?.textContent || "").replace(/\s+/g, " ").trim(),
+      }));
+      assert.equal(settled.cards, INITIAL_CARDS_PER_COLUMN + SHOW_MORE_STEP, "card count after Show more under stalled rAF");
+      assert.equal(settled.buttons, 1, "Show more control must survive the completed chunked render");
+      assert.match(
+        settled.label,
+        new RegExp(`Show ${SHOW_MORE_STEP} more \\(${INBOX_MATTERS - INITIAL_CARDS_PER_COLUMN - SHOW_MORE_STEP} hidden\\)`),
+        "Show more label must carry the updated hidden count",
+      );
+    });
+
+    await stalledContext.close();
   } catch (error) {
     failures.push("harness");
     console.error(error);

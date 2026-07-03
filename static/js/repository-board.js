@@ -37,12 +37,22 @@ const RepositoryBoard = (() => {
   let activeHandlers = null;
   const delegatedLists = typeof WeakSet === "function" ? new WeakSet() : null;
 
+  // requestAnimationFrame is PAUSED entirely in occluded/backgrounded pages (a
+  // preview-driven browser, a hidden tab), which stranded a chunked render mid-way
+  // as a torn "first chunk only, no Show more" board. Race rAF against a setTimeout
+  // backstop so a chunk continuation ALWAYS runs: rAF wins in a visible tab
+  // (frame-aligned, no jank), the timer wins whenever rAF is stalled.
+  const CHUNK_BACKSTOP_MS = 200;
+
   function scheduleFrame(callback) {
-    if (typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(callback);
-      return;
-    }
-    setTimeout(callback, 16);
+    let invoked = false;
+    const invoke = () => {
+      if (invoked) return;
+      invoked = true;
+      callback();
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(invoke);
+    setTimeout(invoke, CHUNK_BACKSTOP_MS);
   }
 
   function html(value) {
@@ -135,7 +145,17 @@ const RepositoryBoard = (() => {
     });
     const lists = document.querySelectorAll("[data-repository-list]");
     const firstList = lists[0] || null;
-    if (signature === lastBoardSignature && firstList === lastRenderedFirstList) return;
+    // The signature says what SHOULD be on the board; the DOM audit verifies the
+    // lists actually carry it. A torn render (a chunk continuation stranded by a
+    // paused rAF, or any future cancellation) fails the audit and forces a full
+    // repaint instead of being frozen in place by an "unchanged" signature.
+    if (
+      signature === lastBoardSignature
+      && firstList === lastRenderedFirstList
+      && boardDomMatchesExpectedRender({ errorMessage, lists, mattersByColumn })
+    ) {
+      return;
+    }
     lastBoardSignature = signature;
     lastRenderedFirstList = firstList;
     const renderToken = ++boardRenderToken;
@@ -171,11 +191,12 @@ const RepositoryBoard = (() => {
 
   // A cheap, change-sensitive signature of exactly what the card render would
   // paint: the render context (error/search/pending-delete/selection) plus, per
-  // column, the full total, the visible cap, and every VISIBLE matter's identity
-  // and card-affecting fields. O(rendered cards), not O(all matters). A matter
-  // edit bumps updated_at; the read-derived review lifecycle fields
-  // (review_status, staleness) are included explicitly because they can change
-  // without a store write.
+  // column, the full total, the PAGE DEPTH (the Show-more visible cap), and every
+  // VISIBLE matter's identity and card-affecting fields. O(rendered cards), not
+  // O(all matters). A matter edit bumps updated_at; the read-derived review
+  // lifecycle fields (review_status, staleness) are included explicitly because
+  // they can change without a store write. The signature describes the INTENDED
+  // render; boardDomMatchesExpectedRender audits the ACTUAL DOM before any skip.
   function boardRenderSignature({ errorMessage, mattersByColumn, pendingDeleteMatterId, query, selectedMatter }) {
     const parts = [errorMessage, query, pendingDeleteMatterId || "", selectedMatter?.id || ""];
     mattersByColumn.forEach((matters, columnId) => {
@@ -193,6 +214,32 @@ const RepositoryBoard = (() => {
       });
     });
     return parts.join("\n");
+  }
+
+  // ACTUAL-DOM audit backing the skip-if-unchanged path: per column, the child
+  // element count must equal the expected rendered depth -- the visible card page
+  // plus the Show-more control when cards remain hidden, or the single dropzone
+  // for the error/empty states. O(#columns), no per-card work. Any mismatch means
+  // the DOM is torn/partial and the skip must not fire. (A mid-flight chunked
+  // append also reads as a mismatch; re-rendering restarts it with a fresh token,
+  // and the setTimeout backstop guarantees that restart completes well before the
+  // next 15s poll, so no livelock.)
+  function boardDomMatchesExpectedRender({ errorMessage, lists, mattersByColumn }) {
+    let matches = true;
+    lists.forEach((list) => {
+      if (!matches) return;
+      const childCount = typeof list.childElementCount === "number" ? list.childElementCount : -1;
+      const matters = mattersByColumn.get(list.dataset.repositoryList) || [];
+      if (errorMessage || !matters.length) {
+        matches = childCount === 1;
+        return;
+      }
+      const cardLimit = columnCardLimits.get(list.dataset.repositoryList) || INITIAL_CARDS_PER_COLUMN;
+      const visibleCount = Math.min(cardLimit, matters.length);
+      const expectedCount = visibleCount + (matters.length > visibleCount ? 1 : 0);
+      matches = childCount === expectedCount;
+    });
+    return matches;
   }
 
   // Guarded MatterUtils.reviewStale (same degrade-to-false contract as
