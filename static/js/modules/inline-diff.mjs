@@ -1,4 +1,9 @@
-import { escapeHtml } from "./html-utils.mjs";
+// Versioned specifier matching global-bridge.mjs's html-utils.mjs token exactly:
+// same token -> same resolved URL -> single module instance, AND the browser can
+// cache it immutably instead of revalidating a query-less URL on every visit.
+// Keep this token in lockstep with html-utils.mjs's bytes (and with the token in
+// global-bridge.mjs -- the manifest guard fails on a conflicting pair).
+import { escapeHtml } from "./html-utils.mjs?v=20260703cachebust1";
 
 export function fullReplacementOperations(original, replacement) {
   const operations = [];
