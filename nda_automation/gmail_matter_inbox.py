@@ -296,6 +296,16 @@ class _ScanState:
         # rate-limit -- i.e. nothing older than the cursor remains to import.
         self.drain_exhausted = False
         self.rate_limited = False
+        # Message ids whose heavy path already ran to a TRANSIENT failure THIS poll.
+        # Enforces "at most ONE attempt increment per message per poll": the head
+        # pass and the drain pass can both surface the same (unmarked, to-retry)
+        # message within one poll, and without this guard it would burn a second
+        # heavy slot AND double-count -- letting e.g. a needs-OCR PDF hit its
+        # 2-attempt quarantine within a single poll, seconds apart, which defeats
+        # the point of a confirm re-run. (Successful/terminal messages need no
+        # entry here: they are ledger-marked in-memory immediately, so a second
+        # encounter this poll already short-circuits on is_processed.)
+        self.transient_attempted_ids: set[str] = set()
 
     def note_floor(self, internal_date_ms: int) -> None:
         if internal_date_ms <= 0:
@@ -420,6 +430,15 @@ def _scan_pass(
                 context.skipped.append({"message_id": message_id, "reason": "processed_message"})
                 continue
 
+            # SAME-POLL RE-ATTEMPT GUARD: a message that already ran the heavy path
+            # to a TRANSIENT failure THIS poll (head pass) can re-surface in the
+            # drain pass of the same poll (it is deliberately unmarked so it retries
+            # NEXT poll). Skip it silently: no second heavy slot, no second AI call,
+            # and -- critically -- no second attempt increment, so "retry N times"
+            # always means N distinct polls, never N passes seconds apart.
+            if message_id in state.transient_attempted_ids:
+                continue
+
             try:
                 message = service.users().messages().get(userId="me", id=message_id, format="full").execute()
             except Exception as exc:
@@ -534,42 +553,88 @@ def _scan_pass(
             # per-poll NEW-work budget that bounds load on the 2 GB worker.
             state.new_processed += 1
 
-            # Defer this CPU-bound per-message step (download + PDF/DOCX extraction
-            # + AI selector/intake) to any in-flight foreground NDA generation so the
-            # single prod worker's GIL/CPU is not starved out from under a user-facing
-            # generate. Bounded + fail-open: blocks at most a few seconds and never
-            # raises, so the poll can never stall unboundedly behind a stuck generate.
-            from . import generation_priority  # noqa: PLC0415 - light/local import.
+            # CRASH CONTAINMENT (the untyped-poison case): the typed error handlers
+            # deep inside the heavy path (Pdf/Docx extraction at prepare, the
+            # ActiveReviewEngine/extraction/alignment family around create_matter)
+            # convert KNOWN failures into transient skips with precise reasons. Any
+            # OTHER exception -- a crash in the detection code, a MatterStoreError,
+            # an unwrapped PyMuPDF RuntimeError -- previously propagated out of the
+            # scan with NO attempt recorded: that one message aborted its owner's
+            # poll at the same point every cycle, forever, and the retry cap never
+            # engaged. The broad catch below converts such a crash into a synthetic
+            # transient "import_crashed" skip (environmental stratum, detail =
+            # exception CLASS name only -- log hygiene) and falls through to the
+            # SAME single-site attempt counter, so an untyped poison quarantines
+            # exactly like a typed one and the scan continues to the next message.
+            # A rate-limit surfacing anywhere in the heavy path (e.g. the download
+            # stage) aborts the pass UNCOUNTED instead -- a provider 429 storm says
+            # nothing about this message and must never walk a real NDA toward
+            # quarantine. The server-level per-user catch remains the outer backstop.
+            try:
+                # Defer this CPU-bound per-message step (download + PDF/DOCX
+                # extraction + AI selector/intake) to any in-flight foreground NDA
+                # generation so the single prod worker's GIL/CPU is not starved out
+                # from under a user-facing generate. Bounded + fail-open: blocks at
+                # most a few seconds and never raises, so the poll can never stall
+                # unboundedly behind a stuck generate.
+                from . import generation_priority  # noqa: PLC0415 - light/local import.
 
-            generation_priority.yield_to_active_generation()
+                generation_priority.yield_to_active_generation()
 
-            # Always make the per-message detection content-aware: if subject/
-            # body/snippet/filename carry no NDA signal, fall back to scanning
-            # attachment content. There is NO terminal drop here anymore -- the
-            # deterministic per-attachment band classifier is authoritative, so an
-            # attachment-only NDA with a neutral subject is never dropped before its
-            # content is judged.
-            detection = transport.message_nda_detection(message, attachments)
-            if not detection["matched"]:
-                detection = transport.attachment_nda_detection(service, message_id, attachments)
+                # Always make the per-message detection content-aware: if subject/
+                # body/snippet/filename carry no NDA signal, fall back to scanning
+                # attachment content. There is NO terminal drop here anymore -- the
+                # deterministic per-attachment band classifier is authoritative, so an
+                # attachment-only NDA with a neutral subject is never dropped before
+                # its content is judged.
+                detection = transport.message_nda_detection(message, attachments)
+                if not detection["matched"]:
+                    detection = transport.attachment_nda_detection(service, message_id, attachments)
 
-            metadata = message_selector_metadata(
-                message,
-                transport.message_metadata(
-                    message, context.account_email, detection=detection if detection["matched"] else None
-                ),
-                transport=transport,
-            )
-            attachment_result = import_inbound_attachments(
-                service,
-                message_id,
-                attachments,
-                metadata,
-                transport=transport,
-                owner_user_id=context.owner_user_id,
-                intake_playbook=context.intake_playbook,
-                intake_budget=context.intake_budget,
-            )
+                metadata = message_selector_metadata(
+                    message,
+                    transport.message_metadata(
+                        message, context.account_email, detection=detection if detection["matched"] else None
+                    ),
+                    transport=transport,
+                )
+                attachment_result = import_inbound_attachments(
+                    service,
+                    message_id,
+                    attachments,
+                    metadata,
+                    transport=transport,
+                    owner_user_id=context.owner_user_id,
+                    intake_playbook=context.intake_playbook,
+                    intake_budget=context.intake_budget,
+                )
+            except Exception as error:
+                if _is_rate_limited(transport, error):
+                    # Keep everything imported so far this poll and stop -- the next
+                    # poll resumes from the persisted cursor. NOT an attempt: the
+                    # provider was throttling, the message content was never judged.
+                    state.rate_limited = True
+                    return
+                LOGGER.warning(
+                    "Gmail inbound heavy import crashed for message %s (%s); "
+                    "recorded as a transient attempt",
+                    message_id,
+                    error.__class__.__name__,
+                    exc_info=True,
+                )
+                attachment_result = {
+                    "imported": [],
+                    "skipped": [
+                        gmail_attachment_skip(
+                            message_id,
+                            "",
+                            "import_crashed",
+                            detail=error.__class__.__name__,
+                        )
+                    ],
+                    "ai_intake": None,
+                    "stable_outcome": False,
+                }
             context.imported.extend(attachment_result["imported"])
             context.skipped.extend(attachment_result["skipped"])
             context.sync_tallies.merge(attachment_result.get("ai_intake"))
@@ -607,6 +672,7 @@ def _scan_pass(
                 # spend forever. Attempt accounting degrades to a no-op (attempts
                 # stay 0, never quarantining) on a ledger session without the
                 # counter seam.
+                state.transient_attempted_ids.add(message_id)
                 transient_reasons, failing_filename = _transient_failure_summary(
                     attachment_result.get("skipped")
                 )
@@ -784,8 +850,9 @@ def _quarantine_message(
     """Terminally quarantine ``message_id`` after exhausting its transient retries.
 
     Marks it processed in the ledger (via the dedicated ``quarantine`` seam when
-    available, recording a keyed ``{attempts, reason, last_at}`` entry so the
-    quarantine is durable, inspectable, and reversible via
+    available, recording a keyed ``{attempts, reason, last_at, filename}`` entry so
+    the quarantine is durable, inspectable via ``quarantined_messages()`` without
+    log archaeology, and reversible via
     ``gmail_processed_ledger.requeue_quarantined_message``) and surfaces a visible
     ``quarantined`` skip carrying the underlying reason + filename so a human can
     act on it (OCR the scanned PDF, raise the size limit, requeue) instead of the
@@ -796,7 +863,7 @@ def _quarantine_message(
     quarantiner = getattr(ledger, "quarantine", None) if ledger is not None else None
     if callable(quarantiner):
         try:
-            quarantiner(message_id, reason=reason_summary, attempts=attempts)
+            quarantiner(message_id, reason=reason_summary, attempts=attempts, filename=filename)
         except TypeError:
             # An older/simpler quarantine seam without the metadata kwargs.
             quarantiner(message_id)
@@ -1274,7 +1341,14 @@ def prepare_inbound_attachment(
 
     try:
         document_bytes = transport.attachment_bytes(service, message_id, attachment)
-    except transport.GmailIntegrationError:
+    except transport.GmailIntegrationError as error:
+        if _is_rate_limited(transport, error):
+            # A Gmail rate-limit at the DOWNLOAD stage is a provider condition, not
+            # a property of this message. Re-raise so the scan-level handler aborts
+            # the pass UNCOUNTED (mirroring the messages().get 429 path) -- turning
+            # it into a per-message attachment_unavailable skip would let a
+            # multi-poll 429 storm walk REAL NDAs toward quarantine.
+            raise
         return None, gmail_attachment_skip(message_id, attachment_filename, "attachment_unavailable")
 
     try:

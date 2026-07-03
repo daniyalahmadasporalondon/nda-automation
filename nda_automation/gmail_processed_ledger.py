@@ -177,12 +177,13 @@ def _coerce_quarantined(payload: object) -> dict[str, dict[str, object]]:
                 "attempts": attempts,
                 "reason": str(entry.get("reason") or ""),
                 "last_at": str(entry.get("last_at") or ""),
+                "filename": str(entry.get("filename") or ""),
             }
     elif isinstance(payload, list):
         for value in payload:
             message_id = str(value or "").strip()
             if message_id and message_id not in quarantined:
-                quarantined[message_id] = {"attempts": 0, "reason": "", "last_at": ""}
+                quarantined[message_id] = {"attempts": 0, "reason": "", "last_at": "", "filename": ""}
     return quarantined
 
 
@@ -411,13 +412,16 @@ class ProcessedLedgerSession:
         self._dirty = True
         return count
 
-    def quarantine(self, message_id: str, *, reason: str = "", attempts: int = 0) -> None:
+    def quarantine(
+        self, message_id: str, *, reason: str = "", attempts: int = 0, filename: str = ""
+    ) -> None:
         """Terminally quarantine ``message_id``: processed + a keyed quarantine record.
 
         A quarantined message is skipped before any fetch/AI work on future polls
         (exactly like any processed id) and carries a durable
-        ``{attempts, reason, last_at}`` record so an operator can inspect WHY and
-        release it via :func:`requeue_quarantined_message`.
+        ``{attempts, reason, last_at, filename}`` record so an operator can see
+        WHAT failed and WHY straight from ``quarantined_messages()`` (no log
+        archaeology) and release it via :func:`requeue_quarantined_message`.
         """
         target = str(message_id or "").strip()
         if not target:
@@ -428,6 +432,7 @@ class ProcessedLedgerSession:
                 "attempts": max(0, int(attempts or 0)),
                 "reason": str(reason or "")[:200],
                 "last_at": datetime.now(timezone.utc).isoformat(),
+                "filename": str(filename or "")[:200],
             }
             self._dirty = True
 

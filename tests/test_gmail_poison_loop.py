@@ -120,7 +120,7 @@ def test_ledger_quarantine_is_processed_and_durably_distinguished(ledger_data_di
     owner = "owner_1"
     session = ledger.ProcessedLedgerSession(owner)
     session.record_attempt("msg_a")
-    session.quarantine("msg_a", reason="review_failed", attempts=5)
+    session.quarantine("msg_a", reason="review_failed", attempts=5, filename="nda.pdf")
     session.flush()
 
     session2 = ledger.ProcessedLedgerSession(owner)
@@ -137,6 +137,7 @@ def test_ledger_quarantine_is_processed_and_durably_distinguished(ledger_data_di
     record = payload["quarantined"]["msg_a"]
     assert record["attempts"] == 5
     assert record["reason"] == "review_failed"
+    assert record["filename"] == "nda.pdf"
     assert record["last_at"]  # timestamped for operator triage
     # The module-level inspector sees the same keyed record.
     assert ledger.quarantined_messages(owner)["msg_a"]["reason"] == "review_failed"
@@ -376,6 +377,9 @@ def test_deterministic_permanent_skip_quarantines_early_with_reason_and_filename
     record = ledger.quarantined_messages("owner_1")["msg_000"]
     assert record["reason"] == "attachment_too_large"
     assert record["attempts"] == 2
+    # F5: the durable record carries the filename too -- inspectable straight from
+    # quarantined_messages(), no log archaeology.
+    assert record["filename"] == "inbound_nda_sample.pdf"
 
 
 def test_environmental_failure_is_not_caught_by_the_tight_permanent_limit(
@@ -394,6 +398,136 @@ def test_environmental_failure_is_not_caught_by_the_tight_permanent_limit(
     assert r1["quarantined"] == r2["quarantined"] == r3["quarantined"] == 0
     assert ledger.ProcessedLedgerSession("owner_1").quarantined_ids() == set()
     assert ledger.ProcessedLedgerSession("owner_1").attempt_count("msg_000") == 3
+
+
+# --------------------------------------------------------------------------- #
+# F1: an UNTYPED crash in the heavy path is contained, counted, and quarantined
+# exactly like a typed failure -- and the scan continues past it in the SAME poll.
+# --------------------------------------------------------------------------- #
+class _UntypedCrashCreateTransport(_RealLedgerTransport):
+    """create_matter_from_document raises a RAW RuntimeError (none of the typed
+    error families the import path catches) for msg_000 only -- modelling an
+    unwrapped PyMuPDF/store crash. Pre-fix this propagated out of the scan with no
+    attempt recorded: the owner's poll aborted at the same message every cycle,
+    forever, and the retry cap never engaged.
+    """
+
+    def create_matter_from_document(self, **kwargs):
+        metadata = kwargs.get("intake_metadata") or {}
+        if str(metadata.get("gmail_message_id") or "") == "msg_000":
+            raise RuntimeError("unwrapped native crash in the import path")
+        return super().create_matter_from_document(**kwargs)
+
+
+def test_untyped_crash_is_counted_and_quarantined_and_scan_continues(
+    ledger_data_dir, import_limit_20, monkeypatch,
+):
+    monkeypatch.delenv(gmail_matter_inbox.NDA_GMAIL_TRANSIENT_RETRY_LIMIT_ENV, raising=False)
+    limit = gmail_matter_inbox.DEFAULT_TRANSIENT_RETRY_LIMIT  # 5 (environmental)
+    transport = _UntypedCrashCreateTransport(inbox_size=2, import_limit=import_limit_20)
+
+    # Poll 1: the crash does NOT abort the poll -- msg_001 (behind the crasher in
+    # the same page) still imports THIS poll, the crash is surfaced as a visible
+    # import_crashed skip (detail = exception CLASS only), and an attempt is
+    # recorded through the same single-site counter.
+    r1 = _poll(transport)
+    assert {m["gmail_message_id"] for m in r1["imported"]} == {"msg_001"}
+    crash_skips = [s for s in r1["skipped"] if s.get("reason") == "import_crashed"]
+    assert len(crash_skips) == 1
+    assert crash_skips[0]["detail"] == "RuntimeError"
+    assert ledger.ProcessedLedgerSession("owner_1").attempt_count("msg_000") == 1
+
+    # Polls 2..limit: attempts climb; at the cap the untyped poison quarantines
+    # exactly like a typed one.
+    result = r1
+    for _ in range(limit - 1):
+        result = _poll(transport)
+    assert result["quarantined"] == 1
+    record = ledger.quarantined_messages("owner_1")["msg_000"]
+    assert record["reason"] == "import_crashed"
+    assert record["attempts"] == limit
+
+    # And the poll after: skipped pre-AI, no more crashes, no more burn.
+    transport.selector_calls.clear()
+    r_after = _poll(transport)
+    assert any(s.get("reason") == "processed_message" for s in r_after["skipped"])
+    assert transport.selector_calls == []
+
+
+# --------------------------------------------------------------------------- #
+# F2: a rate-limit at the DOWNLOAD stage aborts the scan UNCOUNTED (a provider
+# 429 storm must never walk a real NDA toward quarantine).
+# --------------------------------------------------------------------------- #
+class _DownloadRateLimitError(gmail_integration.GmailIntegrationError):
+    pass
+
+
+class _RateLimitedDownloadTransport(_RealLedgerTransport):
+    def attachment_bytes(self, service, message_id: str, attachment):
+        raise _DownloadRateLimitError("429: rate limit exceeded at download")
+
+    def is_rate_limit_error(self, error: Exception) -> bool:
+        return isinstance(error, _DownloadRateLimitError)
+
+    def gmail_retry_after_epoch(self, error: Exception) -> float:
+        return 0.0
+
+
+def test_download_stage_rate_limit_aborts_scan_uncounted(ledger_data_dir, import_limit_20):
+    transport = _RateLimitedDownloadTransport(inbox_size=1, import_limit=import_limit_20)
+
+    result = _poll(transport)
+
+    # Same semantics as a 429 on messages().get: the pass stops cleanly...
+    assert result["rate_limited"] is True
+    assert result["imported"] == []
+    # ... and the throttle is NOT attributed to the message: no attempt counter,
+    # no attachment_unavailable/import_crashed skip, nothing quarantined -- the
+    # message retries next poll with a clean slate.
+    session = ledger.ProcessedLedgerSession("owner_1")
+    assert session.attempt_count("msg_000") == 0
+    assert session.is_processed("msg_000") is False
+    assert not any(
+        s.get("reason") in ("attachment_unavailable", "import_crashed", "quarantined")
+        for s in result["skipped"]
+    )
+
+
+# --------------------------------------------------------------------------- #
+# F4: at most ONE attempt increment per message per poll, even when the head and
+# drain passes both surface the same failing message within a single poll.
+# --------------------------------------------------------------------------- #
+def test_same_poll_second_pass_does_not_double_count_or_rerun_ai(
+    ledger_data_dir, import_limit_20,
+):
+    from tests.test_gmail_processed_ledger import _build_scan_context
+
+    transport = _PoisonedCreateTransport(inbox_size=1, import_limit=import_limit_20)
+    context, imported, skipped = _build_scan_context(transport)
+    # Swap in the REAL durable ledger session (the helper builds an in-memory one).
+    context.processed_ledger = transport.processed_ledger_session("owner_1")
+    state = gmail_matter_inbox._ScanState(import_limit=import_limit_20)
+
+    # Pass 1 (head): the poisoned message runs the heavy path and fails -> one
+    # attempt, one heavy slot, one selector call.
+    gmail_matter_inbox._scan_pass(
+        transport.default_inbound_query(), max_scan=50, state=state, context=context,
+    )
+    assert state.new_processed == 1
+    assert transport.selector_calls == ["msg_000"]
+    assert context.processed_ledger.attempt_count("msg_000") == 1
+
+    # Pass 2 (drain, SAME poll -- same _ScanState): the message re-surfaces but the
+    # same-poll guard skips it silently: no second heavy slot, no second AI call,
+    # and CRUCIALLY no second attempt increment. "Retry N times" therefore always
+    # means N distinct polls -- a needs-OCR PDF can never burn its confirm re-run
+    # seconds after the first failure.
+    gmail_matter_inbox._scan_pass(
+        transport.default_inbound_query(), max_scan=50, state=state, context=context,
+    )
+    assert state.new_processed == 1                      # unchanged
+    assert transport.selector_calls == ["msg_000"]       # unchanged
+    assert context.processed_ledger.attempt_count("msg_000") == 1  # unchanged
 
 
 # --------------------------------------------------------------------------- #
