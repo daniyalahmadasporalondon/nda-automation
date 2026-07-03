@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 from datetime import datetime, timezone
+from typing import Any
+from urllib.parse import parse_qs, urlparse
 
-from .. import ai_review, ai_verifier, app_settings, model_resolver, telemetry
+from .. import ai_review, ai_verifier, app_settings, matter_store, model_resolver, telemetry
 from ..deployment import _deployment_status_for_host, storage_durability_warning
 from ..matter_repository import DiskMatterRepository, MatterRepositoryError
 from ..review_engine import (
     REVIEW_ENGINE_AI_FIRST,
+    REVIEW_ENGINE_DETERMINISTIC,
     active_review_engine_status,
 )
 from ..http_auth import _admin_user_ids
@@ -18,6 +23,8 @@ from .common import (
     request_user_provider,
     require_admin,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def handle_deployment_status(handler, *, send_body: bool = True) -> None:
@@ -857,8 +864,21 @@ def handle_matter_backup(handler, *, send_body: bool = True) -> None:
     if not require_admin(handler, send_body=send_body):
         return
     telemetry.increment("matter_backup_requests")
+    # Admin-only ``?owner=<owner_user_id>`` override: the operator can back up a
+    # SPECIFIC user's matters (e.g. before a bulk archive of that user's
+    # auto-imported Gmail noise). The gate above already established admin, so
+    # this never widens access; absent the param the backup stays scoped to the
+    # caller exactly as before.
+    backup_owner = request_owner_user_id(handler)
     try:
-        backup = DiskMatterRepository().export_matters_backup(owner_user_id=request_owner_user_id(handler))
+        query = parse_qs(urlparse(str(getattr(handler, "path", "") or "")).query)
+        owner_override = str((query.get("owner") or [""])[0] or "").strip()
+    except (ValueError, TypeError):
+        owner_override = ""
+    if owner_override:
+        backup_owner = owner_override
+    try:
+        backup = DiskMatterRepository().export_matters_backup(owner_user_id=backup_owner)
     except MatterRepositoryError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return
@@ -871,3 +891,397 @@ def handle_matter_backup(handler, *, send_body: bool = True) -> None:
         headers={"X-Backup-Contains": "matter-json"},
         send_body=send_body,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Admin bulk archive: auto-imported Gmail noise
+# --------------------------------------------------------------------------- #
+# Hard ceiling on a single run's batch (the request ``limit`` may lower it).
+BULK_ARCHIVE_MAX_LIMIT = 1000
+BULK_ARCHIVE_DEFAULT_LIMIT = 200
+# How many excluded matters are echoed back (id + reason only) per response.
+BULK_ARCHIVE_EXCLUDED_SAMPLE_CAP = 25
+BULK_ARCHIVE_AUDIT_FILENAME = "bulk-archive-audit.log"
+
+
+def _parse_iso_datetime(value: object) -> datetime | None:
+    """Parse an ISO-8601 timestamp; naive values are taken as UTC. None on failure."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith(("Z", "z")):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _pristine_deterministic_review(review_result: object) -> bool:
+    """True only when the stored review is provably no-more-than-import-time.
+
+    Two (and only two) shapes qualify:
+
+    * NO review at all — the deferred-import default (``create_matter_from_document``
+      with ``defer_ai_review=True`` persists ``review_result: None``), i.e. the
+      "Not Reviewed Yet" state every Gmail poll import is born in; or
+    * a review whose ``active_review_engine`` metadata (written by
+      ``review_engine._with_active_engine_metadata``) says the DETERMINISTIC
+      engine was both selected and executed, with no ai_first trace anywhere
+      (the on-demand human "Review" path pins ``force_engine=ai_first``, so a
+      deterministic result can only be an import-time first pass).
+
+    Anything else — ai_first metadata, an ``ai_first_review`` block, missing or
+    unrecognized engine metadata — fails CLOSED (not pristine).
+    """
+    if review_result is None or review_result == {}:
+        return True
+    if not isinstance(review_result, dict):
+        return False
+    if review_result.get("ai_first_review") is not None:
+        return False
+    engine_metadata = review_result.get("active_review_engine")
+    if not isinstance(engine_metadata, dict):
+        return False
+    for key in ("selected_engine", "executed_engine", "engine"):
+        if str(engine_metadata.get(key) or "") != REVIEW_ENGINE_DETERMINISTIC:
+            return False
+    if REVIEW_ENGINE_AI_FIRST in str(engine_metadata.get("ai_first_status") or ""):
+        return False
+    return True
+
+
+def _bulk_archive_exclusion_reason(
+    matter: dict[str, Any],
+    *,
+    owner_user_id: str,
+    created_after: datetime,
+    created_before: datetime,
+) -> str | None:
+    """Why ``matter`` must NOT be bulk-archived, or None when it is selectable.
+
+    FAIL-CLOSED: every rule treats a missing/unknown/odd-shaped field as
+    disqualifying. Only a matter that positively proves it is an untouched
+    auto-imported Gmail card (inside the requested window, owned by exactly the
+    requested user) comes back None.
+    """
+    if not str(matter.get("id") or "").strip():
+        return "missing_matter_id"
+    if str(matter.get("source_type") or "") != "gmail_inbound":
+        return "not_gmail_inbound"
+    if not str(matter.get("gmail_message_id") or "").strip():
+        return "missing_gmail_message_id"
+    matter_owner = matter_store._clean_owner_user_id(matter.get("owner_user_id"))
+    if not matter_owner or matter_owner != owner_user_id:
+        return "owner_mismatch"
+    created_at = _parse_iso_datetime(matter.get("created_at"))
+    if created_at is None:
+        return "created_at_invalid"
+    if created_at < created_after or created_at > created_before:
+        return "outside_window"
+    if str(matter.get("status") or "") != "active":
+        return "status_not_active"
+    if str(matter.get("board_column") or "") != "gmail_demo":
+        return "board_column_moved"
+    if matter.get("human_reviewed"):
+        return "human_reviewed"
+    if matter.get("reviewer_decisions"):
+        return "reviewer_decisions_present"
+    if (
+        matter.get("approved_at")
+        or matter.get("approver")
+        or matter.get("approval")
+    ):
+        return "approval_present"
+    if matter.get("artifacts") or str(matter.get("current_artifact_id") or "").strip():
+        return "artifacts_present"
+    if matter.get("signed_artifact_id"):
+        return "signed_artifact_present"
+    if matter.get("redline_draft") or matter.get("redline_edits"):
+        return "redline_edits_present"
+    if matter.get("pdf_annotations"):
+        return "pdf_annotations_present"
+    if (
+        matter.get("sent_at")
+        or matter.get("last_outbound_at")
+        or matter.get("last_outbound_message_id")
+    ):
+        return "outbound_send_present"
+    if (
+        matter.get("signed_at")
+        or matter.get("executed")
+        or matter.get("executed_at")
+        or matter.get("awaiting_signature")
+        or matter.get("signature_declined")
+        or matter.get("signature_voided")
+    ):
+        return "signature_activity_present"
+    if matter.get("docusign"):
+        return "docusign_present"
+    intake_metadata = matter.get("intake_metadata")
+    if isinstance(intake_metadata, dict):
+        counterparty = intake_metadata.get("counterparty")
+        if isinstance(counterparty, dict) and str(counterparty.get("source") or "") == "human":
+            return "counterparty_human_override"
+    elif intake_metadata is not None:
+        return "intake_metadata_unrecognized"
+    review_status = str(matter.get("review_status") or "").strip()
+    if review_status and review_status != "idle":
+        return "review_status_present"
+    if not _pristine_deterministic_review(matter.get("review_result")):
+        return "review_engine_not_deterministic"
+    return None
+
+
+def _bulk_archive_matter_summary(matter: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(matter.get("id") or ""),
+        "created_at": str(matter.get("created_at") or ""),
+        "document_title": str(matter.get("document_title") or ""),
+        "gmail_message_id": str(matter.get("gmail_message_id") or ""),
+        "sender": str(matter.get("sender") or ""),
+        "subject": str(matter.get("subject") or ""),
+    }
+
+
+def _bulk_archive_selection_hash(owner_user_id: str, matter_ids: list[str]) -> str:
+    """Deterministic sha256 over the (owner, sorted matter ids) selection."""
+    canonical = json.dumps(
+        {"owner_user_id": owner_user_id, "matter_ids": sorted(matter_ids)},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _bulk_archive_selection(
+    *,
+    owner_user_id: str,
+    created_after: datetime,
+    created_before: datetime,
+    limit: int,
+) -> tuple[list[dict[str, Any]], int, list[dict[str, str]], str]:
+    """The current (selected, excluded_count, excluded_samples, selection_hash).
+
+    Selection order is ``matter_store._bulk_archive_sort_key`` (oldest first, id
+    tiebreak) so the same store state always yields the same capped selection —
+    that determinism is what the confirm-hash handshake relies on.
+    """
+    matters = matter_store.list_matters(owner_user_id)
+    matters.sort(key=matter_store._bulk_archive_sort_key)
+    selected: list[dict[str, Any]] = []
+    excluded_samples: list[dict[str, str]] = []
+    excluded_count = 0
+    for matter in matters:
+        reason = _bulk_archive_exclusion_reason(
+            matter,
+            owner_user_id=owner_user_id,
+            created_after=created_after,
+            created_before=created_before,
+        )
+        if reason is None:
+            if len(selected) < limit:
+                selected.append(matter)
+            continue
+        excluded_count += 1
+        if len(excluded_samples) < BULK_ARCHIVE_EXCLUDED_SAMPLE_CAP:
+            excluded_samples.append({"id": str(matter.get("id") or ""), "reason": reason})
+    selection_hash = _bulk_archive_selection_hash(
+        owner_user_id, [str(matter.get("id") or "") for matter in selected]
+    )
+    return selected, excluded_count, excluded_samples, selection_hash
+
+
+def _append_bulk_archive_audit_line(entry: dict[str, Any]) -> bool:
+    """Append one JSON audit line for a bulk-archive run (best-effort, never raises).
+
+    Lives beside the archived records (``DATA_DIR/pruned-matters/``). Carries
+    matter ids and run metadata ONLY — no subjects, no filenames, no NDA content.
+    """
+    try:
+        audit_dir = matter_store.DATA_DIR / matter_store.PRUNED_ARCHIVE_DIRNAME
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        with (audit_dir / BULK_ARCHIVE_AUDIT_FILENAME).open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, sort_keys=True) + "\n")
+        return True
+    except OSError:
+        logger.warning("Bulk-archive audit line could not be written", exc_info=True)
+        return False
+
+
+def handle_matters_bulk_archive(handler) -> None:
+    """POST /api/admin/matters/bulk-archive — remove auto-imported Gmail noise.
+
+    Admin-gated; CSRF/auth/host/rate-limit are enforced centrally by server.do_POST
+    before dispatch (registered in _POST_EXACT_ROUTES like every sibling write).
+
+    Body: {"owner_user_id": required explicit owner (NEVER inferred from the
+    session), "created_after"/"created_before": required ISO window, "dry_run":
+    default true, "confirm": sha256 selection hash (execute only), "limit": batch
+    cap}. Execute requires dry_run:false AND confirm equal to the sha256 hash of
+    the CURRENT selection (recomputed server-side); a stale hash gets 409 with
+    the fresh hash so the operator re-reviews before re-confirming.
+
+    Deletion is delegated to matter_store.bulk_archive_gmail_matters, which
+    re-evaluates the predicate under the store lock and archives every record +
+    source document to pruned-matters/ BEFORE deleting (archive failure keeps
+    everything). After the batch the deleted gmail message ids are marked in the
+    per-owner processed ledger — the MANDATORY re-import guard: deletion destroys
+    the store-based sha256 dedupe, so without the ledger mark the next poll would
+    re-import every message.
+    """
+    if not require_admin(handler):
+        return
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+
+    owner_user_id = payload.get("owner_user_id")
+    if not isinstance(owner_user_id, str) or not owner_user_id.strip():
+        handler._send_json({"error": "owner_user_id is required (explicit, never inferred)."}, status=400)
+        return
+    owner_user_id = matter_store._clean_owner_user_id(owner_user_id)
+    if not owner_user_id:
+        handler._send_json({"error": "owner_user_id is required (explicit, never inferred)."}, status=400)
+        return
+
+    created_after = _parse_iso_datetime(payload.get("created_after"))
+    created_before = _parse_iso_datetime(payload.get("created_before"))
+    if created_after is None or created_before is None:
+        handler._send_json(
+            {"error": "created_after and created_before are required ISO-8601 timestamps."},
+            status=400,
+        )
+        return
+    if created_after >= created_before:
+        handler._send_json({"error": "created_after must be earlier than created_before."}, status=400)
+        return
+
+    dry_run = payload.get("dry_run", True)
+    if not isinstance(dry_run, bool):
+        handler._send_json({"error": "dry_run must be true or false."}, status=400)
+        return
+
+    raw_limit = payload.get("limit", BULK_ARCHIVE_DEFAULT_LIMIT)
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        limit = 0
+    if isinstance(raw_limit, bool) or limit < 1 or limit > BULK_ARCHIVE_MAX_LIMIT:
+        handler._send_json(
+            {"error": f"limit must be an integer between 1 and {BULK_ARCHIVE_MAX_LIMIT}."},
+            status=400,
+        )
+        return
+
+    def predicate(matter: dict[str, Any]) -> bool:
+        return _bulk_archive_exclusion_reason(
+            matter,
+            owner_user_id=owner_user_id,
+            created_after=created_after,
+            created_before=created_before,
+        ) is None
+
+    try:
+        selected, excluded_count, excluded_samples, selection_hash = _bulk_archive_selection(
+            owner_user_id=owner_user_id,
+            created_after=created_after,
+            created_before=created_before,
+            limit=limit,
+        )
+    except matter_store.MatterStoreError as error:
+        logger.warning("Bulk-archive selection failed: %s", error)
+        handler._send_json({"error": matter_store.friendly_matter_store_message(error)}, status=500)
+        return
+
+    if dry_run:
+        handler._send_json({
+            "dry_run": True,
+            "selected_count": len(selected),
+            "excluded_count": excluded_count,
+            "selection_hash": selection_hash,
+            "matters": [_bulk_archive_matter_summary(matter) for matter in selected],
+            "excluded_samples": excluded_samples,
+            "archived": 0,
+            "ledger_marked": False,
+        })
+        return
+
+    confirm = str(payload.get("confirm") or "").strip()
+    if not confirm or confirm != selection_hash:
+        # Stale/absent confirmation: nothing is deleted; the fresh hash of the
+        # CURRENT selection is returned so the operator can re-review + re-confirm.
+        handler._send_json({
+            "error": "confirm does not match the current selection. Re-review and retry with the returned selection_hash.",
+            "selection_hash": selection_hash,
+            "selected_count": len(selected),
+        }, status=409)
+        return
+
+    try:
+        report = matter_store.bulk_archive_gmail_matters(owner_user_id, predicate, limit=limit)
+    except matter_store.MatterStoreError as error:
+        logger.warning("Bulk archive failed: %s", error)
+        handler._send_json({"error": matter_store.friendly_matter_store_message(error)}, status=500)
+        return
+    if report.get("archive_failed"):
+        handler._send_json(
+            {"error": "Archiving to pruned-matters/ failed; nothing was deleted."},
+            status=500,
+        )
+        return
+
+    deleted_matters = list(report.get("deleted_matters") or [])
+    deleted_ids = [str(matter.get("id") or "") for matter in deleted_matters]
+    deleted_message_ids = sorted({
+        str(matter.get("gmail_message_id") or "").strip()
+        for matter in deleted_matters
+        if str(matter.get("gmail_message_id") or "").strip()
+    })
+
+    # MANDATORY re-import guard: mark every deleted message id as processed in
+    # the per-owner Gmail ledger in ONE atomic write, then VERIFY by reading the
+    # ledger back (mark_messages_processed's write is best-effort internally, so
+    # the read-back is what proves the guard actually landed on disk).
+    ledger_marked = True
+    if deleted_message_ids:
+        from .. import gmail_processed_ledger  # noqa: PLC0415 - keep the import local/light.
+
+        gmail_processed_ledger.mark_messages_processed(deleted_message_ids, owner_user_id)
+        persisted = gmail_processed_ledger.load_processed_message_ids(owner_user_id)
+        ledger_marked = all(message_id in persisted for message_id in deleted_message_ids)
+        if not ledger_marked:
+            logger.warning(
+                "Bulk archive: processed-ledger mark did not persist for owner; "
+                "deleted messages may re-import on the next poll."
+            )
+
+    if deleted_ids:
+        telemetry.increment("bulk_archive_matters_removed", len(deleted_ids))
+    audit_written = _append_bulk_archive_audit_line({
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "admin_user": request_actor(handler),
+        "owner": owner_user_id,
+        "window": {
+            "created_after": str(payload.get("created_after") or ""),
+            "created_before": str(payload.get("created_before") or ""),
+        },
+        "selection_hash": selection_hash,
+        "deleted_ids": deleted_ids,
+        "ledger_marked": ledger_marked,
+    })
+
+    handler._send_json({
+        "dry_run": False,
+        "selected_count": len(selected),
+        "excluded_count": excluded_count,
+        "selection_hash": selection_hash,
+        "matters": [_bulk_archive_matter_summary(matter) for matter in deleted_matters],
+        "excluded_samples": excluded_samples,
+        "archived": len(deleted_ids),
+        "ledger_marked": ledger_marked,
+        "audit_written": audit_written,
+    })

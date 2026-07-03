@@ -370,6 +370,10 @@ _POST_EXACT_ROUTES = {
     # request never blocks on conversions). NEVER triggers an AI review. Admin-gated
     # inside the handler; CSRF enforced by do_POST before dispatch.
     "/api/admin/pdf-docx-backfill": admin_routes.handle_pdf_docx_backfill_start,
+    # Admin bulk archive of auto-imported Gmail noise (dry-run by default; execute
+    # requires a confirm hash of the current selection). Admin-gated inside the
+    # handler; CSRF enforced by do_POST before dispatch.
+    "/api/admin/matters/bulk-archive": admin_routes.handle_matters_bulk_archive,
 }
 
 _PUBLIC_POST_EXACT_ROUTES = {

@@ -1082,6 +1082,95 @@ def deduplicate_gmail_matters(owner_user_id: str = "") -> int:
     return len(removed)
 
 
+def _bulk_archive_sort_key(matter: dict[str, Any]) -> tuple[str, str]:
+    """Deterministic selection order for bulk archive: oldest first, id tiebreak.
+
+    A stable order is what makes the dry-run selection hash reproducible across
+    the dry-run call and the execute call (same store state => same selection =>
+    same hash), so the confirm handshake compares like with like.
+    """
+    return (str(matter.get("created_at") or ""), str(matter.get("id") or ""))
+
+
+def bulk_archive_gmail_matters(
+    owner_user_id: str,
+    predicate: Callable[[dict[str, Any]], bool],
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Archive-then-delete the owner's matters that pass ``predicate`` (capped).
+
+    The admin bulk-archive primitive for auto-imported Gmail noise. Safety
+    contract:
+
+    * OWNER IS MANDATORY: an empty ``owner_user_id`` would make every matter in
+      a single-tenant store eligible, so it is rejected outright — this routine
+      must never run store-wide.
+    * The predicate is RE-EVALUATED per matter under ``_locked_store()`` — the
+      caller's dry-run snapshot is never trusted, so a matter that gained human
+      work (review, decision, move, ...) between dry-run and execute is skipped.
+    * Archive-before-delete (the retention-pruning invariant, via
+      ``_archive_pruned_matters``): if archiving to ``pruned-matters/`` fails,
+      NOTHING is deleted and the report says ``archive_failed``.
+    * Record unlinks happen under the lock (mirroring ``delete_matter``); the
+      fsync-heavy stored-document unlinks and the best-effort render-cache purge
+      are deferred until after the lock is released.
+
+    Returns ``{"archived": bool, "archive_failed": bool, "deleted_matters": [...]}``
+    where ``deleted_matters`` are the full matter dicts that were removed (the
+    caller derives ids / gmail message ids / audit fields from them).
+    """
+    owner_user_id = _clean_owner_user_id(owner_user_id)
+    if not owner_user_id:
+        raise MatterStoreError("Bulk archive requires an explicit owner_user_id.")
+    limit = max(0, int(limit))
+    report: dict[str, Any] = {"archived": False, "archive_failed": False, "deleted_matters": []}
+    if not limit:
+        return report
+    selected: list[dict[str, Any]] = []
+    with _locked_store():
+        _ensure_matter_records_from_legacy()
+        matters = _load_matters_for_owner(owner_user_id)
+        matters.sort(key=_bulk_archive_sort_key)
+        for matter in matters:
+            if len(selected) >= limit:
+                break
+            # RE-EVALUATE under the lock: never trust the dry-run snapshot.
+            if predicate(matter):
+                selected.append(matter)
+        if not selected:
+            return report
+        if not _archive_pruned_matters(selected, context="bulk_archive"):
+            report["archive_failed"] = True
+            return report
+        for matter in selected:
+            _delete_matter_record(matter)
+    # --- deferred, post-lock cleanup (mirrors delete_matter / retention) ---
+    # Render bookkeeping first, while the stored source bytes still exist: the
+    # per-user render-cache key is content-derived, so the purge needs the bytes
+    # (replicates repository_board_workflow.delete_card). Lazy import because
+    # document_rendering imports matter_store at module level.
+    from . import document_rendering  # noqa: PLC0415 - avoid an import cycle.
+
+    for matter in selected:
+        matter_id = str(matter.get("id") or "")
+        try:
+            source_bytes = get_source_document_bytes(matter)
+            document_rendering.matter_render_coordinator().forget(matter_id)
+            if source_bytes is not None:
+                document_rendering.purge_render_cache_for_source(
+                    source_bytes,
+                    owner_user_id=owner_user_id,
+                    source_filename=str(matter.get("source_filename") or ""),
+                )
+        except Exception:  # noqa: BLE001 - render cleanup is best-effort, never blocks the batch.
+            pass
+    for matter in selected:
+        _delete_stored_document(matter)
+    report["archived"] = True
+    report["deleted_matters"] = selected
+    return report
+
+
 def create_matter(
     *,
     source_filename: str,
@@ -1866,10 +1955,17 @@ def _matter_is_active(matter: dict[str, Any]) -> bool:
     return matter.get("status") != "closed" and matter.get("board_column") != "signed_closed"
 
 
-def _archive_pruned_matters(pruned_matters: list[dict[str, Any]]) -> bool:
+def _archive_pruned_matters(pruned_matters: list[dict[str, Any]], *, context: str = "retention") -> bool:
     # Retention pruning deletes stored documents. Archive each source document and
     # full matter record before saving the pruned store so an archive failure
     # keeps the matter live.
+    #
+    # ``context`` selects the success telemetry/logging only (the archive
+    # mechanics are identical): the default "retention" keeps the existing
+    # counters and the active-matter DATA-LOSS warning; "bulk_archive" (the
+    # admin bulk-archive endpoint, which deletes deliberately-selected ACTIVE
+    # gmail-noise matters) counts under its own counter so it never pollutes the
+    # "active_matters_pruned" retention red-flag signal.
     if not pruned_matters:
         return True
     archive_dir = DATA_DIR / PRUNED_ARCHIVE_DIRNAME
@@ -1895,6 +1991,16 @@ def _archive_pruned_matters(pruned_matters: list[dict[str, Any]]) -> bool:
         telemetry.increment("matter_prune_archive_failures")
         print(f"Could not archive pruned matters before deletion: {error.__class__.__name__}")
         return False
+    if context == "bulk_archive":
+        telemetry.increment("bulk_archive_matters_archived", len(pruned_matters))
+        if archived_sources:
+            telemetry.increment("matter_sources_archived", archived_sources)
+        # Log counts only, never matter titles, to avoid leaking NDA content.
+        print(
+            f"Bulk archive: archived {archived_records} matter record(s) and "
+            f"{archived_sources} source document(s) to {archive_dir.name}/."
+        )
+        return True
     telemetry.increment("matters_pruned", len(pruned_matters))
     if archived_sources:
         telemetry.increment("matter_sources_archived", archived_sources)
