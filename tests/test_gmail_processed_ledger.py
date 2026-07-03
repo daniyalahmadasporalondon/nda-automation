@@ -114,10 +114,12 @@ def test_session_load_once_mark_many_write_once(ledger_data_dir, monkeypatch):
 
     read_calls: list[int] = []
     write_calls: list[int] = []
-    real_read = ledger._read_ids
+    real_read = ledger._read_payload
     real_write = ledger._write_ids
-    monkeypatch.setattr(ledger, "_read_ids", lambda o: (read_calls.append(1), real_read(o))[1])
-    monkeypatch.setattr(ledger, "_write_ids", lambda o, ids: (write_calls.append(1), real_write(o, ids))[1])
+    monkeypatch.setattr(ledger, "_read_payload", lambda o: (read_calls.append(1), real_read(o))[1])
+    monkeypatch.setattr(
+        ledger, "_write_ids", lambda o, ids, *rest: (write_calls.append(1), real_write(o, ids, *rest))[1]
+    )
 
     session = ledger.ProcessedLedgerSession(owner)
     assert len(read_calls) == 1  # the file is read exactly ONCE on construction
@@ -190,7 +192,9 @@ def test_mark_messages_processed_batch_one_shot(ledger_data_dir, monkeypatch):
     owner = "owner_1"
     write_calls: list[int] = []
     real_write = ledger._write_ids
-    monkeypatch.setattr(ledger, "_write_ids", lambda o, ids: (write_calls.append(1), real_write(o, ids))[1])
+    monkeypatch.setattr(
+        ledger, "_write_ids", lambda o, ids, *rest: (write_calls.append(1), real_write(o, ids, *rest))[1]
+    )
     added = ledger.mark_messages_processed(["a", "b", "c"], owner)
     assert added == 3
     assert len(write_calls) == 1  # batched into a single write

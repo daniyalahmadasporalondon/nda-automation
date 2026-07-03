@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from typing import Any
 
 # Per-sync cost cap for the AI intake classifier. Imported here so the budget the
@@ -37,6 +38,37 @@ _TERMINAL_STABLE_ATTACHMENT_SKIP_REASONS = frozenset(
         "duplicate_attachment",
     }
 )
+
+# QUARANTINE (poison-message retry cap). The transient-skip retry bias above is
+# correct for genuine infra blips, but it has no ceiling: a message whose heavy
+# import path fails DETERMINISTICALLY every poll (a poisoned attachment that always
+# crashes extraction/review) re-runs the PAID gmail_triage selector + gmail_intake
+# classifier AI calls on EVERY poll, forever. The cap bounds that spend: each time a
+# message's heavy path ends in a transient (non-stable) outcome, a per-message
+# attempt counter in the processed ledger is bumped; once it reaches the limit the
+# message is marked processed with reason "quarantined" (terminal), so future polls
+# skip it before any fetch/AI work. Only the EXPENSIVE stage counts an attempt -- a
+# message never reached because the per-poll budget ran out accrues nothing, so
+# budget starvation can never quarantine unattempted mail.
+NDA_GMAIL_TRANSIENT_RETRY_LIMIT_ENV = "NDA_GMAIL_TRANSIENT_RETRY_LIMIT"
+DEFAULT_TRANSIENT_RETRY_LIMIT = 5
+
+
+def _transient_retry_limit() -> int:
+    """The per-message transient-failure attempt cap before quarantine.
+
+    Fail-open like the other Gmail env knobs: a missing/blank/non-numeric/
+    non-positive override falls back to the default so a misconfigured value can
+    never quarantine everything on the first failure (or wedge at zero).
+    """
+    raw = os.environ.get(NDA_GMAIL_TRANSIENT_RETRY_LIMIT_ENV, "")
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_TRANSIENT_RETRY_LIMIT
+    if value < 1:
+        return DEFAULT_TRANSIENT_RETRY_LIMIT
+    return value
 
 
 def import_inbound_matters(
@@ -148,37 +180,47 @@ def import_inbound_matters(
         processed_ledger=processed_ledger,
     )
 
-    if cursor_supported and drain_cursor > 0:
-        # Pass 1: head re-scan for newly-arrived mail above the frontier (bounded).
-        _scan_pass(inbound_query, max_scan=head_window, state=state, context=context)
-        # Pass 2: drain the backlog below the frontier, date-bounded so the drained
-        # prefix never re-surfaces.
-        if not state.rate_limited and state.new_processed < import_limit:
-            drain_query = transport.inbound_query_before(inbound_query, drain_cursor)
-            _scan_pass(drain_query, max_scan=max_scan, state=state, context=context, track_floor=True)
-    else:
-        # No cursor support (or no cursor yet): a single bounded pass over the base
-        # query, identical in spirit to the pre-cursor behaviour.
-        _scan_pass(inbound_query, max_scan=max_scan, state=state, context=context, track_floor=True)
+    # The scan runs inside try/finally so the cursor persist + ledger flush below
+    # happen EVEN IF a pass raises (e.g. a Gmail listing/get failure escalated by
+    # raise_gmail_api_error, or an unexpected store/OS error). Pre-fix, an exception
+    # here skipped BOTH, so every terminal outcome already reached this poll was
+    # forgotten and re-ran its paid AI calls on the next cycle.
+    try:
+        if cursor_supported and drain_cursor > 0:
+            # Pass 1: head re-scan for newly-arrived mail above the frontier (bounded).
+            _scan_pass(inbound_query, max_scan=head_window, state=state, context=context)
+            # Pass 2: drain the backlog below the frontier, date-bounded so the drained
+            # prefix never re-surfaces.
+            if not state.rate_limited and state.new_processed < import_limit:
+                drain_query = transport.inbound_query_before(inbound_query, drain_cursor)
+                _scan_pass(drain_query, max_scan=max_scan, state=state, context=context, track_floor=True)
+        else:
+            # No cursor support (or no cursor yet): a single bounded pass over the base
+            # query, identical in spirit to the pre-cursor behaviour.
+            _scan_pass(inbound_query, max_scan=max_scan, state=state, context=context, track_floor=True)
+    finally:
+        # Advance (lower) the persistent cursor to the oldest message examined in the
+        # drain this poll, so the NEXT poll resumes right below it instead of re-paging
+        # the imported prefix. When the drain pass found NO un-imported message older
+        # than the cursor and was not cut short by the budget/rate-limit, the backlog
+        # below the frontier is exhausted: reset the cursor so future polls run head-only
+        # (and a fresh backlog re-arms it). All best-effort -- never raise into the poll.
+        if cursor_supported:
+            try:
+                _persist_drain_cursor(transport, owner_user_id, state, drain_cursor)
+            except Exception:  # pragma: no cover - cursor write is best-effort
+                LOGGER.warning("Failed to persist Gmail inbound drain cursor", exc_info=True)
 
-    # Advance (lower) the persistent cursor to the oldest message examined in the
-    # drain this poll, so the NEXT poll resumes right below it instead of re-paging
-    # the imported prefix. When the drain pass found NO un-imported message older
-    # than the cursor and was not cut short by the budget/rate-limit, the backlog
-    # below the frontier is exhausted: reset the cursor so future polls run head-only
-    # (and a fresh backlog re-arms it). All best-effort -- never raise into the poll.
-    if cursor_supported:
-        try:
-            _persist_drain_cursor(transport, owner_user_id, state, drain_cursor)
-        except Exception:  # pragma: no cover - cursor write is best-effort
-            LOGGER.warning("Failed to persist Gmail inbound drain cursor", exc_info=True)
-
-    # Persist the processed-message ledger exactly ONCE for the whole poll (write-
-    # once, REFINEMENT A): a no-op when nothing new reached a terminal outcome.
-    # Best-effort -- a flush failure is already logged-and-swallowed inside flush(),
-    # so it can never break the poll, and unwritten ids simply re-process next poll.
-    if processed_ledger is not None:
-        processed_ledger.flush()
+        # Persist the processed-message ledger exactly ONCE for the whole poll (write-
+        # once, REFINEMENT A): a no-op when nothing new reached a terminal outcome.
+        # Best-effort -- a flush failure is already logged-and-swallowed inside
+        # flush(); the extra guard covers exotic session fakes so persistence can
+        # never break (or mask) the poll's own outcome.
+        if processed_ledger is not None:
+            try:
+                processed_ledger.flush()
+            except Exception:  # pragma: no cover - flush is best-effort
+                LOGGER.warning("Failed to flush Gmail processed-message ledger", exc_info=True)
 
     return {
         "account": account_email,
@@ -187,6 +229,10 @@ def import_inbound_matters(
         "skipped": skipped,
         "ai_intake": sync_tallies.as_dict(),
         "rate_limited": state.rate_limited,
+        # Messages terminally quarantined THIS poll (transient-retry cap reached).
+        # Surfaced so the sync summary/status can make a quarantine visible instead
+        # of it silently eating mail.
+        "quarantined": sum(1 for skip in skipped if str(skip.get("reason") or "") == "quarantined"),
     }
 
 
@@ -228,6 +274,7 @@ class _ScanContext:
         skipped: list[dict[str, str]],
         sync_tallies: "_IntakeTallies",
         processed_ledger: Any = None,
+        transient_retry_limit: int | None = None,
     ) -> None:
         self.transport = transport
         self.service = service
@@ -242,6 +289,11 @@ class _ScanContext:
         # poll (REFINEMENT A). May be None when the ledger could not be opened, in
         # which case the scan degrades to the pre-ledger behaviour.
         self.processed_ledger = processed_ledger
+        # Per-message transient-failure attempt cap before quarantine (env-tunable,
+        # resolved once per poll).
+        self.transient_retry_limit = (
+            transient_retry_limit if transient_retry_limit is not None else _transient_retry_limit()
+        )
 
 
 def _scan_pass(
@@ -409,6 +461,17 @@ def _scan_pass(
                 note_terminal_floor()
                 continue
 
+            # QUARANTINE PRE-CHECK: a message whose recorded transient-failure
+            # attempts already reached the cap (e.g. the limit was lowered, or the
+            # quarantine mark itself failed to persist on the capping poll) is
+            # terminally quarantined HERE -- before the budget slot and before the
+            # selector/intake AI calls -- instead of burning one more heavy cycle.
+            prior_attempts = _ledger_attempt_count(context, message_id)
+            if prior_attempts >= context.transient_retry_limit:
+                _quarantine_message(context, message_id, prior_attempts)
+                note_terminal_floor()
+                continue
+
             # This message will hit the heavy import path: count it against the
             # per-poll NEW-work budget that bounds load on the 2 GB worker.
             state.new_processed += 1
@@ -467,8 +530,22 @@ def _scan_pass(
                 _mark_processed(context, message_id)
                 # Terminal/stable: safe to lower the drain cursor past this message.
                 note_terminal_floor()
-            # else: a TRANSIENT failure -- leave the floor where it is so the cursor
-            # never descends past this still-to-retry message (the data-loss fix).
+            else:
+                # A TRANSIENT failure -- leave the message unmarked so it retries
+                # next poll (the safe bias), and leave the floor where it is so the
+                # cursor never descends past this still-to-retry message (the
+                # data-loss fix). BUT count the attempt: this message just consumed
+                # the EXPENSIVE stage (budget slot + selector/intake AI calls), and
+                # once it has done so ``transient_retry_limit`` times it is
+                # quarantined -- a terminal ledger mark with reason "quarantined" --
+                # so a poisoned message stops burning AI spend forever. Attempt
+                # accounting degrades to a no-op (attempts stay 0, never
+                # quarantining) on a ledger session without the counter seam.
+                attempts = _record_transient_attempt(context, message_id)
+                if attempts >= context.transient_retry_limit:
+                    _quarantine_message(context, message_id, attempts)
+                    # Quarantine IS terminal: the cursor may descend past it.
+                    note_terminal_floor()
         # Stop on an empty next-page token OR a zero-progress page (a page that
         # advanced the token but returned no messages), mirroring the original
         # paged-fetch termination guards.
@@ -547,6 +624,74 @@ def _mark_processed(context: "_ScanContext", message_id: str) -> None:
     ledger = context.processed_ledger
     if ledger is not None:
         ledger.mark(message_id)
+
+
+def _ledger_attempt_count(context: "_ScanContext", message_id: str) -> int:
+    """The recorded transient-failure attempts for ``message_id`` (0 without a seam).
+
+    Callable-guarded like every other optional transport/ledger seam: an older/fake
+    ledger session without attempt counting reads as 0 attempts, so quarantine simply
+    never triggers and the scan behaves exactly as before.
+    """
+    ledger = context.processed_ledger
+    counter = getattr(ledger, "attempt_count", None) if ledger is not None else None
+    if not callable(counter):
+        return 0
+    try:
+        return max(0, int(counter(message_id)))
+    except Exception:  # pragma: no cover - attempt read is best-effort
+        return 0
+
+
+def _record_transient_attempt(context: "_ScanContext", message_id: str) -> int:
+    """Count one transient-failure attempt for ``message_id``; returns the new total.
+
+    Returns 0 (never quarantining) when the ledger session lacks the counter seam or
+    the record fails -- the retry-forever bias is the safe degradation.
+    """
+    ledger = context.processed_ledger
+    recorder = getattr(ledger, "record_attempt", None) if ledger is not None else None
+    if not callable(recorder):
+        return 0
+    try:
+        return max(0, int(recorder(message_id)))
+    except Exception:  # pragma: no cover - attempt write is best-effort
+        return 0
+
+
+def _quarantine_message(context: "_ScanContext", message_id: str, attempts: int) -> None:
+    """Terminally quarantine ``message_id`` after exhausting its transient retries.
+
+    Marks it processed in the ledger (via the dedicated ``quarantine`` seam when
+    available, so the ledger file distinguishes quarantined ids) and surfaces a
+    visible ``quarantined`` skip so the sync summary/status reports it instead of
+    the message silently disappearing.
+    """
+    ledger = context.processed_ledger
+    quarantiner = getattr(ledger, "quarantine", None) if ledger is not None else None
+    if callable(quarantiner):
+        quarantiner(message_id)
+    else:
+        _mark_processed(context, message_id)
+    context.skipped.append(
+        gmail_attachment_skip(
+            message_id,
+            "",
+            "quarantined",
+            detail=(
+                f"transient import failure persisted across {attempts} polls; "
+                "message quarantined (no further AI retries)"
+            ),
+            attempts=str(attempts),
+        )
+    )
+    LOGGER.warning(
+        "Gmail inbound message %s quarantined after %d transient import failures "
+        "(limit %d); it will no longer be retried.",
+        message_id,
+        attempts,
+        context.transient_retry_limit,
+    )
 
 
 def _is_rate_limited(transport: Any, error: Exception) -> bool:

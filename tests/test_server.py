@@ -11,9 +11,9 @@ import threading
 import time
 import unittest
 from copy import deepcopy
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from http.server import ThreadingHTTPServer
-from io import BytesIO
+from io import BytesIO, StringIO
 import urllib.error
 from urllib.parse import parse_qs, urlparse
 from unittest.mock import MagicMock, call, patch
@@ -6280,6 +6280,34 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(settings["sync_history"][1]["duplicate_count"], 1)
         self.assertEqual(settings["sync_history"][1]["deduplicated_count"], 2)
         self.assertEqual(settings["sync_history"][1]["review_failed_count"], 1)
+        self.assertEqual(settings["sync_history"][1]["quarantined_count"], 0)
+
+    def test_gmail_sync_history_surfaces_quarantined_count(self):
+        # VISIBILITY (D): a quarantined message is counted in the sync-history
+        # status payload, so the admin UI/status endpoint can surface it.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                app_settings.record_gmail_sync(
+                    {
+                        "imported": [],
+                        "query": "query q",
+                        "skipped": [
+                            {"message_id": "msg_p", "reason": "quarantined", "attempts": "5"},
+                            {"message_id": "msg_r", "reason": "review_failed"},
+                        ],
+                        "quarantined": 1,
+                    },
+                    started_at="2026-07-03T00:00:00+00:00",
+                    synced_at="2026-07-03T00:00:02+00:00",
+                    finished_at="2026-07-03T00:00:02+00:00",
+                )
+                settings = app_settings.gmail_settings()
+
+        entry = settings["sync_history"][0]
+        self.assertEqual(entry["quarantined_count"], 1)
+        self.assertEqual(entry["review_failed_count"], 1)
+        self.assertEqual(entry["skipped_count"], 2)
 
     def test_scheduled_gmail_sync_uses_full_import_window(self):
         result = {
@@ -6333,6 +6361,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(owner_user_ids, [first_user["id"]])
 
     def test_scheduled_gmail_sync_runs_for_each_connected_google_user(self):
+        server_module._reset_gmail_sync_user_rotation_for_tests()
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
@@ -8092,7 +8121,10 @@ class ServerTests(unittest.TestCase):
         # THE CORE GUARANTEE: with N connected users each requesting a full per-user
         # import_limit, the TOTAL heavy imports in one poll is bounded by the global
         # ceiling -- it is NOT import_limit * N. Here N=5 users x per-user 40 would be
-        # 200 uncapped; the ceiling (40) holds the sum to <= 40.
+        # 200 uncapped; the ceiling (40) holds the sum to <= 40. With the fairness
+        # floor, the first user no longer consumes the WHOLE ceiling: one import slot
+        # is reserved for every user behind it, so all five get served in one poll.
+        server_module._reset_gmail_sync_user_rotation_for_tests()
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
@@ -8153,8 +8185,12 @@ class ServerTests(unittest.TestCase):
         # per_user_limit * N (which would be 40 * 5 == 200).
         self.assertEqual(sum(granted), ceiling)
         self.assertLess(sum(granted), ceiling * len(users))
-        # The first user is served fully (nothing else has drawn on the budget yet).
-        self.assertEqual(granted[0], ceiling)
+        # FAIRNESS FLOOR: the first user is granted the ceiling MINUS one reserved
+        # slot per user behind it (40 - 4 == 36), and every later user still gets a
+        # non-zero grant -- one tenant can no longer zero out the others.
+        self.assertEqual(granted[0], ceiling - (len(users) - 1))
+        self.assertEqual(granted[1:], [1, 1, 1, 1])
+        self.assertTrue(all(grant >= 1 for grant in granted))
         # The recorded aggregate imported count is capped at the ceiling too.
         recorded = record_sync.call_args.args[0]
         self.assertEqual(len(recorded["imported"]), ceiling)
@@ -8162,8 +8198,11 @@ class ServerTests(unittest.TestCase):
     def test_scheduled_user_gmail_sync_defers_leftover_users_to_next_poll(self):
         # When the shared budget is exhausted mid-fan-out, the remaining users are
         # DEFERRED (not imported this poll) rather than dropped -- their mail is
-        # untouched and drains next poll via the persistent cursor. Simulate a small
-        # ceiling so the first user consumes it entirely.
+        # untouched and drains next poll via the persistent cursor. With the fairness
+        # floor a single user can no longer consume the whole ceiling ahead of the
+        # others, so exhaustion now requires budget < user count: ceiling 2 across 3
+        # users serves the first two (one slot each) and defers the third.
+        server_module._reset_gmail_sync_user_rotation_for_tests()
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
@@ -8195,9 +8234,10 @@ class ServerTests(unittest.TestCase):
                         "skipped": [],
                     }
 
-                # Ceiling of 5; per-user limit also 5 -> first user consumes it all.
+                # Ceiling of 2 across 3 users -> the floor grants one slot each to
+                # the first two users and the budget is spent before the third.
                 with patch.dict(
-                    os.environ, {"NDA_GMAIL_TOTAL_IMPORT_LIMIT": "5"}, clear=False
+                    os.environ, {"NDA_GMAIL_TOTAL_IMPORT_LIMIT": "2"}, clear=False
                 ):
                     with patch.object(
                         server_module.app_settings, "gmail_import_limit", return_value=5
@@ -8217,19 +8257,20 @@ class ServerTests(unittest.TestCase):
                                 ) as record_sync:
                                     server_module._run_scheduled_gmail_sync()
 
-        # Only the first user actually did heavy import work; the other two were
-        # deferred WITHOUT ever calling import_inbound_matters (no download/extract).
-        self.assertEqual(called_for, [users[0]["id"]])
+        # The first two users each did one heavy import (the fairness floor); the
+        # third was deferred WITHOUT ever calling import_inbound_matters (no
+        # download/extract).
+        self.assertEqual(called_for, [users[0]["id"], users[1]["id"]])
         recorded = record_sync.call_args.args[0]
-        # Total imports bounded by the ceiling (5).
-        self.assertEqual(len(recorded["imported"]), 5)
+        # Total imports bounded by the ceiling (2).
+        self.assertEqual(len(recorded["imported"]), 2)
         # Deferred users are recorded (drain next poll) -- mail is never dropped.
         deferred = [
             entry for entry in recorded["per_user"] if entry.get("deferred")
         ]
         self.assertEqual(
             {entry["owner_user_id"] for entry in deferred},
-            {users[1]["id"], users[2]["id"]},
+            {users[2]["id"]},
         )
         # The deferred users surface as skipped-with-reason so the next poll resumes
         # them via the existing persistent drain cursor (nothing dropped).
@@ -8247,6 +8288,7 @@ class ServerTests(unittest.TestCase):
         # import_inbound_matters IS called) -- i.e. the middle user's rate-limit
         # no longer unwinds the fan-out and stalls the other tenants' import.
         server_module._clear_gmail_sync_backoff_for_tests()
+        server_module._reset_gmail_sync_user_rotation_for_tests()
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
@@ -8337,6 +8379,273 @@ class ServerTests(unittest.TestCase):
         # A per-user rate-limit is NOT a global signal: the shared scheduler
         # backoff must stay clear so the very next poll still runs for everyone.
         self.assertFalse(server_module._gmail_sync_backoff_active())
+
+    def _connect_gmail_users(self, count, *, prefix):
+        """Create ``count`` Google users with an inbound Gmail token (helper)."""
+        users = []
+        for i in range(count):
+            user = user_store.upsert_google_user({
+                "sub": f"google-{prefix}-{i}",
+                "email": f"{prefix}{i}@example.com",
+                "name": f"{prefix.title()}{i}",
+                "picture": "",
+            })
+            users.append(user)
+            token_dir = matter_store.DATA_DIR / "users" / "gmail" / user["id"]
+            token_dir.mkdir(parents=True, exist_ok=True)
+            (token_dir / gmail_integration.ROLE_LOCAL_TOKEN_FILENAME["inbound"]).write_text(
+                "{}\n",
+                encoding="utf-8",
+            )
+        return users
+
+    def test_scheduled_user_gmail_sync_fairness_floor_prevents_second_user_starvation(self):
+        # THE STARVATION FIX (B): under the old grant (min(per_user, remaining))
+        # the FIRST user's large backlog consumed the whole shared ceiling every
+        # poll and the second tenant was deferred FOREVER. The fairness floor
+        # reserves one import slot per user still to come, so the second user is
+        # always granted >= 1 and imports successfully in the SAME poll.
+        server_module._reset_gmail_sync_user_rotation_for_tests()
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                users = self._connect_gmail_users(2, prefix="starve")
+
+                granted_by_user: dict[str, int] = {}
+
+                def import_side_effect(*, limit, query=None, owner_user_id=""):
+                    granted_by_user[owner_user_id] = limit
+                    # BOTH users have unbounded backlogs: each imports its full grant.
+                    return {
+                        "account": f"{owner_user_id}@example.com",
+                        "imported": [{"id": f"{owner_user_id}-{i}"} for i in range(limit)],
+                        "query": "in:inbox has:attachment",
+                        "skipped": [],
+                    }
+
+                # Tight shared ceiling (2) that the first user's backlog would have
+                # consumed entirely under the old first-come-first-served grant.
+                with patch.dict(
+                    os.environ, {"NDA_GMAIL_TOTAL_IMPORT_LIMIT": "2"}, clear=False
+                ):
+                    with patch.object(
+                        server_module.app_settings, "gmail_import_limit", return_value=40
+                    ):
+                        with patch.object(
+                            server_module.gmail_integration,
+                            "import_inbound_matters",
+                            side_effect=import_side_effect,
+                        ):
+                            with patch.object(
+                                server_module.matter_store,
+                                "deduplicate_gmail_matters",
+                                return_value=0,
+                            ):
+                                with patch.object(server_module.app_settings, "record_gmail_sync") as record_sync:
+                                    server_module._run_scheduled_gmail_sync()
+
+        # EVERY user was polled and granted at least one import slot -- the second
+        # tenant is no longer starved behind the first one's backlog.
+        self.assertEqual(set(granted_by_user), {users[0]["id"], users[1]["id"]})
+        self.assertTrue(all(grant >= 1 for grant in granted_by_user.values()))
+        recorded = record_sync.call_args.args[0]
+        per_user = {entry["owner_user_id"]: entry for entry in recorded["per_user"]}
+        self.assertGreaterEqual(per_user[users[1]["id"]]["imported_count"], 1)
+        # The global ceiling held: the SUM is still bounded at 2.
+        self.assertEqual(len(recorded["imported"]), 2)
+
+    def test_scheduled_user_gmail_sync_rotates_user_order_between_polls(self):
+        # FAIRNESS ROTATION (B): the fan-out start position advances by one user per
+        # poll, so the fixed list_users() order cannot permanently privilege the
+        # same tenant's first draw on the shared budget.
+        server_module._reset_gmail_sync_user_rotation_for_tests()
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                users = self._connect_gmail_users(2, prefix="rotate")
+
+                called_for: list[str] = []
+
+                def import_side_effect(*, limit, query=None, owner_user_id=""):
+                    called_for.append(owner_user_id)
+                    return {
+                        "account": f"{owner_user_id}@example.com",
+                        "imported": [],
+                        "query": "in:inbox has:attachment",
+                        "skipped": [],
+                    }
+
+                with patch.object(
+                    server_module.app_settings, "gmail_import_limit", return_value=5
+                ):
+                    with patch.object(
+                        server_module.gmail_integration,
+                        "import_inbound_matters",
+                        side_effect=import_side_effect,
+                    ):
+                        with patch.object(
+                            server_module.matter_store, "deduplicate_gmail_matters", return_value=0
+                        ):
+                            with patch.object(server_module.app_settings, "record_gmail_sync"):
+                                server_module._run_scheduled_gmail_sync()
+                                server_module._run_scheduled_gmail_sync()
+
+        first, second = users[0]["id"], users[1]["id"]
+        # Poll 1 starts at the first user; poll 2 starts at the second.
+        self.assertEqual(called_for, [first, second, second, first])
+
+    def test_scheduled_user_gmail_sync_unexpected_error_does_not_abort_other_users(self):
+        # RESILIENCE (C): an UNEXPECTED per-user exception (OSError, store bug --
+        # anything beyond the Gmail error types) previously unwound the whole
+        # fan-out, so every later user was silently skipped that cycle. It is now
+        # recorded as that user's own sync error and the loop continues.
+        server_module._reset_gmail_sync_user_rotation_for_tests()
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                users = self._connect_gmail_users(3, prefix="oserr")
+                middle_user_id = users[1]["id"]
+                called_for: list[str] = []
+
+                def import_side_effect(*, limit, query=None, owner_user_id=""):
+                    called_for.append(owner_user_id)
+                    if owner_user_id == middle_user_id:
+                        raise OSError("disk exploded mid-import")
+                    return {
+                        "account": f"{owner_user_id}@example.com",
+                        "imported": [{"id": f"{owner_user_id}-0"}],
+                        "query": "in:inbox has:attachment",
+                        "skipped": [],
+                    }
+
+                with patch.object(
+                    server_module.app_settings, "gmail_import_limit", return_value=5
+                ):
+                    with patch.object(
+                        server_module.gmail_integration,
+                        "import_inbound_matters",
+                        side_effect=import_side_effect,
+                    ):
+                        with patch.object(
+                            server_module.matter_store, "deduplicate_gmail_matters", return_value=0
+                        ):
+                            with patch.object(server_module.app_settings, "record_gmail_sync") as record_sync:
+                                with patch.object(server_module, "_log_background_error"):
+                                    server_module._run_scheduled_gmail_sync()
+                middle_sync = user_store.gmail_sync_status(middle_user_id)
+
+        # ALL THREE users were attempted; the middle user's OSError did not abort
+        # the fan-out (users before AND after it were polled this same cycle).
+        self.assertEqual(called_for, [users[0]["id"], middle_user_id, users[2]["id"]])
+        recorded = record_sync.call_args.args[0]
+        self.assertEqual(len(recorded["imported"]), 2)
+        # The failing user is surfaced as skipped-with-reason + a per-user error...
+        failures = [
+            entry for entry in recorded["skipped"] if entry.get("reason") == "user_sync_failed"
+        ]
+        self.assertEqual({entry["owner_user_id"] for entry in failures}, {middle_user_id})
+        per_user = {entry["owner_user_id"]: entry for entry in recorded["per_user"]}
+        self.assertIn("OSError", str(per_user[middle_user_id]["error"]))
+        # ... and recorded on the user's own sync status (their retry channel).
+        middle_history = middle_sync.get("sync_history") or []
+        self.assertTrue(middle_history)
+        self.assertEqual(middle_history[0]["status"], "error")
+        self.assertIn("disk exploded", middle_history[0]["error"])
+
+    def test_scheduled_gmail_sync_emits_one_line_json_summary(self):
+        # VISIBILITY (D): every successful poll emits ONE greppable JSON line with
+        # per-user imported/skipped/quarantined counts, top skip reasons, and
+        # budget state -- a live poison/starvation loop is no longer invisible.
+        server_module._reset_gmail_sync_user_rotation_for_tests()
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                users = self._connect_gmail_users(1, prefix="summary")
+
+                def import_side_effect(*, limit, query=None, owner_user_id=""):
+                    return {
+                        "account": f"{owner_user_id}@example.com",
+                        "imported": [{"id": f"{owner_user_id}-0"}],
+                        "query": "in:inbox has:attachment",
+                        "skipped": [
+                            {"message_id": "msg_p", "reason": "quarantined", "attempts": "5"},
+                            {"message_id": "msg_d", "reason": "duplicate_attachment"},
+                            {"message_id": "msg_e", "reason": "duplicate_attachment"},
+                        ],
+                        "quarantined": 1,
+                    }
+
+                stdout = StringIO()
+                with patch.object(
+                    server_module.app_settings, "gmail_import_limit", return_value=5
+                ):
+                    with patch.object(
+                        server_module.gmail_integration,
+                        "import_inbound_matters",
+                        side_effect=import_side_effect,
+                    ):
+                        with patch.object(
+                            server_module.matter_store, "deduplicate_gmail_matters", return_value=0
+                        ):
+                            with patch.object(server_module.app_settings, "record_gmail_sync"):
+                                with redirect_stdout(stdout):
+                                    server_module._run_scheduled_gmail_sync()
+
+        summary_lines = [
+            json.loads(line)
+            for line in stdout.getvalue().splitlines()
+            if line.strip().startswith("{") and '"gmail_sync_summary"' in line
+        ]
+        self.assertEqual(len(summary_lines), 1)  # exactly ONE line per poll
+        summary = summary_lines[0]
+        self.assertEqual(summary["event"], "gmail_sync_summary")
+        self.assertEqual(summary["imported"], 1)
+        self.assertEqual(summary["skipped"], 3)
+        self.assertEqual(summary["quarantined"], 1)
+        self.assertEqual(
+            summary["top_skip_reasons"], {"duplicate_attachment": 2, "quarantined": 1}
+        )
+        self.assertEqual(len(summary["per_user"]), 1)
+        user_line = summary["per_user"][0]
+        self.assertEqual(user_line["owner_user_id"], users[0]["id"])
+        self.assertEqual(user_line["imported"], 1)
+        self.assertEqual(user_line["skipped"], 3)
+        self.assertEqual(user_line["quarantined"], 1)
+        self.assertEqual(
+            user_line["top_skip_reasons"], {"duplicate_attachment": 2, "quarantined": 1}
+        )
+        self.assertFalse(user_line["budget_exhausted"])
+
+    def test_scheduled_gmail_sync_emits_json_error_line_on_failure(self):
+        # VISIBILITY (D): a failed scheduled sync now prints a structured JSON error
+        # event carrying the class AND the detail -- pre-fix the only stdout trace
+        # was the bare class name, so weeks of a live failure loop logged nothing
+        # actionable.
+        stdout = StringIO()
+        with patch.object(
+            server_module.gmail_integration,
+            "gmail_sync_owner_user_ids",
+            side_effect=RuntimeError("user store exploded"),
+        ):
+            with patch.object(server_module.app_settings, "record_gmail_sync_error"):
+                with patch.object(server_module, "_log_background_error"):
+                    with patch.object(server_module.time, "sleep"):
+                        with redirect_stdout(stdout):
+                            server_module._run_scheduled_gmail_sync()
+
+        error_lines = [
+            json.loads(line)
+            for line in stdout.getvalue().splitlines()
+            if line.strip().startswith("{") and '"gmail_sync_error"' in line
+        ]
+        self.assertEqual(len(error_lines), 1)
+        event = error_lines[0]
+        self.assertEqual(event["event"], "gmail_sync_error")
+        self.assertEqual(event["level"], "error")
+        self.assertEqual(event["error"], "RuntimeError")
+        self.assertIn("user store exploded", event["detail"])
+        self.assertTrue(event["started_at"])
+        self.assertTrue(event["finished_at"])
 
     def test_gmail_settings_endpoint_accepts_sync_enabled_and_import_limit(self):
         with tempfile.TemporaryDirectory() as data_dir:

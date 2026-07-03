@@ -1233,6 +1233,7 @@ def _sync_history_entry(
     duplicate_count = sum(1 for item in skipped if isinstance(item, dict) and item.get("reason") == "duplicate_attachment")
     deduplicated_count = _nonnegative_int(result.get("deduplicated_count"), 0)
     review_failed_count = sum(1 for item in skipped if isinstance(item, dict) and item.get("reason") == "review_failed")
+    quarantined_count = sum(1 for item in skipped if isinstance(item, dict) and item.get("reason") == "quarantined")
     return {
         "started_at": str(started_at or ""),
         "finished_at": str(finished_at or ""),
@@ -1242,6 +1243,7 @@ def _sync_history_entry(
         "duplicate_count": duplicate_count,
         "deduplicated_count": deduplicated_count,
         "review_failed_count": review_failed_count,
+        "quarantined_count": quarantined_count,
         "status": "error" if status == "error" else "success",
         "error": str(error or "")[:500],
     }
@@ -1267,6 +1269,7 @@ def _sync_history_from_payload(value: object) -> list[dict[str, Any]]:
             "duplicate_count": _nonnegative_int(item.get("duplicate_count"), 0),
             "deduplicated_count": _nonnegative_int(item.get("deduplicated_count"), 0),
             "review_failed_count": _nonnegative_int(item.get("review_failed_count"), 0),
+            "quarantined_count": _nonnegative_int(item.get("quarantined_count"), 0),
             "status": "error" if item.get("status") == "error" else "success",
             "error": str(item.get("error") or "")[:500],
         })
