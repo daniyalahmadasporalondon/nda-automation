@@ -71,6 +71,7 @@ from .http_auth import (
     _env_flag_enabled as _env_flag_enabled,
     _is_loopback_host as _is_loopback_host,
     host_header_allowed,
+    session_user_allowed,
 )
 from .rate_limit import (
     DEFAULT_RATE_LIMIT_PER_MINUTE as DEFAULT_RATE_LIMIT_PER_MINUTE,
@@ -1056,6 +1057,13 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         if not _auth_required_for_host(str(self.server.server_address[0])):
             return True
         session_user = auth_routes.current_session_user(self)
+        if session_user is not None and not session_user_allowed(session_user):
+            # App-layer allowlist revocation: a Google session whose verified
+            # email no longer passes NDA_ALLOWED_EMAIL_DOMAINS/NDA_ALLOWED_EMAILS
+            # is treated as unauthenticated (falls through to the 401/login
+            # paths below). Basic-auth identities never route through the
+            # allowlist; with both env vars unset/empty this is a no-op.
+            session_user = None
         if session_user is not None:
             self.current_user = user_store.public_user(session_user)
             self.current_user_id = str(session_user.get("id") or "")
