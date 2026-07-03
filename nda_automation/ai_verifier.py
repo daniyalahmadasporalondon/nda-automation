@@ -1190,6 +1190,11 @@ def _record_verifier_error(verifier_kind: str) -> None:
         telemetry.increment("ai_verifier_errors")
         kind = re.sub(r"[^a-z0-9_]+", "_", str(verifier_kind or "unknown").strip().lower()).strip("_") or "unknown"
         telemetry.increment(f"ai_verifier_errors__kind__{kind}")
+        # One greppable stdout JSON line per verifier failure (matches the
+        # gmail_sync_summary log style in server.py). Pre-fix the ONLY trace was
+        # a telemetry counter nobody watches -- a silently dead verifier affirms
+        # every clause. LOG HYGIENE: kind code only; no clause text/provider detail.
+        print(json.dumps({"event": "ai_verifier_error", "kind": kind}), flush=True)
     except Exception:  # noqa: BLE001 - observability must never break review
         return
 

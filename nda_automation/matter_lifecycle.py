@@ -6,6 +6,7 @@ adapters. Callers use it to express domain transitions, while the existing
 """
 from __future__ import annotations
 
+import logging
 import threading
 import json
 from collections.abc import Callable
@@ -16,6 +17,8 @@ from typing import Any
 from . import artifact_service, workflow
 from .artifact_registry import ArtifactRegistryError
 from .matter_repository import MatterRepository
+
+logger = logging.getLogger(__name__)
 
 BackgroundRunner = Callable[[Callable[[], None]], None]
 MAX_REDLINE_DRAFT_ITEMS = 200
@@ -696,8 +699,15 @@ class RepositoryMatterLifecycle:
             )
             telemetry.increment("drive_auto_intake_synced")
             telemetry.increment("drive_files_synced", amount=int(synced.get("synced_count") or 0))
-        except Exception:
+        except Exception as error:
             telemetry.increment("drive_auto_intake_failed")
+            # Daemon-thread failure was previously counter-only (invisible in the
+            # process log). Exception CLASS only -- no filenames/folder names/content.
+            logger.warning(
+                "Drive auto-intake sync failed for matter %s: %s",
+                matter_id,
+                error.__class__.__name__,
+            )
 
     def _stamp_sent_timeline(self, matter: dict[str, Any], sent: dict[str, Any], *, owner_user_id: str = "") -> None:
         matter_id = str(matter.get("id") or "")

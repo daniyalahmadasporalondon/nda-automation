@@ -542,6 +542,10 @@ def handle_docusign_webhook(handler) -> None:
 
     if not _verify_hmac(handler, raw_body):
         telemetry.increment("docusign_webhook_rejected")
+        # Visibility: a misconfigured HMAC key (or an attacker probing the public
+        # endpoint) was previously counter-only. One line per reject; the path is
+        # already rate-limited centrally in server.do_POST, so no log flood.
+        logger.warning("DocuSign webhook rejected: HMAC signature verification failed")
         handler._send_json({"error": "Invalid DocuSign webhook signature."}, status=401)
         return
 
@@ -571,8 +575,15 @@ def handle_docusign_webhook(handler) -> None:
             matter, matter_id, owner_user_id, repository=_repository(handler)
         )
         completed = result.completed
-    except docusign_workflow.DocuSignWorkflowError:
-        # Best-effort: never fail the webhook ack on a transient sync error.
+    except docusign_workflow.DocuSignWorkflowError as error:
+        # Best-effort: never fail the webhook ack on a transient sync error -- but
+        # log it first (pre-fix the swallow left ZERO trace, so a signed artifact
+        # silently never landing on the matter was invisible to operators).
+        logger.warning(
+            "DocuSign webhook sync failed for envelope %s: %s",
+            envelope_id,
+            error.__class__.__name__,
+        )
         completed = str(status or "").lower() == docusign_integration.STATUS_COMPLETED
     telemetry.increment("docusign_webhook_processed")
     handler._send_json({"received": True, "matched": True, "completed": completed})

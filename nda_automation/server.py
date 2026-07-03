@@ -1133,7 +1133,13 @@ def _reject_non_finite_json_constant(value: str) -> None:
 
 
 def _log_background_error(message: str, error: Exception) -> None:
-    print(f"{message}: {error.__class__.__name__}")
+    # Class + truncated message (no traceback, per log hygiene): the class name
+    # alone ("KeyError") was undiagnosable from the process log.
+    detail = str(error)[:200]
+    if detail:
+        print(f"{message}: {error.__class__.__name__}: {detail}")
+    else:
+        print(f"{message}: {error.__class__.__name__}")
 
 
 def main() -> None:
@@ -1313,13 +1319,57 @@ def _gmail_sync_enabled() -> bool:
 def _gmail_sync_scheduler_loop() -> None:
     last_run = 0.0
     last_frequency = ""
+    ticks = 0
     while True:
         sleep_seconds = MAX_GMAIL_SYNC_IDLE_SECONDS
         try:
             last_run, last_frequency, sleep_seconds = _gmail_sync_scheduler_step(last_run, last_frequency)
         except Exception as error:  # pragma: no cover - defensive background logging.
             _log_background_error("Gmail sync scheduler failed", error)
+        ticks += 1
+        _maybe_log_telemetry_snapshot(ticks)
         time.sleep(sleep_seconds)
+
+
+# Periodic telemetry snapshot cadence, in scheduler ticks. The loop wakes roughly
+# every MAX_GMAIL_SYNC_IDLE_SECONDS (30s) when idle, so the default of 120 ticks
+# approximates one snapshot per hour. Env-tunable; <= 0 disables the snapshot.
+TELEMETRY_SNAPSHOT_TICKS_ENV = "NDA_TELEMETRY_SNAPSHOT_TICKS"
+DEFAULT_TELEMETRY_SNAPSHOT_TICKS = 120
+
+
+def _telemetry_snapshot_ticks() -> int:
+    raw = os.environ.get(TELEMETRY_SNAPSHOT_TICKS_ENV, "").strip()
+    if not raw:
+        return DEFAULT_TELEMETRY_SNAPSHOT_TICKS
+    try:
+        return int(raw)
+    except ValueError:
+        return DEFAULT_TELEMETRY_SNAPSHOT_TICKS
+
+
+def _maybe_log_telemetry_snapshot(ticks: int) -> None:
+    """Every N scheduler ticks, print ONE stdout JSON line of telemetry counters.
+
+    Failure counters (ai_verifier_errors, drive_auto_intake_failed, ...) were
+    previously reachable only via the admin endpoint nobody polls -- a silent
+    failure loop left the plain process log EMPTY. Counters/gauges only, no user
+    data. Fail-open: a snapshot error must never touch the scheduler.
+    """
+    try:
+        cadence = _telemetry_snapshot_ticks()
+        if cadence <= 0 or ticks % cadence != 0:
+            return
+        snap = telemetry.snapshot()
+        event: dict[str, object] = {
+            "event": "telemetry_snapshot",
+            "uptime_seconds": snap.get("uptime_seconds"),
+            "counters": snap.get("counters") or {},
+            "gauges": snap.get("gauges") or {},
+        }
+        print(json.dumps(event), file=sys.stdout, flush=True)
+    except Exception:  # pragma: no cover - logging must never break the scheduler
+        pass
 
 
 def _gmail_sync_scheduler_step(last_run: float, last_frequency: str) -> tuple[float, str, int]:

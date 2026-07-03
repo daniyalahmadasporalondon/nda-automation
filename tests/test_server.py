@@ -2084,12 +2084,33 @@ class ServerTests(unittest.TestCase):
         # he gets his own bucket and is not throttled by Alice's traffic.
         self.assertEqual(bob_first, 200)
 
-    def test_background_error_logging_omits_exception_message(self):
+    def test_background_error_logging_includes_truncated_message(self):
+        # CHANGED CONTRACT (was ...omits_exception_message): the class name alone
+        # ("KeyError") was undiagnosable from the process log, so the line now
+        # carries str(error) truncated to 200 chars -- class+message, still no
+        # traceback. Mirrors _log_gmail_sync_error's existing detail[:500] stdout
+        # precedent.
         with patch("builtins.print") as mocked_print:
             server_module._log_background_error(
                 "Gmail scheduled sync failed",
-                RuntimeError("Sensitive extracted NDA text"),
+                RuntimeError("boom detail"),
             )
+
+        mocked_print.assert_called_once_with("Gmail scheduled sync failed: RuntimeError: boom detail")
+
+    def test_background_error_logging_truncates_long_message(self):
+        with patch("builtins.print") as mocked_print:
+            server_module._log_background_error(
+                "Gmail scheduled sync failed",
+                RuntimeError("x" * 500),
+            )
+
+        logged = mocked_print.call_args[0][0]
+        self.assertEqual(logged, f"Gmail scheduled sync failed: RuntimeError: {'x' * 200}")
+
+    def test_background_error_logging_empty_message_is_class_only(self):
+        with patch("builtins.print") as mocked_print:
+            server_module._log_background_error("Gmail scheduled sync failed", RuntimeError())
 
         mocked_print.assert_called_once_with("Gmail scheduled sync failed: RuntimeError")
 
@@ -6648,6 +6669,68 @@ class ServerTests(unittest.TestCase):
 
         log_error.assert_called_once()
         sleep.assert_called_once_with(server_module.MAX_GMAIL_SYNC_IDLE_SECONDS)
+
+    def test_telemetry_snapshot_emits_on_cadence_tick_with_counters(self):
+        # On tick N (cadence from NDA_TELEMETRY_SNAPSHOT_TICKS) exactly one stdout
+        # JSON line with the counters snapshot is printed; off-cadence ticks are
+        # silent. Counters/gauges only -- no user data on the line.
+        telemetry.increment("ai_verifier_errors")
+        with patch.dict(os.environ, {server_module.TELEMETRY_SNAPSHOT_TICKS_ENV: "2"}, clear=False):
+            buffer = StringIO()
+            with redirect_stdout(buffer):
+                server_module._maybe_log_telemetry_snapshot(1)
+            self.assertEqual(buffer.getvalue(), "")
+
+            buffer = StringIO()
+            with redirect_stdout(buffer):
+                server_module._maybe_log_telemetry_snapshot(2)
+
+        lines = [line for line in buffer.getvalue().splitlines() if line.strip()]
+        self.assertEqual(len(lines), 1)
+        event = json.loads(lines[0])
+        self.assertEqual(event["event"], "telemetry_snapshot")
+        self.assertEqual(event["counters"].get("ai_verifier_errors"), 1)
+        self.assertIn("uptime_seconds", event)
+
+    def test_telemetry_snapshot_disabled_by_nonpositive_ticks(self):
+        with patch.dict(os.environ, {server_module.TELEMETRY_SNAPSHOT_TICKS_ENV: "0"}, clear=False):
+            buffer = StringIO()
+            with redirect_stdout(buffer):
+                server_module._maybe_log_telemetry_snapshot(120)
+        self.assertEqual(buffer.getvalue(), "")
+
+    def test_telemetry_snapshot_default_cadence_and_bad_env_fall_back(self):
+        with patch.dict(os.environ, {server_module.TELEMETRY_SNAPSHOT_TICKS_ENV: ""}, clear=False):
+            self.assertEqual(server_module._telemetry_snapshot_ticks(), server_module.DEFAULT_TELEMETRY_SNAPSHOT_TICKS)
+        with patch.dict(os.environ, {server_module.TELEMETRY_SNAPSHOT_TICKS_ENV: "not-a-number"}, clear=False):
+            self.assertEqual(server_module._telemetry_snapshot_ticks(), server_module.DEFAULT_TELEMETRY_SNAPSHOT_TICKS)
+
+    def test_telemetry_snapshot_error_never_raises(self):
+        # Fail-open contract: a snapshot bug must never touch the scheduler loop.
+        with patch.dict(os.environ, {server_module.TELEMETRY_SNAPSHOT_TICKS_ENV: "1"}, clear=False):
+            with patch.object(server_module.telemetry, "snapshot", side_effect=RuntimeError("boom")):
+                server_module._maybe_log_telemetry_snapshot(1)  # must not raise
+
+    def test_gmail_sync_scheduler_loop_emits_snapshot_each_cadence_tick(self):
+        # End-to-end through the loop: with cadence 1, the first tick emits a
+        # snapshot line even when the step itself errored (visibility survives a
+        # broken scheduler step).
+        with patch.dict(os.environ, {server_module.TELEMETRY_SNAPSHOT_TICKS_ENV: "1"}, clear=False):
+            with patch.object(server_module, "_gmail_sync_scheduler_step", side_effect=RuntimeError("boom")):
+                with patch.object(server_module, "_log_background_error"):
+                    with patch.object(server_module.time, "sleep", side_effect=KeyboardInterrupt):
+                        buffer = StringIO()
+                        with redirect_stdout(buffer):
+                            with self.assertRaises(KeyboardInterrupt):
+                                server_module._gmail_sync_scheduler_loop()
+
+        snapshots = [
+            json.loads(line)
+            for line in buffer.getvalue().splitlines()
+            if line.strip().startswith("{") and '"telemetry_snapshot"' in line
+        ]
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0]["event"], "telemetry_snapshot")
 
     def test_gmail_import_skips_duplicate_and_imports_new_attachment(self):
         class FakeExecutable:

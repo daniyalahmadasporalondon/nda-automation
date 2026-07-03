@@ -7,6 +7,7 @@ tests inject a SYNCHRONOUS runner so the background work is deterministic.
 """
 from __future__ import annotations
 
+import logging
 from io import BytesIO
 from unittest.mock import MagicMock, patch
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -187,6 +188,30 @@ def test_drive_failure_does_not_break_intake(in_memory_matters, _drive_on):
     # No drive block persisted on failure; failure telemetry recorded.
     assert in_memory_matters.get_matter(matter["id"]).get("drive") is None
     assert telemetry.snapshot()["counters"].get("drive_auto_intake_failed") == 1
+
+
+def test_drive_failure_logs_warning(in_memory_matters, _drive_on, caplog):
+    """The daemon-thread sync failure logs a warning beside the failure counter.
+
+    Pre-fix the swallow was counter-only: a Drive outage silently stopped every
+    auto-intake archive with an EMPTY process log. Exception CLASS only -- no
+    filenames, folder names, or provider detail on the line.
+    """
+    sync = MagicMock(side_effect=drive_integration.DriveRateLimitError("secret detail"))
+    with caplog.at_level(logging.WARNING, logger="nda_automation.matter_lifecycle"):
+        with patch.object(drive_integration, "sync_matter_folder", sync):
+            matter = _create(in_memory_matters)
+
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "Drive auto-intake sync failed" in r.getMessage()
+    ]
+    assert len(warnings) == 1
+    assert matter["id"] in warnings[0]
+    assert "DriveRateLimitError" in warnings[0]
+    # LOG HYGIENE: class name only, never the error detail string.
+    assert "secret detail" not in warnings[0]
 
 
 def test_default_runner_is_a_daemon_thread():

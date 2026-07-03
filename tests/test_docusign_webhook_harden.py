@@ -353,3 +353,75 @@ def test_no_key_explicit_optin_allowed_processes(repo, monkeypatch):
     assert handler.response["received"] is True
     # And the helper itself returns True under the opt-in.
     assert docusign_routes._verify_hmac(handler, body) is True
+
+
+# --------------------------------------------------------------------------
+# Failure visibility: HMAC reject + swallowed sync failure each log a warning
+# --------------------------------------------------------------------------
+def test_hmac_reject_logs_warning(repo, connected, fake_client, monkeypatch, caplog):
+    """An HMAC-rejected webhook logs ONE warning beside the rejected counter.
+
+    Pre-fix a misconfigured Connect HMAC key (or a forged-caller probe) was
+    counter-only -- invisible in the process log. The route is centrally
+    rate-limited in server.do_POST, so a single line per reject cannot flood.
+    """
+    monkeypatch.setenv(docusign_connection.CONNECT_HMAC_KEY_ENV, HMAC_KEY)
+    _, envelope_id = _sent_envelope(repo, fake_client)
+
+    body = _webhook_body(envelope_id)
+    handler = _FakeHandler(
+        repo,
+        owner="",
+        raw_body=body,
+        headers={"Content-Length": str(len(body)), docusign_routes.HMAC_SIGNATURE_HEADER: "not-the-signature"},
+    )
+    with caplog.at_level(logging.WARNING, logger="nda_automation.routes.docusign"):
+        docusign_routes.handle_docusign_webhook(handler)
+
+    assert handler.status == 401
+    rejects = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "HMAC signature verification failed" in r.getMessage()
+    ]
+    assert len(rejects) == 1
+
+
+def test_swallowed_sync_failure_logs_warning_before_200_ack(
+    repo, connected, fake_client, monkeypatch, caplog
+):
+    """A sync failure inside the webhook is STILL acked 200 but now logs a warning.
+
+    Pre-fix the DocuSignWorkflowError swallow left ZERO trace: the signed artifact
+    silently never landed on the matter. Ack semantics are unchanged (200, matched)
+    -- the only new behavior is the operator-visible line. Exception CLASS only,
+    no payload/provider detail.
+    """
+    monkeypatch.setenv(docusign_connection.CONNECT_HMAC_KEY_ENV, HMAC_KEY)
+    _, envelope_id = _sent_envelope(repo, fake_client)
+
+    def _boom(*args, **kwargs):
+        raise docusign_workflow.DocuSignWorkflowError("provider secret detail")
+
+    monkeypatch.setattr(docusign_workflow, "sync_signature_status", _boom)
+
+    body = _webhook_body(envelope_id)
+    handler = _FakeHandler(repo, owner="", raw_body=body, headers=_signed_headers(body))
+    with caplog.at_level(logging.WARNING, logger="nda_automation.routes.docusign"):
+        docusign_routes.handle_docusign_webhook(handler)
+
+    # Ack semantics unchanged: 200, matched, completed derived from payload status.
+    assert handler.status == 200
+    assert handler.response["received"] is True
+    assert handler.response["matched"] is True
+    assert handler.response["completed"] is True
+
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "DocuSign webhook sync failed" in r.getMessage()
+    ]
+    assert len(warnings) == 1
+    assert envelope_id in warnings[0]
+    assert "DocuSignWorkflowError" in warnings[0]
+    # LOG HYGIENE: class name only, never the error detail string.
+    assert "provider secret detail" not in warnings[0]

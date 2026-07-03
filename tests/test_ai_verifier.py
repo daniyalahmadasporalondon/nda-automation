@@ -8,6 +8,8 @@ Two layers:
   that pins the eval gate (the non_circumvention freedom-to-deal carve-out the
   keyword checker false-flags as a restriction).
 """
+import contextlib
+import io
 import json
 import os
 import unittest
@@ -525,6 +527,29 @@ class ApplyVerifierTests(unittest.TestCase):
         counters = telemetry.snapshot()["counters"]
         self.assertEqual(counters["ai_verifier_errors"], 1)
         self.assertEqual(counters["ai_verifier_errors__kind__injected"], 1)
+
+    def test_verifier_error_emits_stdout_json_event(self):
+        # Visibility contract: a verifier failure must leave a greppable stdout
+        # JSON line ({"event": "ai_verifier_error", "kind": ...}), not just a
+        # telemetry counter -- a silently dead verifier affirms every clause.
+        telemetry.reset()
+        clauses = [_clause("non_circumvention", "fail", clause_type="prohibited")]
+
+        def boom(_packet):
+            raise RuntimeError("model exploded")
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            apply_ai_verifier(clauses, source_text="x", verifier=boom)
+        events = [
+            json.loads(line)
+            for line in buffer.getvalue().splitlines()
+            if line.strip().startswith("{") and '"ai_verifier_error"' in line
+        ]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0], {"event": "ai_verifier_error", "kind": "injected"})
+        # LOG HYGIENE: no clause content or provider detail on the line.
+        self.assertNotIn("model exploded", buffer.getvalue())
 
     def test_invalid_verdict_is_treated_as_affirm(self):
         clauses = [_clause("non_circumvention", "fail", clause_type="prohibited")]
