@@ -23,6 +23,19 @@ const RepositoryBoard = (() => {
   // Monotonic token guarding the async (rAF-chunked) card appends: a newer
   // renderBoard invalidates any in-flight chunk continuation from an older one.
   let boardRenderToken = 0;
+  // Signature of the last-performed card render. The 15s poll re-renders the board
+  // even when NOTHING visible changed; comparing a cheap signature of the visible
+  // slices (plus the render context) lets an unchanged poll skip the innerHTML
+  // rebuild entirely. lastRenderedFirstList anchors the signature to the actual
+  // container nodes, so a swapped/rebuilt DOM (tests, future re-mounts) can never
+  // be starved of a paint by a stale signature match.
+  let lastBoardSignature = null;
+  let lastRenderedFirstList = null;
+  // The handlers of the most recent render, read by the DELEGATED column listeners
+  // (one click + one keydown listener per column container, attached once) instead
+  // of re-attaching per-card listeners on every render.
+  let activeHandlers = null;
+  const delegatedLists = typeof WeakSet === "function" ? new WeakSet() : null;
 
   function scheduleFrame(callback) {
     if (typeof requestAnimationFrame === "function") {
@@ -76,7 +89,7 @@ const RepositoryBoard = (() => {
       selectedMatter,
       state,
     };
-    const renderToken = ++boardRenderToken;
+    activeHandlers = handlers;
     const mattersByColumn = new Map(RepositoryModel.BOARD_COLUMNS.map((column) => [column.id, []]));
     const query = normalizeSearchText(searchQuery);
     // A CHANGED search starts every column back at its bounded first page; the
@@ -107,16 +120,34 @@ const RepositoryBoard = (() => {
     // genuinely empty board with no active error and no active search (a search
     // that finds nothing is a different, already-handled state).
     renderBoardOnboarding({ state, errorMessage, searchActive: Boolean(query) });
-    document.querySelectorAll("[data-repository-list]").forEach((list) => {
+    // SKIP-IF-UNCHANGED: the 15s poll re-renders even when nothing visible moved.
+    // If the signature of the would-be-rendered cards (plus the render context)
+    // matches the last performed render, leave the card DOM alone -- counts, sync
+    // status, and onboarding above still refreshed. Deliberately checked BEFORE
+    // bumping the render token so an identical render never aborts an in-flight
+    // chunked append.
+    const signature = boardRenderSignature({
+      errorMessage,
+      mattersByColumn,
+      pendingDeleteMatterId,
+      query,
+      selectedMatter,
+    });
+    const lists = document.querySelectorAll("[data-repository-list]");
+    const firstList = lists[0] || null;
+    if (signature === lastBoardSignature && firstList === lastRenderedFirstList) return;
+    lastBoardSignature = signature;
+    lastRenderedFirstList = firstList;
+    const renderToken = ++boardRenderToken;
+    lists.forEach((list) => {
+      ensureBoardDelegation(list);
       const matters = mattersByColumn.get(list.dataset.repositoryList) || [];
       if (errorMessage) {
         list.innerHTML = `<div class="repository-dropzone">${html(errorMessage)}</div>`;
-        bindBoardEvents(list, { handlers, selectedMatter });
         return;
       }
       if (!matters.length) {
         list.innerHTML = `<div class="repository-dropzone">${query ? "No matching documents" : "No documents"}</div>`;
-        bindBoardEvents(list, { handlers, selectedMatter });
         return;
       }
       const columnId = list.dataset.repositoryList;
@@ -128,22 +159,52 @@ const RepositoryBoard = (() => {
       if (cardsHtml.length <= RENDER_CHUNK_SIZE) {
         // Small column: one synchronous parse is cheaper than scheduling frames.
         list.innerHTML = cardsHtml.join("") + showMoreHtml;
-        bindBoardEvents(list, { handlers, selectedMatter });
+        syncBoardCardSelection(list, selectedMatter);
         return;
       }
       // Big visible slice (after "Show more" growth): append in rAF-spaced
       // DocumentFragment chunks so no single frame parses hundreds of cards.
       list.innerHTML = "";
-      appendCardsChunked(list, cardsHtml, 0, {
-        handlers,
-        renderToken,
-        selectedMatter,
-        showMoreHtml,
-      });
+      appendCardsChunked(list, cardsHtml, 0, { renderToken, selectedMatter, showMoreHtml });
     });
   }
 
-  function appendCardsChunked(list, cardsHtml, start, { handlers, renderToken, selectedMatter, showMoreHtml }) {
+  // A cheap, change-sensitive signature of exactly what the card render would
+  // paint: the render context (error/search/pending-delete/selection) plus, per
+  // column, the full total, the visible cap, and every VISIBLE matter's identity
+  // and card-affecting fields. O(rendered cards), not O(all matters). A matter
+  // edit bumps updated_at; the read-derived review lifecycle fields
+  // (review_status, staleness) are included explicitly because they can change
+  // without a store write.
+  function boardRenderSignature({ errorMessage, mattersByColumn, pendingDeleteMatterId, query, selectedMatter }) {
+    const parts = [errorMessage, query, pendingDeleteMatterId || "", selectedMatter?.id || ""];
+    mattersByColumn.forEach((matters, columnId) => {
+      const cardLimit = columnCardLimits.get(columnId) || INITIAL_CARDS_PER_COLUMN;
+      parts.push(`${columnId}#${matters.length}#${cardLimit}`);
+      matters.slice(0, cardLimit).forEach((matter) => {
+        parts.push([
+          matter.id,
+          matter.updated_at || "",
+          matter.review_status || "",
+          matter.issue_count || 0,
+          matter.ai_review_ran === true ? 1 : 0,
+          matterReviewStale(matter) ? 1 : 0,
+        ].join("|"));
+      });
+    });
+    return parts.join("\n");
+  }
+
+  // Guarded MatterUtils.reviewStale (same degrade-to-false contract as
+  // matterReviewInProgress above) for the signature pass.
+  function matterReviewStale(matter) {
+    if (typeof MatterUtils === "undefined" || typeof MatterUtils.reviewStale !== "function") {
+      return false;
+    }
+    return Boolean(MatterUtils.reviewStale(matter));
+  }
+
+  function appendCardsChunked(list, cardsHtml, start, { renderToken, selectedMatter, showMoreHtml }) {
     // A newer render pass replaced this one (poll / action / newer search) or the
     // list left the DOM: abandon the stale continuation without touching the DOM.
     if (renderToken !== boardRenderToken || list.isConnected === false) return;
@@ -154,11 +215,11 @@ const RepositoryBoard = (() => {
     list.appendChild(template.content);
     const next = start + RENDER_CHUNK_SIZE;
     if (next < cardsHtml.length) {
-      scheduleFrame(() => appendCardsChunked(list, cardsHtml, next, { handlers, renderToken, selectedMatter, showMoreHtml }));
+      scheduleFrame(() => appendCardsChunked(list, cardsHtml, next, { renderToken, selectedMatter, showMoreHtml }));
       return;
     }
     if (showMoreHtml) list.insertAdjacentHTML("beforeend", showMoreHtml);
-    bindBoardEvents(list, { handlers, selectedMatter });
+    syncBoardCardSelection(list, selectedMatter);
   }
 
   function renderShowMoreControl(columnId, hiddenCount) {
@@ -203,44 +264,69 @@ const RepositoryBoard = (() => {
     return String(value || "").trim().toLowerCase();
   }
 
-  function bindBoardEvents(list, { handlers, selectedMatter }) {
+  // Reflect the open-inspector selection on the rendered cards. Runs per render
+  // over the bounded visible slice only.
+  function syncBoardCardSelection(list, selectedMatter) {
     list.querySelectorAll("[data-matter-id]").forEach((card) => {
       card.classList.toggle("active", card.dataset.matterId === selectedMatter?.id);
-      card.addEventListener("click", () => handlers.openMatter(card.dataset.matterId));
-      card.addEventListener("keydown", (event) => {
-        if (event.target !== card || (event.key !== "Enter" && event.key !== " ")) return;
-        event.preventDefault();
-        handlers.openMatter(card.dataset.matterId);
-      });
     });
-    list.querySelectorAll("[data-delete-matter-id]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        handlers.requestDeleteMatter(button.dataset.deleteMatterId);
-      });
+  }
+
+  // EVENT DELEGATION (large stores): one click + one keydown listener per column
+  // CONTAINER, attached exactly once, instead of five listeners per card
+  // re-attached on every 15s poll render. The handlers are resolved from
+  // activeHandlers at event time so the delegated listener always drives the
+  // current controller. Match order mirrors the old stopPropagation layering:
+  // innermost controls first, the card open last, and clicks inside the
+  // delete-confirmation strip never open the matter.
+  function ensureBoardDelegation(list) {
+    if (!list || typeof list.addEventListener !== "function") return;
+    if (delegatedLists) {
+      if (delegatedLists.has(list)) return;
+      delegatedLists.add(list);
+    } else if (list.__repositoryBoardDelegated) {
+      return;
+    } else {
+      list.__repositoryBoardDelegated = true;
+    }
+    list.addEventListener("click", (event) => {
+      const handlers = activeHandlers;
+      const target = event.target;
+      if (!handlers || !target || typeof target.closest !== "function") return;
+      const showMore = target.closest("[data-repository-show-more]");
+      if (showMore) {
+        expandColumn(showMore.dataset.repositoryShowMore);
+        return;
+      }
+      const confirmDelete = target.closest("[data-confirm-delete-matter-id]");
+      if (confirmDelete) {
+        handlers.deleteMatter(confirmDelete.dataset.confirmDeleteMatterId, confirmDelete);
+        return;
+      }
+      const cancelDelete = target.closest("[data-cancel-delete-matter-id]");
+      if (cancelDelete) {
+        handlers.cancelDeleteMatter(cancelDelete.dataset.cancelDeleteMatterId);
+        return;
+      }
+      const requestDelete = target.closest("[data-delete-matter-id]");
+      if (requestDelete) {
+        handlers.requestDeleteMatter(requestDelete.dataset.deleteMatterId);
+        return;
+      }
+      if (target.closest("[data-delete-confirmation-id]")) return;
+      const card = target.closest("[data-matter-id]");
+      if (card) handlers.openMatter(card.dataset.matterId);
     });
-    list.querySelectorAll("[data-delete-confirmation-id]").forEach((confirmation) => {
-      confirmation.addEventListener("click", (event) => {
-        event.stopPropagation();
-      });
-    });
-    list.querySelectorAll("[data-cancel-delete-matter-id]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        handlers.cancelDeleteMatter(button.dataset.cancelDeleteMatterId);
-      });
-    });
-    list.querySelectorAll("[data-confirm-delete-matter-id]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        handlers.deleteMatter(button.dataset.confirmDeleteMatterId, button);
-      });
-    });
-    list.querySelectorAll("[data-repository-show-more]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        expandColumn(button.dataset.repositoryShowMore);
-      });
+    list.addEventListener("keydown", (event) => {
+      const handlers = activeHandlers;
+      const target = event.target;
+      if (!handlers || !target || typeof target.matches !== "function") return;
+      // Only the card element itself (role="button") activates on Enter/Space --
+      // keystrokes inside its inner buttons keep their own semantics.
+      if (!target.matches("[data-matter-id]")) return;
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      handlers.openMatter(target.dataset.matterId);
     });
   }
 

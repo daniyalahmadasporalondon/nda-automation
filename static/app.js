@@ -881,17 +881,28 @@ loadDashboardAiHealth();
 loadDashboardDriveHealth();
 loadDashboardDocuSignHealth();
 adminIntegrationsController.load();
+// IN-FLIGHT POLL GUARD (large stores): on a multi-thousand-matter account one
+// /api/matters response can take longer than the 15s poll interval. Without this
+// guard each tick started ANOTHER full-list download; the overlapping multi-MB
+// transfers saturated the browser's per-host connection pool (starving every
+// other /api request) while the stale-response run-token discarded almost every
+// body -- all cost, no render. One tick's fetch must fully settle before the next
+// tick may start a new one; ticks that would overlap are simply skipped.
+let matterPollInFlight = false;
 window.setInterval(() => {
+  if (matterPollInFlight) return;
+  matterPollInFlight = true;
+  const releasePoll = () => { matterPollInFlight = false; };
   if (document.querySelector('[data-view="repository"]')?.classList.contains("active")) {
     Promise.resolve(repositoryController.loadMatters()).then(() => {
       renderDashboardInboxTable();
       notificationsController.observe(state.matters);
-    });
+    }).catch(() => {}).finally(releasePoll);
     repositoryController.loadGmailStatus();
   } else {
     // On any non-Repository tab the board isn't refreshed, so the notifier polls
     // the matter list itself to keep new-inbound toasts flowing app-wide.
-    notificationsController.poll();
+    Promise.resolve(notificationsController.poll()).catch(() => {}).finally(releasePoll);
   }
 }, REPOSITORY_REFRESH_INTERVAL_MS);
 
