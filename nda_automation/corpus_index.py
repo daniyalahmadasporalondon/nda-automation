@@ -27,7 +27,6 @@ fully testable without HTTP or a live Drive.
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import threading
 from datetime import datetime, timezone
@@ -743,19 +742,45 @@ _DRIVE_CACHE: dict[str, dict[str, Any]] = {}
 # --- per-owner app-state build cache --------------------------------------
 # The app-state pass (list_matters + per-matter facet/state build + the dup-document
 # fingerprint resolve) runs on EVERY Corpus/assistant request and is the request's
-# dominant cost at scale. It is a pure function of the owner's stored matters, so it
-# is cached keyed on (owner, records-fingerprint): a content hash over the owner's
-# matters (see _records_fingerprint). The fingerprint changes IFF any matter's content
-# changed, so an unchanged store serves the cached build and skips the rebuild; a
-# changed store misses and rebuilds. Values are stored PRE-group/wrap (the boundary
-# _build_app_state_matters returns at) because _group_and_wrap mutates matters in
-# place; each hit hands back a deep copy so the caller can mutate freely.
-#   owner_user_id -> {"fingerprint": str, "matters": {matter_id: {...}}}
+# dominant cost at scale. Each built CorpusMatter is a pure function of (that single
+# matter, the active playbook), so the cache is INCREMENTAL per matter:
+#
+# * The whole entry is keyed on the owner + the active playbook hash (a playbook
+#   change invalidates every derived workflow/facet state at once).
+# * Each matter's built record is keyed on its ``updated_at`` (every store writer —
+#   disk and in-memory — stamps a fresh microsecond ISO ``updated_at`` on every
+#   write), so one write re-derives ONE matter and reuses the rest instead of paying
+#   an O(store) rebuild cliff per write.
+# * On a disk store, an unchanged store is detected by a cheap opaque change token
+#   (``repository.store_change_token()``, a stat scan) so a fully-warm request skips
+#   ``list_matters`` entirely.
+#
+# The built map is stored as a JSON blob: a hit deserializes the blob, so callers
+# always receive fully-isolated dicts (``_group_and_wrap`` mutates in place) without
+# a Python deepcopy of a large object graph.
+#
+#   owner_user_id -> {"token": Any|None, "playbook_hash": str,
+#                     "signatures": {matter_id: updated_at},
+#                     "built_blob": str, "pending_ids": [str], "built_at": float}
+#
+# KNOWN RESIDUAL (accepted): a record hand-edited on disk WITHOUT bumping its
+# ``updated_at`` (out-of-band edit) changes the stat token, forcing a re-list, but
+# its per-matter build is reused until any real write bumps ``updated_at``. The
+# store's own writers never do this.
 _APP_STATE_CACHE: dict[str, dict[str, Any]] = {}
 # Guard against a pathological unbounded-growth cache if this were ever driven with a
 # huge number of distinct owners in one process; the corpus is a per-request read so
 # a small cap is ample and keeps a single stale entry per owner, not per fingerprint.
 _APP_STATE_CACHE_MAX_OWNERS = 256
+
+# While the background fingerprint backfill is persisting fingerprints, the store
+# content churns continuously (every persist bumps that matter's updated_at), which
+# would turn EVERY corpus request during convergence into a partial rebuild. While a
+# backfill is running for the owner we therefore serve the cached entry under a
+# short bounded-staleness TTL instead. Trade-off (documented, deliberate): a USER
+# write during an active backfill may not surface in the Corpus tab for up to this
+# many seconds; outside a backfill window every write invalidates instantly.
+CORPUS_APP_STATE_BACKFILL_TTL_SECONDS = 30.0
 
 
 def invalidate_cache(owner_user_id: str = "") -> None:
@@ -1132,33 +1157,50 @@ def _start_fingerprint_backfill(repository, owner_user_id: str, matter_ids: list
     return True
 
 
-def _records_fingerprint(matters: list[dict[str, Any]]) -> str:
-    """A content change-signal over a matter list: sha256 of every matter's content.
+def _store_change_token(repository) -> Any | None:
+    """An opaque cheap change token for the repository's backing store, or None.
 
-    Hashes each matter's canonical JSON (``sort_keys`` so field order is irrelevant),
-    then combines them in ``id`` order (so a pure list re-order never invalidates), so
-    the digest changes IFF the CONTENT any matter carries changed -- independent of
-    ``updated_at`` granularity or whether a given field-write happens to bump it. Used
-    to key the app-state build cache: a hit means "no matter the build reads has
-    changed since it was cached", so the cached build is still exactly correct. Hashing
-    already-in-memory data is far cheaper than the per-matter build it gates (workflow
-    state, facet derivation, artifact enumeration, fingerprint compute). Raises only if
-    a matter is not JSON-serializable, which the caller treats as a cache miss.
+    Duck-typed: a repository exposing ``store_change_token()`` (the disk store's
+    stat-scan over its record files) returns a hashable token that changes whenever
+    ANY record file changes. ``None`` (no support / any error) means "unknown" and
+    the caller falls back to the list+signature path. Never raises.
     """
-    per_matter = sorted(
-        (
-            str(matter.get("id") or ""),
-            hashlib.sha256(
-                json.dumps(matter, sort_keys=True, default=str, ensure_ascii=False).encode("utf-8")
-            ).hexdigest(),
-        )
-        for matter in matters
-    )
-    digest = hashlib.sha256()
-    for matter_id, content_hash in per_matter:
-        # Length-prefix the id so two matters cannot pun across the id|hash boundary.
-        digest.update(f"{len(matter_id)}:{matter_id}|{content_hash}\n".encode("utf-8"))
-    return digest.hexdigest()
+    probe = getattr(repository, "store_change_token", None)
+    if not callable(probe):
+        return None
+    try:
+        return probe()
+    except Exception:  # noqa: BLE001 -- the token is an optimisation only.
+        return None
+
+
+def _matter_build_signature(matter: dict[str, Any]) -> str:
+    """The per-matter reuse signature: its ``updated_at`` stamp.
+
+    Every store writer (disk matter_store and the in-memory repository alike)
+    stamps a fresh microsecond-resolution ISO ``updated_at`` on every write, so an
+    unchanged stamp means the stored record is unchanged and its built CorpusMatter
+    can be reused. An EMPTY stamp returns "" and the caller never reuses on "" —
+    a matter without an updated_at is always rebuilt (fail toward recompute).
+    """
+    return str(matter.get("updated_at") or "")
+
+
+def _backfill_running(owner_user_id: str) -> bool:
+    with _FINGERPRINT_BACKFILL_LOCK:
+        return owner_user_id in _FINGERPRINT_BACKFILL_OWNERS
+
+
+def _entry_built_matters(entry: dict[str, Any]) -> dict[str, dict[str, Any]] | None:
+    """Deserialize a cache entry's built map (fresh isolated dicts), or None."""
+    blob = entry.get("built_blob")
+    if not isinstance(blob, str):
+        return None
+    try:
+        parsed = json.loads(blob)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _build_app_state_matters(repository, owner_user_id: str) -> dict[str, dict[str, Any]]:
@@ -1177,76 +1219,186 @@ def _app_state_pass(
 ) -> tuple[dict[str, dict[str, Any]], list[str]]:
     """The cache-fronted app-state pass: ``(matter_id -> CorpusMatter, pending_ids)``.
 
-    Reads the owner's matters once, then returns the cached build when the store is
-    unchanged since the last build (keyed on ``owner`` + a records-fingerprint over
-    the matters' content, see :func:`_records_fingerprint`), else rebuilds from the
-    fresh snapshot and caches it. The cached value is deep-copied on hand-back because
-    the downstream ``_group_and_wrap`` mutates matters in place. Fail-open: any hiccup
-    reading the cache or fingerprinting falls straight through to a full uncached
-    rebuild, so the payload can never be stale or wrong -- only recomputed.
+    Serving order (each step falls through to the next on a miss; any cache hiccup
+    falls through to a full rebuild — the payload can be recomputed, never wrong):
+
+    1. **Token fast path** (disk store): the repository's cheap stat-scan change
+       token equals the cached one -> the store is byte-identical on disk -> serve
+       the cached build without even calling ``list_matters``.
+    2. **Backfill tolerance**: while OUR OWN background fingerprint backfill is
+       persisting fingerprints the store churns continuously; a recent entry
+       (< ``CORPUS_APP_STATE_BACKFILL_TTL_SECONDS``) is served as-is so convergence
+       never turns every request into a rebuild. Bounded, documented staleness.
+    3. **Incremental rebuild**: ``list_matters`` once, then rebuild ONLY the matters
+       whose ``updated_at`` signature changed (or that are new), reusing the cached
+       build for the rest — one write costs one matter's derivation, not O(store).
+       A playbook change (hash mismatch) disables reuse wholesale, since every
+       derived workflow/facet state depends on it.
 
     ``pending_ids`` are the fingerprintable matters whose content fingerprint is
     still missing after this build's bounded inline computes -- i.e. the matters the
     duplicate scan could NOT yet consider. The caller surfaces the honest
     ``duplicate_scan`` degradation from it and hands the ids to the background
-    backfill. A cache hit reproduces the same pending ids (unchanged store content
-    implies unchanged stored fingerprints).
+    backfill.
     """
-    matters = list(repository.list_matters(owner_user_id=owner_user_id))
-    try:
-        fingerprint = _records_fingerprint(matters)
-    except Exception:  # noqa: BLE001 -- fingerprint is an optimisation; degrade to uncached.
-        return _build_app_state_matters_from(repository, owner_user_id, matters)
-
+    # Take the change token BEFORE list_matters (pre-snapshot rule): a write racing
+    # the list is then reflected as a token mismatch on the NEXT request — an extra
+    # rebuild, never a stale serve.
+    token = _store_change_token(repository)
+    now = _now_epoch(None)
     with _CACHE_LOCK:
         entry = _APP_STATE_CACHE.get(owner_user_id)
-        if entry is not None and entry.get("fingerprint") == fingerprint:
-            return copy.deepcopy(entry["matters"]), list(entry.get("pending_ids") or [])
+        entry_snapshot = dict(entry) if entry is not None else None
 
-    built, pending_ids = _build_app_state_matters_from(repository, owner_user_id, matters)
+    if entry_snapshot is not None:
+        # 1. Token fast path: identical on-disk state -> no list, no rebuild.
+        if token is not None and entry_snapshot.get("token") == token:
+            cached = _entry_built_matters(entry_snapshot)
+            if cached is not None:
+                return cached, list(entry_snapshot.get("pending_ids") or [])
+        # 2. Backfill tolerance: the only expected churn is our own fingerprint
+        # persistence; serve the recent entry instead of rebuilding per request.
+        if (
+            _backfill_running(owner_user_id)
+            and (now - float(entry_snapshot.get("built_at") or 0.0))
+            < CORPUS_APP_STATE_BACKFILL_TTL_SECONDS
+        ):
+            cached = _entry_built_matters(entry_snapshot)
+            if cached is not None:
+                return cached, list(entry_snapshot.get("pending_ids") or [])
 
-    # Cache under the PRE-build fingerprint: on a cold store _resolve_fingerprint
-    # persists a lazily-computed content fingerprint onto matters, which changes their
-    # content and thus what the NEXT list_matters returns. Storing a POST-build
-    # fingerprint would key the entry under content the next read can never reproduce;
-    # keying on the pre-build snapshot means the first post-cold build simply misses
-    # again until the stored fingerprints settle (one extra rebuild), then stays warm.
-    # Never serve a stale build -- correctness over one extra rebuild.
+    # 3. Incremental rebuild from a fresh snapshot.
+    matters = list(repository.list_matters(owner_user_id=owner_user_id))
+    runtime_func, hash_func = _resolve_playbook_resolvers()
+    try:
+        playbook_hash = str(hash_func() or "")
+    except Exception:  # noqa: BLE001 -- an unreadable playbook disables reuse only.
+        playbook_hash = ""
+
+    reusable: dict[str, dict[str, Any]] = {}
+    signatures_old: dict[str, str] = {}
+    if (
+        entry_snapshot is not None
+        and playbook_hash
+        and entry_snapshot.get("playbook_hash") == playbook_hash
+    ):
+        cached = _entry_built_matters(entry_snapshot)
+        if cached is not None:
+            reusable = cached
+            raw_signatures = entry_snapshot.get("signatures")
+            if isinstance(raw_signatures, dict):
+                signatures_old = raw_signatures
+
+    built, pending_ids, signatures = _build_app_state_matters_from(
+        repository,
+        owner_user_id,
+        matters,
+        resolvers=(runtime_func, hash_func),
+        reusable=reusable,
+        old_signatures=signatures_old,
+    )
+
+    try:
+        built_blob = json.dumps(built)
+    except (TypeError, ValueError):
+        # Not cacheable (shouldn't happen: the built map is JSON-native); serve
+        # uncached rather than fail.
+        return built, pending_ids
+
     with _CACHE_LOCK:
         if len(_APP_STATE_CACHE) >= _APP_STATE_CACHE_MAX_OWNERS and owner_user_id not in _APP_STATE_CACHE:
-            _APP_STATE_CACHE.clear()  # simple bound; per-owner staleness, not per-fingerprint growth.
+            _APP_STATE_CACHE.clear()  # simple bound; per-owner staleness, not unbounded growth.
         _APP_STATE_CACHE[owner_user_id] = {
-            "fingerprint": fingerprint,
-            "matters": copy.deepcopy(built),
+            "token": token,
+            "playbook_hash": playbook_hash,
+            "signatures": signatures,
+            "built_blob": built_blob,
             "pending_ids": list(pending_ids),
+            "built_at": now,
         }
     return built, pending_ids
 
 
 def _build_app_state_matters_from(
-    repository, owner_user_id: str, source_matters: list[dict[str, Any]]
-) -> tuple[dict[str, dict[str, Any]], list[str]]:
-    """Build the CorpusMatter map from an already-read matter snapshot (uncached).
+    repository,
+    owner_user_id: str,
+    source_matters: list[dict[str, Any]],
+    *,
+    resolvers: tuple[Callable[[], dict[str, Any]], Callable[[], str]] | None = None,
+    reusable: dict[str, dict[str, Any]] | None = None,
+    old_signatures: dict[str, str] | None = None,
+) -> tuple[dict[str, dict[str, Any]], list[str], dict[str, str]]:
+    """Build the CorpusMatter map from an already-read matter snapshot.
 
-    Returns ``(matters_map, pending_fingerprint_ids)``. Missing fingerprints are
-    computed inline for at most ``FINGERPRINT_INLINE_COMPUTE_BUDGET`` matters (so a
-    small corpus behaves exactly as before and self-heals in one build) and the
-    remainder is reported as pending -- keeping the request bounded on an arbitrarily
-    large cold store (the F1 fix: never O(store) SimHash computes on the request
-    thread).
+    Returns ``(matters_map, pending_fingerprint_ids, signatures)``.
+
+    * **Per-matter reuse**: a matter whose ``updated_at`` signature matches its
+      cached build (``reusable``/``old_signatures``, same playbook — enforced by the
+      caller) reuses the cached CorpusMatter instead of re-deriving workflow state,
+      facets and artifacts. One store write therefore re-derives ONE matter.
+    * **Bounded fingerprint work** (the F1 fix): missing fingerprints are computed
+      inline ONLY when the whole missing set fits ``FINGERPRINT_INLINE_COMPUTE_BUDGET``
+      (small corpora keep the legacy compute-on-first-build behavior and dup-resolve
+      in one pass). A larger missing set computes NOTHING inline — every missing
+      matter is reported pending for the background backfill — so the request never
+      pays O(store) SimHash computes or store writes.
     """
     matters: dict[str, dict[str, Any]] = {}
     pending_ids: list[str] = []
-    inline_budget = FINGERPRINT_INLINE_COMPUTE_BUDGET
-    # Resolve the active playbook runtime ONCE per build and thread the constant
-    # resolvers through every matter's workflow_state, instead of paying a
-    # playbook.json flock+read+validate per matter in the approval-gate staleness
-    # check.
-    runtime_func, hash_func = _resolve_playbook_resolvers()
+    signatures: dict[str, str] = {}
+    reusable = reusable or {}
+    old_signatures = old_signatures or {}
+
+    # Fingerprint plan: count the fingerprintable matters lacking a valid stored
+    # fingerprint FIRST (cheap scalar checks), then decide inline-vs-defer for the
+    # whole build. All-inline keeps small corpora byte-identical to the legacy
+    # behavior; all-deferred keeps large cold stores bounded.
+    missing_ids: set[str] = set()
     for matter in source_matters:
         matter_id = str(matter.get("id") or "")
         if not matter_id:
             continue
+        if content_fingerprint.is_valid_fingerprint(matter.get(MATTER_FINGERPRINT_FIELD)):
+            continue
+        if _matter_is_fingerprintable(matter):
+            missing_ids.add(matter_id)
+    compute_inline = len(missing_ids) <= FINGERPRINT_INLINE_COMPUTE_BUDGET
+
+    # Resolve the active playbook runtime ONCE per build and thread the constant
+    # resolvers through every matter's workflow_state, instead of paying a
+    # playbook.json flock+read+validate per matter in the approval-gate staleness
+    # check.
+    runtime_func, hash_func = resolvers if resolvers is not None else _resolve_playbook_resolvers()
+    for matter in source_matters:
+        matter_id = str(matter.get("id") or "")
+        if not matter_id:
+            continue
+
+        signature = _matter_build_signature(matter)
+        signatures[matter_id] = signature
+
+        # Resolve the fingerprint plan for this matter first: reuse decisions below
+        # must never mask a pending fingerprint.
+        stored_fingerprint = matter.get(MATTER_FINGERPRINT_FIELD)
+        if content_fingerprint.is_valid_fingerprint(stored_fingerprint):
+            resolved_fingerprint = stored_fingerprint
+        elif matter_id in missing_ids and compute_inline:
+            resolved_fingerprint = _resolve_fingerprint(repository, owner_user_id, matter, matter_id)
+        elif matter_id in missing_ids:
+            resolved_fingerprint = None
+            pending_ids.append(matter_id)
+        else:
+            resolved_fingerprint = None  # empty text: never fingerprintable, never pending
+
+        # Per-matter reuse: unchanged record + same playbook -> the derived build is
+        # identical; only refresh the fingerprint slot (it may have just resolved).
+        if signature and old_signatures.get(matter_id) == signature:
+            cached_matter = reusable.get(matter_id)
+            if isinstance(cached_matter, dict):
+                cached_matter[_FINGERPRINT_KEY] = resolved_fingerprint
+                matters[matter_id] = cached_matter
+                continue
+
         counterparty = artifact_registry.derive_counterparty(matter)
         state = workflow.workflow_state(
             matter,
@@ -1256,23 +1408,6 @@ def _build_app_state_matters_from(
         artifacts = artifact_registry.matter_artifacts(matter)
         drive_block = matter.get("drive") if isinstance(matter.get("drive"), dict) else {}
         synced_url = str(drive_block.get("matter_folder_url") or "")
-
-        # Content fingerprint for dup-document detection. A stored fingerprint is
-        # returned as-is (scalar read). A MISSING one is computed inline only while
-        # the per-request budget lasts; past the budget the matter is reported
-        # pending (fingerprint None -> excluded from this build's dup scan) and the
-        # background backfill computes it off-thread.
-        stored_fingerprint = matter.get(MATTER_FINGERPRINT_FIELD)
-        if content_fingerprint.is_valid_fingerprint(stored_fingerprint):
-            resolved_fingerprint = stored_fingerprint
-        elif not _matter_is_fingerprintable(matter):
-            resolved_fingerprint = None  # empty text: never fingerprintable, never pending
-        elif inline_budget > 0:
-            inline_budget -= 1
-            resolved_fingerprint = _resolve_fingerprint(repository, owner_user_id, matter, matter_id)
-        else:
-            resolved_fingerprint = None
-            pending_ids.append(matter_id)
 
         matters[matter_id] = {
             "matter_id": matter_id,
@@ -1305,7 +1440,7 @@ def _build_app_state_matters_from(
                 for sequence, artifact in enumerate(artifacts, start=1)
             ],
         }
-    return matters, pending_ids
+    return matters, pending_ids, signatures
 
 
 def _app_title(matter: dict[str, Any]) -> str:

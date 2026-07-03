@@ -164,6 +164,23 @@ class MatterRepository(Protocol):
 class DiskMatterRepository:
     """Production adapter over the disk-backed ``matter_store`` module."""
 
+    def store_change_token(self) -> Any | None:
+        """A cheap opaque change token over the record store, or None.
+
+        A stat scan of the matter record files (name, mtime_ns, size) — the same
+        per-file tuple the store's own list cache keys on — so the token changes
+        whenever ANY record changes on disk, for the cost of one ``stat`` per file
+        (no reads, no parses). ``corpus_index`` uses it to serve its app-state
+        cache without even listing matters when the store is untouched. ``None``
+        (on any error) means "unknown"; callers must then fall back to a real
+        read. OPTIONAL repository capability: callers probe via ``getattr`` and an
+        in-memory repository simply does not provide it.
+        """
+        try:
+            return ("records-dir-stat", matter_store._records_dir_fingerprint())
+        except Exception:  # noqa: BLE001 -- the token is an optimisation only.
+            return None
+
     def list_matters(self, owner_user_id: str = "") -> list[dict[str, Any]]:
         return matter_store.list_matters(owner_user_id=owner_user_id)
 

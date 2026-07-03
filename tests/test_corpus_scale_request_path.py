@@ -80,9 +80,11 @@ class BoundedInlineFingerprintTests(unittest.TestCase):
         )
         return seen
 
-    def test_cold_build_computes_at_most_the_inline_budget(self):
-        # A store larger than the budget with ZERO stored fingerprints: the request
-        # must compute exactly the budget inline (bounded time), not O(store).
+    def test_cold_large_store_computes_nothing_inline(self):
+        # A store whose missing-fingerprint set EXCEEDS the budget (the prod store
+        # the first time the dup feature sees it): the request must compute ZERO
+        # fingerprints inline — no O(store) computes AND no store writes on the
+        # request thread — and report every missing matter pending.
         total = corpus_index.FINGERPRINT_INLINE_COMPUTE_BUDGET + 7
         for i in range(total):
             _seed(self.repo, owner="o", title=f"NDA {i}", n=i)
@@ -97,8 +99,21 @@ class BoundedInlineFingerprintTests(unittest.TestCase):
 
         payload = corpus_index.build_corpus(self.repo, "o", "")
 
-        self.assertEqual(seen["compute"], corpus_index.FINGERPRINT_INLINE_COMPUTE_BUDGET)
-        self.assertEqual(payload["duplicate_scan"], {"pending": 7, "complete": False})
+        self.assertEqual(seen["compute"], 0)
+        self.assertEqual(payload["duplicate_scan"], {"pending": total, "complete": False})
+
+    def test_missing_set_within_budget_computes_all_inline(self):
+        # Exactly at the budget: legacy behavior — everything computes + persists
+        # in this build and the dup scan is complete.
+        total = corpus_index.FINGERPRINT_INLINE_COMPUTE_BUDGET
+        for i in range(total):
+            _seed(self.repo, owner="o", title=f"NDA {i}", n=i)
+        seen = self._count_computes()
+
+        payload = corpus_index.build_corpus(self.repo, "o", "")
+
+        self.assertEqual(seen["compute"], total)
+        self.assertEqual(payload["duplicate_scan"], {"pending": 0, "complete": True})
 
     def test_small_corpus_completes_in_one_build_exactly_as_before(self):
         # Below the budget the legacy behavior holds: first build computes +
@@ -134,7 +149,7 @@ class BoundedInlineFingerprintTests(unittest.TestCase):
             _seed(self.repo, owner="o", title=f"NDA {i}", n=i)
 
         first = corpus_index.build_corpus(self.repo, "o", "")
-        self.assertEqual(first["duplicate_scan"]["pending"], 5)
+        self.assertEqual(first["duplicate_scan"]["pending"], total)
 
         _drain_backfill_threads()
 
@@ -184,7 +199,7 @@ class BoundedInlineFingerprintTests(unittest.TestCase):
         _drain_backfill_threads()
         status = corpus_index.fingerprint_backfill_status("o")
         self.assertEqual(status.get("state"), "done")
-        self.assertEqual(status.get("computed"), 3)
+        self.assertEqual(status.get("computed"), total)
 
 
 class SingleFlightBuildTests(unittest.TestCase):
