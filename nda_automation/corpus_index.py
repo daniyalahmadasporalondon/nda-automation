@@ -808,6 +808,31 @@ def _crawl_deadline(clock: Optional[Callable[[], float]]) -> Callable[[], None]:
 
 
 # --- public entrypoint -----------------------------------------------------
+# Single-flight registry for concurrent corpus builds. Concurrent GET /api/corpus
+# requests for the SAME (owner, drive-owner) ride one leader build instead of each
+# rebuilding (N stacked builds was the F1 amplification: every concurrent click paid
+# the full build). The leader publishes its payload; followers wait and receive a
+# deep copy. force_refresh requests always build (they must bypass caches) but still
+# register as leader so plain concurrent requests can ride them.
+_INFLIGHT_LOCK = threading.Lock()
+_INFLIGHT_BUILDS: dict[tuple[str, str], "_InflightBuild"] = {}
+
+# How long a follower waits for the leader before giving up and building itself.
+# Generous: a healthy build is bounded (~seconds); this only guards against a
+# wedged leader thread turning followers into indefinite waiters.
+_INFLIGHT_WAIT_TIMEOUT_SECONDS = 120.0
+
+
+class _InflightBuild:
+    """One in-flight corpus build: an event followers wait on + the shared payload."""
+
+    __slots__ = ("event", "payload")
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.payload: dict[str, Any] | None = None
+
+
 def build_corpus(
     repository,
     owner_user_id: str,
@@ -824,9 +849,81 @@ def build_corpus(
     ``drive_service``/``clock`` are injectable for tests. A Drive hiccup never
     raises out of here — it degrades to an app-state-only corpus with
     ``drive.reconciled=false`` and a ``drive.reason`` code.
+
+    SINGLE-FLIGHT: concurrent calls for the same (owner, drive-owner) share one
+    build — the first caller becomes the leader and builds; the rest wait for the
+    leader's payload (returned as an independent deep copy) instead of stacking N
+    identical builds. ``force_refresh`` callers never ride a leader (their contract
+    is a fresh crawl) but do lead for concurrent plain callers.
     """
+    key = (str(owner_user_id or ""), str(drive_owner_user_id or ""))
+    entry: _InflightBuild | None = None
+    leader = True
+    with _INFLIGHT_LOCK:
+        existing = _INFLIGHT_BUILDS.get(key)
+        if existing is not None and not force_refresh:
+            entry = existing
+            leader = False
+        else:
+            entry = _InflightBuild()
+            # A force_refresh leader REPLACES any existing entry as the ride target
+            # for later plain callers; the old leader still completes and serves its
+            # own followers.
+            _INFLIGHT_BUILDS[key] = entry
+
+    if not leader:
+        entry.event.wait(timeout=_INFLIGHT_WAIT_TIMEOUT_SECONDS)
+        if entry.payload is not None:
+            # An independent copy: the caller may mutate/serialize freely.
+            return copy.deepcopy(entry.payload)
+        # Leader failed or timed out -> build directly (no re-registration, so a
+        # broken leader can never cascade into a waiter pile-up).
+        return _build_corpus_payload(
+            repository,
+            owner_user_id,
+            drive_owner_user_id,
+            drive_service=drive_service,
+            force_refresh=force_refresh,
+            clock=clock,
+        )
+
+    try:
+        payload = _build_corpus_payload(
+            repository,
+            owner_user_id,
+            drive_owner_user_id,
+            drive_service=drive_service,
+            force_refresh=force_refresh,
+            clock=clock,
+        )
+        entry.payload = payload
+        return payload
+    finally:
+        with _INFLIGHT_LOCK:
+            if _INFLIGHT_BUILDS.get(key) is entry:
+                _INFLIGHT_BUILDS.pop(key, None)
+        entry.event.set()
+
+
+def _build_corpus_payload(
+    repository,
+    owner_user_id: str,
+    drive_owner_user_id: str,
+    *,
+    drive_service: Any | None,
+    force_refresh: bool,
+    clock: Optional[Callable[[], float]],
+) -> dict[str, Any]:
+    """The actual corpus build (see :func:`build_corpus`, which single-flights it)."""
     # 1. App-state pass — always runs; it is the tenant filter and the rich source.
-    app_matters = _build_app_state_matters(repository, owner_user_id)
+    app_matters, pending_fingerprint_ids = _app_state_pass(repository, owner_user_id)
+
+    # 1b. Matters still lacking a content fingerprint could not join THIS build's
+    # duplicate scan. Hand them to the background backfill (single-flight per owner;
+    # a no-op when one is already converging the store) and surface the honest
+    # degradation below instead of blocking the request on O(store) computes.
+    if pending_fingerprint_ids:
+        _start_fingerprint_backfill(repository, owner_user_id, pending_fingerprint_ids)
 
     # 2. Drive pass — cached per owner; only when Drive is connected.
     drive_result = _drive_pass(
@@ -837,7 +934,16 @@ def build_corpus(
     )
 
     # 3. Merge by matter_id + 4. group/sort.
-    return _assemble(app_matters, drive_result)
+    payload = _assemble(app_matters, drive_result)
+    # The duplicate-scan honesty block: pending > 0 means "the dup signal covers the
+    # fingerprinted subset only; N matters are still being scanned in the background".
+    # The FE/assistant can render "duplicate scan pending (N remaining)" off this
+    # instead of silently under-reporting duplicates during backfill convergence.
+    payload["duplicate_scan"] = {
+        "pending": len(pending_fingerprint_ids),
+        "complete": not pending_fingerprint_ids,
+    }
+    return payload
 
 
 def flatten_corpus(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -878,6 +984,16 @@ def _resolve_playbook_resolvers() -> tuple[Callable[[], dict[str, Any]], Callabl
 _FINGERPRINT_KEY = "_content_fingerprint"
 
 
+# How many missing fingerprints one request is allowed to compute INLINE (compute +
+# persist, ~30-40ms/doc). Small corpora (below the budget) therefore behave exactly
+# as before -- the first build computes, persists and dup-resolves in one pass --
+# while a large cold store (e.g. the whole prod store the first time the dup feature
+# sees it) computes only this bounded slice on the request thread and hands the rest
+# to the BACKGROUND backfill (see _start_fingerprint_backfill). The request stays
+# bounded: budget * ~40ms << 1s, never O(store) * 40ms on the request thread.
+FINGERPRINT_INLINE_COMPUTE_BUDGET = 16
+
+
 def _resolve_fingerprint(
     repository, owner_user_id: str, matter: dict[str, Any], matter_id: str
 ) -> dict[str, Any] | None:
@@ -892,6 +1008,12 @@ def _resolve_fingerprint(
     this build; it just recomputes next time). Returns ``None`` when the document has
     no fingerprintable content (empty text) — such a matter never participates in dup
     detection. Never raises.
+
+    BOUNDED-REQUEST contract: callers on the request path must gate calls to this
+    with ``FINGERPRINT_INLINE_COMPUTE_BUDGET`` (see ``_app_state_pass``) so a large
+    cold store never serializes O(store) SimHash computes onto one request; the
+    background backfill (``_start_fingerprint_backfill``) computes the remainder
+    through this same function off-thread.
     """
     stored = matter.get(MATTER_FINGERPRINT_FIELD)
     if content_fingerprint.is_valid_fingerprint(stored):
@@ -909,6 +1031,105 @@ def _resolve_fingerprint(
     except Exception:  # noqa: BLE001 -- persistence is best-effort; recompute next build.
         pass
     return fingerprint
+
+
+def _matter_is_fingerprintable(matter: dict[str, Any]) -> bool:
+    """True when the matter has content a fingerprint could be computed from.
+
+    A matter with empty ``extracted_text`` can NEVER be fingerprinted (the compute
+    returns None), so it is not "pending" -- counting it would leave the honest
+    "duplicate scan pending (N remaining)" signal stuck above zero forever.
+    """
+    return bool(str(matter.get("extracted_text") or "").strip())
+
+
+# --- background fingerprint backfill ----------------------------------------
+# A large store that predates the dup-document feature has NO stored fingerprints;
+# computing them all on the first /api/corpus request serialized ~34ms * n onto the
+# request thread (measured 223s at 1200 matters). Instead the request computes only
+# the small inline budget and this backfill computes + persists the remainder on a
+# daemon thread (single-flight per owner), mirroring the admin pdf-docx-backfill
+# pattern (run-lock + status dict). Persistence goes through the SAME
+# _resolve_fingerprint writer, so the store converges and later builds are pure
+# scalar-compares.
+_FINGERPRINT_BACKFILL_LOCK = threading.Lock()
+_FINGERPRINT_BACKFILL_OWNERS: set[str] = set()
+_FINGERPRINT_BACKFILL_STATUS: dict[str, dict[str, Any]] = {}
+
+
+def fingerprint_backfill_status(owner_user_id: str) -> dict[str, Any]:
+    """The latest fingerprint-backfill tally for one owner (cheap; no re-scan)."""
+    with _FINGERPRINT_BACKFILL_LOCK:
+        return dict(_FINGERPRINT_BACKFILL_STATUS.get(owner_user_id) or {"state": "idle"})
+
+
+def _run_fingerprint_backfill(repository, owner_user_id: str, matter_ids: list[str]) -> dict[str, Any]:
+    """Compute + persist missing fingerprints for ``matter_ids`` (synchronous body).
+
+    Re-reads each matter fresh (it may have changed -- or been deleted -- since the
+    triggering build) and skips any that already carry a valid fingerprint, so a
+    concurrent request's inline-budget compute is never duplicated. Per-matter
+    failures are counted and skipped; the sweep never raises.
+    """
+    done = skipped = failed = 0
+    for matter_id in matter_ids:
+        try:
+            matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+            if matter is None:
+                skipped += 1
+                continue
+            if content_fingerprint.is_valid_fingerprint(matter.get(MATTER_FINGERPRINT_FIELD)):
+                skipped += 1
+                continue
+            fingerprint = _resolve_fingerprint(repository, owner_user_id, matter, matter_id)
+            if fingerprint is None:
+                skipped += 1
+            else:
+                done += 1
+        except Exception:  # noqa: BLE001 -- one bad matter never stops the sweep.
+            failed += 1
+    return {"state": "done", "computed": done, "skipped": skipped, "failed": failed}
+
+
+def _start_fingerprint_backfill(repository, owner_user_id: str, matter_ids: list[str]) -> bool:
+    """Start the fingerprint backfill for one owner on a daemon thread (single-flight).
+
+    Returns True when a worker was started; False when one is already running for
+    this owner (the running worker converges the store; the next build re-derives
+    what is still pending). Never raises -- a thread-spawn failure just means the
+    next request re-attempts.
+    """
+    if not matter_ids:
+        return False
+    with _FINGERPRINT_BACKFILL_LOCK:
+        if owner_user_id in _FINGERPRINT_BACKFILL_OWNERS:
+            return False
+        _FINGERPRINT_BACKFILL_OWNERS.add(owner_user_id)
+        _FINGERPRINT_BACKFILL_STATUS[owner_user_id] = {
+            "state": "running",
+            "pending": len(matter_ids),
+        }
+
+    def _worker() -> None:
+        try:
+            status = _run_fingerprint_backfill(repository, owner_user_id, matter_ids)
+        except Exception:  # noqa: BLE001 -- a backfill failure must never surface.
+            status = {"state": "error"}
+        with _FINGERPRINT_BACKFILL_LOCK:
+            _FINGERPRINT_BACKFILL_OWNERS.discard(owner_user_id)
+            _FINGERPRINT_BACKFILL_STATUS[owner_user_id] = status
+
+    try:
+        thread = threading.Thread(
+            target=_worker, name=f"corpus-fingerprint-backfill-{owner_user_id or 'local'}", daemon=True
+        )
+        thread.start()
+    except Exception:  # noqa: BLE001
+        with _FINGERPRINT_BACKFILL_LOCK:
+            _FINGERPRINT_BACKFILL_OWNERS.discard(owner_user_id)
+            _FINGERPRINT_BACKFILL_STATUS[owner_user_id] = {"state": "error"}
+        return False
+    return True
 
 
 def _records_fingerprint(matters: list[dict[str, Any]]) -> str:
@@ -943,6 +1164,19 @@ def _records_fingerprint(matters: list[dict[str, Any]]) -> str:
 def _build_app_state_matters(repository, owner_user_id: str) -> dict[str, dict[str, Any]]:
     """Map matter_id -> a partially-built CorpusMatter for the owner (cache-fronted).
 
+    Thin compatibility wrapper over :func:`_app_state_pass` (which additionally
+    reports the matters whose fingerprint is still pending backfill) for callers
+    and tests that only need the built map.
+    """
+    matters, _pending = _app_state_pass(repository, owner_user_id)
+    return matters
+
+
+def _app_state_pass(
+    repository, owner_user_id: str
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """The cache-fronted app-state pass: ``(matter_id -> CorpusMatter, pending_ids)``.
+
     Reads the owner's matters once, then returns the cached build when the store is
     unchanged since the last build (keyed on ``owner`` + a records-fingerprint over
     the matters' content, see :func:`_records_fingerprint`), else rebuilds from the
@@ -950,6 +1184,13 @@ def _build_app_state_matters(repository, owner_user_id: str) -> dict[str, dict[s
     the downstream ``_group_and_wrap`` mutates matters in place. Fail-open: any hiccup
     reading the cache or fingerprinting falls straight through to a full uncached
     rebuild, so the payload can never be stale or wrong -- only recomputed.
+
+    ``pending_ids`` are the fingerprintable matters whose content fingerprint is
+    still missing after this build's bounded inline computes -- i.e. the matters the
+    duplicate scan could NOT yet consider. The caller surfaces the honest
+    ``duplicate_scan`` degradation from it and hands the ids to the background
+    backfill. A cache hit reproduces the same pending ids (unchanged store content
+    implies unchanged stored fingerprints).
     """
     matters = list(repository.list_matters(owner_user_id=owner_user_id))
     try:
@@ -960,9 +1201,9 @@ def _build_app_state_matters(repository, owner_user_id: str) -> dict[str, dict[s
     with _CACHE_LOCK:
         entry = _APP_STATE_CACHE.get(owner_user_id)
         if entry is not None and entry.get("fingerprint") == fingerprint:
-            return copy.deepcopy(entry["matters"])
+            return copy.deepcopy(entry["matters"]), list(entry.get("pending_ids") or [])
 
-    built = _build_app_state_matters_from(repository, owner_user_id, matters)
+    built, pending_ids = _build_app_state_matters_from(repository, owner_user_id, matters)
 
     # Cache under the PRE-build fingerprint: on a cold store _resolve_fingerprint
     # persists a lazily-computed content fingerprint onto matters, which changes their
@@ -977,15 +1218,26 @@ def _build_app_state_matters(repository, owner_user_id: str) -> dict[str, dict[s
         _APP_STATE_CACHE[owner_user_id] = {
             "fingerprint": fingerprint,
             "matters": copy.deepcopy(built),
+            "pending_ids": list(pending_ids),
         }
-    return built
+    return built, pending_ids
 
 
 def _build_app_state_matters_from(
     repository, owner_user_id: str, source_matters: list[dict[str, Any]]
-) -> dict[str, dict[str, Any]]:
-    """Build the CorpusMatter map from an already-read matter snapshot (uncached)."""
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Build the CorpusMatter map from an already-read matter snapshot (uncached).
+
+    Returns ``(matters_map, pending_fingerprint_ids)``. Missing fingerprints are
+    computed inline for at most ``FINGERPRINT_INLINE_COMPUTE_BUDGET`` matters (so a
+    small corpus behaves exactly as before and self-heals in one build) and the
+    remainder is reported as pending -- keeping the request bounded on an arbitrarily
+    large cold store (the F1 fix: never O(store) SimHash computes on the request
+    thread).
+    """
     matters: dict[str, dict[str, Any]] = {}
+    pending_ids: list[str] = []
+    inline_budget = FINGERPRINT_INLINE_COMPUTE_BUDGET
     # Resolve the active playbook runtime ONCE per build and thread the constant
     # resolvers through every matter's workflow_state, instead of paying a
     # playbook.json flock+read+validate per matter in the approval-gate staleness
@@ -1005,6 +1257,23 @@ def _build_app_state_matters_from(
         drive_block = matter.get("drive") if isinstance(matter.get("drive"), dict) else {}
         synced_url = str(drive_block.get("matter_folder_url") or "")
 
+        # Content fingerprint for dup-document detection. A stored fingerprint is
+        # returned as-is (scalar read). A MISSING one is computed inline only while
+        # the per-request budget lasts; past the budget the matter is reported
+        # pending (fingerprint None -> excluded from this build's dup scan) and the
+        # background backfill computes it off-thread.
+        stored_fingerprint = matter.get(MATTER_FINGERPRINT_FIELD)
+        if content_fingerprint.is_valid_fingerprint(stored_fingerprint):
+            resolved_fingerprint = stored_fingerprint
+        elif not _matter_is_fingerprintable(matter):
+            resolved_fingerprint = None  # empty text: never fingerprintable, never pending
+        elif inline_budget > 0:
+            inline_budget -= 1
+            resolved_fingerprint = _resolve_fingerprint(repository, owner_user_id, matter, matter_id)
+        else:
+            resolved_fingerprint = None
+            pending_ids.append(matter_id)
+
         matters[matter_id] = {
             "matter_id": matter_id,
             "counterparty": counterparty,
@@ -1012,7 +1281,7 @@ def _build_app_state_matters_from(
             "created_at": str(matter.get("created_at") or ""),
             # Content fingerprint for dup-document detection: lazily computed +
             # cached on first build, scalar-compared thereafter (see _group_and_wrap).
-            _FINGERPRINT_KEY: _resolve_fingerprint(repository, owner_user_id, matter, matter_id),
+            _FINGERPRINT_KEY: resolved_fingerprint,
             # FE contract field (top-level): the dup-document signal, stamped in
             # _group_and_wrap once the whole corpus is known. None until resolved.
             "duplicate_document": None,
@@ -1036,7 +1305,7 @@ def _build_app_state_matters_from(
                 for sequence, artifact in enumerate(artifacts, start=1)
             ],
         }
-    return matters
+    return matters, pending_ids
 
 
 def _app_title(matter: dict[str, Any]) -> str:

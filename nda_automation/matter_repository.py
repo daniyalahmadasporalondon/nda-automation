@@ -597,7 +597,7 @@ class InMemoryMatterRepository:
                             "re-approve to refresh the document sent for signature."
                         ),
                     })
-                    updated_matter["matter_timeline"] = timeline
+                    updated_matter["matter_timeline"] = matter_store.capped_timeline(timeline)
                 self._matters[index] = updated_matter
                 return copy.deepcopy(updated_matter)
         return None
@@ -622,7 +622,7 @@ class InMemoryMatterRepository:
                     "status": "approved",
                     "approver": approver,
                     "approved_at": approved_at,
-                    "matter_timeline": timeline,
+                    "matter_timeline": matter_store.capped_timeline(timeline),
                     "updated_at": approved_at,
                 }
                 self._matters[index] = updated_matter
@@ -643,7 +643,7 @@ class InMemoryMatterRepository:
                 timeline.append(copy.deepcopy(timeline_event))
                 updated_matter = {
                     **matter,
-                    "matter_timeline": timeline,
+                    "matter_timeline": matter_store.capped_timeline(timeline),
                     "updated_at": now,
                 }
                 self._matters[index] = updated_matter

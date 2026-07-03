@@ -257,6 +257,16 @@ def public_matter(
         for key, value in matter.items()
         if key in PUBLIC_MATTER_FIELDS
     }
+    if not detail:
+        # LIST payloads exclude the full ``matter_timeline`` event log: the board
+        # poll returns EVERY matter, so one long-lived matter's log (5000 events ~
+        # 950KB) would ride every /api/matters response. No frontend consumer reads
+        # matter_timeline from the list payload (verified: static/ has zero
+        # references; the Repository inspector synthesizes its timeline from other
+        # card fields), and the list card still carries
+        # ``workflow_state.timeline_summary`` (event count + last event). The
+        # single-matter DETAIL response keeps the full log.
+        public.pop("matter_timeline", None)
     public.update({
         "recipient_email": recipient,
         "needs_human_review": bool(needs_human_review),

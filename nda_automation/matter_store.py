@@ -667,7 +667,7 @@ def set_clause_reviewer_decision(
                     "re-approve to refresh the document sent for signature."
                 ),
             })
-            updated_matter["matter_timeline"] = timeline
+            updated_matter["matter_timeline"] = capped_timeline(timeline)
         _save_matter_record(updated_matter)
         return updated_matter
 
@@ -693,11 +693,61 @@ def record_matter_approval(
             "status": "approved",
             "approver": approver,
             "approved_at": approved_at,
-            "matter_timeline": timeline,
+            "matter_timeline": capped_timeline(timeline),
             "updated_at": approved_at,
         }
         _save_matter_record(updated_matter)
         return updated_matter
+
+
+# Cap on the stored ``matter_timeline`` length. The timeline used to be append-only
+# UNCAPPED, so a matter accumulating machine-written events (poll cycles, repeated
+# transitions) grew without bound — a 5000-event matter added ~950KB to every store
+# read/write of that record and to every detail response. Every timeline writer now
+# caps through :func:`capped_timeline`: the NEWEST events are kept and the oldest are
+# dropped behind a single truncation-marker event carrying the running
+# ``dropped_count`` — so the log stays honest about what it no longer holds.
+TIMELINE_MAX_EVENTS = 500
+TIMELINE_TRUNCATED_EVENT_TYPE = "timeline_truncated"
+
+
+def capped_timeline(timeline: list[Any]) -> list[Any]:
+    """Cap a timeline to ``TIMELINE_MAX_EVENTS``, newest-kept, with a marker event.
+
+    Under the cap the list is returned unchanged (the common case: no copy, no
+    marker). Over the cap the OLDEST events are dropped and replaced by ONE leading
+    ``timeline_truncated`` marker whose ``dropped_count`` accumulates across
+    successive truncations (an existing leading marker is folded into the new one,
+    never stacked). The result is exactly ``TIMELINE_MAX_EVENTS`` entries: the
+    marker + the newest ``TIMELINE_MAX_EVENTS - 1`` events. Kept events are never
+    rewritten — the append-only contract now reads "append-only up to the cap;
+    beyond it the oldest history is dropped and counted".
+    """
+    if len(timeline) <= TIMELINE_MAX_EVENTS:
+        return timeline
+    already_dropped = 0
+    body = timeline
+    head = timeline[0] if timeline else None
+    if isinstance(head, dict) and str(head.get("type") or "") == TIMELINE_TRUNCATED_EVENT_TYPE:
+        try:
+            already_dropped = max(0, int(head.get("dropped_count") or 0))
+        except (TypeError, ValueError):
+            already_dropped = 0
+        body = timeline[1:]
+    keep = TIMELINE_MAX_EVENTS - 1
+    dropped_now = max(0, len(body) - keep)
+    total_dropped = already_dropped + dropped_now
+    marker = {
+        "type": TIMELINE_TRUNCATED_EVENT_TYPE,
+        "at": datetime.now(timezone.utc).isoformat(),
+        "actor": "system",
+        "dropped_count": total_dropped,
+        "detail": (
+            f"Timeline capped at {TIMELINE_MAX_EVENTS} events; "
+            f"{total_dropped} oldest event(s) dropped."
+        ),
+    }
+    return [marker, *body[dropped_now:]]
 
 
 def append_timeline_event(
@@ -709,9 +759,10 @@ def append_timeline_event(
 
     The canonical writer for the workflow timeline backbone: every lifecycle
     transition (created, extracted, review_completed, sent, ...) appends through
-    here so the log is built one way. The existing append-only contract holds --
-    prior events are never rewritten or removed, only appended after. Runs under
-    the store lock so a concurrent transition can't lose-update the list.
+    here so the log is built one way. Prior events are never rewritten; once the
+    log exceeds ``TIMELINE_MAX_EVENTS`` the oldest are dropped behind the
+    ``capped_timeline`` truncation marker. Runs under the store lock so a
+    concurrent transition can't lose-update the list.
     """
     if not isinstance(timeline_event, dict):
         return get_matter(matter_id, owner_user_id=owner_user_id)
@@ -725,7 +776,7 @@ def append_timeline_event(
         timeline.append(timeline_event)
         updated_matter = {
             **matter,
-            "matter_timeline": timeline,
+            "matter_timeline": capped_timeline(timeline),
             "updated_at": now,
         }
         _save_matter_record(updated_matter)
