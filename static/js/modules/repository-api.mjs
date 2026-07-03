@@ -37,8 +37,27 @@ export function createRepositoryApi({ fetchImpl = globalThis.fetch, reviewErrorF
     return payload;
   }
 
+  // Cap the matter-list fetch so a stalled-but-open connection can never hang
+  // its caller forever — the 15s poll's in-flight guard (app.js) holds until this
+  // promise settles, so an unbounded hang would silently kill ALL polling until a
+  // page reload. The abort rejects with a TimeoutError, which loadMatters treats
+  // as transient (board kept, next tick retries). Browsers without
+  // AbortSignal.timeout just keep the old unbounded behavior (the poll watchdog
+  // in app.js still bounds the guard).
+  const LIST_MATTERS_TIMEOUT_MS = 45_000;
+
+  function listMattersTimeoutSignal() {
+    return (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function")
+      ? AbortSignal.timeout(LIST_MATTERS_TIMEOUT_MS)
+      : undefined;
+  }
+
   async function listMatters() {
-    const payload = await jsonRequest("/api/matters", {}, "Repository could not load");
+    const payload = await jsonRequest(
+      "/api/matters",
+      { signal: listMattersTimeoutSignal() },
+      "Repository could not load",
+    );
     return Array.isArray(payload.matters) ? payload.matters : [];
   }
 

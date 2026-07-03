@@ -339,6 +339,40 @@ async function main() {
       );
     });
 
+    await check("a hung matter-list fetch aborts, settles, and keeps the board un-wiped", async () => {
+      // The poll fetches carry AbortSignal.timeout(45s) so a stalled-but-open
+      // connection cannot wedge the 15s poll's in-flight guard forever. 45s is
+      // too slow for a test, so clamp the page's AbortSignal.timeout to 1s, then
+      // BLACK-HOLE /api/matters (never fulfilled) and drive the same loadMatters
+      // the poll drives: it must SETTLE via the timeout (that settling is what
+      // releases the guard) and must treat the abort as TRANSIENT -- the board
+      // keeps its cards, no error dropzone.
+      await page.evaluate(() => {
+        window.__realAbortTimeout = AbortSignal.timeout.bind(AbortSignal);
+        AbortSignal.timeout = (ms) => window.__realAbortTimeout(Math.min(ms, 1000));
+      });
+      await page.route("**/api/matters", () => { /* black-hole: never respond */ });
+      try {
+        const outcome = await page.evaluate(() => Promise.race([
+          repositoryController.loadMatters().then(() => "settled", () => "settled-rejected"),
+          new Promise((resolve) => setTimeout(() => resolve("wedged"), 6000)),
+        ]));
+        assert.equal(outcome, "settled", "loadMatters must settle via the fetch timeout, not hang");
+        const board = await page.evaluate(() => ({
+          cards: document.querySelectorAll('[data-repository-list="gmail_demo"] .repository-card').length,
+          dropzones: document.querySelectorAll('[data-repository-list="gmail_demo"] .repository-dropzone').length,
+        }));
+        assert.equal(board.cards, INITIAL_CARDS_PER_COLUMN, "board must survive a transient poll timeout un-wiped");
+        assert.equal(board.dropzones, 0, "no error dropzone for a transient poll timeout");
+      } finally {
+        await page.unroute("**/api/matters");
+        await page.evaluate(() => {
+          AbortSignal.timeout = window.__realAbortTimeout;
+          delete window.__realAbortTimeout;
+        });
+      }
+    });
+
     await context.close();
 
     // ------------------------------------------------------------------

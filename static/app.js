@@ -261,7 +261,15 @@ const notificationsController = createNotificationsController({
   },
   openRepository: () => activateTab("repository"),
   fetchMatters: async () => {
-    const response = await fetch("/api/matters");
+    // 45s cap so a stalled-but-open connection can't hang this promise forever —
+    // the 15s poll's in-flight guard holds until it settles. The abort rejects,
+    // the poll's catch swallows it, and the next tick retries. Browsers without
+    // AbortSignal.timeout keep the old unbounded fetch (the poll watchdog still
+    // bounds the guard).
+    const signal = (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function")
+      ? AbortSignal.timeout(45_000)
+      : undefined;
+    const response = await fetch("/api/matters", { signal });
     if (!response.ok) return [];
     const payload = await response.json();
     return Array.isArray(payload.matters) ? payload.matters : [];
@@ -889,9 +897,21 @@ adminIntegrationsController.load();
 // body -- all cost, no render. One tick's fetch must fully settle before the next
 // tick may start a new one; ticks that would overlap are simply skipped.
 let matterPollInFlight = false;
+let matterPollStartedAt = 0;
+// WATCHDOG: the poll fetches carry a 45s AbortSignal.timeout, so they normally
+// settle (and release the guard) well before this. If a fetch ever hangs WITHOUT
+// aborting (no AbortSignal.timeout support, a black-holed request the browser
+// never fails), force the guard open after 60s so polling resumes instead of
+// dying until a page reload. A late stale response is defused by loadMatters'
+// run-token, so force-releasing is safe.
+const MATTER_POLL_WATCHDOG_MS = 60_000;
 window.setInterval(() => {
-  if (matterPollInFlight) return;
+  if (matterPollInFlight) {
+    if (Date.now() - matterPollStartedAt < MATTER_POLL_WATCHDOG_MS) return;
+    matterPollInFlight = false;
+  }
   matterPollInFlight = true;
+  matterPollStartedAt = Date.now();
   const releasePoll = () => { matterPollInFlight = false; };
   if (document.querySelector('[data-view="repository"]')?.classList.contains("active")) {
     Promise.resolve(repositoryController.loadMatters()).then(() => {
