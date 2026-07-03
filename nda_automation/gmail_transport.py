@@ -134,6 +134,25 @@ class GmailTransport:
     def extract_document_paragraphs(self, filename: str, document_bytes: bytes):
         return _legacy().extract_document_paragraphs(filename, document_bytes)
 
+    def extract_document(
+        self,
+        filename: str,
+        document_bytes: bytes,
+        *,
+        include_visual_profile: bool = True,
+    ):
+        """Full (document_type, paragraphs, quality) extraction seam.
+
+        Exposed so the inbound-poll prepare stage can run the CPU-heavy parse ONCE
+        and hand the full result through to matter creation instead of extracting
+        the same bytes twice (see gmail_matter_inbox.prepare_inbound_attachment).
+        """
+        return _legacy().extract_document(
+            filename,
+            document_bytes,
+            include_visual_profile=include_visual_profile,
+        )
+
     def pdf_attachment_skip_reason(self, error: Exception) -> str:
         return _legacy()._pdf_attachment_skip_reason(error)
 

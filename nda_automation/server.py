@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from . import (
     app_settings,
@@ -25,6 +25,7 @@ from . import (
     matter_store,
     pdf_export_service,
     redline_export_service as redline_export_service,
+    static_versioning,
     telemetry,
     user_store,
 )
@@ -162,6 +163,72 @@ def _templatize_request_path(path: str) -> str:
 
 def _parse_matter_id(path: str, *, suffix: str = "") -> str | None:
     return _route_parse_matter_id(path, suffix=suffix)
+
+
+# Versioned static assets (referenced with ?v=<token> from index.html and from
+# module imports inside .js/.mjs files -- see nda_automation/static_versioning.py
+# and scripts/cache_bust_guard.py) get long-lived immutable caching, but ONLY on
+# an exact token MATCH against the token THIS process's own tree references the
+# file with. Match => the bytes served are the bytes that token was minted for,
+# so caching forever is safe; after one good load a browser never refetches
+# unchanged scripts, and a busy single worker can no longer 502-brick a
+# returning user. Presence alone is NOT enough: during a zero-downtime deploy a
+# browser holding the NEW index.html can have its asset request land on an
+# instance still serving the OLD tree -- a blanket any-?v=-is-immutable would
+# cache OLD bytes under the NEW token for a year (a permanent wedge). A
+# mismatched/missing token falls back to the no-cache+ETag default, which
+# self-heals. .html files are exempt unconditionally (index.html is the version
+# manifest and must always revalidate so new tokens propagate). The staleness
+# flip side (bytes changed, token forgotten) is guarded in CI by
+# static/asset-tokens.json + tests/test_static_asset_manifest.py.
+IMMUTABLE_STATIC_CACHE_CONTROL = "public, max-age=31536000, immutable"
+
+# Process-lifetime snapshot of {relative asset path -> current ?v= token},
+# built lazily from a scan of the static tree (the running server serves a
+# process-start snapshot of /static anyway; deploys restart the process).
+_STATIC_ASSET_TOKENS: dict[str, str] | None = None
+
+
+def _static_asset_tokens() -> dict[str, str]:
+    global _STATIC_ASSET_TOKENS
+    if _STATIC_ASSET_TOKENS is None:
+        try:
+            _STATIC_ASSET_TOKENS = static_versioning.versioned_asset_tokens(STATIC_DIR)
+        except Exception:  # pragma: no cover - fail-safe: no immutable caching
+            _STATIC_ASSET_TOKENS = {}
+    return _STATIC_ASSET_TOKENS
+
+
+def _reset_static_asset_tokens_for_tests() -> None:
+    global _STATIC_ASSET_TOKENS
+    _STATIC_ASSET_TOKENS = None
+
+
+def _static_cache_control(request_path: str, resolved_file: Path) -> str | None:
+    """Cache-Control override for a /static/ request, or None for the default.
+
+    Returns the immutable policy only when the request's ``?v=`` token exactly
+    matches the token this process's static tree references ``resolved_file``
+    with (and the file is not ``.html``). The token is read from the query
+    string only -- it never participates in filesystem path resolution, which
+    the caller completes (including the traversal check) before consulting this.
+    """
+    if resolved_file.suffix.lower() == ".html":
+        return None
+    try:
+        query = parse_qs(urlparse(request_path).query)
+    except ValueError:
+        return None
+    version = query.get("v", [""])[0]
+    if not version:
+        return None
+    try:
+        asset_rel = resolved_file.relative_to(STATIC_DIR).as_posix()
+    except ValueError:  # pragma: no cover - caller already confined the path
+        return None
+    if _static_asset_tokens().get(asset_rel) != version:
+        return None
+    return IMMUTABLE_STATIC_CACHE_CONTROL
 
 
 def _handle_index_get(handler, *, send_body: bool) -> None:
@@ -480,7 +547,11 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             if STATIC_DIR not in requested.parents or not requested.is_file():
                 self._send_json({"error": "Not found"}, status=404, send_body=send_body)
                 return
-            self._send_file(requested, send_body=send_body)
+            self._send_file(
+                requested,
+                send_body=send_body,
+                cache_control=_static_cache_control(self.path, requested),
+            )
             return
         if not self._authorize_request(send_body=send_body, path=path):
             return
@@ -811,22 +882,30 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             return None
         return content_length
 
-    def _send_file(self, path: Path, content_type: str | None = None, *, send_body: bool = True) -> None:
+    def _send_file(
+        self,
+        path: Path,
+        content_type: str | None = None,
+        *,
+        send_body: bool = True,
+        cache_control: str | None = None,
+    ) -> None:
         if not path.is_file():
             self._send_json({"error": "Not found"}, status=404, send_body=send_body)
             return
         data = path.read_bytes()
         etag = f'"sha256-{hashlib.sha256(data).hexdigest()}"'
         detected_type = content_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        effective_cache_control = cache_control or "no-cache, max-age=0, must-revalidate"
         if self.headers.get("If-None-Match") == etag:
             self.send_response(304)
             self.send_header("ETag", etag)
-            self.send_header("Cache-Control", "no-cache, max-age=0, must-revalidate")
+            self.send_header("Cache-Control", effective_cache_control)
             self.end_headers()
             return
         self.send_response(200)
         self.send_header("Content-Type", detected_type)
-        self.send_header("Cache-Control", "no-cache, max-age=0, must-revalidate")
+        self.send_header("Cache-Control", effective_cache_control)
         self.send_header("ETag", etag)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()

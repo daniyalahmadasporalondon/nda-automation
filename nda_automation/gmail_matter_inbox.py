@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import time
 from typing import Any
 
 # Per-sync cost cap for the AI intake classifier. Imported here so the budget the
@@ -9,6 +11,31 @@ from typing import Any
 from .gmail_intake_classifier import MAX_INTAKE_CALLS_PER_SYNC
 
 LOGGER = logging.getLogger(__name__)
+
+# Cooperative GIL yield between the poll's CPU-heavy steps (attachment download +
+# PDF/DOCX extraction, per-message heavy import). The scheduler thread shares one
+# GIL with every request thread on the single prod worker; a long extraction burst
+# starves static-asset requests into the Render proxy's 502 timeout. A brief sleep
+# after each heavy unit of work releases the GIL so pending request threads get
+# scheduled, at a bounded cost to sync throughput (~50ms per message/attachment).
+# Env-tunable; <= 0 disables the yield entirely.
+GMAIL_SYNC_YIELD_MS_ENV = "NDA_GMAIL_SYNC_YIELD_MS"
+DEFAULT_GMAIL_SYNC_YIELD_MS = 50.0
+# Misconfiguration ceiling: never let a bad env value stall the poll for more than
+# a second per yield point.
+_MAX_GMAIL_SYNC_YIELD_MS = 1000.0
+
+
+def _sync_cpu_yield() -> None:
+    """Briefly sleep so request threads can run during a CPU-heavy sync loop."""
+    raw = str(os.environ.get(GMAIL_SYNC_YIELD_MS_ENV, "") or "").strip()
+    try:
+        yield_ms = float(raw) if raw else DEFAULT_GMAIL_SYNC_YIELD_MS
+    except ValueError:
+        yield_ms = DEFAULT_GMAIL_SYNC_YIELD_MS
+    if yield_ms <= 0:
+        return
+    time.sleep(min(yield_ms, _MAX_GMAIL_SYNC_YIELD_MS) / 1000.0)
 
 # When this fraction (or more) of the AI intake calls in a sync fail (error or
 # timeout), the classifier is likely degraded (bad model slug, rate-limit,
@@ -469,6 +496,10 @@ def _scan_pass(
                 note_terminal_floor()
             # else: a TRANSIENT failure -- leave the floor where it is so the cursor
             # never descends past this still-to-retry message (the data-loss fix).
+
+            # Yield the GIL between heavy per-message imports so request threads
+            # (static assets, API calls) can be scheduled while a long sync churns.
+            _sync_cpu_yield()
         # Stop on an empty next-page token OR a zero-progress page (a page that
         # advanced the token but returned no messages), mirroring the original
         # paged-fetch termination guards.
@@ -622,6 +653,9 @@ def import_inbound_attachments(
             skipped.append(skip)
         elif candidate is not None:
             prepared.append(candidate)
+        # Yield the GIL after each attachment's download + extraction so request
+        # threads (static assets, API calls) can be scheduled during the burst.
+        _sync_cpu_yield()
 
     selected_ids, selector_metadata = selected_candidate_attachment_ids(metadata, prepared, transport=transport)
     triage_min_score = _triage_min_score(transport)
@@ -1017,8 +1051,27 @@ def prepare_inbound_attachment(
     ):
         return None, gmail_attachment_skip(message_id, attachment_filename, "duplicate_attachment")
 
+    # Run the CPU-heavy document parse ONCE per attachment. When the transport
+    # exposes the full ``extract_document`` seam (production does), extract here
+    # with ``include_visual_profile=False`` -- exactly what the create stage's
+    # ``defer_pdf_conversion=True`` ingest would compute (paragraphs are
+    # byte-identical either way, see ingestion_service.extract_document) -- and
+    # hand the full result through the candidate so
+    # ``create_matter_from_prepared_attachment`` never re-extracts the same
+    # bytes. Older/fake transports without the seam keep the paragraphs-only
+    # extraction and the create stage extracts as before.
+    extraction_result: tuple[str, list[dict[str, Any]], dict[str, object] | None] | None = None
+    extract_full = getattr(transport, "extract_document", None)
     try:
-        _document_type, paragraphs = transport.extract_document_paragraphs(attachment_filename, document_bytes)
+        if callable(extract_full):
+            extraction_result = extract_full(
+                attachment_filename,
+                document_bytes,
+                include_visual_profile=False,
+            )
+            _document_type, paragraphs = extraction_result[0], extraction_result[1]
+        else:
+            _document_type, paragraphs = transport.extract_document_paragraphs(attachment_filename, document_bytes)
     except transport.PdfExtractionError as error:
         return None, gmail_attachment_skip(
             message_id,
@@ -1055,6 +1108,10 @@ def prepare_inbound_attachment(
         "part_id": part_id,
         "text_preview": attachment_text_preview(paragraphs),
         "validation": validation,
+        # Full single-pass extraction result (document_type, paragraphs, quality)
+        # for create_matter_from_prepared_attachment to reuse; None when the
+        # transport lacks the extract_document seam (create re-extracts as before).
+        "extraction_result": extraction_result,
     }, None
 
 
@@ -1083,6 +1140,20 @@ def create_matter_from_prepared_attachment(
     metadata = transport.attachment_validation_metadata(metadata, validation)
     if selector_metadata:
         metadata = transport.attachment_selector_metadata(metadata, selector_metadata)
+
+    # Reuse the prepare stage's single-pass extraction (see
+    # prepare_inbound_attachment) so the CPU-heavy parse never runs twice on the
+    # same attachment bytes. Only forwarded when the candidate actually carries a
+    # well-formed result; otherwise ingest extracts exactly as before.
+    extraction_result = candidate.get("extraction_result")
+    extraction_kwargs: dict[str, Any] = {}
+    if (
+        isinstance(extraction_result, tuple)
+        and len(extraction_result) == 3
+        and isinstance(extraction_result[0], str)
+        and isinstance(extraction_result[1], list)
+    ):
+        extraction_kwargs["precomputed_extraction"] = extraction_result
 
     try:
         matter = transport.create_matter_from_document(
@@ -1129,6 +1200,7 @@ def create_matter_from_prepared_attachment(
             # clicks Review. Manual uploads keep converting at ingest (they never set
             # this flag). Storm-safe + fully fail-open.
             defer_pdf_conversion=True,
+            **extraction_kwargs,
         )
     except (
         transport.ActiveReviewEngineError,

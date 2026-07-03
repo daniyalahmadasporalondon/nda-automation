@@ -31,7 +31,8 @@ from .durable_io import fsync_parent_directory
 from .http_auth import _env_flag_enabled
 from .ingestion_service import (
     create_matter_from_document,  # noqa: F401 - transport dependency for gmail_matter_inbox
-    extract_document_paragraphs,
+    extract_document,  # noqa: F401 - transport dependency for gmail_matter_inbox
+    extract_document_paragraphs,  # noqa: F401 - transport dependency for gmail_matter_inbox
     is_supported_document_filename,
 )
 from .pdf_text import PdfExtractionError
@@ -1051,12 +1052,24 @@ def _attachment_nda_detection(
     it would be dropped as ``no_nda_signal`` even though it is a real NDA. This
     closes that false negative by extracting and scanning the document text.
     """
+    # NOTE: this is a THIRD extraction site on the poll path (besides
+    # prepare_inbound_attachment, which now single-passes into matter create).
+    # It runs BEFORE per-attachment prepare -- only for messages whose subject/
+    # body/snippet carried no NDA signal -- and its result is discarded after
+    # the detection verdict, so threading it into prepare would require
+    # restructuring the scan flow (detection is per-message, prepare is
+    # per-attachment post-selector) and is deliberately out of scope here. What
+    # IS safe: skip the PDF visual profile (a second full PyMuPDF parse) --
+    # detection only needs paragraphs, which are byte-identical either way
+    # (see ingestion_service.extract_document).
     for attachment in attachments:
         try:
             document_bytes = _attachment_bytes(service, message_id, attachment)
             ensure_document_size(document_bytes)
-            _document_type, paragraphs = extract_document_paragraphs(
-                str(attachment.get("filename") or ""), document_bytes
+            _document_type, paragraphs, _quality = extract_document(
+                str(attachment.get("filename") or ""),
+                document_bytes,
+                include_visual_profile=False,
             )
         except (GmailIntegrationError, DocumentSizeError, DocxExtractionError, PdfExtractionError):
             continue

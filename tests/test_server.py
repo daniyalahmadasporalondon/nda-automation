@@ -12157,6 +12157,106 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(headers.get("ETag"))
         self.assertEqual(headers["Cache-Control"], "no-cache, max-age=0, must-revalidate")
 
+    def _current_static_token(self, asset_rel: str) -> str:
+        token = server_module._static_asset_tokens().get(asset_rel, "")
+        self.assertTrue(token, f"expected a ?v= token for {asset_rel} in the static tree")
+        return token
+
+    def test_versioned_static_files_are_immutable_on_token_match(self):
+        # Every asset is pinned with a ?v= cache-bust token (index.html + module
+        # imports; see nda_automation/static_versioning.py). When the request's
+        # token MATCHES the token this process's own tree references the file
+        # with, the served bytes are exactly the bytes that token was minted
+        # for, so caching forever is safe. This is what stops a busy single
+        # worker from 502-bricking a RETURNING user: after one good load the
+        # browser never refetches unchanged scripts.
+        token = self._current_static_token("app.js")
+        status, payload, headers = self.request_with_headers("GET", f"/static/app.js?v={token}")
+
+        self.assertEqual(status, 200)
+        self.assertIsInstance(payload, bytes)
+        self.assertTrue(payload)
+        self.assertEqual(
+            headers["Cache-Control"],
+            server_module.IMMUTABLE_STATIC_CACHE_CONTROL,
+        )
+        self.assertEqual(headers["Cache-Control"], "public, max-age=31536000, immutable")
+        self.assertTrue(headers.get("ETag"))
+
+        # A conditional revalidation of a versioned asset still 304s and keeps
+        # the immutable policy (a cold-cache validator round-trip stays cheap).
+        etag = headers["ETag"]
+        cached_status, cached_payload, cached_headers = self.request_with_headers(
+            "GET",
+            f"/static/app.js?v={token}",
+            headers={"If-None-Match": etag},
+        )
+        self.assertEqual(cached_status, 304)
+        self.assertEqual(cached_payload, b"")
+        self.assertEqual(
+            cached_headers["Cache-Control"],
+            "public, max-age=31536000, immutable",
+        )
+
+    def test_versioned_mjs_module_import_is_immutable_on_token_match(self):
+        # Tokens carried by module imports INSIDE .mjs/.js files (not just
+        # index.html) are honored too -- the scan covers the whole static tree.
+        token = self._current_static_token("js/modules/humanize.mjs")
+        status, _payload, headers = self.request_with_headers(
+            "GET", f"/static/js/modules/humanize.mjs?v={token}"
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Cache-Control"], "public, max-age=31536000, immutable")
+
+    def test_mismatched_version_token_falls_back_to_revalidate(self):
+        # THE DEPLOY-RACE GUARD: a browser holding the NEW index.html can have
+        # its asset request land on an instance still serving the OLD tree.
+        # A token that does not match THIS process's tree must never be cached
+        # immutable (that would wedge OLD bytes under the NEW token for a
+        # year); it gets the self-healing no-cache+ETag default instead.
+        status, payload, headers = self.request_with_headers("GET", "/static/app.js?v=20990101x")
+
+        self.assertEqual(status, 200)
+        self.assertIsInstance(payload, bytes)
+        self.assertEqual(headers["Cache-Control"], "no-cache, max-age=0, must-revalidate")
+        self.assertTrue(headers.get("ETag"))
+
+    def test_versioned_index_html_still_revalidates(self):
+        # index.html is the version manifest: it must ALWAYS revalidate so new
+        # ?v= tokens propagate, even if someone requests it with a ?v= query.
+        # (.html is exempt unconditionally -- no token can make it immutable.)
+        status, payload, headers = self.request_with_headers(
+            "GET", "/static/index.html?v=20990101x"
+        )
+
+        self.assertEqual(status, 200)
+        self.assertIsInstance(payload, bytes)
+        self.assertEqual(headers["Cache-Control"], "no-cache, max-age=0, must-revalidate")
+
+    def test_static_with_empty_version_token_keeps_revalidate(self):
+        # "?v=" with no token is not a versioned URL: keep the safe default.
+        status, _payload, headers = self.request_with_headers("GET", "/static/app.js?v=")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Cache-Control"], "no-cache, max-age=0, must-revalidate")
+
+    def test_head_versioned_static_is_immutable_on_token_match(self):
+        token = self._current_static_token("app.js")
+        status, payload, headers = self.request_with_headers("HEAD", f"/static/app.js?v={token}")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, b"")
+        self.assertEqual(headers["Cache-Control"], "public, max-age=31536000, immutable")
+
+    def test_version_token_never_reaches_path_resolution(self):
+        # The ?v= token is parsed from the query string only; a hostile token
+        # cannot alter which file is served (traversal stays 404).
+        status, payload = self.request("GET", "/static/../README.md?v=20990101x")
+
+        self.assertEqual(status, 404)
+        self.assertEqual(payload["error"], "Not found")
+
     def test_head_matter_routes_do_not_send_error_body(self):
         with patch.object(matter_store, "get_matter", side_effect=matter_store.MatterStoreError("store failed")):
             for path in ("/api/matters/matter_1", "/api/matters/matter_1/review"):

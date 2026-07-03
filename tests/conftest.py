@@ -32,6 +32,12 @@ os.environ["NDA_ACTIVE_REVIEW_ENGINE"] = "ai_first"
 # CLAUSE_REQUIRED_TERMS table and the Playbook clause templates still fails the
 # suite loudly, so developers catch drift in dev/CI rather than in prod.
 os.environ["NDA_STRICT_REQUIRED_TERMS"] = "1"
+# The Gmail-sync cooperative GIL yield (NDA_GMAIL_SYNC_YIELD_MS, default ~50ms after
+# each heavy per-attachment/per-message import step) exists so request threads get
+# scheduled during long prod syncs; under test it would only add real wall-clock
+# sleeps to every simulated poll. Pin it OFF for the suite; the dedicated yield
+# tests (tests/test_gmail_sync_resilience.py) re-enable it per-test via monkeypatch.
+os.environ["NDA_GMAIL_SYNC_YIELD_MS"] = "0"
 
 # Belt-and-suspenders: if matter_store was already imported (so DATA_DIR froze to
 # whatever NDA_DATA_DIR/./data was at that moment), re-point its module-level
