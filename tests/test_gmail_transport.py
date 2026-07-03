@@ -172,6 +172,11 @@ def test_inbound_workflow_accepts_public_only_transport():
         "ai_intake": {"ai_calls": 0, "ai_errors": 0, "ai_timeouts": 0, "ai_skipped_cap": 0},
         # The drain never tripped a Gmail rate-limit, so the poll completed cleanly.
         "rate_limited": False,
+        # No message hit the transient-retry cap, so nothing was quarantined.
+        "quarantined": 0,
+        # No message reached the heavy import path (empty inbox), so zero heavy
+        # slots were consumed against the cross-user budget.
+        "new_processed": 0,
     }
     assert transport.service.users_api.messages_api.max_results == 25
 

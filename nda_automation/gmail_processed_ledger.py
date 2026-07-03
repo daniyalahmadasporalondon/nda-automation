@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -49,6 +50,13 @@ LOGGER = logging.getLogger(__name__)
 # next poll) is always retained; an evicted old id simply falls back to the full
 # path once -- correct, just not free.
 MAX_LEDGER_ENTRIES = 20000
+
+# Hard cap on tracked TRANSIENT-FAILURE attempt counters per owner (the quarantine
+# accounting below). Attempt entries are short-lived by design -- an id is dropped
+# the moment its message reaches a terminal outcome (marked processed or
+# quarantined) -- so this cap only bites a pathological inbox with thousands of
+# concurrently-failing messages; eviction keeps the most-recently-touched counters.
+MAX_ATTEMPT_ENTRIES = 5000
 
 _LEDGER_DIRNAME = "gmail"
 _LEDGER_FILENAME = "gmail-processed-messages.json"
@@ -73,22 +81,110 @@ def _ledger_path(owner: str) -> Path:
     return _owner_dir(owner) / _LEDGER_FILENAME
 
 
-def _read_ids(owner: str) -> list[str]:
-    """Read the persisted ids for ``owner`` as an ORDERED list (oldest-first).
+def _read_payload(owner: str) -> dict[str, object]:
+    """Read + normalise the persisted ledger payload for ``owner``.
 
-    Order is preserved so the most-recent-first eviction has a stable notion of
-    "oldest". A missing/corrupt file degrades to an empty list -- a ledger read is
-    best-effort and must never break the poll.
+    Returns ``{"message_ids": [...], "attempts": {...}, "quarantined": {...},
+    "degraded": bool}``. ``message_ids`` is ordered oldest-first (so the
+    most-recent-first eviction has a stable notion of "oldest"); ``attempts`` maps
+    message id -> transient-failure attempt count; ``quarantined`` maps message id
+    -> ``{"attempts", "reason", "last_at"}`` (a DISTINCT keyed structure so
+    quarantined ids are findable/removable without touching the normal marks -- the
+    requeue path below depends on this). A missing file, a legacy ids-only file, or
+    extra keys written by a NEWER version all degrade cleanly (rollback-safe both
+    directions). ``degraded`` is True only when the file EXISTED but was unreadable
+    (corrupt) -- callers use it to avoid clobbering a recoverable file with a
+    from-empty rewrite.
     """
     path = _ledger_path(owner)
+    degraded = False
     try:
-        if not path.is_file():
-            return []
-        with path.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, ValueError):
-        return []
-    return _coerce_id_list(payload)
+        file_exists = path.is_file()
+    except OSError:  # pragma: no cover - stat failure treated as missing
+        file_exists = False
+    payload: object = {}
+    if file_exists:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError):
+            payload = {}
+            degraded = True
+    attempts: dict[str, int] = {}
+    quarantined: dict[str, dict[str, object]] = {}
+    if isinstance(payload, dict):
+        attempts = _coerce_attempts(payload.get("attempts"))
+        quarantined = _coerce_quarantined(payload.get("quarantined"))
+    elif file_exists and not isinstance(payload, list):
+        degraded = True
+    message_ids = _coerce_id_list(payload)
+    if file_exists and isinstance(payload, dict) and not message_ids and not attempts and not quarantined:
+        # A present-but-unusable dict (e.g. hand-mangled keys) is also treated as
+        # degraded ONLY when it yields nothing -- an intact empty ledger
+        # ({"message_ids": []}) is NOT degraded.
+        if not isinstance(payload.get("message_ids"), list):
+            degraded = True
+    return {
+        "message_ids": message_ids,
+        "attempts": attempts,
+        "quarantined": quarantined,
+        "degraded": degraded,
+    }
+
+
+def _read_ids(owner: str) -> list[str]:
+    """The persisted processed ids for ``owner`` as an ORDERED list (oldest-first)."""
+    ids = _read_payload(owner)["message_ids"]
+    return ids if isinstance(ids, list) else []
+
+
+def _coerce_attempts(payload: object) -> dict[str, int]:
+    """Normalise a loaded attempts blob into ``{message_id: positive count}``."""
+    if not isinstance(payload, dict):
+        return {}
+    attempts: dict[str, int] = {}
+    for key, value in payload.items():
+        message_id = str(key or "").strip()
+        if not message_id:
+            continue
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            continue
+        if count > 0:
+            attempts[message_id] = count
+    return attempts
+
+
+def _coerce_quarantined(payload: object) -> dict[str, dict[str, object]]:
+    """Normalise a loaded quarantined blob into ``{id: {attempts, reason, last_at}}``.
+
+    Accepts the canonical keyed-dict shape and, defensively, a bare id list (an
+    early/hand-edited file), which becomes entries with empty metadata.
+    """
+    quarantined: dict[str, dict[str, object]] = {}
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            message_id = str(key or "").strip()
+            if not message_id:
+                continue
+            entry = value if isinstance(value, dict) else {}
+            try:
+                attempts = max(0, int(entry.get("attempts") or 0))
+            except (TypeError, ValueError):
+                attempts = 0
+            quarantined[message_id] = {
+                "attempts": attempts,
+                "reason": str(entry.get("reason") or ""),
+                "last_at": str(entry.get("last_at") or ""),
+                "filename": str(entry.get("filename") or ""),
+            }
+    elif isinstance(payload, list):
+        for value in payload:
+            message_id = str(value or "").strip()
+            if message_id and message_id not in quarantined:
+                quarantined[message_id] = {"attempts": 0, "reason": "", "last_at": "", "filename": ""}
+    return quarantined
 
 
 def _coerce_id_list(payload: object) -> list[str]:
@@ -126,19 +222,36 @@ def _cap_most_recent_first(ordered_ids: list[str]) -> list[str]:
     return ordered_ids[-MAX_LEDGER_ENTRIES:]
 
 
-def _write_ids(owner: str, ordered_ids: list[str]) -> None:
-    """Atomically persist ``ordered_ids`` (oldest-first) for ``owner``.
+def _write_ids(
+    owner: str,
+    ordered_ids: list[str],
+    attempts: dict[str, int] | None = None,
+    quarantined: dict[str, dict[str, object]] | None = None,
+) -> None:
+    """Atomically persist the ledger payload (ids oldest-first) for ``owner``.
 
     Writes ``tmp`` then ``os.replace`` onto the final path so a reader never sees a
     partial file (matches the cursor's durability contract). Capped most-recent-first
-    before writing.
+    before writing. The ``attempts`` / ``quarantined`` sections are OMITTED when
+    empty so a ledger that never quarantined stays byte-identical to the legacy
+    ids-only shape (an OLDER reader simply ignores the extra keys either way).
     """
     capped = _cap_most_recent_first(ordered_ids)
+    payload: dict[str, object] = {"message_ids": capped}
+    if attempts:
+        if len(attempts) > MAX_ATTEMPT_ENTRIES:
+            # Keep the most-recently-touched counters (insertion order tail).
+            attempts = dict(list(attempts.items())[-MAX_ATTEMPT_ENTRIES:])
+        payload["attempts"] = attempts
+    if quarantined:
+        if len(quarantined) > MAX_ATTEMPT_ENTRIES:
+            quarantined = dict(list(quarantined.items())[-MAX_ATTEMPT_ENTRIES:])
+        payload["quarantined"] = quarantined
     path = _ledger_path(owner)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_name(f"{path.name}.tmp")
     with temporary_path.open("w", encoding="utf-8") as handle:
-        json.dump({"message_ids": capped}, handle, indent=2)
+        json.dump(payload, handle, indent=2)
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
@@ -171,11 +284,55 @@ def mark_message_processed(message_id: str, owner: str) -> None:
     target = str(message_id or "").strip()
     if not target:
         return
-    ordered = _read_ids(owner)
+    payload = _read_payload(owner)
+    ordered: list[str] = list(payload["message_ids"])  # type: ignore[arg-type]
     if target in ordered:
         return
     ordered.append(target)
-    _write_ids(owner, ordered)
+    attempts: dict[str, int] = dict(payload["attempts"])  # type: ignore[arg-type]
+    attempts.pop(target, None)  # a processed message no longer needs retry counting
+    quarantined: dict[str, dict[str, object]] = dict(payload["quarantined"])  # type: ignore[arg-type]
+    _write_ids(owner, ordered, attempts, quarantined)
+
+
+def requeue_quarantined_message(message_id: str, owner: str) -> bool:
+    """MANUAL RECOVERY: release a quarantined message so the next poll retries it.
+
+    Removes ``message_id`` from the processed marks, the quarantined records, AND
+    the attempt counters, so the message falls through the ledger pre-skip and the
+    quarantine pre-check and re-enters the full import path with a clean slate.
+    Returns True when the message was quarantined (or marked) and is now released.
+
+    Operator one-liner (run in the app environment on the host):
+
+        python -c "from nda_automation.gmail_processed_ledger import \\
+            requeue_quarantined_message as r; print(r('<message_id>', '<owner>'))"
+    """
+    target = str(message_id or "").strip()
+    if not target:
+        return False
+    payload = _read_payload(owner)
+    ordered: list[str] = list(payload["message_ids"])  # type: ignore[arg-type]
+    attempts: dict[str, int] = dict(payload["attempts"])  # type: ignore[arg-type]
+    quarantined: dict[str, dict[str, object]] = dict(payload["quarantined"])  # type: ignore[arg-type]
+    removed = False
+    if target in ordered:
+        ordered = [existing for existing in ordered if existing != target]
+        removed = True
+    if attempts.pop(target, None) is not None:
+        removed = True
+    if quarantined.pop(target, None) is not None:
+        removed = True
+    if removed:
+        _write_ids(owner, ordered, attempts, quarantined)
+    return removed
+
+
+def quarantined_messages(owner: str) -> dict[str, dict[str, object]]:
+    """The durable quarantine records for ``owner`` (id -> attempts/reason/last_at)."""
+    payload = _read_payload(owner)
+    quarantined = payload["quarantined"]
+    return dict(quarantined) if isinstance(quarantined, dict) else {}
 
 
 # --------------------------------------------------------------------------- #
@@ -193,10 +350,21 @@ class ProcessedLedgerSession:
 
     def __init__(self, owner: str) -> None:
         self._owner = owner
+        payload = _read_payload(owner)
         # Ordered (oldest-first) so eviction is stable; the set is the membership
         # fast-path. New marks this session are tracked so flush can no-op when empty.
-        self._ordered: list[str] = _read_ids(owner)
+        self._ordered: list[str] = list(payload["message_ids"])  # type: ignore[arg-type]
         self._known: set[str] = set(self._ordered)
+        # Transient-failure attempt counters (message id -> count) feeding the
+        # poison-message quarantine, plus the durable KEYED quarantine records
+        # (id -> attempts/reason/last_at; distinct from the plain marks so an
+        # operator can find + requeue them without touching normal marks).
+        self._attempts: dict[str, int] = dict(payload["attempts"])  # type: ignore[arg-type]
+        self._quarantined: dict[str, dict[str, object]] = dict(payload["quarantined"])  # type: ignore[arg-type]
+        # The file existed but was unreadable: flushing from this empty in-memory
+        # view would CLOBBER a possibly-recoverable file with only this poll's
+        # marks. flush() sidelines the corrupt file first (forensics + safety).
+        self._load_degraded = bool(payload.get("degraded"))
         self._dirty = False
 
     def is_processed(self, message_id: str) -> bool:
@@ -208,11 +376,68 @@ class ProcessedLedgerSession:
     def mark(self, message_id: str) -> None:
         """Record ``message_id`` as processed IN MEMORY (no write until :meth:`flush`)."""
         target = str(message_id or "").strip()
-        if not target or target in self._known:
+        if not target:
+            return
+        if target in self._attempts:
+            # A terminal outcome ends retry counting; drop the counter so the
+            # attempts blob only ever holds still-retrying ids.
+            del self._attempts[target]
+            self._dirty = True
+        if target in self._known:
             return
         self._known.add(target)
         self._ordered.append(target)
         self._dirty = True
+
+    # -- transient-failure attempt counting (poison-message quarantine) ------ #
+    def attempt_count(self, message_id: str) -> int:
+        """How many recorded transient-failure attempts ``message_id`` has."""
+        target = str(message_id or "").strip()
+        if not target:
+            return 0
+        return int(self._attempts.get(target, 0))
+
+    def record_attempt(self, message_id: str) -> int:
+        """Count one more transient-failure attempt; returns the new total.
+
+        In-memory until :meth:`flush` (same write-once contract as :meth:`mark`).
+        Re-inserted at the tail so the attempts blob's insertion order tracks
+        most-recently-touched, which is what the size cap keeps.
+        """
+        target = str(message_id or "").strip()
+        if not target:
+            return 0
+        count = int(self._attempts.pop(target, 0)) + 1
+        self._attempts[target] = count
+        self._dirty = True
+        return count
+
+    def quarantine(
+        self, message_id: str, *, reason: str = "", attempts: int = 0, filename: str = ""
+    ) -> None:
+        """Terminally quarantine ``message_id``: processed + a keyed quarantine record.
+
+        A quarantined message is skipped before any fetch/AI work on future polls
+        (exactly like any processed id) and carries a durable
+        ``{attempts, reason, last_at, filename}`` record so an operator can see
+        WHAT failed and WHY straight from ``quarantined_messages()`` (no log
+        archaeology) and release it via :func:`requeue_quarantined_message`.
+        """
+        target = str(message_id or "").strip()
+        if not target:
+            return
+        self.mark(target)
+        if target not in self._quarantined:
+            self._quarantined[target] = {
+                "attempts": max(0, int(attempts or 0)),
+                "reason": str(reason or "")[:200],
+                "last_at": datetime.now(timezone.utc).isoformat(),
+                "filename": str(filename or "")[:200],
+            }
+            self._dirty = True
+
+    def quarantined_ids(self) -> set[str]:
+        return set(self._quarantined)
 
     @property
     def dirty(self) -> bool:
@@ -232,7 +457,15 @@ class ProcessedLedgerSession:
         if not self._dirty:
             return False
         try:
-            _write_ids(self._owner, self._ordered)
+            if self._load_degraded:
+                # The load saw an EXISTING but unreadable file. Never clobber it in
+                # place: sideline it (forensics + recoverability) and only then
+                # write the fresh ledger. Sideline failure aborts the write -- the
+                # marks re-process next poll (correct, just not free) rather than
+                # risking silent loss of up to 20k prior marks.
+                self._sideline_corrupt_file()
+                self._load_degraded = False
+            _write_ids(self._owner, self._ordered, self._attempts, self._quarantined)
         except OSError:
             LOGGER.warning(
                 "Failed to persist Gmail processed-message ledger for owner",
@@ -241,6 +474,18 @@ class ProcessedLedgerSession:
             return False
         self._dirty = False
         return True
+
+    def _sideline_corrupt_file(self) -> None:
+        """Rename an unreadable ledger file to ``*.corrupt`` before rewriting."""
+        path = _ledger_path(self._owner)
+        if not path.is_file():
+            return
+        corrupt_path = path.with_name(f"{path.name}.corrupt")
+        os.replace(path, corrupt_path)
+        LOGGER.warning(
+            "Gmail processed-message ledger was unreadable; sidelined to %s before rewrite",
+            corrupt_path,
+        )
 
 
 def mark_messages_processed(message_ids: Iterable[str], owner: str) -> int:

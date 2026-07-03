@@ -11,6 +11,7 @@ import re
 import sys
 import threading
 import time
+from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -1413,6 +1414,141 @@ def _gmail_total_import_limit() -> int:
     return value
 
 
+# FAIRNESS ROTATION for the multi-user fan-out. user_store.list_users() returns a
+# FIXED order, so under a shared budget the same early user always drew first and a
+# tail user behind a large backlog could be starved on EVERY poll. Rotating the
+# start position each cycle spreads the first-draw advantage across all users, and
+# combined with the per-user minimum grant below it guarantees no tenant is
+# permanently starved. The rotation index is PERSISTED (best-effort, atomic
+# tmp->replace like the drain cursor) so a redeploy/restart does not reset the
+# rotation to the same head user and re-starve the same tail; the in-memory counter
+# is the fail-open fallback when the persist path is unavailable.
+_GMAIL_SYNC_USER_ROTATION = 0
+_GMAIL_SYNC_ROTATION_FILENAME = "sync-rotation.json"
+
+
+def _gmail_sync_rotation_path() -> Path:
+    return matter_store.DATA_DIR / "gmail" / _GMAIL_SYNC_ROTATION_FILENAME
+
+
+def _next_gmail_sync_rotation_index() -> int:
+    """The rotation index for THIS poll; increments durably per call (best-effort)."""
+    global _GMAIL_SYNC_USER_ROTATION
+    counter: int | None = None
+    try:
+        payload = json.loads(_gmail_sync_rotation_path().read_text(encoding="utf-8"))
+        counter = int(payload.get("counter"))
+    except Exception:
+        counter = None
+    if counter is None or counter < 0:
+        counter = _GMAIL_SYNC_USER_ROTATION
+    _GMAIL_SYNC_USER_ROTATION = counter + 1
+    try:
+        path = _gmail_sync_rotation_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = path.with_name(f"{path.name}.tmp")
+        temporary_path.write_text(json.dumps({"counter": counter + 1}) + "\n", encoding="utf-8")
+        os.replace(temporary_path, path)
+    except Exception:  # pragma: no cover - persistence is best-effort (in-memory fallback)
+        pass
+    return counter
+
+
+def _rotated_gmail_sync_user_order(owner_user_ids: list[str]) -> list[str]:
+    """Rotate the fan-out start position by one user per poll (fairness)."""
+    if len(owner_user_ids) < 2:
+        return list(owner_user_ids)
+    offset = _next_gmail_sync_rotation_index() % len(owner_user_ids)
+    return owner_user_ids[offset:] + owner_user_ids[:offset]
+
+
+def _reset_gmail_sync_user_rotation_for_tests() -> None:
+    global _GMAIL_SYNC_USER_ROTATION
+    _GMAIL_SYNC_USER_ROTATION = 0
+    try:
+        _gmail_sync_rotation_path().unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _top_skip_reasons(skipped: list[dict[str, object]], limit: int = 3) -> dict[str, int]:
+    """The most frequent skip reasons in a poll's skipped list (for the summary)."""
+    counts = Counter(
+        str(entry.get("reason") or "")
+        for entry in skipped
+        if isinstance(entry, dict) and entry.get("reason")
+    )
+    return dict(counts.most_common(limit))
+
+
+def _log_gmail_sync_summary(result: dict[str, object]) -> None:
+    """Emit the per-poll one-line JSON sync summary to stdout (greppable).
+
+    One line per poll with per-user {imported, skipped, quarantined, top skip
+    reasons, budget_exhausted} so a stuck/starved/quarantining loop is visible in
+    the plain process log -- pre-fix, weeks of a live poison loop produced ZERO
+    diagnostic output. Exception-guarded: logging can never break the sync.
+    """
+    try:
+        imported = result.get("imported") if isinstance(result.get("imported"), list) else []
+        skipped = result.get("skipped") if isinstance(result.get("skipped"), list) else []
+        per_user_raw = result.get("per_user") if isinstance(result.get("per_user"), list) else []
+        quarantined_total = sum(
+            1 for entry in skipped if isinstance(entry, dict) and entry.get("reason") == "quarantined"
+        )
+        event: dict[str, object] = {
+            "event": "gmail_sync_summary",
+            "imported": len(imported),
+            "skipped": len(skipped),
+            "quarantined": quarantined_total,
+            "top_skip_reasons": _top_skip_reasons(skipped),  # type: ignore[arg-type]
+        }
+        per_user_summary: list[dict[str, object]] = []
+        for entry in per_user_raw:
+            if not isinstance(entry, dict):
+                continue
+            user_line: dict[str, object] = {
+                "owner_user_id": str(entry.get("owner_user_id") or ""),
+                "imported": int(entry.get("imported_count") or 0),
+                "skipped": int(entry.get("skipped_count") or 0),
+                "quarantined": int(entry.get("quarantined") or 0),
+                "top_skip_reasons": entry.get("top_skip_reasons") or {},
+                "budget_exhausted": bool(entry.get("deferred")),
+            }
+            # LOG HYGIENE: the stdout summary carries counts, owner ids, and reason
+            # codes ONLY -- never error detail strings (which can embed filenames/
+            # provider messages). The full detail lives in the per-user sync record.
+            if entry.get("error"):
+                user_line["failed"] = True
+            per_user_summary.append(user_line)
+        if per_user_summary:
+            event["per_user"] = per_user_summary
+        print(json.dumps(event), file=sys.stdout, flush=True)
+    except Exception:  # pragma: no cover - logging must never break the sync
+        pass
+
+
+def _log_gmail_sync_error(error: Exception, *, started_at: str, finished_at: str) -> None:
+    """Emit the scheduled-sync failure as a one-line JSON stdout event.
+
+    Pre-fix the only trace was 'Gmail sync scheduler failed: <ClassName>' (and the
+    settings-store record nobody greps) -- a live failure loop was invisible in the
+    process log. Exception-guarded like every other log path.
+    """
+    try:
+        event = {
+            "event": "gmail_sync_error",
+            "level": "error",
+            "error": error.__class__.__name__,
+            "detail": str(error)[:500],
+            "started_at": started_at,
+            "finished_at": finished_at,
+        }
+        print(json.dumps(event), file=sys.stdout, flush=True)
+    except Exception:  # pragma: no cover - logging must never break the sync
+        pass
+
+
 def _gmail_inbound_configured_for_scheduled_sync() -> bool:
     if gmail_integration.gmail_sync_owner_user_ids():
         return True
@@ -1481,6 +1617,10 @@ def _run_scheduled_gmail_sync() -> None:
         finished_at = datetime.now(timezone.utc).isoformat()
         app_settings.record_gmail_sync(result, synced_at=finished_at, started_at=started_at, finished_at=finished_at)
         telemetry.increment("gmail_sync_successes")
+        # One greppable JSON line per poll: per-user imported/skipped/quarantined/
+        # top-skip-reasons/budget state. This is the visibility fix -- a poisoned or
+        # starved inbox now shows up in the plain process log every cycle.
+        _log_gmail_sync_summary(result)
     except Exception as error:  # pragma: no cover - defensive background logging.
         telemetry.increment("gmail_sync_failures")
         _set_gmail_sync_backoff(error)
@@ -1491,6 +1631,9 @@ def _run_scheduled_gmail_sync() -> None:
             finished_at=finished_at,
             query=gmail_integration._default_inbound_query(),
         )
+        # Structured stdout event FIRST (greppable, carries the detail); the legacy
+        # class-name-only line is kept for continuity with existing log scrapes.
+        _log_gmail_sync_error(error, started_at=started_at, finished_at=finished_at)
         _log_background_error("Gmail scheduled sync failed", error)
         time.sleep(5)
 
@@ -1523,13 +1666,27 @@ def _run_scheduled_user_gmail_sync(
     # cross-user SUM.
     remaining_import_budget = _gmail_total_import_limit()
 
-    for owner_user_id in owner_user_ids:
+    # FAIRNESS: rotate the fan-out start position each poll so the fixed
+    # list_users() order cannot permanently privilege the same early user, and
+    # reserve a MINIMUM one-import floor for every user still to come (below) so a
+    # single tenant's large/poisoned backlog can never zero out the others' imports.
+    owner_user_ids = _rotated_gmail_sync_user_order(owner_user_ids)
+
+    for user_position, owner_user_id in enumerate(owner_user_ids):
         user_started_at = datetime.now(timezone.utc).isoformat()
-        # Grant this user the smaller of its own per-user limit and whatever remains of
-        # the shared cross-user budget. When the budget is spent, skip the remaining
-        # users' heavy import work; their mail is untouched and drains next poll.
-        user_import_limit = min(effective_import_limit, remaining_import_budget)
-        if user_import_limit < 1:
+        users_after = len(owner_user_ids) - user_position - 1
+        # Grant this user the smaller of its own per-user limit and its fair share of
+        # the remaining cross-user budget: everything left MINUS a reserved
+        # one-import floor per user still to come (never below 1 while budget
+        # remains). The global ceiling is untouched -- the SUM of heavy imports per
+        # poll still cannot exceed it -- but no user can consume the slots reserved
+        # for the users behind it. Only when the budget is genuinely spent are the
+        # remaining users deferred; their mail is untouched and drains next poll.
+        user_import_limit = min(
+            effective_import_limit,
+            max(1, remaining_import_budget - users_after),
+        )
+        if remaining_import_budget < 1:
             skipped.append({
                 "owner_user_id": owner_user_id,
                 "reason": "total_import_limit_reached",
@@ -1619,13 +1776,63 @@ def _run_scheduled_user_gmail_sync(
                 "error": str(error),
             })
             continue
+        except Exception as error:  # noqa: BLE001 - one tenant must never abort the fan-out
+            # RESILIENCE (mirrors the GmailRateLimitError handling above): an
+            # UNEXPECTED per-user failure (MatterStoreError, OSError, a bug in one
+            # tenant's data) previously unwound the WHOLE fan-out -- every later
+            # user was silently skipped this cycle AND the outer handler set the
+            # global error record as if all users failed. Record it as this user's
+            # own sync error and CONTINUE to the next user.
+            user_finished_at = datetime.now(timezone.utc).isoformat()
+            try:
+                user_store.record_user_gmail_sync_error(
+                    owner_user_id,
+                    str(error),
+                    started_at=user_started_at,
+                    finished_at=user_finished_at,
+                    query=gmail_integration._default_inbound_query(),
+                )
+            except Exception:  # pragma: no cover - recording must not mask the loop
+                pass
+            telemetry.increment("gmail_sync_user_unexpected_failures")
+            _log_background_error(f"Gmail sync failed for user {owner_user_id}", error)
+            # Full traceback to the logger (an UNEXPECTED failure class is by
+            # definition a bug worth a stack, unlike the typed Gmail errors above).
+            logging.getLogger(__name__).warning(
+                "Unexpected per-user Gmail sync failure for %s", owner_user_id, exc_info=True
+            )
+            skipped.append({
+                "owner_user_id": owner_user_id,
+                "reason": "user_sync_failed",
+                "detail": f"{error.__class__.__name__}: {error}",
+            })
+            per_user.append({
+                "owner_user_id": owner_user_id,
+                "account": "",
+                "imported_count": 0,
+                "skipped_count": 1,
+                "deduplicated_count": 0,
+                "error": f"{error.__class__.__name__}: {error}",
+            })
+            continue
 
         result_imported = result.get("imported") if isinstance(result.get("imported"), list) else []
         result_skipped = result.get("skipped") if isinstance(result.get("skipped"), list) else []
-        # Charge the shared budget for the heavy imports this user actually performed
-        # (deduped/short-circuited messages never download+extract, so they aren't
-        # charged — later users still get served when an earlier one had no new work).
-        remaining_import_budget = max(0, remaining_import_budget - len(result_imported))
+        # Charge the shared budget for the HEAVY slots this user actually consumed:
+        # new_processed counts imports AND transient-failure attempts (both burn
+        # worker CPU + AI calls), so a poisoned backlog draws down the ceiling like
+        # real imports do and the SUM of heavy work per poll stays bounded by it.
+        # Deduped/short-circuited messages never download+extract, so they aren't
+        # charged — later users still get served when an earlier one had no new
+        # work. max() with the imported count keeps the charge honest against
+        # legacy/stubbed results that lack new_processed.
+        try:
+            heavy_slots_used = int(result.get("new_processed") or 0)
+        except (TypeError, ValueError):
+            heavy_slots_used = 0
+        remaining_import_budget = max(
+            0, remaining_import_budget - max(len(result_imported), heavy_slots_used)
+        )
         account = str(result.get("account") or "")
         query = str(result.get("query") or "")
         if account and account not in accounts:
@@ -1641,6 +1848,10 @@ def _run_scheduled_user_gmail_sync(
             "imported_count": len(result_imported),
             "skipped_count": len(result_skipped),
             "deduplicated_count": owner_deduplicated_count,
+            # Visibility: quarantined-this-poll count + the dominant skip reasons,
+            # consumed by the per-poll JSON summary line (and the sync status).
+            "quarantined": int(result.get("quarantined") or 0),
+            "top_skip_reasons": _top_skip_reasons(result_skipped),
         })
 
     return {
