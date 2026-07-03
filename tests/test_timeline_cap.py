@@ -58,6 +58,37 @@ class CappedTimelineTests(unittest.TestCase):
         self.assertEqual(len(capped), CAP)
         self.assertEqual(capped[0]["dropped_count"], 4)  # 3 over + 1 marker slot; garbage -> 0
 
+    def test_marker_actor_stays_system_when_only_system_events_drop(self):
+        # All-system history (the pristine auto-import shape): the marker keeps the
+        # system actor so the bulk-archive pristine gate is unaffected.
+        events = [
+            {"type": "poll", "actor": "system", "seq": i} for i in range(CAP + 20)
+        ]
+        capped = matter_store.capped_timeline(events)
+        self.assertEqual(capped[0]["actor"], "system")
+
+    def test_marker_inherits_non_system_actor_from_dropped_events(self):
+        # FAIL-CLOSED: dropping a human event must not launder the evidence of
+        # human activity — the marker carries the non-system actor so the
+        # bulk-archive pristine gate still fails closed on the truncated log.
+        events = [{"type": "approved", "actor": "counsel@example.com", "seq": -1}] + [
+            {"type": "poll", "actor": "system", "seq": i} for i in range(CAP + 20)
+        ]
+        capped = matter_store.capped_timeline(events)
+        self.assertEqual(capped[0]["actor"], "counsel@example.com")
+        # ...and the inherited actor persists through LATER truncations via the
+        # prior-marker fold, even though the human event itself is long gone.
+        recapped = matter_store.capped_timeline(
+            capped + [{"type": "poll", "actor": "system", "seq": 90000 + i} for i in range(30)]
+        )
+        self.assertEqual(recapped[0]["actor"], "counsel@example.com")
+
+    def test_marker_treats_missing_actor_as_non_system(self):
+        # An actor-less event already fails the pristine gate on a full log; the
+        # marker preserves that (actor 'unknown', not 'system').
+        capped = matter_store.capped_timeline(_events(CAP + 5))
+        self.assertEqual(capped[0]["actor"], "unknown")
+
 
 class RepositoryTimelineCapTests(unittest.TestCase):
     def setUp(self):

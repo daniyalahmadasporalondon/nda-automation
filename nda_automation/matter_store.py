@@ -726,6 +726,7 @@ def capped_timeline(timeline: list[Any]) -> list[Any]:
     if len(timeline) <= TIMELINE_MAX_EVENTS:
         return timeline
     already_dropped = 0
+    prior_marker_actor = ""
     body = timeline
     head = timeline[0] if timeline else None
     if isinstance(head, dict) and str(head.get("type") or "") == TIMELINE_TRUNCATED_EVENT_TYPE:
@@ -733,14 +734,31 @@ def capped_timeline(timeline: list[Any]) -> list[Any]:
             already_dropped = max(0, int(head.get("dropped_count") or 0))
         except (TypeError, ValueError):
             already_dropped = 0
+        prior_marker_actor = str(head.get("actor") or "")
         body = timeline[1:]
     keep = TIMELINE_MAX_EVENTS - 1
     dropped_now = max(0, len(body) - keep)
     total_dropped = already_dropped + dropped_now
+    # FAIL-CLOSED actor propagation: the bulk-archive pristine gate
+    # (routes/admin._only_system_timeline_events) treats any non-"system" event as
+    # evidence of human-adjacent activity. Dropping such an event behind a
+    # system-actor marker would LAUNDER that evidence, so the marker inherits a
+    # non-system actor whenever any dropped event (or a prior marker) carried one —
+    # the truncated log then still fails the pristine gate, exactly like the full
+    # log would have.
+    marker_actor = "system"
+    if prior_marker_actor and prior_marker_actor != "system":
+        marker_actor = prior_marker_actor
+    else:
+        for event in body[:dropped_now]:
+            actor = str(event.get("actor") or "") if isinstance(event, dict) else ""
+            if actor != "system":
+                marker_actor = actor or "unknown"
+                break
     marker = {
         "type": TIMELINE_TRUNCATED_EVENT_TYPE,
         "at": datetime.now(timezone.utc).isoformat(),
-        "actor": "system",
+        "actor": marker_actor,
         "dropped_count": total_dropped,
         "detail": (
             f"Timeline capped at {TIMELINE_MAX_EVENTS} events; "
