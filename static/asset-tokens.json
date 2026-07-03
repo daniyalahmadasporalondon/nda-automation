@@ -1,7 +1,7 @@
 {
   "app.js": {
-    "sha256": "1177016cfa748d1a1bf127b5845347cef1c7bc5a77b748185f2228a3cc2e410d",
-    "v": "20260623cachefix1"
+    "sha256": "17d572ae9c2b57545e187ec4bf0693c152714bcec73c62a73c3e183be22eccf4",
+    "v": "20260703bigstore3"
   },
   "css/corpus.css": {
     "sha256": "b352644bdd179bc240ade82a32c8ba9ef6062adbe80cf7359e321492aca40a61",
@@ -12,8 +12,8 @@
     "v": "20260617sig1"
   },
   "css/repository.css": {
-    "sha256": "e94f068c827e227bec552cc7fa1c18c6eb2962321f1b19047994b5ef17de515f",
-    "v": "20260621felayout1"
+    "sha256": "8d2b9f1ad30e9b594728a9d990ea2c53240950448555542319ef34df10ed5e3a",
+    "v": "20260703bigstore1"
   },
   "js/admin-access.js": {
     "sha256": "8621b10b9c262e4d450aad87bbe1347245c4e6a6573ae44170b5b082dd7f8af4",
@@ -76,8 +76,8 @@
     "v": "20260621hum1"
   },
   "js/dashboard-search.js": {
-    "sha256": "244b4958501c3765aba21df8188a046a5e352e08394fbeb51a9c01d3823837f0",
-    "v": "20260621hum1"
+    "sha256": "31c78527950b9afda717ad314fddc7ae9662696d4a736d83e0ef648b2fc19574",
+    "v": "20260703bigstore1"
   },
   "js/document-download-menu.js": {
     "sha256": "ca9c38d7509373202922b230565c5e9756687c82784af698de22c74ce9358d02",
@@ -152,8 +152,8 @@
     "v": "20260614c"
   },
   "js/modules/repository-api.mjs": {
-    "sha256": "4cbfe92416f3616ddd1a95ea9e52a8a7166a9d26563fcfc1ae12d936c37e9663",
-    "v": "20260621nda1"
+    "sha256": "94e8514c7addc1aed14e10314c1a4fe68a497c09723878430136e3cbb40119f9",
+    "v": "20260703bigstore3"
   },
   "js/notifications.js": {
     "sha256": "e718d556496abc148a33f12a45b4120d89e353c530ebd28234730a97fe62c072",
@@ -192,24 +192,24 @@
     "v": "20260622redlineresilience1"
   },
   "js/repository-actions.js": {
-    "sha256": "b5d19eb5f070d95e7528cddaff91ab5c91708f18a36d132f0696ea591f1f7080",
-    "v": "20260622redlineresilience1"
+    "sha256": "74d1eef529a69b833ae3786caf8056510ce939cacb07cc7cb516c39d8e3d2872",
+    "v": "20260703bigstore3"
   },
   "js/repository-api.js": {
-    "sha256": "76f98ef3cc1de584bdc755235057306479da786be5ede84c2e45eecfc90eaf09",
-    "v": "20260621nda1"
+    "sha256": "4963db0d12bdef57185873b2f8a5ee1b802c6b7799b1eaadd33bee45ac8f6324",
+    "v": "20260703bigstore3"
   },
   "js/repository-board.js": {
-    "sha256": "078eb1ce85903d1008060c233094296b7b89472e08045249c1a8763c162e0ef3",
-    "v": "20260622ripguard1"
+    "sha256": "b69097f8fc8280cdce01a8682d7f0908861be03d3a7ed388df9c8fbf563874b7",
+    "v": "20260703bigstore3"
   },
   "js/repository-detail.js": {
     "sha256": "2e4b631618f943b65cbb2279ed6739bde530539d87196763c7133830325bdf3f",
     "v": "20260621humanize1"
   },
   "js/repository-model.js": {
-    "sha256": "99929f2b973d25a33c96e426af988fa5a9b8aaa6069e1f5241a1abdd5f4a8172",
-    "v": "20260621hum1"
+    "sha256": "9646ef0f44916e4b2e415315e7ceb0abbf1e496b1cf5cae03f32cf81b2d025de",
+    "v": "20260703bigstore1"
   },
   "js/repository-send.js": {
     "sha256": "d69afa5a45b2c09d58f8d05b761a3c2769b359a34e49e12ba56b9f53d955bc38",
@@ -252,7 +252,7 @@
     "v": "20260623rwbugs1"
   },
   "styles.css": {
-    "sha256": "c3f86cd925ff85f104fce6f908ec1faafab1bdf26f0a3bb83ac8484a00610691",
-    "v": "20260702termunit1"
+    "sha256": "e6a4ad3eabf20038f8a5db583f50a5648271bc040dd0731b7446f218f87e8d32",
+    "v": "20260703bigstore1"
   }
 }
