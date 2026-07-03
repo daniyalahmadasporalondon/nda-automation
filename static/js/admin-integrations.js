@@ -164,26 +164,28 @@ const AdminIntegrationsView = (() => {
           fetch("/api/gmail/status"),
           fetch("/api/matters"),
         ]);
-        const statusPayload = await statusResponse.json();
-        const mattersPayload = await mattersResponse.json();
-        if (!statusResponse.ok) throw reviewErrorFromPayload(statusPayload, "Gmail status could not load");
-        if (!mattersResponse.ok) throw reviewErrorFromPayload(mattersPayload, "Repository could not load");
+        const statusPayload = await parseOkJson(statusResponse, "Gmail status could not load");
+        const mattersPayload = await parseOkJson(mattersResponse, "Repository could not load");
         renderGmail(statusPayload.gmail || {}, Array.isArray(mattersPayload.matters) ? mattersPayload.matters : []);
       } catch (error) {
         renderError(error.message || "Gmail status could not load");
       }
     }
 
-    // Posts a Gmail settings change, checking response.ok BEFORE parsing so a
+    // Shared ok-before-parse guard: checks response.ok BEFORE parsing so a
     // 401/500 (or a non-JSON proxy error page) surfaces the real status instead
-    // of a generic failure or a raw JSON SyntaxError. Returns the parsed status
-    // payload on success; throws a descriptive Error otherwise.
-    async function postGmailSettings(body, fallbackMessage) {
-      const response = await fetch("/api/gmail/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+    // of a raw JSON SyntaxError (the Safari "string did not match the expected
+    // pattern" class). Routes through window.AuthExpired.parseOkJson when the
+    // page has it (which also fires the global session-expired prompt on a
+    // 401); the inline fallback keeps the Node test harness (no window) on the
+    // same ok-first contract. The thrown Error carries the real HTTP `status`.
+    async function parseOkJson(response, fallbackMessage) {
+      const fallback = response.ok
+        ? fallbackMessage
+        : `${fallbackMessage} (HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""})`;
+      if (typeof window !== "undefined" && window.AuthExpired?.parseOkJson) {
+        return window.AuthExpired.parseOkJson(response, fallback, reviewErrorFromPayload);
+      }
       if (!response.ok) {
         // The error body may be JSON ({error}) or an HTML/blank proxy page;
         // never let a failed parse mask the underlying HTTP status.
@@ -193,18 +195,46 @@ const AdminIntegrationsView = (() => {
         } catch {
           payload = null;
         }
-        throw reviewErrorFromPayload(
-          payload,
-          `${fallbackMessage} (HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""})`,
-        );
+        const error = reviewErrorFromPayload(payload, fallback);
+        error.status = response.status;
+        throw error;
       }
-      // A 2xx with a malformed/blank body is still a save we cannot trust the
-      // status from; treat it as an error rather than silently wiping state.
+      return response.json();
+    }
+
+    // Posts a Gmail settings change through the shared ok-before-parse guard.
+    // Returns the parsed status payload on success; throws a descriptive Error
+    // otherwise. /api/gmail/settings is admin-only, so a 403 additionally
+    // flips the panel into its read-only (toggle disabled) state.
+    async function postGmailSettings(body, fallbackMessage) {
+      const response = await fetch("/api/gmail/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
       try {
-        return await response.json();
-      } catch {
-        throw new Error(`${fallbackMessage} (unreadable server response)`);
+        return await parseOkJson(response, fallbackMessage);
+      } catch (error) {
+        if (response.ok) {
+          // A 2xx with a malformed/blank body is still a save we cannot trust
+          // the status from; treat it as an error rather than silently wiping
+          // state.
+          throw new Error(`${fallbackMessage} (unreadable server response)`);
+        }
+        if (Number(error.status) === 403) markSettingsForbidden();
+        throw error;
       }
+    }
+
+    // /api/gmail/settings writes are admin-only, but the panel (and its
+    // pause/resume switch) renders for every signed-in user because the status
+    // GET is not admin-gated. Once a settings write comes back 403 we KNOW the
+    // viewer is not an admin: keep the panel readable but disable the polling
+    // switch instead of offering a control that can only fail.
+    function markSettingsForbidden() {
+      if (state.gmailSettingsForbidden === true) return;
+      state.gmailSettingsForbidden = true;
+      renderToggleControls(state.gmailStatus || {});
     }
 
     async function updateGmailToggle() {
@@ -237,7 +267,13 @@ const AdminIntegrationsView = (() => {
         state.gmailStatus = payload.gmail || state.gmailStatus || {};
         await load();
       } catch (error) {
-        setOverall(error.message || "Save failed", "blocked");
+        if (Number(error.status) === 403) {
+          // Not an admin: calm read-only state (postGmailSettings already
+          // disabled the switch), not a scary red failure.
+          setOverall("Admin only", "pending");
+        } else {
+          setOverall(error.message || "Save failed", "blocked");
+        }
         renderToggleControls(state.gmailStatus || {});
       } finally {
         setToggleDisabled(false);
@@ -310,13 +346,7 @@ const AdminIntegrationsView = (() => {
       setFrequencyDisabled(true);
       setOverall("Saving", "pending");
       try {
-        const response = await fetch("/api/gmail/settings", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sync_frequency: syncFrequency }),
-        });
-        const payload = await response.json();
-        if (!response.ok) throw reviewErrorFromPayload(payload, "Gmail sync frequency could not save");
+        const payload = await postGmailSettings({ sync_frequency: syncFrequency }, "Gmail sync frequency could not save");
         state.gmailStatus = payload.gmail || state.gmailStatus || {};
         await load();
       } catch (error) {
@@ -339,13 +369,7 @@ const AdminIntegrationsView = (() => {
       setSearchTermsDisabled(true);
       setOverall("Saving", "pending");
       try {
-        const response = await fetch("/api/gmail/settings", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ inbound_search_terms: terms }),
-        });
-        const payload = await response.json();
-        if (!response.ok) throw reviewErrorFromPayload(payload, "Gmail search terms could not save");
+        const payload = await postGmailSettings({ inbound_search_terms: terms }, "Gmail search terms could not save");
         state.gmailStatus = payload.gmail || state.gmailStatus || {};
         await load();
       } catch (error) {
@@ -371,13 +395,7 @@ const AdminIntegrationsView = (() => {
       setIntakeDisabled(true);
       setOverall("Saving", "pending");
       try {
-        const response = await fetch("/api/gmail/settings", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ intake_playbook: intakePlaybook }),
-        });
-        const payload = await response.json();
-        if (!response.ok) throw reviewErrorFromPayload(payload, "NDA intake criteria could not save");
+        const payload = await postGmailSettings({ intake_playbook: intakePlaybook }, "NDA intake criteria could not save");
         state.gmailStatus = payload.gmail || state.gmailStatus || {};
         await load();
       } catch (error) {
@@ -404,8 +422,7 @@ const AdminIntegrationsView = (() => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ role }),
         });
-        const payload = await response.json();
-        if (!response.ok) throw reviewErrorFromPayload(payload, "Gmail disconnect failed");
+        const payload = await parseOkJson(response, "Gmail disconnect failed");
         state.gmailStatus = payload.gmail || state.gmailStatus || {};
         await load();
       } catch (error) {
@@ -627,6 +644,15 @@ const AdminIntegrationsView = (() => {
       renderToggle(gmailToggle, on);
       renderToggleIntent(status, { on, needsConnect, ready });
       setFact("enabled-copy", needsConnect ? "Not connected" : on ? "Polling on" : "Polling off");
+      // Non-admin viewer (a settings write came back 403): the switch still
+      // SHOWS the polling state but cannot change it -- disable it and say who
+      // can, mirroring how the other admin-only panels go read-only.
+      if (gmailToggle && state.gmailSettingsForbidden === true) {
+        const adminOnlyLabel = "Gmail polling is managed by an administrator";
+        gmailToggle.disabled = true;
+        gmailToggle.setAttribute("aria-label", adminOnlyLabel);
+        gmailToggle.title = adminOnlyLabel;
+      }
     }
 
     function renderToggle(button, enabled) {
@@ -657,7 +683,9 @@ const AdminIntegrationsView = (() => {
     }
 
     function setToggleDisabled(disabled) {
-      if (gmailToggle) gmailToggle.disabled = disabled;
+      // Never re-enable past the admin-only latch: once a settings write has
+      // 403'd, the switch stays disabled no matter how a save settles.
+      if (gmailToggle) gmailToggle.disabled = disabled || state.gmailSettingsForbidden === true;
     }
 
     function renderImportLimit(status) {

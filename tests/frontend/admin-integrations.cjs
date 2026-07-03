@@ -193,12 +193,14 @@ function mountController(initialStatus) {
   const searchTermsCopy = copySpan("search-terms-copy");
   const inboundConfigured = copySpan("inbound-configured");
   const outboundConfigured = copySpan("outbound-configured");
+  const inboundEmail = copySpan("inbound-email");
   gmailCard.appendChild(enabledCopy);
   gmailCard.appendChild(importLimitCopy);
   gmailCard.appendChild(syncWindowCopy);
   gmailCard.appendChild(searchTermsCopy);
   gmailCard.appendChild(inboundConfigured);
   gmailCard.appendChild(outboundConfigured);
+  gmailCard.appendChild(inboundEmail);
 
   const gmailToggle = new FakeElement("button");
   const gmailImportLimitInput = new FakeElement("input");
@@ -267,6 +269,7 @@ function mountController(initialStatus) {
     searchTermsCopy,
     inboundConfigured,
     outboundConfigured,
+    inboundEmail,
   };
 }
 
@@ -551,6 +554,58 @@ const ENV_CONNECTED = {
       /can't be empty/,
       "the server 400 is surfaced inline next to the field"
     );
+  });
+
+  await test("a 403 on the settings POST disables the toggle (admin-only latch)", async () => {
+    // /api/gmail/settings is admin-only but the panel renders for every
+    // signed-in user (the status GET is open). Once a settings write comes
+    // back 403 the pause/resume switch must go read-only instead of offering a
+    // control that can only fail again.
+    const ui = mountController(ENV_CONNECTED);
+    installFetch((url) => {
+      if (url === "/api/gmail/settings") {
+        return { ok: false, status: 403, payload: { error: "Administrator access is required." } };
+      }
+      if (url === "/api/gmail/status") return { payload: { gmail: { ...ENV_CONNECTED } } };
+      if (url === "/api/matters") return { payload: { matters: [] } };
+      return {};
+    });
+
+    await ui.gmailToggle.click();
+    await flush();
+
+    assert.equal(ui.state.gmailSettingsForbidden, true, "the admin-only latch is set");
+    assert.equal(ui.gmailToggle.disabled, true, "switch is disabled after the 403");
+    assert.equal(
+      ui.gmailToggle.getAttribute("aria-label"),
+      "Gmail polling is managed by an administrator",
+      "the switch says who can manage polling"
+    );
+
+    // The latch survives a later re-render (e.g. a refresh of the status).
+    ui.controller.renderGmailStatus({ ...ENV_CONNECTED });
+    assert.equal(ui.gmailToggle.disabled, true, "still disabled after a re-render");
+  });
+
+  await test("a non-JSON 401 on load surfaces the status, not a parse error", async () => {
+    // The historical "string did not match the expected pattern" class: load()
+    // used to parse response.json() BEFORE checking response.ok, so a 401 with
+    // an HTML/blank body threw a raw SyntaxError. Now the ok-first guard
+    // surfaces the real HTTP status.
+    const ui = mountController(ENV_CONNECTED);
+    installFetch((url) => {
+      if (url === "/api/gmail/status") {
+        return { ok: false, status: 401, statusText: "Unauthorized", nonJson: true };
+      }
+      if (url === "/api/matters") return { payload: { matters: [] } };
+      return {};
+    });
+
+    await ui.controller.load();
+    await flush();
+
+    assert.match(ui.inboundEmail.textContent, /HTTP 401/, "shows the real HTTP status");
+    assert.doesNotMatch(ui.inboundEmail.textContent, /JSON|token/i, "no raw parse error leaks");
   });
 
   await test("master sync OFF greys the sub-roles and labels them inactive", async () => {
