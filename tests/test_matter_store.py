@@ -1527,6 +1527,90 @@ class G3CoherentCacheUpdateTests(unittest.TestCase):
                 second = repo.list_matters()
                 self.assertNotEqual(second[0].get("review_result"), {"poisoned": True})
 
+    def test_mixed_write_sequence_cache_equals_cold_reload_byte_for_byte(self):
+        # Contract for the O(one-record) per-record-blob cache: after ANY mixed
+        # sequence of create / update / delete / timeline-append against a warm
+        # cache, a warm (cache-hit) list_matters must be BYTE-EQUAL to a cold
+        # (cache-dropped) full reload from disk -- same records, same order, same
+        # key order. json.dumps WITHOUT sort_keys makes the comparison bytewise.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                created = [
+                    repo.create_matter(**_create_kwargs(
+                        source_filename=f"Mix {index}.docx",
+                        document_bytes=f"bytes-{index}".encode(),
+                    ))
+                    for index in range(5)
+                ]
+                repo.list_matters()  # prime the cache
+
+                # Mixed writes, all patching the warm cache in place.
+                repo.update_matter_fields(created[0]["id"], {"last_outbound_subject": "mixed"})
+                repo.append_timeline_event(
+                    created[1]["id"],
+                    {"event": "review_completed", "at": "2026-07-03T00:00:00+00:00"},
+                )
+                repo.delete_matter(created[2]["id"])
+                repo.create_matter(**_create_kwargs(
+                    source_filename="Mix late.docx", document_bytes=b"late-bytes",
+                ))
+                repo.update_matter_fields(created[3]["id"], {"board_column": "sent"})
+
+                # The warm read must be a cache HIT (zero record re-parses)...
+                warm, reparses = self._count_reparses(repo.list_matters)
+                self.assertEqual(
+                    reparses, 0,
+                    "mixed create/update/delete/timeline writes dropped the cache instead of patching it",
+                )
+                # ...and byte-equal to a cold full reload.
+                matter_store._invalidate_list_cache()
+                cold, reparses = self._count_reparses(repo.list_matters)
+                self.assertGreater(reparses, 0, "cold reload did not actually re-parse from disk")
+                self.assertEqual(
+                    json.dumps(warm),
+                    json.dumps(cold),
+                    "warm cache diverged from a cold reload after mixed create/update/delete/timeline writes",
+                )
+
+    def test_cache_isolated_from_write_input_and_read_output_mutation(self):
+        # Copy semantics in BOTH aliasing directions. The cache stores per-record
+        # SERIALIZED blobs, so neither (in) the dicts a write path handled nor
+        # (out) the dicts a read returned may share mutable state with it.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                repo = DiskMatterRepository()
+                created = repo.create_matter(**_create_kwargs(source_filename="Alias.docx"))
+                matter_id = created["id"]
+                repo.list_matters()  # prime
+
+                # (in, container field) append_timeline_event stores the caller's
+                # event dict by reference into the written matter; mutating it after
+                # the call must not leak into the cache.
+                event = {"event": "sent", "at": "2026-07-03T00:00:00+00:00"}
+                repo.append_timeline_event(matter_id, event)
+                event["event"] = "POISONED-IN-EVENT"
+
+                # (in, returned matter) the dict a write path returned is the dict it
+                # serialized; mutating it after the call must not leak either.
+                updated = repo.update_matter_fields(matter_id, {"last_outbound_subject": "clean"})
+                updated["last_outbound_subject"] = "POISONED-IN-RETURN"
+                updated["matter_timeline"][0]["event"] = "POISONED-IN-NESTED"
+
+                warm = repo.list_matters()
+                self.assertEqual(warm[0].get("last_outbound_subject"), "clean")
+                self.assertEqual(warm[0]["matter_timeline"][0].get("event"), "sent")
+
+                # (out) mutating a returned record -- top-level and nested -- must
+                # leave the cache untouched for the next read.
+                warm[0]["last_outbound_subject"] = "POISONED-OUT"
+                warm[0]["matter_timeline"][0]["event"] = "POISONED-OUT-NESTED"
+                second = repo.list_matters()
+                self.assertEqual(second[0].get("last_outbound_subject"), "clean")
+                self.assertEqual(second[0]["matter_timeline"][0].get("event"), "sent")
+
 
 class MatterStoreRetentionFairnessTests(unittest.TestCase):
     """Retention + lock-contention fairness on the SHIPPED disk store.
