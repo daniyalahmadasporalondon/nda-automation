@@ -6,7 +6,7 @@ import secrets
 from urllib.parse import parse_qs, urlparse
 
 from .. import app_settings, google_connection, google_identity, user_store
-from ..http_auth import _basic_auth_credentials, _basic_auth_matches
+from ..http_auth import _basic_auth_credentials, _basic_auth_matches, google_email_allowed
 
 
 def handle_auth_status(handler, *, send_body: bool = True) -> None:
@@ -115,6 +115,57 @@ _LOGIN_PAGE_HTML = """<!doctype html>
 </html>"""
 
 
+# Friendly access-denied page for a Google sign-in whose verified email is not
+# on the app-layer allowlist (NDA_ALLOWED_EMAIL_DOMAINS / NDA_ALLOWED_EMAILS).
+# Served with a 403 from the OAuth callback -- the person at the browser is a
+# human mid-login, so this must read like a door, not a JSON stack trace.
+_ACCESS_DENIED_PAGE_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Access needed &middot; Aspora NDA</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: #170a33;
+      display: grid;
+      place-items: center;
+      min-height: 100vh;
+      background: #f7f5fc;
+      padding: 24px;
+    }
+    .card {
+      width: min(440px, 100%);
+      background: #fff;
+      border-radius: 16px;
+      padding: 40px 36px;
+      box-shadow: 0 10px 40px rgba(23, 10, 51, 0.08);
+      text-align: center;
+    }
+    h1 { font-size: 24px; font-weight: 750; letter-spacing: -0.01em; margin: 0 0 10px; }
+    p { color: #5d5470; font-size: 15px; line-height: 1.55; margin: 0 0 8px; }
+    .actions { margin-top: 24px; }
+    .actions a {
+      display: inline-block; padding: 12px 22px; border-radius: 12px;
+      background: #5b2bd6; color: #fff; font-weight: 700; font-size: 14.5px;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>This account doesn&rsquo;t have access</h1>
+    <p>You signed in with a Google account that isn&rsquo;t on this workspace&rsquo;s access list.</p>
+    <p>Ask your Aspora admin for access, or sign in with your Aspora account.</p>
+    <div class="actions"><a href="/login">Back to sign in</a></div>
+  </div>
+</body>
+</html>"""
+
+
 def handle_login_page(handler, *, send_body: bool = True) -> None:
     if google_identity.google_oauth_configured():
         action = (
@@ -184,9 +235,23 @@ def handle_google_callback(handler, *, send_body: bool = True) -> None:
             str(token_response.get("id_token") or ""),
             expected_nonce=expected_nonce,
         )
+    except google_identity.GoogleIdentityError as error:
+        handler._send_json({"error": str(error)}, status=502, send_body=send_body)
+        return
+
+    # App-layer allowlist (defense-in-depth over the OAuth-app audience): the
+    # VERIFIED email must pass NDA_ALLOWED_EMAIL_DOMAINS / NDA_ALLOWED_EMAILS
+    # BEFORE any user record or session is minted. A no-op while both env vars
+    # are unset/empty (fail-safe: no lockout on deploy before the env is set).
+    # Admin status grants no bypass -- admins must pass the allowlist too.
+    if not google_email_allowed(profile.get("email")):
+        handler._send_html(_ACCESS_DENIED_PAGE_HTML, status=403, send_body=send_body)
+        return
+
+    try:
         user = user_store.upsert_google_user(profile)
         session_token = user_store.create_session(str(user.get("id") or ""))
-    except (google_identity.GoogleIdentityError, user_store.UserStoreError) as error:
+    except user_store.UserStoreError as error:
         handler._send_json({"error": str(error)}, status=502, send_body=send_body)
         return
 

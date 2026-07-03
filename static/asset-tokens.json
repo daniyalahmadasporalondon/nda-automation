@@ -40,8 +40,8 @@
     "v": "20260621humanize1"
   },
   "js/admin-integrations.js": {
-    "sha256": "80a9ed594943af73f17433c3b4636932b8f00db51238d2bd70b1e27b0553bf0a",
-    "v": "20260703quarantine"
+    "sha256": "fb82f1a7da4a5c9487e8ae9aed96725b6b43996ffb70975dd875c98bb7ae0955",
+    "v": "20260703persona1"
   },
   "js/admin-models.js": {
     "sha256": "6a7fa0087ff72d26051f033ac1f253a753208a08a8c4d47f97f332f3ea437273",

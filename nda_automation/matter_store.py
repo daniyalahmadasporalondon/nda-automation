@@ -210,6 +210,27 @@ def export_matters_backup(owner_user_id: str = "") -> dict[str, Any]:
     }
 
 
+def export_all_matters_backup() -> dict[str, Any]:
+    """Owner-UNSCOPED backup: every matter regardless of owner, ownerless included.
+
+    An explicit disaster-recovery/admin export path. It deliberately does NOT
+    route through :func:`_matter_owner_matches` (whose empty-owner wildcard is
+    the single-tenant convenience, not an export contract), so the fail-closed
+    per-owner scoping stays untouched. Callers MUST admin-gate this: the dump
+    contains every tenant's full extracted NDA text.
+    """
+    with _locked_store():
+        matters = list(_load_matters())
+        documents = [_stored_document_manifest(matter) for matter in matters]
+    return {
+        "version": 1,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "matter_count": len(matters),
+        "matters": matters,
+        "documents": [document for document in documents if document is not None],
+    }
+
+
 def get_matter(matter_id: str, owner_user_id: str = "") -> dict[str, Any] | None:
     with _locked_store():
         if not MATTERS_PATH.is_file():

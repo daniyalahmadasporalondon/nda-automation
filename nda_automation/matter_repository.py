@@ -160,6 +160,8 @@ class MatterRepository(Protocol):
 
     def export_matters_backup(self, owner_user_id: str = "") -> dict[str, Any]: ...
 
+    def export_all_matters_backup(self) -> dict[str, Any]: ...
+
 
 class DiskMatterRepository:
     """Production adapter over the disk-backed ``matter_store`` module."""
@@ -346,6 +348,9 @@ class DiskMatterRepository:
 
     def export_matters_backup(self, owner_user_id: str = "") -> dict[str, Any]:
         return matter_store.export_matters_backup(owner_user_id=owner_user_id)
+
+    def export_all_matters_backup(self) -> dict[str, Any]:
+        return matter_store.export_all_matters_backup()
 
 
 class InMemoryMatterRepository:
@@ -873,6 +878,17 @@ class InMemoryMatterRepository:
                 for matter in self._matters
                 if _matter_owner_matches(matter, owner_user_id)
             ]
+        return self._backup_payload(matters)
+
+    def export_all_matters_backup(self) -> dict[str, Any]:
+        # Owner-UNSCOPED: every matter regardless of owner, ownerless included
+        # (mirrors matter_store.export_all_matters_backup). Callers admin-gate.
+        with self._lock:
+            matters = [copy.deepcopy(matter) for matter in self._matters]
+        return self._backup_payload(matters)
+
+    def _backup_payload(self, matters: list[dict[str, Any]]) -> dict[str, Any]:
+        with self._lock:
             documents = []
             for matter in matters:
                 stored_filename = str(matter.get("stored_filename") or "")

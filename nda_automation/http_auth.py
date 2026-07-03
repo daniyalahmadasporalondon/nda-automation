@@ -104,6 +104,92 @@ def _persisted_admin_emails_safe() -> set[str]:
         return set()
 
 
+# --------------------------------------------------------------------------- #
+# App-layer user allowlist (defense-in-depth over the OAuth-app audience)
+# --------------------------------------------------------------------------- #
+# Without this, Google's OAuth consent-screen audience (testing mode / internal)
+# is the only thing gating who can sign up. These two env vars add an APP-LAYER
+# allowlist on the OAuth-verified email so access survives a consent-screen
+# change:
+#   * NDA_ALLOWED_EMAIL_DOMAINS -- comma list of domains (e.g. "aspora.com");
+#   * NDA_ALLOWED_EMAILS        -- comma list of exact emails (exceptions,
+#                                  e.g. a personal gmail).
+# Matching EITHER list allows the identity. The allowlist applies to GOOGLE
+# identities only (callers gate on provider); basic-auth sessions are never
+# routed through it. Persisted admins and env-root admins are NOT implicitly
+# allowed -- an admin's email must also pass the allowlist.
+ALLOWED_EMAIL_DOMAINS_ENV = "NDA_ALLOWED_EMAIL_DOMAINS"
+ALLOWED_EMAILS_ENV = "NDA_ALLOWED_EMAILS"
+ACCESS_DENIED_MESSAGE = "This Google account does not have access. Ask your Aspora admin for access."
+
+
+def user_allowlist_configured() -> bool:
+    """Whether EITHER allowlist env var carries at least one non-blank entry.
+
+    CRITICAL FAIL-SAFE: with both vars unset/empty the allowlist is OFF and
+    behavior is unchanged (no restriction). This prevents a lockout on deploy
+    before the env is configured.
+    """
+    return bool(_env_list(ALLOWED_EMAIL_DOMAINS_ENV) or _env_list(ALLOWED_EMAILS_ENV))
+
+
+def google_email_allowed(email: object) -> bool:
+    """Whether a Google-VERIFIED email may sign in / keep its session.
+
+    Unconfigured (both env vars unset/empty) -> True for every input: the
+    fail-safe open state. Once EITHER var has an entry the allowlist is
+    enforced and fails CLOSED: an email that normalizes to "" (missing,
+    oversized, malformed) or matches neither the exact-email list nor the
+    domain list is denied. Emails are normalized exactly like persisted admin
+    emails (``app_settings.normalize_admin_email``: lowercase/strip), so
+    matching is case-insensitive. Only ever call this for a GOOGLE identity;
+    basic-auth sessions must not be routed through the allowlist.
+    """
+    if not user_allowlist_configured():
+        return True
+    normalized = _normalize_admin_email_safe(email)
+    if not normalized:
+        return False
+    if normalized in _allowed_emails():
+        return True
+    domain = normalized.rsplit("@", 1)[-1]
+    return domain in _allowed_email_domains()
+
+
+def session_user_allowed(user: dict | None) -> bool:
+    """Allowlist gate for an ALREADY-AUTHENTICATED session user.
+
+    Google identities must (still) pass the email allowlist -- this is what
+    makes allowlist revocation effective for existing sessions: a session
+    whose email no longer passes is treated as unauthenticated by the caller.
+    Non-Google identities (basic auth) are unaffected: the allowlist can only
+    ever restrict verified-Google sessions.
+    """
+    if not isinstance(user, dict):
+        return False
+    if str(user.get("provider") or "").strip().lower() != "google":
+        return True
+    return google_email_allowed(user.get("email"))
+
+
+def _allowed_emails() -> set[str]:
+    """Normalized NDA_ALLOWED_EMAILS entries (invalid entries drop; they can never match)."""
+    return {
+        normalized
+        for entry in _env_list(ALLOWED_EMAILS_ENV)
+        if (normalized := _normalize_admin_email_safe(entry))
+    }
+
+
+def _allowed_email_domains() -> set[str]:
+    """Normalized NDA_ALLOWED_EMAIL_DOMAINS entries (lowercase, leading '@' stripped)."""
+    return {domain for entry in _env_list(ALLOWED_EMAIL_DOMAINS_ENV) if (domain := entry.lower().lstrip("@"))}
+
+
+def _env_list(name: str) -> list[str]:
+    return [entry.strip() for entry in os.environ.get(name, "").split(",") if entry.strip()]
+
+
 def _basic_auth_matches(header: str, username: str, password: str) -> bool:
     credentials = _basic_auth_credentials(header)
     if credentials is None:
