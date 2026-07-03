@@ -1340,24 +1340,56 @@ def _gmail_total_import_limit() -> int:
 # tail user behind a large backlog could be starved on EVERY poll. Rotating the
 # start position each cycle spreads the first-draw advantage across all users, and
 # combined with the per-user minimum grant below it guarantees no tenant is
-# permanently starved. In-memory (per process) on purpose: the exact offset does not
-# need durability, only per-cycle variation.
+# permanently starved. The rotation index is PERSISTED (best-effort, atomic
+# tmp->replace like the drain cursor) so a redeploy/restart does not reset the
+# rotation to the same head user and re-starve the same tail; the in-memory counter
+# is the fail-open fallback when the persist path is unavailable.
 _GMAIL_SYNC_USER_ROTATION = 0
+_GMAIL_SYNC_ROTATION_FILENAME = "sync-rotation.json"
+
+
+def _gmail_sync_rotation_path() -> Path:
+    return matter_store.DATA_DIR / "gmail" / _GMAIL_SYNC_ROTATION_FILENAME
+
+
+def _next_gmail_sync_rotation_index() -> int:
+    """The rotation index for THIS poll; increments durably per call (best-effort)."""
+    global _GMAIL_SYNC_USER_ROTATION
+    counter: int | None = None
+    try:
+        payload = json.loads(_gmail_sync_rotation_path().read_text(encoding="utf-8"))
+        counter = int(payload.get("counter"))
+    except Exception:
+        counter = None
+    if counter is None or counter < 0:
+        counter = _GMAIL_SYNC_USER_ROTATION
+    _GMAIL_SYNC_USER_ROTATION = counter + 1
+    try:
+        path = _gmail_sync_rotation_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = path.with_name(f"{path.name}.tmp")
+        temporary_path.write_text(json.dumps({"counter": counter + 1}) + "\n", encoding="utf-8")
+        os.replace(temporary_path, path)
+    except Exception:  # pragma: no cover - persistence is best-effort (in-memory fallback)
+        pass
+    return counter
 
 
 def _rotated_gmail_sync_user_order(owner_user_ids: list[str]) -> list[str]:
     """Rotate the fan-out start position by one user per poll (fairness)."""
-    global _GMAIL_SYNC_USER_ROTATION
     if len(owner_user_ids) < 2:
         return list(owner_user_ids)
-    offset = _GMAIL_SYNC_USER_ROTATION % len(owner_user_ids)
-    _GMAIL_SYNC_USER_ROTATION += 1
+    offset = _next_gmail_sync_rotation_index() % len(owner_user_ids)
     return owner_user_ids[offset:] + owner_user_ids[:offset]
 
 
 def _reset_gmail_sync_user_rotation_for_tests() -> None:
     global _GMAIL_SYNC_USER_ROTATION
     _GMAIL_SYNC_USER_ROTATION = 0
+    try:
+        _gmail_sync_rotation_path().unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def _top_skip_reasons(skipped: list[dict[str, object]], limit: int = 3) -> dict[str, int]:
@@ -1404,8 +1436,11 @@ def _log_gmail_sync_summary(result: dict[str, object]) -> None:
                 "top_skip_reasons": entry.get("top_skip_reasons") or {},
                 "budget_exhausted": bool(entry.get("deferred")),
             }
+            # LOG HYGIENE: the stdout summary carries counts, owner ids, and reason
+            # codes ONLY -- never error detail strings (which can embed filenames/
+            # provider messages). The full detail lives in the per-user sync record.
             if entry.get("error"):
-                user_line["error"] = str(entry.get("error"))[:200]
+                user_line["failed"] = True
             per_user_summary.append(user_line)
         if per_user_summary:
             event["per_user"] = per_user_summary
@@ -1682,6 +1717,11 @@ def _run_scheduled_user_gmail_sync(
                 pass
             telemetry.increment("gmail_sync_user_unexpected_failures")
             _log_background_error(f"Gmail sync failed for user {owner_user_id}", error)
+            # Full traceback to the logger (an UNEXPECTED failure class is by
+            # definition a bug worth a stack, unlike the typed Gmail errors above).
+            logging.getLogger(__name__).warning(
+                "Unexpected per-user Gmail sync failure for %s", owner_user_id, exc_info=True
+            )
             skipped.append({
                 "owner_user_id": owner_user_id,
                 "reason": "user_sync_failed",
@@ -1699,10 +1739,21 @@ def _run_scheduled_user_gmail_sync(
 
         result_imported = result.get("imported") if isinstance(result.get("imported"), list) else []
         result_skipped = result.get("skipped") if isinstance(result.get("skipped"), list) else []
-        # Charge the shared budget for the heavy imports this user actually performed
-        # (deduped/short-circuited messages never download+extract, so they aren't
-        # charged — later users still get served when an earlier one had no new work).
-        remaining_import_budget = max(0, remaining_import_budget - len(result_imported))
+        # Charge the shared budget for the HEAVY slots this user actually consumed:
+        # new_processed counts imports AND transient-failure attempts (both burn
+        # worker CPU + AI calls), so a poisoned backlog draws down the ceiling like
+        # real imports do and the SUM of heavy work per poll stays bounded by it.
+        # Deduped/short-circuited messages never download+extract, so they aren't
+        # charged — later users still get served when an earlier one had no new
+        # work. max() with the imported count keeps the charge honest against
+        # legacy/stubbed results that lack new_processed.
+        try:
+            heavy_slots_used = int(result.get("new_processed") or 0)
+        except (TypeError, ValueError):
+            heavy_slots_used = 0
+        remaining_import_budget = max(
+            0, remaining_import_budget - max(len(result_imported), heavy_slots_used)
+        )
         account = str(result.get("account") or "")
         query = str(result.get("query") or "")
         if account and account not in accounts:

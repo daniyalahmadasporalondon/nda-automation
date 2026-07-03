@@ -8454,10 +8454,12 @@ class ServerTests(unittest.TestCase):
         # The global ceiling held: the SUM is still bounded at 2.
         self.assertEqual(len(recorded["imported"]), 2)
 
-    def test_scheduled_user_gmail_sync_rotates_user_order_between_polls(self):
+    def test_scheduled_user_gmail_sync_rotates_user_order_and_survives_restart(self):
         # FAIRNESS ROTATION (B): the fan-out start position advances by one user per
         # poll, so the fixed list_users() order cannot permanently privilege the
-        # same tenant's first draw on the shared budget.
+        # same tenant's first draw on the shared budget. The rotation index is
+        # PERSISTED: a process restart between polls must NOT reset it back to the
+        # same head user (which would re-starve the same tail forever).
         server_module._reset_gmail_sync_user_rotation_for_tests()
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
@@ -8488,11 +8490,77 @@ class ServerTests(unittest.TestCase):
                         ):
                             with patch.object(server_module.app_settings, "record_gmail_sync"):
                                 server_module._run_scheduled_gmail_sync()
+                                # Simulate a process RESTART: the in-memory counter
+                                # resets, but the persisted index must carry the
+                                # rotation forward.
+                                server_module._GMAIL_SYNC_USER_ROTATION = 0
                                 server_module._run_scheduled_gmail_sync()
 
         first, second = users[0]["id"], users[1]["id"]
-        # Poll 1 starts at the first user; poll 2 starts at the second.
+        # Poll 1 starts at the first user; poll 2 (post-"restart") starts at the
+        # SECOND -- the durable index, not the reset in-memory counter, won.
         self.assertEqual(called_for, [first, second, second, first])
+
+    def test_scheduled_user_gmail_sync_charges_budget_for_transient_heavy_attempts(self):
+        # LOAD HONESTY (B/R6): a poisoned backlog consumes heavy slots (download +
+        # extract + AI) without importing anything. Those slots must draw down the
+        # shared cross-user ceiling exactly like successful imports, so the SUM of
+        # heavy work per poll stays bounded by the ceiling.
+        server_module._reset_gmail_sync_user_rotation_for_tests()
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                users = self._connect_gmail_users(2, prefix="charge")
+
+                granted: list[int] = []
+
+                def import_side_effect(*, limit, query=None, owner_user_id=""):
+                    granted.append(limit)
+                    if owner_user_id == users[0]["id"]:
+                        # A fully poisoned backlog: every granted heavy slot burned
+                        # on transient failures, ZERO imports.
+                        return {
+                            "account": f"{owner_user_id}@example.com",
+                            "imported": [],
+                            "query": "in:inbox has:attachment",
+                            "skipped": [
+                                {"message_id": f"msg-{i}", "reason": "review_failed"}
+                                for i in range(limit)
+                            ],
+                            "new_processed": limit,
+                        }
+                    return {
+                        "account": f"{owner_user_id}@example.com",
+                        "imported": [{"id": f"{owner_user_id}-{i}"} for i in range(limit)],
+                        "query": "in:inbox has:attachment",
+                        "skipped": [],
+                        "new_processed": limit,
+                    }
+
+                with patch.dict(
+                    os.environ, {"NDA_GMAIL_TOTAL_IMPORT_LIMIT": "6"}, clear=False
+                ):
+                    with patch.object(
+                        server_module.app_settings, "gmail_import_limit", return_value=40
+                    ):
+                        with patch.object(
+                            server_module.gmail_integration,
+                            "import_inbound_matters",
+                            side_effect=import_side_effect,
+                        ):
+                            with patch.object(
+                                server_module.matter_store,
+                                "deduplicate_gmail_matters",
+                                return_value=0,
+                            ):
+                                with patch.object(server_module.app_settings, "record_gmail_sync"):
+                                    server_module._run_scheduled_gmail_sync()
+
+        # Ceiling 6 over 2 users: user 1 is granted 5 (6 minus the one-slot floor
+        # reserved for user 2) and BURNS all 5 on transient failures; that charge
+        # leaves exactly the reserved 1 for user 2. Were the charge imports-only
+        # (the old accounting), user 2 would have been granted the full 6.
+        self.assertEqual(granted, [5, 1])
 
     def test_scheduled_user_gmail_sync_unexpected_error_does_not_abort_other_users(self):
         # RESILIENCE (C): an UNEXPECTED per-user exception (OSError, store bug --

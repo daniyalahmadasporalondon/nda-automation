@@ -120,25 +120,52 @@ def test_ledger_quarantine_is_processed_and_durably_distinguished(ledger_data_di
     owner = "owner_1"
     session = ledger.ProcessedLedgerSession(owner)
     session.record_attempt("msg_a")
-    session.quarantine("msg_a")
+    session.quarantine("msg_a", reason="review_failed", attempts=5)
     session.flush()
 
     session2 = ledger.ProcessedLedgerSession(owner)
     # Quarantined == processed (skipped before any fetch/AI work on future polls)...
     assert session2.is_processed("msg_a") is True
-    # ... AND distinguishable for operator inspection, with its counter dropped.
+    # ... AND a DISTINCT keyed record (findable/removable without touching the
+    # normal marks), with its retry counter dropped.
     assert session2.quarantined_ids() == {"msg_a"}
     assert session2.attempt_count("msg_a") == 0
     payload = json.loads(
         (ledger_data_dir / "gmail" / "owner_1" / "gmail-processed-messages.json").read_text()
     )
     assert payload["message_ids"] == ["msg_a"]
-    assert payload["quarantined"] == ["msg_a"]
+    record = payload["quarantined"]["msg_a"]
+    assert record["attempts"] == 5
+    assert record["reason"] == "review_failed"
+    assert record["last_at"]  # timestamped for operator triage
+    # The module-level inspector sees the same keyed record.
+    assert ledger.quarantined_messages(owner)["msg_a"]["reason"] == "review_failed"
+
+
+def test_ledger_requeue_releases_a_quarantined_message(ledger_data_dir):
+    # THE MANUAL RECOVERY PATH: requeue removes the id from marks + quarantine +
+    # attempts so the next poll retries it with a clean slate.
+    owner = "owner_1"
+    session = ledger.ProcessedLedgerSession(owner)
+    session.record_attempt("msg_a")
+    session.quarantine("msg_a", reason="pdf_text_unreadable_needs_ocr", attempts=2)
+    session.mark("msg_other")  # an unrelated normal mark must survive the requeue
+    session.flush()
+
+    assert ledger.requeue_quarantined_message("msg_a", owner) is True
+
+    session2 = ledger.ProcessedLedgerSession(owner)
+    assert session2.is_processed("msg_a") is False       # falls through the pre-skip
+    assert session2.attempt_count("msg_a") == 0          # clean retry slate
+    assert session2.quarantined_ids() == set()
+    assert session2.is_processed("msg_other") is True    # unrelated mark untouched
+    # Requeueing an unknown id is a clean no-op.
+    assert ledger.requeue_quarantined_message("msg_a", owner) is False
 
 
 def test_ledger_legacy_ids_only_file_still_reads(ledger_data_dir):
     # A pre-quarantine ledger file (ids only) loads cleanly: ids preserved, zero
-    # attempts, nothing quarantined.
+    # attempts, nothing quarantined. (New-code-reads-old-file rollback direction.)
     path = ledger_data_dir / "gmail" / "owner_1" / "gmail-processed-messages.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"message_ids": ["msg_old"]}))
@@ -146,6 +173,52 @@ def test_ledger_legacy_ids_only_file_still_reads(ledger_data_dir):
     assert session.is_processed("msg_old") is True
     assert session.attempt_count("msg_old") == 0
     assert session.quarantined_ids() == set()
+
+
+def test_ledger_new_file_shape_readable_by_old_code_path(ledger_data_dir):
+    # Old-code-reads-new-file rollback direction: the legacy reader
+    # (_coerce_id_list over the whole payload) ignores the attempts/quarantined
+    # sections and still sees the processed ids.
+    owner = "owner_1"
+    session = ledger.ProcessedLedgerSession(owner)
+    session.mark("msg_a")
+    session.record_attempt("msg_b")
+    session.quarantine("msg_c", reason="attachment_too_large", attempts=2)
+    session.flush()
+    payload = json.loads(
+        (ledger_data_dir / "gmail" / "owner_1" / "gmail-processed-messages.json").read_text()
+    )
+    # Exactly what the OLD reader evaluates: the message_ids list.
+    assert ledger._coerce_id_list(payload) == ["msg_a", "msg_c"]
+
+
+def test_ledger_legacy_list_shaped_quarantine_section_tolerated(ledger_data_dir):
+    # Defensive: a hand-edited/early list-shaped quarantined section coerces to
+    # keyed entries instead of crashing the poll.
+    path = ledger_data_dir / "gmail" / "owner_1" / "gmail-processed-messages.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"message_ids": ["msg_q"], "quarantined": ["msg_q"]}))
+    session = ledger.ProcessedLedgerSession("owner_1")
+    assert session.quarantined_ids() == {"msg_q"}
+    assert ledger.quarantined_messages("owner_1")["msg_q"]["attempts"] == 0
+
+
+def test_ledger_corrupt_file_is_sidelined_not_clobbered_on_flush(ledger_data_dir):
+    # CLOBBER GUARD: when the load found an EXISTING but unreadable file, flush
+    # sidelines it to *.corrupt (forensics) before writing the fresh ledger,
+    # instead of silently overwriting up to 20k prior marks in place.
+    path = ledger_data_dir / "gmail" / "owner_1" / "gmail-processed-messages.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{ not json at all")
+
+    session = ledger.ProcessedLedgerSession("owner_1")
+    session.mark("msg_new")
+    assert session.flush() is True
+
+    corrupt = path.with_name(path.name + ".corrupt")
+    assert corrupt.is_file()
+    assert corrupt.read_text() == "{ not json at all"
+    assert json.loads(path.read_text())["message_ids"] == ["msg_new"]
 
 
 # --------------------------------------------------------------------------- #
@@ -232,6 +305,10 @@ def test_poisoned_message_is_quarantined_after_retry_limit_and_stops_ai_calls(
     session = ledger.ProcessedLedgerSession("owner_1")
     assert session.is_processed("msg_000") is True
     assert session.quarantined_ids() == {"msg_000"}
+    # The durable quarantine record carries the underlying reason for triage.
+    record = ledger.quarantined_messages("owner_1")["msg_000"]
+    assert record["reason"] == "review_failed"
+    assert record["attempts"] == limit
     assert transport.create_attempts == limit
 
     # Poll N+1: THE WHOLE POINT -- the quarantined message is skipped BEFORE the
@@ -256,6 +333,101 @@ def test_quarantine_honours_env_retry_limit(ledger_data_dir, import_limit_20, mo
     assert r2["quarantined"] == 1
     assert ledger.ProcessedLedgerSession("owner_1").quarantined_ids() == {"msg_000"}
     assert transport.create_attempts == 2
+
+
+# --------------------------------------------------------------------------- #
+# A (stratified): a DETERMINISTIC-PERMANENT skip (same bytes -> same outcome)
+# quarantines at the tighter limit, visibly, with reason + filename for a human.
+# --------------------------------------------------------------------------- #
+class _TooLargeAttachmentTransport(_RealLedgerTransport):
+    """Every attachment fails the size gate -- deterministic on the bytes, so a
+    retry can never change the outcome (the too_large stratum).
+    """
+
+    def ensure_document_size(self, document_bytes: bytes) -> None:
+        raise self.DocumentSizeError("attachment exceeds the size limit")
+
+
+def test_deterministic_permanent_skip_quarantines_early_with_reason_and_filename(
+    ledger_data_dir, import_limit_20, monkeypatch,
+):
+    monkeypatch.delenv(gmail_matter_inbox.NDA_GMAIL_TRANSIENT_RETRY_LIMIT_ENV, raising=False)
+    monkeypatch.delenv(gmail_matter_inbox.NDA_GMAIL_PERMANENT_SKIP_RETRY_LIMIT_ENV, raising=False)
+    assert gmail_matter_inbox.DEFAULT_PERMANENT_SKIP_RETRY_LIMIT == 2
+    transport = _TooLargeAttachmentTransport(inbox_size=1, import_limit=import_limit_20)
+
+    # Poll 1: attempt 1 -- below even the tight limit; still unmarked (one confirm
+    # re-run is allowed).
+    r1 = _poll(transport)
+    assert any(s.get("reason") == "attachment_too_large" for s in r1["skipped"])
+    assert r1["quarantined"] == 0
+    assert ledger.ProcessedLedgerSession("owner_1").is_processed("msg_000") is False
+
+    # Poll 2: the deterministic stratum's limit (2) -- quarantined NOW, three polls
+    # earlier than an environmental failure would be (5). NOT silent: the skip
+    # record carries the filename + underlying reason so a human can act (OCR /
+    # raise the size limit / requeue), and the ledger record is inspectable.
+    r2 = _poll(transport)
+    quarantine_skips = [s for s in r2["skipped"] if s.get("reason") == "quarantined"]
+    assert len(quarantine_skips) == 1
+    assert quarantine_skips[0]["attachment_filename"] == "inbound_nda_sample.pdf"
+    assert "attachment_too_large" in quarantine_skips[0]["detail"]
+    assert r2["quarantined"] == 1
+    record = ledger.quarantined_messages("owner_1")["msg_000"]
+    assert record["reason"] == "attachment_too_large"
+    assert record["attempts"] == 2
+
+
+def test_environmental_failure_is_not_caught_by_the_tight_permanent_limit(
+    ledger_data_dir, import_limit_20, monkeypatch,
+):
+    # CONTROL for the stratification: an environmental failure (review_failed --
+    # a retry CAN genuinely fix it) must NOT quarantine at the tight limit (2);
+    # it keeps the full environmental allowance (5).
+    monkeypatch.delenv(gmail_matter_inbox.NDA_GMAIL_TRANSIENT_RETRY_LIMIT_ENV, raising=False)
+    monkeypatch.delenv(gmail_matter_inbox.NDA_GMAIL_PERMANENT_SKIP_RETRY_LIMIT_ENV, raising=False)
+    transport = _PoisonedCreateTransport(inbox_size=1, import_limit=import_limit_20)
+
+    r1 = _poll(transport)
+    r2 = _poll(transport)
+    r3 = _poll(transport)
+    assert r1["quarantined"] == r2["quarantined"] == r3["quarantined"] == 0
+    assert ledger.ProcessedLedgerSession("owner_1").quarantined_ids() == set()
+    assert ledger.ProcessedLedgerSession("owner_1").attempt_count("msg_000") == 3
+
+
+# --------------------------------------------------------------------------- #
+# A (reversible): the requeue path releases a quarantined message end-to-end.
+# --------------------------------------------------------------------------- #
+def test_requeued_quarantined_message_is_retried_and_imports(
+    ledger_data_dir, import_limit_20, monkeypatch,
+):
+    monkeypatch.setenv(gmail_matter_inbox.NDA_GMAIL_TRANSIENT_RETRY_LIMIT_ENV, "2")
+    # Fails on polls 1+2 (-> quarantined at the limit), healthy afterwards --
+    # modelling a poison whose root cause an operator has since fixed.
+    transport = _FlakyThenHealthyCreateTransport(
+        inbox_size=1, import_limit=import_limit_20, failures=2,
+    )
+
+    _poll(transport)
+    r2 = _poll(transport)
+    assert r2["quarantined"] == 1
+    assert ledger.ProcessedLedgerSession("owner_1").quarantined_ids() == {"msg_000"}
+
+    # Poll 3 (still quarantined): skipped pre-AI, nothing imported.
+    transport.selector_calls.clear()
+    r3 = _poll(transport)
+    assert r3["imported"] == []
+    assert transport.selector_calls == []
+
+    # OPERATOR RECOVERY: requeue, then the next poll retries + imports normally.
+    assert ledger.requeue_quarantined_message("msg_000", "owner_1") is True
+    r4 = _poll(transport)
+    assert len(r4["imported"]) == 1
+    assert transport.selector_calls == ["msg_000"]  # the retry genuinely re-ran
+    session = ledger.ProcessedLedgerSession("owner_1")
+    assert session.is_processed("msg_000") is True   # marked via the normal path
+    assert session.quarantined_ids() == set()
 
 
 # --------------------------------------------------------------------------- #

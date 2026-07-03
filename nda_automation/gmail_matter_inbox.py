@@ -45,30 +45,68 @@ _TERMINAL_STABLE_ATTACHMENT_SKIP_REASONS = frozenset(
 # crashes extraction/review) re-runs the PAID gmail_triage selector + gmail_intake
 # classifier AI calls on EVERY poll, forever. The cap bounds that spend: each time a
 # message's heavy path ends in a transient (non-stable) outcome, a per-message
-# attempt counter in the processed ledger is bumped; once it reaches the limit the
-# message is marked processed with reason "quarantined" (terminal), so future polls
-# skip it before any fetch/AI work. Only the EXPENSIVE stage counts an attempt -- a
-# message never reached because the per-poll budget ran out accrues nothing, so
-# budget starvation can never quarantine unattempted mail.
+# attempt counter in the processed ledger is bumped; once it reaches the applicable
+# limit the message is marked processed with reason "quarantined" (terminal), so
+# future polls skip it before any fetch/AI work. Only the EXPENSIVE stage counts an
+# attempt -- a message never reached because the per-poll budget ran out accrues
+# nothing, so budget starvation can never quarantine unattempted mail.
+#
+# The limit is REASON-STRATIFIED. "Transient" is the complement of the terminal
+# allowlist above, which lumps together two very different failure classes:
+#
+# * ENVIRONMENTAL (attachment_unavailable download failures, review_failed
+#   create/extraction crashes, unknown/future reasons): a retry can genuinely
+#   succeed, so these get the full NDA_GMAIL_TRANSIENT_RETRY_LIMIT (default 5).
+# * DETERMINISTIC-PERMANENT (attachment_too_large, pdf_text_unreadable_needs_ocr):
+#   the outcome is a pure function of the SAME bytes -- retrying can never change
+#   it. These may be a REAL counterparty NDA (a scanned PDF needing OCR!), so they
+#   are NOT dropped silently: they quarantine early (NDA_GMAIL_PERMANENT_SKIP_
+#   RETRY_LIMIT, default 2 -- one confirm re-run, no infinite burn) and the
+#   quarantine record carries the underlying reason + filename so a human can act
+#   (OCR it, raise the size limit, or requeue via
+#   gmail_processed_ledger.requeue_quarantined_message).
 NDA_GMAIL_TRANSIENT_RETRY_LIMIT_ENV = "NDA_GMAIL_TRANSIENT_RETRY_LIMIT"
 DEFAULT_TRANSIENT_RETRY_LIMIT = 5
+NDA_GMAIL_PERMANENT_SKIP_RETRY_LIMIT_ENV = "NDA_GMAIL_PERMANENT_SKIP_RETRY_LIMIT"
+DEFAULT_PERMANENT_SKIP_RETRY_LIMIT = 2
+
+# Skip reasons that are DETERMINISTIC on the attachment bytes: a retry re-runs the
+# same computation on the same input and must produce the same skip.
+_DETERMINISTIC_PERMANENT_SKIP_REASONS = frozenset(
+    {
+        "attachment_too_large",
+        "pdf_text_unreadable_needs_ocr",
+    }
+)
 
 
-def _transient_retry_limit() -> int:
-    """The per-message transient-failure attempt cap before quarantine.
+def _env_retry_limit(env_name: str, default: int) -> int:
+    """A fail-open env-tunable retry limit (shared parser for both strata).
 
-    Fail-open like the other Gmail env knobs: a missing/blank/non-numeric/
-    non-positive override falls back to the default so a misconfigured value can
-    never quarantine everything on the first failure (or wedge at zero).
+    A missing/blank/non-numeric/non-positive override falls back to the default so
+    a misconfigured value can never quarantine everything on the first failure (or
+    wedge at zero).
     """
-    raw = os.environ.get(NDA_GMAIL_TRANSIENT_RETRY_LIMIT_ENV, "")
+    raw = os.environ.get(env_name, "")
     try:
         value = int(str(raw).strip())
     except (TypeError, ValueError):
-        return DEFAULT_TRANSIENT_RETRY_LIMIT
+        return default
     if value < 1:
-        return DEFAULT_TRANSIENT_RETRY_LIMIT
+        return default
     return value
+
+
+def _transient_retry_limit() -> int:
+    """The environmental-failure attempt cap before quarantine (default 5)."""
+    return _env_retry_limit(NDA_GMAIL_TRANSIENT_RETRY_LIMIT_ENV, DEFAULT_TRANSIENT_RETRY_LIMIT)
+
+
+def _permanent_skip_retry_limit() -> int:
+    """The deterministic-permanent-failure attempt cap before quarantine (default 2)."""
+    return _env_retry_limit(
+        NDA_GMAIL_PERMANENT_SKIP_RETRY_LIMIT_ENV, DEFAULT_PERMANENT_SKIP_RETRY_LIMIT
+    )
 
 
 def import_inbound_matters(
@@ -205,6 +243,9 @@ def import_inbound_matters(
         # than the cursor and was not cut short by the budget/rate-limit, the backlog
         # below the frontier is exhausted: reset the cursor so future polls run head-only
         # (and a fresh backlog re-arms it). All best-effort -- never raise into the poll.
+        # SAFE ON THE EXCEPTION PATH: state.drain_exhausted is only ever set at a
+        # CLEAN pass-end (never when a pass raised), so an aborted poll can lower
+        # the cursor to its terminal floor but can never spuriously RESET it.
         if cursor_supported:
             try:
                 _persist_drain_cursor(transport, owner_user_id, state, drain_cursor)
@@ -233,6 +274,11 @@ def import_inbound_matters(
         # Surfaced so the sync summary/status can make a quarantine visible instead
         # of it silently eating mail.
         "quarantined": sum(1 for skip in skipped if str(skip.get("reason") or "") == "quarantined"),
+        # HEAVY slots actually consumed this poll (imports + transient-failure
+        # attempts). The fan-out charges the cross-user ceiling with this, so a
+        # poisoned backlog burning worker cycles draws down the shared budget just
+        # like successful imports do -- the ceiling bounds LOAD, not just successes.
+        "new_processed": state.new_processed,
     }
 
 
@@ -275,6 +321,7 @@ class _ScanContext:
         sync_tallies: "_IntakeTallies",
         processed_ledger: Any = None,
         transient_retry_limit: int | None = None,
+        permanent_skip_retry_limit: int | None = None,
     ) -> None:
         self.transport = transport
         self.service = service
@@ -289,10 +336,17 @@ class _ScanContext:
         # poll (REFINEMENT A). May be None when the ledger could not be opened, in
         # which case the scan degrades to the pre-ledger behaviour.
         self.processed_ledger = processed_ledger
-        # Per-message transient-failure attempt cap before quarantine (env-tunable,
-        # resolved once per poll).
+        # Per-message transient-failure attempt caps before quarantine (env-tunable,
+        # resolved once per poll): the full environmental limit and the tighter
+        # deterministic-permanent limit (see the stratification note at the top).
         self.transient_retry_limit = (
             transient_retry_limit if transient_retry_limit is not None else _transient_retry_limit()
+        )
+        self.permanent_skip_retry_limit = min(
+            self.transient_retry_limit,
+            permanent_skip_retry_limit
+            if permanent_skip_retry_limit is not None
+            else _permanent_skip_retry_limit(),
         )
 
 
@@ -466,6 +520,10 @@ def _scan_pass(
             # quarantine mark itself failed to persist on the capping poll) is
             # terminally quarantined HERE -- before the budget slot and before the
             # selector/intake AI calls -- instead of burning one more heavy cycle.
+            # This backstop deliberately compares against the LARGER environmental
+            # limit (the failure reasons are not known pre-run, so the permanent
+            # stratum's tighter cap is only applied at failure time below, where
+            # the reasons are in hand) and NEVER increments the counter itself.
             prior_attempts = _ledger_attempt_count(context, message_id)
             if prior_attempts >= context.transient_retry_limit:
                 _quarantine_message(context, message_id, prior_attempts)
@@ -526,6 +584,10 @@ def _scan_pass(
             # mark when stable_outcome is False -- any transient per-attachment failure
             # (attachment_unavailable / too_large / extraction crash / review_failed)
             # leaves the message unmarked so it retries next poll (the safe bias).
+            # ORDERING INVARIANT: ledger marking (and attempt counting) happens
+            # STRICTLY AFTER import_inbound_attachments returns -- the mark must
+            # reflect the message's actual outcome, never precede it. Nothing in
+            # the heavy path above may mark/count this message id.
             if attachment_result.get("stable_outcome"):
                 _mark_processed(context, message_id)
                 # Terminal/stable: safe to lower the drain cursor past this message.
@@ -534,17 +596,44 @@ def _scan_pass(
                 # A TRANSIENT failure -- leave the message unmarked so it retries
                 # next poll (the safe bias), and leave the floor where it is so the
                 # cursor never descends past this still-to-retry message (the
-                # data-loss fix). BUT count the attempt: this message just consumed
-                # the EXPENSIVE stage (budget slot + selector/intake AI calls), and
-                # once it has done so ``transient_retry_limit`` times it is
-                # quarantined -- a terminal ledger mark with reason "quarantined" --
-                # so a poisoned message stops burning AI spend forever. Attempt
-                # accounting degrades to a no-op (attempts stay 0, never
-                # quarantining) on a ledger session without the counter seam.
+                # data-loss fix). BUT count the attempt -- exactly ONE increment per
+                # message per poll, and ONLY here (this message just consumed the
+                # EXPENSIVE stage: budget slot + selector/intake AI calls). Never
+                # counted: ledger pre-skips, budget/max_scan cut-offs, rate-limit
+                # early returns, or message_unavailable fetch failures (content
+                # never seen). Once the count reaches the applicable stratum's
+                # limit the message is quarantined -- a terminal ledger mark with a
+                # keyed reason record -- so a poisoned message stops burning AI
+                # spend forever. Attempt accounting degrades to a no-op (attempts
+                # stay 0, never quarantining) on a ledger session without the
+                # counter seam.
+                transient_reasons, failing_filename = _transient_failure_summary(
+                    attachment_result.get("skipped")
+                )
+                # Reason stratification: a failure set that is ENTIRELY
+                # deterministic-permanent (too_large / needs_ocr -- same bytes, same
+                # outcome, retrying cannot help) quarantines at the tighter limit;
+                # any environmental reason keeps the full retry allowance.
+                deterministic_only = bool(transient_reasons) and all(
+                    reason in _DETERMINISTIC_PERMANENT_SKIP_REASONS
+                    for reason in transient_reasons
+                )
+                applicable_limit = (
+                    context.permanent_skip_retry_limit
+                    if deterministic_only
+                    else context.transient_retry_limit
+                )
                 attempts = _record_transient_attempt(context, message_id)
-                if attempts >= context.transient_retry_limit:
-                    _quarantine_message(context, message_id, attempts)
-                    # Quarantine IS terminal: the cursor may descend past it.
+                if attempts >= applicable_limit:
+                    _quarantine_message(
+                        context,
+                        message_id,
+                        attempts,
+                        reasons=transient_reasons,
+                        filename=failing_filename,
+                    )
+                    # Quarantine IS terminal: the cursor may descend past it (R5 --
+                    # without this the drain keeps re-paging the same prefix).
                     note_terminal_floor()
         # Stop on an empty next-page token OR a zero-progress page (a page that
         # advanced the token but returned no messages), mirroring the original
@@ -659,38 +748,81 @@ def _record_transient_attempt(context: "_ScanContext", message_id: str) -> int:
         return 0
 
 
-def _quarantine_message(context: "_ScanContext", message_id: str, attempts: int) -> None:
+def _transient_failure_summary(skipped: object) -> tuple[list[str], str]:
+    """The distinct TRANSIENT skip reasons + first failing filename for a message.
+
+    Reads a message's per-attachment skip records (the output of
+    ``import_inbound_attachments``) and keeps only the non-terminal reasons -- the
+    ones that made ``stable_outcome`` False. Used to stratify the retry limit and
+    to make the quarantine record actionable (which attachment, why).
+    """
+    reasons: list[str] = []
+    filename = ""
+    if not isinstance(skipped, list):
+        return reasons, filename
+    for skip in skipped:
+        if not isinstance(skip, dict):
+            continue
+        reason = str(skip.get("reason") or "")
+        if not reason or reason in _TERMINAL_STABLE_ATTACHMENT_SKIP_REASONS:
+            continue
+        if reason not in reasons:
+            reasons.append(reason)
+        if not filename:
+            filename = str(skip.get("attachment_filename") or "")
+    return reasons, filename
+
+
+def _quarantine_message(
+    context: "_ScanContext",
+    message_id: str,
+    attempts: int,
+    *,
+    reasons: list[str] | None = None,
+    filename: str = "",
+) -> None:
     """Terminally quarantine ``message_id`` after exhausting its transient retries.
 
     Marks it processed in the ledger (via the dedicated ``quarantine`` seam when
-    available, so the ledger file distinguishes quarantined ids) and surfaces a
-    visible ``quarantined`` skip so the sync summary/status reports it instead of
-    the message silently disappearing.
+    available, recording a keyed ``{attempts, reason, last_at}`` entry so the
+    quarantine is durable, inspectable, and reversible via
+    ``gmail_processed_ledger.requeue_quarantined_message``) and surfaces a visible
+    ``quarantined`` skip carrying the underlying reason + filename so a human can
+    act on it (OCR the scanned PDF, raise the size limit, requeue) instead of the
+    message silently disappearing.
     """
+    reason_summary = ",".join(reasons or []) or "transient_import_failure"
     ledger = context.processed_ledger
     quarantiner = getattr(ledger, "quarantine", None) if ledger is not None else None
     if callable(quarantiner):
-        quarantiner(message_id)
+        try:
+            quarantiner(message_id, reason=reason_summary, attempts=attempts)
+        except TypeError:
+            # An older/simpler quarantine seam without the metadata kwargs.
+            quarantiner(message_id)
     else:
         _mark_processed(context, message_id)
     context.skipped.append(
         gmail_attachment_skip(
             message_id,
-            "",
+            filename,
             "quarantined",
             detail=(
-                f"transient import failure persisted across {attempts} polls; "
-                "message quarantined (no further AI retries)"
+                f"import failed with [{reason_summary}] across {attempts} attempts; "
+                "message quarantined (no further AI retries; requeue via "
+                "gmail_processed_ledger.requeue_quarantined_message)"
             ),
             attempts=str(attempts),
         )
     )
+    # NOTE (log hygiene): message id + reason codes + counts only -- never
+    # subjects/senders/body text in process logs.
     LOGGER.warning(
         "Gmail inbound message %s quarantined after %d transient import failures "
-        "(limit %d); it will no longer be retried.",
+        "(reasons=%s); it will no longer be retried.",
         message_id,
         attempts,
-        context.transient_retry_limit,
+        reason_summary,
     )
 
 
