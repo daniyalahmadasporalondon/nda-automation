@@ -866,22 +866,33 @@ def handle_matter_backup(handler, *, send_body: bool = True) -> None:
     telemetry.increment("matter_backup_requests")
     # Admin-only ``?owner=<owner_user_id>`` override: the operator can back up a
     # SPECIFIC user's matters (e.g. before a bulk archive of that user's
-    # auto-imported Gmail noise). The gate above already established admin, so
-    # this never widens access; absent the param the backup stays scoped to the
-    # caller exactly as before.
+    # auto-imported Gmail noise), or EVERYTHING with the ``__all__`` sentinel.
+    # The gate above already established admin, so this never widens access;
+    # absent the param the backup stays scoped to the caller exactly as before.
     backup_owner = request_owner_user_id(handler)
     try:
         query = parse_qs(urlparse(str(getattr(handler, "path", "") or "")).query)
         owner_override = str((query.get("owner") or [""])[0] or "").strip()
     except (ValueError, TypeError):
         owner_override = ""
-    if owner_override:
+    export_all = owner_override == "__all__"
+    if owner_override and not export_all:
         backup_owner = owner_override
     try:
-        backup = DiskMatterRepository().export_matters_backup(owner_user_id=backup_owner)
+        repository = DiskMatterRepository()
+        if export_all:
+            # Disaster-recovery dump: EVERY matter regardless of owner,
+            # ownerless (owner_user_id == "") included.
+            backup = repository.export_all_matters_backup()
+        else:
+            backup = repository.export_matters_backup(owner_user_id=backup_owner)
     except MatterRepositoryError as error:
         handler._send_json({"error": str(error)}, status=500, send_body=send_body)
         return
+    # Self-describing scope marker so a dump on disk can always be told apart
+    # from a single-owner export (matter_count is already in the payload).
+    backup["scope"] = "all-owners" if export_all else "single-owner"
+    backup["owner"] = None if export_all else (backup_owner or None)
     data = json.dumps(backup, indent=2).encode("utf-8") + b"\n"
     exported_at = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
     handler._send_download(
