@@ -833,6 +833,141 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(after_status, 200)
         self.assertFalse(after_payload["authenticated"])
 
+    # --- App-layer user allowlist (NDA_ALLOWED_EMAIL_DOMAINS / NDA_ALLOWED_EMAILS) ---
+    # Defense-in-depth over the Google OAuth-app audience: the verified email
+    # must pass the allowlist at the callback (no user/session ever minted) AND
+    # on every later request (revocation for existing sessions). Fail-safe: with
+    # both env vars unset/empty there is no restriction at all.
+
+    ALLOWLIST_OAUTH_ENV = {
+        "NDA_REQUIRE_AUTH": "true",
+        "NDA_AUTH_USERNAME": "",
+        "NDA_AUTH_PASSWORD": "",
+        "NDA_GOOGLE_OAUTH_CLIENT_ID": "google-client",
+        "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
+        "NDA_GOOGLE_OAUTH_REDIRECT_URI": "http://127.0.0.1/auth/google/callback",
+    }
+
+    def _google_callback(self, email):
+        """Drive /auth/google/start + /auth/google/callback for ``email``.
+
+        Returns (status, payload, headers) of the callback response. The token
+        exchange and ID-token verification are stubbed; everything else is the
+        real route (state cookie, allowlist gate, user/session mint)."""
+        _status, _payload, start_headers = self.request_with_headers(
+            "GET", "/auth/google/start?next=/api/matters"
+        )
+        state = parse_qs(urlparse(start_headers["Location"]).query)["state"][0]
+        state_cookie = self.cookie_header(start_headers["Set-Cookie"])
+        with patch(
+            "nda_automation.routes.auth.google_identity.exchange_google_code",
+            return_value={"id_token": "id-token"},
+        ), patch(
+            "nda_automation.routes.auth.google_identity.verify_google_id_token",
+            return_value={
+                "aud": "google-client",
+                "sub": "allowlist-user-1",
+                "email": email,
+                "email_verified": "true",
+                "name": "Allowlist Probe",
+            },
+        ):
+            return self.request_with_headers(
+                "GET",
+                f"/auth/google/callback?code=auth-code&state={state}",
+                headers={"Cookie": state_cookie},
+            )
+
+    def test_google_callback_denies_email_outside_allowlist(self):
+        env = {**self.ALLOWLIST_OAUTH_ENV, "NDA_ALLOWED_EMAIL_DOMAINS": "aspora.com"}
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patch.dict(os.environ, env):
+                status, payload, headers = self._google_callback("mallory@evil.example")
+        self.assertEqual(status, 403)
+        # A friendly HTML door, not a JSON error -- and NO session is minted.
+        self.assertIn("text/html", headers["Content-Type"])
+        self.assertIn("Ask your Aspora admin", payload.decode("utf-8"))
+        self.assertNotIn("Set-Cookie", headers)
+
+    def test_google_callback_allows_email_on_allowed_domain(self):
+        # Mixed case on both sides: matching is normalized (lowercase/strip).
+        env = {**self.ALLOWLIST_OAUTH_ENV, "NDA_ALLOWED_EMAIL_DOMAINS": " Aspora.COM , other.example "}
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patch.dict(os.environ, env):
+                status, _payload, headers = self._google_callback("Dana@ASPORA.com")
+        self.assertEqual(status, 302)
+        self.assertIn("nda_session=", headers["Set-Cookie"])
+
+    def test_google_callback_allows_exact_email_exception(self):
+        # The exceptions list admits a personal address outside every domain.
+        env = {
+            **self.ALLOWLIST_OAUTH_ENV,
+            "NDA_ALLOWED_EMAIL_DOMAINS": "aspora.com",
+            "NDA_ALLOWED_EMAILS": " Personal.Founder@Gmail.com ",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patch.dict(os.environ, env):
+                status, _payload, headers = self._google_callback("personal.founder@gmail.com")
+        self.assertEqual(status, 302)
+        self.assertIn("nda_session=", headers["Set-Cookie"])
+
+    def test_google_callback_unrestricted_when_allowlist_unset(self):
+        # CRITICAL fail-safe: both vars unset/empty -> current behavior (open),
+        # so a deploy before the env is configured can never lock everyone out.
+        env = {**self.ALLOWLIST_OAUTH_ENV, "NDA_ALLOWED_EMAIL_DOMAINS": "", "NDA_ALLOWED_EMAILS": " , "}
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patch.dict(os.environ, env):
+                status, _payload, headers = self._google_callback("anyone@anywhere.example")
+        self.assertEqual(status, 302)
+        self.assertIn("nda_session=", headers["Set-Cookie"])
+
+    def test_existing_google_session_is_revoked_by_allowlist(self):
+        # Enforcement is per-request, so tightening the env vars cuts off
+        # ALREADY-signed-in users too: their session reads as unauthenticated.
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patch.dict(os.environ, self.ALLOWLIST_OAUTH_ENV):
+                headers, _user = self.google_session_headers()  # alice@example.com
+                open_status, _open_payload = self.request("GET", "/api/matters", headers=headers)
+                with patch.dict(os.environ, {"NDA_ALLOWED_EMAIL_DOMAINS": "aspora.com"}):
+                    revoked_status, revoked_payload = self.request(
+                        "GET", "/api/matters", headers=headers
+                    )
+                # The exact-email exception restores the same session (mixed case).
+                with patch.dict(
+                    os.environ,
+                    {"NDA_ALLOWED_EMAIL_DOMAINS": "aspora.com", "NDA_ALLOWED_EMAILS": "ALICE@Example.com"},
+                ):
+                    restored_status, _restored_payload = self.request(
+                        "GET", "/api/matters", headers=headers
+                    )
+        self.assertEqual(open_status, 200)
+        self.assertEqual(revoked_status, 401)
+        self.assertEqual(revoked_payload["error"], server_module.AUTH_REQUIRED_MESSAGE)
+        self.assertEqual(restored_status, 200)
+
+    def test_basic_auth_sessions_are_unaffected_by_allowlist(self):
+        # The allowlist gates GOOGLE identities only; a Basic-auth operator
+        # (whose username is not an email at all) keeps working unchanged.
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "nda-admin",
+            "NDA_AUTH_PASSWORD": "secret",
+            "NDA_ALLOWED_EMAIL_DOMAINS": "aspora.com",
+            "NDA_ALLOWED_EMAILS": "",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patch.dict(os.environ, auth_env):
+                status, _payload = self.request(
+                    "GET", "/api/matters", headers=self.basic_auth_headers()
+                )
+        self.assertEqual(status, 200)
+
     def test_matter_backup_export_requires_auth_when_auth_is_enabled(self):
         auth_env = {
             "NDA_REQUIRE_AUTH": "true",
@@ -942,6 +1077,111 @@ class ServerTests(unittest.TestCase):
                 with patch.dict(os.environ, auth_env):
                     status, payload = self.request(
                         "GET", "/api/matters/export", headers=session_headers
+                    )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"], server_module.ADMIN_REQUIRED_MESSAGE)
+
+    # --- All-owners backup (?owner=__all__) -----------------------------------
+    # A disaster-recovery dump must cover EVERY tenant's matters, ownerless
+    # (owner_user_id == "") included, and say so in the payload; the default
+    # (single-owner) export stays exactly as before -- just scope-tagged.
+
+    BACKUP_ADMIN_ENV = {
+        "NDA_REQUIRE_AUTH": "true",
+        "NDA_AUTH_USERNAME": "nda-admin",
+        "NDA_AUTH_PASSWORD": "secret",
+        "NDA_ADMIN_USERS": "nda-admin",
+    }
+
+    def _seed_backup_matters(self):
+        """Three tenants' worth of matters: owner A, owner B, and OWNERLESS."""
+        seeded = {}
+        for label, owner in (("a", "google:owner-a"), ("b", "google:owner-b"), ("orphan", "")):
+            seeded[label] = matter_store.create_matter(
+                source_filename=f"Backup NDA {label}.docx",
+                document_bytes=f"backup-bytes-{label}".encode("utf-8"),
+                extracted_text=f"Extracted text {label}",
+                review_result={"clauses": []},
+                triage={"triage_status": "legal_review", "issue_count": 0},
+                owner_user_id=owner,
+            )
+        return seeded
+
+    def test_matter_backup_all_owners_exports_every_owner_and_ownerless(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                seeded = self._seed_backup_matters()
+                with patch.dict(os.environ, self.BACKUP_ADMIN_ENV):
+                    status, payload, headers = self.request_with_headers(
+                        "GET",
+                        "/api/matters/export?owner=__all__",
+                        headers=self.basic_auth_headers(),
+                    )
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["X-Backup-Contains"], "matter-json")
+        # Self-describing scope marker.
+        self.assertEqual(payload["scope"], "all-owners")
+        self.assertIsNone(payload["owner"])
+        self.assertEqual(payload["matter_count"], 3)
+        exported_ids = {matter["id"] for matter in payload["matters"]}
+        self.assertEqual(exported_ids, {matter["id"] for matter in seeded.values()})
+        # The ownerless matter (owner_user_id == "") is INCLUDED.
+        owners = {str(matter.get("owner_user_id") or "") for matter in payload["matters"]}
+        self.assertEqual(owners, {"google:owner-a", "google:owner-b", ""})
+
+    def test_matter_backup_single_owner_default_is_unchanged_and_scope_tagged(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                self._seed_backup_matters()
+                own_matter = matter_store.create_matter(
+                    source_filename="Admin Own NDA.docx",
+                    document_bytes=b"admin-own-bytes",
+                    extracted_text="Admin's own matter",
+                    review_result={"clauses": []},
+                    triage={"triage_status": "legal_review", "issue_count": 0},
+                    owner_user_id="nda-admin",
+                )
+                with patch.dict(os.environ, self.BACKUP_ADMIN_ENV):
+                    default_status, default_payload = self.request(
+                        "GET", "/api/matters/export", headers=self.basic_auth_headers()
+                    )
+                    override_status, override_payload = self.request(
+                        "GET",
+                        "/api/matters/export?owner=google:owner-a",
+                        headers=self.basic_auth_headers(),
+                    )
+        # Default: scoped to the caller exactly as before, now scope-tagged.
+        self.assertEqual(default_status, 200)
+        self.assertEqual(default_payload["scope"], "single-owner")
+        self.assertEqual(default_payload["owner"], "nda-admin")
+        self.assertEqual(default_payload["matter_count"], 1)
+        self.assertEqual(default_payload["matters"][0]["id"], own_matter["id"])
+        # Specific-owner override: still exactly that owner's matters.
+        self.assertEqual(override_status, 200)
+        self.assertEqual(override_payload["scope"], "single-owner")
+        self.assertEqual(override_payload["owner"], "google:owner-a")
+        self.assertEqual(override_payload["matter_count"], 1)
+        self.assertEqual(override_payload["matters"][0]["owner_user_id"], "google:owner-a")
+
+    def test_matter_backup_all_owners_denies_non_admin(self):
+        auth_env = {
+            "NDA_REQUIRE_AUTH": "true",
+            "NDA_AUTH_USERNAME": "",
+            "NDA_AUTH_PASSWORD": "",
+            "NDA_GOOGLE_OAUTH_CLIENT_ID": "google-client",
+            "NDA_GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
+            "NDA_ADMIN_USERS": "",
+        }
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                self._seed_backup_matters()
+                session_headers, _user = self.google_session_headers()
+                with patch.dict(os.environ, auth_env):
+                    status, payload = self.request(
+                        "GET", "/api/matters/export?owner=__all__", headers=session_headers
                     )
         self.assertEqual(status, 403)
         self.assertEqual(payload["error"], server_module.ADMIN_REQUIRED_MESSAGE)
