@@ -195,10 +195,64 @@ GMAIL_INBOUND_BASE_QUERY = _inbound_envelope_query(GMAIL_INBOUND_WINDOW_DAYS)
 # string is retained only for back-compat references and is NOT appended to the
 # fetch query.
 NDA_MESSAGE_QUERY = _gmail_search_terms_query(app_settings.DEFAULT_GMAIL_INBOUND_SEARCH_TERMS)
-# The fetch query is now the structural envelope only; keyword terms never gate
-# the fetch. The "...WITH_AI_SELECTOR" alias stays so existing references keep
-# resolving to the same envelope.
-DEFAULT_INBOUND_QUERY = GMAIL_INBOUND_BASE_QUERY
+
+# ENVELOPE SENDER EXCLUDES (query-level, kill-switchable). The structural envelope
+# matches EVERY docx/pdf attachment email, which floods the scan with e-signature
+# platform notifications and calendar invites -- ~735 junk matters across 4
+# mailboxes, each paying Pro-selector + Flash-intake AI calls. The AUTHORITATIVE
+# suppression is the code-level sender check (_excluded_notification_sender below):
+# it keeps every drop VISIBLE in skipped[] telemetry + the processed ledger and is
+# reversible per-message. The query-level ``-from:`` clauses here are a REDUNDANT
+# fetch-quota optimization over the SAME sender entries -- safe because they are
+# sender-domain-only (never subject/filename, which Gmail tokenizes lossily and
+# which would hide real "Invitation to tender -- NDA attached" threads).
+# NDA_GMAIL_ENVELOPE_EXCLUDES: default ON; set 0/false/no/off to fall back to the
+# exact pre-exclude query AND to the DocuSign-only code check (full rollback).
+NDA_GMAIL_ENVELOPE_EXCLUDES_ENV = "NDA_GMAIL_ENVELOPE_EXCLUDES"
+
+
+def _default_on_env_flag(name: str) -> bool:
+    """A default-ON env kill switch: only an explicit 0/false/no/off disables."""
+    raw = os.environ.get(name, "")
+    return str(raw or "").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def gmail_envelope_excludes_enabled() -> bool:
+    """Whether the inbound sender excludes (query + code level) are active."""
+    return _default_on_env_flag(NDA_GMAIL_ENVELOPE_EXCLUDES_ENV)
+
+
+def _envelope_sender_exclude_clause(entries: list[str]) -> str:
+    """The ``-from:`` clause group for the validated sender-exclude entries.
+
+    Entries are re-cleaned through the settings validator so nothing that could
+    carry whitespace/quotes/operators is ever interpolated into the fetch query.
+    """
+    parts: list[str] = []
+    for entry in entries:
+        cleaned = app_settings._clean_gmail_excluded_sender(entry)
+        if cleaned and f"-from:{cleaned}" not in parts:
+            parts.append(f"-from:{cleaned}")
+    return " ".join(parts)
+
+
+def _settings_excluded_senders() -> list[str]:
+    """The admin-editable sender-exclude entries (defensive settings read)."""
+    try:
+        return app_settings.gmail_inbound_excluded_senders()
+    except Exception:  # pragma: no cover - settings read must never break the poll
+        return list(app_settings.DEFAULT_GMAIL_INBOUND_EXCLUDED_SENDERS)
+
+
+# The default exclude clause + query at import time (the shipped default shape).
+# Consumers comparing the EFFECTIVE query against these constants assume default
+# settings AND the excludes flag on (its default).
+DEFAULT_GMAIL_ENVELOPE_EXCLUDE_CLAUSE = _envelope_sender_exclude_clause(
+    list(app_settings.DEFAULT_GMAIL_INBOUND_EXCLUDED_SENDERS)
+)
+DEFAULT_INBOUND_QUERY = f"{GMAIL_INBOUND_BASE_QUERY} {DEFAULT_GMAIL_ENVELOPE_EXCLUDE_CLAUSE}"
+# The "...WITH_AI_SELECTOR" alias stays so existing references keep resolving to
+# the same envelope.
 DEFAULT_INBOUND_QUERY_WITH_AI_SELECTOR = DEFAULT_INBOUND_QUERY
 
 # DocuSign envelope-notification emails (signature requests/completions, "your
@@ -208,6 +262,8 @@ DEFAULT_INBOUND_QUERY_WITH_AI_SELECTOR = DEFAULT_INBOUND_QUERY
 # matters. The match is DOMAIN-ONLY (never subject/body): a real NDA that merely
 # mentions DocuSign must still pass. Covers dse@docusign.net, dse_demo@,
 # dse_na1..4@, dse_eu1@, eumail.docusign.net, mail.docusign.net, etc.
+# This tuple is the HARD FLOOR: it applies even when the admin clears the
+# settings-level exclude list or the envelope-excludes kill switch is off.
 DOCUSIGN_NOTIFICATION_DOMAINS = ("docusign.net",)
 
 # Per-poll import ceiling. This is the GENTLE CATCH-UP knob: it bounds how many
@@ -320,7 +376,13 @@ def gmail_status(owner_user_id: str = "") -> dict[str, Any]:
         "inbound_window_days_default": app_settings.DEFAULT_GMAIL_INBOUND_WINDOW_DAYS,
         "inbound_window_days_min": app_settings.MIN_GMAIL_INBOUND_WINDOW_DAYS,
         "inbound_window_days_max": app_settings.MAX_GMAIL_INBOUND_WINDOW_DAYS,
-        "sync": user_store.gmail_sync_status(owner_user_id) if owner_user_id else _global_gmail_sync_status(settings),
+        # The effective + default inbound sender-exclude lists (admin-visible,
+        # editable via the /api/gmail/settings update path) and whether the
+        # NDA_GMAIL_ENVELOPE_EXCLUDES kill switch currently has them active.
+        "inbound_excluded_senders": app_settings.gmail_inbound_excluded_senders(settings),
+        "inbound_excluded_senders_default": list(app_settings.DEFAULT_GMAIL_INBOUND_EXCLUDED_SENDERS),
+        "envelope_excludes_enabled": gmail_envelope_excludes_enabled(),
+        "sync": _gmail_sync_status_payload(owner_user_id, settings),
         "account_match": True,
         "user_scoped": bool(owner_user_id),
         "setup": google_connection.connection_setup_status(
@@ -500,11 +562,56 @@ def _global_gmail_sync_status(settings: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _gmail_sync_status_payload(owner_user_id: str, settings: dict[str, Any]) -> dict[str, Any]:
+    """The status payload's ``sync`` block, with backfill progress for user scopes.
+
+    The per-user sync record carries ``backfill_completed_through_days`` (the
+    first-sync backfill cursor); surface it as a small display object so the
+    UI/operator can see WHY an old thread has not imported yet ("backfilling:
+    X of Y days") instead of suspecting a broken sync.
+    """
+    if not owner_user_id:
+        return _global_gmail_sync_status(settings)
+    sync = dict(user_store.gmail_sync_status(owner_user_id))
+    try:
+        completed = int(sync.get("backfill_completed_through_days") or 0)
+    except (TypeError, ValueError):
+        completed = 0
+    try:
+        target_days = app_settings.gmail_inbound_window_days(settings)
+    except Exception:  # pragma: no cover - settings read must never break status
+        target_days = GMAIL_INBOUND_WINDOW_DAYS
+    active = 0 < completed < target_days
+    backfill: dict[str, Any] = {
+        "active": active,
+        "completed_through_days": completed,
+        "target_days": target_days,
+    }
+    if active:
+        backfill["label"] = f"backfilling: {completed} of {target_days} days"
+    sync["backfill"] = backfill
+    return sync
+
+
+def _inbound_query_for_window(window_days: int) -> str:
+    """The effective inbound fetch query for an explicit window (in days).
+
+    The structural envelope plus (when the kill switch is on) the sender-exclude
+    ``-from:`` clauses. Only ever SHRINKS the candidate set relative to the bare
+    envelope; the code-level sender check remains the authoritative/visible drop.
+    """
+    base = _inbound_envelope_query(window_days)
+    if not gmail_envelope_excludes_enabled():
+        return base
+    clause = _envelope_sender_exclude_clause(_settings_excluded_senders())
+    return f"{base} {clause}" if clause else base
+
+
 def _default_inbound_query() -> str:
-    # Only the structural envelope. The admin keyword terms are NEVER a fetch gate.
-    # They feed the deterministic CONTENT scorer (and only when
-    # NDA_GMAIL_CUSTOM_TERMS_ENABLED is on; see _nda_terms_in_text) -- broadening
-    # the fetch with them is the storm vector we deliberately avoid.
+    # Only the structural envelope (+ the sender excludes). The admin keyword terms
+    # are NEVER a fetch gate. They feed the deterministic CONTENT scorer (and only
+    # when NDA_GMAIL_CUSTOM_TERMS_ENABLED is on; see _nda_terms_in_text) --
+    # broadening the fetch with them is the storm vector we deliberately avoid.
     #
     # The window (``newer_than:{N}d``) is admin-configurable, so build the envelope
     # at CALL time from the stored setting. The reader already falls back to the
@@ -515,7 +622,97 @@ def _default_inbound_query() -> str:
         window_days = app_settings.gmail_inbound_window_days()
     except Exception:  # pragma: no cover - defensive: settings read must never break fetch
         return GMAIL_INBOUND_BASE_QUERY
-    return _inbound_envelope_query(window_days)
+    return _inbound_query_for_window(window_days)
+
+
+# FIRST-SYNC BACKFILL CAP. A NEWLY connected account's first poll would otherwise
+# scan the whole configured window (default 90d) at once -- on a busy inbox that is
+# hundreds of stubs and a long march of paid selector/intake calls. The cap starts
+# the first sync at min(window, NDA_GMAIL_FIRST_SYNC_CAP_DAYS) days and widens by
+# the same step on each successful poll (14 -> 28 -> ... -> 90), recording a
+# per-user ``backfill_completed_through_days`` cursor alongside the existing
+# per-user gmail sync state. EXISTING connected users are exempt: prior sync
+# evidence (last_sync_at / sync_history) means their ledger + drain cursor already
+# drained the window, so capping them would be a pointless (and confusing) shrink.
+# NDA_GMAIL_FIRST_SYNC_CAP_DAYS: default 14; 0 disables the cap entirely.
+NDA_GMAIL_FIRST_SYNC_CAP_DAYS_ENV = "NDA_GMAIL_FIRST_SYNC_CAP_DAYS"
+DEFAULT_GMAIL_FIRST_SYNC_CAP_DAYS = 14
+
+
+def _first_sync_cap_days() -> int:
+    """The first-sync cap/widen step in days (0 = disabled; junk => default)."""
+    raw = str(os.environ.get(NDA_GMAIL_FIRST_SYNC_CAP_DAYS_ENV, "") or "").strip()
+    if not raw:
+        return DEFAULT_GMAIL_FIRST_SYNC_CAP_DAYS
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_GMAIL_FIRST_SYNC_CAP_DAYS
+    if value < 0:
+        return DEFAULT_GMAIL_FIRST_SYNC_CAP_DAYS
+    return value
+
+
+def _inbound_backfill_state(owner_user_id: str) -> dict[str, int] | None:
+    """The first-sync backfill window for this owner's NEXT poll, or None.
+
+    Returns ``{"effective_window_days", "completed_through_days", "target_days"}``
+    when the cap applies; ``None`` when it does not (cap disabled, no owner, cap
+    >= window, backfill already complete, or an EXISTING connected user whose
+    sync state predates the cap -- their window already drained). Defensive:
+    any state-read failure returns None so the poll degrades to the full window
+    rather than ever raising.
+    """
+    owner = _clean_user_token_segment(owner_user_id)
+    if not owner:
+        return None
+    cap = _first_sync_cap_days()
+    if cap <= 0:
+        return None
+    try:
+        window_days = app_settings.gmail_inbound_window_days()
+    except Exception:  # pragma: no cover - settings read must never break the poll
+        window_days = GMAIL_INBOUND_WINDOW_DAYS
+    if cap >= window_days:
+        return None
+    try:
+        sync = user_store.gmail_sync_status(owner)
+    except Exception:  # pragma: no cover - state read must never break the poll
+        return None
+    try:
+        completed = int(sync.get("backfill_completed_through_days") or 0)
+    except (TypeError, ValueError):
+        completed = 0
+    if completed <= 0:
+        # No backfill cursor yet. An EXISTING connected user (prior sync evidence)
+        # is exempt -- their ledger/drain cursor already drained the window -- and
+        # is never capped nor migrated onto the cursor.
+        if str(sync.get("last_sync_at") or "").strip() or sync.get("sync_history"):
+            return None
+        return {
+            "effective_window_days": min(cap, window_days),
+            "completed_through_days": 0,
+            "target_days": window_days,
+        }
+    if completed >= window_days:
+        return None  # backfill complete -- full window from here on
+    return {
+        "effective_window_days": min(completed + cap, window_days),
+        "completed_through_days": completed,
+        "target_days": window_days,
+    }
+
+
+def _record_inbound_backfill_progress(owner_user_id: str, completed_through_days: int) -> None:
+    """Persist the per-user backfill cursor after a poll that secured the band.
+
+    Best-effort: a write failure only delays widening (the next poll re-uses the
+    same window), never fails the poll.
+    """
+    owner = _clean_user_token_segment(owner_user_id)
+    if not owner:
+        return
+    user_store.record_gmail_backfill_progress(owner, completed_through_days)
 
 
 def gmail_role_setup_error(role: str, owner_user_id: str = "") -> str:
@@ -918,6 +1115,198 @@ def _is_self_or_outbound_message(message: dict[str, Any], account_email: str) ->
     return bool(sender and _email_addresses_match(sender, account_email))
 
 
+def _message_sender_address(message: dict[str, Any]) -> str:
+    """The single, lowercased sender address from the raw ``From`` header, or "".
+
+    Fail-open: a malformed ``From`` (no parseable address, more than one address,
+    or no "@") returns "" so a sender-based skip can never fire on ambiguity and
+    a real NDA is never wrongly dropped.
+    """
+    headers = message.get("payload", {}).get("headers") or []
+    raw_from = _header(headers, "From")
+    if not raw_from:
+        return ""
+    parsed = getaddresses([raw_from])
+    # Exactly one address; anything ambiguous (0 or 2+) fails open.
+    if len(parsed) != 1:
+        return ""
+    _name, address = parsed[0]
+    address = (address or "").strip().lower()
+    if "@" not in address:
+        return ""
+    domain = address.rsplit("@", 1)[1].strip()
+    if not domain:
+        return ""
+    return address
+
+
+def _sender_matches_exclude_entry(address: str, entry: str) -> bool:
+    """SENDER-ONLY match of one exclude entry against a parsed address.
+
+    An entry carrying an "@" matches the FULL address exactly (e.g.
+    ``calendar-notification@google.com``); a bare-domain entry matches the
+    sender's domain or any subdomain of it. Subject/body/filename are never
+    consulted -- a real NDA that merely mentions an e-sign platform must import.
+    """
+    entry = str(entry or "").strip().lower()
+    if not entry or not address:
+        return False
+    if "@" in entry:
+        return address == entry
+    domain = address.rsplit("@", 1)[1]
+    return domain == entry or domain.endswith("." + entry)
+
+
+def _notification_sender_exclude_entries() -> list[str]:
+    """The effective code-level sender-exclude entries for the inbound scan.
+
+    The hard DOCUSIGN_NOTIFICATION_DOMAINS floor ALWAYS applies (it is the live
+    fix and survives an admin clearing the settings list); the admin-editable
+    settings entries (defaulting to the e-sign platform + calendar senders) are
+    added on top only while the NDA_GMAIL_ENVELOPE_EXCLUDES kill switch is on --
+    switching it off restores the exact DocuSign-only behaviour.
+    """
+    entries = list(DOCUSIGN_NOTIFICATION_DOMAINS)
+    if not gmail_envelope_excludes_enabled():
+        return entries
+    for entry in _settings_excluded_senders():
+        cleaned = str(entry or "").strip().lower()
+        if cleaned and cleaned not in entries:
+            entries.append(cleaned)
+    return entries
+
+
+def _excluded_notification_sender(message: dict[str, Any]) -> str:
+    """The exclude-list entry this message's sender matches, or "".
+
+    The authoritative (code-level) counterpart of the query-level ``-from:``
+    clauses: it also catches FORWARDED notifications the query cannot see, and
+    every drop it causes stays visible in skipped[] telemetry + the ledger.
+    """
+    address = _message_sender_address(message)
+    if not address:
+        return ""
+    for entry in _notification_sender_exclude_entries():
+        if _sender_matches_exclude_entry(address, entry):
+            return entry
+    return ""
+
+
+# EXECUTED-NDA CAPTURE. E-sign platform notification mail is USUALLY junk
+# (requests/reminders/receipts) -- but a counterparty-initiated envelope's
+# COMPLETION email is often the only copy of an executed NDA that ever reaches
+# the mailbox, and an unconditional terminal drop would leave it with NO capture
+# route. When a platform notification carries an EXPLICIT NDA signal (a strong
+# NDA filename, or an explicit NDA term in subject/body/snippet -- the same
+# signals as the AI pre-gate escape hatch), it is let THROUGH the intake
+# pipeline instead of the terminal drop, but clamped to at most the TRIAGE lane
+# (these are usually executed documents; a human must look, never a silent
+# auto-clean import) and stamped with the esign_notification_nda provenance so
+# an operator can filter them later. Platform mail with no explicit signal keeps
+# the terminal drop. NDA_GMAIL_ESIGN_NDA_CAPTURE: default ON; 0/false/no/off
+# restores the unconditional drop.
+NDA_GMAIL_ESIGN_NDA_CAPTURE_ENV = "NDA_GMAIL_ESIGN_NDA_CAPTURE"
+# The provenance marker for captured e-sign platform NDAs: used as the forced
+# triage_reason and the gmail_esign_notification metadata key's semantic tag.
+# Aliased from the inbox module (which stamps it) so there is one definition.
+ESIGN_NDA_CAPTURE_TRIAGE_REASON = gmail_matter_inbox.ESIGN_NDA_CAPTURE_TRIAGE_REASON
+
+
+def gmail_esign_nda_capture_enabled() -> bool:
+    """Whether explicit-NDA e-sign notifications are captured for triage."""
+    return _default_on_env_flag(NDA_GMAIL_ESIGN_NDA_CAPTURE_ENV)
+
+
+def _esign_notification_nda_hit(
+    message: dict[str, Any],
+    attachments: list[dict[str, str]],
+) -> bool:
+    """Whether an e-sign platform notification carries an explicit NDA signal.
+
+    REUSES the pre-gate escape hatch's signal definitions -- a strong NDA
+    filename on any reviewable attachment, or an explicit NDA term detected in
+    the subject/body/snippet (never filename-only for the message-level check,
+    mirroring _metadata_has_explicit_nda_signal). False when the capture feature
+    is switched off, so the caller falls back to the terminal drop.
+    """
+    if not gmail_esign_nda_capture_enabled():
+        return False
+    for attachment in attachments:
+        filename = str(attachment.get("filename") or "")
+        if filename and _attachment_explicit_nda_hit(None, filename):
+            return True
+    detection = _message_nda_detection(message, attachments)
+    sources = detection.get("sources") if isinstance(detection.get("sources"), list) else []
+    if not any(source in {"subject", "body", "snippet"} for source in sources):
+        return False
+    terms = detection.get("terms") if isinstance(detection.get("terms"), list) else []
+    return any(term in EXPLICIT_NDA_TERMS for term in terms)
+
+
+def _excluded_message_content_probe(
+    service: Any,
+    message_id: str,
+    attachments: list[dict[str, str]],
+) -> bool:
+    """Deterministic CONTENT probe for an excluded-sender message (no AI).
+
+    The explicit-token capture above misses genuine NDA envelopes whose subject/
+    filename carries no English NDA token (Adobe Sign "Signature requested on
+    'Acme - Mutual Agreement'"); the base (pre-exclude) behaviour would have
+    imported those. Before the terminal drop, download + extract each reviewable
+    attachment and run the EXISTING deterministic scorer: True (capture, triage-
+    clamped) when any attachment reaches the triage band (a content basis or a
+    triage-band score) OR the scorer is language-blind on substantial text (zero
+    vocabulary hits -- mirrors the pre-gate's F1(a) exemption). Platform junk
+    (invoices, decks, receipts) engages the vocabulary and still drops.
+
+    NOTE: like ``_attachment_nda_detection`` this is an extra extraction site
+    whose result is discarded (prepare re-extracts on the capture path); it runs
+    at most once per message EVER (the drop ledger-marks) and the scan loop caps
+    probes per poll. A Gmail rate-limit at the download stage is re-raised so a
+    429 storm aborts the pass instead of terminal-dropping a real NDA.
+    """
+    if not gmail_esign_nda_capture_enabled():
+        return False
+    for attachment in attachments:
+        filename = str(attachment.get("filename") or "")
+        try:
+            document_bytes = _attachment_bytes(service, message_id, attachment)
+            ensure_document_size(document_bytes)
+            _document_type, paragraphs, _quality = extract_document(
+                filename,
+                document_bytes,
+                include_visual_profile=False,
+            )
+        except GmailIntegrationError as error:
+            if _gmail_retry_after_epoch(error):
+                raise  # provider throttling says nothing about this message
+            continue
+        except (DocumentSizeError, DocxExtractionError, PdfExtractionError):
+            continue
+        validation = _attachment_nda_validation(filename, paragraphs)
+        try:
+            score = int(validation.get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        if bool(validation.get("has_content_basis")) or score >= TRIAGE_MIN_NDA_SCORE:
+            return True
+        try:
+            hits = int(validation.get("detection_hits") or 0)
+        except (TypeError, ValueError):
+            hits = 0
+        if hits == 0:
+            # Zero vocabulary hits: the English scorer is blind here. Capture
+            # only when there is SUBSTANTIAL text (a thin/empty extraction gives
+            # the deterministic probe nothing to stand on either way).
+            total_text = 0
+            for paragraph in paragraphs:
+                total_text += len(" ".join(str(paragraph.get("text") or "").split()))
+                if total_text >= gmail_matter_inbox.MIN_PREGATE_EXTRACTED_TEXT_CHARS:
+                    return True
+    return False
+
+
 def _is_docusign_notification(message: dict[str, Any]) -> bool:
     """Return True iff the message is a DocuSign envelope-notification email.
 
@@ -927,24 +1316,13 @@ def _is_docusign_notification(message: dict[str, Any]) -> bool:
     mentions DocuSign must still be imported.
 
     Fail-open: a malformed ``From`` (no parseable address, or more than one
-    address) returns False so a real NDA is never wrongly skipped.
+    address) returns False so a real NDA is never wrongly skipped. Kept as the
+    hard-floor backstop the broader ``_excluded_notification_sender`` builds on.
     """
-    headers = message.get("payload", {}).get("headers") or []
-    raw_from = _header(headers, "From")
-    if not raw_from:
-        return False
-    parsed = getaddresses([raw_from])
-    # Exactly one address; anything ambiguous (0 or 2+) fails open.
-    if len(parsed) != 1:
-        return False
-    _name, address = parsed[0]
-    address = (address or "").strip().lower()
-    if "@" not in address:
-        return False
-    domain = address.rsplit("@", 1)[1].strip()
-    if not domain:
-        return False
-    return any(domain == base or domain.endswith("." + base) for base in DOCUSIGN_NOTIFICATION_DOMAINS)
+    address = _message_sender_address(message)
+    return bool(address) and any(
+        _sender_matches_exclude_entry(address, base) for base in DOCUSIGN_NOTIFICATION_DOMAINS
+    )
 
 
 def _email_addresses_match(left: str, right: str) -> bool:
@@ -1138,6 +1516,14 @@ def _attachment_nda_validation(
         "score": score,
         "sources": sources,
         "terms": terms,
+        # How many vocabulary signals (NDA filename/content + collateral) the
+        # scorer matched AT ALL. Zero over substantial text means the ENGLISH
+        # vocabulary is language-blind for this document (e.g. a Spanish
+        # "Acuerdo de Confidencialidad") -- the AI pre-gate treats that as
+        # blind-equivalent and keeps the multilingual AI overlay available,
+        # while junk that engages the vocabulary (a "confidential" filename, an
+        # invoice/proposal/deck collateral hit) still pre-gates.
+        "detection_hits": len(filename_reasons) + len(content_reasons) + len(collateral_reasons),
     }
 
 
@@ -1190,6 +1576,50 @@ def _metadata_has_explicit_nda_signal(metadata: dict[str, str] | None) -> bool:
         return False
     terms = _metadata_csv_values(metadata.get("gmail_detection_terms"))
     return any(term in EXPLICIT_NDA_TERMS for term in terms)
+
+
+def _attachment_explicit_nda_hit(metadata: dict[str, str] | None, filename: str) -> bool:
+    """The AI pre-gate's MANDATORY escape hatch: an explicit NDA mention anywhere
+    in the message metadata (subject/body/snippet, via the SAME
+    ``_metadata_has_explicit_nda_signal`` the scorer's message-signal check uses --
+    never a weaker subject-only probe) OR a STRONG NDA filename signal. Either one
+    keeps the AI overlay available even for a low-content-score candidate, so a
+    scanned/odd-extraction NDA announced in the email body ("Attached is our NDA"
+    + "document (3).pdf") or named explicitly ("Mutual NDA.pdf" with image-only
+    content) is never pre-gated away from the model.
+
+    ADMIN CUSTOM TERMS extend the hatch: when NDA_GMAIL_CUSTOM_TERMS_ENABLED is
+    on, a validated Signal Term matched in the subject/body/snippet detection
+    (the detection scan already includes custom terms) or appearing in the
+    FILENAME unlocks the AI exactly like the hardcoded English set -- an admin
+    adding "Acuerdo de Confidencialidad" must not be silently ignored by an
+    English-only hatch.
+    """
+    if _metadata_has_explicit_nda_signal(metadata):
+        return True
+    custom_terms = _custom_detection_terms()
+    if custom_terms and metadata:
+        sources = _metadata_csv_values(metadata.get("gmail_detection_sources"))
+        if any(source in {"subject", "body", "snippet"} for source in sources):
+            detected = {
+                term.casefold()
+                for term in _metadata_csv_values(metadata.get("gmail_detection_terms"))
+            }
+            if any(term.casefold() in detected for term in custom_terms):
+                return True
+    _score, _terms, _reasons, strong_filename = _attachment_signal_score(
+        filename,
+        ATTACHMENT_FILENAME_NDA_SIGNALS,
+    )
+    if strong_filename:
+        return True
+    if custom_terms:
+        # Custom terms are validated literal substrings (never regex); match them
+        # against the filename the same case-insensitive way the detector does.
+        cleaned_filename = str(filename or "").casefold()
+        if any(term.casefold() in cleaned_filename for term in custom_terms):
+            return True
+    return False
 
 
 def _attachment_validation_metadata(metadata: dict[str, str], validation: dict[str, object]) -> dict[str, str]:

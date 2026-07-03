@@ -106,6 +106,148 @@ _DETERMINISTIC_PERMANENT_SKIP_REASONS = frozenset(
 )
 
 
+# AI PRE-GATE (money follows signal). The deterministic band classifier already
+# computes a terminal-precision "skip" lane (score < triage band, no content
+# basis); historically the paid Flash-intake classifier still ran on every such
+# candidate and the Pro selector ran on every multi-attachment message, so junk
+# mail paid full AI freight. The pre-gate suppresses those calls for candidates
+# the deterministic lane already terminally skips -- with three MANDATORY
+# fail-open exemptions (any one keeps the AI available):
+#
+#   1. ESCAPE HATCH: an explicit NDA mention in the message metadata (subject/
+#      body/snippet via _metadata_has_explicit_nda_signal) or a strong NDA
+#      filename -- covers scanned/odd-extraction NDAs announced in the email.
+#      Admin custom Signal Terms (NDA_GMAIL_CUSTOM_TERMS_ENABLED on) extend the
+#      hatch, so a configured non-English term ("Acuerdo de Confidencialidad")
+#      unlocks the AI exactly like the hardcoded English set.
+#   2. SCORER-BLIND, two forms -- a blind det-skip means "couldn't judge",
+#      never "not an NDA", so such candidates ALWAYS keep the AI overlay:
+#      (a) EXTRACTION-BLIND: extracted text empty or under ~200 chars
+#          (image-only DOCX extracts EMPTY with no error; a partial-scan PDF
+#          extracts only its cover letter);
+#      (b) LANGUAGE-BLIND: substantial text but ZERO vocabulary hits
+#          (validation detection_hits == 0). Every scoring regex is English, so
+#          a text-extractable foreign-language NDA scores ~0 while matching
+#          NOTHING -- whereas English junk engages the vocabulary somewhere (a
+#          "confidential"/"agreement"/"document" filename signal, an invoice/
+#          proposal/deck collateral hit) and still pre-gates.
+#   3. SEAM PRESENCE: the pre-gate only activates when the transport exposes the
+#      attachment_explicit_nda_signal escape-hatch seam. A transport that cannot
+#      answer the escape-hatch question must not pre-gate (fail-open toward
+#      paying for AI rather than dropping a real NDA); older fakes therefore
+#      behave byte-identically to before.
+#
+# Candidates ABOVE the skip band are untouched: the selector still ranks them and
+# the intake classifier still adjudicates confident/triage exactly as before.
+# NDA_GMAIL_AI_PREGATE: default ON; 0/false/no/off restores the always-call path.
+NDA_GMAIL_AI_PREGATE_ENV = "NDA_GMAIL_AI_PREGATE"
+# Below this much extracted text the deterministic scorer is considered BLIND on
+# the attachment (exemption 2 above). Deliberately small: a genuine one-page NDA
+# body is far past it, while an image-only/failed extraction sits near zero.
+MIN_PREGATE_EXTRACTED_TEXT_CHARS = 200
+
+
+def _ai_pregate_enabled() -> bool:
+    """Whether the AI pre-gate env switch is on (default ON; explicit off wins)."""
+    raw = str(os.environ.get(NDA_GMAIL_AI_PREGATE_ENV, "") or "").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+# The forced triage reason / provenance marker for e-sign platform notifications
+# captured as likely executed NDAs (see the capture block in _scan_pass). Defined
+# here (the module that stamps it) and aliased by gmail_integration.
+ESIGN_NDA_CAPTURE_TRIAGE_REASON = "esign_notification_nda"
+
+
+def _resolve_inbound_backfill(transport: Any, owner_user_id: str) -> dict[str, int] | None:
+    """The first-sync backfill window for this poll, via the transport seam.
+
+    Returns a well-formed ``{"effective_window_days", "completed_through_days",
+    "target_days"}`` dict or ``None`` when the cap does not apply (seam absent on
+    older transports, cap disabled/complete, existing user, or a malformed state).
+    Defensive: any probe failure returns None so the poll degrades to the full
+    window rather than ever raising.
+    """
+    prober = getattr(transport, "inbound_backfill_state", None)
+    if not callable(prober):
+        return None
+    try:
+        state = prober(owner_user_id)
+    except Exception:  # pragma: no cover - the probe must never break the poll
+        return None
+    if not isinstance(state, dict):
+        return None
+    try:
+        effective = int(state.get("effective_window_days") or 0)
+        completed = int(state.get("completed_through_days") or 0)
+        target = int(state.get("target_days") or 0)
+    except (TypeError, ValueError):
+        return None
+    if effective <= 0 or target <= 0 or effective > target:
+        return None
+    return {
+        "effective_window_days": effective,
+        "completed_through_days": max(0, completed),
+        "target_days": target,
+    }
+
+
+def _candidate_extraction_blind(candidate: dict[str, Any]) -> bool:
+    """True when the candidate's extracted text is too thin to trust a det-skip."""
+    paragraphs = candidate.get("paragraphs")
+    if not isinstance(paragraphs, list):
+        return True
+    total = 0
+    for paragraph in paragraphs:
+        text = paragraph.get("text") if isinstance(paragraph, dict) else None
+        total += len(" ".join(str(text or "").split()))
+        if total >= MIN_PREGATE_EXTRACTED_TEXT_CHARS:
+            return False
+    return True
+
+
+def _candidate_language_blind(candidate: dict[str, Any]) -> bool:
+    """True when the scorer matched ZERO vocabulary signals on this candidate.
+
+    The blind exemption's second form (module note, 2b): substantial text where
+    the English vocabulary found NOTHING to judge -- either genuinely alien
+    content or a non-English document -- so a det-skip is untrustworthy and the
+    multilingual AI overlay must stay available. Junk that engaged the
+    vocabulary anywhere (an NDA term OR a collateral invoice/proposal/deck hit)
+    is a TRUSTED skip and still pre-gates.
+    """
+    validation = candidate.get("validation") if isinstance(candidate.get("validation"), dict) else {}
+    if "detection_hits" in validation:
+        return _coerce_int(validation.get("detection_hits")) <= 0
+    # Legacy validation shape (no hit count, e.g. an older transport overriding
+    # attachment_nda_validation): derive conservatively. Any sign the scorer
+    # engaged -- a matched term, a positive score, a collateral reason -- means
+    # NOT blind; a fully silent validation is treated as blind so the safe bias
+    # stays "pay for the AI look" rather than "drop".
+    if validation.get("terms"):
+        return False
+    if _coerce_int(validation.get("score")) > 0:
+        return False
+    if "collateral" in str(validation.get("reason") or ""):
+        return False
+    return True
+
+
+def _candidate_explicit_nda_signal(
+    transport: Any,
+    metadata: dict[str, str],
+    candidate: dict[str, Any],
+) -> bool:
+    """The escape-hatch probe via the transport seam (False when it errors)."""
+    probe = getattr(transport, "attachment_explicit_nda_signal", None)
+    if not callable(probe):
+        return False
+    try:
+        return bool(probe(metadata, candidate))
+    except Exception:  # pragma: no cover - the probe must never break the poll
+        return False
+
+
 def _env_retry_limit(env_name: str, default: int) -> int:
     """A fail-open env-tunable retry limit (shared parser for both strata).
 
@@ -147,7 +289,25 @@ def import_inbound_matters(
     owner_user_id = transport.clean_user_token_segment(owner_user_id)
     service = transport.gmail_service_for_owner("inbound", owner_user_id)
     profile = transport.gmail_profile_for_role("inbound", service=service, owner_user_id=owner_user_id)
-    inbound_query = query.strip() if isinstance(query, str) and query.strip() else transport.default_inbound_query()
+    explicit_query = isinstance(query, str) and bool(query.strip())
+    inbound_query = query.strip() if explicit_query else transport.default_inbound_query()
+
+    # FIRST-SYNC BACKFILL CAP: a newly connected account's early polls scan a
+    # capped window (min(configured, NDA_GMAIL_FIRST_SYNC_CAP_DAYS)) that widens
+    # per successful poll until it reaches the configured window. Only applies to
+    # the DEFAULT query (an explicit caller query is respected verbatim) and only
+    # on transports exposing the backfill seams; a transport without drain-cursor
+    # support also skips the cap (the widen safety below depends on the cursor).
+    backfill = None if explicit_query else _resolve_inbound_backfill(transport, owner_user_id)
+    if backfill is not None:
+        query_for_window = getattr(transport, "inbound_query_for_window", None)
+        if callable(query_for_window):
+            try:
+                inbound_query = str(query_for_window(backfill["effective_window_days"]))
+            except Exception:  # pragma: no cover - fall back to the full window
+                backfill = None
+        else:
+            backfill = None
     try:
         requested_limit = int(limit or 10)
     except (TypeError, ValueError):
@@ -207,6 +367,39 @@ def import_inbound_matters(
             drain_cursor = int(transport.inbound_drain_cursor(owner_user_id))
         except Exception:  # pragma: no cover - cursor read is best-effort
             drain_cursor = 0
+
+    if backfill is not None and not cursor_supported:
+        # Without a drain cursor the widened band below a processed prefix could
+        # never be reliably reached, so a capped window would silently strand old
+        # mail. Degrade to the full-window behaviour instead.
+        backfill = None
+        inbound_query = query.strip() if explicit_query else transport.default_inbound_query()
+
+    # BACKFILL CURSOR RE-ARM. The two-pass scan assumes new work arrives at the
+    # FRONT (head pass) or below an armed cursor (drain pass). A backfill WIDEN
+    # step injects new work at the BACK -- below the already-processed prefix of
+    # the previous (narrower) window -- where an UNARMED cursor (reset when the
+    # previous band drained to exhaustion) would leave only the single bounded
+    # no-cursor pass to page through the whole processed prefix every poll. Arm
+    # the cursor at the OLD window boundary (now - already-drained days) so the
+    # drain pass jumps straight past the drained prefix into the widened band.
+    # Only when UNARMED: an armed cursor is still mid-descent through un-drained
+    # mail, and moving it down past that mail would silently lose it.
+    if backfill is not None and cursor_supported and drain_cursor <= 0:
+        completed_days = int(backfill.get("completed_through_days") or 0)
+        if completed_days > 0:
+            boundary_ms = int(time.time() * 1000) - completed_days * 86_400_000
+            if boundary_ms > 0:
+                try:
+                    drain_cursor = int(
+                        transport.advance_inbound_drain_cursor(owner_user_id, boundary_ms)
+                    )
+                except Exception:  # pragma: no cover - arm is best-effort
+                    drain_cursor = 0
+
+    # One line per poll of the exact query in force (static config only -- window,
+    # sender-exclude entries; never subjects/senders/body text; log hygiene).
+    LOGGER.info("Gmail inbound poll query: %s", inbound_query)
 
     # Open the durable per-owner processed-message ledger ONCE for the whole poll
     # (load-once / mark-many / write-once, REFINEMENT A). The scan checks it BEFORE
@@ -289,7 +482,37 @@ def import_inbound_matters(
             except Exception:  # pragma: no cover - flush is best-effort
                 LOGGER.warning("Failed to flush Gmail processed-message ledger", exc_info=True)
 
-    return {
+    # BACKFILL PROGRESS: record the widened band as drained-through ONLY when this
+    # poll ended with the band secured -- either the drain ran to exhaustion, or
+    # the persistent cursor is armed (it will keep descending through the band on
+    # subsequent polls regardless of window width). A poll that secured neither
+    # (e.g. rate-limited before any floor was learned) records nothing, so the
+    # next poll retries the SAME window and no band is ever skipped past.
+    backfill_result: dict[str, Any] | None = None
+    if backfill is not None:
+        cursor_after = 0
+        try:
+            cursor_after = int(transport.inbound_drain_cursor(owner_user_id))
+        except Exception:  # pragma: no cover - cursor read is best-effort
+            cursor_after = 0
+        effective_days = int(backfill.get("effective_window_days") or 0)
+        target_days = int(backfill.get("target_days") or 0)
+        secured = state.drain_exhausted or cursor_after > 0
+        if secured:
+            try:
+                transport.record_inbound_backfill_progress(owner_user_id, effective_days)
+            except Exception:  # pragma: no cover - bookkeeping must never fail the poll
+                LOGGER.warning("Failed to record Gmail backfill progress", exc_info=True)
+        recorded_days = effective_days if secured else int(backfill.get("completed_through_days") or 0)
+        backfill_result = {
+            "active": effective_days < target_days or not secured,
+            "window_days": effective_days,
+            "completed_through_days": recorded_days,
+            "target_days": target_days,
+            "label": f"backfilling: {recorded_days} of {target_days} days",
+        }
+
+    result: dict[str, Any] = {
         "account": account_email,
         "imported": imported,
         "query": inbound_query,
@@ -306,6 +529,13 @@ def import_inbound_matters(
         # like successful imports do -- the ceiling bounds LOAD, not just successes.
         "new_processed": state.new_processed,
     }
+    if backfill_result is not None:
+        # First-sync backfill progress, surfaced so the sync summary + status
+        # payloads can explain why an old thread has not imported yet. The key is
+        # present only while the cap applies, keeping the legacy result shape
+        # byte-identical for every other poll.
+        result["backfill"] = backfill_result
+    return result
 
 
 class _ScanState:
@@ -332,6 +562,11 @@ class _ScanState:
         # entry here: they are ledger-marked in-memory immediately, so a second
         # encounter this poll already short-circuits on is_processed.)
         self.transient_attempted_ids: set[str] = set()
+        # Excluded-sender CONTENT probes run this poll (download + extraction, no
+        # AI). Capped at import_limit per poll so a backlog of excluded mail can
+        # never do more heavy extraction work than the budget allows for imports;
+        # overflow messages are deferred UNMARKED (they retry next poll).
+        self.capture_probes_used = 0
 
     def note_floor(self, internal_date_ms: int) -> None:
         if internal_date_ms <= 0:
@@ -407,10 +642,23 @@ def _scan_pass(
     service = context.service
     new_stubs_total = 0
     stubs_scanned = 0
+    # Total stubs PAGED this pass, including cheap ledger pre-skips. Ledger
+    # pre-skips deliberately do NOT count toward max_scan (they cost one in-memory
+    # set lookup, no fetch, no AI) -- otherwise a processed prefix longer than
+    # max_scan would permanently wall off the un-processed band behind it (the
+    # first-sync backfill widen injects exactly such a band BELOW the processed
+    # prefix). This separate, much larger cap bounds the pass's raw paging so a
+    # pathological inbox still terminates.
+    total_stubs_paged = 0
+    max_total_paged = max(max_scan * 10, 500)
     page_token = ""
     page_size = min(state.import_limit, 100) or 1
     saw_pages = False
-    while state.new_processed < state.import_limit and stubs_scanned < max_scan:
+    while (
+        state.new_processed < state.import_limit
+        and stubs_scanned < max_scan
+        and total_stubs_paged < max_total_paged
+    ):
         # Only the list() call is guarded as a "list" error: the per-message work
         # below keeps its own narrow error handling so a genuine processing bug is
         # never mislabeled as a Gmail listing failure. A rate-limit (429) on list()
@@ -433,11 +681,19 @@ def _scan_pass(
         page_token = str(page.get("nextPageToken") or "")
         new_stubs_total += len(new_stubs)
         for message_stub in new_stubs:
-            if state.new_processed >= state.import_limit or stubs_scanned >= max_scan:
+            if (
+                state.new_processed >= state.import_limit
+                or stubs_scanned >= max_scan
+                or total_stubs_paged >= max_total_paged
+            ):
                 break
-            stubs_scanned += 1
+            total_stubs_paged += 1
             message_id = str(message_stub.get("id") or "")
             if not message_id:
+                # An id-less stub counts toward the hard scan cap exactly as it
+                # always did -- max_scan is the backstop that stops an endless
+                # stream of junk stubs from probing unbounded.
+                stubs_scanned += 1
                 continue
 
             # PROCESSED-LEDGER SKIP (REFINEMENT C): this is the whole point of the
@@ -446,15 +702,18 @@ def _scan_pass(
             # gmail_intake classifier + the gmail_triage attachment-selector AI calls
             # those downstream paths make. A "processed" skip is a cheap pre-fetch
             # gate (like the dedup short-circuit): it does NOT count toward
-            # import_limit and does NOT touch the drain cursor, so the scan pages past
-            # it to the next un-processed (older) batch exactly as it pages past an
-            # already-imported one -- coexisting with the cursor drain (REFINEMENT F),
+            # import_limit, does NOT touch the drain cursor, AND does NOT count
+            # toward max_scan (only toward the raw total-paged cap) -- so the scan
+            # pages past an arbitrarily long processed prefix to the next
+            # un-processed (older) batch exactly as it pages past an already-
+            # imported one -- coexisting with the cursor drain (REFINEMENT F),
             # never stalling its forward progress nor hiding genuinely-new mail (an
             # unseen id is simply absent from the ledger and falls through).
             ledger = context.processed_ledger
             if ledger is not None and ledger.is_processed(message_id):
                 context.skipped.append({"message_id": message_id, "reason": "processed_message"})
                 continue
+            stubs_scanned += 1
 
             # SAME-POLL RE-ATTEMPT GUARD: a message that already ran the heavy path
             # to a TRANSIENT failure THIS poll (head pass) can re-surface in the
@@ -509,18 +768,101 @@ def _scan_pass(
                 note_terminal_floor()
                 continue
 
-            # DocuSign envelope-notification emails (from the docusign.net family)
-            # carry a PDF attachment and pass the structural fetch query, but they
-            # are never inbound counterparty NDAs -- importing them spawns phantom
+            # E-SIGNATURE / CALENDAR platform notification emails (DocuSign,
+            # Adobe Sign, HelloSign, PandaDoc, Google Calendar invites) carry a
+            # PDF/DOCX attachment and pass the structural fetch query, but they are
+            # never inbound counterparty NDAs -- importing them spawns phantom
             # matters. Skip + ledger-mark them BEFORE the import-budget slot so a
             # skip costs no budget and future polls re-skip cheaply without a
-            # re-fetch. Callable-guard via getattr so older/fake transports lacking
-            # the predicate degrade to today's behavior (no skip, no crash). The
-            # match is DOMAIN-ONLY: a real NDA that mentions DocuSign still imports.
+            # re-fetch. This code-level check is the AUTHORITATIVE suppression
+            # (the query-level -from: clauses are only a fetch-quota optimization):
+            # it also catches FORWARDED notifications the query cannot see, and
+            # every drop stays visible here in skipped[] + the ledger. The match is
+            # SENDER-ONLY (domain suffix / full address): a real NDA that mentions
+            # DocuSign still imports. Callable-guard via getattr so older/fake
+            # transports lacking the seams degrade gracefully: the broader
+            # excluded_notification_sender seam is preferred, the legacy
+            # DocuSign-only predicate is the fallback, neither means no skip.
+            matched_exclude_entry = ""
+            excluded_sender_probe = getattr(transport, "excluded_notification_sender", None)
             is_docusign_notification = getattr(transport, "is_docusign_notification", None)
-            if callable(is_docusign_notification) and is_docusign_notification(message):
-                context.skipped.append({"message_id": message_id, "reason": "docusign_notification"})
-                # TERMINAL outcome (mirrors self/outbound above): a DocuSign
+            if callable(excluded_sender_probe):
+                try:
+                    matched_exclude_entry = str(excluded_sender_probe(message) or "")
+                except Exception:  # pragma: no cover - the probe must never break the poll
+                    matched_exclude_entry = ""
+            elif callable(is_docusign_notification) and is_docusign_notification(message):
+                matched_exclude_entry = "docusign.net"
+            # EXECUTED-NDA CAPTURE: a platform notification that carries an
+            # EXPLICIT NDA signal (strong NDA filename, or an explicit NDA term in
+            # subject/body/snippet) is a counterparty-initiated envelope's likely
+            # only copy of an executed NDA -- let it THROUGH the intake pipeline
+            # (clamped to at most the triage lane + provenance-stamped below)
+            # instead of terminally dropping it. Platform mail with no explicit
+            # signal keeps the terminal drop. Seam-guarded + env-flagged
+            # (NDA_GMAIL_ESIGN_NDA_CAPTURE, default on): older transports and the
+            # flag-off state keep the unconditional drop.
+            esign_capture_entry = ""
+            if matched_exclude_entry:
+                capture_probe = getattr(transport, "esign_nda_capture_hit", None)
+                content_probe = getattr(transport, "excluded_message_capture_probe", None)
+                capture_attachments: list[dict[str, str]] = []
+                if callable(capture_probe) or callable(content_probe):
+                    capture_attachments = list(
+                        transport.reviewable_attachments(message.get("payload") or {})
+                    )
+                # Stage 1 -- explicit-token capture (free: headers + filenames).
+                if capture_attachments and callable(capture_probe):
+                    try:
+                        if capture_probe(message, capture_attachments):
+                            esign_capture_entry = matched_exclude_entry
+                            matched_exclude_entry = ""
+                    except Exception:  # pragma: no cover - probe must never break the poll
+                        esign_capture_entry = ""
+                # Stage 2 -- deterministic CONTENT probe (download + extract, no
+                # AI) before the terminal drop: a genuine NDA envelope without an
+                # English NDA token (Adobe Sign "Signature requested on 'Acme -
+                # Mutual Agreement'") must not be silently dropped -- the base
+                # (pre-exclude) behaviour imported these. Capped per poll so a
+                # backlog of excluded mail cannot out-extract the import budget;
+                # over-cap messages are DEFERRED unmarked (no terminal drop, no
+                # cursor-floor advance) and retry next poll.
+                if matched_exclude_entry and capture_attachments and callable(content_probe):
+                    if state.capture_probes_used >= state.import_limit:
+                        context.skipped.append(
+                            {"message_id": message_id, "reason": "excluded_probe_deferred"}
+                        )
+                        continue
+                    state.capture_probes_used += 1
+                    try:
+                        if content_probe(service, message_id, capture_attachments):
+                            esign_capture_entry = matched_exclude_entry
+                            matched_exclude_entry = ""
+                    except Exception as probe_error:
+                        if _is_rate_limited(transport, probe_error):
+                            # Provider throttling says nothing about this message:
+                            # keep what was imported this poll and stop, exactly
+                            # like the download-stage 429 path -- never let a 429
+                            # storm terminal-drop a real NDA.
+                            state.rate_limited = True
+                            return
+                        # A broken probe fails toward the AI-era default for
+                        # excluded senders (the terminal drop), never a crash.
+            if matched_exclude_entry:
+                # Keep the live fix's reason label for the DocuSign family so
+                # existing telemetry/greps stay continuous; other platforms get
+                # the generic label with the STATIC exclude-list entry as detail
+                # (config value only -- never the sender address; log hygiene).
+                reason = (
+                    "docusign_notification"
+                    if "docusign" in matched_exclude_entry
+                    else "excluded_sender_notification"
+                )
+                skip_record = {"message_id": message_id, "reason": reason}
+                if reason == "excluded_sender_notification":
+                    skip_record["detail"] = matched_exclude_entry
+                context.skipped.append(skip_record)
+                # TERMINAL outcome (mirrors self/outbound above): a platform
                 # notification is structurally never reviewable -- mark it so the
                 # next poll skips it before the fetch + AI calls.
                 _mark_processed(context, message_id)
@@ -624,6 +966,11 @@ def _scan_pass(
                     ),
                     transport=transport,
                 )
+                if esign_capture_entry:
+                    # Provenance for the executed-NDA capture path: the matched
+                    # platform entry rides the intake metadata so the matter is
+                    # identifiable/filterable later (static config value only).
+                    metadata = {**metadata, "gmail_esign_notification": esign_capture_entry}
                 attachment_result = import_inbound_attachments(
                     service,
                     message_id,
@@ -633,6 +980,7 @@ def _scan_pass(
                     owner_user_id=context.owner_user_id,
                     intake_playbook=context.intake_playbook,
                     intake_budget=context.intake_budget,
+                    esign_capture=bool(esign_capture_entry),
                 )
             except Exception as error:
                 if _is_rate_limited(transport, error):
@@ -962,6 +1310,7 @@ def import_inbound_attachments(
     owner_user_id: str = "",
     intake_playbook: str | None = None,
     intake_budget: "_IntakeCallBudget | None" = None,
+    esign_capture: bool = False,
 ) -> dict[str, list[dict[str, Any]]]:
     # The AI intake classifier (when configured) overlays the deterministic band
     # lane below. Compute the playbook/budget defensively so that, when called
@@ -1002,10 +1351,56 @@ def import_inbound_attachments(
         # threads (static assets, API calls) can be scheduled during the burst.
         _sync_cpu_yield()
 
-    selected_ids, selector_metadata = selected_candidate_attachment_ids(metadata, prepared, transport=transport)
     triage_min_score = _triage_min_score(transport)
-    imported: list[dict[str, Any]] = []
+
+    # AI PRE-GATE eligibility (see the module note at NDA_GMAIL_AI_PREGATE_ENV).
+    # Computed from the SELECTOR-INDEPENDENT deterministic band so the same answer
+    # gates both paid calls symmetrically: suppressing only one would kill one of
+    # the two AI rescue paths (selector promote-to-confident / intake det-skip ->
+    # triage promotion) while leaving the message half-judged. A candidate is
+    # AI-eligible when the deterministic PRE-lane is above the terminal skip band,
+    # OR the extraction is too thin to trust (blind), OR the explicit-NDA escape
+    # hatch fires. The pre-gate is only ACTIVE when the env switch is on AND the
+    # transport exposes the escape-hatch seam (fail-open for older transports).
+    pregate_active = _ai_pregate_enabled() and callable(
+        getattr(transport, "attachment_explicit_nda_signal", None)
+    )
+    ai_eligibility: list[bool] = []
     for candidate in prepared:
+        if not pregate_active:
+            ai_eligibility.append(True)
+            continue
+        validation = candidate.get("validation") if isinstance(candidate.get("validation"), dict) else {}
+        pre_lane, _pre_reason = classify_attachment_lane(
+            validation,
+            selector_selected=False,
+            selector_configured=False,
+            triage_min_score=triage_min_score,
+        )
+        # An e-sign capture message is by definition explicit-signal (that is what
+        # let it past the terminal drop), so it always keeps the AI overlay --
+        # belt-and-braces on top of the escape hatch so no double-drop path exists.
+        ai_eligibility.append(
+            esign_capture
+            or pre_lane != "skip"
+            or _candidate_extraction_blind(candidate)
+            or _candidate_language_blind(candidate)
+            or _candidate_explicit_nda_signal(transport, metadata, candidate)
+        )
+
+    # Pro selector: only pay for the ranking call when at least one prepared
+    # candidate reaches the gate (deterministic triage band, extraction-blind, or
+    # escape hatch). When it DOES run it still sees every prepared candidate, so
+    # messages with any signal behave byte-identically to before.
+    if pregate_active and not any(ai_eligibility):
+        selected_ids, selector_metadata = None, {}
+    else:
+        selected_ids, selector_metadata = selected_candidate_attachment_ids(
+            metadata, prepared, transport=transport
+        )
+
+    imported: list[dict[str, Any]] = []
+    for candidate, ai_allowed in zip(prepared, ai_eligibility):
         attachment_id = str(candidate.get("attachment_id") or "")
         validation = candidate.get("validation") if isinstance(candidate.get("validation"), dict) else {}
         selector_selected = selected_ids is not None and attachment_id in selected_ids
@@ -1020,17 +1415,33 @@ def import_inbound_attachments(
         # is not yet exhausted, then reconcile (fail toward triage on ambiguity). Any
         # unconfigured/error/timeout/overflow yields a non-ok status, and
         # resolve_intake_lane returns the deterministic lane verbatim.
-        ai_result = _maybe_classify_intake(
-            transport,
-            metadata,
-            candidate,
-            intake_playbook,
-            intake_budget,
-            configured=intake_configured,
-        )
+        #
+        # PRE-GATE: a candidate the deterministic lane terminally skips AND that is
+        # not AI-eligible (no escape hatch, not extraction-blind) does not pay for
+        # the Flash call -- the synthetic "skipped_pregate" status routes
+        # resolve_intake_lane straight to the deterministic skip. A det_lane above
+        # skip (including a selector-promoted one) ALWAYS keeps the call.
+        if pregate_active and det_lane == "skip" and not ai_allowed:
+            ai_result: dict[str, Any] = {"status": "skipped_pregate"}
+        else:
+            ai_result = _maybe_classify_intake(
+                transport,
+                metadata,
+                candidate,
+                intake_playbook,
+                intake_budget,
+                configured=intake_configured,
+            )
         tallies.record(str(ai_result.get("status") or ""))
         lane, triage_reason = transport.resolve_intake_lane(det_lane, det_reason, ai_result)
         ai_ok = ai_result.get("status") == "ok"
+        # EXECUTED-NDA CAPTURE clamp: a captured e-sign platform notification may
+        # import at most into the TRIAGE lane -- it is usually an EXECUTED document
+        # a human must look at, never a silent auto-clean import -- and carries the
+        # uniform provenance reason so the operator can filter these matters. A
+        # terminal skip (the pipeline judged the content non-NDA) still stands.
+        if esign_capture and lane != "skip":
+            lane, triage_reason = "triage", ESIGN_NDA_CAPTURE_TRIAGE_REASON
         if lane == "skip":
             # An AI NOT_NDA terminal skip carries the AI reason/model so the
             # skipped-list telemetry explains the drop; otherwise the deterministic
@@ -1059,6 +1470,15 @@ def import_inbound_attachments(
                     "non_nda_attachment",
                     detail=str(validation.get("reason") or ""),
                     score=str(validation.get("score") or "0"),
+                    # AUDITABILITY: distinguish "the AI was never consulted (the
+                    # pre-gate suppressed the call)" from "the AI agreed" in the
+                    # skipped[] telemetry. Reason stays within the terminal-stable
+                    # set; only the detail gains the marker.
+                    **(
+                        {"pregate": "suppressed"}
+                        if ai_result.get("status") == "skipped_pregate"
+                        else {}
+                    ),
                 ))
             continue
         # When the AI is what put this candidate into triage, surface the model's
@@ -1117,6 +1537,10 @@ class _IntakeTallies:
         self.ai_errors = 0
         self.ai_timeouts = 0
         self.ai_skipped_cap = 0
+        # Candidates whose Flash call the deterministic PRE-GATE suppressed
+        # (status "skipped_pregate"): surfaced so an operator can tell "the AI
+        # was never consulted" apart from "the AI agreed" per sync.
+        self.ai_skipped_pregate = 0
 
     def record(self, status: str) -> None:
         if status in ("ok", "error", "timeout"):
@@ -1127,14 +1551,21 @@ class _IntakeTallies:
             self.ai_timeouts += 1
         elif status == "skipped_cap":
             self.ai_skipped_cap += 1
+        elif status == "skipped_pregate":
+            self.ai_skipped_pregate += 1
 
     def as_dict(self) -> dict[str, int]:
-        return {
+        tallies = {
             "ai_calls": self.ai_calls,
             "ai_errors": self.ai_errors,
             "ai_timeouts": self.ai_timeouts,
             "ai_skipped_cap": self.ai_skipped_cap,
         }
+        # Included only when non-zero so the legacy tally shape stays
+        # byte-identical for every sync that never suppresses a call.
+        if self.ai_skipped_pregate:
+            tallies["ai_skipped_pregate"] = self.ai_skipped_pregate
+        return tallies
 
     def merge(self, other: "_IntakeTallies | dict[str, Any] | None") -> None:
         if other is None:
@@ -1144,6 +1575,7 @@ class _IntakeTallies:
         self.ai_errors += int(data.get("ai_errors") or 0)
         self.ai_timeouts += int(data.get("ai_timeouts") or 0)
         self.ai_skipped_cap += int(data.get("ai_skipped_cap") or 0)
+        self.ai_skipped_pregate += int(data.get("ai_skipped_pregate") or 0)
 
     def warn_if_degraded(self, logger: logging.Logger, scope: str, *, model: str = "") -> None:
         """Warn when failures are a high fraction of the calls actually attempted."""

@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .. import ai_review, ai_verifier, app_settings, matter_store, model_resolver, telemetry
 from ..deployment import _deployment_status_for_host, storage_durability_warning
+from ..gmail_matter_inbox import ESIGN_NDA_CAPTURE_TRIAGE_REASON
 from ..matter_repository import DiskMatterRepository, MatterRepositoryError
 from ..review_engine import (
     REVIEW_ENGINE_AI_FIRST,
@@ -1093,6 +1094,17 @@ def _bulk_archive_exclusion_reason(
         return "signature_activity_present"
     if matter.get("docusign"):
         return "docusign_present"
+    # E-SIGN CAPTURED NDA: a matter the inbound scan captured off an e-signature
+    # platform notification because it carried an explicit NDA signal
+    # (gmail_esign_notification provenance / the esign capture triage reason).
+    # These are often the ONLY copy of an EXECUTED NDA that ever reached the
+    # mailbox — the capture feature exists precisely to keep them — so a
+    # never-touched one must NOT be swept as gmail noise even though it looks
+    # pristine on every other axis.
+    if str(matter.get("gmail_esign_notification") or "").strip() or (
+        str(matter.get("triage_reason") or "") == ESIGN_NDA_CAPTURE_TRIAGE_REASON
+    ):
+        return "esign_captured_nda"
     intake_metadata = matter.get("intake_metadata")
     if isinstance(intake_metadata, dict):
         counterparty = intake_metadata.get("counterparty")

@@ -77,6 +77,19 @@ class GmailTransport:
     def default_inbound_query(self) -> str:
         return _legacy()._default_inbound_query()
 
+    def inbound_query_for_window(self, window_days: int) -> str:
+        """The effective inbound query for an EXPLICIT window (days) -- used by the
+        first-sync backfill cap to shrink a new user's early polls."""
+        return _legacy()._inbound_query_for_window(int(window_days))
+
+    def inbound_backfill_state(self, owner_user_id: str = "") -> dict[str, int] | None:
+        """The first-sync backfill window for this owner's next poll (or None)."""
+        return _legacy()._inbound_backfill_state(owner_user_id)
+
+    def record_inbound_backfill_progress(self, owner_user_id: str, completed_through_days: int) -> None:
+        """Persist the per-user backfill cursor after a poll secured the band."""
+        _legacy()._record_inbound_backfill_progress(owner_user_id, completed_through_days)
+
     def max_import_limit(self) -> int:
         return int(_legacy().MAX_GMAIL_IMPORT_LIMIT)
 
@@ -97,6 +110,35 @@ class GmailTransport:
 
     def is_docusign_notification(self, message: dict[str, Any]) -> bool:
         return bool(_legacy()._is_docusign_notification(message))
+
+    def excluded_notification_sender(self, message: dict[str, Any]) -> str:
+        """The sender-exclude entry this message matches, or "" (see
+        gmail_integration._excluded_notification_sender): the hard DocuSign floor
+        plus the admin-editable e-sign/calendar platform entries."""
+        return str(_legacy()._excluded_notification_sender(message) or "")
+
+    def esign_nda_capture_hit(
+        self,
+        message: dict[str, Any],
+        attachments: list[dict[str, str]],
+    ) -> bool:
+        """Whether an e-sign platform notification carries an explicit NDA signal
+        and must be captured for triage instead of terminally dropped."""
+        return bool(_legacy()._esign_notification_nda_hit(message, attachments))
+
+    def excluded_message_capture_probe(
+        self,
+        service: Any,
+        message_id: str,
+        attachments: list[dict[str, str]],
+    ) -> bool:
+        """Deterministic content probe (no AI) run before terminally dropping an
+        excluded-sender message whose explicit-token capture missed: True when
+        any attachment looks agreement-shaped (triage band) or the scorer is
+        language-blind over substantial text."""
+        return bool(
+            _legacy()._excluded_message_content_probe(service, message_id, attachments)
+        )
 
     def reviewable_attachments(self, payload: dict[str, Any]) -> list[dict[str, str]]:
         return list(_legacy()._reviewable_attachments(payload))
@@ -182,6 +224,23 @@ class GmailTransport:
         selection: dict[str, object],
     ) -> dict[str, str]:
         return _legacy()._attachment_selector_metadata(metadata, selection)
+
+    def attachment_explicit_nda_signal(
+        self,
+        metadata: dict[str, str],
+        candidate: dict[str, Any],
+    ) -> bool:
+        """The AI pre-gate's escape hatch: an explicit NDA mention in the message
+        metadata (subject/body/snippet) OR a strong NDA filename signal. Presence
+        of this seam is ALSO what activates the pre-gate -- a transport that
+        cannot answer the escape-hatch question must not pre-gate (fail-open
+        toward paying for the AI call rather than dropping a real NDA)."""
+        return bool(
+            _legacy()._attachment_explicit_nda_hit(
+                metadata,
+                str(candidate.get("filename") or ""),
+            )
+        )
 
     def selector_configured(self) -> bool:
         return bool(gmail_attachment_selector.selector_configured())
