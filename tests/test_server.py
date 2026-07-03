@@ -2084,33 +2084,55 @@ class ServerTests(unittest.TestCase):
         # he gets his own bucket and is not throttled by Alice's traffic.
         self.assertEqual(bob_first, 200)
 
-    def test_background_error_logging_includes_truncated_message(self):
-        # CHANGED CONTRACT (was ...omits_exception_message): the class name alone
-        # ("KeyError") was undiagnosable from the process log, so the line now
-        # carries str(error) truncated to 200 chars -- class+message, still no
-        # traceback. Mirrors _log_gmail_sync_error's existing detail[:500] stdout
-        # precedent.
+    def test_background_error_logging_omits_exception_message(self):
         with patch("builtins.print") as mocked_print:
             server_module._log_background_error(
                 "Gmail scheduled sync failed",
-                RuntimeError("boom detail"),
+                RuntimeError("Sensitive extracted NDA text"),
             )
+
+        mocked_print.assert_called_once_with("Gmail scheduled sync failed: RuntimeError")
+
+    def test_background_error_logging_verbose_optin_includes_truncated_message(self):
+        # NDA_VERBOSE_BACKGROUND_ERRORS is the explicit incident-debugging opt-in:
+        # when (and only when) it is set truthy, the line carries str(error)
+        # truncated to 200 chars -- still never a traceback. The DEFAULT stays
+        # class-only (the test above) because background exception messages can
+        # embed document text and the process log is broadly visible.
+        with patch.dict(os.environ, {server_module.VERBOSE_BACKGROUND_ERRORS_ENV: "true"}, clear=False):
+            with patch("builtins.print") as mocked_print:
+                server_module._log_background_error(
+                    "Gmail scheduled sync failed",
+                    RuntimeError("boom detail"),
+                )
 
         mocked_print.assert_called_once_with("Gmail scheduled sync failed: RuntimeError: boom detail")
 
-    def test_background_error_logging_truncates_long_message(self):
-        with patch("builtins.print") as mocked_print:
-            server_module._log_background_error(
-                "Gmail scheduled sync failed",
-                RuntimeError("x" * 500),
-            )
+    def test_background_error_logging_verbose_optin_truncates_long_message(self):
+        with patch.dict(os.environ, {server_module.VERBOSE_BACKGROUND_ERRORS_ENV: "1"}, clear=False):
+            with patch("builtins.print") as mocked_print:
+                server_module._log_background_error(
+                    "Gmail scheduled sync failed",
+                    RuntimeError("x" * 500),
+                )
 
         logged = mocked_print.call_args[0][0]
         self.assertEqual(logged, f"Gmail scheduled sync failed: RuntimeError: {'x' * 200}")
 
-    def test_background_error_logging_empty_message_is_class_only(self):
-        with patch("builtins.print") as mocked_print:
-            server_module._log_background_error("Gmail scheduled sync failed", RuntimeError())
+    def test_background_error_logging_verbose_optin_empty_message_is_class_only(self):
+        with patch.dict(os.environ, {server_module.VERBOSE_BACKGROUND_ERRORS_ENV: "true"}, clear=False):
+            with patch("builtins.print") as mocked_print:
+                server_module._log_background_error("Gmail scheduled sync failed", RuntimeError())
+
+        mocked_print.assert_called_once_with("Gmail scheduled sync failed: RuntimeError")
+
+    def test_background_error_logging_falsey_env_stays_class_only(self):
+        with patch.dict(os.environ, {server_module.VERBOSE_BACKGROUND_ERRORS_ENV: "false"}, clear=False):
+            with patch("builtins.print") as mocked_print:
+                server_module._log_background_error(
+                    "Gmail scheduled sync failed",
+                    RuntimeError("Sensitive extracted NDA text"),
+                )
 
         mocked_print.assert_called_once_with("Gmail scheduled sync failed: RuntimeError")
 

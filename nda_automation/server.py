@@ -1132,10 +1132,20 @@ def _reject_non_finite_json_constant(value: str) -> None:
     raise ValueError(f"Non-finite JSON value is not allowed: {value}.")
 
 
+# Opt-in detail for background-error lines. DEFAULT OFF (class name only): a
+# background exception message can embed document text, and the process log
+# (Render drains) is broadly visible -- so message OMISSION is the deliberate
+# PII default. An operator debugging an incident can consciously flip this on
+# to get str(error) truncated to 200 chars (still never a traceback).
+VERBOSE_BACKGROUND_ERRORS_ENV = "NDA_VERBOSE_BACKGROUND_ERRORS"
+
+
+def _verbose_background_errors() -> bool:
+    return os.environ.get(VERBOSE_BACKGROUND_ERRORS_ENV, "").strip().lower() in {"true", "1", "yes", "on"}
+
+
 def _log_background_error(message: str, error: Exception) -> None:
-    # Class + truncated message (no traceback, per log hygiene): the class name
-    # alone ("KeyError") was undiagnosable from the process log.
-    detail = str(error)[:200]
+    detail = str(error)[:200] if _verbose_background_errors() else ""
     if detail:
         print(f"{message}: {error.__class__.__name__}: {detail}")
     else:
