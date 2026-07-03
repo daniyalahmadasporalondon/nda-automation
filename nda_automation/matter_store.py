@@ -49,12 +49,27 @@ _GMAIL_CURSOR_LOCK = threading.RLock()
 # stress mtime-granularity force the uncached path.
 _LIST_CACHE_LOCK = threading.RLock()
 _list_cache_fingerprint: tuple[tuple[str, int, int], ...] | None = None
-# The cached list is stored as its SERIALIZED JSON blob, not as live dicts. A hit
-# returns ``json.loads(blob)`` — fresh, fully-isolated dicts the caller may freely
+# The cached list is stored SERIALIZED, not as live dicts: a dict mapping each
+# record FILENAME (``{cleaned_id}.json`` — exactly one cache entry per on-disk
+# record file) to that record's own JSON blob. A hit joins the per-record blobs
+# in sorted-filename order (the same order ``_matter_record_paths`` yields) and
+# ``json.loads`` the result — fresh, fully-isolated dicts the caller may freely
 # mutate (preserving the prior uncached contract) — and a JSON round-trip of this
 # JSON-origin data is markedly cheaper than ``copy.deepcopy`` of the parsed list,
 # so the cache is a real speed win and never hands out a shared mutable object.
-_list_cache_blob: str | None = None
+#
+# WHY PER-RECORD BLOBS AND NOT ONE WHOLE-LIST BLOB (the original shape): the G3
+# write-through patch must update ONE matter after every store write, and with a
+# single monolithic blob that meant ``json.loads`` + ``json.dumps`` of the ENTIRE
+# store on EVERY write — O(total store bytes) per write, measured at ~330ms/write
+# on a 47MB/1200-matter store, serialized under the store lock. Keyed per-record
+# blobs make the write patch O(one record): serialize just the written matter and
+# replace its single dict entry. Reads remain O(total bytes), as before.
+#
+# The name ``_list_cache_blob`` is retained from the monolithic-blob era (tests
+# reach it by name to simulate a corrupted cache); any non-dict value is treated
+# as malformed and fail-safe-dropped.
+_list_cache_blob: dict[str, str] | None = None
 _list_cache_dir: str | None = None
 # Test seam: force list_matters onto the uncached path (e.g. mtime-granularity
 # stress tests that deliberately defeat the fingerprint).
@@ -1492,6 +1507,16 @@ def _coherent_cache_update_after_write(matter: dict[str, Any]) -> None:
       stat being unreadable, or any exception -- we fall back to a full
       ``_invalidate_list_cache``. A wrong cache is data corruption; a dropped cache
       is only a slower next read, so we always prefer the drop.
+    * O(ONE RECORD) PER WRITE. The cache is a dict of per-record blobs keyed by the
+      record FILENAME, so the patch serializes just this matter and replaces its one
+      dict entry. It never round-trips the whole store (the original monolithic-blob
+      shape cost O(total store bytes) per write -- ~330ms at 47MB/1200 matters --
+      serialized under the store lock, on EVERY review save / Gmail intake / timeline
+      append). Keying the blob entry and the fingerprint entry on the SAME cleaned
+      filename also keeps create/update/delete symmetric by construction: a stored
+      raw ``id`` that differs from its cleaned filename form (the e88baaad ghost)
+      still maps to exactly the entry the write stored, because both paths derive
+      the key through ``_clean_matter_record_id``.
 
     MUST be called under ``_locked_store()`` (as ``_write_matter_record`` is), so the
     on-disk file and the fingerprint we snapshot describe the same committed write.
@@ -1513,9 +1538,9 @@ def _coherent_cache_update_after_write(matter: dict[str, Any]) -> None:
             _invalidate_list_cache()
             return
         current_dir = str(_matter_records_dir())
-        # A JSON round-trip yields a fresh, fully-isolated dict -- the cached blob
-        # must never alias a live matter dict the caller may mutate afterwards.
-        patched_matter = json.loads(json.dumps(matter))
+        # Serialize THIS matter only -- the stored blob is an immutable string, so
+        # the cache can never alias a live matter dict the caller mutates afterwards.
+        record_blob = json.dumps(matter)
         with _LIST_CACHE_LOCK:
             if (
                 _list_cache_blob is None
@@ -1528,22 +1553,12 @@ def _coherent_cache_update_after_write(matter: dict[str, Any]) -> None:
                 _list_cache_blob = None
                 _list_cache_dir = None
                 return
-            cached_list = json.loads(_list_cache_blob)
-            if not isinstance(cached_list, list):
+            if not isinstance(_list_cache_blob, dict):
+                # Unexpected cache shape -- do not trust it; drop the cache.
                 _list_cache_fingerprint = None
                 _list_cache_blob = None
                 _list_cache_dir = None
                 return
-            replaced = False
-            for index, existing in enumerate(cached_list):
-                if isinstance(existing, dict) and existing.get("id") == matter.get("id"):
-                    cached_list[index] = patched_matter
-                    replaced = True
-                    break
-            if not replaced:
-                # A create (new record). Append it; list_matters re-sorts by
-                # created_at per call, so cache order is not load-bearing.
-                cached_list.append(patched_matter)
             # Rebuild the fingerprint: swap in THIS file's new entry (or add it for a
             # create), carrying every other file's prior entry unchanged.
             fingerprint_map = {
@@ -1558,7 +1573,10 @@ def _coherent_cache_update_after_write(matter: dict[str, Any]) -> None:
                 _list_cache_dir = None
                 return
             fingerprint_map[new_entry[0]] = new_entry
-            _list_cache_blob = json.dumps(cached_list)
+            # Replace (update) or add (create) the ONE entry for this record file.
+            # Dict insertion order is not load-bearing: reads assemble the list in
+            # sorted-filename order, matching _matter_record_paths.
+            _list_cache_blob[record_path.name] = record_blob
             _list_cache_fingerprint = tuple(sorted(fingerprint_map.values()))
             _list_cache_dir = current_dir
     except Exception:  # noqa: BLE001 -- correctness beats the optimization; drop the cache.
@@ -1575,11 +1593,12 @@ def _coherent_cache_update_after_delete(raw_id: object) -> None:
     uncertainty (the file still existing, an unexpected cache/fingerprint shape, any
     exception) falls back to a full invalidation.
 
-    The blob entry is matched on the RAW stored ``id`` (``raw_id``) -- exactly the
-    key ``_coherent_cache_update_after_write`` stores under -- so create/update/
-    delete are all symmetric on the raw id even when a stored ``id`` differs from its
-    cleaned/filename form. The fingerprint entry is dropped on the CLEANED filename,
-    because record files on disk are named by the cleaned id.
+    The cache entry and the fingerprint entry are BOTH keyed on the CLEANED record
+    filename -- exactly the key ``_coherent_cache_update_after_write`` stores under --
+    so create/update/delete are symmetric by construction, even when a stored ``id``
+    differs from its cleaned/filename form (the e88baaad ghost): both paths derive
+    the same key from the raw id via ``_clean_matter_record_id``. ``raw_id`` is the
+    caller's stored id (pre-cleaning), matching what ``_delete_matter_record`` holds.
 
     Holds ``_LIST_CACHE_LOCK`` for the blob read-modify-write; it does NOT require
     ``_locked_store()``. The blob mutation is serialized by ``_LIST_CACHE_LOCK``, and
@@ -1616,23 +1635,19 @@ def _coherent_cache_update_after_delete(raw_id: object) -> None:
                 _list_cache_blob = None
                 _list_cache_dir = None
                 return
-            cached_list = json.loads(_list_cache_blob)
-            if not isinstance(cached_list, list):
+            if not isinstance(_list_cache_blob, dict):
                 _list_cache_fingerprint = None
                 _list_cache_blob = None
                 _list_cache_dir = None
                 return
-            pruned_list = [
-                existing
-                for existing in cached_list
-                if not (isinstance(existing, dict) and existing.get("id") == raw_id)
-            ]
+            # O(one record): drop the single per-record blob entry and this file's
+            # fingerprint entry; every other entry is untouched.
+            _list_cache_blob.pop(record_name, None)
             fingerprint = tuple(
                 entry
                 for entry in _list_cache_fingerprint
                 if not (isinstance(entry, tuple) and len(entry) == 3 and entry[0] == record_name)
             )
-            _list_cache_blob = json.dumps(pruned_list)
             _list_cache_fingerprint = fingerprint
             _list_cache_dir = current_dir
     except Exception:  # noqa: BLE001 -- correctness beats the optimization; drop the cache.
@@ -1664,21 +1679,36 @@ def _load_matters_cached() -> list[dict[str, Any]]:
     fingerprint = _records_dir_fingerprint()
     with _LIST_CACHE_LOCK:
         if (
-            _list_cache_blob is not None
+            isinstance(_list_cache_blob, dict)
             and _list_cache_dir == current_dir
             and _list_cache_fingerprint == fingerprint
         ):
-            return json.loads(_list_cache_blob)
+            # Snapshot the per-record blob strings (immutable) in sorted-filename
+            # order -- the same order _matter_record_paths yields -- under the lock;
+            # the O(total bytes) join+parse happens outside it.
+            hit_blobs = [_list_cache_blob[name] for name in sorted(_list_cache_blob)]
+        else:
+            hit_blobs = None
+    if hit_blobs is not None:
+        if not hit_blobs:
+            return []
+        return json.loads("[" + ",".join(hit_blobs) + "]")
     # Miss (or stale): parse fresh, then re-snapshot the fingerprint AFTER the
     # parse so a write that races our parse is reflected by a fingerprint mismatch
     # on the next call rather than being cached against a pre-write fingerprint.
-    parsed = _load_matter_records()
+    record_paths = _matter_record_paths()
+    parsed = [_load_matter_record_path(record_path) for record_path in record_paths]
     fingerprint_after = _records_dir_fingerprint()
     if fingerprint_after == fingerprint:
-        # Stable across the parse: safe to cache against this fingerprint.
-        blob = json.dumps(parsed)
+        # Stable across the parse: safe to cache against this fingerprint. Serialize
+        # per record (keyed by filename) so later writes patch one entry in O(1
+        # record); the total dumps cost equals the old whole-list dumps.
+        blobs = {
+            record_path.name: json.dumps(record)
+            for record_path, record in zip(record_paths, parsed)
+        }
         with _LIST_CACHE_LOCK:
-            _list_cache_blob = blob
+            _list_cache_blob = blobs
             _list_cache_fingerprint = fingerprint_after
             _list_cache_dir = current_dir
     else:
