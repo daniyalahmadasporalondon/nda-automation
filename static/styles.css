@@ -2516,6 +2516,16 @@ h3 {
   padding: 18px;
 }
 
+/* Truncation row for large stores: the intake table shows a bounded page of rows
+   and this final row points at the Repository board for the rest. */
+.dashboard-inbox-more-row td {
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 12px 18px;
+  text-align: center;
+}
+
 .dashboard-search-result-summarize:disabled {
   cursor: default;
   opacity: 0.65;

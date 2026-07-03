@@ -1603,6 +1603,13 @@ function initGuideToggle() {
   applyGuideMode(stored);
 }
 
+// LARGE-STORE BOUND: the dashboard intake table used to render EVERY Inbox matter;
+// a Gmail-import-storm account (thousands of inbound matters) froze the dashboard
+// on boot. The visible table caps at this many rows -- the count label and the
+// per-column stat chips still aggregate over the FULL list (cheap data-only pass),
+// and a truncation row points at the Repository board for the rest.
+const DASHBOARD_INBOX_MAX_ROWS = 30;
+
 function renderDashboardInboxTable() {
   if (!dashboardInboxTableBody) return;
   const inboxMatters = Array.isArray(state.matters)
@@ -1626,7 +1633,16 @@ function renderDashboardInboxTable() {
     dashboardInboxCount.textContent = `${inboxMatters.length} ${noun}`;
   }
   if (dashboardInboxEmpty) dashboardInboxEmpty.hidden = inboxMatters.length > 0;
-  dashboardInboxTableBody.innerHTML = inboxMatters.map((matter) => {
+  const visibleInboxMatters = inboxMatters.slice(0, DASHBOARD_INBOX_MAX_ROWS);
+  const truncatedCount = inboxMatters.length - visibleInboxMatters.length;
+  const truncationRow = truncatedCount > 0
+    ? (
+      `<tr class="dashboard-inbox-more-row" data-dashboard-inbox-truncated="${truncatedCount}">` +
+      `<td colspan="5">Showing ${visibleInboxMatters.length} of ${inboxMatters.length} Inbox NDAs — open the Repository to browse the rest.</td>` +
+      `</tr>`
+    )
+    : "";
+  dashboardInboxTableBody.innerHTML = visibleInboxMatters.map((matter) => {
     const id = htmlEscape(String(matter?.id || ""));
     const title = htmlEscape(RepositoryModel.matterSubject(matter));
     const counterparty = htmlEscape(matter?.counterparty || matter?.counterparty_name || "Unknown counterparty");
@@ -1649,7 +1665,7 @@ function renderDashboardInboxTable() {
       `<td><button class="dashboard-inbox-action" type="button" data-dashboard-inbox-open="${id}">Open review</button></td>` +
       `</tr>`
     );
-  }).join("");
+  }).join("") + truncationRow;
 }
 
 async function loadDashboardAiHealth() {

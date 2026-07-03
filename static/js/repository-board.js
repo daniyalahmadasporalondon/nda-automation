@@ -1,4 +1,37 @@
 const RepositoryBoard = (() => {
+  // LARGE-STORE RENDER BOUNDS. A Gmail-import-storm account can hold thousands of
+  // matters; rendering every card synchronously froze the whole SPA on boot. Each
+  // column now renders at most its visible cap (INITIAL_CARDS_PER_COLUMN, grown by
+  // SHOW_MORE_STEP per "Show more" click) while the column COUNTS, the search, and
+  // every data pass still operate on the FULL in-memory list. When a column's
+  // visible slice exceeds RENDER_CHUNK_SIZE cards, the DOM work is batched through
+  // a DocumentFragment in requestAnimationFrame chunks so the main thread never
+  // blocks on one giant innerHTML parse.
+  const INITIAL_CARDS_PER_COLUMN = 30;
+  const SHOW_MORE_STEP = 50;
+  const RENDER_CHUNK_SIZE = 40;
+
+  // Per-column visible-card caps (columnId -> cap). Survives re-renders (polls,
+  // actions) so an expanded column stays expanded; reset when the search query
+  // changes so a new search starts from the bounded first page again.
+  const columnCardLimits = new Map();
+  let lastRenderedQuery = "";
+  // The args of the most recent renderBoard call, so a "Show more" click can
+  // re-render the board with the caller's own state/handlers without every caller
+  // having to learn a new callback.
+  let lastRenderArgs = null;
+  // Monotonic token guarding the async (rAF-chunked) card appends: a newer
+  // renderBoard invalidates any in-flight chunk continuation from an older one.
+  let boardRenderToken = 0;
+
+  function scheduleFrame(callback) {
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(callback);
+      return;
+    }
+    setTimeout(callback, 16);
+  }
+
   function html(value) {
     if (typeof window !== "undefined" && typeof window.escapeHtml === "function") {
       return window.escapeHtml(value);
@@ -34,8 +67,24 @@ const RepositoryBoard = (() => {
     state,
   }) {
     if (!gmailDemoMatterList) return;
+    lastRenderArgs = {
+      errorMessage,
+      gmailDemoMatterList,
+      handlers,
+      pendingDeleteMatterId,
+      searchQuery,
+      selectedMatter,
+      state,
+    };
+    const renderToken = ++boardRenderToken;
     const mattersByColumn = new Map(RepositoryModel.BOARD_COLUMNS.map((column) => [column.id, []]));
     const query = normalizeSearchText(searchQuery);
+    // A CHANGED search starts every column back at its bounded first page; the
+    // matches the user is looking for must not hide behind stale "Show more" depth.
+    if (query !== lastRenderedQuery) {
+      columnCardLimits.clear();
+      lastRenderedQuery = query;
+    }
     // The board is WIP only: an EXECUTED (fully-signed) matter is done and drops
     // off the board, so it is never bucketed into a column. The backend already
     // excludes it from the payload; this is the frontend backstop.
@@ -46,6 +95,8 @@ const RepositoryBoard = (() => {
         mattersByColumn.get(RepositoryModel.matterColumn(matter)).push(matter);
       });
     mattersByColumn.forEach((matters) => matters.sort(RepositoryModel.compareMatterRecency));
+    // Column counts always reflect the FULL (search-matched) totals, never the
+    // bounded rendered subset below.
     document.querySelectorAll("[data-repository-count]").forEach((count) => {
       count.textContent = String(mattersByColumn.get(count.dataset.repositoryCount)?.length || 0);
     });
@@ -58,13 +109,74 @@ const RepositoryBoard = (() => {
     renderBoardOnboarding({ state, errorMessage, searchActive: Boolean(query) });
     document.querySelectorAll("[data-repository-list]").forEach((list) => {
       const matters = mattersByColumn.get(list.dataset.repositoryList) || [];
-      list.innerHTML = errorMessage
-        ? `<div class="repository-dropzone">${html(errorMessage)}</div>`
-        : matters.length
-        ? matters.map((matter) => renderMatterCard(matter, { confirmingDelete: matter.id === pendingDeleteMatterId })).join("")
-        : `<div class="repository-dropzone">${query ? "No matching documents" : "No documents"}</div>`;
-      bindBoardEvents(list, { handlers, selectedMatter });
+      if (errorMessage) {
+        list.innerHTML = `<div class="repository-dropzone">${html(errorMessage)}</div>`;
+        bindBoardEvents(list, { handlers, selectedMatter });
+        return;
+      }
+      if (!matters.length) {
+        list.innerHTML = `<div class="repository-dropzone">${query ? "No matching documents" : "No documents"}</div>`;
+        bindBoardEvents(list, { handlers, selectedMatter });
+        return;
+      }
+      const columnId = list.dataset.repositoryList;
+      const cardLimit = columnCardLimits.get(columnId) || INITIAL_CARDS_PER_COLUMN;
+      const visible = matters.slice(0, cardLimit);
+      const hiddenCount = matters.length - visible.length;
+      const cardsHtml = visible.map((matter) => renderMatterCard(matter, { confirmingDelete: matter.id === pendingDeleteMatterId }));
+      const showMoreHtml = hiddenCount > 0 ? renderShowMoreControl(columnId, hiddenCount) : "";
+      if (cardsHtml.length <= RENDER_CHUNK_SIZE) {
+        // Small column: one synchronous parse is cheaper than scheduling frames.
+        list.innerHTML = cardsHtml.join("") + showMoreHtml;
+        bindBoardEvents(list, { handlers, selectedMatter });
+        return;
+      }
+      // Big visible slice (after "Show more" growth): append in rAF-spaced
+      // DocumentFragment chunks so no single frame parses hundreds of cards.
+      list.innerHTML = "";
+      appendCardsChunked(list, cardsHtml, 0, {
+        handlers,
+        renderToken,
+        selectedMatter,
+        showMoreHtml,
+      });
     });
+  }
+
+  function appendCardsChunked(list, cardsHtml, start, { handlers, renderToken, selectedMatter, showMoreHtml }) {
+    // A newer render pass replaced this one (poll / action / newer search) or the
+    // list left the DOM: abandon the stale continuation without touching the DOM.
+    if (renderToken !== boardRenderToken || list.isConnected === false) return;
+    const template = document.createElement("template");
+    template.innerHTML = cardsHtml.slice(start, start + RENDER_CHUNK_SIZE).join("");
+    // template.content IS a DocumentFragment: the chunk's cards land in the live
+    // list in one append, not one reflow-provoking insert per card.
+    list.appendChild(template.content);
+    const next = start + RENDER_CHUNK_SIZE;
+    if (next < cardsHtml.length) {
+      scheduleFrame(() => appendCardsChunked(list, cardsHtml, next, { handlers, renderToken, selectedMatter, showMoreHtml }));
+      return;
+    }
+    if (showMoreHtml) list.insertAdjacentHTML("beforeend", showMoreHtml);
+    bindBoardEvents(list, { handlers, selectedMatter });
+  }
+
+  function renderShowMoreControl(columnId, hiddenCount) {
+    const nextBatch = Math.min(SHOW_MORE_STEP, hiddenCount);
+    return `
+      <button class="repository-show-more" type="button" data-repository-show-more="${html(columnId)}" aria-label="Show ${nextBatch} more of ${hiddenCount} hidden documents in this column">
+        Show ${nextBatch} more (${hiddenCount} hidden)
+      </button>
+    `;
+  }
+
+  function expandColumn(columnId) {
+    if (!columnId) return;
+    columnCardLimits.set(
+      columnId,
+      (columnCardLimits.get(columnId) || INITIAL_CARDS_PER_COLUMN) + SHOW_MORE_STEP,
+    );
+    if (lastRenderArgs) renderBoard(lastRenderArgs);
   }
 
   function matterMatchesSearch(matter, query) {
@@ -122,6 +234,12 @@ const RepositoryBoard = (() => {
       button.addEventListener("click", (event) => {
         event.stopPropagation();
         handlers.deleteMatter(button.dataset.confirmDeleteMatterId, button);
+      });
+    });
+    list.querySelectorAll("[data-repository-show-more]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        expandColumn(button.dataset.repositoryShowMore);
       });
     });
   }
@@ -277,7 +395,16 @@ const RepositoryBoard = (() => {
     `;
   }
 
-  return { renderBoard, renderBoardOnboarding, renderMatterCard, renderSyncStatus };
+  return {
+    INITIAL_CARDS_PER_COLUMN,
+    RENDER_CHUNK_SIZE,
+    SHOW_MORE_STEP,
+    expandColumn,
+    renderBoard,
+    renderBoardOnboarding,
+    renderMatterCard,
+    renderSyncStatus,
+  };
 })();
 
 if (typeof module !== "undefined" && module.exports) {
