@@ -337,10 +337,63 @@ def test_deterministic_import_time_review_is_still_selected():
         ({"review_status": "in_progress"}, "review_status_present"),
         ({"review_status": "completed"}, "review_status_present"),
         ({"review_status": "failed"}, "review_status_present"),
+        # E-sign captured NDAs (often the only copy of an EXECUTED NDA that ever
+        # reached the mailbox) must never be swept as gmail noise, even when
+        # otherwise untouched -- either provenance marker excludes.
+        ({"gmail_esign_notification": "docusign.net"}, "esign_captured_nda"),
+        (
+            {
+                "needs_triage": "true",
+                "triage_reason": "esign_notification_nda",
+                "triage_confidence": "70",
+            },
+            "esign_captured_nda",
+        ),
     ],
 )
 def test_exclusion_rules_fail_closed(overrides, expected_reason):
     assert _reason(_pristine_matter(**overrides)) == expected_reason
+
+
+def test_esign_captured_nda_excluded_but_ordinary_triage_still_selected():
+    # A never-touched matter captured off an e-sign platform notification is
+    # excluded on either provenance marker...
+    assert _reason(_pristine_matter(gmail_esign_notification="pandadoc.com")) == "esign_captured_nda"
+    assert (
+        _reason(_pristine_matter(triage_reason="esign_notification_nda", needs_triage="true"))
+        == "esign_captured_nda"
+    )
+    # ...while an ORDINARY auto-imported gmail card -- including a routine
+    # deterministic-triage one -- stays selectable, so the rule cannot silently
+    # shrink the sweep beyond the capture feature's matters.
+    assert _reason(_pristine_matter()) is None
+    assert (
+        _reason(
+            _pristine_matter(
+                needs_triage="true",
+                triage_reason="low_confidence_nda_content",
+                triage_confidence="45",
+            )
+        )
+        is None
+    )
+
+
+def test_esign_captured_exclusion_surfaces_in_excluded_samples():
+    pristine = _store_matter(_pristine_matter())
+    captured = _store_matter(
+        _pristine_matter(
+            gmail_esign_notification="docusign.net",
+            needs_triage="true",
+            triage_reason="esign_notification_nda",
+        )
+    )
+
+    handler = _run(_payload())
+    assert handler.status == 200
+    body = handler.response
+    assert [m["id"] for m in body["matters"]] == [pristine["id"]]
+    assert body["excluded_samples"] == [{"id": captured["id"], "reason": "esign_captured_nda"}]
 
 
 def test_ai_first_review_anywhere_excludes():
