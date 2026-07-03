@@ -954,6 +954,55 @@ def _pristine_deterministic_review(review_result: object) -> bool:
     return True
 
 
+def _only_system_intake_artifacts(matter: dict[str, Any]) -> bool:
+    """True when the matter's artifact registry is no more than the intake backfill.
+
+    VERIFIED SHAPE (probe of the real deferred gmail import path at this SHA):
+    ``matter_lifecycle.complete_intake._register_original_artifact`` runs on EVERY
+    fresh import and registers exactly ONE ``role == "original"`` artifact with
+    ``current_artifact_id`` pointing at it — so "artifacts present" alone is NOT
+    human engagement. Human/AI work always ADDS artifacts (redline, reviewed,
+    sent, signed, counter, ...) or re-points the current pointer. Allowed shapes:
+
+    * no artifacts and no current pointer (a fail-soft intake whose backfill
+      errored), or
+    * exactly one ``original`` artifact, with the current pointer absent or
+      pointing at it.
+
+    Anything else fails CLOSED.
+    """
+    artifacts = matter.get("artifacts")
+    current_id = str(matter.get("current_artifact_id") or "").strip()
+    if not artifacts:
+        return not current_id
+    if not isinstance(artifacts, list) or len(artifacts) != 1:
+        return False
+    artifact = artifacts[0]
+    if not isinstance(artifact, dict):
+        return False
+    if str(artifact.get("role") or "") != "original":
+        return False
+    return current_id in ("", str(artifact.get("id") or ""))
+
+
+def _only_system_timeline_events(matter: dict[str, Any]) -> bool:
+    """True when every timeline event was stamped by the system (or none exist).
+
+    The intake hooks append system-actor events on every import; any event with
+    a different (or missing) actor is evidence of human-adjacent workflow
+    activity (approval, send, manual mark-executed, ...) and fails CLOSED.
+    """
+    timeline = matter.get("matter_timeline")
+    if not timeline:
+        return True
+    if not isinstance(timeline, list):
+        return False
+    for event in timeline:
+        if not isinstance(event, dict) or str(event.get("actor") or "") != "system":
+            return False
+    return True
+
+
 def _bulk_archive_exclusion_reason(
     matter: dict[str, Any],
     *,
@@ -967,6 +1016,16 @@ def _bulk_archive_exclusion_reason(
     disqualifying. Only a matter that positively proves it is an untouched
     auto-imported Gmail card (inside the requested window, owned by exactly the
     requested user) comes back None.
+
+    KNOWN BLIND SPOT (verified, deliberate): a human touch that was fully
+    REVERTED — a card dragged off gmail_demo and back, or mark-reviewed toggled
+    on then off — leaves NO durable field trace at this SHA (those writers set
+    only board_column/status/human_reviewed + updated_at, and ``updated_at``
+    cannot be used as the signal because SYSTEM writers bump it on every
+    pristine import: the intake artifact backfill + two intake timeline appends
+    at create, the corpus build's lazy ``content_fingerprint`` write, Drive
+    auto-intake's background ``drive`` write, and the PDF->DOCX backfill).
+    Detecting reverted touches needs those writers to leave a trace first.
     """
     if not str(matter.get("id") or "").strip():
         return "missing_matter_id"
@@ -996,8 +1055,10 @@ def _bulk_archive_exclusion_reason(
         or matter.get("approval")
     ):
         return "approval_present"
-    if matter.get("artifacts") or str(matter.get("current_artifact_id") or "").strip():
+    if not _only_system_intake_artifacts(matter):
         return "artifacts_present"
+    if not _only_system_timeline_events(matter):
+        return "non_system_timeline_event"
     if matter.get("signed_artifact_id"):
         return "signed_artifact_present"
     if matter.get("redline_draft") or matter.get("redline_edits"):
@@ -1112,6 +1173,30 @@ def _append_bulk_archive_audit_line(entry: dict[str, Any]) -> bool:
         return False
 
 
+def _gmail_polling_active() -> bool:
+    """Whether the scheduled Gmail inbound poll can currently run.
+
+    Mirrors the scheduler's own gate chain (server._gmail_sync_scheduler_step):
+    the env kill switch, the ``sync_enabled`` master pause, and the narrower
+    ``inbound_enabled`` toggle. Polling is "paused" when ANY gate is closed.
+    FAIL-CLOSED for the bulk-archive execute gate: if the check itself errors we
+    report polling as ACTIVE, so execute refuses rather than racing the ledger.
+    """
+    try:
+        # Lazy: server imports this module at load time (cycle-safe at call time),
+        # and reusing its predicate keeps the env kill switch a single source of truth.
+        from .. import server  # noqa: PLC0415
+
+        if not server._gmail_sync_enabled():
+            return False
+        settings = app_settings.gmail_settings()
+        if not app_settings.gmail_scheduler_enabled(settings):
+            return False
+        return bool(settings.get("inbound_enabled", True))
+    except Exception:  # noqa: BLE001 - unknown polling state must read as ACTIVE (refuse).
+        return True
+
+
 def handle_matters_bulk_archive(handler) -> None:
     """POST /api/admin/matters/bulk-archive — remove auto-imported Gmail noise.
 
@@ -1125,13 +1210,28 @@ def handle_matters_bulk_archive(handler) -> None:
     the CURRENT selection (recomputed server-side); a stale hash gets 409 with
     the fresh hash so the operator re-reviews before re-confirming.
 
-    Deletion is delegated to matter_store.bulk_archive_gmail_matters, which
-    re-evaluates the predicate under the store lock and archives every record +
-    source document to pruned-matters/ BEFORE deleting (archive failure keeps
-    everything). After the batch the deleted gmail message ids are marked in the
-    per-owner processed ledger — the MANDATORY re-import guard: deletion destroys
-    the store-based sha256 dedupe, so without the ledger mark the next poll would
+    Deletion is delegated to matter_store.bulk_archive_gmail_matters with the
+    CONFIRMED id set threaded through: only ``predicate ∩ confirmed`` is deleted
+    (a matter that newly qualifies after the confirm-hash check was never
+    operator-reviewed and is skipped), the predicate is re-evaluated under the
+    store lock, and every record + source document is archived to
+    pruned-matters/ BEFORE deleting (archive failure keeps everything). After
+    the batch the deleted gmail message ids are marked in the per-owner
+    processed ledger — the MANDATORY re-import guard: deletion destroys the
+    store-based sha256 dedupe, so without the ledger mark the next poll would
     re-import every message.
+
+    LEDGER RACE (why execute REFUSES while Gmail polling is enabled): the poll's
+    ProcessedLedgerSession loads the whole per-owner ledger file at poll start
+    and its flush() REWRITES the whole file at poll end — a mark written here
+    mid-poll would be silently clobbered by that flush, and the read-back
+    verification below runs BEFORE the poll's flush so ``ledger_marked: true``
+    could not detect it. Mitigation: execute (never dry-run) checks the polling
+    gates (env kill switch + sync_enabled + inbound_enabled, the same chain the
+    scheduler obeys) and returns 409 while any poll could run; the success
+    response carries ``polling_paused_verified: true`` as the record of that
+    check. The operator must pause Gmail polling in Admin before executing and
+    may resume it after.
     """
     if not require_admin(handler):
         return
@@ -1221,8 +1321,31 @@ def handle_matters_bulk_archive(handler) -> None:
         }, status=409)
         return
 
+    # LEDGER-RACE GUARD (see docstring): a concurrent poll's whole-file ledger
+    # flush would clobber the re-import marks written below, undetectably. Refuse
+    # to execute until Gmail polling is paused; dry-run stays always available.
+    if _gmail_polling_active():
+        handler._send_json({
+            "error": (
+                "Pause Gmail polling before executing bulk-archive; a concurrent "
+                "poll rewrites the processed-message ledger and could clobber the "
+                "re-import guard. Disable Gmail sync/inbound in Admin (or the "
+                "NDA_GMAIL_SYNC_ENABLED kill switch), execute, then re-enable."
+            ),
+            "polling_paused_verified": False,
+            "selection_hash": selection_hash,
+            "selected_count": len(selected),
+        }, status=409)
+        return
+
+    confirmed_matter_ids = frozenset(str(matter.get("id") or "") for matter in selected)
     try:
-        report = matter_store.bulk_archive_gmail_matters(owner_user_id, predicate, limit=limit)
+        report = matter_store.bulk_archive_gmail_matters(
+            owner_user_id,
+            predicate,
+            limit=limit,
+            confirmed_matter_ids=confirmed_matter_ids,
+        )
     except matter_store.MatterStoreError as error:
         logger.warning("Bulk archive failed: %s", error)
         handler._send_json({"error": matter_store.friendly_matter_store_message(error)}, status=500)
@@ -1283,5 +1406,8 @@ def handle_matters_bulk_archive(handler) -> None:
         "excluded_samples": excluded_samples,
         "archived": len(deleted_ids),
         "ledger_marked": ledger_marked,
+        # Record of the ledger-race guard: execute only proceeds after verifying
+        # every Gmail polling gate is closed (see docstring).
+        "polling_paused_verified": True,
         "audit_written": audit_written,
     })

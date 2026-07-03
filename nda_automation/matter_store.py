@@ -1096,6 +1096,8 @@ def bulk_archive_gmail_matters(
     owner_user_id: str,
     predicate: Callable[[dict[str, Any]], bool],
     limit: int = 200,
+    *,
+    confirmed_matter_ids: "set[str] | frozenset[str] | None" = None,
 ) -> dict[str, Any]:
     """Archive-then-delete the owner's matters that pass ``predicate`` (capped).
 
@@ -1108,12 +1110,24 @@ def bulk_archive_gmail_matters(
     * The predicate is RE-EVALUATED per matter under ``_locked_store()`` — the
       caller's dry-run snapshot is never trusted, so a matter that gained human
       work (review, decision, move, ...) between dry-run and execute is skipped.
+    * ``confirmed_matter_ids`` (when given) is the other half of that handshake:
+      only matters in ``predicate ∩ confirmed_matter_ids`` are deleted. The
+      predicate can only SHRINK the confirmed set, never widen it — a matter
+      that newly qualifies between the caller's confirm-hash check and this
+      lock (e.g. a fresh import inside a future-dated window) was never
+      reviewed by the operator, is skipped here, and simply surfaces in the
+      next dry-run.
     * Archive-before-delete (the retention-pruning invariant, via
       ``_archive_pruned_matters``): if archiving to ``pruned-matters/`` fails,
       NOTHING is deleted and the report says ``archive_failed``.
     * Record unlinks happen under the lock (mirroring ``delete_matter``); the
       fsync-heavy stored-document unlinks and the best-effort render-cache purge
-      are deferred until after the lock is released.
+      are deferred until after the lock is released. CRASH NOTE: a crash after
+      the under-lock record unlink but before the deferred post-lock document
+      unlink can orphan a file under uploads/ — the matter record is gone but
+      its source bytes remain on disk (and are ALSO preserved in the
+      ``pruned-matters/`` archive written beforehand, so nothing is lost; the
+      orphan is just unreclaimed space an operator may sweep).
 
     Returns ``{"archived": bool, "archive_failed": bool, "deleted_matters": [...]}``
     where ``deleted_matters`` are the full matter dicts that were removed (the
@@ -1134,7 +1148,15 @@ def bulk_archive_gmail_matters(
         for matter in matters:
             if len(selected) >= limit:
                 break
-            # RE-EVALUATE under the lock: never trust the dry-run snapshot.
+            # Delete only the CONFIRMED ∩ predicate set: the confirmed-id gate
+            # keeps anything the operator never reviewed out of the batch, and
+            # the under-lock predicate RE-EVALUATION (never trusting the dry-run
+            # snapshot) drops anything that gained human work since.
+            if (
+                confirmed_matter_ids is not None
+                and str(matter.get("id") or "") not in confirmed_matter_ids
+            ):
+                continue
             if predicate(matter):
                 selected.append(matter)
         if not selected:

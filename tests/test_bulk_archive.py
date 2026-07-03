@@ -51,6 +51,9 @@ def _isolated_store(tmp_path, monkeypatch):
     # Real (non-loopback) admin gate: env-root admin only.
     monkeypatch.setenv("NDA_REQUIRE_AUTH", "1")
     monkeypatch.setenv("NDA_ADMIN_USERS", ADMIN_USER["id"])
+    # Gmail polling PAUSED via the env kill switch, so execute-mode tests pass
+    # the ledger-race guard by default; the polling tests flip this explicitly.
+    monkeypatch.setenv("NDA_GMAIL_SYNC_ENABLED", "off")
     yield
     matter_store._invalidate_list_cache()
 
@@ -107,15 +110,25 @@ _MATTER_SEQ = 0
 
 
 def _pristine_matter(**overrides):
-    """A full matter record exactly as a deferred Gmail poll import persists it."""
+    """A full matter record exactly as a deferred Gmail poll import persists it.
+
+    Shape VERIFIED against the real ingestion path
+    (``ingestion_service.create_matter_from_document`` + ``complete_intake``):
+    a pristine import carries ONE system-registered ``original`` artifact with
+    ``current_artifact_id`` pointing at it, TWO system-actor timeline events,
+    and an ``updated_at`` a few ms AFTER ``created_at`` (the intake artifact +
+    timeline writes bump it) — so the predicate must select exactly this shape.
+    """
     global _MATTER_SEQ
     _MATTER_SEQ += 1
     matter_id = overrides.pop("id", f"matter_bulk{_MATTER_SEQ:04d}")
     document_bytes = overrides.pop("document_bytes", f"nda bytes {matter_id}".encode())
+    artifact_id = f"artifact_{matter_id}"
     matter = {
         "id": matter_id,
         "created_at": IN_WINDOW,
-        "updated_at": IN_WINDOW,
+        # Real imports: intake hooks bump updated_at AFTER create (verified).
+        "updated_at": IN_WINDOW.replace("T00:00:00", "T00:00:01"),
         "source_type": "gmail_inbound",
         "source_filename": "Inbound NDA.docx",
         "stored_filename": f"{matter_id}-Inbound-NDA.docx",
@@ -133,6 +146,21 @@ def _pristine_matter(**overrides):
         "owner_user_id": OWNER,
         "extracted_text": "This Agreement is mutual.",
         "review_result": None,
+        # System intake backfill: exactly one original artifact, current.
+        "artifacts": [{
+            "id": artifact_id,
+            "role": "original",
+            "version": 1,
+            "source": "gmail_inbound",
+            "actor": "counterparty",
+            "stored_filename": f"{matter_id}-Inbound-NDA.docx",
+        }],
+        "current_artifact_id": artifact_id,
+        # System intake timeline: created + review_completed, both actor=system.
+        "matter_timeline": [
+            {"type": "created", "actor": "system", "at": IN_WINDOW},
+            {"type": "review_completed", "actor": "system", "at": IN_WINDOW},
+        ],
     }
     matter.update(overrides)
     matter["_document_bytes"] = document_bytes
@@ -213,6 +241,30 @@ def test_pristine_gmail_import_in_window_is_selected():
     assert _reason(_pristine_matter()) is None
 
 
+def test_real_import_shape_with_system_writes_is_still_selected():
+    """F1 verification, encoded as a regression guard.
+
+    Probing the REAL deferred import path (ingestion_service.create_matter_from_
+    document + complete_intake) shows every pristine import carries
+    updated_at != created_at (intake artifact backfill + two timeline appends
+    bump it), one system-registered original artifact, and two system timeline
+    events; the corpus build later adds content_fingerprint via
+    update_matter_fields. The predicate must SELECT this shape — a naive
+    ``updated_at != created_at`` rule would exclude every import.
+    """
+    matter = _pristine_matter()
+    assert matter["updated_at"] != matter["created_at"]
+    assert [artifact["role"] for artifact in matter["artifacts"]] == ["original"]
+    assert matter["current_artifact_id"] == matter["artifacts"][0]["id"]
+    assert all(event["actor"] == "system" for event in matter["matter_timeline"])
+    assert _reason(matter) is None
+    # The lazy corpus-fingerprint system write must not read as a human touch.
+    assert _reason(_pristine_matter(content_fingerprint={"version": 1, "shingles": []})) is None
+    # A fail-soft intake whose artifact backfill errored (no artifacts at all)
+    # is also a valid pristine shape.
+    assert _reason(_pristine_matter(artifacts=[], current_artifact_id="")) is None
+
+
 def test_deterministic_import_time_review_is_still_selected():
     assert _reason(_pristine_matter(review_result=_deterministic_review())) is None
 
@@ -236,7 +288,26 @@ def test_deterministic_import_time_review_is_still_selected():
         ({"reviewer_decisions": {"c1": {"decision": "accept"}}}, "reviewer_decisions_present"),
         ({"approved_at": "2026-06-11T00:00:00+00:00", "approver": "x"}, "approval_present"),
         ({"artifacts": [{"id": "a1"}]}, "artifacts_present"),
+        ({"artifacts": [{"id": "a1", "role": "redline"}]}, "artifacts_present"),
+        (
+            {"artifacts": [
+                {"id": "a1", "role": "original"},
+                {"id": "a2", "role": "redline"},
+            ]},
+            "artifacts_present",
+        ),
         ({"current_artifact_id": "a1"}, "artifacts_present"),
+        (
+            {"matter_timeline": [
+                {"type": "created", "actor": "system", "at": IN_WINDOW},
+                {"type": "approved", "actor": "admin@example.com", "at": IN_WINDOW},
+            ]},
+            "non_system_timeline_event",
+        ),
+        (
+            {"matter_timeline": [{"type": "approval_reset", "at": IN_WINDOW}]},
+            "non_system_timeline_event",
+        ),
         ({"signed_artifact_id": "a1"}, "signed_artifact_present"),
         ({"redline_draft": {"edits": [{"action": "replace_paragraph"}]}}, "redline_edits_present"),
         ({"redline_edits": [{"action": "replace_paragraph"}]}, "redline_edits_present"),
@@ -452,6 +523,120 @@ def test_limit_caps_the_batch(render_recorder):
     assert handler.response["archived"] == 2
     remaining = _run(_payload()).response
     assert remaining["selected_count"] == 1
+
+
+# --- F2: ledger-race guard (execute refuses while Gmail polling is enabled) ---
+def test_execute_refuses_while_gmail_polling_enabled(monkeypatch, render_recorder):
+    pristine = _store_matter(_pristine_matter())
+    dry = _run(_payload()).response
+
+    # Flip the env kill switch back ON: default admin settings (sync_enabled +
+    # inbound_enabled true) then make polling ACTIVE.
+    monkeypatch.setenv("NDA_GMAIL_SYNC_ENABLED", "1")
+
+    # Dry-run stays available while polling runs.
+    assert _run(_payload()).status == 200
+
+    handler = _run(_payload(dry_run=False, confirm=dry["selection_hash"]))
+    assert handler.status == 409
+    assert handler.response["polling_paused_verified"] is False
+    assert "Pause Gmail polling" in handler.response["error"]
+    # Nothing was deleted and the ledger was not touched.
+    assert _record_path(pristine["id"]).is_file()
+    assert not gmail_processed_ledger.is_message_processed(pristine["gmail_message_id"], OWNER)
+
+    # Pausing via the env kill switch lets the same confirm proceed.
+    monkeypatch.setenv("NDA_GMAIL_SYNC_ENABLED", "off")
+    ok = _run(_payload(dry_run=False, confirm=dry["selection_hash"]))
+    assert ok.status == 200
+    assert ok.response["archived"] == 1
+    assert ok.response["polling_paused_verified"] is True
+
+
+def test_execute_honours_admin_polling_settings(monkeypatch, render_recorder):
+    pristine = _store_matter(_pristine_matter())
+    dry = _run(_payload()).response
+    # Env switch open; the admin settings now decide.
+    monkeypatch.setenv("NDA_GMAIL_SYNC_ENABLED", "")
+
+    monkeypatch.setattr(
+        admin_routes.app_settings,
+        "gmail_settings",
+        lambda: {"sync_enabled": True, "inbound_enabled": True},
+    )
+    refused = _run(_payload(dry_run=False, confirm=dry["selection_hash"]))
+    assert refused.status == 409
+    assert _record_path(pristine["id"]).is_file()
+
+    # Master pause (sync_enabled false) => polling paused => execute proceeds.
+    monkeypatch.setattr(
+        admin_routes.app_settings,
+        "gmail_settings",
+        lambda: {"sync_enabled": False, "inbound_enabled": True},
+    )
+    ok = _run(_payload(dry_run=False, confirm=dry["selection_hash"]))
+    assert ok.status == 200
+    assert ok.response["archived"] == 1
+
+
+def test_unknown_polling_state_fails_closed(monkeypatch):
+    pristine = _store_matter(_pristine_matter())
+    dry = _run(_payload()).response
+    monkeypatch.setenv("NDA_GMAIL_SYNC_ENABLED", "")
+
+    def _boom():
+        raise RuntimeError("settings store unreachable")
+
+    monkeypatch.setattr(admin_routes.app_settings, "gmail_settings", _boom)
+    handler = _run(_payload(dry_run=False, confirm=dry["selection_hash"]))
+    assert handler.status == 409
+    assert _record_path(pristine["id"]).is_file()
+
+
+# --- F3: delete the CONFIRMED set, never the raw predicate set -----------------
+def test_store_confirmed_ids_bound_the_deletion(render_recorder):
+    confirmed = _store_matter(_pristine_matter())
+    unconfirmed = _store_matter(_pristine_matter())
+    report = matter_store.bulk_archive_gmail_matters(
+        OWNER,
+        lambda matter: True,
+        confirmed_matter_ids=frozenset({confirmed["id"]}),
+    )
+    assert [matter["id"] for matter in report["deleted_matters"]] == [confirmed["id"]]
+    assert not _record_path(confirmed["id"]).is_file()
+    assert _record_path(unconfirmed["id"]).is_file()
+    assert (matter_store.UPLOADS_DIR / unconfirmed["stored_filename"]).is_file()
+
+
+def test_matter_imported_between_confirm_and_execute_is_not_deleted(monkeypatch, render_recorder):
+    """A fresh qualifying import landing AFTER the confirm-hash check is spared.
+
+    Simulated by wrapping the store call: the wrapper inserts a new pristine
+    matter (inside the window) just before delegating, i.e. after the handler
+    validated the confirm hash but before the store lock — the exact race F3
+    describes. Only the confirmed matter is deleted; the newcomer surfaces in
+    the next dry-run instead.
+    """
+    confirmed = _store_matter(_pristine_matter())
+    dry = _run(_payload()).response
+    real_bulk_archive = matter_store.bulk_archive_gmail_matters
+    late_import = {}
+
+    def racing_bulk_archive(owner_user_id, predicate, limit=200, **kwargs):
+        late_import.update(_store_matter(_pristine_matter()))
+        return real_bulk_archive(owner_user_id, predicate, limit=limit, **kwargs)
+
+    monkeypatch.setattr(matter_store, "bulk_archive_gmail_matters", racing_bulk_archive)
+    handler = _run(_payload(dry_run=False, confirm=dry["selection_hash"]))
+    assert handler.status == 200
+    assert handler.response["archived"] == 1
+    assert [m["id"] for m in handler.response["matters"]] == [confirmed["id"]]
+    # The unreviewed newcomer QUALIFIES for the predicate but was never confirmed.
+    assert _record_path(late_import["id"]).is_file()
+    assert not _record_path(confirmed["id"]).is_file()
+    # It surfaces in the next dry-run for a fresh review + confirm cycle.
+    next_dry = _run(_payload()).response
+    assert [m["id"] for m in next_dry["matters"]] == [late_import["id"]]
 
 
 # --- store primitive guard rails ----------------------------------------------
