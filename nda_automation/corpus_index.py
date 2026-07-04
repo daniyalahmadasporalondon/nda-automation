@@ -26,6 +26,7 @@ fully testable without HTTP or a live Drive.
 
 from __future__ import annotations
 
+import copy
 import json
 import threading
 from datetime import datetime, timezone
@@ -738,14 +739,59 @@ _CACHE_LOCK = threading.Lock()
 #                   "drive_orphans": [ {...} ]}
 _DRIVE_CACHE: dict[str, dict[str, Any]] = {}
 
+# --- per-owner app-state build cache --------------------------------------
+# The app-state pass (list_matters + per-matter facet/state build + the dup-document
+# fingerprint resolve) runs on EVERY Corpus/assistant request and is the request's
+# dominant cost at scale. Each built CorpusMatter is a pure function of (that single
+# matter, the active playbook), so the cache is INCREMENTAL per matter:
+#
+# * The whole entry is keyed on the owner + the active playbook hash (a playbook
+#   change invalidates every derived workflow/facet state at once).
+# * Each matter's built record is keyed on its ``updated_at`` (every store writer —
+#   disk and in-memory — stamps a fresh microsecond ISO ``updated_at`` on every
+#   write), so one write re-derives ONE matter and reuses the rest instead of paying
+#   an O(store) rebuild cliff per write.
+# * On a disk store, an unchanged store is detected by a cheap opaque change token
+#   (``repository.store_change_token()``, a stat scan) so a fully-warm request skips
+#   ``list_matters`` entirely.
+#
+# The built map is stored as a JSON blob: a hit deserializes the blob, so callers
+# always receive fully-isolated dicts (``_group_and_wrap`` mutates in place) without
+# a Python deepcopy of a large object graph.
+#
+#   owner_user_id -> {"token": Any|None, "playbook_hash": str,
+#                     "signatures": {matter_id: updated_at},
+#                     "built_blob": str, "pending_ids": [str], "built_at": float}
+#
+# KNOWN RESIDUAL (accepted): a record hand-edited on disk WITHOUT bumping its
+# ``updated_at`` (out-of-band edit) changes the stat token, forcing a re-list, but
+# its per-matter build is reused until any real write bumps ``updated_at``. The
+# store's own writers never do this.
+_APP_STATE_CACHE: dict[str, dict[str, Any]] = {}
+# Guard against a pathological unbounded-growth cache if this were ever driven with a
+# huge number of distinct owners in one process; the corpus is a per-request read so
+# a small cap is ample and keeps a single stale entry per owner, not per fingerprint.
+_APP_STATE_CACHE_MAX_OWNERS = 256
+
+# While the background fingerprint backfill is persisting fingerprints, the store
+# content churns continuously (every persist bumps that matter's updated_at), which
+# would turn EVERY corpus request during convergence into a partial rebuild. While a
+# backfill is running for the owner we therefore serve the cached entry under a
+# short bounded-staleness TTL instead. Trade-off (documented, deliberate): a USER
+# write during an active backfill may not surface in the Corpus tab for up to this
+# many seconds; outside a backfill window every write invalidates instantly.
+CORPUS_APP_STATE_BACKFILL_TTL_SECONDS = 30.0
+
 
 def invalidate_cache(owner_user_id: str = "") -> None:
     """Drop the cached Drive listing for one owner, or the whole cache when empty."""
     with _CACHE_LOCK:
         if owner_user_id:
             _DRIVE_CACHE.pop(owner_user_id, None)
+            _APP_STATE_CACHE.pop(owner_user_id, None)
         else:
             _DRIVE_CACHE.clear()
+            _APP_STATE_CACHE.clear()
 
 
 class _DriveCrawlTimeout(Exception):
@@ -787,6 +833,31 @@ def _crawl_deadline(clock: Optional[Callable[[], float]]) -> Callable[[], None]:
 
 
 # --- public entrypoint -----------------------------------------------------
+# Single-flight registry for concurrent corpus builds. Concurrent GET /api/corpus
+# requests for the SAME (owner, drive-owner) ride one leader build instead of each
+# rebuilding (N stacked builds was the F1 amplification: every concurrent click paid
+# the full build). The leader publishes its payload; followers wait and receive a
+# deep copy. force_refresh requests always build (they must bypass caches) but still
+# register as leader so plain concurrent requests can ride them.
+_INFLIGHT_LOCK = threading.Lock()
+_INFLIGHT_BUILDS: dict[tuple[str, str], "_InflightBuild"] = {}
+
+# How long a follower waits for the leader before giving up and building itself.
+# Generous: a healthy build is bounded (~seconds); this only guards against a
+# wedged leader thread turning followers into indefinite waiters.
+_INFLIGHT_WAIT_TIMEOUT_SECONDS = 120.0
+
+
+class _InflightBuild:
+    """One in-flight corpus build: an event followers wait on + the shared payload."""
+
+    __slots__ = ("event", "payload")
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.payload: dict[str, Any] | None = None
+
+
 def build_corpus(
     repository,
     owner_user_id: str,
@@ -803,9 +874,81 @@ def build_corpus(
     ``drive_service``/``clock`` are injectable for tests. A Drive hiccup never
     raises out of here — it degrades to an app-state-only corpus with
     ``drive.reconciled=false`` and a ``drive.reason`` code.
+
+    SINGLE-FLIGHT: concurrent calls for the same (owner, drive-owner) share one
+    build — the first caller becomes the leader and builds; the rest wait for the
+    leader's payload (returned as an independent deep copy) instead of stacking N
+    identical builds. ``force_refresh`` callers never ride a leader (their contract
+    is a fresh crawl) but do lead for concurrent plain callers.
     """
+    key = (str(owner_user_id or ""), str(drive_owner_user_id or ""))
+    entry: _InflightBuild | None = None
+    leader = True
+    with _INFLIGHT_LOCK:
+        existing = _INFLIGHT_BUILDS.get(key)
+        if existing is not None and not force_refresh:
+            entry = existing
+            leader = False
+        else:
+            entry = _InflightBuild()
+            # A force_refresh leader REPLACES any existing entry as the ride target
+            # for later plain callers; the old leader still completes and serves its
+            # own followers.
+            _INFLIGHT_BUILDS[key] = entry
+
+    if not leader:
+        entry.event.wait(timeout=_INFLIGHT_WAIT_TIMEOUT_SECONDS)
+        if entry.payload is not None:
+            # An independent copy: the caller may mutate/serialize freely.
+            return copy.deepcopy(entry.payload)
+        # Leader failed or timed out -> build directly (no re-registration, so a
+        # broken leader can never cascade into a waiter pile-up).
+        return _build_corpus_payload(
+            repository,
+            owner_user_id,
+            drive_owner_user_id,
+            drive_service=drive_service,
+            force_refresh=force_refresh,
+            clock=clock,
+        )
+
+    try:
+        payload = _build_corpus_payload(
+            repository,
+            owner_user_id,
+            drive_owner_user_id,
+            drive_service=drive_service,
+            force_refresh=force_refresh,
+            clock=clock,
+        )
+        entry.payload = payload
+        return payload
+    finally:
+        with _INFLIGHT_LOCK:
+            if _INFLIGHT_BUILDS.get(key) is entry:
+                _INFLIGHT_BUILDS.pop(key, None)
+        entry.event.set()
+
+
+def _build_corpus_payload(
+    repository,
+    owner_user_id: str,
+    drive_owner_user_id: str,
+    *,
+    drive_service: Any | None,
+    force_refresh: bool,
+    clock: Optional[Callable[[], float]],
+) -> dict[str, Any]:
+    """The actual corpus build (see :func:`build_corpus`, which single-flights it)."""
     # 1. App-state pass — always runs; it is the tenant filter and the rich source.
-    app_matters = _build_app_state_matters(repository, owner_user_id)
+    app_matters, pending_fingerprint_ids = _app_state_pass(repository, owner_user_id)
+
+    # 1b. Matters still lacking a content fingerprint could not join THIS build's
+    # duplicate scan. Hand them to the background backfill (single-flight per owner;
+    # a no-op when one is already converging the store) and surface the honest
+    # degradation below instead of blocking the request on O(store) computes.
+    if pending_fingerprint_ids:
+        _start_fingerprint_backfill(repository, owner_user_id, pending_fingerprint_ids)
 
     # 2. Drive pass — cached per owner; only when Drive is connected.
     drive_result = _drive_pass(
@@ -816,7 +959,16 @@ def build_corpus(
     )
 
     # 3. Merge by matter_id + 4. group/sort.
-    return _assemble(app_matters, drive_result)
+    payload = _assemble(app_matters, drive_result)
+    # The duplicate-scan honesty block: pending > 0 means "the dup signal covers the
+    # fingerprinted subset only; N matters are still being scanned in the background".
+    # The FE/assistant can render "duplicate scan pending (N remaining)" off this
+    # instead of silently under-reporting duplicates during backfill convergence.
+    payload["duplicate_scan"] = {
+        "pending": len(pending_fingerprint_ids),
+        "complete": not pending_fingerprint_ids,
+    }
+    return payload
 
 
 def flatten_corpus(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -857,6 +1009,16 @@ def _resolve_playbook_resolvers() -> tuple[Callable[[], dict[str, Any]], Callabl
 _FINGERPRINT_KEY = "_content_fingerprint"
 
 
+# How many missing fingerprints one request is allowed to compute INLINE (compute +
+# persist, ~30-40ms/doc). Small corpora (below the budget) therefore behave exactly
+# as before -- the first build computes, persists and dup-resolves in one pass --
+# while a large cold store (e.g. the whole prod store the first time the dup feature
+# sees it) computes only this bounded slice on the request thread and hands the rest
+# to the BACKGROUND backfill (see _start_fingerprint_backfill). The request stays
+# bounded: budget * ~40ms << 1s, never O(store) * 40ms on the request thread.
+FINGERPRINT_INLINE_COMPUTE_BUDGET = 16
+
+
 def _resolve_fingerprint(
     repository, owner_user_id: str, matter: dict[str, Any], matter_id: str
 ) -> dict[str, Any] | None:
@@ -871,6 +1033,12 @@ def _resolve_fingerprint(
     this build; it just recomputes next time). Returns ``None`` when the document has
     no fingerprintable content (empty text) — such a matter never participates in dup
     detection. Never raises.
+
+    BOUNDED-REQUEST contract: callers on the request path must gate calls to this
+    with ``FINGERPRINT_INLINE_COMPUTE_BUDGET`` (see ``_app_state_pass``) so a large
+    cold store never serializes O(store) SimHash computes onto one request; the
+    background backfill (``_start_fingerprint_backfill``) computes the remainder
+    through this same function off-thread.
     """
     stored = matter.get(MATTER_FINGERPRINT_FIELD)
     if content_fingerprint.is_valid_fingerprint(stored):
@@ -890,18 +1058,371 @@ def _resolve_fingerprint(
     return fingerprint
 
 
+def _matter_is_fingerprintable(matter: dict[str, Any]) -> bool:
+    """True when the matter has content a fingerprint could be computed from.
+
+    A matter with empty ``extracted_text`` can NEVER be fingerprinted (the compute
+    returns None), so it is not "pending" -- counting it would leave the honest
+    "duplicate scan pending (N remaining)" signal stuck above zero forever.
+    """
+    return bool(str(matter.get("extracted_text") or "").strip())
+
+
+# --- background fingerprint backfill ----------------------------------------
+# A large store that predates the dup-document feature has NO stored fingerprints;
+# computing them all on the first /api/corpus request serialized ~34ms * n onto the
+# request thread (measured 223s at 1200 matters). Instead the request computes only
+# the small inline budget and this backfill computes + persists the remainder on a
+# daemon thread (single-flight per owner), mirroring the admin pdf-docx-backfill
+# pattern (run-lock + status dict). Persistence goes through the SAME
+# _resolve_fingerprint writer, so the store converges and later builds are pure
+# scalar-compares.
+_FINGERPRINT_BACKFILL_LOCK = threading.Lock()
+_FINGERPRINT_BACKFILL_OWNERS: set[str] = set()
+_FINGERPRINT_BACKFILL_STATUS: dict[str, dict[str, Any]] = {}
+
+
+def fingerprint_backfill_status(owner_user_id: str) -> dict[str, Any]:
+    """The latest fingerprint-backfill tally for one owner (cheap; no re-scan)."""
+    with _FINGERPRINT_BACKFILL_LOCK:
+        return dict(_FINGERPRINT_BACKFILL_STATUS.get(owner_user_id) or {"state": "idle"})
+
+
+def _fingerprint_backfill_sleep_seconds() -> float:
+    """Pause between backfill items (default 0.05s; env-tunable, >=0).
+
+    The sweep runs for minutes on a large store; each item takes the store lock
+    (read + persist) and burns CPU on the SimHash. A short yield between items
+    keeps the store lock and the GIL available to live request threads instead of
+    letting the sweep monopolize them — mirroring the pdf-docx backfill's pacing.
+    """
+    import os
+
+    try:
+        value = float(os.environ.get("NDA_CORPUS_FINGERPRINT_BACKFILL_SLEEP_SECONDS", "0.05") or 0.05)
+    except (TypeError, ValueError):
+        return 0.05
+    return max(0.0, value)
+
+
+def _run_fingerprint_backfill(repository, owner_user_id: str, matter_ids: list[str]) -> dict[str, Any]:
+    """Compute + persist missing fingerprints for ``matter_ids`` (synchronous body).
+
+    Re-reads each matter fresh (it may have changed -- or been deleted -- since the
+    triggering build) and skips any that already carry a valid fingerprint, so a
+    concurrent request's inline-budget compute is never duplicated. Per-matter
+    failures are counted and skipped; the sweep never raises. Sleeps briefly
+    between items (see :func:`_fingerprint_backfill_sleep_seconds`) so the sweep
+    never monopolizes the store lock or the GIL.
+    """
+    import time as _time
+
+    pause = _fingerprint_backfill_sleep_seconds()
+    done = skipped = failed = 0
+    for position, matter_id in enumerate(matter_ids):
+        if pause and position:
+            _time.sleep(pause)
+        try:
+            matter = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+            if matter is None:
+                skipped += 1
+                continue
+            if content_fingerprint.is_valid_fingerprint(matter.get(MATTER_FINGERPRINT_FIELD)):
+                skipped += 1
+                continue
+            fingerprint = _resolve_fingerprint(repository, owner_user_id, matter, matter_id)
+            if fingerprint is None:
+                skipped += 1
+            else:
+                done += 1
+        except Exception:  # noqa: BLE001 -- one bad matter never stops the sweep.
+            failed += 1
+    return {"state": "done", "computed": done, "skipped": skipped, "failed": failed}
+
+
+def _start_fingerprint_backfill(repository, owner_user_id: str, matter_ids: list[str]) -> bool:
+    """Start the fingerprint backfill for one owner on a daemon thread (single-flight).
+
+    Returns True when a worker was started; False when one is already running for
+    this owner (the running worker converges the store; the next build re-derives
+    what is still pending). Never raises -- a thread-spawn failure just means the
+    next request re-attempts.
+    """
+    if not matter_ids:
+        return False
+    with _FINGERPRINT_BACKFILL_LOCK:
+        if owner_user_id in _FINGERPRINT_BACKFILL_OWNERS:
+            return False
+        _FINGERPRINT_BACKFILL_OWNERS.add(owner_user_id)
+        _FINGERPRINT_BACKFILL_STATUS[owner_user_id] = {
+            "state": "running",
+            "pending": len(matter_ids),
+        }
+
+    def _worker() -> None:
+        try:
+            status = _run_fingerprint_backfill(repository, owner_user_id, matter_ids)
+        except Exception:  # noqa: BLE001 -- a backfill failure must never surface.
+            status = {"state": "error"}
+        with _FINGERPRINT_BACKFILL_LOCK:
+            _FINGERPRINT_BACKFILL_OWNERS.discard(owner_user_id)
+            _FINGERPRINT_BACKFILL_STATUS[owner_user_id] = status
+
+    try:
+        thread = threading.Thread(
+            target=_worker, name=f"corpus-fingerprint-backfill-{owner_user_id or 'local'}", daemon=True
+        )
+        thread.start()
+    except Exception:  # noqa: BLE001
+        with _FINGERPRINT_BACKFILL_LOCK:
+            _FINGERPRINT_BACKFILL_OWNERS.discard(owner_user_id)
+            _FINGERPRINT_BACKFILL_STATUS[owner_user_id] = {"state": "error"}
+        return False
+    return True
+
+
+def _store_change_token(repository) -> Any | None:
+    """An opaque cheap change token for the repository's backing store, or None.
+
+    Duck-typed: a repository exposing ``store_change_token()`` (the disk store's
+    stat-scan over its record files) returns a hashable token that changes whenever
+    ANY record file changes. ``None`` (no support / any error) means "unknown" and
+    the caller falls back to the list+signature path. Never raises.
+    """
+    probe = getattr(repository, "store_change_token", None)
+    if not callable(probe):
+        return None
+    try:
+        return probe()
+    except Exception:  # noqa: BLE001 -- the token is an optimisation only.
+        return None
+
+
+def _matter_build_signature(matter: dict[str, Any]) -> str:
+    """The per-matter reuse signature: its ``updated_at`` stamp.
+
+    Every store writer (disk matter_store and the in-memory repository alike)
+    stamps a fresh microsecond-resolution ISO ``updated_at`` on every write, so an
+    unchanged stamp means the stored record is unchanged and its built CorpusMatter
+    can be reused. An EMPTY stamp returns "" and the caller never reuses on "" —
+    a matter without an updated_at is always rebuilt (fail toward recompute).
+    """
+    return str(matter.get("updated_at") or "")
+
+
+def _backfill_running(owner_user_id: str) -> bool:
+    with _FINGERPRINT_BACKFILL_LOCK:
+        return owner_user_id in _FINGERPRINT_BACKFILL_OWNERS
+
+
+def _entry_built_matters(entry: dict[str, Any]) -> dict[str, dict[str, Any]] | None:
+    """Deserialize a cache entry's built map (fresh isolated dicts), or None."""
+    blob = entry.get("built_blob")
+    if not isinstance(blob, str):
+        return None
+    try:
+        parsed = json.loads(blob)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def _build_app_state_matters(repository, owner_user_id: str) -> dict[str, dict[str, Any]]:
-    """Map matter_id -> a partially-built CorpusMatter from app-state."""
+    """Map matter_id -> a partially-built CorpusMatter for the owner (cache-fronted).
+
+    Thin compatibility wrapper over :func:`_app_state_pass` (which additionally
+    reports the matters whose fingerprint is still pending backfill) for callers
+    and tests that only need the built map.
+    """
+    matters, _pending = _app_state_pass(repository, owner_user_id)
+    return matters
+
+
+def _app_state_pass(
+    repository, owner_user_id: str
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """The cache-fronted app-state pass: ``(matter_id -> CorpusMatter, pending_ids)``.
+
+    Serving order (each step falls through to the next on a miss; any cache hiccup
+    falls through to a full rebuild — the payload can be recomputed, never wrong):
+
+    1. **Token fast path** (disk store): the repository's cheap stat-scan change
+       token equals the cached one -> the store is byte-identical on disk -> serve
+       the cached build without even calling ``list_matters``.
+    2. **Backfill tolerance**: while OUR OWN background fingerprint backfill is
+       persisting fingerprints the store churns continuously; a recent entry
+       (< ``CORPUS_APP_STATE_BACKFILL_TTL_SECONDS``) is served as-is so convergence
+       never turns every request into a rebuild. Bounded, documented staleness.
+    3. **Incremental rebuild**: ``list_matters`` once, then rebuild ONLY the matters
+       whose ``updated_at`` signature changed (or that are new), reusing the cached
+       build for the rest — one write costs one matter's derivation, not O(store).
+       A playbook change (hash mismatch) disables reuse wholesale, since every
+       derived workflow/facet state depends on it.
+
+    ``pending_ids`` are the fingerprintable matters whose content fingerprint is
+    still missing after this build's bounded inline computes -- i.e. the matters the
+    duplicate scan could NOT yet consider. The caller surfaces the honest
+    ``duplicate_scan`` degradation from it and hands the ids to the background
+    backfill.
+    """
+    # Take the change token BEFORE list_matters (pre-snapshot rule): a write racing
+    # the list is then reflected as a token mismatch on the NEXT request — an extra
+    # rebuild, never a stale serve.
+    token = _store_change_token(repository)
+    now = _now_epoch(None)
+    with _CACHE_LOCK:
+        entry = _APP_STATE_CACHE.get(owner_user_id)
+        entry_snapshot = dict(entry) if entry is not None else None
+
+    if entry_snapshot is not None:
+        # 1. Token fast path: identical on-disk state -> no list, no rebuild.
+        if token is not None and entry_snapshot.get("token") == token:
+            cached = _entry_built_matters(entry_snapshot)
+            if cached is not None:
+                return cached, list(entry_snapshot.get("pending_ids") or [])
+        # 2. Backfill tolerance: the only expected churn is our own fingerprint
+        # persistence; serve the recent entry instead of rebuilding per request.
+        if (
+            _backfill_running(owner_user_id)
+            and (now - float(entry_snapshot.get("built_at") or 0.0))
+            < CORPUS_APP_STATE_BACKFILL_TTL_SECONDS
+        ):
+            cached = _entry_built_matters(entry_snapshot)
+            if cached is not None:
+                return cached, list(entry_snapshot.get("pending_ids") or [])
+
+    # 3. Incremental rebuild from a fresh snapshot.
+    matters = list(repository.list_matters(owner_user_id=owner_user_id))
+    runtime_func, hash_func = _resolve_playbook_resolvers()
+    try:
+        playbook_hash = str(hash_func() or "")
+    except Exception:  # noqa: BLE001 -- an unreadable playbook disables reuse only.
+        playbook_hash = ""
+
+    reusable: dict[str, dict[str, Any]] = {}
+    signatures_old: dict[str, str] = {}
+    if (
+        entry_snapshot is not None
+        and playbook_hash
+        and entry_snapshot.get("playbook_hash") == playbook_hash
+    ):
+        cached = _entry_built_matters(entry_snapshot)
+        if cached is not None:
+            reusable = cached
+            raw_signatures = entry_snapshot.get("signatures")
+            if isinstance(raw_signatures, dict):
+                signatures_old = raw_signatures
+
+    built, pending_ids, signatures = _build_app_state_matters_from(
+        repository,
+        owner_user_id,
+        matters,
+        resolvers=(runtime_func, hash_func),
+        reusable=reusable,
+        old_signatures=signatures_old,
+    )
+
+    try:
+        built_blob = json.dumps(built)
+    except (TypeError, ValueError):
+        # Not cacheable (shouldn't happen: the built map is JSON-native); serve
+        # uncached rather than fail.
+        return built, pending_ids
+
+    with _CACHE_LOCK:
+        if len(_APP_STATE_CACHE) >= _APP_STATE_CACHE_MAX_OWNERS and owner_user_id not in _APP_STATE_CACHE:
+            _APP_STATE_CACHE.clear()  # simple bound; per-owner staleness, not unbounded growth.
+        _APP_STATE_CACHE[owner_user_id] = {
+            "token": token,
+            "playbook_hash": playbook_hash,
+            "signatures": signatures,
+            "built_blob": built_blob,
+            "pending_ids": list(pending_ids),
+            "built_at": now,
+        }
+    return built, pending_ids
+
+
+def _build_app_state_matters_from(
+    repository,
+    owner_user_id: str,
+    source_matters: list[dict[str, Any]],
+    *,
+    resolvers: tuple[Callable[[], dict[str, Any]], Callable[[], str]] | None = None,
+    reusable: dict[str, dict[str, Any]] | None = None,
+    old_signatures: dict[str, str] | None = None,
+) -> tuple[dict[str, dict[str, Any]], list[str], dict[str, str]]:
+    """Build the CorpusMatter map from an already-read matter snapshot.
+
+    Returns ``(matters_map, pending_fingerprint_ids, signatures)``.
+
+    * **Per-matter reuse**: a matter whose ``updated_at`` signature matches its
+      cached build (``reusable``/``old_signatures``, same playbook — enforced by the
+      caller) reuses the cached CorpusMatter instead of re-deriving workflow state,
+      facets and artifacts. One store write therefore re-derives ONE matter.
+    * **Bounded fingerprint work** (the F1 fix): missing fingerprints are computed
+      inline ONLY when the whole missing set fits ``FINGERPRINT_INLINE_COMPUTE_BUDGET``
+      (small corpora keep the legacy compute-on-first-build behavior and dup-resolve
+      in one pass). A larger missing set computes NOTHING inline — every missing
+      matter is reported pending for the background backfill — so the request never
+      pays O(store) SimHash computes or store writes.
+    """
     matters: dict[str, dict[str, Any]] = {}
+    pending_ids: list[str] = []
+    signatures: dict[str, str] = {}
+    reusable = reusable or {}
+    old_signatures = old_signatures or {}
+
+    # Fingerprint plan: count the fingerprintable matters lacking a valid stored
+    # fingerprint FIRST (cheap scalar checks), then decide inline-vs-defer for the
+    # whole build. All-inline keeps small corpora byte-identical to the legacy
+    # behavior; all-deferred keeps large cold stores bounded.
+    missing_ids: set[str] = set()
+    for matter in source_matters:
+        matter_id = str(matter.get("id") or "")
+        if not matter_id:
+            continue
+        if content_fingerprint.is_valid_fingerprint(matter.get(MATTER_FINGERPRINT_FIELD)):
+            continue
+        if _matter_is_fingerprintable(matter):
+            missing_ids.add(matter_id)
+    compute_inline = len(missing_ids) <= FINGERPRINT_INLINE_COMPUTE_BUDGET
+
     # Resolve the active playbook runtime ONCE per build and thread the constant
     # resolvers through every matter's workflow_state, instead of paying a
     # playbook.json flock+read+validate per matter in the approval-gate staleness
     # check.
-    runtime_func, hash_func = _resolve_playbook_resolvers()
-    for matter in repository.list_matters(owner_user_id=owner_user_id):
+    runtime_func, hash_func = resolvers if resolvers is not None else _resolve_playbook_resolvers()
+    for matter in source_matters:
         matter_id = str(matter.get("id") or "")
         if not matter_id:
             continue
+
+        signature = _matter_build_signature(matter)
+        signatures[matter_id] = signature
+
+        # Resolve the fingerprint plan for this matter first: reuse decisions below
+        # must never mask a pending fingerprint.
+        stored_fingerprint = matter.get(MATTER_FINGERPRINT_FIELD)
+        if content_fingerprint.is_valid_fingerprint(stored_fingerprint):
+            resolved_fingerprint = stored_fingerprint
+        elif matter_id in missing_ids and compute_inline:
+            resolved_fingerprint = _resolve_fingerprint(repository, owner_user_id, matter, matter_id)
+        elif matter_id in missing_ids:
+            resolved_fingerprint = None
+            pending_ids.append(matter_id)
+        else:
+            resolved_fingerprint = None  # empty text: never fingerprintable, never pending
+
+        # Per-matter reuse: unchanged record + same playbook -> the derived build is
+        # identical; only refresh the fingerprint slot (it may have just resolved).
+        if signature and old_signatures.get(matter_id) == signature:
+            cached_matter = reusable.get(matter_id)
+            if isinstance(cached_matter, dict):
+                cached_matter[_FINGERPRINT_KEY] = resolved_fingerprint
+                matters[matter_id] = cached_matter
+                continue
+
         counterparty = artifact_registry.derive_counterparty(matter)
         state = workflow.workflow_state(
             matter,
@@ -919,7 +1440,7 @@ def _build_app_state_matters(repository, owner_user_id: str) -> dict[str, dict[s
             "created_at": str(matter.get("created_at") or ""),
             # Content fingerprint for dup-document detection: lazily computed +
             # cached on first build, scalar-compared thereafter (see _group_and_wrap).
-            _FINGERPRINT_KEY: _resolve_fingerprint(repository, owner_user_id, matter, matter_id),
+            _FINGERPRINT_KEY: resolved_fingerprint,
             # FE contract field (top-level): the dup-document signal, stamped in
             # _group_and_wrap once the whole corpus is known. None until resolved.
             "duplicate_document": None,
@@ -943,7 +1464,7 @@ def _build_app_state_matters(repository, owner_user_id: str) -> dict[str, dict[s
                 for sequence, artifact in enumerate(artifacts, start=1)
             ],
         }
-    return matters
+    return matters, pending_ids, signatures
 
 
 def _app_title(matter: dict[str, Any]) -> str:
@@ -1497,69 +2018,220 @@ def _is_duplicate_pair(
     return score
 
 
+# --- duplicate-document detection: candidate bucketing (scale) -------------
+#
+# Naive dup detection is an all-pairs O(n²) scan over every fingerprinted matter
+# (see _stamp_duplicate_document_full, retained as the authoritative fallback).
+# That is fine at hundreds of matters but goes quadratic at 10-20k, and it re-runs
+# uncached on every Corpus/assistant request. To keep the SAME flagged result while
+# only comparing PLAUSIBLE pairs, candidates are bucketed and each matter is scored
+# ONLY against the union of matters sharing one of its buckets:
+#
+# * Exact-dup  -- an exact match means identical ``exact`` sha256 (regardless of
+#   counterparty), so two candidates can be an exact-dup pair IFF they share an
+#   ``exact`` value. Bucketing on ``exact`` therefore never drops an exact pair.
+# * Near-dup   -- a near-dup requires SAME non-empty counterparty AND SimHash
+#   similarity >= NEAR_DUPLICATE_SIMILARITY_THRESHOLD (0.93), i.e. Hamming distance
+#   <= 4 over the 64-bit SimHash (1 - 4/64 = 0.9375 >= 0.93; 1 - 5/64 < 0.93). By the
+#   pigeonhole principle, two 64-bit values within Hamming distance 4 must agree
+#   EXACTLY on at least one of _SIMHASH_BANDS = 5 disjoint bit-bands (k differing
+#   bits cannot touch more than k of k+1 bands). Bucketing near candidates on
+#   (counterparty_key, band_index, band_bits) therefore co-locates every true
+#   near-dup pair in at least one bucket, so none is dropped.
+#
+# The reduced candidate set for a matter is a SUPERSET of its true matches, and the
+# exact same scoring (_is_duplicate_pair) + deterministic earliest-match tie-break
+# is applied over it, so the stamped result is byte-identical to the all-pairs path.
+# A matter that lands in no shared bucket has no possible match and is stamped None
+# without any comparison. Fail-open: any bucketing hiccup falls back to the full
+# all-pairs path (see _stamp_duplicate_document).
+
+# Number of disjoint SimHash bit-bands. Must be >= (max Hamming distance that still
+# passes the near-dup threshold) + 1 so two near-dup fingerprints are guaranteed to
+# share at least one bit-identical band. Threshold 0.93 => max Hamming 4 => 5 bands.
+_SIMHASH_BANDS = 5
+
+
+def _simhash_band_keys(simhash_value: int) -> tuple[int, ...]:
+    """The per-band (band_index, band_bits) fingerprints of a 64-bit SimHash.
+
+    Splits the 64 bits into ``_SIMHASH_BANDS`` disjoint contiguous bands (sizes
+    [13,13,13,13,12] for 5 bands) and returns one packed key per band. Two SimHashes
+    within Hamming distance 4 are guaranteed to share at least one of these keys
+    (pigeonhole), which is exactly the near-dup gate's bound, so bucketing on these
+    keys never drops a near-dup pair.
+    """
+    bits = content_fingerprint._SIMHASH_BITS  # noqa: SLF001 -- module-private constant reuse
+    base, rem = divmod(bits, _SIMHASH_BANDS)
+    keys: list[int] = []
+    offset = 0
+    for band_index in range(_SIMHASH_BANDS):
+        width = base + (1 if band_index < rem else 0)
+        band_bits = (simhash_value >> offset) & ((1 << width) - 1)
+        # Pack (band_index, band_bits) into one hashable int key; band_index in the
+        # high bits keeps band-0 bits from ever colliding with band-1 bits, etc.
+        keys.append((band_index << bits) | band_bits)
+        offset += width
+    return tuple(keys)
+
+
 def _stamp_duplicate_document(matters: list[dict[str, Any]]) -> int:
     """Stamp each matter's ``duplicate_document`` signal; return the flagged count.
 
     Resolves the cross-matter duplicate signal now the whole corpus is known (a
-    per-matter facet builder cannot see other matters). For every matter carrying a
-    fingerprint, find the OTHER matters it duplicates per :func:`_is_duplicate_pair`
-    (exact-dup = cross-counterparty sha256 ``==``; near-dup = SAME-counterparty SimHash
-    >= ``NEAR_DUPLICATE_SIMILARITY_THRESHOLD`` -- scalar only, NEVER a live text diff),
-    and point at a DETERMINISTIC match: the earliest other matter (by ``created_at``
-    then ``matter_id``), with its title + the similarity.
+    per-matter facet builder cannot see other matters). Produces the IDENTICAL result
+    to the all-pairs scan (:func:`_stamp_duplicate_document_full`) -- the earliest
+    deterministic match per matter -- but compares each matter only against the
+    matters sharing one of its dup buckets (see the module comment above), turning the
+    O(n²) all-pairs scan into an O(n · bucket-fanout) one that scales to 10-20k matters
+    and is safe to run per request. Fail-open: any hiccup building/using the buckets
+    reverts to the authoritative all-pairs path, so the flagged set can never change.
 
     "Same matter from app + Drive counts once": app+Drive records merge by matter_id
     into one corpus-matter BEFORE this runs, and matters sharing a matter_id are
     skipped as self-matches here, so a matter is never flagged a duplicate of itself.
-
-    Complexity note: this is O(n²) SCALAR comparisons over n fingerprinted matters
-    (each comparison is a hex ``==`` plus, on the same-counterparty near path, two
-    64-bit int ops), NOT an O(n²) text diff. The expensive work (extraction,
-    fingerprint compute) already happened once at cache time. The counterparty key is
-    normalized ONCE per candidate here (not per pair), so the gate adds no per-pair
-    cost beyond a string ``==``.
     """
-    # Only matters with a real fingerprint can match. Capture (index, matter, fp,
-    # normalized-counterparty-key). The key is computed ONCE per candidate (not per
-    # pair) so the same-counterparty gate stays a cheap scalar string compare inside
-    # the O(n²) loop.
+    try:
+        return _stamp_duplicate_document_bucketed(matters)
+    except Exception:  # noqa: BLE001 -- bucketing is an optimisation; never change the result.
+        return _stamp_duplicate_document_full(matters)
+
+
+def _dedup_sort_key(
+    item: tuple[int, dict[str, Any], dict[str, Any], str],
+) -> tuple[str, str, int]:
+    """Deterministic match-ordering key: (created_at, matter_id, corpus index).
+
+    The single ordering the earliest-match tie-break uses, shared by the bucketed
+    and full paths so both pick the byte-identical winner.
+    """
+    index, matter, _fp, _cp = item
+    return (str(matter.get("created_at") or ""), str(matter.get("matter_id") or ""), index)
+
+
+def _dedup_candidates(
+    matters: list[dict[str, Any]],
+) -> list[tuple[int, dict[str, Any], dict[str, Any], str]]:
+    """(index, matter, fingerprint, counterparty_key) for each fingerprinted matter.
+
+    Only matters carrying a valid fingerprint can match. The counterparty key is
+    normalized ONCE per candidate here (not per pair) so the same-counterparty near
+    gate stays a cheap scalar string compare.
+    """
     candidates: list[tuple[int, dict[str, Any], dict[str, Any], str]] = []
     for index, matter in enumerate(matters):
         fingerprint = matter.get(_FINGERPRINT_KEY)
         if content_fingerprint.is_valid_fingerprint(fingerprint):
             cp_key = _normalized_entity_key(str(matter.get("counterparty") or ""))
             candidates.append((index, matter, fingerprint, cp_key))
+    return candidates
 
-    def _sort_key(item: tuple[int, dict[str, Any], dict[str, Any], str]) -> tuple[str, str, int]:
-        index, matter, _fp, _cp = item
-        return (str(matter.get("created_at") or ""), str(matter.get("matter_id") or ""), index)
+
+def _stamp_best_match(
+    self_item: tuple[int, dict[str, Any], dict[str, Any], str],
+    others: list[tuple[int, dict[str, Any], dict[str, Any], str]],
+) -> bool:
+    """Score ``self`` against every candidate in ``others`` and stamp its dup signal.
+
+    Applies the SAME per-pair oracle (:func:`_is_duplicate_pair`) and deterministic
+    earliest-match tie-break (:func:`_dedup_sort_key`) the all-pairs path uses, over
+    whatever candidate list is supplied (the full list, or a bucket-reduced superset
+    of the true matches). Returns True when a match was stamped (for the flagged
+    count). ``others`` may include ``self``; the self-match is skipped by matter_id.
+    """
+    index, matter, fingerprint, self_key = self_item
+    self_id = str(matter.get("matter_id") or "") or f"__idx_{index}"
+    best_match: tuple[tuple[str, str, int], dict[str, Any], float] | None = None
+    for other_item in others:
+        other_index, other, other_fp, other_key = other_item
+        other_id = str(other.get("matter_id") or "") or f"__idx_{other_index}"
+        if other_id == self_id:
+            continue  # never a duplicate of itself (incl. the merged app+Drive record)
+        score = _is_duplicate_pair(fingerprint, self_key, other_fp, other_key)
+        if score is None:
+            continue
+        candidate_key = _dedup_sort_key(other_item)
+        if best_match is None or candidate_key < best_match[0]:
+            best_match = (candidate_key, other, score)
+    if best_match is None:
+        matter["duplicate_document"] = None
+        return False
+    _key, matched, score = best_match
+    matter["duplicate_document"] = {
+        "matched_matter_id": str(matched.get("matter_id") or ""),
+        "matched_title": str(matched.get("title") or "") or "NDA",
+        # Round to 4 dp so the stored similarity is stable/JSON-clean; the FE
+        # renders it as a percentage (e.g. 0.9231 -> "92% match").
+        "similarity": round(float(score), 4),
+    }
+    return True
+
+
+def _stamp_duplicate_document_full(matters: list[dict[str, Any]]) -> int:
+    """All-pairs O(n²) dup resolution -- the authoritative reference/fallback.
+
+    For every fingerprinted matter, scan EVERY other fingerprinted matter for the
+    earliest deterministic duplicate. Pure scalar work per pair (a hex ``==`` plus,
+    on the same-counterparty near path, an XOR+popcount) -- never a live text diff.
+    Kept as the correctness oracle the bucketed fast path must match byte-for-byte,
+    and as the fail-open path when bucketing hits any snag.
+    """
+    candidates = _dedup_candidates(matters)
+    count = 0
+    for self_item in candidates:
+        if _stamp_best_match(self_item, candidates):
+            count += 1
+    return count
+
+
+def _stamp_duplicate_document_bucketed(matters: list[dict[str, Any]]) -> int:
+    """Bucketed dup resolution: score each matter only against plausible candidates.
+
+    Builds two bucket indexes over the fingerprinted candidates and, for each matter,
+    unions the candidates sharing one of its buckets into a reduced set that is a
+    SUPERSET of its true matches (see the module comment for the pigeonhole proof),
+    then defers to :func:`_stamp_best_match` -- the SAME oracle + tie-break as the
+    all-pairs path -- so the stamped result is byte-identical. A matter with no shared
+    bucket is stamped None with zero comparisons.
+    """
+    candidates = _dedup_candidates(matters)
+    # Exact bucket: exact-sha256 -> candidate positions. Near bucket: per-band packed
+    # key, scoped to the counterparty, -> candidate positions. Positions index into
+    # ``candidates`` so a shared-bucket union can be de-duplicated cheaply.
+    exact_buckets: dict[str, list[int]] = {}
+    near_buckets: dict[tuple[str, int], list[int]] = {}
+    for position, (_index, _matter, fingerprint, cp_key) in enumerate(candidates):
+        exact_buckets.setdefault(str(fingerprint["exact"]), []).append(position)
+        # Near-dup only ever fires within a non-empty counterparty and needs a real
+        # SimHash; skip banding when either is absent (that matter can still exact-dup
+        # via the exact bucket, matching the full path's gating exactly).
+        if not cp_key:
+            continue
+        sim_value = content_fingerprint._coerce_simhash(  # noqa: SLF001 -- reuse the canonical coercion
+            fingerprint.get("simhash")
+        )
+        if sim_value is None:
+            continue
+        for band_key in _simhash_band_keys(sim_value):
+            near_buckets.setdefault((cp_key, band_key), []).append(position)
 
     count = 0
-    for index, matter, fingerprint, self_key in candidates:
-        self_id = str(matter.get("matter_id") or "") or f"__idx_{index}"
-        best_match: tuple[tuple[str, str, int], dict[str, Any], float] | None = None
-        for other_index, other, other_fp, other_key in candidates:
-            other_id = str(other.get("matter_id") or "") or f"__idx_{other_index}"
-            if other_id == self_id:
-                continue  # never a duplicate of itself (incl. the merged app+Drive record)
-            score = _is_duplicate_pair(fingerprint, self_key, other_fp, other_key)
-            if score is None:
-                continue
-            candidate_key = _sort_key((other_index, other, other_fp, other_key))
-            if best_match is None or candidate_key < best_match[0]:
-                best_match = (candidate_key, other, score)
-        if best_match is None:
-            matter["duplicate_document"] = None
-            continue
-        _key, matched, score = best_match
-        matter["duplicate_document"] = {
-            "matched_matter_id": str(matched.get("matter_id") or ""),
-            "matched_title": str(matched.get("title") or "") or "NDA",
-            # Round to 4 dp so the stored similarity is stable/JSON-clean; the FE
-            # renders it as a percentage (e.g. 0.9231 -> "92% match").
-            "similarity": round(float(score), 4),
-        }
-        count += 1
+    for self_position, self_item in enumerate(candidates):
+        _index, _matter, fingerprint, cp_key = self_item
+        # Union the positions sharing any of this matter's buckets. ``self`` is in its
+        # own buckets; _stamp_best_match skips the self-match by matter_id.
+        related: set[int] = set(exact_buckets.get(str(fingerprint["exact"]), ()))
+        if cp_key:
+            sim_value = content_fingerprint._coerce_simhash(  # noqa: SLF001
+                fingerprint.get("simhash")
+            )
+            if sim_value is not None:
+                for band_key in _simhash_band_keys(sim_value):
+                    related.update(near_buckets.get((cp_key, band_key), ()))
+        related.discard(self_position)
+        others = [candidates[pos] for pos in related]
+        if _stamp_best_match(self_item, others):
+            count += 1
     return count
 
 

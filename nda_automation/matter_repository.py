@@ -166,6 +166,17 @@ class MatterRepository(Protocol):
 class DiskMatterRepository:
     """Production adapter over the disk-backed ``matter_store`` module."""
 
+    def store_change_token(self) -> Any | None:
+        """A cheap opaque change token over the record store, or None.
+
+        Delegates to ``matter_store.store_change_token`` (a stat scan over the
+        record files) so the token changes whenever ANY record changes on disk,
+        for the cost of one ``stat`` per file. ``corpus_index`` uses it to serve
+        its app-state cache without even listing matters when the store is
+        untouched. ``None`` means "unknown"; callers fall back to a real read.
+        """
+        return matter_store.store_change_token()
+
     def list_matters(self, owner_user_id: str = "") -> list[dict[str, Any]]:
         return matter_store.list_matters(owner_user_id=owner_user_id)
 
@@ -363,6 +374,15 @@ class InMemoryMatterRepository:
         self._gmail_inbound_cursors: dict[str, int] = {}
 
     # --- reads ---------------------------------------------------------
+    def store_change_token(self) -> Any | None:
+        """Always None: the in-memory double has no cheap out-of-band change token.
+
+        Returning None makes token-consuming callers (corpus_index's app-state
+        cache) fall back to the real-read path — which is what the double's tests
+        exercise and what an in-memory list costs anyway.
+        """
+        return None
+
     def list_matters(self, owner_user_id: str = "") -> list[dict[str, Any]]:
         with self._lock:
             matters = [
@@ -602,7 +622,7 @@ class InMemoryMatterRepository:
                             "re-approve to refresh the document sent for signature."
                         ),
                     })
-                    updated_matter["matter_timeline"] = timeline
+                    updated_matter["matter_timeline"] = matter_store.capped_timeline(timeline)
                 self._matters[index] = updated_matter
                 return copy.deepcopy(updated_matter)
         return None
@@ -627,7 +647,7 @@ class InMemoryMatterRepository:
                     "status": "approved",
                     "approver": approver,
                     "approved_at": approved_at,
-                    "matter_timeline": timeline,
+                    "matter_timeline": matter_store.capped_timeline(timeline),
                     "updated_at": approved_at,
                 }
                 self._matters[index] = updated_matter
@@ -648,7 +668,7 @@ class InMemoryMatterRepository:
                 timeline.append(copy.deepcopy(timeline_event))
                 updated_matter = {
                     **matter,
-                    "matter_timeline": timeline,
+                    "matter_timeline": matter_store.capped_timeline(timeline),
                     "updated_at": now,
                 }
                 self._matters[index] = updated_matter
