@@ -10,7 +10,7 @@
 | **Status** | Live on Render — continuous deploy from `main` (this sheet is grounded at `cb7346b0`) |
 | **Source** | `github.com/daniyalahmadasporalondon/nda-automation` (deploy origin) · prod: `nda-automation.onrender.com` |
 | **Stack** | Vanilla-JS SPA (no build step) · Python stdlib HTTP server (no web framework) · JSON matter-store on a persistent disk (no DB) · Claude **Opus 4.8** + DeepSeek via **OpenRouter** · `python-docx` / PyMuPDF / pdf2docx · DocuSign + Gmail |
-| **Scope** | Review · Redline · Generate · E-sign — playbook-driven across 5 core clause families (mutuality, confidential information, governing law, term & survival, non-circumvention) and 4 governing-law options (India, Delaware, England & Wales, DIFC) |
+| **Scope** | Review · Redline · Generate · E-sign — playbook-driven across 5 core clause families (mutuality, confidential information, governing law, term & survival, non-circumvention) and 5 governing-law options (India, Delaware, England & Wales, DIFC, Ontario/Canada) |
 | **Owner** | Aspora Team — daniyal.ahmad@aspora.com |
 
 ---
@@ -73,7 +73,7 @@ The only **usage-based** cost is the AI (via OpenRouter). Every AI feature is a 
 | AI operation | When it runs | Model | ~Input | ~Output | ~Cost / call |
 |---|---|---|---|---|---|
 | **Clause review** | Review clicked, per matter | Opus 4.8 | 15,000 | 4,000 | **$0.18** |
-| **Attachment triage** | inbound email with attachments | Opus 4.8 | 4,000 | 1,000 | **$0.05** |
+| **Attachment triage** | inbound email with attachments | DeepSeek-Pro | 4,000 | 1,000 | **~$0.01** |
 | **Playbook semantic-lint** | on publish (advisory, opt-in) | Opus 4.8 | 6,000 | 2,000 | **$0.08** |
 | **Adversarial verify** | after review, confident clauses | DeepSeek-Pro | 8,000 | 2,000 | **~$0.01** |
 | **Structure validation** | after review, per matter | DeepSeek-Flash | 10,000 | 3,000 | **~$0.002** |
@@ -86,11 +86,11 @@ The only **usage-based** cost is the AI (via OpenRouter). Every AI feature is a 
 
 | Scenario | AI calls | ~Cost |
 |---|---|---|
-| **One inbound NDA, full pass** (intake + triage + review + verify + structure) | 5 | **~$0.24** |
+| **One inbound NDA, full pass** (intake + triage + review + verify + structure) | 5 | **~$0.20** |
 | **One re-review** of an existing matter (review + verify + structure) | 3 | **~$0.19** |
-| **Monthly example** — 200 inbound NDAs reviewed + 50 re-reviews | ~1,150 | **~$58 / month** |
+| **Monthly example** — 200 inbound NDAs reviewed + 50 re-reviews | ~1,150 | **~$50 / month** |
 
-**What lowers it:** our own reviewer bake-offs found **DeepSeek-V4-Pro and GLM 5.2 tie Opus on review quality** (including the hard polarity traps) at roughly **1/8 the cost** — routing the reviewer there drops a full pass from ~$0.24 to **~$0.04** (and the monthly example from ~$58 to **~$10**). Prompt caching bills the ~3k-token system prompt at ~10% on repeat calls, and the verifier/structure/intake steps already run on cheap models.
+**What lowers it:** our own reviewer bake-offs found **DeepSeek-V4-Pro and GLM 5.2 tie Opus on review quality** (including the hard polarity traps) at roughly **1/8 the cost** — routing the reviewer there drops a full pass from ~$0.20 to **~$0.04** (and the monthly example from ~$50 to **~$10**). Prompt caching bills the ~3k-token system prompt at ~10% on repeat calls, and the verifier/structure/intake steps already run on cheap models.
 
 **Infrastructure:** a Render Standard plan + a 1 GB persistent disk (`/var/data`) for durable matters, sessions, and OAuth tokens — no managed database (state is JSON on the disk, which keeps the system small, auditable, and trivial to rebuild). It can run on Render's free tier for evaluation at $0 (with idle-sleep and ephemeral storage).
 

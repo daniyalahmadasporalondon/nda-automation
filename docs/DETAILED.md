@@ -262,7 +262,7 @@ DOCX review/export work with only the core dependency (`python-docx`); PDF and G
 python -m pytest tests/            # backend (pytest)
 npm run test:frontend              # main review-workstation FE test (Node, no build)
 # plus per-area FE scripts in package.json: test:frontend:utils, :structure, :corpus,
-# :repository, :docusign, :entities, :find-replace, :docx-faithful, ... (31 scripts)
+# :repository, :docusign, :entities, :find-replace, :docx-faithful, ... (34 per-area scripts)
 ```
 
 Frontend tests are plain Node scripts (`.cjs`/`.mjs`) under `tests/frontend/`; the workstation test spins up a local server and drives it. No build/bundler step exists.
