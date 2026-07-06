@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260706featureoff1">
+    <link rel="stylesheet" href="/static/styles.css?v=20260706int2">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260703bigstore1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260619onboard1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
@@ -704,6 +704,11 @@
               </div>
               <div class="studio-page-wrap">
                 <div class="studio-page">
+                  <!-- First-run onboarding: shown by renderStudioEmpty() only
+                       when no NDA is loaded (genuine empty state), hidden the
+                       moment a document opens. Painted by the shared onboarding
+                       component (static/js/onboarding.js). -->
+                  <div class="review-onboarding" data-review-onboarding hidden></div>
                   <div id="studioDocumentRender" class="studio-document-render" hidden></div>
                   <textarea id="studioNdaText" spellcheck="false" aria-label="NDA source text" placeholder="Paste NDA text here"></textarea>
                   <!-- FIX 4: the paste workspace previously had no way to actually
@@ -2333,6 +2338,10 @@
          Must load before app.js (which registers the handler) and before any
          classic script that calls window.AuthExpired.parseOkJson at runtime. -->
     <script src="/static/js/auth-expired.js?v=20260617a401"></script>
+    <!-- Shared first-run onboarding component (single source of truth for the
+         "get started" empty-state cards). Load before any page module that
+         paints an onboarding card at runtime. -->
+    <script src="/static/js/onboarding.js?v=20260706onboard1"></script>
     <script src="/static/js/repository-api.js?v=20260703bigstore3"></script>
     <script src="/static/js/repository-model.js?v=20260703bigstore1"></script>
     <script src="/static/js/repository-board.js?v=20260703bigstore3"></script>
@@ -2367,8 +2376,8 @@
     <script src="/static/js/playbook-draft-runtime.js?v=20260620integ1"></script>
     <script src="/static/js/playbook-view.js?v=20260706warn1"></script>
     <script src="/static/js/review-workstation-actions.js?v=20260623reviewtabv2-2"></script>
-    <script src="/static/js/review-workstation-source.js?v=20260623rwbugs1"></script>
-    <script src="/static/js/review-workstation-rendering.js?v=20260626editordur1"></script>
+    <script src="/static/js/review-workstation-source.js?v=20260706onboard1"></script>
+    <script src="/static/js/review-workstation-rendering.js?v=20260706onboard1"></script>
     <script src="/static/js/review-workstation-format.js?v=20260622docxphase2-1"></script>
     <script src="/static/js/review-workstation-viewer.js?v=20260626editordur1"></script>
     <script src="/static/js/viewer-controls.js?v=20260623rwbugs1"></script>

@@ -191,6 +191,10 @@
     "sha256": "e718d556496abc148a33f12a45b4120d89e353c530ebd28234730a97fe62c072",
     "v": "20260623reviewtabv2-1"
   },
+  "js/onboarding.js": {
+    "sha256": "3f8eeffe38bc8f3ad65bb45bd582254cf136929383391ded8b4b9627aff6060c",
+    "v": "20260706onboard1"
+  },
   "js/overview/facts.js": {
     "sha256": "39a7548456251c681f56c1ca0e5fcb3017e665ee2a056a52bff7ca748c22e8c7",
     "v": "20260622escfix1"
@@ -264,12 +268,12 @@
     "v": "20260622docxphase2-1"
   },
   "js/review-workstation-rendering.js": {
-    "sha256": "123872a0be0cc3da3ba97e847e7e283fce3f326147ca3881a710a1ff7b1e9ca1",
-    "v": "20260626editordur1"
+    "sha256": "d1a13857e9367eb34747b3951b9b50352b90fffe0eeb64028fed06cef5345ea6",
+    "v": "20260706onboard1"
   },
   "js/review-workstation-source.js": {
-    "sha256": "a635d552cbce7dd47d0752fea01cdd3ffa8e79ef753a5d375980c70a62f0e7a8",
-    "v": "20260623rwbugs1"
+    "sha256": "dc075665414f8a245e0e0b1f7f6d8b3b689ad9ea54138dcac1348cfc07660105",
+    "v": "20260706onboard1"
   },
   "js/review-workstation-viewer.js": {
     "sha256": "e0a63e335a4ed52b2704722c03786395b263a8a6d7ad7978fb2791fdd8edf0c0",
@@ -284,7 +288,7 @@
     "v": "20260623rwbugs1"
   },
   "styles.css": {
-    "sha256": "0559fe5a7632f850522bd5fa4dfbf5447b62685dd271edccca14e1971b58cdb7",
-    "v": "20260706featureoff1"
+    "sha256": "0660f10f16a88c1c7cb8a03a0c67fd552bdf7b4475707c97f3906d9977f54013",
+    "v": "20260706int2"
   }
 }
