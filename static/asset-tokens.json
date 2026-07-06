@@ -40,8 +40,8 @@
     "v": "20260621humanize1"
   },
   "js/admin-integrations.js": {
-    "sha256": "fb82f1a7da4a5c9487e8ae9aed96725b6b43996ffb70975dd875c98bb7ae0955",
-    "v": "20260703persona1"
+    "sha256": "c8b1d74d85beb323d0e2b5b9863f6c2789638f73c8f27487567b9c591af02071",
+    "v": "20260706warn1"
   },
   "js/admin-models.js": {
     "sha256": "6a7fa0087ff72d26051f033ac1f253a753208a08a8c4d47f97f332f3ea437273",
@@ -216,8 +216,8 @@
     "v": "20260620integ1"
   },
   "js/playbook-view.js": {
-    "sha256": "22dab74d27aef03fecbc3e4bccaa3102308dd82bd95ad6c9704f1306812278c7",
-    "v": "20260623acceptableposclobber1"
+    "sha256": "df50b4fe2f9c9601a89c1994b4bc61ca01ebfce2f535b5242647b309bf0834c5",
+    "v": "20260706warn1"
   },
   "js/redline-rendering.js": {
     "sha256": "1c8fc0ab450e1b4f6dfb6d925a17c4971b725eeb105be86a88e046903c8a0237",
