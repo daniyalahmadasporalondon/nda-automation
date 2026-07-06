@@ -1,7 +1,7 @@
 {
   "app.js": {
-    "sha256": "4adafa0279dd120ffa8faaa9b8a6c8c681451cb1f33d17e72fdfba5c8d987ac8",
-    "v": "20260706merge1"
+    "sha256": "8d25f080ec1e5cafbf2f4eb1d86831c547061bf70fc94cd2eade0dc2266d236d",
+    "v": "20260706drivepause1"
   },
   "css/corpus.css": {
     "sha256": "b352644bdd179bc240ade82a32c8ba9ef6062adbe80cf7359e321492aca40a61",
@@ -28,8 +28,8 @@
     "v": "20260617a401"
   },
   "js/admin-drive.js": {
-    "sha256": "82e58ccb8cb5a025f33be658ec6db19835798aac4ab672858d3abc0a906ef451",
-    "v": "20260621nda1"
+    "sha256": "d227f61cdf0e9bbf119f7410af7553c3b709d49a151cecb709fcb43ed4e28486",
+    "v": "20260706drivepause1"
   },
   "js/admin-entities.js": {
     "sha256": "aad1267817eadb9a7ed45eb0ba36c95ce2aee35d58d4f6c6053e846fd188949c",

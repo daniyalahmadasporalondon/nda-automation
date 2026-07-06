@@ -846,7 +846,13 @@ class DriveSettingsTests(unittest.TestCase):
         with self._isolated_data_dir():
             self.assertEqual(
                 app_settings.drive_settings(),
-                {"enabled": False, "folder_id": "", "folder_name": "", "auto_intake": True},
+                {
+                    "enabled": False,
+                    "folder_id": "",
+                    "folder_name": "",
+                    "auto_intake": True,
+                    "drive_paused": False,
+                },
             )
 
     def test_update_drive_settings_persists(self):
@@ -861,6 +867,7 @@ class DriveSettingsTests(unittest.TestCase):
                     "folder_id": "folder_XYZ-123",
                     "folder_name": "Signed NDAs",
                     "auto_intake": True,
+                    "drive_paused": False,
                 },
             )
             # A fresh read returns the persisted values.
@@ -1217,6 +1224,7 @@ class DriveRouteTests(unittest.TestCase):
                 "folder",
                 "filing_location",
                 "enabled",
+                "drive_paused",
                 "signed_in",
                 "user_scoped",
                 "needs_connect",
@@ -1359,6 +1367,7 @@ class DriveRouteTests(unittest.TestCase):
                         "folder_id": "folder_99",
                         "folder_name": "Vault",
                         "auto_intake": True,
+                        "drive_paused": False,
                     },
                 )
                 # Audit event recorded for the admin change.

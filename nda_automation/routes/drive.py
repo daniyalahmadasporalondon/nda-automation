@@ -103,6 +103,9 @@ def handle_drive_status(handler, *, send_body: bool = True) -> None:
             "folder": folder,
             "filing_location": filing_location,
             "enabled": bool(settings.get("enabled", False)),
+            # Explicit master-pause signal for the UI toggle (default False). This
+            # is DISTINCT from the legacy ``enabled`` field, which the gate ignores.
+            "drive_paused": bool(settings.get("drive_paused", False)),
             "signed_in": bool(owner_user_id),
             "user_scoped": bool(owner_user_id),
             "needs_connect": bool(owner_user_id) and not connected,
@@ -233,6 +236,12 @@ def handle_drive_upload_matter(handler) -> None:
         handler._send_json(_needs_connect_payload(), status=409)
         return
 
+    # Master pause gate: an explicitly-paused Drive rejects manual filing too.
+    if not app_settings.drive_active():
+        telemetry.increment("drive_upload_failed")
+        handler._send_json(_paused_payload(), status=409)
+        return
+
     if not artifact_registry.matter_artifacts(matter):
         telemetry.increment("drive_upload_failed")
         handler._send_json({"error": "NDA has no document to save to Drive."}, status=400)
@@ -328,6 +337,11 @@ def handle_drive_folders(handler, *, send_body: bool = True) -> None:
         handler._send_json(_needs_connect_payload(), status=409, send_body=send_body)
         return
 
+    # Master pause gate: browsing is a Drive read, so a paused Drive blocks it.
+    if not app_settings.drive_active():
+        handler._send_json(_paused_payload(), status=409, send_body=send_body)
+        return
+
     try:
         folders = drive_integration.list_child_folders(
             parent_id=parent,
@@ -402,6 +416,11 @@ def handle_drive_create_folder(handler) -> None:
         handler._send_json(_needs_connect_payload(), status=409)
         return
 
+    # Master pause gate: creating a folder writes to Drive, so pause blocks it.
+    if not app_settings.drive_active():
+        handler._send_json(_paused_payload(), status=409)
+        return
+
     try:
         folder = drive_integration.create_folder(
             name=name,
@@ -441,6 +460,12 @@ def handle_drive_settings_update(handler) -> None:
             handler._send_json({"error": "Drive auto-intake setting must be true or false."}, status=400)
             return
         updates["auto_intake"] = auto_intake
+    if "drive_paused" in payload:
+        drive_paused = payload.get("drive_paused")
+        if not isinstance(drive_paused, bool):
+            handler._send_json({"error": "Drive pause setting must be true or false."}, status=400)
+            return
+        updates["drive_paused"] = drive_paused
     if "folder_id" in payload:
         folder_id = payload.get("folder_id")
         if not isinstance(folder_id, str):
@@ -513,6 +538,7 @@ def handle_drive_settings_update(handler) -> None:
                 "folder_id": str(settings.get("folder_id") or ""),
                 "folder_name": str(settings.get("folder_name") or ""),
                 "auto_intake": bool(settings.get("auto_intake", True)),
+                "drive_paused": bool(settings.get("drive_paused", False)),
             }
         }
     )
@@ -524,6 +550,13 @@ def _needs_connect_payload() -> dict:
         "error": "Google Drive is not connected.",
         "needs_connect": True,
         "connect_url": DRIVE_CONNECT_URL,
+    }
+
+
+def _paused_payload() -> dict:
+    return {
+        "error": "Google Drive is paused. Resume it in Drive settings to continue.",
+        "drive_paused": True,
     }
 
 
@@ -561,7 +594,7 @@ def _google_owner_user_id(handler) -> str:
 
 def _record_drive_settings_audit(previous: dict, current: dict) -> None:
     changes = []
-    for key in ("enabled", "folder_id", "folder_name", "auto_intake"):
+    for key in ("enabled", "folder_id", "folder_name", "auto_intake", "drive_paused"):
         before = previous.get(key)
         after = current.get(key)
         if before != after:

@@ -753,6 +753,8 @@ def archive_executed_matter(
     try:
         connected = drive_connected(token_owner)
         auto_intake = app_settings.drive_auto_intake_enabled()
+        # Master pause gate: an explicitly-paused Drive stops all archiving.
+        active = app_settings.drive_active()
     except Exception:
         telemetry.increment("drive_oncomplete_skipped")
         logger.warning(
@@ -761,14 +763,15 @@ def archive_executed_matter(
             signed_via or "unknown",
         )
         return
-    if not connected or not auto_intake:
+    if not connected or not active or not auto_intake:
         telemetry.increment("drive_oncomplete_skipped")
         logger.info(
             "Drive archive skipped for matter %s (signed_via=%s): "
-            "drive_connected=%s auto_intake=%s token_owner=%r.",
+            "drive_connected=%s drive_active=%s auto_intake=%s token_owner=%r.",
             matter_id,
             signed_via or "unknown",
             connected,
+            active,
             auto_intake,
             token_owner,
         )

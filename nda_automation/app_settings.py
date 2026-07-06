@@ -204,6 +204,18 @@ DEFAULT_DRIVE_SETTINGS = {
     # intake (best-effort, gated on the user having Drive connected). When False,
     # filing is manual-only (the "Save to Drive" button).
     "auto_intake": True,
+    # Explicit master-pause signal for ALL Drive activity (filing / auto-intake /
+    # archive / upload / browse / create). This is the DISTINCT pause flag the
+    # master gate reads — it is set to True ONLY by the admin "Pause Drive" toggle.
+    #
+    # It is intentionally SEPARATE from the legacy ``enabled`` field: legacy
+    # connected users have ``enabled=false`` on disk (written by the old
+    # ``bool(payload.get("enabled", False))`` normalizer), and treating that as
+    # "paused" silently switched working users off. ``drive_paused`` defaults to
+    # False and is IGNORED-until-set, so a connected user who never hit the new
+    # pause toggle ALWAYS keeps Drive running. ``enabled`` is no longer read by
+    # the gate.
+    "drive_paused": False,
 }
 MAX_DRIVE_FOLDER_ID_LENGTH = 256
 MAX_DRIVE_FOLDER_NAME_LENGTH = 200
@@ -577,6 +589,28 @@ def drive_auto_intake_enabled() -> bool:
     return bool(drive_settings().get("auto_intake", DEFAULT_DRIVE_SETTINGS["auto_intake"]))
 
 
+def drive_paused() -> bool:
+    """Whether the admin has explicitly PAUSED all Drive activity (default False).
+
+    Reads the DISTINCT ``drive_paused`` signal — set only by the admin pause
+    toggle. A legacy on-disk payload (which has ``enabled=false`` and no
+    ``drive_paused`` key) resolves to False here, so a connected user who never
+    touched the toggle is never treated as paused. This is the ONLY switch the
+    master gate consults; the legacy ``enabled`` field is ignored by the gate.
+    """
+    return bool(drive_settings().get("drive_paused", DEFAULT_DRIVE_SETTINGS["drive_paused"]))
+
+
+def drive_active() -> bool:
+    """Master gate for ALL Drive activity: True unless explicitly paused.
+
+    Call-sites combine this with connectivity: Drive runs when
+    ``drive_connected(...) AND drive_active()``. A never-paused connected user
+    always passes this gate regardless of the legacy ``enabled`` value on disk.
+    """
+    return not drive_paused()
+
+
 def gmail_inbound_search_terms() -> list[str]:
     return gmail_settings()["inbound_search_terms"]
 
@@ -858,6 +892,9 @@ def drive_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "folder_id": _clean_drive_folder_id(payload.get("folder_id")),
         "folder_name": _clean_drive_folder_name(payload.get("folder_name")),
         "auto_intake": bool(payload.get("auto_intake", DEFAULT_DRIVE_SETTINGS["auto_intake"])),
+        # Absent on legacy on-disk payloads -> defaults to False (NOT paused), so a
+        # user who never touched the new pause toggle keeps Drive running.
+        "drive_paused": bool(payload.get("drive_paused", DEFAULT_DRIVE_SETTINGS["drive_paused"])),
     }
 
 
@@ -1087,7 +1124,7 @@ def _clamp_intake_playbook(value: object) -> str:
 
 
 def _valid_drive_setting(key: str, value: Any) -> bool:
-    if key in ("enabled", "auto_intake"):
+    if key in ("enabled", "auto_intake", "drive_paused"):
         return isinstance(value, bool)
     if key in ("folder_id", "folder_name"):
         return isinstance(value, str)
@@ -1101,7 +1138,7 @@ def _valid_personalisation_setting(key: str, value: Any) -> bool:
 
 
 def _clean_drive_setting(key: str, value: Any) -> Any:
-    if key in ("enabled", "auto_intake"):
+    if key in ("enabled", "auto_intake", "drive_paused"):
         return bool(value)
     if key == "folder_id":
         return _clean_drive_folder_id(value)
