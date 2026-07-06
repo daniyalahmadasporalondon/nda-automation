@@ -1372,7 +1372,6 @@ async function testContractStructureReviewPanel(page) {
   assert.deepEqual(aiKeyPayloads[aiKeyPayloads.length - 1], { api_key: "browser-gemini-local-key", enabled: true });
   assert.equal(await page.locator("#adminAiApiKeyInput").inputValue(), "");
   assert.equal(await page.locator('[data-admin-ai="enabled-copy"]').innerText(), "On");
-  assert.equal(await page.locator('[data-admin-ai="provider"]').innerText(), "openrouter");
   assert.equal(await page.locator('[data-admin-ai="model"]').innerText(), "anthropic/claude-opus-4.8");
   assert.equal(await page.locator('[data-admin-ai="api-key"]').innerText(), "Configured from saved local OpenRouter key");
   assert.equal(await page.locator('[data-admin-ai="verifier-kind"]').innerText(), "AI via OpenRouter");
@@ -1383,14 +1382,6 @@ async function testContractStructureReviewPanel(page) {
   assert.equal(await page.locator('[data-admin-ai="runtime-source"]').innerText(), "Default runtime");
   assert.equal(await page.locator('[data-admin-ai="operational-warnings"]').innerText(), "None");
   assert.equal(await page.locator("#adminAiOverall").innerText(), "ON");
-  await page.locator("#adminActiveReviewEngineSelect").selectOption("ai_first");
-  await page.locator("#adminRuntimeSaveButton").click();
-  await page.waitForFunction(() => document.querySelector('[data-admin-ai="runtime-source"]')?.textContent?.trim() === "Admin runtime settings");
-  assert.deepEqual(aiSettingsPayloads[aiSettingsPayloads.length - 1], {
-    active_review_engine: "ai_first",
-  });
-  assert.equal(await page.locator('[data-admin-ai="runtime-source"]').innerText(), "Admin runtime settings");
-  assert.equal(await page.locator('[data-admin-ai="last-settings-change"]').innerText(), "admin_settings_update: review_runtime.active_review_engine");
   await page.locator("#adminAiClearKeyButton").click();
   await page.waitForFunction(() => document.querySelector('[data-admin-ai="api-key"]')?.textContent?.trim() === "Missing AI API key");
   assert.equal(await page.locator("#adminAiOverall").innerText(), "NEEDS KEY");

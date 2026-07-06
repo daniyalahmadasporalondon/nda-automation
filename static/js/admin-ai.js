@@ -6,9 +6,6 @@ const AdminAiView = (() => {
     aiApiKeyInput,
     aiClearKeyButton,
     aiEnabledToggle,
-    runtimeForm,
-    activeReviewEngineSelect,
-    runtimeSaveButton,
     aiFacts,
     aiOverall,
     aiRefreshButton,
@@ -18,7 +15,6 @@ const AdminAiView = (() => {
     aiKeyForm?.addEventListener("submit", saveAiKey);
     aiClearKeyButton?.addEventListener("click", clearAiKey);
     aiEnabledToggle?.addEventListener("click", updateAiEnabled);
-    runtimeForm?.addEventListener("submit", saveRuntimeSettings);
 
     async function load() {
       if (!aiCard) return;
@@ -131,36 +127,6 @@ const AdminAiView = (() => {
       }
     }
 
-    async function saveRuntimeSettings(event) {
-      event.preventDefault();
-      const activeReviewEngine = activeReviewEngineSelect?.value || "ai_first";
-      const runtimeStatus = state.activeReviewEngineStatus || {};
-      const requestPayload = {};
-      if (!runtimeStatus.environment_active_engine) {
-        requestPayload.active_review_engine = activeReviewEngine;
-      }
-      if (!Object.keys(requestPayload).length) {
-        setFact("runtime-message", "Runtime settings are pinned by the backend environment.");
-        return;
-      }
-      setRuntimeControlsDisabled(true);
-      setFact("runtime-message", "Saving runtime settings...");
-      try {
-        const response = await fetch("/api/ai/settings", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(requestPayload),
-        });
-        const payload = await window.AuthExpired.parseOkJson(response, "Runtime settings could not save", reviewErrorFromPayload);
-        renderAiFromPayload(payload);
-        setFact("runtime-message", "Runtime settings saved for new reviews.");
-      } catch (error) {
-        setFact("runtime-message", error.message || "Runtime settings could not save");
-      } finally {
-        setRuntimeControlsDisabled(false);
-      }
-    }
-
     function renderAiFromPayload(payload = {}) {
       renderAi(
         payload.ai_review || {},
@@ -181,10 +147,9 @@ const AdminAiView = (() => {
       const keyConfigured = status.api_key_configured === true;
       setOverall(enabled ? (keyConfigured ? "On" : "Needs key") : "Off", enabled ? (keyConfigured ? "ready" : "blocked") : "pending");
       renderToggle(enabled);
-      renderRuntime(runtimeStatus, status);
+      renderRuntime(runtimeStatus);
       renderOperationalStatus(warnings, settingsAudit);
       setFact("enabled-copy", enabled ? (keyConfigured ? "On" : "On - missing API key") : "Off");
-      setFact("provider", status.provider || "openrouter");
       setFact("model", status.model || "-");
       setFact("api-key", apiKeyLabel(status));
       setFact("confidence-threshold", String(status.confidence_threshold ?? "-"));
@@ -199,7 +164,6 @@ const AdminAiView = (() => {
     function renderError(message) {
       setOverall("Unavailable", "blocked");
       setFact("enabled-copy", message);
-      setFact("provider", "Unknown");
       setFact("model", "Unknown");
       setFact("api-key", "Unknown");
       setFact("confidence-threshold", "Unknown");
@@ -213,19 +177,12 @@ const AdminAiView = (() => {
       setFact("runtime-source", "Unknown");
       setFact("operational-warnings", "Unknown");
       setFact("last-settings-change", "Unknown");
-      setFact("runtime-message", message);
     }
 
-    function renderRuntime(status, aiStatus = {}) {
+    function renderRuntime(status) {
       const activeEngine = runtimeValue(status.active_engine, "ai_first");
-      if (activeReviewEngineSelect) activeReviewEngineSelect.value = activeEngine;
       setFact("active-engine", engineLabel(activeEngine));
       setFact("runtime-source", runtimeSourceLabel(status));
-      const missingAiKey = activeEngine === "ai_first" && aiStatus.api_key_configured !== true;
-      setFact("runtime-message", missingAiKey
-        ? "AI-first is active. Add an AI key before running reviews."
-        : "Runtime changes apply to new reviews.");
-      setRuntimeControlsDisabled(false);
     }
 
     function renderOperationalStatus(warnings, settingsAudit) {
@@ -277,13 +234,6 @@ const AdminAiView = (() => {
         });
       }
       if (aiClearKeyButton) aiClearKeyButton.disabled = disabled;
-    }
-
-    function setRuntimeControlsDisabled(disabled) {
-      const runtimeStatus = state.activeReviewEngineStatus || {};
-      const enginePinned = Boolean(runtimeStatus.environment_active_engine);
-      if (activeReviewEngineSelect) activeReviewEngineSelect.disabled = disabled || enginePinned;
-      if (runtimeSaveButton) runtimeSaveButton.disabled = disabled || enginePinned;
     }
 
     function setOverall(label, tone) {

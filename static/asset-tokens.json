@@ -1,7 +1,7 @@
 {
   "app.js": {
-    "sha256": "6bba7b4edbc217fa0b0e3e2e6aa6000b41d110a34dfe9ed2f3ac6d4d7d6169bb",
-    "v": "20260706signout1"
+    "sha256": "4adafa0279dd120ffa8faaa9b8a6c8c681451cb1f33d17e72fdfba5c8d987ac8",
+    "v": "20260706merge1"
   },
   "css/corpus.css": {
     "sha256": "b352644bdd179bc240ade82a32c8ba9ef6062adbe80cf7359e321492aca40a61",
@@ -20,8 +20,8 @@
     "v": "20260620integ1"
   },
   "js/admin-ai.js": {
-    "sha256": "53a5a1c33f129a2949b1e95375f0557ffb5ad71126b11234a7a1a152d61daaa9",
-    "v": "20260621humanize1"
+    "sha256": "023617ec0c9b17278812fa3fa9ac5fac0048aea2c9e23397ad34893b5f828170",
+    "v": "20260706cleanup1"
   },
   "js/admin-docusign.js": {
     "sha256": "9647bab2e81888ff8729f6551f484c081bcf9639fc212d9bca84126c530d58c1",
