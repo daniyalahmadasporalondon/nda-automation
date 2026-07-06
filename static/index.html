@@ -259,6 +259,13 @@
 
           <section class="generator-workspace">
             <form class="generator-form" id="draftIntakeForm">
+              <!-- OUR SIGNING ENTITY (consolidated): the entity picker + its coupled
+                   legal name, address, governing law and court all live in one card.
+                   Governing law + court are DERIVED from the picked entity (read-only
+                   here; edited in the Playbook "Entities & Courts" editor). The
+                   standalone "Governing law & court" fieldset was folded in here so the
+                   coupling is visible in one place. #draftIntakeBundle is the real home
+                   of renderEntityBundle()'s summary block (previously a dead node). -->
               <fieldset class="draft-fieldset">
                 <legend>Our signing entity</legend>
                 <div class="upload-field-grid">
@@ -273,6 +280,21 @@
                     <select id="draftIntakeAddressSelect"></select>
                   </label>
                 </div>
+                <!-- Read-only summary of the picked entity. renderEntityBundle() fills
+                     legal name + registered address; renderGoverningLaw() fills the law
+                     and court nodes below. All update live on entity/address change. -->
+                <div class="draft-entity-bundle empty" id="draftIntakeBundle">Pick an entity to pre-fill its legal name, address and governing law.</div>
+                <div class="upload-field-grid">
+                  <div class="upload-field">
+                    <span>Governing law</span>
+                    <p class="draft-law-value" id="draftIntakeGoverningLaw" data-readonly="true" aria-live="polite">—</p>
+                  </div>
+                  <div class="upload-field">
+                    <span>Court</span>
+                    <p class="draft-law-value" id="draftIntakeForum" data-readonly="true" aria-live="polite">—</p>
+                  </div>
+                </div>
+                <p class="draft-law-status" id="draftIntakeLawStatus" aria-live="polite">Fixed by the signing entity. Pick an entity to set its law and court.</p>
               </fieldset>
 
               <fieldset class="draft-fieldset">
@@ -316,21 +338,6 @@
                     <input id="draftIntakeProjectPurpose" type="text" autocomplete="off" placeholder="e.g. Series B diligence">
                   </label>
                 </div>
-              </fieldset>
-
-              <fieldset class="draft-fieldset">
-                <legend>Governing law &amp; court</legend>
-                <div class="upload-field-grid">
-                  <div class="upload-field">
-                    <span>Governing law</span>
-                    <p class="draft-law-value" id="draftIntakeGoverningLaw" data-readonly="true" aria-live="polite">—</p>
-                  </div>
-                  <div class="upload-field">
-                    <span>Court</span>
-                    <p class="draft-law-value" id="draftIntakeForum" data-readonly="true" aria-live="polite">—</p>
-                  </div>
-                </div>
-                <p class="draft-law-status" id="draftIntakeLawStatus" aria-live="polite">Fixed by the signing entity. Pick an entity to set its law and court.</p>
               </fieldset>
 
               <footer class="upload-actions">
@@ -2388,7 +2395,7 @@
     <script src="/static/js/corpus.js?v=20260621hum1"></script>
     <script src="/static/js/manual-upload.js?v=20260617hyg1"></script>
     <script src="/static/js/send-document.js?v=20260606i"></script>
-    <script src="/static/js/draft-intake.js?v=20260706onboardgen2"></script>
+    <script src="/static/js/draft-intake.js?v=20260706int7"></script>
     <script src="/static/js/auth-session.js?v=20260706signout1"></script>
     <script src="/static/js/admin-ai.js?v=20260706cleanup1"></script>
     <script src="/static/js/admin-models.js?v=20260706featureoff1"></script>
