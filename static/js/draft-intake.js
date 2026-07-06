@@ -83,6 +83,19 @@ function createDraftIntakeController({
   // The signing-entities endpoint. Overridable for tests; defaults to the live
   // route entity-model ships.
   signingEntitiesUrl = "/api/signing-entities",
+  // First-run onboarding panel (a distinct card at the top of the Generator that
+  // tells a new user what this page is for). onboardingNode is the wrapper we
+  // show/hide; onboardingDismissButton is its "×" close control. Both optional —
+  // absent = the onboarding feature is simply inert. Self-contained here for now;
+  // a later integrator unifies all onboarding into one shared component.
+  onboardingNode,
+  onboardingDismissButton,
+  // Storage seam for remembering dismissal across visits. When omitted the
+  // controller lazily + defensively resolves window.localStorage (merely reading
+  // that property throws on an opaque-origin document, so it's guarded). Tests
+  // inject a stub. Unavailable storage = the panel still shows on activation and
+  // hides on interaction, it just isn't remembered.
+  onboardingStorage,
 }) {
   // The pure helper surface, bound to the registry. createDraftIntake comes from
   // the bridged module (window.createDraftIntake); resolved lazily inside the
@@ -106,6 +119,68 @@ function createDraftIntakeController({
   // The term the stepper starts at (and resets to). 2 years matches the form's
   // previous "e.g. 2 years" default; always within [1, maxTermYears].
   const DEFAULT_TERM_YEARS = 2;
+
+  // ── First-run onboarding panel ────────────────────────────────────────────
+  // A distinct card at the top of the Generator that tells a fresh user what the
+  // page is for. It appears on the first activation of the tab and self-hides the
+  // moment the user engages (any form interaction or a generate) or clicks its
+  // dismiss "×"; the dismissal is remembered so it never returns. Everything here
+  // is self-contained and inert when onboardingNode is absent.
+  const ONBOARDING_DISMISSED_KEY = "nda.generator.onboardingDismissed";
+
+  // Resolve the storage backing. The injected seam wins; otherwise fall back to
+  // window.localStorage. Reading window.localStorage THROWS on an opaque-origin
+  // document (and access can be disabled), so the whole resolution is guarded and
+  // returns null on any failure — the panel then behaves as "not remembered".
+  function onboardingStore() {
+    if (onboardingStorage) return onboardingStorage;
+    try {
+      return typeof window !== "undefined" ? window.localStorage || null : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  // Read the persisted "already dismissed" flag. Any storage failure (private
+  // mode, quota, no storage seam) is swallowed so onboarding never throws.
+  function onboardingDismissed() {
+    try {
+      return onboardingStore()?.getItem(ONBOARDING_DISMISSED_KEY) === "1";
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Hide the panel. `remember` persists the dismissal so it stays gone on the
+  // next visit (used by the dismiss button + a completed generate); a transient
+  // hide (e.g. it was never eligible) passes remember=false.
+  function hideOnboarding({ remember = false } = {}) {
+    if (onboardingNode) onboardingNode.hidden = true;
+    if (!remember) return;
+    try {
+      onboardingStore()?.setItem(ONBOARDING_DISMISSED_KEY, "1");
+    } catch (error) {
+      // Best-effort: an un-persisted dismissal simply reappears next visit.
+    }
+  }
+
+  // Show the panel on first activation, but only when it hasn't been dismissed.
+  // Idempotent + safe to call on every tab activation.
+  function maybeShowOnboarding() {
+    if (!onboardingNode) return;
+    onboardingNode.hidden = onboardingDismissed();
+  }
+
+  // The user has engaged with the form (or generated). Onboarding has served its
+  // purpose, so retire it for good. Guarded so we only persist once.
+  function dismissOnboardingOnInteraction() {
+    if (!onboardingNode || onboardingNode.hidden) return;
+    hideOnboarding({ remember: true });
+  }
+
+  onboardingDismissButton?.addEventListener("click", () => {
+    hideOnboarding({ remember: true });
+  });
 
   function api() {
     if (!intakeApi) {
@@ -165,6 +240,12 @@ function createDraftIntakeController({
   clearButton?.addEventListener("click", () => resetForm());
   // "Start a new NDA" wipes the form AND the document editor for the next one.
   newNdaButton?.addEventListener("click", () => startNewNda());
+
+  // Retire the first-run onboarding the moment the user starts filling the form.
+  // One delegated listener on the form (capture-phase so it fires ahead of the
+  // per-field handlers) covers every control without touching their logic.
+  form?.addEventListener("input", dismissOnboardingOnInteraction, true);
+  form?.addEventListener("change", dismissOnboardingOnInteraction, true);
 
   form?.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -781,6 +862,8 @@ function createDraftIntakeController({
       return;
     }
     busy = true;
+    // A generate is unambiguous engagement — retire the first-run guide for good.
+    dismissOnboardingOnInteraction();
     if (clearButton) clearButton.disabled = true;
     updateGenerateState();
     setStatus("Generating NDA…");
@@ -867,6 +950,9 @@ function createDraftIntakeController({
   // form persists across tab switches — re-activating does not wipe in-progress
   // input. Idempotent and safe to call on every tab activation.
   async function activate() {
+    // Reveal the first-run guide before the async registry load so a fresh user
+    // sees it immediately; it self-hides once they engage or dismiss it.
+    maybeShowOnboarding();
     await ensureInitialized();
     renderEntityBundle();
     renderGoverningLaw();
