@@ -1,7 +1,7 @@
 {
   "app.js": {
-    "sha256": "4adafa0279dd120ffa8faaa9b8a6c8c681451cb1f33d17e72fdfba5c8d987ac8",
-    "v": "20260706merge1"
+    "sha256": "e7907c5873dd7322449e5f0c1be338ac4d62a063ef634fe4fddf4a7c43afb779",
+    "v": "20260706onboard1"
   },
   "css/corpus.css": {
     "sha256": "b352644bdd179bc240ade82a32c8ba9ef6062adbe80cf7359e321492aca40a61",
@@ -46,6 +46,10 @@
   "js/admin-models.js": {
     "sha256": "6a7fa0087ff72d26051f033ac1f253a753208a08a8c4d47f97f332f3ea437273",
     "v": "20260623modelpicker1"
+  },
+  "js/admin-onboarding.js": {
+    "sha256": "771565cf070e36675ab8238a4b371b5ad7f15f2e12adf19a7b2a2d6eef769a76",
+    "v": "20260706onboard1"
   },
   "js/admin-personalisation.js": {
     "sha256": "65cc20c6acb2268f806437acbc8f701a96ba394ae1bcc14d0587eb23bb275b34",
@@ -284,7 +288,7 @@
     "v": "20260623rwbugs1"
   },
   "styles.css": {
-    "sha256": "38cc86250e6eba66ed291f011ac59cbfb46f4a1364d36c299e997bce2f2bb632",
-    "v": "20260706signout1"
+    "sha256": "8859ef28237aa9d9567bc77b4f0fc8812d264ef2b5f2a44affbc077a82d8ba63",
+    "v": "20260706onboard1"
   }
 }

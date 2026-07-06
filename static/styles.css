@@ -8114,6 +8114,19 @@ body.modal-open {
   padding: 14px 18px 18px;
 }
 
+/* First-run "Set up your workspace" checklist. Rendered by admin-onboarding.js
+   into [data-admin-onboarding]; the card itself reuses the repository-onboarding
+   styles (css/repository.css). Show it ONLY on the admin operations surface —
+   the Playbook and Guide surfaces are not first-run setup. */
+.admin-onboarding {
+  display: none;
+  margin-bottom: 12px;
+}
+
+#clausesView[data-admin-surface="admin"] .admin-onboarding {
+  display: block;
+}
+
 .admin-console {
   display: grid;
   gap: 10px;

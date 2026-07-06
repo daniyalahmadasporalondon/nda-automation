@@ -1018,6 +1018,19 @@ document.addEventListener("click", (event) => {
   activateTab(tab);
 });
 
+// The Admin setup checklist (admin-onboarding.js) routes to a SECTION within the
+// already-open Admin console, not a top-level tab, so it carries its own goto
+// attribute handled here. One delegated listener covers every checklist CTA.
+document.addEventListener("click", (event) => {
+  const trigger = event.target.closest("[data-admin-onboarding-goto]");
+  if (!trigger) return;
+  const section = trigger.dataset.adminOnboardingGoto;
+  if (!section) return;
+  event.preventDefault();
+  activateAdminSurface("admin");
+  activateAdminSection(section);
+});
+
 reviewInspectorButtons.forEach((button) => {
   button.addEventListener("click", () => setReviewInspectorView(button.dataset.reviewInspector));
 });
@@ -1585,6 +1598,10 @@ function activateTab(tabName) {
     } else {
       activateAdminSection(activeAdminSection());
     }
+    // Refresh the first-run setup checklist. Re-rendering on every activation lets
+    // a step's ✓ light up once its connection status has been detected (e.g. the
+    // admin opened the Drive section, so state.driveStatus is now populated).
+    if (typeof AdminOnboarding !== "undefined") AdminOnboarding.render(state);
   }
   if (tabName === "guide") {
     // The entire Guide tab IS the embedded User Guide. Its own sidebar (the
