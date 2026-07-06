@@ -14880,3 +14880,126 @@ label.is-hidden {
   margin-left: auto;
   margin-right: auto;
 }
+
+/* ---------------------------------------------------------------------------
+   SHARED FIRST-RUN ONBOARDING CARD (static/js/onboarding.js).
+
+   A single style set for the "welcome / here's how to get started" cards shown
+   on empty pages, so new pages (Review is the first) share one look instead of
+   re-deriving copy + markup. Generalised from the Repository (repository.css
+   .repository-onboarding-*) and Corpus (corpus.css .corpus-empty-*) cards.
+   Lives in the global stylesheet (loaded on every page) since the component is
+   page-agnostic. Container show/hide is owned by each caller.
+   --------------------------------------------------------------------------- */
+.onboarding-card {
+  background: linear-gradient(180deg, var(--brand-glow), #fff 70%);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-xs);
+  padding: 24px 26px;
+}
+
+.onboarding-title {
+  color: var(--ink);
+  font-family: var(--display-font);
+  font-size: 18px;
+  font-weight: 800;
+  margin: 0 0 6px;
+}
+
+.onboarding-lead {
+  color: var(--ink-muted);
+  font-size: 14px;
+  margin: 0 0 18px;
+  max-width: 60ch;
+}
+
+.onboarding-steps {
+  display: grid;
+  gap: 14px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.onboarding-step {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+}
+
+.onboarding-step-icon {
+  align-items: center;
+  background: var(--brand);
+  border-radius: 999px;
+  color: #fff;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 700;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
+}
+
+.onboarding-step.is-done .onboarding-step-icon {
+  background: #1f9d6b;
+}
+
+.onboarding-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.onboarding-step-body strong {
+  color: var(--ink);
+  font-size: 14.5px;
+}
+
+.onboarding-step-body span {
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+.onboarding-action {
+  align-self: flex-start;
+  background: var(--brand);
+  border: 1px solid var(--brand);
+  border-radius: 999px;
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  margin-top: 6px;
+  padding: 7px 16px;
+}
+
+.onboarding-action:hover,
+.onboarding-action:focus-visible {
+  background: var(--brand-bright);
+  border-color: var(--brand-bright);
+}
+
+.onboarding-action.secondary {
+  background: #fff;
+  border-color: var(--border-strong);
+  color: var(--brand);
+}
+
+.onboarding-action.secondary:hover,
+.onboarding-action.secondary:focus-visible {
+  background: var(--brand-glow);
+}
+
+/* The Review page's first-run onboarding container: shown only in the genuine
+   empty state (no NDA loaded), hidden the moment a document is open. */
+.review-onboarding[hidden] {
+  display: none;
+}
+
+.review-onboarding {
+  margin: 8px auto 0;
+  max-width: 820px;
+  width: 100%;
+}

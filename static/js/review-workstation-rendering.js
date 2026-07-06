@@ -154,9 +154,51 @@ function renderStudioEmpty() {
   } else {
     studioDetailPanel.innerHTML = "";
   }
+  updateReviewOnboarding();
   updateReviewInspectorTabs();
   updateExportButtonState();
   renderStudioClauseLane();
+}
+
+// First-run guidance for the Review page. When a brand-new user opens Review
+// with nothing loaded — no selected matter, no clauses, and an empty source
+// editor — we paint a shared onboarding card that explains what the page does
+// and routes them to their Repository to open an NDA. The moment a real NDA is
+// open (a matter is selected, a review has produced clauses, or source text has
+// been pasted), the card auto-hides so it never overlays a live review. Called
+// from renderStudioEmpty() (empty path) and renderStudioResult() (populated
+// path, where it hides). Degrades to a no-op if the shared component or the
+// container is missing (partial load order / isolated test).
+function updateReviewOnboarding() {
+  const container = document.querySelector("[data-review-onboarding]");
+  if (!container) return;
+  const hasMatter = Boolean(state.selectedMatter && state.selectedMatter.id);
+  const hasClauses = Array.isArray(state.reviewClauses) && state.reviewClauses.length > 0;
+  const sourceText = (studioNdaText && studioNdaText.value ? studioNdaText.value : "").trim()
+    || (state.reviewSourceText ? state.reviewSourceText : "").trim();
+  const firstRun = !hasMatter && !hasClauses && !sourceText;
+  container.hidden = !firstRun;
+  if (!firstRun) {
+    container.innerHTML = "";
+    return;
+  }
+  if (typeof Onboarding === "undefined" || typeof Onboarding.renderOnboardingCard !== "function") {
+    container.hidden = true;
+    return;
+  }
+  Onboarding.renderOnboardingCard(container, {
+    ariaLabel: "Get started with reviewing an NDA",
+    title: "Review an NDA",
+    lead: "The AI checks an NDA clause-by-clause against your playbook.",
+    steps: [
+      {
+        label: "Open an NDA from your Repository",
+        body: "Pick one from your Inbox or In Review column to start, then run Review to see findings and redlines.",
+        actionText: "Go to Repository",
+        actionGoto: "repository",
+      },
+    ],
+  });
 }
 
 function updateExportButtonState() {
@@ -420,6 +462,7 @@ function renderStudioResult(result) {
   // A finished review supersedes any in-flight skeleton overlay; drop it before
   // painting the real result so a stale skeleton never lingers over content.
   if (typeof setReviewWorkspaceSkeleton === "function") setReviewWorkspaceSkeleton(false);
+  updateReviewOnboarding();
   renderReviewOverlayBanner();
   renderStudioSummary(clauses);
   renderStudioClauseLane();

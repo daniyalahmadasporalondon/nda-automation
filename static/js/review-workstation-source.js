@@ -284,6 +284,11 @@ function updateSourceReviewBar() {
   }
   if (button) button.disabled = !editorActive || !String(studioNdaText.value || "").trim();
   if (!editorActive) setReviewPastedStatus("");
+  // Re-evaluate the first-run onboarding card: once the user starts pasting NDA
+  // text into the empty editor it is no longer a genuine first-run state, so the
+  // card auto-hides. Guarded — updateReviewOnboarding lives in the rendering
+  // module (same window scope; loaded by interaction time).
+  if (typeof updateReviewOnboarding === "function") updateReviewOnboarding();
 }
 
 async function reviewPastedSourceText() {
