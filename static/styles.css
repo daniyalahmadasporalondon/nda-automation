@@ -8267,6 +8267,54 @@ body.modal-open {
   min-width: 0;
 }
 
+/* First-run orientation banner sitting above the clause editor. The card itself
+   reuses the shared .repository-onboarding-card / -title / -lead classes (from
+   repository.css) so it matches the other onboarding panels; this wrapper only
+   adds the spacing below it and the dismiss affordance. Dismissed = [hidden]. */
+.playbook-onboarding {
+  margin-bottom: 10px;
+}
+
+.playbook-onboarding[hidden] {
+  display: none;
+}
+
+/* Position the dismiss × in the card's top-right corner. */
+.playbook-onboarding .repository-onboarding-card {
+  position: relative;
+}
+
+.playbook-onboarding-hint {
+  color: var(--ink-muted);
+  font-size: 13px;
+  margin: 10px 0 0;
+  max-width: 60ch;
+}
+
+.playbook-onboarding-hint strong {
+  color: var(--ink);
+}
+
+.playbook-onboarding-dismiss {
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+  padding: 2px 8px;
+  position: absolute;
+  right: 12px;
+  top: 12px;
+}
+
+.playbook-onboarding-dismiss:hover,
+.playbook-onboarding-dismiss:focus-visible {
+  background: var(--brand-glow);
+  color: var(--ink);
+}
+
 /* Sidebar nav groups (Registry first, then Clauses). The group label is a small
    uppercase eyebrow over each group's entries. */
 .rail-group-label {

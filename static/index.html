@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260706int2">
+    <link rel="stylesheet" href="/static/styles.css?v=20260706int4">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260706onboardgen1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260619onboard1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
@@ -1033,6 +1033,11 @@
                      registry are siblings here; the active surface shows, the other
                      is [hidden]. The persistent sidebar above never hides. -->
                 <div class="playbook-main">
+                  <!-- First-run orientation banner. Rendered/dismissed by
+                       playbook-onboarding.js (own localStorage-backed dismissal);
+                       kept separate from the clause editor + publish flow so it
+                       never collides with playbook-view.js edits. -->
+                  <div class="playbook-onboarding" data-playbook-onboarding hidden></div>
                   <section class="clause-detail" id="clauseDetail" data-playbook-panel="clauses"></section>
 
                   <!-- Entities surface (moved here from the Admin area). Renders the
@@ -2401,6 +2406,7 @@
     <script src="/static/js/overview/overview-tab.js?v=20260620integ1"></script>
     <script src="/static/js/playbook-draft-runtime.js?v=20260620integ1"></script>
     <script src="/static/js/playbook-view.js?v=20260706warn1"></script>
+    <script src="/static/js/playbook-onboarding.js?v=20260706onboard1"></script>
     <script src="/static/js/review-workstation-actions.js?v=20260623reviewtabv2-2"></script>
     <script src="/static/js/review-workstation-source.js?v=20260706onboard1"></script>
     <script src="/static/js/review-workstation-rendering.js?v=20260706onboard1"></script>

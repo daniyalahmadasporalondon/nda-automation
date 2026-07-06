@@ -219,6 +219,10 @@
     "sha256": "5cbc93fb512a263cceacb463e0fc5589272bcaf5d9421e8ba01499af07a13a67",
     "v": "20260620integ1"
   },
+  "js/playbook-onboarding.js": {
+    "sha256": "83d394312567254475ea85c9848013307bcd0e9a9ffafb291dbbf7472db03ae8",
+    "v": "20260706onboard1"
+  },
   "js/playbook-view.js": {
     "sha256": "df50b4fe2f9c9601a89c1994b4bc61ca01ebfce2f535b5242647b309bf0834c5",
     "v": "20260706warn1"
@@ -288,7 +292,7 @@
     "v": "20260623rwbugs1"
   },
   "styles.css": {
-    "sha256": "0660f10f16a88c1c7cb8a03a0c67fd552bdf7b4475707c97f3906d9977f54013",
-    "v": "20260706int2"
+    "sha256": "5e0d8f6402517f579717ed1ac32cd9434bf8ea7f8d92387974df77f3c2bf08e2",
+    "v": "20260706int4"
   }
 }
