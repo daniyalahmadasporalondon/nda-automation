@@ -465,13 +465,14 @@ function createDraftIntakeController({
       if (!hasEntity) {
         bundleNode.textContent = "Pick an entity to pre-fill its legal name, address and governing law.";
       } else {
+        // Legal name + registered address only. Governing law and court are shown by
+        // their own read-only nodes (renderGoverningLaw) directly below this summary
+        // in the consolidated "Our signing entity" card, so they are not repeated here.
         const address = intakeApi.selectedAddress(intake);
-        const law = intakeApi.effectiveGoverningLaw(intake);
         bundleNode.innerHTML = `
           <dl class="draft-bundle-grid">
             <div><dt>Legal name</dt><dd>${escapeHtml(entity.legal_name)}</dd></div>
-            <div><dt>${escapeHtml(address?.label || "Address")}</dt><dd>${escapeHtml(intakeApi.formatAddressLines(address))}</dd></div>
-            <div><dt>Governing law</dt><dd>${escapeHtml(law?.label || "—")}</dd></div>
+            <div><dt>${escapeHtml(address?.label || "Registered address")}</dt><dd>${escapeHtml(intakeApi.formatAddressLines(address))}</dd></div>
           </dl>
         `;
       }
