@@ -1601,8 +1601,8 @@ function activateTab(tabName) {
 // shown (iframe src + open-in-new-tab href + header title) and persists the
 // choice in localStorage. Both guides are public static files — no auth gate.
 var GUIDE_SRC = {
-  user: "/static/user-guide.html?v=20260623devguide1",
-  developer: "/static/developer-guide.html?v=20260623devguide1",
+  user: "/static/user-guide.html?v=20260706devguide1",
+  developer: "/static/developer-guide.html?v=20260706devguide2",
 };
 var GUIDE_MODE_STORAGE_KEY = "ndaGuideMode";
 

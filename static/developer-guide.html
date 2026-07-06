@@ -416,7 +416,7 @@
       <p class="panel-lede">The backend is a single Python process built on the standard-library HTTP server — no Django, no Flask, no ASGI. The frontend is plain static files served by the same process. There is no build step on either side.</p>
 
       <h3>The hand-rolled router</h3>
-      <p>The HTTP layer is <code>http.server</code> from the standard library. The request handler is <code>NdaAutomationHandler(SimpleHTTPRequestHandler)</code> in <code>nda_automation/server.py:332</code>, run under stdlib <code>ThreadingHTTPServer</code> (one thread per request). The entrypoint is <code>python -m nda_automation.server --host 0.0.0.0 --port &lt;PORT&gt;</code>.</p>
+      <p>The HTTP layer is <code>http.server</code> from the standard library. The request handler is <code>NdaAutomationHandler(SimpleHTTPRequestHandler)</code> in <code>nda_automation/server.py</code>, run under stdlib <code>ThreadingHTTPServer</code> (one thread per request). The entrypoint is <code>python -m nda_automation.server --host 0.0.0.0 --port &lt;PORT&gt;</code>.</p>
       <p>Dispatch is via four module-level <strong>exact-match route dictionaries</strong> that map a path string straight to a handler function — there is no decorator/registry framework:</p>
       <table>
         <thead><tr><th>Dict</th><th>server.py</th><th>Holds</th></tr></thead>
@@ -429,9 +429,9 @@
       </table>
       <p>The dispatchers:</p>
       <ul>
-        <li><code>_handle_get()</code> (server.py:343, used by <code>do_GET</code> + <code>do_HEAD</code>) — host check → static-file serving (before auth) → public routes → <code>_authorize_request()</code> → rate-limit → exact GET routes → pattern routes for <code>/api/matters/&lt;id&gt;/…</code> → 404.</li>
-        <li><code>do_POST()</code> (server.py:449) — host check → <strong>CSRF check before auth</strong> → public POST → auth → rate-limit → exact POST routes → matter-pattern POST routes.</li>
-        <li><code>do_DELETE()</code> (server.py:524) — host → CSRF → auth → matter-pattern DELETE routes.</li>
+        <li><code>_handle_get()</code> (server.py, used by <code>do_GET</code> + <code>do_HEAD</code>) — host check → static-file serving (before auth) → public routes → <code>_authorize_request()</code> → rate-limit → exact GET routes → pattern routes for <code>/api/matters/&lt;id&gt;/…</code> → 404.</li>
+        <li><code>do_POST()</code> (server.py) — host check → <strong>CSRF check before auth</strong> → public POST → auth → rate-limit → exact POST routes → matter-pattern POST routes.</li>
+        <li><code>do_DELETE()</code> (server.py) — host → CSRF → auth → matter-pattern DELETE routes.</li>
       </ul>
       <p>Per-matter sub-resources (<code>/api/matters/&lt;id&gt;/review-refresh</code>, <code>…/working-docx</code>, etc.) are not in the dicts; they are matched by suffix in the fallback blocks of each dispatcher.</p>
 
@@ -439,10 +439,24 @@
       <p>Handler functions live in <code>nda_automation/routes/</code> — one module per surface, imported at the top of <code>server.py</code> (~lines 81-103) and referenced directly in the route dicts. The modules are: <code>admin.py</code>, <code>approval.py</code>, <code>auth.py</code>, <code>common.py</code>, <code>corpus.py</code>, <code>dashboard.py</code>, <code>docusign.py</code>, <code>drive.py</code>, <code>entities.py</code>, <code>generation.py</code>, <code>gmail.py</code>, <code>matters.py</code>, <code>pdf_markup.py</code>, <code>playbook.py</code>, <code>review.py</code>, <code>send_document.py</code>. A handler takes the request handler (<code>self</code>) and writes its own response; there is no middleware stack.</p>
 
       <h3>Static files</h3>
-      <p>The <code>/static/*</code> branch in <code>_handle_get()</code> (server.py:356-364) resolves the requested path, asserts it stays inside <code>STATIC_DIR = ROOT/"static"</code> (server.py:110) as a path-traversal guard, and streams the file. This is why <strong>both guides are served with no per-file route</strong>: dropping <code>static/developer-guide.html</code> into the tree is enough to serve it at <code>/static/developer-guide.html</code>.</p>
+      <p>The <code>/static/*</code> branch in <code>_handle_get()</code> (server.py) resolves the requested path, asserts it stays inside <code>STATIC_DIR = ROOT/"static"</code> (server.py) as a path-traversal guard, and streams the file. This is why <strong>both guides are served with no per-file route</strong>: dropping <code>static/developer-guide.html</code> into the tree is enough to serve it at <code>/static/developer-guide.html</code>.</p>
+
+      <h4>Cache-bust tokens &amp; the asset manifest</h4>
+      <p>Every script/stylesheet is loaded from <code>index.html</code> with a <code>?v=YYYYMMDD&lt;letter&gt;</code> token so browsers reload it after a change. With immutable caching live, a forgotten token bump would pin a stale asset in a user's browser for up to a year — so a committed manifest guards against it:</p>
+      <ul>
+        <li><strong>The manifest</strong> — <code>static/asset-tokens.json</code> records <code>{path: {v, sha256}}</code> for every versioned asset. It's the CI staleness guard's source of truth.</li>
+        <li><strong>The tool</strong> — <code>python -m nda_automation.static_versioning</code> (<code>nda_automation/static_versioning.py</code>). <code>--check</code> fails if any asset's bytes changed without its <code>?v=</code> token (and manifest entry) changing; <code>--write</code> regenerates the manifest after you've bumped the tokens.</li>
+        <li><strong>The test</strong> — <code>tests/test_static_asset_manifest.py</code> runs the same check in CI, so a bytes-changed-but-token-unchanged slip is a red build, not a silent stale-cache incident.</li>
+      </ul>
+      <div class="callout warn">
+        <strong>The edit ritual for any <code>static/</code> change:</strong> edit the file → bump its <code>?v=</code> token in <code>index.html</code> → run <code>python -m nda_automation.static_versioning --write</code> → confirm <code>--check</code> passes. <code>scripts/cache_bust_guard.py --tree</code> is the belt-and-braces tree-wide guard.
+      </div>
+
+      <h4>Syntax floor (the shipped bundle must parse on old webviews)</h4>
+      <p>Everything under <code>static/**/*.{js,mjs}</code> ships <strong>untranspiled</strong> and most loads as classic <code>&lt;script&gt;</code> tags in one chain — a single <code>SyntaxError</code> detonates the whole chain (app.js and all it wires) at parse time on the oldest webview a user opens, before any feature detection can run. <code>tests/frontend/syntax-floor.cjs</code> enforces the floor (Safari 13.x era): full ES2020 syntax and numeric separators are allowed; <strong>logical assignment (<code>??=</code>/<code>||=</code>/<code>&amp;&amp;=</code>) and anything ES2022+ (class fields, <code>#private</code>, static blocks, top-level await) are rejected</strong> — the parse runs at ecmaVersion 2021 with a dedicated AST scan for the logical-assignment operators acorn would otherwise accept.</p>
 
       <h3>The data dir &amp; deploy shape</h3>
-      <p>All durable state roots at <code>NDA_DATA_DIR</code> (read in <code>matter_store.py:24</code>; default <code>ROOT/"data"</code>). In production it is the Render persistent disk at <code>/var/data</code>, which holds <code>matters/*.json</code>, <code>uploads/</code>, the lock file, Gmail cursors, and the live <code>playbook.json</code> + sidecars. The app ships as a Docker image (python:3.11-slim + LibreOffice) on Render Standard. See <strong>Deploy &amp; Ops</strong> for the full env-var map.</p>
+      <p>All durable state roots at <code>NDA_DATA_DIR</code> (read in <code>matter_store.py</code>; default <code>ROOT/"data"</code>). In production it is the Render persistent disk at <code>/var/data</code>, which holds <code>matters/*.json</code>, <code>uploads/</code>, the lock file, Gmail cursors, and the live <code>playbook.json</code> + sidecars. The app ships as a Docker image (python:3.11-slim + LibreOffice) on Render Standard. See <strong>Deploy &amp; Ops</strong> for the full env-var map.</p>
 
       <div class="callout">
         <strong>Mental model.</strong> A request walks: host check → (CSRF for writes) → auth → rate-limit → an exact-match function → a JSON or file response. Everything stateful is a JSON file under <code>NDA_DATA_DIR</code>. Everything user-facing is a static file under <code>static/</code>.
@@ -458,7 +472,7 @@
       <ul>
         <li>Bundled copy: <code>playbook.json</code> in the repo root.</li>
         <li>Live copy: <code>$NDA_DATA_DIR/playbook.json</code> (e.g. <code>/var/data/playbook.json</code>). On first run, if the persistent copy is absent the bundled one is seeded once; it is never clobbered on redeploy.</li>
-        <li>Loader: <code>load_playbook()</code> in <code>nda_automation/checker.py:137</code>, resolving <code>PLAYBOOK_PATH</code> at startup (persistent disk if set, else bundled).</li>
+        <li>Loader: <code>load_playbook()</code> in <code>nda_automation/checker.py</code>, resolving <code>PLAYBOOK_PATH</code> at startup (persistent disk if set, else bundled).</li>
         <li>Sidecars in the same dir: <code>playbook.draft.json</code>, <code>playbook.runtime.json</code>, <code>playbook.history.json</code>.</li>
       </ul>
       <div class="callout warn">
@@ -473,9 +487,9 @@
       <table>
         <thead><tr><th>Endpoint</th><th>Handler (routes/playbook.py)</th><th>Purpose</th></tr></thead>
         <tbody>
-          <tr><td>POST /api/playbook/draft</td><td>handle_playbook_validate_draft (~74)</td><td>Returns <code>{valid, errors, warnings}</code>; warnings are advisory.</td></tr>
-          <tr><td>POST /api/playbook/draft/save</td><td>handle_playbook_draft_save (~89)</td><td>Persists the draft sidecar.</td></tr>
-          <tr><td>POST /api/playbook/publish</td><td>handle_playbook_publish (~115)</td><td>Lint-gated promotion of draft → live.</td></tr>
+          <tr><td>POST /api/playbook/draft</td><td>handle_playbook_validate_draft</td><td>Returns <code>{valid, errors, warnings}</code>; warnings are advisory.</td></tr>
+          <tr><td>POST /api/playbook/draft/save</td><td>handle_playbook_draft_save</td><td>Persists the draft sidecar.</td></tr>
+          <tr><td>POST /api/playbook/publish</td><td>handle_playbook_publish</td><td>Lint-gated promotion of draft → live.</td></tr>
         </tbody>
       </table>
       <p>The lint gate is <code>_enforce_playbook_lint()</code> in <code>nda_automation/playbook_authoring.py</code>, which calls <code>lint_violations_for(playbook, severities={"error"})</code> — only <strong>error</strong>-severity violations block publish; warnings surface in draft validation but never wedge a publish. The deterministic lint covers decision-space, condition-well-formedness, redline-template, approved-options, and referential integrity. An optional AI semantic lint (advisory, default-off) layers on top.</p>
@@ -492,18 +506,18 @@
       <p class="panel-lede">Review is <strong>on-demand only</strong> — there is no automatic AI review on inbound documents. A user clicks Review; the server enqueues an async job; the workstation polls for the result.</p>
 
       <h3>Entry point &amp; on-demand contract</h3>
-      <p>The review is triggered by <code>POST /api/matters/&lt;id&gt;/review-refresh</code> → <code>handle_matter_review_refresh()</code> in <code>nda_automation/routes/matters.py:119</code>. It <strong>enqueues</strong> a review and returns <code>202</code> immediately — it never runs the AI engine inline (asserted by <code>tests/test_async_review_backend.py</code>). Inbound Gmail matters import as "Not Reviewed" and are reviewed only when a human asks (server.py:1134 comment; <code>tests/test_inbound_auto_review.py</code>).</p>
+      <p>The review is triggered by <code>POST /api/matters/&lt;id&gt;/review-refresh</code> → <code>handle_matter_review_refresh()</code> in <code>nda_automation/routes/matters.py</code>. It <strong>enqueues</strong> a review and returns <code>202</code> immediately — it never runs the AI engine inline (asserted by <code>tests/test_async_review_backend.py</code>). Inbound Gmail matters import as "Not Reviewed" and are reviewed only when a human asks (server.py comment; <code>tests/test_inbound_auto_review.py</code>).</p>
 
       <h3>The packet</h3>
-      <p>Before the model is called, the app assembles an <strong>assessment packet</strong> via <code>build_ai_assessment_packet()</code> in <code>nda_automation/ai_assessment_prompt.py:254</code>. It bundles: the clause requirements / playbook rules (<code>playbook_rules_for_ai()</code> in <code>playbook_rules.py</code>), the binding policy block (<code>build_playbook_policy_block()</code> in <code>playbook_policy.py</code>), the Stage-1 structure context (<code>build_contract_structure()</code> in <code>contract_structure.py</code>), and the source paragraphs (with omitted-paragraph counts + truncation markers). The model sees a flat <code>{id, index, text}</code> packet plus the rules.</p>
+      <p>Before the model is called, the app assembles an <strong>assessment packet</strong> via <code>build_ai_assessment_packet()</code> in <code>nda_automation/ai_assessment_prompt.py</code>. It bundles: the clause requirements / playbook rules (<code>playbook_rules_for_ai()</code> in <code>playbook_rules.py</code>), the binding policy block (<code>build_playbook_policy_block()</code> in <code>playbook_policy.py</code>), the Stage-1 structure context (<code>build_contract_structure()</code> in <code>contract_structure.py</code>), and the source paragraphs (with omitted-paragraph counts + truncation markers). The model sees a flat <code>{id, index, text}</code> packet plus the rules.</p>
 
       <h3>The two models</h3>
       <div class="card tight">
         <dl class="kv">
           <dt>Reviewer (first pass)</dt>
-          <dd>Default <code>anthropic/claude-opus-4.8-fast</code> — <code>DEFAULT_OPENROUTER_MODEL</code> at <code>ai_review.py:28</code>, selected by env <code>NDA_AI_MODEL</code> (<code>AI_REVIEW_ENV_MODEL</code>, ai_review.py:35). Resolved in <code>configured_ai_assessment_reviewer()</code> (ai_assessor.py:422).</dd>
+          <dd>Default <code>anthropic/claude-opus-4.8-fast</code> — <code>DEFAULT_OPENROUTER_MODEL</code> at <code>ai_review.py</code>, selected by env <code>NDA_AI_MODEL</code> (<code>AI_REVIEW_ENV_MODEL</code>, ai_review.py). Resolved in <code>configured_ai_assessment_reviewer()</code> (ai_assessor.py).</dd>
           <dt>Verifier (second pass)</dt>
-          <dd>Default <code>deepseek/deepseek-v4-pro</code> — <code>DEFAULT_VERIFIER_MODEL</code> at <code>ai_verifier.py:61</code>, env <code>NDA_AI_VERIFIER_MODEL</code> (ai_verifier.py:63). Enabled by <code>NDA_AI_VERIFIER</code> (opt-in). Resolved in <code>resolve_verifier()</code> (ai_verifier.py:1148).</dd>
+          <dd>Default <code>deepseek/deepseek-v4-pro</code> — <code>DEFAULT_VERIFIER_MODEL</code> at <code>ai_verifier.py</code>, env <code>NDA_AI_VERIFIER_MODEL</code> (ai_verifier.py). Enabled by <code>NDA_AI_VERIFIER</code> (opt-in). Resolved in <code>resolve_verifier()</code> (ai_verifier.py).</dd>
         </dl>
       </div>
       <p>Both run through OpenRouter; the key (<code>OPENROUTER_API_KEY</code>) lives in backend config and is never exposed to the browser.</p>
@@ -511,17 +525,17 @@
       <h3>The decision arbiter</h3>
       <p>Clause decisions are synthesised in three phases:</p>
       <ol>
-        <li><strong>AI assessment →</strong> <code>build_ai_first_review_result()</code> (ai_first_review.py:327) normalises reviewer assessments into clause results.</li>
-        <li><strong>Adversarial verifier →</strong> <code>apply_ai_verifier()</code> (ai_verifier.py:128). Escalated clauses (fail/review) are always verified; passes are verified only when confidence is below the high-confidence pass threshold (<code>0.85</code>, ai_verifier.py:92). A <em>refute</em>/<em>uncertain</em> verdict downgrades to review — the verifier never autonomously acquits a clause to pass.</li>
-        <li><strong>Reconciliation →</strong> <code>_reconcile_unchanged_clause_review_states()</code> (ai_first_review.py:809) and <code>_reconcile_clause_decision()</code> (ai_first_review.py:857) propagate changes into <code>review_state</code> and apply floor normalisations.</li>
+        <li><strong>AI assessment →</strong> <code>build_ai_first_review_result()</code> (ai_first_review.py) normalises reviewer assessments into clause results.</li>
+        <li><strong>Adversarial verifier →</strong> <code>apply_ai_verifier()</code> (ai_verifier.py). Escalated clauses (fail/review) are always verified; passes are verified only when confidence is below the high-confidence pass threshold (<code>0.85</code>, ai_verifier.py). A <em>refute</em>/<em>uncertain</em> verdict downgrades to review — the verifier never autonomously acquits a clause to pass.</li>
+        <li><strong>Reconciliation →</strong> <code>_reconcile_unchanged_clause_review_states()</code> (ai_first_review.py) and <code>_reconcile_clause_decision()</code> (ai_first_review.py) propagate changes into <code>review_state</code> and apply floor normalisations.</li>
       </ol>
-      <p>The semantic confidence floor is <code>SEMANTIC_REVIEW_THRESHOLD = 0.75</code> in <code>decision_arbiter.py:32</code> — a pass below it is escalated to review. <code>review_state.py:332</code> (<code>_normalize_clause_decision()</code>) imports the same constant so the floor is single-sourced.</p>
+      <p>The semantic confidence floor is <code>SEMANTIC_REVIEW_THRESHOLD = 0.75</code> in <code>decision_arbiter.py</code> — a pass below it is escalated to review. <code>review_state.py</code> (<code>_normalize_clause_decision()</code>) imports the same constant so the floor is single-sourced.</p>
 
       <h3>Evidence grounding</h3>
-      <p>Every pass/fail on a <em>present</em> clause must cite a real, verbatim quote. <code>classify_grounding()</code> (evidence_grounding.py:88) returns grounded / absence / ungrounded. Ungrounded findings are demoted by <code>downgrade_ungrounded_finding()</code> (evidence_grounding.py:223) → decision <code>REVIEW</code>, <code>blocks_send=True</code>, reason code <code>ungrounded_finding</code>. The two legitimate no-quote cases: a required clause FAILed as missing, and a prohibited clause that correctly does not appear. Wired in via <code>build_grounding()</code> (ai_first_review.py:699).</p>
+      <p>Every pass/fail on a <em>present</em> clause must cite a real, verbatim quote. <code>classify_grounding()</code> (evidence_grounding.py) returns grounded / absence / ungrounded. Ungrounded findings are demoted by <code>downgrade_ungrounded_finding()</code> (evidence_grounding.py) → decision <code>REVIEW</code>, <code>blocks_send=True</code>, reason code <code>ungrounded_finding</code>. The two legitimate no-quote cases: a required clause FAILed as missing, and a prohibited clause that correctly does not appear. Wired in via <code>build_grounding()</code> (ai_first_review.py).</p>
 
       <h3>review_state</h3>
-      <p>The per-clause <code>review_state</code> struct (review_state.py:40) carries <code>state</code> (<code>pass</code>|<code>review</code>|<code>check</code>), <code>decision</code> (<code>pass</code>|<code>review</code>|<code>fail</code>), <code>blocks_send</code>, <code>blocks_auto_send</code>, <code>requires_human_review</code>, and <code>reason_codes</code>. <code>clause_review_state()</code> sets it per clause; <code>aggregate_review_state()</code> (review_state.py:113) rolls up the document-level state.</p>
+      <p>The per-clause <code>review_state</code> struct (review_state.py) carries <code>state</code> (<code>pass</code>|<code>review</code>|<code>check</code>), <code>decision</code> (<code>pass</code>|<code>review</code>|<code>fail</code>), <code>blocks_send</code>, <code>blocks_auto_send</code>, <code>requires_human_review</code>, and <code>reason_codes</code>. <code>clause_review_state()</code> sets it per clause; <code>aggregate_review_state()</code> (review_state.py) rolls up the document-level state.</p>
 
       <div class="callout">
         <strong>Why it's trustworthy.</strong> Fail-closed everywhere: a missing assessment, an invalid citation, or a provider error escalates to Review and blocks auto-send rather than waving a document through. Low confidence becomes "ask a human"; uncertainty leans to Review.
@@ -536,22 +550,22 @@
       <h3>Redlines: propose → diff → anchor → export</h3>
       <ul>
         <li><strong>Propose.</strong> A failed clause's suggested-fix wording comes from the playbook's <code>redline_guidance</code>; the FE edit model lives in <code>static/js/modules/redline-edit-contract.mjs</code> (action types REPLACE_PARAGRAPH / DELETE_PARAGRAPH / INSERT_AFTER_PARAGRAPH / FORMAT_PARAGRAPH).</li>
-        <li><strong>Diff.</strong> Word tracked changes are built in <code>nda_automation/redline_xml.py</code> — the <code>_source_tracked_replace_paragraph*</code> / <code>_source_tracked_delete_paragraph</code> / <code>_source_tracked_insert_paragraphs</code> builders emit <code>&lt;w:ins&gt;</code> / <code>&lt;w:del&gt;</code> revision markup. <code>redline_replace_uses_whole_text_markup()</code> (redline_xml.py:814) decides whole-text vs char-level tokenised diff.</li>
-        <li><strong>Anchor.</strong> <code>source_index</code> is <em>non-unique</em> provenance — split blocks (a paragraph cut on an internal blank line) share it on purpose. <code>paragraph_index</code> (a.k.a. <code>index</code>) is the <em>unique</em> blank-line-block key. Export and the health gate key on <code>paragraph_index</code>, falling back to <code>source_index</code>: see <code>_expected_redline_source_index()</code> (docx_health.py:793) and <code>redline_source_index()</code> (redline_edit_contract.py).</li>
+        <li><strong>Diff.</strong> Word tracked changes are built in <code>nda_automation/redline_xml.py</code> — the <code>_source_tracked_replace_paragraph*</code> / <code>_source_tracked_delete_paragraph</code> / <code>_source_tracked_insert_paragraphs</code> builders emit <code>&lt;w:ins&gt;</code> / <code>&lt;w:del&gt;</code> revision markup. <code>redline_replace_uses_whole_text_markup()</code> (redline_xml.py) decides whole-text vs char-level tokenised diff.</li>
+        <li><strong>Anchor.</strong> <code>source_index</code> is <em>non-unique</em> provenance — split blocks (a paragraph cut on an internal blank line) share it on purpose. <code>paragraph_index</code> (a.k.a. <code>index</code>) is the <em>unique</em> blank-line-block key. Export and the health gate key on <code>paragraph_index</code>, falling back to <code>source_index</code>: see <code>_expected_redline_source_index()</code> (docx_health.py) and <code>redline_source_index()</code> (redline_edit_contract.py).</li>
         <li><strong>Export.</strong> Built in <code>docx_export.py</code>.</li>
       </ul>
 
       <h3>Coverage gates</h3>
-      <p>The DOCX gate <code>verify_export_content_coverage()</code> (docx_health.py:~150) asserts the export body is non-empty, covers ≥80% of source text, and that the accepted-paragraph sequence matches the expected sequence built from source + redline edits. The PDF path can't do exact sequence comparison (reconstruction reflows), so <code>verify_pdf_reconstruction_redline_coverage()</code> (docx_health.py:~203) instead finds each redline's target paragraph by confident text match and verifies <code>w:ins</code>/<code>w:del</code> markup is present, using one-to-one bipartite matching so identical redlines consume distinct paragraphs. Both fail closed.</p>
+      <p>The DOCX gate <code>verify_export_content_coverage()</code> (docx_health.py) asserts the export body is non-empty, covers ≥80% of source text, and that the accepted-paragraph sequence matches the expected sequence built from source + redline edits. The PDF path can't do exact sequence comparison (reconstruction reflows), so <code>verify_pdf_reconstruction_redline_coverage()</code> (docx_health.py) instead finds each redline's target paragraph by confident text match and verifies <code>w:ins</code>/<code>w:del</code> markup is present, using one-to-one bipartite matching so identical redlines consume distinct paragraphs. Both fail closed.</p>
 
       <h3>Generation (deterministic)</h3>
-      <p><code>POST /api/generate-nda</code> (routed at server.py:282) delegates to the generation workflow. By default generation is <strong>deterministic</strong>: <code>generation_ai_enabled()</code> (nda_generation.py) reads <code>NDA_GENERATION_AI_ENABLED</code>; in production it is set to <code>false</code>, so no OpenRouter call is made and the document is built purely from the template + playbook. The template is <code>nda_automation/templates/generic_nda.docx</code> (Aspora = second party, counterparty = first), with Term/Survival and Confidential-Information exclusions realigned from the template defaults to the live playbook at generation time.</p>
+      <p><code>POST /api/generate-nda</code> (routed at server.py) delegates to the generation workflow. By default generation is <strong>deterministic</strong>: <code>generation_ai_enabled()</code> (nda_generation.py) reads <code>NDA_GENERATION_AI_ENABLED</code>; in production it is set to <code>false</code>, so no OpenRouter call is made and the document is built purely from the template + playbook. The template is <code>nda_automation/templates/generic_nda.docx</code> (Aspora = second party, counterparty = first), with Term/Survival and Confidential-Information exclusions realigned from the template defaults to the live playbook at generation time.</p>
 
       <h3>gen-verify (the ship gate)</h3>
-      <p>Before any persistence, <code>assert_generated_nda_is_on_position()</code> (nda_generation.py:~980) runs two independent screens: (1) <code>self_check_generated_nda()</code> (nda_generation.py:1094) — a network-free deterministic oracle that re-extracts the generated text and runs <code>review_nda(..., ai_enabled=False)</code>, requiring zero native-clause failures, plus a key-free stub check that non_circumvention does not fail; and (2) a prohibited-position scan over the whole document. Either failure raises <code>NdaGenerationError</code> and blocks the ship.</p>
+      <p>Before any persistence, <code>assert_generated_nda_is_on_position()</code> (nda_generation.py) runs two independent screens: (1) <code>self_check_generated_nda()</code> (nda_generation.py) — a network-free deterministic oracle that re-extracts the generated text and runs <code>review_nda(..., ai_enabled=False)</code>, requiring zero native-clause failures, plus a key-free stub check that non_circumvention does not fail; and (2) a prohibited-position scan over the whole document. Either failure raises <code>NdaGenerationError</code> and blocks the ship.</p>
 
       <h3>The governing-law lock</h3>
-      <p>Governing law is fixed by the signing entity and cannot be overridden. In <code>nda_generation.py:~893</code>, an <code>override_id</code> that differs from the entity default raises <code>NdaGenerationError</code> (input category); an override equal to the default is a harmless no-op. The manifest always records <code>governing_law_overridden = False</code>. This closes the divergence where an override could pull another entity's court into a signed NDA.</p>
+      <p>Governing law is fixed by the signing entity and cannot be overridden. In <code>nda_generation.py</code>, an <code>override_id</code> that differs from the entity default raises <code>NdaGenerationError</code> (input category); an override equal to the default is a harmless no-op. The manifest always records <code>governing_law_overridden = False</code>. This closes the divergence where an override could pull another entity's court into a signed NDA.</p>
     </section>
 
     <!-- ============ 5. PDF / DOCX & APPROACH C ============ -->
@@ -561,15 +575,15 @@
 
       <h3>Approach C: convert at ingest</h3>
       <ul>
-        <li><code>convert_pdf_matter_to_docx()</code> lives in <code>nda_automation/pdf_ingest_conversion.py:65</code>.</li>
-        <li>It is wired at <strong>ingest</strong>: <code>ingestion_service.py:1321</code> → <code>_convert_pdf_matter_at_ingest()</code> → <code>_persist_pdf_working_conversion()</code> (ingestion_service.py:1367) → <code>convert_pdf_matter_to_docx()</code>. Non-PDF matters are skipped (document_type guard). The conversion re-keys paragraphs to anchor by source_index and registers a <code>role="working"</code> artifact.</li>
+        <li><code>convert_pdf_matter_to_docx()</code> lives in <code>nda_automation/pdf_ingest_conversion.py</code>.</li>
+        <li>It is wired at <strong>ingest</strong>: <code>ingestion_service.py</code> → <code>_convert_pdf_matter_at_ingest()</code> → <code>_persist_pdf_working_conversion()</code> (ingestion_service.py) → <code>convert_pdf_matter_to_docx()</code>. Non-PDF matters are skipped (document_type guard). The conversion re-keys paragraphs to anchor by source_index and registers a <code>role="working"</code> artifact.</li>
         <li><strong>Fail-open:</strong> any error in the chain returns the original matter unchanged — conversion never hard-blocks ingest.</li>
       </ul>
 
       <h3>working_docx_ready &amp; the /working-docx seam</h3>
       <ul>
-        <li><code>working_docx_ready</code> is set in the render payload at <code>matter_render_job.py:91</code> via <code>matter_has_working_docx()</code> (matter_render_job.py:95), which checks for a <code>ROLE_WORKING</code> artifact in the registry.</li>
-        <li>The route <code>GET /api/matters/&lt;id&gt;/working-docx</code> → <code>handle_matter_working_docx()</code> (routes/matters.py:588, wired at server.py:390) streams the working DOCX bytes via <code>pdf_export_service.build_matter_working_docx_export()</code>.</li>
+        <li><code>working_docx_ready</code> is set in the render payload at <code>matter_render_job.py</code> via <code>matter_has_working_docx()</code> (matter_render_job.py), which checks for a <code>ROLE_WORKING</code> artifact in the registry.</li>
+        <li>The route <code>GET /api/matters/&lt;id&gt;/working-docx</code> → <code>handle_matter_working_docx()</code> (routes/matters.py, wired at server.py) streams the working DOCX bytes via <code>pdf_export_service.build_matter_working_docx_export()</code>.</li>
       </ul>
 
       <h3>The vendored faithful render (docx-preview)</h3>
@@ -577,14 +591,14 @@
       <ul>
         <li><code>static/vendor/docx-preview/docx-preview.min.js</code> (+ <code>LICENSE</code>) — confirmed present in the deployed tree.</li>
         <li><code>static/js/docx-faithful-render.js</code> — lazily injects jszip + docx-preview on first render (retrying), exposes <code>renderFaithfulDocx(container, options)</code>, and <strong>always returns <code>{ ok, reason }</code> — never throws</strong>, degrading to reconstruction on any failure.</li>
-        <li>Flag: <code>nda.faithfulDocxRender</code> (localStorage key from <code>static/js/config.js:20</code>; gate <code>faithfulDocxRenderEnabled()</code> in docx-faithful-render.js:61). <strong>Default OFF</strong> — set <code>localStorage["nda.faithfulDocxRender"] = "1"</code> to enable.</li>
+        <li>Flag: <code>nda.faithfulDocxRender</code> (localStorage key from <code>static/js/config.js</code>; gate <code>faithfulDocxRenderEnabled()</code> in docx-faithful-render.js). <strong>Default OFF</strong> — set <code>localStorage["nda.faithfulDocxRender"] = "1"</code> to enable.</li>
       </ul>
 
       <h3>reconstruct_pdf_to_docx (the low-level fallback)</h3>
-      <p><code>reconstruct_pdf_to_docx()</code> (pdf_docx_reconstruction.py:318) is the engine that turns PDF bytes into DOCX bytes (semaphore/slot backpressure, page-cap, owner-keyed LRU cache, subprocess timeout/RLIMIT hardening). It knows nothing about redlines. <code>convert_pdf_matter_to_docx()</code> is the high-level wrapper that calls it, re-keys paragraphs for anchor-by-index, and enforces an empty-body guard.</p>
+      <p><code>reconstruct_pdf_to_docx()</code> (pdf_docx_reconstruction.py) is the engine that turns PDF bytes into DOCX bytes (semaphore/slot backpressure, page-cap, owner-keyed LRU cache, subprocess timeout/RLIMIT hardening). It knows nothing about redlines. <code>convert_pdf_matter_to_docx()</code> is the high-level wrapper that calls it, re-keys paragraphs for anchor-by-index, and enforces an empty-body guard.</p>
 
       <h3>PDF extraction: pypdf vs PyMuPDF</h3>
-      <p>Document <strong>structure/text</strong> extraction uses <code>pypdf</code> (<code>extract_pdf_document()</code> in pdf_text.py:140). <code>PyMuPDF</code> / <code>fitz</code> is used <strong>only</strong> for visual signals — a cheap image-count decompression-bomb guard (pdf_text.py:280, via <code>get_image_info()</code>, no pixel decode) and page rasterization for preview thumbnails. fitz is never used for structure.</p>
+      <p>Document <strong>structure/text</strong> extraction uses <code>pypdf</code> (<code>extract_pdf_document()</code> in pdf_text.py). <code>PyMuPDF</code> / <code>fitz</code> is used <strong>only</strong> for visual signals — a cheap image-count decompression-bomb guard (pdf_text.py, via <code>get_image_info()</code>, no pixel decode) and page rasterization for preview thumbnails. fitz is never used for structure.</p>
 
       <div class="callout warn">
         <strong>Why the Dockerfile asserts fitz.</strong> A silent PyMuPDF ABI mismatch would break page-image rendering only at runtime. The build smoke-test (<code>import fitz; fitz.open()</code>, Dockerfile:43) fails the build loudly instead. See Deploy &amp; Ops.
@@ -598,16 +612,25 @@
 
       <h3>The matter store</h3>
       <ul>
-        <li><strong>Module:</strong> <code>nda_automation/matter_store.py</code>. <code>create_matter()</code> (matter_store.py:1020) mints <code>matter_&lt;uuid12&gt;</code> and writes <code>$NDA_DATA_DIR/matters/&lt;id&gt;.json</code>.</li>
-        <li><strong>Locking:</strong> <code>_locked_store()</code> (matter_store.py:1124) takes an in-process <code>threading.RLock()</code> (30s timeout) <em>and</em> a cross-process <code>fcntl.flock()</code> on <code>matters.lock</code>, so create/dedupe/update read-modify-write is serialised even across processes. The one historical bug was an <em>unlocked</em> dedupe pre-check; the real R-M-W path was always sound.</li>
-        <li><strong>Dedup:</strong> <code>_find_gmail_duplicate_unlocked()</code> (matter_store.py:1615) runs inside the lock — it indexes attachment id / case-folded filename / SHA256, gates each candidate through ownership, and confirms filename-only matches by hash. Atomic check+write closes the TOCTOU window.</li>
+        <li><strong>Module:</strong> <code>nda_automation/matter_store.py</code>. <code>create_matter()</code> (matter_store.py) mints <code>matter_&lt;uuid12&gt;</code> and writes <code>$NDA_DATA_DIR/matters/&lt;id&gt;.json</code>.</li>
+        <li><strong>Locking:</strong> <code>_locked_store()</code> (matter_store.py) takes an in-process <code>threading.RLock()</code> (30s timeout) <em>and</em> a cross-process <code>fcntl.flock()</code> on <code>matters.lock</code>, so create/dedupe/update read-modify-write is serialised even across processes. The one historical bug was an <em>unlocked</em> dedupe pre-check; the real R-M-W path was always sound.</li>
+        <li><strong>Dedup:</strong> <code>_find_gmail_duplicate_unlocked()</code> (matter_store.py) runs inside the lock — it indexes attachment id / case-folded filename / SHA256, gates each candidate through ownership, and confirms filename-only matches by hash. Atomic check+write closes the TOCTOU window.</li>
+      </ul>
+
+      <h3>Performance &amp; observability (scale hardening)</h3>
+      <p>The store is a single-process file store, so a growing corpus turned several hot paths O(store). Four changes keep them bounded:</p>
+      <ul>
+        <li><strong>Per-record list cache</strong> — <code>list_matters()</code> is cached under a fingerprint of every record file's <code>(name, mtime, size)</code>, consulted/refreshed only while the store lock is held (so it observes a consistent set) and storing the <strong>UNFILTERED</strong> list — owner scoping is always applied per-call <em>after</em>, so the cache can never serve cross-tenant data. The blob is keyed <strong>per record filename</strong>, not one monolithic blob: a write-through patch updates the one written record's entry (O(one record)) instead of re-serialising the whole store (~330ms/write on a 47MB/1200-matter store → a few ms). <code>NDA_DISABLE_MATTER_LIST_CACHE</code> forces the uncached path for tests.</li>
+        <li><strong>Timeline cap</strong> — <code>matter_timeline</code> was append-only and grew unbounded; <code>capped_timeline()</code> now clamps it to <code>TIMELINE_MAX_EVENTS = 500</code> (newest kept, oldest dropped, with a marker event) on every write.</li>
+        <li><strong>Corpus fingerprinting off the request path</strong> — dedup SimHash fingerprints are computed inline only under a <code>FINGERPRINT_INLINE_COMPUTE_BUDGET</code> per request; the remainder is computed by a single-flight <strong>background backfill</strong> (<code>_start_fingerprint_backfill</code>, corpus_index.py), so a large cold store never serialises O(store) SimHash computes onto one request.</li>
+        <li><strong>Failure visibility</strong> — swallowed failures now <strong>log</strong> (module <code>LOGGER.warning/error</code> with the exception type) instead of failing silently — e.g. the PyMuPDF import path logs the exact module+message at ERROR on a genuine load failure rather than degrading rendering invisibly.</li>
       </ul>
 
       <h3>Artifacts</h3>
-      <p><code>nda_automation/artifact_registry.py</code> is a thin registry over a matter's documents. Roles (artifact_registry.py:39-47): <code>original</code>, <code>redline</code>, <code>reviewed</code>, <code>generated</code>, <code>counter</code>, <code>sent</code>, <code>signed</code>, and <code>working</code> (the Approach-C PDF→DOCX). Actors: <code>counterparty</code>, <code>ai</code>, <code>human</code> (or an entity id). The matter carries an <code>artifacts</code> list + a <code>current_artifact_id</code> pointer.</p>
+      <p><code>nda_automation/artifact_registry.py</code> is a thin registry over a matter's documents. Roles (artifact_registry.py): <code>original</code>, <code>redline</code>, <code>reviewed</code>, <code>generated</code>, <code>counter</code>, <code>sent</code>, <code>signed</code>, and <code>working</code> (the Approach-C PDF→DOCX). Actors: <code>counterparty</code>, <code>ai</code>, <code>human</code> (or an entity id). The matter carries an <code>artifacts</code> list + a <code>current_artifact_id</code> pointer.</p>
 
       <h3>Fail-closed ownership</h3>
-      <p><code>_matter_owner_matches()</code> (matter_store.py:1666) is the tenant guard, used by every matter op (list/get/update/delete/export/dedup):</p>
+      <p><code>_matter_owner_matches()</code> (matter_store.py) is the tenant guard, used by every matter op (list/get/update/delete/export/dedup):</p>
       <ul>
         <li>Empty caller <code>owner_user_id</code> = single-tenant/no-auth → wildcard (all matters in scope).</li>
         <li>Non-empty caller = authenticated → matter's <code>owner_user_id</code> <strong>must match exactly</strong>.</li>
@@ -616,10 +639,10 @@
 
       <h3>Auth, admin &amp; CSRF</h3>
       <ul>
-        <li><strong>Auth:</strong> <code>_authorize_request()</code> (server.py:740) — Google OAuth session first, then HTTP Basic (<code>NDA_AUTH_USERNAME</code>/<code>NDA_AUTH_PASSWORD</code>), else 401. Loopback hosts are auth-exempt for local dev.</li>
-        <li><strong>Admin:</strong> <code>request_is_admin()</code> (http_auth.py:20). Authority = the <code>NDA_ADMIN_USERS</code> env list (matched against the verbatim user id, e.g. <code>google:&lt;sub&gt;</code>, and — for Google callers only — the OAuth-verified email), plus an in-app persisted admin list (Google callers only). Basic-auth usernames never inherit admin from an email.</li>
-        <li><strong>CSRF:</strong> <code>origin_allowed_for_request()</code> (csrf.py:20) runs for state-changing methods only, matching the <code>Origin</code> (or <code>Referer</code>) host against an allow-set. Enforcement flag <code>NDA_ENFORCE_CSRF</code> (default ON for non-loopback binds, OFF for localhost). Checked before auth in <code>do_POST</code>/<code>do_DELETE</code>.</li>
-        <li><strong>Rate limit:</strong> <code>rate_limit.py</code> + <code>_rate_limit_request()</code> (server.py:809) — bucketed by user id then real client IP (proxy-aware via <code>NDA_TRUSTED_PROXY_COUNT</code>), 300/min general, 240/min render, 60s window, 429 + Retry-After.</li>
+        <li><strong>Auth:</strong> <code>_authorize_request()</code> (server.py) — Google OAuth session first, then HTTP Basic (<code>NDA_AUTH_USERNAME</code>/<code>NDA_AUTH_PASSWORD</code>), else 401. Loopback hosts are auth-exempt for local dev.</li>
+        <li><strong>Admin:</strong> <code>request_is_admin()</code> (http_auth.py). Authority = the <code>NDA_ADMIN_USERS</code> env list (matched against the verbatim user id, e.g. <code>google:&lt;sub&gt;</code>, and — for Google callers only — the OAuth-verified email), plus an in-app persisted admin list (Google callers only). Basic-auth usernames never inherit admin from an email.</li>
+        <li><strong>CSRF:</strong> <code>origin_allowed_for_request()</code> (csrf.py) runs for state-changing methods only, matching the <code>Origin</code> (or <code>Referer</code>) host against an allow-set. Enforcement flag <code>NDA_ENFORCE_CSRF</code> (default ON for non-loopback binds, OFF for localhost). Checked before auth in <code>do_POST</code>/<code>do_DELETE</code>.</li>
+        <li><strong>Rate limit:</strong> <code>rate_limit.py</code> + <code>_rate_limit_request()</code> (server.py) — bucketed by user id then real client IP (proxy-aware via <code>NDA_TRUSTED_PROXY_COUNT</code>), 300/min general, 240/min render, 60s window, 429 + Retry-After.</li>
       </ul>
     </section>
 
@@ -630,21 +653,31 @@
 
       <h3>Gmail intake</h3>
       <ul>
-        <li><strong>Scheduler:</strong> <code>_gmail_sync_scheduler_loop()</code> (server.py:957), a daemon thread; each tick runs <code>_run_scheduled_gmail_sync()</code> (server.py:1113). Master kill-switch env <code>NDA_GMAIL_SYNC_ENABLED</code> (server.py:992).</li>
-        <li><strong>Fetch query (fixed structure):</strong> <code>_inbound_envelope_query(90)</code> (gmail_integration.py:185) → <code>in:inbox has:attachment (filename:docx OR filename:pdf) -from:me newer_than:90d</code>. Window default <code>GMAIL_INBOUND_WINDOW_DAYS = 90</code> (admin-configurable). Per-poll limit default 20, hard cap 40 (<code>_MAX_GMAIL_IMPORT_LIMIT_CLAMP</code>, gmail_integration.py:229; env <code>NDA_GMAIL_IMPORT_LIMIT</code>).</li>
-        <li><strong>Intake classifier (NDA vs not):</strong> <code>classify_intake_attachment()</code> (gmail_intake_classifier.py:149); model env <code>NDA_GMAIL_INTAKE_MODEL</code>, default <code>deepseek/deepseek-v4-flash</code> (gmail_intake_classifier.py:45). Additive — any error/timeout/cap falls back to the deterministic lane classifier.</li>
-        <li><strong>Attachment selector / triage:</strong> <code>gmail_attachment_selector.py</code>; model env <code>NDA_GMAIL_TRIAGE_MODEL</code>, default <code>deepseek/deepseek-v4-pro</code> (line 16). Injection defense: the model's selection is intersected with the real candidate attachment ids (gmail_attachment_selector.py:101-109) — an injected instruction can't import an attachment that was never a candidate.</li>
-        <li><strong>Review is deferred.</strong> <code>import_inbound_matters()</code> (gmail_integration.py:541) fetches, triages, and classifies but does <em>not</em> enqueue AI review — inbound matters land "Not Reviewed" and are reviewed only on demand.</li>
+        <li><strong>Scheduler:</strong> <code>_gmail_sync_scheduler_loop()</code> (server.py), a daemon thread; each tick runs <code>_run_scheduled_gmail_sync()</code> (server.py). Master kill-switch env <code>NDA_GMAIL_SYNC_ENABLED</code> (server.py).</li>
+        <li><strong>Fetch query (fixed structure) + sender exclusion:</strong> <code>_inbound_envelope_query(90)</code> (gmail_integration.py) → <code>in:inbox has:attachment (filename:docx OR filename:pdf) -from:me newer_than:90d</code>, with a <strong><code>-from:</code> exclusion clause</strong> for noise senders appended to the query. The default excluded set (<code>DEFAULT_GMAIL_INBOUND_EXCLUDED_SENDERS</code>, app_settings.py) is the e-sign platforms (<code>docusign.net/.com</code>, <code>adobesign.com</code>, <code>documents.adobe.com</code>, <code>echosign.com</code>, <code>hellosign.com</code>, <code>pandadoc.com</code>) plus <code>calendar-notification@google.com</code>; it's admin-editable, but <code>DOCUSIGN_NOTIFICATION_DOMAINS</code> is a hard floor that always applies. Window default <code>GMAIL_INBOUND_WINDOW_DAYS = 90</code> (admin-configurable). Per-poll limit default 20, hard cap 40 (<code>_MAX_GMAIL_IMPORT_LIMIT_CLAMP</code>, gmail_integration.py; env <code>NDA_GMAIL_IMPORT_LIMIT</code>).</li>
+        <li><strong>Deterministic pre-gate (before the paid model):</strong> a content scorer drops obvious non-NDAs (proposals, invoices, decks, questionnaires) <em>before</em> a paid intake AI call, cutting intake-AI spend markedly. A <strong>mandatory escape hatch</strong> (<code>_metadata_has_explicit_nda_signal</code> / the filename+text NDA signal, gmail_integration.py) forces any document with an explicit NDA signal through to the AI regardless — including foreign-language NDA titles. Detection uses a fixed built-in vocabulary; an <strong>opt-in</strong> custom-terms extension is gated behind <code>NDA_GMAIL_CUSTOM_TERMS_ENABLED</code> (default off; <code>_custom_detection_terms</code> only <em>adds</em> content-scorer signals — never widens the fetch query).</li>
+        <li><strong>Executed-NDA capture:</strong> e-sign platform notification mail is usually terminal-dropped, but a completion email is often the only copy of an executed NDA. When such a platform email carries an explicit NDA signal (<code>_esign_notification_nda_hit</code>, gmail_integration.py), it's let through the pipeline but <strong>clamped to at most the triage lane</strong> and stamped with the <code>esign_notification_nda</code> provenance (<code>ESIGN_NDA_CAPTURE_TRIAGE_REASON</code>) — never a silent auto-import. Gated by <code>NDA_GMAIL_ESIGN_NDA_CAPTURE</code> (default on; off restores the unconditional drop).</li>
+        <li><strong>Intake classifier (NDA vs not):</strong> <code>classify_intake_attachment()</code> (gmail_intake_classifier.py); model env <code>NDA_GMAIL_INTAKE_MODEL</code>, default <code>deepseek/deepseek-v4-flash</code> (gmail_intake_classifier.py). Additive — any error/timeout/cap falls back to the deterministic lane classifier.</li>
+        <li><strong>Attachment selector / triage:</strong> <code>gmail_attachment_selector.py</code>; model env <code>NDA_GMAIL_TRIAGE_MODEL</code>, default <code>deepseek/deepseek-v4-pro</code>. Injection defense: the model's selection is intersected with the real candidate attachment ids (gmail_attachment_selector.py) — an injected instruction can't import an attachment that was never a candidate.</li>
+        <li><strong>Review is deferred.</strong> <code>import_inbound_matters()</code> (gmail_integration.py) fetches, triages, and classifies but does <em>not</em> enqueue AI review — inbound matters land "Not Reviewed" and are reviewed only on demand.</li>
       </ul>
 
       <h3>DocuSign</h3>
-      <p><code>nda_automation/docusign_integration.py</code> holds the client. <code>HttpDocuSignClient</code> (line 404) creates envelopes (<code>create_envelope()</code>, ~431), reads status (<code>get_envelope_status()</code>) and recipients (<code>get_envelope_recipients()</code>). Signature placement uses <strong>anchor tabs</strong> built in <code>_tabs_for(signer)</code> (~305) — <code>signHereTabs</code> + <code>dateSignedTabs</code> anchored to document strings. Two signers: the counterparty and the single Aspora signer (<code>NDA_DOCUSIGN_ASPORA_SIGNER_NAME</code>/<code>_EMAIL</code>). OAuth env (docusign_connection.py:48-54): <code>NDA_DOCUSIGN_CLIENT_ID</code>, <code>_CLIENT_SECRET</code>, <code>_OAUTH_REDIRECT_URI</code>, <code>_AUTH_SERVER</code> (<code>demo</code>|<code>prod</code>), <code>_CONNECT_HMAC_KEY</code>.</p>
+      <p><code>nda_automation/docusign_integration.py</code> holds the client. <code>HttpDocuSignClient</code> creates envelopes (<code>create_envelope()</code>), reads status (<code>get_envelope_status()</code>) and recipients (<code>get_envelope_recipients()</code>). Signature placement uses <strong>anchor tabs</strong> built in <code>_tabs_for(signer)</code> — <code>signHereTabs</code> + <code>dateSignedTabs</code> anchored to document strings. Two signers: the counterparty and the single Aspora signer (<code>NDA_DOCUSIGN_ASPORA_SIGNER_NAME</code>/<code>_EMAIL</code>). OAuth env (<code>docusign_connection.py</code>): <code>NDA_DOCUSIGN_CLIENT_ID</code>, <code>_CLIENT_SECRET</code>, <code>_OAUTH_REDIRECT_URI</code>, <code>_AUTH_SERVER</code> (<code>demo</code>|<code>prod</code>), <code>_CONNECT_HMAC_KEY</code>.</p>
+      <div class="callout warn">
+        <strong>Envelope document = current reviewed DOCX (P0 invariant).</strong> <code>docusign_workflow.py</code> never signs the un-redlined original when a matter has reviewer edits. The base document selection walks <code>_DOCUMENT_PRECEDENCE</code> — order <code>reviewed → generated → sent → original</code> (<code>ROLE_REVIEWED</code> is the <em>first</em> element, not excluded). The two paths differ:
+        <ul>
+          <li><strong>Edited matter:</strong> the reviewed DOCX is <strong>rebuilt from the matter's CURRENT state</strong> via the same <code>build_reviewed_docx</code> path (and the same coverage gates) the download + approval handlers use — <em>not</em> a stored <code>role=reviewed</code> artifact, which could be stale after a reversal. If that rebuild can't be produced, the send is <strong>refused</strong> ("Refusing to send the un-redlined original for signature.") rather than falling back to the original.</li>
+          <li><strong>Clean / no-edits matter</strong> (comment-only or nothing to redline): the selection is made with an explicit <code>exclude_roles=(ROLE_REVIEWED,)</code> argument at the call site, so precedence skips the reviewed role and falls to generated/sent/original. The exclusion is a call-site argument, not a property of the precedence constant.</li>
+        </ul>
+        Either way, the user-facing invariant holds: it never signs a stale reviewed copy or the un-redlined original of an edited matter.
+      </div>
 
       <h3>Outbound (send redline / send document)</h3>
       <ul>
-        <li><strong>Send redline:</strong> <code>handle_gmail_send_redline()</code> (routes/gmail.py:397, wired at server.py:287).</li>
-        <li><strong>Send document:</strong> <code>handle_send_document()</code> (routes/send_document.py:33, wired at server.py:285) — reuses the same Gmail send plumbing.</li>
-        <li><strong>Recipient-confirmation gate:</strong> <code>require_confirmed_recipient()</code> (gmail_matter_outbox.py:103-118), reached via <code>validate_outbound_send_ready()</code> before any Gmail call. It raises <code>RecipientConfirmationError</code> → <strong>400</strong> if the recipient came from an inbound header and was not confirmed, if the confirmed value is empty, or if it doesn't match the resolved recipient ("The confirmed recipient does not match the NDA recipient; refusing to send."). This blocks spoofed-Reply-To exfiltration.</li>
+        <li><strong>Send redline:</strong> <code>handle_gmail_send_redline()</code> (routes/gmail.py, wired at server.py).</li>
+        <li><strong>Send document:</strong> <code>handle_send_document()</code> (routes/send_document.py, wired at server.py) — reuses the same Gmail send plumbing.</li>
+        <li><strong>Recipient-confirmation gate:</strong> <code>require_confirmed_recipient()</code> (gmail_matter_outbox.py), reached via <code>validate_outbound_send_ready()</code> before any Gmail call. It raises <code>RecipientConfirmationError</code> → <strong>400</strong> if the recipient came from an inbound header and was not confirmed, if the confirmed value is empty, or if it doesn't match the resolved recipient ("The confirmed recipient does not match the NDA recipient; refusing to send."). This blocks spoofed-Reply-To exfiltration.</li>
       </ul>
     </section>
 
@@ -654,7 +687,7 @@
       <p class="panel-lede">No build step. Plain HTML/CSS/JS served from <code>static/</code>. <code>package.json</code> exists only for the test toolchain (jsdom, playwright, pngjs). State is wired at load time through a global bridge in <code>app.js</code>.</p>
 
       <h3>Tabs &amp; the load-time bridge</h3>
-      <p>Tab routing is <code>activateTab(tabName)</code> in <code>static/app.js:1474</code> (names: repository, review, generator, playbook, admin, guide). The <strong>bridge</strong> is a set of load-time <code>document.querySelector</code> bindings near the top of <code>app.js</code> that read server-rendered <code>&lt;script&gt;</code>/DOM state (doc title, NDA text, render payload, file meta) into globals the other modules consume directly — <code>app.js</code> is the single bootstrap.</p>
+      <p>Tab routing is <code>activateTab(tabName)</code> in <code>static/app.js</code> (names: repository, review, generator, playbook, admin, guide). The <strong>bridge</strong> is a set of load-time <code>document.querySelector</code> bindings near the top of <code>app.js</code> that read server-rendered <code>&lt;script&gt;</code>/DOM state (doc title, NDA text, render payload, file meta) into globals the other modules consume directly — <code>app.js</code> is the single bootstrap.</p>
 
       <h3>Review-workstation modules (static/js/)</h3>
       <table>
@@ -670,13 +703,13 @@
       <p><strong>Model-based edits:</strong> the document edit state machine is <code>static/js/modules/redline-edit-contract.mjs</code> (<code>RedlineEditContract</code>) — redline action types, manual-edit detection, inline-diff mode, full-paragraph-replacement normalization.</p>
 
       <h3>Notifications</h3>
-      <p><code>static/js/notifications.js:12</code> (<code>NotificationsView</code>) watches the matter list for new inbound matters and pops a top-right toast stack (max 4, auto-dismiss ~12s). The first seed after page load is silent so an existing inbox doesn't flood.</p>
+      <p><code>static/js/notifications.js</code> (<code>NotificationsView</code>) watches the matter list for new inbound matters and pops a top-right toast stack (max 4, auto-dismiss ~12s). The first seed after page load is silent so an existing inbox doesn't flood.</p>
 
       <h3>The Guide tab</h3>
-      <p>The whole Guide tab <em>is</em> the embedded guide. <code>activateTab("guide")</code> (app.js:1530-1537) calls <code>activateAdminSurface("guide")</code> + <code>activateAdminSection("user_guide")</code>, which shows the <code>#adminUserGuidePanel</code> section in <code>static/index.html</code> (~1257-1276) — a header with an "open in new tab" link plus an <code>&lt;iframe&gt;</code> pointing at the guide HTML. The User⇄Developer toggle (this guide) swaps the iframe <code>src</code>, the link <code>href</code>, and the header <code>h1</code>, persisting the choice in <code>localStorage["ndaGuideMode"]</code>.</p>
+      <p>The whole Guide tab <em>is</em> the embedded guide. <code>activateTab("guide")</code> (app.js) calls <code>activateAdminSurface("guide")</code> + <code>activateAdminSection("user_guide")</code>, which shows the <code>#adminUserGuidePanel</code> section in <code>static/index.html</code> — a header with an "open in new tab" link plus an <code>&lt;iframe&gt;</code> pointing at the guide HTML. The User⇄Developer toggle (this guide) swaps the iframe <code>src</code>, the link <code>href</code>, and the header <code>h1</code>, persisting the choice in <code>localStorage["ndaGuideMode"]</code>.</p>
 
       <div class="callout">
-        <strong>Editing static assets.</strong> Each script/stylesheet carries a <code>?v=…</code> cache-bust in <code>index.html</code> (e.g. <code>styles.css?v=…</code> on line 7, <code>app.js?v=…</code> near the end). Bump the bust when you change a file so browsers reload it. The running preview server serves a process-start snapshot — cache-bust to verify static edits.
+        <strong>Editing static assets.</strong> Each script/stylesheet carries a <code>?v=…</code> cache-bust in <code>index.html</code> (e.g. <code>styles.css?v=…</code>, <code>app.js?v=…</code> near the end). Bump the bust when you change a file so browsers reload it. The running preview server serves a process-start snapshot — cache-bust to verify static edits.
       </div>
     </section>
 
@@ -709,8 +742,36 @@
           <tr><td>OPENROUTER_API_KEY=&lt;blank&gt;</td><td>Nuclear stop for all provider calls.</td></tr>
           <tr><td>NDA_AI_VERIFIER=false</td><td>Drops the second-opinion pass.</td></tr>
           <tr><td>NDA_GENERATION_AI_ENABLED=false</td><td>Forces deterministic generation (already the prod default).</td></tr>
+          <tr><td>NDA_GMAIL_ESIGN_NDA_CAPTURE=false</td><td>Restores the unconditional terminal drop of e-sign platform mail (disables executed-NDA triage capture). Default on.</td></tr>
+          <tr><td>NDA_GMAIL_CUSTOM_TERMS_ENABLED=true</td><td>Opt-in: lets admin "inbound search terms" extend the detection content scorer. Default off (built-in vocabulary only).</td></tr>
+          <tr><td>NDA_DISABLE_MATTER_LIST_CACHE=1</td><td>Test seam: forces <code>list_matters()</code> onto the uncached path.</td></tr>
         </tbody>
       </table>
+      <p>Excluded-sender defaults, per-poll limit, and model choices are covered under <strong>Gmail intake</strong> and the <strong>Change an AI model</strong> recipe; the table above is only the top incident on/off flips.</p>
+
+      <h4>Other Gmail &amp; background-ops knobs</h4>
+      <p>All Gmail intake knobs are <code>NDA_GMAIL_</code>-prefixed; the background-ops ones are not. Defaults are safe — flip only for an incident or tuning. (Single-process by design: there is no <code>WEB_CONCURRENCY</code>.)</p>
+      <table>
+        <thead><tr><th>Env var</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td>NDA_GMAIL_AI_PREGATE</td><td>on</td><td>Deterministic pre-gate that drops obvious non-NDAs below the skip band before the paid intake AI. Off restores the always-call path.</td></tr>
+          <tr><td>NDA_GMAIL_ENVELOPE_EXCLUDES</td><td>on</td><td>Applies the noise-sender exclusion clause in the fetch query. Off falls back to the DocuSign-only code check (full rollback).</td></tr>
+          <tr><td>NDA_GMAIL_ESIGN_NDA_CAPTURE</td><td>on</td><td>Executed-NDA capture: explicit-NDA e-sign completion mail let through, clamped to triage. Off = unconditional drop.</td></tr>
+          <tr><td>NDA_GMAIL_CUSTOM_TERMS_ENABLED</td><td>off</td><td>Lets admin inbound terms extend the detection content scorer (additive; never widens the fetch).</td></tr>
+          <tr><td>NDA_GMAIL_FIRST_SYNC_CAP_DAYS</td><td>14</td><td>Caps the look-back on a brand-new account's first sync; 0 disables the cap.</td></tr>
+          <tr><td>NDA_GMAIL_TRANSIENT_RETRY_LIMIT / _PERMANENT_SKIP_RETRY_LIMIT</td><td>—</td><td>Per-message ledger retry bounds for transient vs permanently-skipped imports.</td></tr>
+          <tr><td>NDA_GMAIL_SYNC_YIELD_MS</td><td>~50</td><td>Cooperative yield per message/attachment so a big sync doesn't starve request threads; ≤0 disables.</td></tr>
+          <tr><td>NDA_VERBOSE_BACKGROUND_ERRORS</td><td>off</td><td>Opt-in: include <code>str(error)</code> (truncated to 200 chars, never a traceback) in background-error logs. Off by default as the PII-safe default.</td></tr>
+          <tr><td>NDA_TELEMETRY_SNAPSHOT_TICKS</td><td>120</td><td>Ticks between telemetry snapshots (~1/hour at the 30s idle cadence); ≤0 disables.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Admin / operator endpoints (no UI)</h3>
+      <ul>
+        <li><strong>Bulk-archive Gmail noise</strong> — <code>POST /api/admin/matters/bulk-archive</code> (<code>routes/admin.py</code> → <code>matter_store.bulk_archive_gmail_matters</code>). Admin-gated. Body takes an explicit <code>owner_user_id</code> (never inferred), a required <code>created_after</code>/<code>created_before</code> window, <code>dry_run</code> (default <strong>true</strong>), and a <code>confirm</code> sha256 of the current selection. Execute requires <code>dry_run:false</code> + a matching confirm hash (stale hash → <strong>409</strong> with the fresh hash), and <strong>refuses unless inbound Gmail import is disabled</strong> (a ledger-flush race with a live import → 409). Only <code>predicate ∩ confirmed</code> is deleted; every record + source doc is archived to <code>pruned-matters/</code> before deletion; deleted message ids are marked in the per-owner processed ledger so the next poll won't re-import them.</li>
+        <li><strong>Backup export</strong> — <code>GET /api/matters/export</code> (<code>routes/admin.py</code>, <code>handle_matter_backup</code>). Admin-gated; dumps full extracted NDA text + metadata as JSON. Defaults to the caller's owner scope; <code>?owner=__all__</code> exports <strong>all owners</strong> (<code>export_all_matters_backup()</code>), stamping <code>scope: "all-owners"</code>.</li>
+      </ul>
+
       <div class="callout warn">
         <strong>Disk-durability blind spot.</strong> The boot guard checks <code>NDA_DATA_DIR</code> is set, not that the disk is actually mounted — an unmounted <code>/var/data</code> can pass the guard. Confirm the disk is attached before trusting persistence.
       </div>
