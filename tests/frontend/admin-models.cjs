@@ -512,6 +512,36 @@ async function test(name, fn) {
     assert.equal(ui.overall.textContent, "No roles");
   });
 
+  await test("a role with enabled=false renders a 'Feature off' badge and a subdued row", async () => {
+    const ui = mount();
+    const models = overview();
+    // Mark the two dormant roles off; leave everything else on (default true).
+    models.forEach((m) => {
+      m.enabled = !(m.role === "pdf_ocr" || m.role === "structure");
+    });
+    installFetch((url) => (url === "/api/ai/settings" ? { payload: { ai_models: models } } : {}));
+    await ui.controller.load();
+    await flush();
+
+    // Exactly the two dormant rows are flagged off + subdued.
+    assert.equal((ui.rowsList.innerHTML.match(/Feature off/g) || []).length, 2, "two Feature off badges");
+    assert.equal((ui.rowsList.innerHTML.match(/admin-models-row--off/g) || []).length, 2, "two subdued rows");
+    assert.match(ui.rowsList.innerHTML, /admin-models-featureoff[^>]*isn't used/, "explanatory tooltip present");
+
+    // The exact two dormant rows carry the data flag; an on role does not.
+    assert.match(ui.rowsList.innerHTML, /data-model-row="pdf_ocr" data-feature-off="1"/, "pdf_ocr row flagged off");
+    assert.match(ui.rowsList.innerHTML, /data-model-row="structure" data-feature-off="1"/, "structure row flagged off");
+    assert.doesNotMatch(
+      ui.rowsList.innerHTML,
+      /data-model-row="reviewer" data-feature-off/,
+      "an on role is not flagged",
+    );
+
+    // The off row stays fully interactive -- the picker is still usable.
+    const offSelect = makeSelect(ui.rowsList.innerHTML, "pdf_ocr");
+    assert.ok(offSelect && offSelect.getAttribute("data-model-select") === "pdf_ocr", "off row keeps a live model picker");
+  });
+
   await test("interpolated model ids are HTML-escaped (no injection)", async () => {
     const ui = mount();
     const evil = '"><img src=x onerror=alert(1)>';

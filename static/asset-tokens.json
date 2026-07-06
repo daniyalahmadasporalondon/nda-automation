@@ -44,8 +44,8 @@
     "v": "20260703persona1"
   },
   "js/admin-models.js": {
-    "sha256": "6a7fa0087ff72d26051f033ac1f253a753208a08a8c4d47f97f332f3ea437273",
-    "v": "20260623modelpicker1"
+    "sha256": "5d9c5ddfee3cb7ab6872e4fa73c9e19a7ef01ab3d673681a06b6755a4d0f7745",
+    "v": "20260706featureoff1"
   },
   "js/admin-personalisation.js": {
     "sha256": "65cc20c6acb2268f806437acbc8f701a96ba394ae1bcc14d0587eb23bb275b34",
@@ -284,7 +284,7 @@
     "v": "20260623rwbugs1"
   },
   "styles.css": {
-    "sha256": "38cc86250e6eba66ed291f011ac59cbfb46f4a1364d36c299e997bce2f2bb632",
-    "v": "20260706signout1"
+    "sha256": "0559fe5a7632f850522bd5fa4dfbf5447b62685dd271edccca14e1971b58cdb7",
+    "v": "20260706featureoff1"
   }
 }

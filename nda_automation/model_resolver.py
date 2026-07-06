@@ -307,6 +307,33 @@ def recommended_models(role: str) -> list:
     return list(RECOMMENDED_MODELS_BY_ROLE.get(role, ()))
 
 
+def role_feature_enabled(role: str) -> bool:
+    """Whether the feature that consumes this role's model is actually live.
+
+    Two roles are gated OFF by default -- their picked model never runs until the
+    feature's env flag is flipped on: ``pdf_ocr`` (``ocr_enabled()``) and
+    ``structure`` (``structure_validation_enabled()``). Every other role's feature
+    is on by default, so it reports ``True``.
+
+    Purely informational: the gates are imported lazily and any failure fails
+    *open* (returns ``True``) so a check on the admin GET path never raises.
+    """
+
+    try:
+        if role == "pdf_ocr":
+            from . import pdf_ocr
+
+            return bool(pdf_ocr.ocr_enabled())
+        if role == "structure":
+            from . import structure_validation
+
+            return bool(structure_validation.structure_validation_enabled())
+    except Exception:
+        # Informational field only -- never break the overview payload on it.
+        return True
+    return True
+
+
 def role_model_overview() -> list:
     """The per-role payload the admin GET returns: effective / source / recommended.
 
@@ -318,6 +345,7 @@ def role_model_overview() -> list:
           "env_var": "NDA_AI_MODEL",
           "default": "anthropic/claude-opus-4.8-fast",
           "recommended": ["...", "..."],
+          "enabled": True,   # is this role's feature actually live?
         }
     """
 
@@ -332,6 +360,7 @@ def role_model_overview() -> list:
                 "env_var": detail.env_var,
                 "default": detail.default,
                 "recommended": recommended_models(role),
+                "enabled": role_feature_enabled(role),
             }
         )
     return overview
