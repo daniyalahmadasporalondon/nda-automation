@@ -4,7 +4,7 @@ Status: active
 
 Owner: evidence
 
-Last updated: 2026-06-09
+Last updated: 2026-07-06
 
 ## Purpose
 
@@ -39,7 +39,11 @@ the method is legible and repeatable.
    prohibition can sit right next to freedom-preserving language in the same
    paragraph, so each obligation is judged on its own.
 3. **Apply.** Check the read meaning against this clause's Playbook criteria and
-   approved options — not against assumptions about what is "normal".
+   approved options — not against assumptions about what is "normal". Where a
+   clause carries a numeric cap (the term limit), the packet states it as an
+   explicit machine-readable figure in both units — e.g. a 5-year cap is also
+   given as `limit_months: 60` — so a term written in months is compared to the
+   cap directly, without the model having to convert.
 4. **Cite.** Select the exact quote span from the located paragraph that drives
    the decision. The quote is copied, never paraphrased.
 5. **Decide.** Pass only if the criteria are satisfied, fail only if they are

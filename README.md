@@ -4,7 +4,7 @@
 
 aspora's contract desk imports NDAs from manual upload or Gmail, reviews them against a configurable playbook with grounded, fail-closed AI legal assessment, proposes Word tracked-change redlines, generates first-party NDAs from your own signing entities, and sends documents back to counterparties — all from one repository-first workspace.
 
-> Python 3.9+ · stdlib `http.server` backend · vanilla-JS frontend · AI review on **Grok 4.3 via OpenRouter** (`x-ai/grok-4.3`)
+> Python 3.9+ · stdlib `http.server` backend · vanilla-JS frontend · AI review on **Claude Opus 4.8 via OpenRouter** (`anthropic/claude-opus-4.8-fast`, the code default; overridable per `NDA_AI_MODEL`)
 
 ---
 
@@ -46,7 +46,7 @@ The product is a single-page app with seven tabs:
 | Tab | What it's for |
 | --- | --- |
 | **Dashboard** | A command center: at-a-glance pipeline counts (Inbox / In Review / Reviewed / Sent), an AI-assisted search bar (deterministic chips → natural-language → counterparty grouping), and in-app toasts when a new inbound NDA arrives. |
-| **Generator** | Draft a first-party NDA from one of your signing entities + counterparty details, governing-law options, and term. Output is checked by an independent gen-verify gate before it can be saved. |
+| **Generator** | Draft a first-party NDA from one of your signing entities + counterparty details, governing-law options, and a **Years / Months** term (converted and capped to the playbook maximum — 5 years / 60 months — with the clause worded "whichever is earlier"). Output is checked by an independent gen-verify gate before it can be saved. |
 | **Repository** | The matter board (Inbox / In Review / Reviewed / Sent / Generated) with stored source documents, redline drafts, and per-matter review views. |
 | **Review** | The reviewer workstation: clause checklist, contract-structure view, AI evidence and rationale, in-viewer tracked editing, per-clause reviewed toggles, DOCX export, and confirmed outbound send. |
 | **Playbook** | Edit review policy with schema validation, redline-template previews, allowed placeholders, generated governing-law options, version history, and restore. |
@@ -76,12 +76,14 @@ The product is a single-page app with seven tabs:
 
 **NDA generation**
 - Generate NDAs from a registry of signing entities and approved governing-law jurisdictions, gated by an independent verifier so a generated document is checked against its own playbook before it ships.
+- The term is chosen in **years or months**, converted and capped to the playbook maximum (5 years / 60 months), and the term clause is worded "whichever is earlier" so it terminates at the fixed period *or* completion of the purpose. Review surfaces the same cap as a month-equivalence (e.g. "60 months") in the AI packet so a document that states its term in months is compared directly.
 
 **Gmail & Drive**
 - One Gmail connection serves both inbound import and outbound send (see below). Save reviewed documents to Google Drive.
+- Inbound intake filters e-signature-platform and calendar-invite senders (code-level and query-level), runs a deterministic **AI pre-gate** that only pays for the paid intake/selector calls when a candidate shows real signal (with fail-open exemptions for extraction-blind, foreign-language, and explicitly-announced NDAs), captures likely **executed NDAs** arriving as platform completion notifications, and quarantines failures by reason (transient vs deterministic-permanent retry limits). A newly connected account's first sync is backfill-capped (14 days, widening per poll).
 
 **Operations**
-- Editable playbook with versioned history, runtime AI controls, deployment status, non-sensitive telemetry, and an auth-gated matter backup.
+- Editable playbook with versioned history, runtime AI controls, deployment status, non-sensitive telemetry (including a periodic stdout `telemetry_snapshot` and greppable failure lines), an auth-gated matter backup (admin `?owner=__all__` all-owners disaster-recovery dump), and an admin **bulk-archive** tool for auto-imported Gmail noise (dry-run by default, hash-confirmed, fail-closed exclusions).
 
 ## How review works
 
@@ -131,12 +133,14 @@ Minimum `.env` to enable AI review:
 ```bash
 NDA_AI_REVIEW_ENABLED=true
 NDA_AI_PROVIDER=openrouter
-NDA_AI_MODEL=x-ai/grok-4.3
+NDA_AI_MODEL=anthropic/claude-opus-4.8-fast
 OPENROUTER_API_KEY="your-openrouter-api-key"
 ```
 
+`anthropic/claude-opus-4.8-fast` is the built-in reviewer default (`ai_review.DEFAULT_OPENROUTER_MODEL`) and the model prod runs (`render.yaml`). `.env.example` intentionally ships a cheaper `x-ai/grok-4.3` **local** override so local reviews cost less — set `NDA_AI_MODEL` back to the Opus default to mirror prod behaviour.
+
 You can also paste/save the OpenRouter key from **Admin → AI** after the app is running; saved keys are stored under ignored app data and are never returned to the browser. Connect Gmail and Drive from **Admin** after signing in with Google.
-The optional adversarial verifier uses the same OpenRouter key but is an independent second-opinion pass; set `NDA_AI_VERIFIER=true` and `NDA_AI_VERIFIER_MODEL=deepseek/deepseek-v4-pro` to run it with DeepSeek V4 Pro while keeping the main reviewer on Grok.
+The optional adversarial verifier uses the same OpenRouter key but is an independent second-opinion pass; set `NDA_AI_VERIFIER=true` and `NDA_AI_VERIFIER_MODEL=deepseek/deepseek-v4-pro` to run it with DeepSeek V4 Pro as a second-opinion model distinct from the Opus reviewer.
 
 **Optional extras**
 
@@ -172,10 +176,10 @@ Common environment variables:
 | `NDA_RATE_LIMIT_PER_MINUTE` | Request cap for expensive endpoints (`0` for trusted local testing). |
 | `NDA_AI_REVIEW_ENABLED` | Enables provider-backed AI review. |
 | `OPENROUTER_API_KEY` | Server-side OpenRouter key for review + Gmail attachment selection. |
-| `NDA_AI_PROVIDER` / `NDA_AI_MODEL` | `openrouter` / `x-ai/grok-4.3`. |
+| `NDA_AI_PROVIDER` / `NDA_AI_MODEL` | `openrouter` / reviewer model. **Code default `anthropic/claude-opus-4.8-fast`** (Claude Opus 4.8), which is what prod runs; `.env.example` sets a cheaper `x-ai/grok-4.3` local override. |
 | `NDA_AI_VERIFIER` / `NDA_AI_VERIFIER_MODEL` | Optional independent adversarial verifier; default model is `deepseek/deepseek-v4-pro` and it uses the same OpenRouter key. |
 | `NDA_GMAIL_IMPORT_LIMIT` | Max inbound messages processed per poll cycle (default `20`). See [Gmail import throttle](#gmail-import-throttle). |
-| `NDA_GMAIL_TRIAGE_MODEL` | Gmail attachment-selector model (picks the NDA attachment, e.g. `x-ai/grok-4.3`). |
+| `NDA_GMAIL_TRIAGE_MODEL` | Gmail attachment-selector model (picks the NDA attachment); default `deepseek/deepseek-v4-pro`. |
 | `NDA_GMAIL_INTAKE_MODEL` | Gmail NDA-intake classifier model; default `deepseek/deepseek-v4-flash`. Optional and reuses `OPENROUTER_API_KEY`; with no key it falls back to the deterministic intake gate. |
 | `NDA_ACTIVE_REVIEW_ENGINE` | Review runtime pin; inbound review resolves to `ai_first`. Deterministic remains internal-only for explicit generation `force_engine` paths. |
 | `NDA_AI_FIRST_REVIEW_ENABLED` | Store AI-first shadow/comparison output. |
@@ -183,6 +187,16 @@ Common environment variables:
 | `NDA_ALLOW_EPHEMERAL_DATA` | `true` only for short-lived demos on ephemeral storage. |
 | `NDA_GMAIL_INBOUND_TOKEN_PATH` / `_OUTBOUND_TOKEN_PATH` | Legacy shared token files for local Gmail; leave unset for hosted per-user Gmail. |
 | `NDA_GMAIL_SERVER_INBOUND` | Opt-in (`true`/`1`) for the legacy server-level inbound token fallback. When **no** user has connected Gmail, the scheduler runs the shared/env token only if this is set. Default off ⇒ disconnecting the last account stops the scheduled inbound sync. |
+| `NDA_GMAIL_ENVELOPE_EXCLUDES` | Default **on**. Drop e-signature-platform + calendar-invite senders (code-level check + `-from:` query clauses). `0`/`false` restores the pre-exclude fetch query and the DocuSign-only code check. |
+| `NDA_GMAIL_ESIGN_NDA_CAPTURE` | Default **on**. Capture a platform notification carrying an explicit NDA signal as a likely executed NDA (triage lane, `esign_notification_nda` provenance) instead of dropping it. |
+| `NDA_GMAIL_AI_PREGATE` | Default **on**. Deterministic pre-gate on the paid intake/selector AI calls, with fail-open exemptions for extraction-blind, foreign-language, and explicitly-announced NDAs. `0`/`false` restores the always-call path. |
+| `NDA_GMAIL_FIRST_SYNC_CAP_DAYS` | Default `14`. A newly connected account's first sync scans `min(window, this)` days and widens per successful poll. `0` disables the cap. |
+| `NDA_GMAIL_TRANSIENT_RETRY_LIMIT` / `NDA_GMAIL_PERMANENT_SKIP_RETRY_LIMIT` | Reason-stratified inbound quarantine retry limits: environmental/unknown failures (default `5`), deterministic-permanent skips such as too-large / scanned-needs-OCR (default `2`). |
+| `NDA_GMAIL_SYNC_YIELD_MS` | Default `50`. Per-heavy-unit CPU yield during a sync so request threads aren't starved (capped at 1000ms; `<= 0` disables). |
+| `NDA_GMAIL_CUSTOM_TERMS_ENABLED` | Default **off**. Safety gate; when off, inbound NDA detection uses only the hardcoded term floor. When on, admin "Signal Terms" are added as additive literal content signals (never to the Gmail fetch query). |
+| `NDA_ALLOWED_EMAIL_DOMAINS` / `NDA_ALLOWED_EMAILS` | Optional app-layer sign-in allowlist over the OAuth-verified Google email (domain list / exact-email list). **Both unset ⇒ allowlist is OFF and every verified Google identity is allowed** (fail-safe open); set either to enforce it (fail-closed). Google identities only; basic-auth is never routed through it. |
+| `NDA_VERBOSE_BACKGROUND_ERRORS` | Default **off**. When off, background-error logs carry only the exception class name (PII-safe default); on, they add a 200-char truncated message (never a traceback). |
+| `NDA_TELEMETRY_SNAPSHOT_TICKS` | Default `120` scheduler ticks (≈ hourly). Cadence of the periodic stdout `telemetry_snapshot` counters line; `<= 0` disables it. |
 
 **Optional semantic fallback** — a lazy-loaded callable invoked only when configured:
 
@@ -219,6 +233,8 @@ Raise to drain the backlog faster at the cost of a larger per-poll burst; the va
 ## DocuSign: send for signature (real e-signature)
 
 After a matter is approved, the finalized NDA can be sent for signature through the **real DocuSign eSignature API** — the user clicks **Connect DocuSign**, completes a real DocuSign login (OAuth Authorization Code Grant), and from then on envelopes, status, the executed PDF and voids are all live DocuSign calls. There is no simulated/demo client in the running app; the only test double lives in the unit tests.
+
+The envelope always signs the **current** reviewed document, never the un-redlined original or a stale copy. At approval the reviewed/redlined DOCX is built and registered eagerly (content-hash idempotent) so approval and send agree on the exact bytes. For a matter that carries reviewer edits, send **rebuilds** the reviewed DOCX from the matter's current state through the same coverage-gated, staleness-checked path used by download and approval — and if that build can't be produced it **raises** rather than falling back to the original.
 
 By default both signers are added at the **same routing order (parallel signing)** — either side can sign in any order. Pass `signing_order: "sequential"` in the request to enforce a sequence.
 
@@ -277,7 +293,7 @@ python -m nda_automation.server --host 0.0.0.0 --port $PORT
 - Configure these redirect URIs in the Google Cloud OAuth client (and matching env vars): `.../auth/google/callback` and `.../auth/gmail/callback`. Configure `.../auth/docusign/callback` on the DocuSign integration key.
 - The server refuses to start on non-loopback hosts when `NDA_DATA_DIR` is missing or points at ephemeral storage, unless `NDA_ALLOW_EPHEMERAL_DATA=true`.
 
-Authenticated admins can inspect `/api/deployment/status`, `/api/auth/status`, `/api/telemetry`, and download `/api/matters/export` (metadata + stored-document manifest; no embedded source bytes).
+Authenticated admins can inspect `/api/deployment/status`, `/api/auth/status`, `/api/telemetry`, and download `/api/matters/export` (metadata + stored-document manifest; no embedded source bytes). `/api/matters/export?owner=<id>` scopes the backup to one user, and `?owner=__all__` is an admin-only all-owners disaster-recovery dump. `POST /api/admin/matters/bulk-archive` archives auto-imported Gmail noise for an explicit owner + time window — dry-run by default, and an execute requires `dry_run:false` plus a `confirm` equal to the server-recomputed sha256 selection hash (a stale hash gets a 409 with the fresh one), with matters excluded fail-closed.
 
 ## Security & data
 
@@ -307,6 +323,8 @@ ruff check nda_automation tests
 ```
 
 The Playwright suite runs the real app in Chromium and covers repository/matter loading, review view modes, viewer editing, redline rendering, Gmail/admin surfaces, dashboard search, notifications, and DOCX export. The backend suite includes a counsel-style **eval gate** over review cases.
+
+**Static cache-busting.** Every `<script>`/`<link>` in `static/index.html` carries a `?v=<token>` query, and the tokens are tracked in the committed `static/asset-tokens.json` manifest. After editing any file under `static/`, regenerate the manifest with `python -m nda_automation.static_versioning --write` (a `--check` run verifies the tree matches the manifest and is enforced in CI); a forgotten bump leaves browsers serving the cached file. A separate CI syntax-floor test guards the static JS against parse errors.
 
 ## Project layout
 
