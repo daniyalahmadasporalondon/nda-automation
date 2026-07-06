@@ -7,6 +7,9 @@ const AdminDriveView = (() => {
     driveRefreshButton,
     driveConnectPanel,
     driveEnabledToggle,
+    // Master pause toggle (optional). Distinct from connect/disconnect: On = Drive
+    // active; toggling to paused stops ALL Drive activity without disconnecting.
+    drivePauseToggle,
     driveFolderForm,
     driveFolderIdInput,
     driveFolderSaveButton,
@@ -45,6 +48,7 @@ const AdminDriveView = (() => {
   }) {
     driveRefreshButton?.addEventListener("click", load);
     driveEnabledToggle?.addEventListener("click", updateDriveEnabled);
+    drivePauseToggle?.addEventListener("click", updateDrivePaused);
     driveFolderForm?.addEventListener("submit", saveFolderSettings);
 
     // --- Drive folder picker state + wiring --------------------------------
@@ -116,6 +120,33 @@ const AdminDriveView = (() => {
       const url = connectUrl(state.driveStatus || {});
       const separator = url.includes("?") ? "&" : "?";
       window.location.href = `${url}${separator}next=${encodeURIComponent(window.location.pathname + window.location.search)}`;
+    }
+
+    // Master pause toggle: On = Drive active; Off = paused (all activity stops).
+    // Distinct from connect/disconnect — this posts the DISTINCT drive_paused flag
+    // and never touches the Drive token. Reads the current active state (active =
+    // NOT paused) and flips it.
+    async function updateDrivePaused() {
+      const active = drivePausedFromStatus(state.driveStatus || {}) === false;
+      const nextPaused = active; // active -> pause; paused -> resume.
+      setPauseToggleDisabled(true);
+      setOverall(nextPaused ? "Pausing" : "Resuming", "pending");
+      try {
+        const response = await fetch("/api/admin/drive-settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ drive_paused: nextPaused }),
+        });
+        const payload = await window.AuthExpired.parseOkJson(response, "Drive activity could not update", reviewErrorFromPayload);
+        applyDriveSettings(payload.drive || {});
+        setOverall(nextPaused ? "Paused" : "Active", nextPaused ? "blocked" : "ready");
+      } catch (error) {
+        setOverall(error.message || "Drive activity could not update", "blocked");
+        // Re-render the toggle from the unchanged cached state.
+        renderPauseToggle(drivePausedFromStatus(state.driveStatus || {}));
+      } finally {
+        setPauseToggleDisabled(false);
+      }
     }
 
     async function saveFolderSettings(event) {
@@ -453,6 +484,9 @@ const AdminDriveView = (() => {
       renderDrive({
         ...previous,
         enabled: drive.enabled === true,
+        // Fold the DISTINCT pause flag back into the cached status when the settings
+        // response carried it; otherwise keep the previous value.
+        drive_paused: drive.drive_paused != null ? drive.drive_paused === true : previous.drive_paused,
         folder: folderId || folderName ? { id: folderId, name: folderName } : null,
       });
     }
@@ -468,6 +502,8 @@ const AdminDriveView = (() => {
       setOverall(overallLabel, connected ? "ready" : "blocked");
       renderToggle(connected);
       renderToggleIntent(status);
+      const paused = drivePausedFromStatus(status);
+      renderPauseToggle(paused);
       renderConnect(status);
       renderFolderForm(status.folder || null);
       renderFilingBanner(status);
@@ -475,6 +511,15 @@ const AdminDriveView = (() => {
       setFact("account", status.account || (connected ? "Connected account" : signedIn ? "Signed in Google session" : "No account connected"));
       setFact("folder", folderLabel(status.folder));
       setFact("enabled-copy", connected ? "On" : "Off");
+      // The pause copy shows the ACTIVITY state (Active/Paused), independent of the
+      // connection. A connected + never-paused Drive reads "Active".
+      setFact("pause-copy", paused ? "Paused" : "Active");
+    }
+
+    // The DISTINCT pause signal, defaulting to NOT paused when absent — so a legacy
+    // connected user (no drive_paused on disk) is treated as active, never as paused.
+    function drivePausedFromStatus(status = {}) {
+      return status.drive_paused === true;
     }
 
     function renderConnect(status) {
@@ -592,6 +637,7 @@ const AdminDriveView = (() => {
       setFact("folder-message", message);
       renderConnect(state.driveStatus || {});
       renderToggle(state.driveStatus?.connected === true);
+      renderPauseToggle(drivePausedFromStatus(state.driveStatus || {}));
     }
 
     function renderToggle(enabled) {
@@ -599,6 +645,23 @@ const AdminDriveView = (() => {
       driveEnabledToggle.setAttribute("aria-checked", enabled ? "true" : "false");
       driveEnabledToggle.classList.toggle("on", enabled);
       driveEnabledToggle.classList.toggle("off", !enabled);
+    }
+
+    // The switch is ON when Drive is ACTIVE (i.e. NOT paused): a connected,
+    // never-paused user sees it On. Off = explicitly paused.
+    function renderPauseToggle(paused) {
+      if (!drivePauseToggle) return;
+      const active = paused !== true;
+      drivePauseToggle.setAttribute("aria-checked", active ? "true" : "false");
+      drivePauseToggle.classList.toggle("on", active);
+      drivePauseToggle.classList.toggle("off", !active);
+      const label = active ? "Pause all Google Drive activity" : "Resume all Google Drive activity";
+      drivePauseToggle.setAttribute("aria-label", label);
+      drivePauseToggle.title = label;
+    }
+
+    function setPauseToggleDisabled(disabled) {
+      if (drivePauseToggle) drivePauseToggle.disabled = disabled;
     }
 
     function renderToggleIntent(status = {}) {

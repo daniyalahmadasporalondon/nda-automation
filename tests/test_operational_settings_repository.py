@@ -40,6 +40,7 @@ def test_disk_repository_updates_sections_and_audit_history(tmp_path, monkeypatc
         "folder_id": "folder_123",
         "folder_name": "",
         "auto_intake": True,
+        "drive_paused": False,
     }
     assert repository.read_section("drive", app_settings.drive_settings_from_payload) == updated
 

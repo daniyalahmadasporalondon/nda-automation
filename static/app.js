@@ -442,6 +442,7 @@ adminDriveController = createAdminDriveController({
   driveRefreshButton: document.querySelector("#adminDriveRefreshButton"),
   driveConnectPanel: document.querySelector("#adminDriveConnectPanel"),
   driveEnabledToggle: document.querySelector("#adminDriveEnabledToggle"),
+  drivePauseToggle: document.querySelector("#adminDrivePauseToggle"),
   driveFolderForm: document.querySelector("#adminDriveFolderForm"),
   driveFolderIdInput: document.querySelector("#adminDriveFolderIdInput"),
   driveFolderSaveButton: document.querySelector("#adminDriveFolderSaveButton"),

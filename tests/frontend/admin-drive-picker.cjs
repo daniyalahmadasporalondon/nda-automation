@@ -248,6 +248,11 @@ function mountController() {
   const driveCard = new FakeElement("article");
   const folderMessage = copySpan("folder-message");
   driveCard.appendChild(folderMessage);
+  // The master-pause activity copy the controller writes on every render.
+  const pauseCopy = copySpan("pause-copy");
+  driveCard.appendChild(pauseCopy);
+  // The master-pause toggle (distinct from connect/disconnect).
+  const drivePauseToggle = new FakeElement("button");
 
   const driveFolderForm = new FakeElement("form");
   const driveFolderIdInput = new FakeElement("input");
@@ -298,6 +303,7 @@ function mountController() {
     driveRefreshButton: new FakeElement("button"),
     driveConnectPanel: new FakeElement("div"),
     driveEnabledToggle: new FakeElement("button"),
+    drivePauseToggle,
     driveFolderForm,
     driveFolderIdInput,
     driveFolderSaveButton,
@@ -331,6 +337,8 @@ function mountController() {
     state,
     driveCard,
     folderMessage,
+    pauseCopy,
+    drivePauseToggle,
     driveFolderForm,
     driveFolderIdInput,
     driveFolderSaveButton,
@@ -749,6 +757,92 @@ function openSpanOf(folderBtn) {
 
     assert.equal(ui.driveFolderIdRow.hidden, false, "raw-id editor visible when no folder is set");
     assert.equal(ui.driveFolderDisplay.hidden, true, "name display hidden when nothing to show");
+  });
+
+  // --- Master pause toggle --------------------------------------------------
+  await test('connected + no drive_paused renders the pause toggle as Active (On)', async () => {
+    const ui = mountController();
+    installFetch((url) => {
+      if (url === "/api/drive/status") {
+        // Legacy-shaped status: connected, enabled false, NO drive_paused.
+        return { payload: { connected: true, enabled: false, folder: null } };
+      }
+      return {};
+    });
+
+    await ui.controller.load();
+    await flush();
+
+    // Never-paused reads as Active: the switch is ON.
+    assert.equal(ui.drivePauseToggle.getAttribute("aria-checked"), "true", "activity toggle On when never paused");
+    assert.equal(ui.drivePauseToggle.classList.contains("on"), true);
+    assert.equal(ui.pauseCopy.textContent, "Active");
+  });
+
+  await test('drive_paused true renders the pause toggle as Paused (Off)', async () => {
+    const ui = mountController();
+    installFetch((url) => {
+      if (url === "/api/drive/status") {
+        return { payload: { connected: true, drive_paused: true, folder: null } };
+      }
+      return {};
+    });
+
+    await ui.controller.load();
+    await flush();
+
+    assert.equal(ui.drivePauseToggle.getAttribute("aria-checked"), "false", "activity toggle Off when paused");
+    assert.equal(ui.drivePauseToggle.classList.contains("off"), true);
+    assert.equal(ui.pauseCopy.textContent, "Paused");
+  });
+
+  await test('clicking the Active toggle POSTs drive_paused:true (pause)', async () => {
+    const ui = mountController();
+    const calls = installFetch((url) => {
+      if (url === "/api/drive/status") {
+        return { payload: { connected: true, drive_paused: false, folder: null } };
+      }
+      if (url === "/api/admin/drive-settings") {
+        return { payload: { drive: { drive_paused: true } } };
+      }
+      return {};
+    });
+
+    await ui.controller.load();
+    await flush();
+    await ui.drivePauseToggle.click();
+    await flush();
+
+    const post = calls.find((c) => c.url === "/api/admin/drive-settings" && c.method === "POST");
+    assert.ok(post, "posted a drive-settings update");
+    assert.deepEqual(post.body, { drive_paused: true }, "pause posts drive_paused:true, nothing else");
+    // The response folds back in: toggle now reads Paused.
+    assert.equal(ui.drivePauseToggle.getAttribute("aria-checked"), "false");
+    assert.equal(ui.pauseCopy.textContent, "Paused");
+  });
+
+  await test('clicking the Paused toggle POSTs drive_paused:false (resume)', async () => {
+    const ui = mountController();
+    const calls = installFetch((url) => {
+      if (url === "/api/drive/status") {
+        return { payload: { connected: true, drive_paused: true, folder: null } };
+      }
+      if (url === "/api/admin/drive-settings") {
+        return { payload: { drive: { drive_paused: false } } };
+      }
+      return {};
+    });
+
+    await ui.controller.load();
+    await flush();
+    await ui.drivePauseToggle.click();
+    await flush();
+
+    const post = calls.find((c) => c.url === "/api/admin/drive-settings" && c.method === "POST");
+    assert.ok(post, "posted a drive-settings update");
+    assert.deepEqual(post.body, { drive_paused: false }, "resume posts drive_paused:false");
+    assert.equal(ui.drivePauseToggle.getAttribute("aria-checked"), "true");
+    assert.equal(ui.pauseCopy.textContent, "Active");
   });
 
   process.stdout.write(`\nadmin-drive-picker.cjs: ${passed} passed\n`);
