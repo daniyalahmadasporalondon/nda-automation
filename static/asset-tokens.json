@@ -1,7 +1,7 @@
 {
   "app.js": {
-    "sha256": "8d25f080ec1e5cafbf2f4eb1d86831c547061bf70fc94cd2eade0dc2266d236d",
-    "v": "20260706drivepause1"
+    "sha256": "b1344b8d5014febed491336d8bf1136e1a9231d610be3e6250898f7e5544dd22",
+    "v": "20260706int1"
   },
   "css/corpus.css": {
     "sha256": "b352644bdd179bc240ade82a32c8ba9ef6062adbe80cf7359e321492aca40a61",
@@ -48,8 +48,8 @@
     "v": "20260706featureoff1"
   },
   "js/admin-personalisation.js": {
-    "sha256": "65cc20c6acb2268f806437acbc8f701a96ba394ae1bcc14d0587eb23bb275b34",
-    "v": "20260619selfserve1"
+    "sha256": "c2a6b020b39a09c569d32adefb2a9693ceaa9691ee5e3a14b8131b9bc75db5ad",
+    "v": "20260706sigshadow1"
   },
   "js/app-state.js": {
     "sha256": "277a0ade7fb913ab0e003b00f96e221801b79f7538cd36838a4abdffb2f34eb2",

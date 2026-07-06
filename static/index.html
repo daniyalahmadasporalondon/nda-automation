@@ -1485,6 +1485,19 @@
             </section>
 
             <section class="admin-section-panel" id="adminPersonalisationPanel" data-admin-panel="personalisation" hidden>
+              <style>
+                .personalisation-shadow-note {
+                  grid-column: 1 / -1;
+                  margin: 0;
+                  padding: 8px 10px;
+                  border: 1px solid rgba(139, 92, 246, 0.28);
+                  border-radius: 8px;
+                  background: rgba(139, 92, 246, 0.08);
+                  color: var(--ink-muted);
+                  font: 650 11px/1.45 var(--font-body);
+                }
+                .personalisation-shadow-note[hidden] { display: none; }
+              </style>
               <header class="admin-section-head">
                 <div>
                   <p class="eyebrow">personalisation</p>
@@ -1508,6 +1521,7 @@
                   </header>
 
                   <form class="personalisation-form" id="adminPersonalisationForm">
+                    <p class="personalisation-shadow-note" id="adminPersonalisationShadowNote" hidden>Signature Block is in use — clear it to use Sign-Off + Signature instead.</p>
                     <label class="personalisation-field" for="adminSignOffInput">
                       <span>Sign-Off</span>
                       <input id="adminSignOffInput" name="sign_off" type="text" autocomplete="off" placeholder="Best,">
@@ -1552,6 +1566,7 @@
                     </header>
 
                     <form class="personalisation-form" id="adminGlobalPersonalisationForm">
+                      <p class="personalisation-shadow-note" id="adminGlobalPersonalisationShadowNote" hidden>Signature Block is in use — clear it to use Sign-Off + Signature instead.</p>
                       <label class="personalisation-field" for="adminGlobalSignOffInput">
                         <span>Sign-Off</span>
                         <input id="adminGlobalSignOffInput" name="sign_off" type="text" autocomplete="off" placeholder="Best,">
@@ -2336,7 +2351,7 @@
     <script src="/static/js/admin-health.js?v=20260621humanize1"></script>
     <script src="/static/js/admin-integrations.js?v=20260703persona1"></script>
     <script src="/static/js/admin-drive.js?v=20260706drivepause1"></script>
-    <script src="/static/js/admin-personalisation.js?v=20260619selfserve1"></script>
+    <script src="/static/js/admin-personalisation.js?v=20260706sigshadow1"></script>
     <script src="/static/js/admin-docusign.js?v=20260617a401"></script>
     <script src="/static/js/admin-access.js?v=20260620integ1"></script>
     <script src="/static/js/admin-entities.js?v=20260622entityroundtrip1"></script>
@@ -2363,6 +2378,6 @@
     <script src="/static/js/notifications.js?v=20260623reviewtabv2-1"></script>
     <script src="/static/js/generator-editor.js?v=20260626editordur1"></script>
     <script src="/static/js/find-replace.js?v=20260621wave3"></script>
-    <script src="/static/app.js?v=20260706drivepause1"></script>
+    <script src="/static/app.js?v=20260706int1"></script>
   </body>
 </html>
