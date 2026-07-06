@@ -1311,6 +1311,29 @@ class AIFirstPathIntegrationTests(unittest.TestCase):
             if clause["id"] != "non_circumvention":
                 self.assertNotIn("ai_verifier", clause)
 
+    def test_total_verifier_failure_never_stamps_ai_first_clauses_affirmed(self):
+        # HONEST STAMP on the SHIPPING path: a batched verifier that TOTALLY fails must
+        # not leave the review reading "every clause adversarially affirmed". No clause
+        # gets an ai_verifier audit block, the AI's first-pass fail stands (fail-open),
+        # and the review's ai_verifier summary status is "failed" (not "completed").
+        class _ExplodingBatchVerifier:
+            def verify_batch(self, packets):
+                raise RuntimeError("batched model exploded")
+
+        result = build_ai_first_review_result(
+            self.SOURCE_TEXT,
+            self._all_assessments("fail"),
+            ai_verifier=_ExplodingBatchVerifier(),
+        )
+        nc = next(c for c in result["clauses"] if c["id"] == "non_circumvention")
+        self.assertEqual(nc["decision"], "fail")  # first-pass verdict preserved
+        for clause in result["clauses"]:
+            self.assertNotIn("ai_verifier", clause)  # no fabricated affirmed block
+        self.assertEqual(result["ai_verifier"]["status"], "failed")
+        self.assertEqual(result["ai_verifier"]["verified_count"], 0)
+        self.assertEqual(result["ai_verifier"]["changed_count"], 0)
+        self.assertGreaterEqual(result["ai_verifier"]["unverified_count"], 1)
+
     def test_verifier_leaves_correct_ai_first_pass_untouched(self):
         # The AI got it right (pass). The verifier must not disturb a confident pass.
         result = build_ai_first_review_result(self.SOURCE_TEXT, self._all_assessments("pass"))
@@ -1531,16 +1554,29 @@ class BatchedVerifierTests(unittest.TestCase):
         self.assertEqual(verifier.calls, [["non_circumvention"]])
         self.assertEqual(summary["verified_count"], 1)
 
-    def test_missing_verdict_for_a_clause_falls_back_to_safe_affirm(self):
-        # The batched response omits term_and_survival -> it must AFFIRM (leave the
-        # review untouched), never invent a fail or clear on a missing verdict.
+    def test_missing_verdict_for_a_clause_is_an_honest_unverified_skip(self):
+        # The batched response omits term_and_survival -> the verifier did NOT judge
+        # it. HONEST STAMP: it must NOT get a fabricated "affirmed" audit block; it is
+        # left UNVERIFIED (no ai_verifier block, decision untouched, fail-open). A
+        # PARTIAL miss keeps the batch as "completed" (ran=True) and counts the miss.
         verdicts = self._verdict_map()
         verifier = _RecordingBatchVerifier(verdicts, drop_ids=["term_and_survival"])
-        updated, _ = apply_ai_verifier(self._mixed_clauses(), source_text="full doc", verifier=verifier)
+        updated, summary = apply_ai_verifier(
+            self._mixed_clauses(), source_text="full doc", verifier=verifier
+        )
         term = next(c for c in updated if c["id"] == "term_and_survival")
-        self.assertEqual(term["decision"], "review")  # untouched
-        self.assertEqual(term["ai_verifier"]["verdict"], VERIFIER_VERDICT_AFFIRM)
-        self.assertFalse(term["ai_verifier"]["changed"])
+        self.assertEqual(term["decision"], "review")  # untouched (fail-open)
+        # No "affirmed" audit block is fabricated for a clause the verifier never judged.
+        self.assertNotIn("ai_verifier", term)
+        # The skip is recorded honestly as "unverified".
+        term_record = next(r for r in summary["records"] if r["clause_id"] == "term_and_survival")
+        self.assertEqual(term_record["outcome"], "unverified")
+        self.assertEqual(term_record["rationale"], "verifier_missing_verdict")
+        self.assertFalse(term_record["changed"])
+        # PARTIAL failure: the batch still ran (2 of 3 judged), so status stays completed.
+        self.assertEqual(summary["status"], "completed")
+        self.assertEqual(summary["unverified_count"], 1)
+        self.assertEqual(summary["verified_count"], 2)
 
     def test_unknown_id_in_response_is_ignored(self):
         verifier = _RecordingBatchVerifier(self._verdict_map(), inject_unknown=True)
@@ -1551,18 +1587,56 @@ class BatchedVerifierTests(unittest.TestCase):
         # confidence-gating: ip_assignment's confident prohibited pass no longer qualifies).
         self.assertEqual(summary["verified_count"], 3)
 
-    def test_total_batch_failure_degrades_all_to_affirm(self):
+    def test_total_batch_failure_leaves_no_affirmed_blocks_and_reports_failed(self):
+        # HONEST STAMP: a TOTAL batch failure means the verifier judged NO clause. It
+        # must NOT stamp every clause "affirmed" (which would read as "adversarially
+        # verified") -- each clause is an honest UNVERIFIED skip, decision untouched
+        # (fail-open), NO ai_verifier audit block, and the summary status is "failed"
+        # so downstream reads ai_verifier_ran = False.
         telemetry.reset()
         verifier = _RecordingBatchVerifier(self._verdict_map(), raise_error=True)
-        updated, summary = apply_ai_verifier(self._mixed_clauses(), source_text="full doc", verifier=verifier)
-        # Every verified clause keeps its original decision (AFFIRM degrade-safe).
+        updated, summary = apply_ai_verifier(
+            self._mixed_clauses(), source_text="full doc", verifier=verifier
+        )
+        # Every qualifying clause keeps its original first-pass decision (fail-open).
         nc = next(c for c in updated if c["id"] == "non_circumvention")
         self.assertEqual(nc["decision"], "fail")
-        self.assertEqual(nc["ai_verifier"]["verdict"], VERIFIER_VERDICT_AFFIRM)
-        self.assertFalse(nc["ai_verifier"]["changed"])
+        # NOT a single fabricated "affirmed" audit block on any clause.
+        for clause in updated:
+            self.assertNotIn("ai_verifier", clause)
+        # Every record is an honest "unverified" skip with the total-failure reason.
+        self.assertTrue(summary["records"])
+        for record in summary["records"]:
+            self.assertEqual(record["outcome"], "unverified")
+            self.assertEqual(record["rationale"], "verifier_unavailable")
+            self.assertFalse(record["changed"])
+        # TOTAL failure -> status "failed" (ran=False downstream), nothing counted verified.
+        self.assertEqual(summary["status"], "failed")
         self.assertEqual(summary["changed_count"], 0)
+        self.assertEqual(summary["verified_count"], 0)
+        self.assertEqual(summary["unverified_count"], 3)
         # The batch error is recorded once (mirrors the per-clause error path).
         self.assertEqual(telemetry.snapshot()["counters"].get("ai_verifier_errors"), 1)
+
+    def test_happy_path_batch_is_unchanged_by_honest_stamp(self):
+        # Regression guard: when EVERY qualifying clause gets a real verdict, the
+        # honest-stamp change is inert -- each judged clause carries its normal
+        # ai_verifier audit block, status is "completed", nothing is "unverified".
+        verifier = _RecordingBatchVerifier(self._verdict_map())
+        updated, summary = apply_ai_verifier(
+            self._mixed_clauses(), source_text="full doc", verifier=verifier
+        )
+        for clause_id in ("non_circumvention", "term_and_survival", "governing_law"):
+            clause = next(c for c in updated if c["id"] == clause_id)
+            self.assertIn("ai_verifier", clause)  # real judged verdict, real audit block
+        self.assertEqual(summary["status"], "completed")
+        self.assertEqual(summary["verified_count"], 3)
+        self.assertEqual(summary["unverified_count"], 0)
+        # non_circumvention was confidently refuted -> downgraded to review (unchanged
+        # affirm/refute/uncertain semantics).
+        nc = next(c for c in updated if c["id"] == "non_circumvention")
+        self.assertEqual(nc["decision"], "review")
+        self.assertEqual(nc["ai_verifier"]["verdict"], VERIFIER_VERDICT_REFUTE)
 
 
 class OpenRouterBatchTransportTests(unittest.TestCase):

@@ -286,12 +286,19 @@ def reassess_single_clause(
     # Whether the adversarial verifier actually ran is the summary status, not the
     # caller's ``verify`` intent: with NDA_AI_VERIFIER off the resolver path is a
     # no-op (status "disabled"), so reporting bool(verify) would over-claim.
+    #
+    # "failed" is a TOTAL verifier failure (the batched call returned nothing, so NO
+    # clause was actually judged -- every clause is an honest unverified skip, none
+    # carries a fabricated "affirmed" audit block). It must read ran=False, exactly
+    # like "disabled"/"deferred", so nothing claims a clause was adversarially
+    # verified when the verifier never ran. A PARTIAL failure stays "completed"
+    # (ran=True) -- some clauses WERE judged.
     verifier_status_value = str(ai_verifier_review.get("status") or "") if isinstance(ai_verifier_review, Mapping) else ""
     updated_clause["reassess_metadata"] = {
         "clause_id": clause_id,
         "feature": "review",
         "has_edited_paragraphs": bool(edited_paragraphs),
-        "ai_verifier_ran": verifier_status_value not in {"", "disabled", "deferred"},
+        "ai_verifier_ran": verifier_status_value not in {"", "disabled", "deferred", "failed"},
     }
     timer.total()
     return updated_clause

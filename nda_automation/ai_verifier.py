@@ -208,11 +208,24 @@ def apply_ai_verifier(
         records = _apply_per_clause_verdicts(active_verifier, pending, verifier_kind=verifier_kind)
 
     changed = sum(1 for record in records if record.get("changed"))
+    unverified = sum(1 for record in records if record.get("outcome") == "unverified")
+    # HONEST STATUS: if the verifier judged NO clause it qualified (every record is an
+    # "unverified" skip -- e.g. a TOTAL batch failure), the pass did not actually run;
+    # report status="failed" so downstream (ai_first_review) reads ai_verifier_ran =
+    # False rather than "every clause affirmed". A PARTIAL failure (some judged, some
+    # unverified) stays "completed" (ran=True) but the unverified count is surfaced.
+    if records and unverified == len(records):
+        status = "failed"
+    elif records:
+        status = "completed"
+    else:
+        status = "no_op"
     return updated, _summary(
-        status="completed" if records else "no_op",
+        status=status,
         records=records,
         verifier_kind=verifier_kind,
         changed=changed,
+        unverified=unverified,
     )
 
 
@@ -272,18 +285,37 @@ def _apply_batched_verdicts(
 ) -> List[Dict[str, object]]:
     """Apply one batched verdict per clause via the unchanged _apply_verdict logic.
 
-    Robust degradation, per clause:
-      * missing clause id / fewer verdicts than clauses / a non-mapping verdict
-        -> _normalize_verdict(None) == a zero-confidence AFFIRM, i.e. the SAME safe
-        default the per-clause path uses on a bad/missing verdict (leave untouched).
-      * a total batch failure (``verdicts_by_id is None``) -> every clause AFFIRMs.
+    HONEST STAMP: a clause the verifier did NOT actually judge must NOT be recorded
+    as adversarially "affirmed" -- that would let a review where the verifier never
+    ran read as "every clause affirmed". Fail-open is preserved (the clause keeps its
+    first-pass decision, nothing blocks), but the audit is honest:
+
+      * a total batch failure (``verdicts_by_id is None``) -> EVERY clause is
+        UNVERIFIED: an explicit ``verifier_unavailable`` skip record (via _skip_record),
+        NO ``ai_verifier`` audit block, decision untouched. The summary then reports a
+        total failure so downstream reads ``ai_verifier_ran = False``.
+      * a missing clause id / a non-mapping verdict in an otherwise successful batch
+        (a PARTIAL failure) -> that clause is UNVERIFIED: same explicit skip, no affirm
+        block, decision untouched. The batch DID run, so ran stays True and the
+        unverified clause is COUNTED.
+      * a present, well-formed verdict -> the unchanged _apply_verdict path (real
+        affirm/refute/uncertain semantics).
       * extra/unknown ids in the response are simply never looked up (ignored).
     """
+    total_failure = verdicts_by_id is None
     lookup: Mapping[str, object] = verdicts_by_id if isinstance(verdicts_by_id, Mapping) else {}
     records: List[Dict[str, object]] = []
     for clause, packet in pending:
         clause_id = str(packet.get("clause_id") or clause.get("id") or "")
         raw_verdict = lookup.get(clause_id)
+        if not isinstance(raw_verdict, Mapping):
+            # The verifier never judged this clause (whole batch failed, or its id was
+            # missing/malformed in the response). Record an HONEST unverified skip --
+            # NOT a fabricated "affirmed" audit block -- and leave the first-pass
+            # decision UNCHANGED (fail-open).
+            reason = "verifier_unavailable" if total_failure else "verifier_missing_verdict"
+            records.append(_skip_record(clause, reason=reason, outcome="unverified"))
+            continue
         verdict = _normalize_verdict(raw_verdict)
         record = _apply_verdict(clause, verdict, verifier_kind=verifier_kind)
         records.append(record)
@@ -771,6 +803,7 @@ def _summary(
     status: str,
     records: List[Dict[str, object]],
     changed: int = 0,
+    unverified: int = 0,
     verifier_kind: str = "",
     active_kind: str | None = None,
 ) -> Dict[str, object]:
@@ -779,22 +812,41 @@ def _summary(
     # to have run. Default it from verifier_kind when the caller does not pass one.
     if active_kind is None:
         active_kind = "ai" if verifier_kind == "ai" else "noop" if verifier_kind in {"noop", ""} else verifier_kind
+    # ``verified_count`` counts only clauses the verifier ACTUALLY judged (a real
+    # affirm/refute/uncertain), not clauses left unverified by a batch failure/miss;
+    # ``unverified_count`` surfaces the latter so a partial failure is observable and a
+    # review never over-claims how many clauses were adversarially checked.
+    verified = sum(1 for record in records if record.get("outcome") != "unverified")
     return {
         "version": AI_VERIFIER_VERSION,
         "status": status,
         "verifier_kind": verifier_kind,
         "active_kind": active_kind,
-        "verified_count": len(records),
+        "verified_count": verified,
+        "unverified_count": unverified,
         "changed_count": changed,
         "records": records,
     }
 
 
-def _skip_record(clause: Mapping[str, object], *, reason: str) -> Dict[str, object]:
+def _skip_record(
+    clause: Mapping[str, object],
+    *,
+    reason: str,
+    outcome: str = "skipped",
+) -> Dict[str, object]:
+    """A record for a clause the verifier did NOT actually judge.
+
+    Carries no ``ai_verifier`` audit block on the clause and leaves its decision
+    untouched. ``outcome`` distinguishes an exception on the per-clause path
+    (``"skipped"``) from a clause left UNVERIFIED because the batched verifier never
+    returned a verdict for it (``"unverified"``); the summary counts the latter so a
+    partial batch failure is observable and a total failure is honest.
+    """
     return {
         "clause_id": str(clause.get("id") or ""),
-        "verdict": "skipped",
-        "outcome": "skipped",
+        "verdict": outcome,
+        "outcome": outcome,
         "changed": False,
         "rationale": reason,
     }
