@@ -12315,6 +12315,27 @@ label.is-hidden {
   vertical-align: middle;
 }
 
+/* A role whose feature is gated OFF by default: the picked model never runs
+   until the feature is turned on, so subdue the whole row and flag it. The row
+   stays interactive -- an admin can still pre-set a model for when it's live. */
+.admin-models-row--off {
+  opacity: 0.62;
+}
+
+.admin-models-featureoff {
+  background: var(--warn-soft, rgba(180, 83, 9, 0.14));
+  border-radius: 999px;
+  color: var(--warn-strong, #b45309);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  margin-left: 4px;
+  padding: 1px 6px;
+  text-transform: uppercase;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
 .admin-models-badge {
   align-self: center;
   border-radius: 999px;

@@ -182,6 +182,11 @@ const AdminModelsView = (() => {
       // silently lost on the next Save).
       const inList = recommended.includes(effective);
       const decoupled = DECOUPLED_ROLES.has(role);
+      // `enabled` (backend, informational): false means this role's feature is
+      // gated OFF by default, so a picked model never runs. We keep the row fully
+      // functional (an admin can pre-set a model for when it's turned on) but make
+      // it obvious the pick is currently inert.
+      const featureOff = entry.enabled === false;
       const labelId = `adminModelLabel-${esc(role)}`;
       const inputId = `adminModelCustom-${esc(role)}`;
 
@@ -196,10 +201,15 @@ const AdminModelsView = (() => {
         ? ` <span class="admin-models-decoupled" title="Independently configurable -- no longer rides the Reviewer model.">Independent</span>`
         : "";
 
+      const featureOffTag = featureOff
+        ? ` <span class="admin-models-featureoff" title="This feature is turned off, so the selected model isn't used.">Feature off</span>`
+        : "";
+      const rowClass = featureOff ? "admin-models-row admin-models-row--off" : "admin-models-row";
+
       return `
-        <li class="admin-models-row" data-model-row="${esc(role)}">
+        <li class="${rowClass}" data-model-row="${esc(role)}"${featureOff ? ' data-feature-off="1"' : ""}>
           <div class="admin-models-identity">
-            <span class="admin-models-name" id="${labelId}">${esc(roleLabel(role))}${decoupledTag}</span>
+            <span class="admin-models-name" id="${labelId}">${esc(roleLabel(role))}${decoupledTag}${featureOffTag}</span>
             <span class="admin-models-effective" title="${esc(effective)}">${esc(effective) || "&mdash;"}</span>
             <span class="admin-models-env" title="Environment variable: ${esc(envVar)}">${esc(envVar)}</span>
           </div>

@@ -159,10 +159,70 @@ class ModelResolverTests(unittest.TestCase):
                 self.assertIn("default", entry)
                 self.assertIsInstance(entry["recommended"], list)
                 self.assertTrue(entry["recommended"], f"role {entry['role']} has no recommendations")
+                self.assertIn("enabled", entry)
+                self.assertIsInstance(entry["enabled"], bool)
 
     def test_unknown_role_raises(self):
         with self.assertRaises(KeyError):
             model_resolver.resolve_model("not_a_role")
+
+
+class RoleFeatureEnabledTests(unittest.TestCase):
+    """The informational `enabled` flag mirrors each feature's real gate.
+
+    Two roles are dormant by default (their picked model never runs until the
+    feature is turned on): `pdf_ocr` and `structure`. Everything else is on.
+    """
+
+    def setUp(self):
+        model_resolver._reset_caches_for_tests()
+        self.addCleanup(model_resolver._reset_caches_for_tests)
+        # Isolate the two gate env flags so the process env can't leak into either
+        # direction of these assertions.
+        p = patch.dict(os.environ, {}, clear=False)
+        p.start()
+        self.addCleanup(p.stop)
+        for key in ("NDA_PDF_OCR_ENABLED", "NDA_STRUCTURE_VALIDATION_ENABLED"):
+            os.environ.pop(key, None)
+
+    def test_dormant_roles_report_disabled_by_default(self):
+        self.assertFalse(model_resolver.role_feature_enabled("pdf_ocr"))
+        self.assertFalse(model_resolver.role_feature_enabled("structure"))
+
+    def test_other_roles_report_enabled(self):
+        for role in model_resolver.ROLES:
+            if role in ("pdf_ocr", "structure"):
+                continue
+            self.assertTrue(
+                model_resolver.role_feature_enabled(role),
+                f"role {role} should report enabled=True",
+            )
+
+    def test_pdf_ocr_flips_true_when_its_flag_is_on(self):
+        with patch.dict(os.environ, {"NDA_PDF_OCR_ENABLED": "1"}):
+            self.assertTrue(model_resolver.role_feature_enabled("pdf_ocr"))
+
+    def test_structure_flips_true_when_its_flag_is_on(self):
+        with patch.dict(os.environ, {"NDA_STRUCTURE_VALIDATION_ENABLED": "true"}):
+            self.assertTrue(model_resolver.role_feature_enabled("structure"))
+
+    def test_overview_enabled_tracks_gates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            from pathlib import Path
+
+            with patch.object(matter_store, "DATA_DIR", Path(tmp)):
+                by_role = {e["role"]: e for e in model_resolver.role_model_overview()}
+                self.assertFalse(by_role["pdf_ocr"]["enabled"])
+                self.assertFalse(by_role["structure"]["enabled"])
+                self.assertTrue(by_role["reviewer"]["enabled"])
+
+            with patch.dict(
+                os.environ,
+                {"NDA_PDF_OCR_ENABLED": "1", "NDA_STRUCTURE_VALIDATION_ENABLED": "on"},
+            ), patch.object(matter_store, "DATA_DIR", Path(tmp)):
+                by_role = {e["role"]: e for e in model_resolver.role_model_overview()}
+                self.assertTrue(by_role["pdf_ocr"]["enabled"])
+                self.assertTrue(by_role["structure"]["enabled"])
 
 
 def model_resolver_path(name):
