@@ -10,7 +10,7 @@
 | **Status** | Live on Render — continuous deploy from `main` (this sheet is grounded at `cb7346b0`) |
 | **Source** | `github.com/daniyalahmadasporalondon/nda-automation` (deploy origin) · prod: `nda-automation.onrender.com` |
 | **Stack** | Vanilla-JS SPA (no build step) · Python stdlib HTTP server (no web framework) · JSON matter-store on a persistent disk (no DB) · Claude **Opus 4.8** + DeepSeek via **OpenRouter** · `python-docx` / PyMuPDF / pdf2docx · DocuSign + Gmail |
-| **Scope** | Review · Redline · Generate · E-sign — playbook-driven across 5 core clause families (mutuality, confidential information, governing law, term & survival, non-circumvention) and 5 governing-law options (India, Delaware, England & Wales, DIFC, Ontario/Canada) |
+| **Scope** | Review · Redline · Generate · E-sign — playbook-driven across 6 core clause families (mutuality, confidential information, governing law, term & survival, non-circumvention, signatures) and 5 governing-law options (India, Delaware, England & Wales, DIFC, Ontario/Canada) |
 | **Owner** | Aspora Team — daniyal.ahmad@aspora.com |
 
 ---

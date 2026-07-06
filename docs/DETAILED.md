@@ -1,6 +1,6 @@
 # NDA Review OS — Detailed Sheet
 
-> Technical companion to the one-page **Overview**. Covers architecture, data model, components, configuration, operations, and how to rebuild and change the system. Deployment-platform access (hosting dashboard, deploy mechanics) is documented **separately** and is intentionally out of scope here. This sheet is grounded in the deployed code on `origin/main`.
+> Technical companion to the one-page **Overview**. Covers architecture, data model, components, configuration, operations, and how to rebuild and change the system. Deployment-platform access (hosting dashboard, deploy mechanics) is documented **separately** and is intentionally out of scope here. This sheet is grounded in the deployed code at `origin/main` (`cb7346b0`).
 
 ---
 
@@ -94,7 +94,7 @@ Each clause carries display fields (`name`, `requirement`, `preferred_position`,
 
 ### Signing-entity registry
 
-`entity_registry.py` defines Aspora's signing entities as self-contained bundles (legal name, short name, address, signatory, `incorporation_jurisdiction`, `jurisdiction` venue, and `governing_law`). Each bundle's `governing_law.playbook_option_id` is the **join key** into the live playbook's `governing_law.rules.approved_options[].id` — picking an entity selects the matching approved governing law, so registry and playbook can't silently drift (`validate_registry_against_playbook()` guards this). Shipped entities include Aspora Technology Services (India), Vance Money Services (Delaware), Real Transfer Limited (England & Wales), Vance Techlabs (DIFC). The live store lives under `NDA_DATA_DIR` (`entity_store.py`), seeded from the bundles; `entity_authoring.py` is the edit path.
+`entity_registry.py` defines Aspora's signing entities as self-contained bundles (legal name, short name, address, signatory, `incorporation_jurisdiction`, `jurisdiction` venue, and `governing_law`). Each bundle's `governing_law.playbook_option_id` is the **join key** into the live playbook's `governing_law.rules.approved_options[].id` — picking an entity selects the matching approved governing law, so registry and playbook can't silently drift (`validate_registry_against_playbook()` guards this). The seven shipped entities (governing law in parentheses) are Aspora Technology Services (India), Vance Money Services (Delaware), Real Transfer Limited (England & Wales), Vance Techlabs (DIFC), Nesse Technologies (Ontario, Canada), Vance Technologies (England & Wales), and Aspora Financial Services (India). The live store lives under `NDA_DATA_DIR` (`entity_store.py`), seeded from the bundles; `entity_authoring.py` is the edit path.
 
 ### Where it persists (under `NDA_DATA_DIR`)
 
