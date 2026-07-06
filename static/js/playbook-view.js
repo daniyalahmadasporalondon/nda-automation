@@ -312,6 +312,8 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
 
         <div class="playbook-validation" id="playbookValidation" data-state="idle" aria-live="polite" hidden></div>
 
+        <div class="playbook-validation playbook-semantic-warnings" id="playbookSemanticWarnings" data-state="idle" role="alert" aria-live="assertive" hidden></div>
+
         <div class="admin-actions playbook-draft-actions">
           <span class="admin-save-status" id="playbookSaveStatus" aria-live="polite"></span>
           <button class="secondary" type="button" id="discardPlaybookDraft" ${actionAvailabilityForClause(clause).discardDisabled ? "disabled" : ""}>Discard Changes</button>
@@ -973,10 +975,15 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
       state.savedPlaybook = clonePlaybook(state.playbook);
       state.playbookHistory = Array.isArray(payload?.history) ? payload.history : state.playbookHistory;
       lastValidation = null;
+      // Advisory Layer-2 semantic-lint findings the backend surfaces at publish
+      // (e.g. a POISON standard that tells the reviewer to ignore the playbook).
+      // Publish still SUCCEEDED -- these are a prominent caution, not a hard error.
+      const semanticWarnings = Array.isArray(payload?.semantic_warnings) ? payload.semantic_warnings : [];
       renderPlaybookList();
       renderClauseDetail();
-      // Re-render rebuilds #clauseDetail, so set the status on the fresh node.
+      // Re-render rebuilds #clauseDetail, so set the status + warnings on the fresh nodes.
       setSaveStatus("Playbook published.");
+      renderSemanticWarnings(semanticWarnings);
     } catch (error) {
       if (status) status.textContent = error.message;
       if (button) button.disabled = !canPublish();
@@ -987,6 +994,46 @@ function createPlaybookController({ state, playbookList, clauseDetail, renderStu
   function setSaveStatus(message) {
     const node = clauseDetail.querySelector("#playbookSaveStatus");
     if (node) node.textContent = message;
+  }
+
+  // Surface the backend's advisory Layer-2 semantic-lint warnings prominently near
+  // the publish control. Publish already SUCCEEDED -- this is a caution, not a hard
+  // error -- but a POISON finding (a standard telling the reviewer to ignore the
+  // playbook) is elevated so it cannot be missed. Empty list hides the region.
+  function renderSemanticWarnings(warnings) {
+    const region = clauseDetail.querySelector("#playbookSemanticWarnings");
+    if (!region) return;
+    const list = Array.isArray(warnings) ? warnings.filter((item) => item && typeof item === "object") : [];
+    if (!list.length) {
+      region.hidden = true;
+      region.dataset.state = "idle";
+      region.dataset.hasPoison = "false";
+      region.innerHTML = "";
+      return;
+    }
+    const hasPoison = list.some((item) => String(item.check_id || "").trim() === "poison_instruction");
+    // Elevate a poison finding to the red "invalid" treatment; ordinary advisories
+    // keep the neutral bordered box. Publish still succeeded either way.
+    region.dataset.state = hasPoison ? "invalid" : "idle";
+    const items = list
+      .map((warning) => {
+        const message = String(warning.message == null ? "" : warning.message).trim();
+        const clauseId = String(warning.clause == null ? "" : warning.clause).trim();
+        const where = clauseId
+          ? `<span class="playbook-validation-where">${escapeHtml(clauseNameForId(clauseId))}</span>`
+          : "";
+        return `<li>${where}<span>${escapeHtml(message)}</span></li>`;
+      })
+      .join("");
+    region.hidden = false;
+    region.dataset.hasPoison = hasPoison ? "true" : "false";
+    const title = hasPoison
+      ? "Published, but the semantic check flagged a possible poison standard — review before relying on it:"
+      : `Published, but the semantic check raised ${list.length === 1 ? "a caution" : "cautions"}:`;
+    region.innerHTML = `
+      <p class="playbook-validation-title">${escapeHtml(title)}</p>
+      <ul class="playbook-validation-list">${items}</ul>
+    `;
   }
 
   // Pull a named block ({active}/{draft}) out of an API response. Each block is

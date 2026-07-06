@@ -372,6 +372,14 @@ const AdminIntegrationsView = (() => {
         const payload = await postGmailSettings({ inbound_search_terms: terms }, "Gmail search terms could not save");
         state.gmailStatus = payload.gmail || state.gmailStatus || {};
         await load();
+        // Honesty: the backend validates the Signal Terms and silently drops any it
+        // won't use for NDA detection. If it skipped some, surface the warning inline
+        // (after the re-render's "N Gmail search terms." copy) so the admin knows the
+        // saved set is narrower than what they typed rather than assuming all took.
+        if (payload.warning) {
+          setOverall("Some skipped", "blocked");
+          setFact("search-terms-copy", payload.warning);
+        }
       } catch (error) {
         setOverall(error.message || "Save failed", "blocked");
         // Surface the server's 400 inline next to the field, then restore the
