@@ -298,6 +298,43 @@ class IntakeClassifierUnitTests(unittest.TestCase):
         for kind in ("mutual", "one-way", "mnda", "cda", "confidentiality agreement", "dpa"):
             self.assertIn(kind, criteria, kind)
 
+    # A7b -- rule-drop guard for the READABLE default. The default was rewritten from
+    # an engineer's "=== SECTION ===" system prompt into plain English for admins to
+    # read/edit. This asserts the rewrite kept every load-bearing anchor so a future
+    # readability edit that silently drops a rule fails CI. It is deliberately broad:
+    # the three output labels, the DPA nuance, a representative slice of the exclusion
+    # list, and the primary-purpose / strip-out concept must all survive verbatim.
+    def test_default_playbook_preserves_all_rule_anchors(self):
+        raw = intake.DEFAULT_INTAKE_PLAYBOOK
+        criteria = raw.lower()
+        # The engineer-only section scaffolding is gone (readability requirement).
+        self.assertNotIn("===", raw)
+        # The three verdict labels the parser (_LABEL_TO_VERDICT) and model output
+        # depend on must appear verbatim (case-sensitive) in the prose.
+        for label in ("NDA", "NOT_NDA", "UNCERTAIN"):
+            self.assertIn(label, raw, label)
+        # The primary-purpose / strip-out test -- the core decision rule.
+        self.assertIn("primary purpose", criteria)
+        self.assertIn("strip", criteria)
+        self.assertIn("operative", criteria)
+        # A representative slice of the exclusion list (dropping any of these would
+        # re-open a mis-classification the criteria closed).
+        for term in (
+            "master services agreement",
+            "msa",
+            "statement of work",
+            "sow",
+            "consultancy",
+            "invoice",
+            "hmrc",
+            "aml",
+        ):
+            self.assertIn(term, criteria, term)
+        # The DPA-is-confidentiality nuance must survive (a DPA whose substance is
+        # confidentiality obligations still counts as an NDA).
+        self.assertIn("dpa", criteria)
+        self.assertIn("data processing agreement", criteria)
+
     # A8 -- replay the confirmed-live miss and the over-tightening guards end-to-end
     # through the stub transport. With a stub model we cannot prove the *model* now
     # returns the right label, so we drive the model's label and assert the verdict
