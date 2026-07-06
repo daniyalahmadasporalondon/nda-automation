@@ -8030,6 +8030,81 @@ body.modal-open {
   box-shadow: 0 12px 26px -10px rgba(79, 27, 179, 0.48);
 }
 
+.confirm-modal-dialog {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  box-shadow: 0 24px 80px -34px rgba(17, 17, 26, 0.55);
+  display: grid;
+  gap: 14px;
+  max-height: calc(100vh - 44px);
+  overflow: auto;
+  padding: 20px;
+  width: min(440px, calc(100vw - 32px));
+}
+
+.confirm-modal-body {
+  color: var(--ink-soft);
+  font-size: 14px;
+  margin: 0;
+}
+
+.confirm-modal-choices {
+  display: grid;
+  gap: 10px;
+}
+
+.confirm-choice {
+  align-items: flex-start;
+  background: var(--brand);
+  border: 1px solid transparent;
+  border-radius: var(--r-lg, 12px);
+  color: #fff;
+  cursor: pointer;
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  text-align: left;
+  width: 100%;
+}
+
+.confirm-choice:hover:not(:disabled) {
+  background: var(--brand-bright);
+  box-shadow: 0 12px 26px -10px rgba(79, 27, 179, 0.48);
+}
+
+.confirm-choice.secondary {
+  background: var(--bg-soft);
+  border-color: var(--border);
+  color: var(--ink);
+}
+
+.confirm-choice.secondary:hover:not(:disabled) {
+  background: var(--bg-panel);
+  box-shadow: none;
+}
+
+.confirm-choice:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.confirm-choice-label {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.confirm-choice-help {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.35;
+  opacity: 0.85;
+}
+
+.confirm-modal-actions {
+  justify-content: flex-end;
+}
+
 /* ---------- Admin / playbook view ---------- */
 
 .admin-view {

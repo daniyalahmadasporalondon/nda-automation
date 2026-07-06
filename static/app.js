@@ -578,6 +578,12 @@ authSessionController = createAuthSessionController({
   connectButton: document.querySelector("[data-session-gmail-connect]"),
   syncButton: document.querySelector("[data-session-gmail-sync]"),
   disconnectButton: document.querySelector("[data-session-gmail-disconnect]"),
+  signOutModal: document.querySelector("#signOutModal"),
+  signOutModalClose: document.querySelector("#signOutModalClose"),
+  signOutModalStatus: document.querySelector("#signOutModalStatus"),
+  signOutThisDeviceButton: document.querySelector("#signOutThisDeviceButton"),
+  signOutAllDevicesButton: document.querySelector("#signOutAllDevicesButton"),
+  signOutCancelButton: document.querySelector("#signOutCancelButton"),
   reviewErrorFromPayload,
   onGmailStatus: (gmailStatus) => {
     state.gmailStatus = gmailStatus;

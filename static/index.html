@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260703browsermatrix1">
+    <link rel="stylesheet" href="/static/styles.css?v=20260706signout1">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260703bigstore1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260619onboard1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
@@ -2098,6 +2098,41 @@
       </div>
     </div>
 
+    <div class="send-modal" id="signOutModal" role="dialog" aria-modal="true" aria-labelledby="signOutModalTitle" aria-describedby="signOutModalBody" hidden>
+      <div class="confirm-modal-dialog">
+        <header class="send-modal-head">
+          <div>
+            <p class="send-modal-eyebrow">Session</p>
+            <h2 id="signOutModalTitle">Sign out</h2>
+          </div>
+          <button class="send-modal-close" id="signOutModalClose" type="button" aria-label="Close sign out dialog">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M18 6 6 18M6 6l12 12"/>
+            </svg>
+          </button>
+        </header>
+
+        <p class="confirm-modal-body" id="signOutModalBody">How do you want to sign out?</p>
+
+        <div class="confirm-modal-choices">
+          <button class="confirm-choice" id="signOutThisDeviceButton" type="button">
+            <span class="confirm-choice-label">This device only</span>
+            <span class="confirm-choice-help">You'll stay signed in on your phone and other computers.</span>
+          </button>
+          <button class="confirm-choice secondary" id="signOutAllDevicesButton" type="button">
+            <span class="confirm-choice-label">All devices</span>
+            <span class="confirm-choice-help">Signs you out everywhere. Use this if you've lost a device or think someone else has access to your account.</span>
+          </button>
+        </div>
+
+        <p class="send-modal-status" id="signOutModalStatus" aria-live="polite"></p>
+
+        <footer class="send-modal-actions confirm-modal-actions">
+          <button class="secondary" id="signOutCancelButton" type="button">Cancel</button>
+        </footer>
+      </div>
+    </div>
+
     <div class="send-modal" id="studioSendModal" role="dialog" aria-modal="true" aria-labelledby="studioSendModalTitle" hidden>
       <div class="send-modal-dialog">
         <form class="send-modal-form" id="studioSendForm">
@@ -2297,7 +2332,7 @@
     <script src="/static/js/manual-upload.js?v=20260617hyg1"></script>
     <script src="/static/js/send-document.js?v=20260606i"></script>
     <script src="/static/js/draft-intake.js?v=20260702termunit1"></script>
-    <script src="/static/js/auth-session.js?v=20260618depstatus1"></script>
+    <script src="/static/js/auth-session.js?v=20260706signout1"></script>
     <script src="/static/js/admin-ai.js?v=20260621humanize1"></script>
     <script src="/static/js/admin-models.js?v=20260623modelpicker1"></script>
     <script src="/static/js/admin-health.js?v=20260621humanize1"></script>
@@ -2330,6 +2365,6 @@
     <script src="/static/js/notifications.js?v=20260623reviewtabv2-1"></script>
     <script src="/static/js/generator-editor.js?v=20260626editordur1"></script>
     <script src="/static/js/find-replace.js?v=20260621wave3"></script>
-    <script src="/static/app.js?v=20260706devguide2"></script>
+    <script src="/static/app.js?v=20260706signout1"></script>
   </body>
 </html>

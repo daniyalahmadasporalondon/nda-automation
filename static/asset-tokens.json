@@ -1,7 +1,7 @@
 {
   "app.js": {
-    "sha256": "414372d03a9c34384d259b76fa73c4959ec6a63128d516d2089d2470b8999c7b",
-    "v": "20260706devguide2"
+    "sha256": "6bba7b4edbc217fa0b0e3e2e6aa6000b41d110a34dfe9ed2f3ac6d4d7d6169bb",
+    "v": "20260706signout1"
   },
   "css/corpus.css": {
     "sha256": "b352644bdd179bc240ade82a32c8ba9ef6062adbe80cf7359e321492aca40a61",
@@ -60,8 +60,8 @@
     "v": "20260617a401"
   },
   "js/auth-session.js": {
-    "sha256": "562773302dbcb9a42bf261b95d8d5ef6eb42f9ec4ced0f088bd9dc3369476216",
-    "v": "20260618depstatus1"
+    "sha256": "4d47059433a188f3130ad806b8b5e284bf652985d11c2beefd94929c76b8a217",
+    "v": "20260706signout1"
   },
   "js/config.js": {
     "sha256": "afbc1d99507b91edb6fcda969a0256a638707eea14b545ded871a9ee1a7e2a09",
@@ -284,7 +284,7 @@
     "v": "20260623rwbugs1"
   },
   "styles.css": {
-    "sha256": "f0759eef6020ddf64979d8f0e618ba492bc340d133eee1e02f0249f44ff7240f",
-    "v": "20260703browsermatrix1"
+    "sha256": "38cc86250e6eba66ed291f011ac59cbfb46f4a1364d36c299e997bce2f2bb632",
+    "v": "20260706signout1"
   }
 }

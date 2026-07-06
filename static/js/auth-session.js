@@ -10,6 +10,12 @@ const AuthSessionView = (() => {
     connectButton,
     syncButton,
     disconnectButton,
+    signOutModal,
+    signOutModalClose,
+    signOutModalStatus,
+    signOutThisDeviceButton,
+    signOutAllDevicesButton,
+    signOutCancelButton,
     accountToggle,
     accountMenu,
     avatarNode,
@@ -29,6 +35,8 @@ const AuthSessionView = (() => {
     let deploymentStatus = null;
     let greetingHelper = null;
     let menuOpen = false;
+    let signOutBusy = false;
+    let signOutPreviousFocus = null;
     const api = RepositoryApi.create({ reviewErrorFromPayload });
 
     // Load the greeting name-resolution helper once; re-render the greeting when
@@ -52,7 +60,14 @@ const AuthSessionView = (() => {
       const href = authStatus?.login_url || "/auth/google/start";
       loginLink.href = `${href}${href.includes("?") ? "&" : "?"}next=${encodeURIComponent(window.location.pathname + window.location.search)}`;
     });
-    logoutButton?.addEventListener("click", logout);
+    logoutButton?.addEventListener("click", openSignOutDialog);
+    signOutModalClose?.addEventListener("click", () => closeSignOutDialog());
+    signOutCancelButton?.addEventListener("click", () => closeSignOutDialog());
+    signOutModal?.addEventListener("click", (event) => {
+      if (event.target === signOutModal && !signOutBusy) closeSignOutDialog();
+    });
+    signOutThisDeviceButton?.addEventListener("click", () => performLogout("/api/auth/logout"));
+    signOutAllDevicesButton?.addEventListener("click", () => performLogout("/api/auth/logout-all"));
     connectButton?.addEventListener("click", () => {
       const href = gmailStatus?.connect_url || gmailStatus?.inbound?.connect_url || "/auth/gmail/start";
       window.location.href = withParams(href, { next: window.location.pathname + window.location.search, role: "all" });
@@ -66,7 +81,30 @@ const AuthSessionView = (() => {
       setMenuOpen(false);
     });
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") setMenuOpen(false);
+      if (event.key !== "Escape") return;
+      if (isSignOutDialogOpen()) {
+        if (signOutBusy) return;
+        event.preventDefault();
+        closeSignOutDialog();
+        return;
+      }
+      setMenuOpen(false);
+    });
+    // Focus trap: keep Tab within the dialog while it is open.
+    signOutModal?.addEventListener("keydown", (event) => {
+      if (event.key !== "Tab" || !isSignOutDialogOpen()) return;
+      const focusable = signOutFocusableNodes();
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || !signOutModal.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
     });
 
     async function load() {
@@ -122,18 +160,83 @@ const AuthSessionView = (() => {
       }
     }
 
-    async function logout() {
+    function isSignOutDialogOpen() {
+      return Boolean(signOutModal && !signOutModal.hidden);
+    }
+
+    function signOutFocusableNodes() {
+      if (!signOutModal) return [];
+      return Array.from(
+        signOutModal.querySelectorAll(
+          'button:not([disabled]), a[href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((node) => node instanceof HTMLElement && !node.hidden);
+    }
+
+    function setSignOutStatus(message) {
+      if (!signOutModalStatus) return;
+      signOutModalStatus.textContent = message || "";
+    }
+
+    function openSignOutDialog() {
+      // No dialog wired (defensive) -- fall back to the previous direct behaviour.
+      if (!signOutModal) {
+        performLogout("/api/auth/logout");
+        return;
+      }
+      setMenuOpen(false);
+      setSignOutStatus("");
+      signOutPreviousFocus = document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+      signOutModal.hidden = false;
+      document.body.classList.add("modal-open");
+      window.setTimeout(() => signOutThisDeviceButton?.focus?.(), 0);
+    }
+
+    function closeSignOutDialog({ restoreFocus = true } = {}) {
+      if (!signOutModal) return;
+      signOutModal.hidden = true;
+      document.body.classList.remove("modal-open");
+      setSignOutStatus("");
+      if (restoreFocus) {
+        const focusTarget = signOutPreviousFocus?.isConnected ? signOutPreviousFocus : logoutButton;
+        focusTarget?.focus?.();
+      }
+      signOutPreviousFocus = null;
+    }
+
+    async function performLogout(url) {
+      if (signOutBusy) return;
+      signOutBusy = true;
       setBusy(logoutButton, true);
+      // The choice buttons hold child <span>s, so disable them directly rather
+      // than via setBusy (which rewrites textContent and would flatten them).
+      setChoiceDisabled(signOutThisDeviceButton, true);
+      setChoiceDisabled(signOutAllDevicesButton, true);
+      setSignOutStatus("Signing out...");
       try {
-        const response = await fetch("/api/auth/logout", { method: "POST" });
+        const response = await fetch(url, { method: "POST" });
         const payload = await response.json();
         if (!response.ok) throw reviewErrorFromPayload(payload, "Sign out failed");
+        // Success: mirror the original logout behaviour exactly.
         window.location.reload();
       } catch (error) {
-        setWarning(error.message || "Sign out failed");
+        const message = error.message || "Sign out failed";
+        setSignOutStatus(message);
+        setWarning(message);
       } finally {
+        signOutBusy = false;
         setBusy(logoutButton, false);
+        setChoiceDisabled(signOutThisDeviceButton, false);
+        setChoiceDisabled(signOutAllDevicesButton, false);
       }
+    }
+
+    function setChoiceDisabled(button, disabled) {
+      if (!button) return;
+      button.disabled = Boolean(disabled);
+      button.setAttribute("aria-busy", disabled ? "true" : "false");
     }
 
     async function disconnectGmail() {
