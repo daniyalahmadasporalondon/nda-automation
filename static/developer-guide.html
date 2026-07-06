@@ -441,6 +441,20 @@
       <h3>Static files</h3>
       <p>The <code>/static/*</code> branch in <code>_handle_get()</code> (server.py:356-364) resolves the requested path, asserts it stays inside <code>STATIC_DIR = ROOT/"static"</code> (server.py:110) as a path-traversal guard, and streams the file. This is why <strong>both guides are served with no per-file route</strong>: dropping <code>static/developer-guide.html</code> into the tree is enough to serve it at <code>/static/developer-guide.html</code>.</p>
 
+      <h4>Cache-bust tokens &amp; the asset manifest</h4>
+      <p>Every script/stylesheet is loaded from <code>index.html</code> with a <code>?v=YYYYMMDD&lt;letter&gt;</code> token so browsers reload it after a change. With immutable caching live, a forgotten token bump would pin a stale asset in a user's browser for up to a year — so a committed manifest guards against it:</p>
+      <ul>
+        <li><strong>The manifest</strong> — <code>static/asset-tokens.json</code> records <code>{path: {v, sha256}}</code> for every versioned asset. It's the CI staleness guard's source of truth.</li>
+        <li><strong>The tool</strong> — <code>python -m nda_automation.static_versioning</code> (<code>nda_automation/static_versioning.py</code>). <code>--check</code> fails if any asset's bytes changed without its <code>?v=</code> token (and manifest entry) changing; <code>--write</code> regenerates the manifest after you've bumped the tokens.</li>
+        <li><strong>The test</strong> — <code>tests/test_static_asset_manifest.py</code> runs the same check in CI, so a bytes-changed-but-token-unchanged slip is a red build, not a silent stale-cache incident.</li>
+      </ul>
+      <div class="callout warn">
+        <strong>The edit ritual for any <code>static/</code> change:</strong> edit the file → bump its <code>?v=</code> token in <code>index.html</code> → run <code>python -m nda_automation.static_versioning --write</code> → confirm <code>--check</code> passes. <code>scripts/cache_bust_guard.py --tree</code> is the belt-and-braces tree-wide guard.
+      </div>
+
+      <h4>Syntax floor (the shipped bundle must parse on old webviews)</h4>
+      <p>Everything under <code>static/**/*.{js,mjs}</code> ships <strong>untranspiled</strong> and most loads as classic <code>&lt;script&gt;</code> tags in one chain — a single <code>SyntaxError</code> detonates the whole chain (app.js and all it wires) at parse time on the oldest webview a user opens, before any feature detection can run. <code>tests/frontend/syntax-floor.cjs</code> enforces the floor (Safari 13.x era): full ES2020 syntax and numeric separators are allowed; <strong>logical assignment (<code>??=</code>/<code>||=</code>/<code>&amp;&amp;=</code>) and anything ES2022+ (class fields, <code>#private</code>, static blocks, top-level await) are rejected</strong> — the parse runs at ecmaVersion 2021 with a dedicated AST scan for the logical-assignment operators acorn would otherwise accept.</p>
+
       <h3>The data dir &amp; deploy shape</h3>
       <p>All durable state roots at <code>NDA_DATA_DIR</code> (read in <code>matter_store.py:24</code>; default <code>ROOT/"data"</code>). In production it is the Render persistent disk at <code>/var/data</code>, which holds <code>matters/*.json</code>, <code>uploads/</code>, the lock file, Gmail cursors, and the live <code>playbook.json</code> + sidecars. The app ships as a Docker image (python:3.11-slim + LibreOffice) on Render Standard. See <strong>Deploy &amp; Ops</strong> for the full env-var map.</p>
 
@@ -603,6 +617,15 @@
         <li><strong>Dedup:</strong> <code>_find_gmail_duplicate_unlocked()</code> (matter_store.py:1615) runs inside the lock — it indexes attachment id / case-folded filename / SHA256, gates each candidate through ownership, and confirms filename-only matches by hash. Atomic check+write closes the TOCTOU window.</li>
       </ul>
 
+      <h3>Performance &amp; observability (scale hardening)</h3>
+      <p>The store is a single-process file store, so a growing corpus turned several hot paths O(store). Four changes keep them bounded:</p>
+      <ul>
+        <li><strong>Per-record list cache</strong> — <code>list_matters()</code> is cached under a fingerprint of every record file's <code>(name, mtime, size)</code>, consulted/refreshed only while the store lock is held (so it observes a consistent set) and storing the <strong>UNFILTERED</strong> list — owner scoping is always applied per-call <em>after</em>, so the cache can never serve cross-tenant data. The blob is keyed <strong>per record filename</strong>, not one monolithic blob: a write-through patch updates the one written record's entry (O(one record)) instead of re-serialising the whole store (~330ms/write on a 47MB/1200-matter store → a few ms). <code>NDA_DISABLE_MATTER_LIST_CACHE</code> forces the uncached path for tests.</li>
+        <li><strong>Timeline cap</strong> — <code>matter_timeline</code> was append-only and grew unbounded; <code>capped_timeline()</code> now clamps it to <code>TIMELINE_MAX_EVENTS = 500</code> (newest kept, oldest dropped, with a marker event) on every write.</li>
+        <li><strong>Corpus fingerprinting off the request path</strong> — dedup SimHash fingerprints are computed inline only under a <code>FINGERPRINT_INLINE_COMPUTE_BUDGET</code> per request; the remainder is computed by a single-flight <strong>background backfill</strong> (<code>_start_fingerprint_backfill</code>, corpus_index.py), so a large cold store never serialises O(store) SimHash computes onto one request.</li>
+        <li><strong>Failure visibility</strong> — swallowed failures now <strong>log</strong> (module <code>LOGGER.warning/error</code> with the exception type) instead of failing silently — e.g. the PyMuPDF import path logs the exact module+message at ERROR on a genuine load failure rather than degrading rendering invisibly.</li>
+      </ul>
+
       <h3>Artifacts</h3>
       <p><code>nda_automation/artifact_registry.py</code> is a thin registry over a matter's documents. Roles (artifact_registry.py:39-47): <code>original</code>, <code>redline</code>, <code>reviewed</code>, <code>generated</code>, <code>counter</code>, <code>sent</code>, <code>signed</code>, and <code>working</code> (the Approach-C PDF→DOCX). Actors: <code>counterparty</code>, <code>ai</code>, <code>human</code> (or an entity id). The matter carries an <code>artifacts</code> list + a <code>current_artifact_id</code> pointer.</p>
 
@@ -631,7 +654,9 @@
       <h3>Gmail intake</h3>
       <ul>
         <li><strong>Scheduler:</strong> <code>_gmail_sync_scheduler_loop()</code> (server.py:957), a daemon thread; each tick runs <code>_run_scheduled_gmail_sync()</code> (server.py:1113). Master kill-switch env <code>NDA_GMAIL_SYNC_ENABLED</code> (server.py:992).</li>
-        <li><strong>Fetch query (fixed structure):</strong> <code>_inbound_envelope_query(90)</code> (gmail_integration.py:185) → <code>in:inbox has:attachment (filename:docx OR filename:pdf) -from:me newer_than:90d</code>. Window default <code>GMAIL_INBOUND_WINDOW_DAYS = 90</code> (admin-configurable). Per-poll limit default 20, hard cap 40 (<code>_MAX_GMAIL_IMPORT_LIMIT_CLAMP</code>, gmail_integration.py:229; env <code>NDA_GMAIL_IMPORT_LIMIT</code>).</li>
+        <li><strong>Fetch query (fixed structure) + sender exclusion:</strong> <code>_inbound_envelope_query(90)</code> (gmail_integration.py:185) → <code>in:inbox has:attachment (filename:docx OR filename:pdf) -from:me newer_than:90d</code>, with a <strong><code>-from:</code> exclusion clause</strong> for noise senders appended to the query. The default excluded set (<code>DEFAULT_GMAIL_INBOUND_EXCLUDED_SENDERS</code>, app_settings.py:158) is the e-sign platforms (<code>docusign.net/.com</code>, <code>adobesign.com</code>, <code>documents.adobe.com</code>, <code>echosign.com</code>, <code>hellosign.com</code>, <code>pandadoc.com</code>) plus <code>calendar-notification@google.com</code>; it's admin-editable, but <code>DOCUSIGN_NOTIFICATION_DOMAINS</code> is a hard floor that always applies. Window default <code>GMAIL_INBOUND_WINDOW_DAYS = 90</code> (admin-configurable). Per-poll limit default 20, hard cap 40 (<code>_MAX_GMAIL_IMPORT_LIMIT_CLAMP</code>, gmail_integration.py:229; env <code>NDA_GMAIL_IMPORT_LIMIT</code>).</li>
+        <li><strong>Deterministic pre-gate (before the paid model):</strong> a content scorer drops obvious non-NDAs (proposals, invoices, decks, questionnaires) <em>before</em> a paid intake AI call, cutting intake-AI spend markedly. A <strong>mandatory escape hatch</strong> (<code>_metadata_has_explicit_nda_signal</code> / the filename+text NDA signal, gmail_integration.py:1582) forces any document with an explicit NDA signal through to the AI regardless — including foreign-language NDA titles. Detection uses a fixed built-in vocabulary; an <strong>opt-in</strong> custom-terms extension is gated behind <code>NDA_GMAIL_CUSTOM_TERMS_ENABLED</code> (default off; <code>_custom_detection_terms</code> only <em>adds</em> content-scorer signals — never widens the fetch query).</li>
+        <li><strong>Executed-NDA capture:</strong> e-sign platform notification mail is usually terminal-dropped, but a completion email is often the only copy of an executed NDA. When such a platform email carries an explicit NDA signal (<code>_esign_notification_nda_hit</code>, gmail_integration.py:1220), it's let through the pipeline but <strong>clamped to at most the triage lane</strong> and stamped with the <code>esign_notification_nda</code> provenance (<code>ESIGN_NDA_CAPTURE_TRIAGE_REASON</code>) — never a silent auto-import. Gated by <code>NDA_GMAIL_ESIGN_NDA_CAPTURE</code> (default on; off restores the unconditional drop).</li>
         <li><strong>Intake classifier (NDA vs not):</strong> <code>classify_intake_attachment()</code> (gmail_intake_classifier.py:149); model env <code>NDA_GMAIL_INTAKE_MODEL</code>, default <code>deepseek/deepseek-v4-flash</code> (gmail_intake_classifier.py:45). Additive — any error/timeout/cap falls back to the deterministic lane classifier.</li>
         <li><strong>Attachment selector / triage:</strong> <code>gmail_attachment_selector.py</code>; model env <code>NDA_GMAIL_TRIAGE_MODEL</code>, default <code>deepseek/deepseek-v4-pro</code> (line 16). Injection defense: the model's selection is intersected with the real candidate attachment ids (gmail_attachment_selector.py:101-109) — an injected instruction can't import an attachment that was never a candidate.</li>
         <li><strong>Review is deferred.</strong> <code>import_inbound_matters()</code> (gmail_integration.py:541) fetches, triages, and classifies but does <em>not</em> enqueue AI review — inbound matters land "Not Reviewed" and are reviewed only on demand.</li>
@@ -639,6 +664,9 @@
 
       <h3>DocuSign</h3>
       <p><code>nda_automation/docusign_integration.py</code> holds the client. <code>HttpDocuSignClient</code> (line 404) creates envelopes (<code>create_envelope()</code>, ~431), reads status (<code>get_envelope_status()</code>) and recipients (<code>get_envelope_recipients()</code>). Signature placement uses <strong>anchor tabs</strong> built in <code>_tabs_for(signer)</code> (~305) — <code>signHereTabs</code> + <code>dateSignedTabs</code> anchored to document strings. Two signers: the counterparty and the single Aspora signer (<code>NDA_DOCUSIGN_ASPORA_SIGNER_NAME</code>/<code>_EMAIL</code>). OAuth env (docusign_connection.py:48-54): <code>NDA_DOCUSIGN_CLIENT_ID</code>, <code>_CLIENT_SECRET</code>, <code>_OAUTH_REDIRECT_URI</code>, <code>_AUTH_SERVER</code> (<code>demo</code>|<code>prod</code>), <code>_CONNECT_HMAC_KEY</code>.</p>
+      <div class="callout warn">
+        <strong>Envelope document = current reviewed DOCX (P0 invariant).</strong> <code>docusign_workflow.py</code> (~531) never signs the un-redlined original when a matter has reviewer edits. It <strong>rebuilds the reviewed DOCX from the matter's CURRENT state</strong> via the same <code>build_reviewed_docx</code> path (and the same coverage gates) the download + approval handlers use — deliberately <em>not</em> trusting a stored <code>role=reviewed</code> artifact, which could be stale after a reversal (<code>_DOCUMENT_PRECEDENCE</code> excludes <code>ROLE_REVIEWED</code> as a backstop). If a matter has edits but the reviewed DOCX can't be produced, the send is <strong>refused</strong> ("Refusing to send the un-redlined original for signature.") rather than sending the original. Edit-free matters (comment-only/clean) fall through to precedence-ordered document selection.
+      </div>
 
       <h3>Outbound (send redline / send document)</h3>
       <ul>
@@ -709,8 +737,36 @@
           <tr><td>OPENROUTER_API_KEY=&lt;blank&gt;</td><td>Nuclear stop for all provider calls.</td></tr>
           <tr><td>NDA_AI_VERIFIER=false</td><td>Drops the second-opinion pass.</td></tr>
           <tr><td>NDA_GENERATION_AI_ENABLED=false</td><td>Forces deterministic generation (already the prod default).</td></tr>
+          <tr><td>NDA_GMAIL_ESIGN_NDA_CAPTURE=false</td><td>Restores the unconditional terminal drop of e-sign platform mail (disables executed-NDA triage capture). Default on.</td></tr>
+          <tr><td>NDA_GMAIL_CUSTOM_TERMS_ENABLED=true</td><td>Opt-in: lets admin "inbound search terms" extend the detection content scorer. Default off (built-in vocabulary only).</td></tr>
+          <tr><td>NDA_DISABLE_MATTER_LIST_CACHE=1</td><td>Test seam: forces <code>list_matters()</code> onto the uncached path.</td></tr>
         </tbody>
       </table>
+      <p>Excluded-sender defaults, per-poll limit, and model choices are covered under <strong>Gmail intake</strong> and the <strong>Change an AI model</strong> recipe; the table above is only the top incident on/off flips.</p>
+
+      <h4>Other Gmail &amp; background-ops knobs</h4>
+      <p>All Gmail intake knobs are <code>NDA_GMAIL_</code>-prefixed; the background-ops ones are not. Defaults are safe — flip only for an incident or tuning. (Single-process by design: there is no <code>WEB_CONCURRENCY</code>.)</p>
+      <table>
+        <thead><tr><th>Env var</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td>NDA_GMAIL_AI_PREGATE</td><td>on</td><td>Deterministic pre-gate that drops obvious non-NDAs below the skip band before the paid intake AI. Off restores the always-call path.</td></tr>
+          <tr><td>NDA_GMAIL_ENVELOPE_EXCLUDES</td><td>on</td><td>Applies the noise-sender exclusion clause in the fetch query. Off falls back to the DocuSign-only code check (full rollback).</td></tr>
+          <tr><td>NDA_GMAIL_ESIGN_NDA_CAPTURE</td><td>on</td><td>Executed-NDA capture: explicit-NDA e-sign completion mail let through, clamped to triage. Off = unconditional drop.</td></tr>
+          <tr><td>NDA_GMAIL_CUSTOM_TERMS_ENABLED</td><td>off</td><td>Lets admin inbound terms extend the detection content scorer (additive; never widens the fetch).</td></tr>
+          <tr><td>NDA_GMAIL_FIRST_SYNC_CAP_DAYS</td><td>14</td><td>Caps the look-back on a brand-new account's first sync; 0 disables the cap.</td></tr>
+          <tr><td>NDA_GMAIL_TRANSIENT_RETRY_LIMIT / _PERMANENT_SKIP_RETRY_LIMIT</td><td>—</td><td>Per-message ledger retry bounds for transient vs permanently-skipped imports.</td></tr>
+          <tr><td>NDA_GMAIL_SYNC_YIELD_MS</td><td>~50</td><td>Cooperative yield per message/attachment so a big sync doesn't starve request threads; ≤0 disables.</td></tr>
+          <tr><td>NDA_VERBOSE_BACKGROUND_ERRORS</td><td>off</td><td>Opt-in: include <code>str(error)</code> (truncated to 200 chars, never a traceback) in background-error logs. Off by default as the PII-safe default.</td></tr>
+          <tr><td>NDA_TELEMETRY_SNAPSHOT_TICKS</td><td>120</td><td>Ticks between telemetry snapshots (~1/hour at the 30s idle cadence); ≤0 disables.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Admin / operator endpoints (no UI)</h3>
+      <ul>
+        <li><strong>Bulk-archive Gmail noise</strong> — <code>POST /api/admin/matters/bulk-archive</code> (<code>routes/admin.py:1224</code> → <code>matter_store.bulk_archive_gmail_matters</code>). Admin-gated. Body takes an explicit <code>owner_user_id</code> (never inferred), a required <code>created_after</code>/<code>created_before</code> window, <code>dry_run</code> (default <strong>true</strong>), and a <code>confirm</code> sha256 of the current selection. Execute requires <code>dry_run:false</code> + a matching confirm hash (stale hash → <strong>409</strong> with the fresh hash), and <strong>refuses unless inbound Gmail import is disabled</strong> (a ledger-flush race with a live import → 409). Only <code>predicate ∩ confirmed</code> is deleted; every record + source doc is archived to <code>pruned-matters/</code> before deletion; deleted message ids are marked in the per-owner processed ledger so the next poll won't re-import them.</li>
+        <li><strong>Backup export</strong> — <code>GET /api/matters/export</code> (<code>routes/admin.py:862</code>, <code>handle_matter_backup</code>). Admin-gated; dumps full extracted NDA text + metadata as JSON. Defaults to the caller's owner scope; <code>?owner=__all__</code> exports <strong>all owners</strong> (<code>export_all_matters_backup()</code>), stamping <code>scope: "all-owners"</code>.</li>
+      </ul>
+
       <div class="callout warn">
         <strong>Disk-durability blind spot.</strong> The boot guard checks <code>NDA_DATA_DIR</code> is set, not that the disk is actually mounted — an unmounted <code>/var/data</code> can pass the guard. Confirm the disk is attached before trusting persistence.
       </div>
