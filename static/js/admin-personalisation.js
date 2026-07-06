@@ -12,6 +12,7 @@ const AdminPersonalisationView = (() => {
     signOffInput,
     signatureInput,
     signatureBlockInput,
+    shadowNote,
     saveButton,
     resetButton,
     overall,
@@ -29,6 +30,10 @@ const AdminPersonalisationView = (() => {
     let loadedSettings = { ...EMPTY_SETTINGS };
     let endpointAvailable = false;
     let loading = false;
+    // Tracks the global (load/save-driven) disabled state so the Signature
+    // Block shadow never re-enables Sign-Off/Signature while the whole form is
+    // meant to be locked (e.g. mid-load or when the endpoint is unavailable).
+    let controlsDisabled = true;
 
     form?.addEventListener("submit", save);
     resetButton?.addEventListener("click", () => {
@@ -38,6 +43,13 @@ const AdminPersonalisationView = (() => {
     });
     [signOffInput, signatureInput, signatureBlockInput].forEach((input) => {
       input?.addEventListener("input", updateDirtyState);
+    });
+    // When Signature Block has content, outbound email uses it verbatim and
+    // ignores Sign-Off + Signature — so shadow those two live to make the
+    // "editing them does nothing" trap visible. Wired on both input and change
+    // so paste/programmatic tweaks are caught too.
+    ["input", "change"].forEach((evt) => {
+      signatureBlockInput?.addEventListener(evt, applyShadowState);
     });
 
     async function load() {
@@ -152,6 +164,9 @@ const AdminPersonalisationView = (() => {
         signatureBlockInput.value = values.signature_block;
         signatureBlockInput.placeholder = fallback.signature_block || "Best,\nAspora Legal";
       }
+      // Reconcile the Sign-Off/Signature shadow with the freshly-rendered
+      // Signature Block value (covers load, save, and reset paths).
+      applyShadowState();
     }
 
     function currentSettings() {
@@ -169,11 +184,26 @@ const AdminPersonalisationView = (() => {
     }
 
     function setControlsDisabled(disabled) {
+      controlsDisabled = Boolean(disabled);
       [signOffInput, signatureInput, signatureBlockInput].forEach((input) => {
-        if (input) input.disabled = Boolean(disabled);
+        if (input) input.disabled = controlsDisabled;
       });
       setSaveDisabled(true);
       if (resetButton) resetButton.disabled = true;
+      // Layer the Signature-Block shadow on top of the global enabled state.
+      applyShadowState();
+    }
+
+    // Sign-Off + Signature are ignored by outbound email whenever Signature
+    // Block is non-empty. Grey them out and show an inline note in that case;
+    // clear the shadow (and note) when Signature Block is empty. Never touches
+    // field VALUES, so saving still persists whatever is stored.
+    function applyShadowState() {
+      const shadowed = !controlsDisabled && Boolean((signatureBlockInput?.value || "").trim());
+      [signOffInput, signatureInput].forEach((input) => {
+        if (input) input.disabled = controlsDisabled || shadowed;
+      });
+      if (shadowNote) shadowNote.hidden = !shadowed;
     }
 
     function setSaveDisabled(disabled) {

@@ -1,7 +1,7 @@
 {
   "app.js": {
-    "sha256": "4adafa0279dd120ffa8faaa9b8a6c8c681451cb1f33d17e72fdfba5c8d987ac8",
-    "v": "20260706merge1"
+    "sha256": "8817dad25b3c21966b45a8099eecc74b76cb66f2f3bbd9ccbc50d34b9644e0d8",
+    "v": "20260706sigshadow1"
   },
   "css/corpus.css": {
     "sha256": "b352644bdd179bc240ade82a32c8ba9ef6062adbe80cf7359e321492aca40a61",
@@ -48,8 +48,8 @@
     "v": "20260623modelpicker1"
   },
   "js/admin-personalisation.js": {
-    "sha256": "65cc20c6acb2268f806437acbc8f701a96ba394ae1bcc14d0587eb23bb275b34",
-    "v": "20260619selfserve1"
+    "sha256": "c2a6b020b39a09c569d32adefb2a9693ceaa9691ee5e3a14b8131b9bc75db5ad",
+    "v": "20260706sigshadow1"
   },
   "js/app-state.js": {
     "sha256": "277a0ade7fb913ab0e003b00f96e221801b79f7538cd36838a4abdffb2f34eb2",

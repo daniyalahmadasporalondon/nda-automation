@@ -110,6 +110,7 @@ function mount(extra = {}) {
     signOffInput: new FakeElement("input"),
     signatureInput: new FakeElement("input"),
     signatureBlockInput: new FakeElement("textarea"),
+    shadowNote: new FakeElement("p"),
     saveButton: new FakeElement("button"),
     resetButton: new FakeElement("button"),
     overall: new FakeElement("span"),
@@ -169,7 +170,10 @@ async function test(name, fn) {
     assert.equal(ui.signatureInput.value, "Dana Doe");
     assert.equal(ui.signatureBlockInput.value, "Cheers,\nDana Doe");
     assert.equal(ui.overall.textContent, "Ready");
-    assert.ok(!ui.signOffInput.disabled, "fields editable for a non-admin");
+    // Non-admin is not admin-blocked: the always-editable Signature Block field
+    // is enabled. (Sign-Off/Signature are shadowed here only because this
+    // fixture has a non-empty Signature Block — see the shadow tests below.)
+    assert.ok(!ui.signatureBlockInput.disabled, "fields editable for a non-admin");
     assert.doesNotMatch(ui.message.textContent, /Administrator access is required/i);
   });
 
@@ -244,6 +248,88 @@ async function test(name, fn) {
     // It must NOT have rendered the admin-only nag into the visible message.
     assert.doesNotMatch(ui.message.textContent, /Administrator access is required/i);
     assert.notEqual(ui.overall.textContent, "Unavailable");
+  });
+
+  await test("non-empty Signature Block shadows Sign-Off + Signature on load and shows the note", async () => {
+    const ui = mount();
+    installFetch((url) => {
+      if (url === "/api/me/personalisation-settings") {
+        return {
+          payload: {
+            personalisation: { sign_off: "Cheers,", signature: "Dana Doe", signature_block: "Cheers,\nDana Doe" },
+            is_custom: true,
+          },
+        };
+      }
+      return { ok: false, status: 403, payload: {} };
+    });
+
+    await ui.controller.load();
+    await flush();
+
+    // Signature Block has content => the other two are shadowed and the note shows.
+    assert.equal(ui.signatureBlockInput.disabled, false, "Signature Block itself stays editable");
+    assert.equal(ui.signOffInput.disabled, true, "Sign-Off shadowed while Signature Block is set");
+    assert.equal(ui.signatureInput.disabled, true, "Signature shadowed while Signature Block is set");
+    assert.equal(ui.shadowNote.hidden, false, "the inline note is visible");
+    // Values are preserved (never wiped) even though the fields are disabled.
+    assert.equal(ui.signOffInput.value, "Cheers,");
+    assert.equal(ui.signatureInput.value, "Dana Doe");
+  });
+
+  await test("clearing Signature Block live re-enables Sign-Off + Signature and hides the note", async () => {
+    const ui = mount();
+    installFetch((url) => {
+      if (url === "/api/me/personalisation-settings") {
+        return {
+          payload: {
+            personalisation: { sign_off: "Cheers,", signature: "Dana Doe", signature_block: "Cheers,\nDana Doe" },
+            is_custom: true,
+          },
+        };
+      }
+      return { ok: false, status: 403, payload: {} };
+    });
+
+    await ui.controller.load();
+    await flush();
+    assert.equal(ui.signOffInput.disabled, true, "starts shadowed");
+    assert.equal(ui.shadowNote.hidden, false);
+
+    // User empties the Signature Block -> live re-enable.
+    ui.signatureBlockInput.value = "";
+    await ui.signatureBlockInput.dispatchEvent({ type: "input" });
+    assert.equal(ui.signOffInput.disabled, false, "Sign-Off re-enabled");
+    assert.equal(ui.signatureInput.disabled, false, "Signature re-enabled");
+    assert.equal(ui.shadowNote.hidden, true, "note hidden");
+
+    // Re-typing content shadows them again (change event path).
+    ui.signatureBlockInput.value = "Regards,\nDana";
+    await ui.signatureBlockInput.dispatchEvent({ type: "change" });
+    assert.equal(ui.signOffInput.disabled, true, "shadowed again on new content");
+    assert.equal(ui.shadowNote.hidden, false);
+  });
+
+  await test("empty Signature Block leaves Sign-Off + Signature editable (no shadow, no note)", async () => {
+    const ui = mount();
+    installFetch((url) => {
+      if (url === "/api/me/personalisation-settings") {
+        return {
+          payload: {
+            personalisation: { sign_off: "Cheers,", signature: "Dana Doe", signature_block: "" },
+            is_custom: true,
+          },
+        };
+      }
+      return { ok: false, status: 403, payload: {} };
+    });
+
+    await ui.controller.load();
+    await flush();
+
+    assert.equal(ui.signOffInput.disabled, false, "editable when Signature Block is empty");
+    assert.equal(ui.signatureInput.disabled, false, "editable when Signature Block is empty");
+    assert.equal(ui.shadowNote.hidden, true, "no note when Signature Block is empty");
   });
 
   process.stdout.write(`\npersonalisation-self-serve.cjs: ${passed} passed\n`);
