@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
     <link rel="stylesheet" href="/static/styles.css?v=20260706signout1">
-    <link rel="stylesheet" href="/static/css/repository.css?v=20260703bigstore1">
+    <link rel="stylesheet" href="/static/css/repository.css?v=20260706onboardgen1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260619onboard1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
   </head>
@@ -230,6 +230,32 @@
               <h1>NDA Generator</h1>
             </div>
           </header>
+
+          <!--
+            First-run onboarding for the Generator. Hidden by default; the intake
+            controller reveals it on first activation (unless dismissed) and hides
+            it once the user interacts with the form or generates an NDA. Mirrors
+            the repository/corpus onboarding-card pattern (same classes + the
+            shared [data-onboarding-goto] nav hook) so a later integrator can lift
+            all three into one shared component. Dismissal is remembered in
+            localStorage. Kept ABOVE the workspace so it never disturbs the form.
+          -->
+          <div class="repository-onboarding generator-onboarding" data-generator-onboarding hidden>
+            <div class="repository-onboarding-card" role="note" aria-label="Get started with the NDA Generator">
+              <button class="generator-onboarding-dismiss" type="button" data-generator-onboarding-dismiss aria-label="Dismiss this guide">×</button>
+              <h2 class="repository-onboarding-title">Draft a new NDA</h2>
+              <p class="repository-onboarding-lead">Create a fresh NDA from your playbook.</p>
+              <ol class="repository-onboarding-steps">
+                <li class="repository-onboarding-step">
+                  <span class="repository-onboarding-step-icon" aria-hidden="true">1</span>
+                  <span class="repository-onboarding-step-body">
+                    <strong>Pick, set, generate</strong>
+                    <span>Pick your signing entity and the counterparty, set the term, then <strong>Generate</strong> — you can download it, send it, or send it for signature.</span>
+                  </span>
+                </li>
+              </ol>
+            </div>
+          </div>
 
           <section class="generator-workspace">
             <form class="generator-form" id="draftIntakeForm">
@@ -2316,7 +2342,7 @@
     <script src="/static/js/corpus.js?v=20260621hum1"></script>
     <script src="/static/js/manual-upload.js?v=20260617hyg1"></script>
     <script src="/static/js/send-document.js?v=20260606i"></script>
-    <script src="/static/js/draft-intake.js?v=20260702termunit1"></script>
+    <script src="/static/js/draft-intake.js?v=20260706onboardgen2"></script>
     <script src="/static/js/auth-session.js?v=20260706signout1"></script>
     <script src="/static/js/admin-ai.js?v=20260706cleanup1"></script>
     <script src="/static/js/admin-models.js?v=20260623modelpicker1"></script>
@@ -2350,6 +2376,6 @@
     <script src="/static/js/notifications.js?v=20260623reviewtabv2-1"></script>
     <script src="/static/js/generator-editor.js?v=20260626editordur1"></script>
     <script src="/static/js/find-replace.js?v=20260621wave3"></script>
-    <script src="/static/app.js?v=20260706merge1"></script>
+    <script src="/static/app.js?v=20260706onboardgen1"></script>
   </body>
 </html>

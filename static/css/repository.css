@@ -241,6 +241,39 @@
   background: var(--brand-glow);
 }
 
+/*
+  Generator first-run onboarding. Reuses the .repository-onboarding card so the
+  look matches the repository/corpus panels; these rules only add the spacing
+  above the workspace and the corner dismiss control the generator panel carries.
+*/
+.generator-onboarding {
+  margin-bottom: 20px;
+}
+
+.generator-onboarding .repository-onboarding-card {
+  position: relative;
+}
+
+.generator-onboarding-dismiss {
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: var(--ink-muted);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+  padding: 4px 8px;
+  position: absolute;
+  right: 12px;
+  top: 12px;
+}
+
+.generator-onboarding-dismiss:hover,
+.generator-onboarding-dismiss:focus-visible {
+  background: var(--brand-glow);
+  color: var(--ink);
+}
+
 .repository-column {
   background: #fff;
   min-height: 300px;

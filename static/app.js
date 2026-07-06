@@ -355,6 +355,9 @@ const draftIntakeController = createDraftIntakeController({
   sideLawNode: document.querySelector("#draftIntakeSideLaw"),
   sideTypeNode: document.querySelector("#draftIntakeSideType"),
   previewNode: document.querySelector("#draftIntakePreview"),
+  // First-run onboarding panel + its dismiss control (top of the Generator view).
+  onboardingNode: document.querySelector("[data-generator-onboarding]"),
+  onboardingDismissButton: document.querySelector("[data-generator-onboarding-dismiss]"),
   counterpartyIncorporationInput: document.querySelector("#draftIntakeCounterpartyIncorporation"),
   counterpartyAddressInput: document.querySelector("#draftIntakeCounterpartyAddress"),
   businessDescriptionInput: document.querySelector("#draftIntakeBusinessDescription"),
