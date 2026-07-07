@@ -522,63 +522,57 @@
       <p class="panel-lede">Every NDA takes the same journey through the app. You can follow any NDA along these six steps.</p>
 
       <figure class="wf-fig">
-        <svg role="img" viewBox="0 0 900 320" aria-labelledby="wf-life-t wf-life-d" xmlns="http://www.w3.org/2000/svg">
+        <svg role="img" viewBox="0 0 900 300" aria-labelledby="wf-life-t wf-life-d" xmlns="http://www.w3.org/2000/svg">
           <title id="wf-life-t">The life of an NDA</title>
-          <desc id="wf-life-d">Seven stages left to right: an NDA arrives from Gmail or upload, AI intake classifies and picks the file, AI clause review compares against the Playbook, an adversarial verify pass downgrades only, a reviewer approves in the Workstation, a coverage-gated tracked-change DOCX is produced, then DocuSign e-signs. A Playbook single-source-of-truth box feeds rules into the AI clause review step.</desc>
+          <desc id="wf-life-d">Six steps: an NDA arrives from Gmail or upload, the AI reviews it against your rules, problems are flagged and redlined, you mark it Reviewed, it is sent by email or e-sign, then it is signed and filed to the Corpus. A Playbook box feeds your rules into the AI review step.</desc>
           <defs>
             <marker id="wf-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M0 0 L10 5 L0 10 z" class="wf-arrow-fill"/>
             </marker>
           </defs>
 
-          <!-- Row 1: stages 1-4 -->
-          <rect class="wf-box" x="8"   y="20" width="126" height="52"/>
-          <text class="wf-th" x="71"  y="42" text-anchor="middle">NDA arrives</text>
-          <text class="wf-ts" x="71"  y="59" text-anchor="middle">Gmail or upload</text>
+          <!-- Row 1: steps 1-3 (left to right) -->
+          <rect class="wf-box" x="20"  y="20" width="240" height="56"/>
+          <text class="wf-th" x="140" y="43" text-anchor="middle">NDA arrives</text>
+          <text class="wf-ts" x="140" y="60" text-anchor="middle">Gmail or upload</text>
 
-          <rect class="wf-box" x="200" y="20" width="126" height="52"/>
-          <text class="wf-th" x="263" y="42" text-anchor="middle">AI intake</text>
-          <text class="wf-ts" x="263" y="59" text-anchor="middle">classify + pick file</text>
+          <rect class="wf-box" x="330" y="20" width="240" height="56"/>
+          <text class="wf-th" x="450" y="43" text-anchor="middle">AI reviews it</text>
+          <text class="wf-ts" x="450" y="60" text-anchor="middle">vs your rules</text>
 
-          <rect class="wf-box" x="392" y="20" width="126" height="52"/>
-          <text class="wf-th" x="455" y="42" text-anchor="middle">AI clause review</text>
-          <text class="wf-ts" x="455" y="59" text-anchor="middle">vs Playbook</text>
+          <rect class="wf-box" x="640" y="20" width="240" height="56"/>
+          <text class="wf-th" x="760" y="43" text-anchor="middle">Problems flagged</text>
+          <text class="wf-ts" x="760" y="60" text-anchor="middle">and redlined</text>
 
-          <rect class="wf-box" x="584" y="20" width="126" height="52"/>
-          <text class="wf-th" x="647" y="42" text-anchor="middle">Adversarial verify</text>
-          <text class="wf-ts" x="647" y="59" text-anchor="middle">downgrade-only</text>
+          <line class="wf-arr" x1="260" y1="48" x2="326" y2="48" marker-end="url(#wf-arrow)"/>
+          <line class="wf-arr" x1="570" y1="48" x2="636" y2="48" marker-end="url(#wf-arrow)"/>
 
-          <line class="wf-arr" x1="134" y1="46" x2="196" y2="46" marker-end="url(#wf-arrow)"/>
-          <line class="wf-arr" x1="326" y1="46" x2="388" y2="46" marker-end="url(#wf-arrow)"/>
-          <line class="wf-arr" x1="518" y1="46" x2="580" y2="46" marker-end="url(#wf-arrow)"/>
+          <!-- wrap arrow from step 3 down to step 4 -->
+          <path class="wf-arr" d="M760 76 L760 118 L760 158" marker-end="url(#wf-arrow)"/>
 
-          <!-- wrap arrow from stage 4 down to stage 5 -->
-          <path class="wf-arr" d="M710 46 L732 46 L732 140 L710 140" marker-end="url(#wf-arrow)"/>
+          <!-- Row 2: steps 4-6 (right to left, flowing back) -->
+          <rect class="wf-box" x="640" y="160" width="240" height="56"/>
+          <text class="wf-th" x="760" y="183" text-anchor="middle">You mark it Reviewed</text>
+          <text class="wf-ts" x="760" y="200" text-anchor="middle">confirm each clause</text>
 
-          <!-- Row 2: stages 5-7 (right to left visually, flowing back) -->
-          <rect class="wf-box" x="584" y="114" width="126" height="52"/>
-          <text class="wf-th" x="647" y="136" text-anchor="middle">Reviewer approves</text>
-          <text class="wf-ts" x="647" y="153" text-anchor="middle">in Workstation</text>
+          <rect class="wf-box" x="330" y="160" width="240" height="56"/>
+          <text class="wf-th" x="450" y="183" text-anchor="middle">Sent</text>
+          <text class="wf-ts" x="450" y="200" text-anchor="middle">email or e-sign</text>
 
-          <rect class="wf-box" x="392" y="114" width="126" height="52"/>
-          <text class="wf-th" x="455" y="132" text-anchor="middle">Coverage-gated</text>
-          <text class="wf-ts" x="455" y="149" text-anchor="middle">tracked-change DOCX</text>
+          <rect class="wf-box" x="20"  y="160" width="240" height="56"/>
+          <text class="wf-th" x="140" y="183" text-anchor="middle">Signed &amp; filed</text>
+          <text class="wf-ts" x="140" y="200" text-anchor="middle">to the Corpus</text>
 
-          <rect class="wf-box" x="200" y="114" width="126" height="52"/>
-          <text class="wf-th" x="263" y="136" text-anchor="middle">DocuSign</text>
-          <text class="wf-ts" x="263" y="153" text-anchor="middle">e-sign</text>
+          <line class="wf-arr" x1="640" y1="188" x2="574" y2="188" marker-end="url(#wf-arrow)"/>
+          <line class="wf-arr" x1="330" y1="188" x2="264" y2="188" marker-end="url(#wf-arrow)"/>
 
-          <line class="wf-arr" x1="584" y1="140" x2="522" y2="140" marker-end="url(#wf-arrow)"/>
-          <line class="wf-arr" x1="392" y1="140" x2="330" y2="140" marker-end="url(#wf-arrow)"/>
-
-          <!-- Playbook source-of-truth box + dashed leader into clause review -->
-          <rect class="wf-accent" x="380" y="238" width="150" height="56"/>
-          <text class="wf-th wf-accent-th" x="455" y="261" text-anchor="middle">Playbook</text>
-          <text class="wf-ts" x="455" y="278" text-anchor="middle">single source of truth</text>
-          <path class="wf-leader" d="M455 238 L455 74"/>
-          <text class="wf-ts" x="463" y="160" text-anchor="start">rules</text>
+          <!-- Playbook (your rules) feeder into the AI review step -->
+          <rect class="wf-accent" x="20" y="250" width="240" height="40"/>
+          <text class="wf-th wf-accent-th" x="140" y="275" text-anchor="middle">Your Playbook = your rules</text>
+          <path class="wf-leader" d="M260 270 L300 270 L300 48 L326 48" marker-end="url(#wf-arrow)"/>
+          <text class="wf-ts" x="308" y="140" text-anchor="start">rules</text>
         </svg>
-        <figcaption>The seven stages every NDA moves through. The Playbook feeds the rules the AI clause review checks against.</figcaption>
+        <figcaption>The six steps every NDA moves through. Your Playbook feeds the rules the AI checks against.</figcaption>
       </figure>
 
       <ol class="steps">
@@ -695,7 +689,7 @@
       <figure class="wf-fig">
         <svg role="img" viewBox="0 0 900 96" aria-labelledby="wf-rev-t wf-rev-d" xmlns="http://www.w3.org/2000/svg">
           <title id="wf-rev-t">Review an inbound NDA</title>
-          <desc id="wf-rev-d">Six steps left to right: open the NDA from your Inbox, open it in the review workstation, run the review, see the findings and redlines, approve it, then send it or send it for signature.</desc>
+          <desc id="wf-rev-d">Six steps left to right: open the NDA from your Inbox, open it in the review workstation, run the review, see the findings and redlines, mark it Reviewed, then send the redline or send it for signature.</desc>
           <defs>
             <marker id="wf-arrow-2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M0 0 L10 5 L0 10 z" class="wf-arrow-fill"/>
@@ -716,10 +710,10 @@
           <text class="wf-ts" x="531" y="61" text-anchor="middle">+ redlines</text>
 
           <rect class="wf-box" x="622" y="22" width="126" height="52"/>
-          <text class="wf-th" x="685" y="52" text-anchor="middle">Approve</text>
+          <text class="wf-th" x="685" y="52" text-anchor="middle">Mark Reviewed</text>
 
           <rect class="wf-accent" x="776" y="22" width="120" height="52"/>
-          <text class="wf-th wf-accent-th" x="836" y="44" text-anchor="middle">Send</text>
+          <text class="wf-th wf-accent-th" x="836" y="44" text-anchor="middle">Send Redline</text>
           <text class="wf-ts" x="836" y="61" text-anchor="middle">or for signature</text>
 
           <line class="wf-arr" x1="132" y1="48" x2="156" y2="48" marker-end="url(#wf-arrow-2)"/>
@@ -1153,7 +1147,7 @@
 
           <rect class="wf-accent" x="358" y="78" width="132" height="52"/>
           <text class="wf-th wf-accent-th" x="424" y="100" text-anchor="middle">Generate</text>
-          <text class="wf-ts" x="424" y="117" text-anchor="middle">checked .docx</text>
+          <text class="wf-ts" x="424" y="117" text-anchor="middle">verified Word file</text>
 
           <line class="wf-arr" x1="138" y1="104" x2="178" y2="104" marker-end="url(#wf-arrow-3)"/>
           <line class="wf-arr" x1="314" y1="104" x2="354" y2="104" marker-end="url(#wf-arrow-3)"/>
