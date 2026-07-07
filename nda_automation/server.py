@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from . import (
     app_settings,
+    disk_janitor,
     entity_registry,
     export_service,
     gmail_integration,
@@ -1291,6 +1292,13 @@ def _start_gmail_sync_scheduler() -> None:
     # and are reviewed only on-demand), so there is no startup recovery sweep to
     # re-enqueue them -- that sweep was the Gmail-storm re-enqueue engine and is
     # removed. The scheduler just polls Gmail for new inbound matters.
+    # Once-at-startup archive rotation (forced past the hourly rate-limit) so a
+    # boot after a disk-full incident reclaims space immediately, not on the
+    # first hourly tick. Fail-safe: never blocks scheduler startup.
+    try:
+        disk_janitor.maybe_run_archive_rotation(force=True)
+    except Exception as error:  # pragma: no cover - defensive background logging.
+        _log_background_error("Startup archive-rotation disk janitor failed", error)
     scheduler = threading.Thread(target=_gmail_sync_scheduler_loop, daemon=True)
     scheduler.start()
 
@@ -1346,6 +1354,13 @@ def _gmail_sync_scheduler_loop() -> None:
             _log_background_error("Gmail sync scheduler failed", error)
         ticks += 1
         _maybe_log_telemetry_snapshot(ticks)
+        # Reclaim /var/data by rotating the unbounded pruned-matters/ archive.
+        # Rate-limited (hourly by default) inside maybe_run_archive_rotation and
+        # fully fail-safe -- a janitor error must never break the poll cadence.
+        try:
+            disk_janitor.maybe_run_archive_rotation()
+        except Exception as error:  # pragma: no cover - defensive background logging.
+            _log_background_error("Archive-rotation disk janitor failed", error)
         time.sleep(sleep_seconds)
 
 
