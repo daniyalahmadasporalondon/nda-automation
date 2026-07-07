@@ -482,5 +482,69 @@ class ResolveIntakeLaneTests(unittest.TestCase):
             )
 
 
+class DeriveDetectionTermsTests(unittest.TestCase):
+    """The criteria "counts" list is the single source of truth for the extra
+    deterministic-detection tokens. These pin the extraction + guard contract."""
+
+    def test_default_counts_yield_distinctive_tokens(self):
+        # The built-in counts distil to acronyms + distinctive phrases/words, with
+        # the over-generic words (agreement/confidential/...) filtered out.
+        derived = intake.derive_detection_terms_from_criteria(intake.DEFAULT_INTAKE_COUNTS)
+        self.assertIn("NDA", derived)
+        self.assertIn("MNDA", derived)
+        self.assertIn("CDA", derived)
+        self.assertIn("DPA", derived)
+        self.assertIn("confidential disclosure agreement", derived)
+        # Bare generic words must NOT be emitted (they'd defeat the cost filter).
+        casefolded = {t.casefold() for t in derived}
+        for generic in ("agreement", "document", "contract", "confidential", "information", "party"):
+            self.assertNotIn(generic, casefolded)
+
+    def test_new_type_extracts_its_keyword(self):
+        derived = intake.derive_detection_terms_from_criteria(["a secrecy undertaking"])
+        # The distinctive phrase and its distinctive word survive; "undertaking"
+        # (denylisted) does not appear as a bare token.
+        self.assertIn("secrecy undertaking", derived)
+        self.assertIn("secrecy", derived)
+        self.assertNotIn("undertaking", {t.casefold() for t in derived})
+
+    def test_denylist_filters_generic_only_entry(self):
+        # An entry made only of generic words adds NOTHING (the escape hatch is not
+        # unlocked for every attachment).
+        derived = intake.derive_detection_terms_from_criteria(
+            ["any agreement or contract document containing confidential information"]
+        )
+        self.assertEqual(derived, [])
+
+    def test_dedupe_is_casefold_and_first_case_wins(self):
+        derived = intake.derive_detection_terms_from_criteria(
+            ["a secrecy undertaking", "A SECRECY pact"]
+        )
+        keys = [t.casefold() for t in derived]
+        self.assertEqual(len(keys), len(set(keys)))
+        # First occurrence's casing is preserved.
+        self.assertIn("secrecy", derived)
+        self.assertNotIn("SECRECY", derived)
+
+    def test_short_tokens_rejected(self):
+        # Tokens under MIN_DERIVED_TERM_CHARS never survive.
+        derived = intake.derive_detection_terms_from_criteria(["an X or Y agreement"])
+        self.assertEqual(derived, [])
+
+    def test_cap_bounds_the_list(self):
+        many = [f"a widgetzz{i} undertaking" for i in range(200)]
+        derived = intake.derive_detection_terms_from_criteria(many)
+        self.assertLessEqual(len(derived), intake.MAX_DERIVED_DETECTION_TERMS)
+
+    def test_empty_and_garbage_yield_floor_only(self):
+        # Anything that isn't a usable list -> [] so the caller keeps the floor.
+        self.assertEqual(intake.derive_detection_terms_from_criteria([]), [])
+        self.assertEqual(intake.derive_detection_terms_from_criteria(None), [])
+        self.assertEqual(intake.derive_detection_terms_from_criteria("not a list"), [])
+        self.assertEqual(intake.derive_detection_terms_from_criteria(123), [])
+        # A list of empty / whitespace entries contributes nothing.
+        self.assertEqual(intake.derive_detection_terms_from_criteria(["", "   ", None]), [])
+
+
 if __name__ == "__main__":
     unittest.main()

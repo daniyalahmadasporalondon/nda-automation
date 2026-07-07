@@ -103,6 +103,74 @@ TRIAGE_MIN_NDA_SCORE = 40
 MIN_MESSAGE_BACKED_CONTENT_SCORE = 55
 
 
+# ---------------------------------------------------------------------------
+# Criteria-derived detection terms (AI-WIDENING layer)
+# ---------------------------------------------------------------------------
+# The admin's intake "counts as an NDA" criteria are the single source of truth for
+# the deterministic keyword layer. The hardcoded NDA_DETECTION_TERMS floor is the
+# UNION BASE (coverage can only grow, never shrink); tokens distilled from the
+# criteria are unioned on top, and they also widen the escape-hatch explicit-signal
+# set so a criteria-named NDA type mentioned in an email routes the attachment to
+# the AI even when the tuned weighted scorer under-scores it. The whole layer is
+# FAIL-SOFT: any error deriving/reading criteria collapses to the floor ONLY.
+# The tuned weighted scorer (ATTACHMENT_*_SIGNALS) is deliberately NOT touched.
+
+
+def _derived_detection_terms() -> list[str]:
+    """Extra detection tokens derived from the admin's intake "counts" criteria.
+
+    FAIL-SOFT: the intake criteria are the single source of truth for the keyword
+    layer, but this MUST never break detection. Any error reading settings or
+    deriving tokens returns ``[]`` so the caller falls back to the hardcoded floor
+    ONLY -- byte-identical to the box-removed base. The returned tokens are
+    AI-WIDENING (they only ever add coverage on top of the floor).
+    """
+    try:
+        counts = app_settings.gmail_intake_counts()
+        return gmail_intake_classifier.derive_detection_terms_from_criteria(counts)
+    except Exception:  # noqa: BLE001 - detection must never throw on a settings read
+        return []
+
+
+def _effective_detection_patterns() -> tuple[tuple[str, str], ...]:
+    """The floor detection vocabulary UNION the derived criteria tokens.
+
+    The hardcoded ``NDA_DETECTION_TERMS`` floor is ALWAYS the union base (coverage
+    can only grow, never shrink); derived tokens whose casefolded name already
+    matches a floor term are dropped so the floor's tuned pattern wins. On any
+    derivation error the floor is returned unchanged.
+    """
+    patterns: list[tuple[str, str]] = list(NDA_DETECTION_TERMS)
+    seen = {term.casefold() for term, _pattern in NDA_DETECTION_TERMS}
+    for term in _derived_detection_terms():
+        key = term.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        patterns.append((term, gmail_intake_classifier._detection_term_pattern(term)))
+    return tuple(patterns)
+
+
+def _effective_explicit_nda_terms() -> set[str]:
+    """``EXPLICIT_NDA_TERMS`` widened with the derived criteria tokens.
+
+    The escape-hatch explicit-signal check (``_metadata_has_explicit_nda_signal``)
+    intersects the detected terms against this set. Adding the derived tokens is
+    what lets a criteria-named NDA type mentioned in an email fire the escape
+    hatch even when the tuned weighted scorer under-scores the attachment.
+    AI-WIDENING ONLY: the floor set is always included, so an explicit signal that
+    fired before still fires. On any derivation error the floor set is returned
+    unchanged.
+
+    The derived tokens are added in the EXACT string ``_nda_terms_in_text`` emits
+    (their original derived case), because the escape-hatch check is an exact
+    ``in`` membership test against the stored ``gmail_detection_terms``. The floor
+    ``EXPLICIT_NDA_TERMS`` is likewise case-exact against the floor detector's
+    emitted terms.
+    """
+    return EXPLICIT_NDA_TERMS | set(_derived_detection_terms())
+
+
 def _gmail_search_terms_query(terms: list[str]) -> str:
     query_terms: list[str] = []
     for term in terms:
@@ -507,9 +575,14 @@ def gmail_inbound_parsing_summary() -> dict[str, object]:
         ],
         # The scoring/ranking vocabulary surfaced for display. This is a fixed
         # built-in list (DEFAULT_GMAIL_INBOUND_SEARCH_TERMS), not an admin setting;
-        # it is NOT a fetch gate (see NDA_MESSAGE_QUERY).
+        # it is NOT a fetch gate (see NDA_MESSAGE_QUERY). Left on the constant so the
+        # payload shape / existing membership assertions stay stable.
         "terms": list(app_settings.DEFAULT_GMAIL_INBOUND_SEARCH_TERMS),
-        "deterministic_terms": [term for term, _pattern in NDA_DETECTION_TERMS],
+        # The EFFECTIVE deterministic detection vocabulary: the hardcoded floor plus
+        # any tokens the admin's intake "counts" criteria produce (fail-soft to the
+        # floor alone). This read-only readout shows the admin what their criteria
+        # add to the keyword layer.
+        "deterministic_terms": [term for term, _pattern in _effective_detection_patterns()],
         "mode": (
             "OpenRouter reviews subject, body, snippet, attachment names, extracted attachment text, and deterministic "
             "signals before selecting import attachments. Deterministic rules are used as fallback."
@@ -1206,7 +1279,10 @@ def _esign_notification_nda_hit(
     if not any(source in {"subject", "body", "snippet"} for source in sources):
         return False
     terms = detection.get("terms") if isinstance(detection.get("terms"), list) else []
-    return any(term in EXPLICIT_NDA_TERMS for term in terms)
+    # Same widened explicit set as _metadata_has_explicit_nda_signal so a
+    # criteria-named NDA type in an e-sign notification body also captures.
+    explicit = _effective_explicit_nda_terms()
+    return any(term in explicit for term in terms)
 
 
 def _excluded_message_content_probe(
@@ -1541,7 +1617,12 @@ def _metadata_has_explicit_nda_signal(metadata: dict[str, str] | None) -> bool:
     if not any(source in {"subject", "body", "snippet"} for source in sources):
         return False
     terms = _metadata_csv_values(metadata.get("gmail_detection_terms"))
-    return any(term in EXPLICIT_NDA_TERMS for term in terms)
+    # Intersect against the floor explicit set WIDENED with the derived criteria
+    # tokens, so a criteria-named NDA type ("secrecy undertaking") announced in the
+    # subject/body/snippet fires the escape hatch even when the weighted scorer
+    # under-scores the attachment. AI-widening only (the floor set is always in).
+    explicit = _effective_explicit_nda_terms()
+    return any(term in explicit for term in terms)
 
 
 def _attachment_explicit_nda_hit(metadata: dict[str, str] | None, filename: str) -> bool:
@@ -1643,8 +1724,10 @@ def _nda_terms_in_text(text: object) -> list[str]:
     if not value:
         return []
     matches: list[str] = []
-    # The hardcoded detection vocabulary (regex word-boundary patterns).
-    for term, pattern in NDA_DETECTION_TERMS:
+    # The hardcoded floor vocabulary UNION any tokens derived from the admin's
+    # intake "counts" criteria (fail-soft: floor-only on any derivation error).
+    # The floor is always the union base, so this only ever WIDENS what is caught.
+    for term, pattern in _effective_detection_patterns():
         if re.search(pattern, value, flags=re.IGNORECASE) and term not in matches:
             matches.append(term)
     return matches

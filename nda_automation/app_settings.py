@@ -625,6 +625,25 @@ def gmail_intake_playbook() -> str:
     return gmail_intake_classifier.assemble_intake_criteria(rule, list(counts), list(excludes))
 
 
+def gmail_intake_counts() -> list[str]:
+    """The effective "counts as an NDA" prose list (stored value or default).
+
+    This is the *structured* source the deterministic keyword layer derives its
+    extra detection tokens from (see
+    ``gmail_intake_classifier.derive_detection_terms_from_criteria``). Precedence
+    mirrors :func:`gmail_intake_playbook`: an empty stored ``intake_counts`` means
+    "use the built-in default". The legacy freeform ``intake_playbook`` override
+    carries no structured list, so it too falls back to the default counts -- the
+    derived layer is AI-widening only, so the built-in floor stays the base
+    regardless.
+    """
+    from . import gmail_intake_classifier
+
+    settings = gmail_settings()
+    counts = settings.get("intake_counts") or gmail_intake_classifier.DEFAULT_INTAKE_COUNTS
+    return list(counts)
+
+
 def gmail_sync_interval_seconds(frequency: object | None = None) -> int:
     frequency_key = frequency if isinstance(frequency, str) else gmail_settings()["sync_frequency"]
     return GMAIL_SYNC_FREQUENCIES.get(frequency_key, GMAIL_SYNC_FREQUENCIES[DEFAULT_GMAIL_SETTINGS["sync_frequency"]])

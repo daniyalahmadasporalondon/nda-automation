@@ -1051,3 +1051,122 @@ def test_backfill_skipped_for_explicit_caller_query(import_limit_20):
     assert result["query"] == "in:inbox custom"
     assert "backfill" not in result
     assert transport.backfill_records == []
+
+
+# ===========================================================================
+# CRITERIA-DERIVED DETECTION TERMS
+# The intake "counts as an NDA" criteria are the single source of truth for the
+# deterministic keyword layer: the built-in floor is the union base (coverage can
+# only grow), derivation is fail-soft, and the widening is AI-widening only.
+# ===========================================================================
+
+
+def _detection_metadata(body: str) -> dict[str, str]:
+    """Build the message metadata the escape-hatch reads, exactly as the poll path
+    would after ``_message_nda_detection`` scans a body."""
+    terms = gmail_integration._nda_terms_in_text(body)
+    return {
+        "gmail_detection_sources": "body",
+        "gmail_detection_terms": ", ".join(terms),
+    }
+
+
+def _re_hit(pattern: str, text: str) -> bool:
+    import re
+
+    return bool(re.search(pattern, text, flags=re.IGNORECASE))
+
+
+def test_floor_recall_preserved_as_union_base():
+    # Every floor term the detector caught before is still caught, and the derived
+    # union is a strict SUPERSET of the floor.
+    for phrase in (
+        "please review the attached non-disclosure agreement",
+        "a confidentiality agreement",
+        "this is confidential",
+        "sign the NDA",
+        "mutual non-disclosure terms",
+    ):
+        floor_terms = [
+            term for term, pattern in gmail_integration.NDA_DETECTION_TERMS if _re_hit(pattern, phrase)
+        ]
+        got = gmail_integration._nda_terms_in_text(phrase)
+        assert set(floor_terms) <= set(got), (phrase, floor_terms, got)
+
+    effective = {term for term, _ in gmail_integration._effective_detection_patterns()}
+    floor = {term for term, _ in gmail_integration.NDA_DETECTION_TERMS}
+    assert floor <= effective
+    explicit = gmail_integration._effective_explicit_nda_terms()
+    assert gmail_integration.EXPLICIT_NDA_TERMS <= explicit
+
+
+def test_criteria_new_type_fires_escape_hatch(monkeypatch):
+    from nda_automation import gmail_intake_classifier
+
+    body = "Please countersign the attached secrecy undertaking today."
+
+    # BEFORE: the default criteria carry no "secrecy" type, so the body produces no
+    # detection term and the explicit escape-hatch stays shut.
+    assert gmail_integration._nda_terms_in_text(body) == []
+    assert gmail_integration._metadata_has_explicit_nda_signal(_detection_metadata(body)) is False
+
+    # AFTER: the admin adds "a secrecy undertaking" to the counts list.
+    new_counts = list(gmail_intake_classifier.DEFAULT_INTAKE_COUNTS) + ["a secrecy undertaking"]
+    monkeypatch.setattr(app_settings, "gmail_intake_counts", lambda: new_counts)
+
+    got = gmail_integration._nda_terms_in_text(body)
+    assert "secrecy undertaking" in got
+    # The derived term now fires the AI-widening escape hatch.
+    assert gmail_integration._metadata_has_explicit_nda_signal(_detection_metadata(body)) is True
+
+
+def test_cost_guard_generic_criteria_unlocks_nothing(monkeypatch):
+    from nda_automation import gmail_intake_classifier
+
+    # A naive admin entry made only of generic words.
+    bad_counts = list(gmail_intake_classifier.DEFAULT_INTAKE_COUNTS) + [
+        "any agreement or contract document containing confidential information"
+    ]
+    monkeypatch.setattr(app_settings, "gmail_intake_counts", lambda: bad_counts)
+
+    # None of the generic words are added as detection tokens...
+    effective = {term.casefold() for term, _ in gmail_integration._effective_detection_patterns()}
+    for generic in ("agreement", "document", "contract", "information"):
+        assert generic not in effective
+
+    # ...so a plain business email does NOT fire the escape hatch.
+    for probe in ("Please review this agreement.", "See attached document.", "Contract enclosed."):
+        assert gmail_integration._metadata_has_explicit_nda_signal(_detection_metadata(probe)) is False
+
+
+def test_detection_is_fail_soft_to_floor(monkeypatch):
+    # Any error reading/deriving criteria collapses to the built-in floor ONLY --
+    # byte-identical to the box-removed base; the detection path never throws.
+    def _boom():
+        raise RuntimeError("settings store is down")
+
+    monkeypatch.setattr(app_settings, "gmail_intake_counts", _boom)
+
+    assert gmail_integration._derived_detection_terms() == []
+    assert tuple(gmail_integration._effective_detection_patterns()) == tuple(
+        gmail_integration.NDA_DETECTION_TERMS
+    )
+    assert gmail_integration._effective_explicit_nda_terms() == gmail_integration.EXPLICIT_NDA_TERMS
+    # Floor detection still functions.
+    assert gmail_integration._nda_terms_in_text("attached NDA") == ["NDA"]
+
+
+def test_parsing_summary_surfaces_effective_terms(monkeypatch):
+    from nda_automation import gmail_intake_classifier
+
+    new_counts = list(gmail_intake_classifier.DEFAULT_INTAKE_COUNTS) + ["a secrecy undertaking"]
+    monkeypatch.setattr(app_settings, "gmail_intake_counts", lambda: new_counts)
+
+    summary = gmail_integration.gmail_inbound_parsing_summary()
+    det = summary["deterministic_terms"]
+    # Floor terms remain; the derived criteria token is now surfaced too.
+    assert "NDA" in det
+    assert "confidentiality" in det
+    assert "secrecy undertaking" in det
+    # The separate "terms" readout stays on the fixed constant (payload-shape stable).
+    assert summary["terms"] == list(app_settings.DEFAULT_GMAIL_INBOUND_SEARCH_TERMS)
