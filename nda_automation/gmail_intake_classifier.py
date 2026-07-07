@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
@@ -123,6 +124,232 @@ DEFAULT_INTAKE_EXCLUDES = [
     "a project proposal or statement",
     "any commercial contract whose main body is about performing work, supplying goods or services, granting rights, or paying money, with confidentiality as just one supporting clause",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Criteria -> deterministic-detection derivation
+# ---------------------------------------------------------------------------
+# The admin-editable "counts as an NDA" list (``intake_counts``) is prose, e.g.
+# "a confidential disclosure agreement (CDA)". :func:`derive_detection_terms_from_criteria`
+# distils each entry into a handful of short match-tokens (distinctive keywords,
+# acronyms, tight phrases) that the Gmail deterministic detector can UNION on top
+# of its hardcoded floor. This makes the intake criteria the single source of
+# truth for the keyword layer WITHOUT auto-deriving numeric weights (explicitly
+# out of scope) and WITHOUT ever shrinking coverage: the floor is the union base,
+# the derived tokens can only add.
+#
+# GUARD: the derived tokens are AI-WIDENING -- they only ever route MORE
+# attachments to the AI, never fewer. To keep them from defeating the tuned
+# cost-scorer they are filtered against ``DETECTION_TERM_DENYLIST`` (over-generic
+# words that appear in almost every business document), dropped when shorter than
+# ``MIN_DERIVED_TERM_CHARS``, casefold-deduped, and capped at
+# ``MAX_DERIVED_DETECTION_TERMS``.
+
+# Over-generic tokens that must NEVER become detection terms: each is common in
+# ordinary commercial paperwork, so admitting it would unlock the AI escape hatch
+# (and inflate the message-signal basis) for essentially every attachment. Stored
+# casefolded; the guard compares casefolded.
+DETECTION_TERM_DENYLIST = frozenset(
+    {
+        "agreement",
+        "agreements",
+        "document",
+        "documents",
+        "contract",
+        "contracts",
+        "confidential",
+        "confidentiality",
+        "information",
+        "party",
+        "parties",
+        "letter",
+        "letters",
+        "form",
+        "forms",
+        "data",
+        "deed",
+        "deeds",
+        "undertaking",
+        "undertakings",
+        "mutual",
+        "one-way",
+        "oneway",
+        "processing",
+        "substance",
+        "obligation",
+        "obligations",
+        "typical",
+        "example",
+        "examples",
+        "commercial",
+        "business",
+        "company",
+        "client",
+        "vendor",
+        "service",
+        "services",
+        "general",
+        "standard",
+    }
+)
+
+# Filler words dropped before a phrase is tokenised. These are not "banned"
+# tokens (the denylist is), just glue words that carry no match signal.
+_DERIVE_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "or",
+        "the",
+        "of",
+        "and",
+        "is",
+        "are",
+        "be",
+        "to",
+        "for",
+        "with",
+        "whose",
+        "that",
+        "this",
+        "it",
+        "as",
+        "on",
+        "in",
+        "by",
+        "any",
+        "its",
+        "their",
+        "which",
+        "when",
+        # Common criteria-prose glue verbs / participles -- carry no match signal
+        # and would otherwise leak in as junk single-word tokens.
+        "containing",
+        "protecting",
+        "covering",
+        "governing",
+        "including",
+        "regarding",
+        "concerning",
+        "essentially",
+        "only",
+        "just",
+        "such",
+        "other",
+        "main",
+        "real",
+        "genuine",
+    }
+)
+
+MIN_DERIVED_TERM_CHARS = 3
+MAX_DERIVED_DETECTION_TERMS = 40
+
+
+def _iter_criteria_phrase_tokens(phrase: str) -> list[str]:
+    """Yield candidate match-tokens from ONE prose "counts" entry.
+
+    Three token shapes are harvested:
+
+    * Parenthesised acronyms (``(CDA)``, ``(DPA)``, ``MNDA``) -- the sharpest,
+      most distinctive signal an NDA type carries.
+    * Multi-word noun phrases before an acronym / clause break, kept whole so a
+      distinctive phrase like ``secrecy undertaking`` or ``confidential
+      disclosure`` survives as a single token (word-boundary matched later).
+    * The individual non-filler words of those phrases, so a lone distinctive
+      keyword (``secrecy``, ``proprietary``) still contributes.
+
+    Filler words are dropped; the denylist / length / dedupe guard runs later in
+    :func:`derive_detection_terms_from_criteria`, so this stays purely
+    extractive.
+    """
+    text = str(phrase or "")
+    tokens: list[str] = []
+
+    # 1) Parenthesised acronyms, and any all-caps run (NDA, MNDA, CDA, DPA).
+    for acronym in re.findall(r"\b[A-Z][A-Z0-9]{1,}\b", text):
+        tokens.append(acronym)
+
+    # Strip parentheticals now so the phrase pass doesn't re-ingest "(CDA)".
+    stripped = re.sub(r"\([^)]*\)", " ", text)
+    # Split into clause-ish chunks on commas / conjunctions / "whose"..."such".
+    for chunk in re.split(r"[,;:.]|\bor\b|\band\b|\bwhose\b", stripped):
+        words = [w for w in re.findall(r"[A-Za-z][A-Za-z-]*", chunk)]
+        meaningful = [w for w in words if w.casefold() not in _DERIVE_STOPWORDS]
+        if not meaningful:
+            continue
+        # 2) The whole distinctive phrase (2..4 words) kept as one token.
+        if 2 <= len(meaningful) <= 4:
+            tokens.append(" ".join(meaningful))
+        # 3) Each meaningful single word.
+        tokens.extend(meaningful)
+    return tokens
+
+
+def _detection_term_pattern(term: str) -> str:
+    """A word-boundary, case-insensitive regex for a derived match-token.
+
+    Mirrors the shape of the hardcoded floor patterns: internal whitespace is
+    made flexible (one-or-more spaces) so "secrecy   undertaking" still matches,
+    and every non-alphanumeric run is escaped. Word boundaries anchor both ends
+    so a short token can't match inside a larger word.
+    """
+    parts = [re.escape(part) for part in str(term).split()]
+    core = r"\s+".join(parts)
+    return rf"\b{core}\b"
+
+
+def derive_detection_terms_from_criteria(counts: object) -> list[str]:
+    """Distil the prose "counts as an NDA" list into guarded detection tokens.
+
+    Returns a deduped, denylisted, length- and count-capped list of short
+    match-tokens (casefold-unique, original-case preserved for the first
+    occurrence). NEVER raises: any malformed entry is skipped. An empty / garbage
+    input yields ``[]`` so the caller falls back to the hardcoded floor alone.
+
+    The result is AI-WIDENING ONLY -- the Gmail detector unions it ON TOP OF its
+    built-in floor, so coverage can only grow.
+    """
+    if not isinstance(counts, (list, tuple)):
+        return []
+
+    derived: list[str] = []
+    seen: set[str] = set()
+    for entry in counts:
+        # Only genuine prose strings contribute; a non-string entry (None, a number,
+        # a nested structure) is skipped rather than str()-coerced into junk like
+        # "None"/"123". The intake-counts list is string-cleaned upstream, so this is
+        # purely defensive.
+        if not isinstance(entry, str):
+            continue
+        try:
+            candidates = _iter_criteria_phrase_tokens(entry)
+        except Exception:  # pragma: no cover - defensive; extraction is pure
+            continue
+        for token in candidates:
+            cleaned = " ".join(str(token).split()).strip()
+            if len(cleaned) < MIN_DERIVED_TERM_CHARS:
+                continue
+            key = cleaned.casefold()
+            if key in seen:
+                continue
+            # Reject tokens that would defeat the cost filter. A token is kept only
+            # when it carries at least one DISTINCTIVE word: a word that is neither
+            # denylisted (over-generic) nor too short to be a signal. So a bare
+            # "agreement" is dropped, a phrase of only generic/short words
+            # ("Y agreement") is dropped, but a distinctive phrase
+            # ("confidential disclosure agreement", on "disclosure") survives.
+            words = key.split()
+            if not any(
+                word not in DETECTION_TERM_DENYLIST and len(word) >= MIN_DERIVED_TERM_CHARS
+                for word in words
+            ):
+                continue
+            seen.add(key)
+            derived.append(cleaned)
+            if len(derived) >= MAX_DERIVED_DETECTION_TERMS:
+                return derived
+    return derived
 
 
 def assemble_intake_criteria(rule: str, counts: list[str], excludes: list[str]) -> str:
