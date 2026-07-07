@@ -223,7 +223,6 @@ function mountController(initialStatus) {
   const enabledCopy = copySpan("enabled-copy");
   const importLimitCopy = copySpan("import-limit-copy");
   const syncWindowCopy = copySpan("sync-window-copy");
-  const searchTermsCopy = copySpan("search-terms-copy");
   const intakeCopy = copySpan("intake-copy");
   const inboundConfigured = copySpan("inbound-configured");
   const outboundConfigured = copySpan("outbound-configured");
@@ -231,7 +230,6 @@ function mountController(initialStatus) {
   gmailCard.appendChild(enabledCopy);
   gmailCard.appendChild(importLimitCopy);
   gmailCard.appendChild(syncWindowCopy);
-  gmailCard.appendChild(searchTermsCopy);
   gmailCard.appendChild(intakeCopy);
   gmailCard.appendChild(inboundConfigured);
   gmailCard.appendChild(outboundConfigured);
@@ -251,12 +249,6 @@ function mountController(initialStatus) {
   const gmailSyncWindowForm = new FakeElement("form");
   gmailSyncWindowSaveButton.addEventListener("click", async () => {
     await gmailSyncWindowForm.submit();
-  });
-  const gmailSearchTermsInput = new FakeElement("textarea");
-  const gmailSearchSaveButton = new FakeElement("button");
-  const gmailSearchForm = new FakeElement("form");
-  gmailSearchSaveButton.addEventListener("click", async () => {
-    await gmailSearchForm.submit();
   });
   const gmailOverall = new FakeElement("span");
 
@@ -318,9 +310,6 @@ function mountController(initialStatus) {
     gmailSyncWindowForm,
     gmailSyncWindowInput,
     gmailSyncWindowSaveButton,
-    gmailSearchForm,
-    gmailSearchTermsInput,
-    gmailSearchSaveButton,
     gmailIntakeForm,
     gmailIntakePanels,
     gmailIntakeRuleInput,
@@ -341,13 +330,9 @@ function mountController(initialStatus) {
     gmailSyncWindowInput,
     gmailSyncWindowSaveButton,
     gmailSyncWindowForm,
-    gmailSearchTermsInput,
-    gmailSearchSaveButton,
-    gmailSearchForm,
     enabledCopy,
     importLimitCopy,
     syncWindowCopy,
-    searchTermsCopy,
     inboundConfigured,
     outboundConfigured,
     inboundEmail,
@@ -593,55 +578,6 @@ const ENV_CONNECTED = {
       ui.importLimitCopy.textContent,
       "Import limit capped at 40 (max safe per-poll value).",
       "the cap warning is shown inline next to the input"
-    );
-  });
-
-  await test("empty search terms are rejected client-side (no silent default)", async () => {
-    // Honesty (Bug 2): clearing the field must NOT post (which would let the
-    // server default it back); the admin sees a clear inline message instead.
-    const ui = mountController(ENV_CONNECTED);
-    ui.gmailSearchTermsInput.value = "   \n  ";
-    const calls = installFetch(() => ({}));
-
-    await ui.gmailSearchSaveButton.click();
-    await flush();
-
-    assert.ok(
-      !calls.some((c) => c.url === "/api/gmail/settings"),
-      "an empty terms list must not be posted"
-    );
-    assert.match(
-      ui.searchTermsCopy.textContent,
-      /can't be empty/,
-      "shows the honest empty-field message inline"
-    );
-  });
-
-  await test("a 400 from the server on search terms surfaces inline", async () => {
-    // If the field is non-empty client-side but the server still rejects it, the
-    // 400 message must land inline so the admin knows the save did not take.
-    const ui = mountController(ENV_CONNECTED);
-    ui.gmailSearchTermsInput.value = "alpha";
-    installFetch((url) => {
-      if (url === "/api/gmail/settings") {
-        return {
-          ok: false,
-          status: 400,
-          payload: { error: "Add at least one Gmail search term — it can't be empty." },
-        };
-      }
-      if (url === "/api/gmail/status") return { payload: { gmail: { ...ENV_CONNECTED } } };
-      if (url === "/api/matters") return { payload: { matters: [] } };
-      return {};
-    });
-
-    await ui.gmailSearchSaveButton.click();
-    await flush();
-
-    assert.match(
-      ui.searchTermsCopy.textContent,
-      /can't be empty/,
-      "the server 400 is surfaced inline next to the field"
     );
   });
 
