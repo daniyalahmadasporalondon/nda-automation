@@ -451,8 +451,10 @@
     <input class="guide-search" id="guideSearch" type="search" placeholder="Search the guide…" aria-label="Search the guide">
     <div class="no-results-note" id="noResults">No tabs match that search.</div>
     <nav class="tabs" id="tabNav">
+      <div class="group-label">Getting started</div>
+      <button data-tab="quickstart" class="active"><span class="num">0</span>Quick Start — Run It Locally</button>
       <div class="group-label">Orientation</div>
-      <button data-tab="architecture" class="active"><span class="num">1</span>Architecture &amp; Request Flow</button>
+      <button data-tab="architecture"><span class="num">1</span>Architecture &amp; Request Flow</button>
       <button data-tab="playbook"><span class="num">2</span>Playbook: Source of Truth</button>
       <div class="group-label">The review engine</div>
       <button data-tab="ai-review"><span class="num">3</span>AI Review Pipeline</button>
@@ -476,8 +478,109 @@
       <p>How the system is wired, with real file:line and symbol references against the deployed code. Pick a topic on the left.</p>
     </header>
 
+    <!-- ============ 0. QUICK START ============ -->
+    <section class="tab-panel active" id="tab-quickstart">
+      <h2>Quick start — run it locally</h2>
+      <p class="panel-lede">Zero build step, one Python process. From a fresh clone you are signed in and reviewing NDAs in about five commands. There is no Node build and no database — durable state is JSON files under a data dir.</p>
+
+      <figure class="wf-fig">
+        <svg role="img" viewBox="0 0 720 108" xmlns="http://www.w3.org/2000/svg" aria-labelledby="wf-boot-t wf-boot-d">
+          <title id="wf-boot-t">Local bootstrap: clone to signed in</title>
+          <desc id="wf-boot-d">Clone the repo, install the package with the PDF and Gmail extras, copy and source the dotenv file, run the server module on a local port, then open the loopback address and sign in — loopback is auth-exempt for local dev.</desc>
+          <defs>
+            <marker id="wf-cv0" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path class="wf-chevron" d="M0,0 L6,3 L0,6 Z"></path>
+            </marker>
+          </defs>
+          <rect class="wf-box" x="6" y="30" width="118" height="52" rx="8"></rect>
+          <text class="wf-th" x="65" y="52" text-anchor="middle">Clone</text>
+          <text class="wf-ts" x="65" y="68" text-anchor="middle">git clone</text>
+
+          <rect class="wf-box" x="150" y="30" width="126" height="52" rx="8"></rect>
+          <text class="wf-th" x="213" y="52" text-anchor="middle">Install extras</text>
+          <text class="wf-ts" x="213" y="68" text-anchor="middle">pip install -e</text>
+
+          <rect class="wf-box" x="302" y="30" width="118" height="52" rx="8"></rect>
+          <text class="wf-th" x="361" y="52" text-anchor="middle">.env</text>
+          <text class="wf-ts" x="361" y="68" text-anchor="middle">cp · source</text>
+
+          <rect class="wf-box" x="446" y="30" width="118" height="52" rx="8"></rect>
+          <text class="wf-th" x="505" y="52" text-anchor="middle">Run</text>
+          <text class="wf-ts" x="505" y="68" text-anchor="middle">server --port</text>
+
+          <rect class="wf-accent" x="590" y="30" width="124" height="52" rx="8"></rect>
+          <text class="wf-th on-accent" x="652" y="52" text-anchor="middle">Sign in</text>
+          <text class="wf-ts" x="652" y="68" text-anchor="middle">127.0.0.1 · exempt</text>
+
+          <path class="wf-arr" marker-end="url(#wf-cv0)" d="M124,56 L146,56"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv0)" d="M276,56 L298,56"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv0)" d="M420,56 L442,56"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv0)" d="M564,56 L586,56"></path>
+        </svg>
+        <figcaption>The local bootstrap. On a loopback bind the auth layer is exempt (<code>_is_loopback_host</code> matches <code>127.0.0.1</code>/<code>::1</code>/<code>localhost</code>, http_auth.py), so you don't need OAuth configured just to open the app locally.</figcaption>
+      </figure>
+
+      <h3>The five commands</h3>
+      <div class="card tight">
+        <p><strong>Requires Python 3.9+.</strong> DOCX review/export work out of the box (<code>python-docx</code> is a core dep); PDF and Gmail are optional extras.</p>
+        <p>
+          <code>git clone &lt;repo-url&gt; &amp;&amp; cd nda-automation</code><br>
+          <code>python3 -m pip install -e ".[pdf,gmail]"</code><br>
+          <code>cp .env.example .env</code>&nbsp; <em>(then fill in keys — <code>.env</code> is gitignored)</em><br>
+          <code>set -a; source .env; set +a</code><br>
+          <code>python -m nda_automation.server --port 8787</code>
+        </p>
+        <p>Then open <code>http://127.0.0.1:8787</code>.</p>
+      </div>
+
+      <h3>The extras matrix</h3>
+      <p>The optional-dependency extras are declared in <code>pyproject.toml</code> (<code>[project.optional-dependencies]</code>). Pick the set you need:</p>
+      <table>
+        <thead><tr><th>Extra</th><th>Adds</th><th>When</th></tr></thead>
+        <tbody>
+          <tr><td>.[pdf]</td><td>pypdf + PyMuPDF + pdf2docx</td><td>PDF intake &amp; PDF→DOCX reconstruction.</td></tr>
+          <tr><td>.[gmail]</td><td>Google API client</td><td>The Gmail inbound connector.</td></tr>
+          <tr><td>.[pdf,gmail]</td><td>Both of the above</td><td>What the Render blueprint installs — the usual local set.</td></tr>
+          <tr><td>.[pdf,gmail,tables]</td><td>+ camelot (2.x) table extra</td><td>The full prod-Docker set (adds <code>NDA_TABLE_AUGMENTATION_ENABLED</code> backends). Heavier resolve — the PyMuPDF pin exists so this co-resolves.</td></tr>
+        </tbody>
+      </table>
+      <div class="callout warn">
+        <strong>Without <code>.[pdf]</code>, PDF uploads fail</strong> with a clear "PDF support is not installed" error, and PDF→DOCX reconstruction is unavailable — download/export routes say so explicitly rather than serving extracted text as a fake Word conversion. The prod Docker image installs the full <code>.[pdf,gmail,tables]</code> set; the <code>docker-build</code> CI job is what catches a co-resolution/ABI break there before it ships.
+      </div>
+
+      <h3>Minimum <code>.env</code> to enable AI review</h3>
+      <p>The <code>cp .env.example .env</code> step seeds a full annotated file; the review-relevant floor is:</p>
+      <div class="card tight">
+        <p>
+          <code>NDA_AI_REVIEW_ENABLED=true</code><br>
+          <code>NDA_AI_PROVIDER=openrouter</code><br>
+          <code>NDA_AI_MODEL=x-ai/grok-4.3</code>&nbsp; <em>(the shipped local default; see the divergence note below)</em><br>
+          <code>OPENROUTER_API_KEY="your-openrouter-api-key"</code>
+        </p>
+      </div>
+      <div class="callout">
+        <strong>Local reviewer model ≠ prod.</strong> <code>.env.example</code> deliberately ships the cheaper <code>x-ai/grok-4.3</code> for local dev, while the code default and prod both run <code>anthropic/claude-opus-4.8-fast</code>. If a local review disagrees with prod on a borderline clause, that is the model difference, not a bug — set <code>NDA_AI_MODEL</code> to the Opus model to mirror prod. (Fuller treatment in <strong>AI Review Pipeline</strong> and the <strong>Change an AI model</strong> recipe.)
+      </div>
+
+      <h3>Repo map — the files you'll reach for first</h3>
+      <table>
+        <thead><tr><th>File</th><th>What it is</th></tr></thead>
+        <tbody>
+          <tr><td>pyproject.toml</td><td>Package metadata + the optional-dependency <strong>extras</strong> (<code>pdf</code> / <code>gmail</code> / <code>tables</code>).</td></tr>
+          <tr><td>.env.example</td><td>The annotated dotenv template — every knob with its default and a comment.</td></tr>
+          <tr><td>clause_taxonomy.yaml</td><td>The clause taxonomy groups the checker/engine key against.</td></tr>
+          <tr><td>requirements-ci.txt</td><td>The pinned constraint set CI installs against (reproducible builds).</td></tr>
+          <tr><td>scripts/hooks/pre-commit</td><td>The repo's pre-commit hook (wire it into <code>.git/hooks</code> to run the local guards).</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout">
+        <strong>Next stops.</strong> <strong>Architecture</strong> for the request flow and the static-asset ritual; <strong>Deploy &amp; Ops</strong> for the full env-var map and incident levers; <strong>Data Model &amp; Security</strong> for auth/OAuth setup; <strong>How-To Recipes</strong> for running the tests the right way on this box.
+      </div>
+    </section>
+
     <!-- ============ 1. ARCHITECTURE ============ -->
-    <section class="tab-panel active" id="tab-architecture">
+    <section class="tab-panel" id="tab-architecture">
       <h2>Architecture &amp; request flow</h2>
       <p class="panel-lede">The backend is a single Python process built on the standard-library HTTP server — no Django, no Flask, no ASGI. The frontend is plain static files served by the same process. There is no build step on either side.</p>
 
@@ -685,6 +788,46 @@
       <h3>The packet</h3>
       <p>Before the model is called, the app assembles an <strong>assessment packet</strong> via <code>build_ai_assessment_packet()</code> in <code>nda_automation/ai_assessment_prompt.py</code>. It bundles: the clause requirements / playbook rules (<code>playbook_rules_for_ai()</code> in <code>playbook_rules.py</code>), the binding policy block (<code>build_playbook_policy_block()</code> in <code>playbook_policy.py</code>), the Stage-1 structure context (<code>build_contract_structure()</code> in <code>contract_structure.py</code>), and the source paragraphs (with omitted-paragraph counts + truncation markers). The model sees a flat <code>{id, index, text}</code> packet plus the rules.</p>
 
+      <h3>The structure layer (Stage 1)</h3>
+      <p>Before the packet is built, a deterministic Stage-1 pass turns the raw paragraph list into structure/reference/concept signals that ride into the packet as context. It is network-free — no model call — and feeds Stage 3 (clause review) a map instead of a flat blob.</p>
+      <figure class="wf-fig">
+        <svg role="img" viewBox="0 0 720 108" xmlns="http://www.w3.org/2000/svg" aria-labelledby="wf-struct-t wf-struct-d">
+          <title id="wf-struct-t">Structure layer: raw paragraphs to packet context</title>
+          <desc id="wf-struct-d">Raw paragraphs go through heading detection, then contract-structure building, reference resolution, and concept classification, and the combined structure context feeds the assessment packet.</desc>
+          <defs>
+            <marker id="wf-cv8" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path class="wf-chevron" d="M0,0 L6,3 L0,6 Z"></path>
+            </marker>
+          </defs>
+          <rect class="wf-box" x="8" y="30" width="140" height="52" rx="8"></rect>
+          <text class="wf-th" x="78" y="52" text-anchor="middle">Raw paragraphs</text>
+          <text class="wf-ts" x="78" y="68" text-anchor="middle">extracted text</text>
+
+          <rect class="wf-box" x="186" y="30" width="150" height="52" rx="8"></rect>
+          <text class="wf-th" x="261" y="49" text-anchor="middle">Headings ·</text>
+          <text class="wf-th" x="261" y="64" text-anchor="middle">structure</text>
+
+          <rect class="wf-box" x="374" y="30" width="164" height="52" rx="8"></rect>
+          <text class="wf-th" x="456" y="49" text-anchor="middle">References ·</text>
+          <text class="wf-th" x="456" y="64" text-anchor="middle">concepts</text>
+
+          <rect class="wf-accent" x="576" y="30" width="136" height="52" rx="8"></rect>
+          <text class="wf-th on-accent" x="644" y="52" text-anchor="middle">Packet context</text>
+          <text class="wf-ts" x="644" y="68" text-anchor="middle">into Stage 3</text>
+
+          <path class="wf-arr" marker-end="url(#wf-cv8)" d="M148,56 L182,56"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv8)" d="M336,56 L370,56"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv8)" d="M538,56 L572,56"></path>
+        </svg>
+        <figcaption>The Stage-1 structure pass. It is deterministic and model-free; its output is context the reviewer model reads, not a verdict.</figcaption>
+      </figure>
+      <ul>
+        <li><strong>Structure:</strong> <code>build_contract_structure()</code> (contract_structure.py) assembles the section/heading map from the paragraph list.</li>
+        <li><strong>Headings:</strong> <code>heading_detection.py</code> (<code>parse_leading_number</code> et al.) detects numbered headings/leading numbers that seed the structure.</li>
+        <li><strong>References:</strong> <code>reference_resolver.py</code> (<code>resolve_document_references</code>, <code>build_reference_integrity_signal</code>) resolves cross-references and emits an integrity signal.</li>
+        <li><strong>Concepts:</strong> <code>concept_classifier.py</code> (<code>classify_document_concepts</code>) tags paragraphs/sections with concept labels — shared with the dashboard-search grouping.</li>
+      </ul>
+
       <h3>The two models</h3>
       <div class="card tight">
         <dl class="kv">
@@ -695,6 +838,10 @@
         </dl>
       </div>
       <p>Both run through OpenRouter; the key (<code>OPENROUTER_API_KEY</code>) lives in backend config and is never exposed to the browser.</p>
+
+      <div class="callout warn">
+        <strong>Local reviewer ≠ prod reviewer (deliberate divergence).</strong> <code>.env.example</code> ships <code>NDA_AI_MODEL=x-ai/grok-4.3</code> for local dev (cheaper), while the code default (<code>DEFAULT_OPENROUTER_MODEL</code>, ai_review.py) and prod (<code>render.yaml</code>) both run <code>anthropic/claude-opus-4.8-fast</code>. So a local review can legitimately disagree with prod on borderline clauses — that's the model, not a bug. To mirror prod, set <code>NDA_AI_MODEL=anthropic/claude-opus-4.8-fast</code> in your <code>.env</code>.
+      </div>
 
       <h3>The decision arbiter</h3>
       <p>Clause decisions are synthesised in three phases:</p>
@@ -770,7 +917,7 @@
       </ul>
 
       <h3>Coverage gates</h3>
-      <p>The DOCX gate <code>verify_export_content_coverage()</code> (docx_health.py) asserts the export body is non-empty, covers ≥80% of source text, and that the accepted-paragraph sequence matches the expected sequence built from source + redline edits. The PDF path can't do exact sequence comparison (reconstruction reflows), so <code>verify_pdf_reconstruction_redline_coverage()</code> (docx_health.py) instead finds each redline's target paragraph by confident text match and verifies <code>w:ins</code>/<code>w:del</code> markup is present, using one-to-one bipartite matching so identical redlines consume distinct paragraphs. Both fail closed.</p>
+      <p>The DOCX gate <code>verify_export_content_coverage()</code> (docx_health.py) asserts the export body is non-empty, covers ≥50% of source text (<code>EXPORT_CONTENT_COVERAGE_RATIO = 0.5</code>; the unrelated <code>_COVERAGE_DIAGNOSTIC_WINDOW = 80</code> is only a log-truncation width, not the floor), and that the accepted-paragraph sequence matches the expected sequence built from source + redline edits. The PDF path can't do exact sequence comparison (reconstruction reflows), so <code>verify_pdf_reconstruction_redline_coverage()</code> (docx_health.py) instead finds each redline's target paragraph by confident text match and verifies <code>w:ins</code>/<code>w:del</code> markup is present, using one-to-one bipartite matching so identical redlines consume distinct paragraphs. Both fail closed.</p>
 
       <h3>Generation (deterministic)</h3>
       <figure class="wf-fig">
@@ -848,6 +995,19 @@
       <div class="callout warn">
         <strong>Why the Dockerfile asserts fitz.</strong> A silent PyMuPDF ABI mismatch would break page-image rendering only at runtime. The build smoke-test (<code>import fitz; fitz.open()</code>, Dockerfile:43) fails the build loudly instead. See Deploy &amp; Ops.
       </div>
+
+      <h3>Scanned-PDF OCR fallback (default OFF)</h3>
+      <p>A scanned/image-only PDF has no extractable text for <code>pypdf</code> to read. <code>nda_automation/pdf_ocr.py</code> is an <strong>opt-in</strong> vision fallback for exactly that case — it sends page images to a vision model to recover text. It is <strong>off by default</strong> and bounded so it can't run away on cost or latency:</p>
+      <table>
+        <thead><tr><th>Env var</th><th>Default</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td>NDA_PDF_OCR_ENABLED</td><td>false</td><td>Master switch for the vision OCR fallback. Off = never runs.</td></tr>
+          <tr><td>NDA_PDF_OCR_MODEL</td><td>google/gemini-2.5-flash</td><td>The vision model used for the OCR pass.</td></tr>
+          <tr><td>NDA_PDF_OCR_MAX_PAGES</td><td>20</td><td>Hard ceiling on pages OCR'd per document.</td></tr>
+          <tr><td>NDA_PDF_OCR_TIMEOUT_SECONDS</td><td>60</td><td>Per-call timeout for the OCR request.</td></tr>
+          <tr><td>NDA_PDF_OCR_DPI</td><td>200</td><td>Rasterization DPI for the page images sent to the model.</td></tr>
+        </tbody>
+      </table>
     </section>
 
     <!-- ============ 6. DATA MODEL & SECURITY ============ -->
@@ -882,9 +1042,30 @@
         <li>A matter with <em>no</em> owner field (legacy / pre-ownership Gmail import) is <strong>not</strong> a wildcard — it fails closed and is never served to an authenticated caller with a different owner.</li>
       </ul>
 
+      <h3>OAuth &amp; the sign-in allowlist (setup)</h3>
+      <p>Sign-in is Google OAuth. Configure the client and (optionally) the allowlist through these env vars:</p>
+      <table>
+        <thead><tr><th>Env var</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td>NDA_GOOGLE_OAUTH_CLIENT_ID</td><td>Google OAuth client id (google_identity.py). Without id+secret, Google sign-in is "not configured".</td></tr>
+          <tr><td>NDA_GOOGLE_OAUTH_CLIENT_SECRET</td><td>Google OAuth client secret (google_identity.py).</td></tr>
+          <tr><td>NDA_GOOGLE_OAUTH_REDIRECT_URI</td><td>The OAuth callback URL registered with Google (google_identity.py / deployment.py).</td></tr>
+          <tr><td>NDA_ALLOWED_EMAIL_DOMAINS</td><td>Comma list of allowed sign-in domains (e.g. <code>aspora.com</code>).</td></tr>
+          <tr><td>NDA_ALLOWED_EMAILS</td><td>Comma list of exact allowed emails (exceptions, e.g. a personal gmail).</td></tr>
+          <tr><td>NDA_ADMIN_USERS</td><td>Admin authority list (http_auth.py). Entries are <code>google:&lt;sub&gt;</code> — the OAuth <em>sub</em>, not the email.</td></tr>
+          <tr><td>NDA_ALLOWED_HOSTS</td><td>Comma list of allowed request hostnames (your Render host); the host-check guard.</td></tr>
+        </tbody>
+      </table>
+      <div class="callout warn">
+        <strong>Allowlist fail-safe (know this before you deploy).</strong> With <strong>both</strong> <code>NDA_ALLOWED_EMAIL_DOMAINS</code> and <code>NDA_ALLOWED_EMAILS</code> unset/empty, the allowlist is <strong>OFF</strong> — every OAuth-verified Google identity is allowed (no lockout on a fresh deploy). Set <strong>either</strong> one and it flips to <strong>fail-closed</strong>: an email matching neither list is denied, and an existing session whose email no longer passes is treated as unauthenticated. Basic-auth sessions are never routed through the allowlist.
+      </div>
+      <div class="callout warn">
+        <strong>Admin is the OAuth <em>sub</em>, not the email (footgun).</strong> <code>NDA_ADMIN_USERS</code> entries take the form <code>google:&lt;sub&gt;</code> (the stable Google subject id), e.g. <code>google:101508195488490085718</code> — <em>not</em> <code>google:alice@aspora.com</code>. For Google callers <code>request_is_admin()</code> also accepts the OAuth-verified email, but the canonical, stable id is the sub. Basic-auth usernames never inherit admin from an email.
+      </div>
+
       <h3>Auth, admin &amp; CSRF</h3>
       <ul>
-        <li><strong>Auth:</strong> <code>_authorize_request()</code> (server.py) — Google OAuth session first, then HTTP Basic (<code>NDA_AUTH_USERNAME</code>/<code>NDA_AUTH_PASSWORD</code>), else 401. Loopback hosts are auth-exempt for local dev.</li>
+        <li><strong>Auth:</strong> <code>_authorize_request()</code> (server.py) — Google OAuth session first, then HTTP Basic (<code>NDA_AUTH_USERNAME</code>/<code>NDA_AUTH_PASSWORD</code>), else 401. Loopback hosts (<code>127.0.0.1</code>/<code>::1</code>/<code>localhost</code>, <code>_is_loopback_host</code> in http_auth.py) are auth-exempt for local dev.</li>
         <li><strong>Admin:</strong> <code>request_is_admin()</code> (http_auth.py). Authority = the <code>NDA_ADMIN_USERS</code> env list (matched against the verbatim user id, e.g. <code>google:&lt;sub&gt;</code>, and — for Google callers only — the OAuth-verified email), plus an in-app persisted admin list (Google callers only). Basic-auth usernames never inherit admin from an email.</li>
         <li><strong>CSRF:</strong> <code>origin_allowed_for_request()</code> (csrf.py) runs for state-changing methods only, matching the <code>Origin</code> (or <code>Referer</code>) host against an allow-set. Enforcement flag <code>NDA_ENFORCE_CSRF</code> (default ON for non-loopback binds, OFF for localhost). Checked before auth in <code>do_POST</code>/<code>do_DELETE</code>.</li>
         <li><strong>Rate limit:</strong> <code>rate_limit.py</code> + <code>_rate_limit_request()</code> (server.py) — bucketed by user id then real client IP (proxy-aware via <code>NDA_TRUSTED_PROXY_COUNT</code>), 300/min general, 240/min render, 60s window, 429 + Retry-After.</li>
@@ -1006,9 +1187,49 @@
       <h3>Notifications</h3>
       <p><code>static/js/notifications.js</code> (<code>NotificationsView</code>) watches the matter list for new inbound matters and pops a top-right toast stack (max 4, auto-dismiss ~12s). The first seed after page load is silent so an existing inbox doesn't flood.</p>
 
+      <h3>Dashboard search &amp; the assistant subsystem</h3>
+      <p>The repository dashboard's search bar is a funnel that starts cheap and only escalates to a model when a query needs it: deterministic filter chips first, then a natural-language <em>intent</em> parse, then counterparty grouping — with a read-only command-bar "assistant" seam alongside.</p>
+      <figure class="wf-fig">
+        <svg role="img" viewBox="0 0 720 108" xmlns="http://www.w3.org/2000/svg" aria-labelledby="wf-dash-t wf-dash-d">
+          <title id="wf-dash-t">Dashboard search funnel: chips to grouped results</title>
+          <desc id="wf-dash-d">A dashboard query hits deterministic filter chips first, escalates to a natural-language intent parse that returns a validated structured filter spec, then results are grouped by counterparty, with a read-only assistant command-bar seam alongside.</desc>
+          <defs>
+            <marker id="wf-cv7" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path class="wf-chevron" d="M0,0 L6,3 L0,6 Z"></path>
+            </marker>
+          </defs>
+          <rect class="wf-box" x="8" y="30" width="150" height="52" rx="8"></rect>
+          <text class="wf-th" x="83" y="52" text-anchor="middle">Deterministic chips</text>
+          <text class="wf-ts" x="83" y="68" text-anchor="middle">exact filters</text>
+
+          <rect class="wf-accent" x="196" y="30" width="164" height="52" rx="8"></rect>
+          <text class="wf-th on-accent" x="278" y="52" text-anchor="middle">NL intent parse</text>
+          <text class="wf-ts" x="278" y="68" text-anchor="middle">/search-intent · spec</text>
+
+          <rect class="wf-box" x="398" y="30" width="150" height="52" rx="8"></rect>
+          <text class="wf-th" x="473" y="52" text-anchor="middle">Group</text>
+          <text class="wf-ts" x="473" y="68" text-anchor="middle">by counterparty</text>
+
+          <rect class="wf-box" x="586" y="30" width="126" height="52" rx="8"></rect>
+          <text class="wf-th" x="649" y="52" text-anchor="middle">Assistant</text>
+          <text class="wf-ts" x="649" y="68" text-anchor="middle">read-only seam</text>
+
+          <path class="wf-arr" marker-end="url(#wf-cv7)" d="M158,56 L192,56"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv7)" d="M360,56 L394,56"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv7)" d="M548,56 L582,56"></path>
+        </svg>
+        <figcaption>The search funnel. Deterministic chips answer most queries for free; only a natural-language query escalates to the intent model.</figcaption>
+      </figure>
+      <ul>
+        <li><strong>Intent parse:</strong> <code>POST /api/dashboard/search-intent</code> (routes/dashboard.py, <code>handle_dashboard_search_config</code> et al.) translates a natural-language query into a <em>validated, structured</em> filter spec via <code>dashboard_search_intent.py</code> — the model's output is schema-validated, never executed raw.</li>
+        <li><strong>Assistant seam:</strong> <code>POST /api/dashboard/assistant</code> is the read-only command-bar seam, delegating to <code>dashboard_assistant.py</code> (+ the model path in <code>dashboard_assistant_ai.py</code>).</li>
+        <li><strong>Concept grouping:</strong> <code>concept_classifier.py</code> (<code>classify_document_concepts</code>) feeds the counterparty/concept grouping.</li>
+        <li><strong>Frontend:</strong> <code>static/js/dashboard-search.js</code> renders the chips + query bar and calls the routes above.</li>
+      </ul>
+
       <h3>Newer surfaces to know</h3>
       <ul>
-        <li><strong>Shared onboarding component</strong> — <code>static/js/onboarding.js</code> is the single source of truth for the <strong>first-run setup panels</strong> (the <code>#adminUserGuidePanel</code>-adjacent first-run checklist re-rendered on tab activation, app.js ~1607). The admin/playbook consoles reuse it via <code>admin-onboarding.js</code> / <code>playbook-onboarding.js</code> rather than each hand-rolling its own empty state.</li>
+        <li><strong>Onboarding is a shared <em>renderer</em>, not yet a shared wiring</strong> — <code>static/js/onboarding.js</code> (global <code>Onboarding</code>) is a dependency-free first-run <em>card renderer</em>. Its actual consumers today are Repository and Corpus (Review is the newest); its own header names those surfaces. The newer consoles do <strong>NOT</strong> route through it yet: <code>admin-onboarding.js</code> and <code>playbook-onboarding.js</code> each define their <em>own</em> steps/markup, and the Generator's first-run panel is self-contained in <code>static/js/draft-intake.js</code> (~86–168, gated on an optional <code>onboardingNode</code>) driving <code>static/index.html</code>'s <code>[data-generator-onboarding]</code> card (~line 243). Unifying all of them onto <code>onboarding.js</code> is a <strong>TODO</strong> (draft-intake.js says as much: "a later integrator unifies all onboarding into one shared component").</li>
         <li><strong>Generator "Our signing entity" card</strong> — the generator's entity picker is a <em>consolidated</em> fieldset (<code>&lt;legend&gt;Our signing entity&lt;/legend&gt;</code>, index.html ~262–297) that couples the entity choice to its fixed governing-law/court status line (<code>#draftIntakeLawStatus</code>): picking an entity sets the law, so the law is never an independent input.</li>
         <li><strong>Dormant-UI honesty badges</strong> — where a config control is wired but its feature is off, the UI says so rather than implying it's live. The model rows in <code>static/js/admin-models.js</code> (~205) render a <span class="ui">Feature off</span> badge (<code>admin-models-featureoff</code>) titled "This feature is turned off, so the selected model isn't used" — so an operator never mistakes a dormant selector for an active one.</li>
       </ul>
@@ -1164,6 +1385,9 @@
           <tr><td>Gmail triage</td><td>NDA_GMAIL_TRIAGE_MODEL</td><td>deepseek/deepseek-v4-pro</td></tr>
         </tbody>
       </table>
+      <div class="callout warn">
+        <strong>Reviewer default differs between local and prod.</strong> The <code>anthropic/claude-opus-4.8-fast</code> above is the code/prod default, but <code>.env.example</code> intentionally sets <code>NDA_AI_MODEL=x-ai/grok-4.3</code> for cheaper local dev. If a local review disagrees with prod, this is why — set <code>NDA_AI_MODEL</code> to the Opus model to match prod.
+      </div>
 
       <h3>Change a playbook rule</h3>
       <p>Edit the rule in the <strong>Playbook</strong>, never the engine. The AI receives the playbook rules in its packet; deterministic checkers read the same playbook. Hardcoding a rule the playbook owns is a "deterministic ghost" — don't.</p>
@@ -1187,6 +1411,9 @@
         <strong>Lint:</strong> <code>ruff check nda_automation tests</code></p>
       </div>
       <p><code>-p no:cacheprovider</code> keeps a batch run from writing a stale cross-batch cache. There is no Makefile; pytest + npm run directly. The pytest suite includes the review eval gate (counsel-style review cases). See <strong>Gotchas / known hazards</strong> for why the single-process ceiling exists.</p>
+      <div class="callout">
+        <strong>The constraint is this box, not the suite.</strong> CI (<code>.github/workflows/ci.yml</code>) runs the <em>full</em> <code>python -m pytest -q</code> on a clean ubuntu runner across <strong>Python 3.9 / 3.11 / 3.12</strong> — the whole suite in one process is fine on a fresh machine; it's only this shared dev box that SIGKILLs a monolithic run under memory pressure. CI has three jobs: <strong><code>test</code></strong> (lint + compile + the OAuth-focused slice + full pytest, matrixed over the three interpreters), <strong><code>frontend</code></strong>, and <strong><code>docker-build</code></strong>. The <code>docker-build</code> job is the one that catches <em>prod-only</em> dependency breaks — a camelot/PyMuPDF ABI or co-resolution failure that only shows up in the full <code>.[pdf,gmail,tables]</code> Docker image — so a green local test run is not a substitute for it.
+      </div>
     </section>
   </main>
 </div>
