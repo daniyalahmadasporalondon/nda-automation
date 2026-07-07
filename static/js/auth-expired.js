@@ -13,26 +13,71 @@
 // real HTTP `status`. On a 401 it also fires the global auth-expired handler so
 // the user gets a "session expired — sign in again" prompt instead of a cryptic
 // failure.
+//
+// SELF-HEALING REDIRECT: a 401 on an *authenticated* request means the session
+// died mid-use. Surfacing a banner alone leaves the app looking bricked, so the
+// handler also redirects the browser to the login URL (preserving `next`) after
+// a short beat — a dead session recovers instead of stranding the user.
+//
+// WHY THIS CAN'T LOOP: only requests that funnel through this handler trigger the
+// redirect, and the auth/login/status endpoints never do. `/api/auth/status` is
+// fetched directly in auth-session.js and handles its own 401 (authenticated:
+// false) without calling here; the login endpoint is a navigation target, not a
+// fetch. As a belt-and-braces guard we also refuse to redirect when we are
+// already sitting on the login path, and a single `redirecting` latch means a
+// burst of concurrent 401s schedules at most ONE navigation.
 const AuthExpired = (() => {
   let notifyFn = null;
   let loginHref = "/auth/google/start";
   let prompting = false; // de-dupe concurrent 401s into a single prompt
+  let redirecting = false; // fire at most ONE login redirect per expiry
+  // Redirect delay: long enough for the "session expired" banner to register,
+  // short enough that the user isn't left staring at a bricked screen.
+  const REDIRECT_DELAY_MS = 1_200;
+  // Seam so tests can observe the redirect without a real navigation (vm/jsdom
+  // cannot assign window.location). Defaults to a real browser navigation.
+  let redirectFn = (url) => {
+    if (typeof window !== "undefined" && window.location) {
+      window.location.assign ? window.location.assign(url) : (window.location.href = url);
+    }
+  };
 
   // Wire the handler to the app's notification system + login flow. Called once
   // from app.js. Kept tiny so app.js edits stay minimal.
-  function register({ notify, loginHref: href } = {}) {
+  function register({ notify, loginHref: href, redirect } = {}) {
     if (typeof notify === "function") notifyFn = notify;
     if (typeof href === "string" && href) loginHref = href;
+    if (typeof redirect === "function") redirectFn = redirect;
+  }
+
+  // True when the browser is already parked on the login path — redirecting again
+  // would loop. Compares only the pathname of loginHref so query/`next` differ.
+  function alreadyOnLoginPage() {
+    if (typeof window === "undefined" || !window.location) return false;
+    let loginPath = loginHref;
+    try {
+      // Resolve relative/absolute loginHref to a pathname for a clean compare.
+      const base = window.location.origin || undefined;
+      loginPath = new URL(loginHref, base).pathname;
+    } catch {
+      loginPath = String(loginHref).split("?")[0];
+    }
+    return window.location.pathname === loginPath;
   }
 
   function isAuthError(error) {
     return Boolean(error) && Number(error.status) === 401;
   }
 
-  // Surface a clean "your session expired" prompt and offer a re-login path.
-  // De-duped so a burst of parallel 401s (the dashboard fires several requests
-  // at load) shows a single prompt, not one per request.
+  // Surface a clean "your session expired" prompt and self-heal by redirecting
+  // to sign-in. De-duped so a burst of parallel 401s (the dashboard fires several
+  // requests at load) shows a single prompt and schedules a single redirect, not
+  // one per request.
   function handleAuthExpired() {
+    // The redirect latch is the real single-fire guard: once a navigation is
+    // scheduled, every later 401 in the burst is a no-op (prevents redirect
+    // stacking / a flicker of repeated navigations).
+    if (redirecting) return;
     if (prompting) return;
     prompting = true;
     const message = "Your session expired — please sign in again.";
@@ -51,6 +96,31 @@ const AuthExpired = (() => {
     if (!prompted && typeof window.alert === "function") {
       // Last-resort fallback if no notifier was registered.
       window.alert(message);
+    }
+    scheduleLoginRedirect();
+  }
+
+  // Schedule the self-healing navigation to the login URL. Guarded so it fires at
+  // most once per expiry and never when we're already on the login page (which
+  // would loop). Runs after a short beat so the "session expired" banner lands
+  // first. `redirecting` is intentionally NOT reset — once we've committed to
+  // sending the browser to /login, the page is being torn down anyway.
+  function scheduleLoginRedirect() {
+    if (redirecting) return;
+    if (alreadyOnLoginPage()) return; // belt-and-braces: never loop on /login
+    redirecting = true;
+    const target = loginUrl();
+    const go = () => {
+      try {
+        redirectFn(target);
+      } catch {
+        /* navigation failed (e.g. test stub threw) — the banner still stands */
+      }
+    };
+    if (typeof window !== "undefined" && typeof window.setTimeout === "function") {
+      window.setTimeout(go, REDIRECT_DELAY_MS);
+    } else {
+      go();
     }
   }
 

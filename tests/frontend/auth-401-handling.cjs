@@ -39,7 +39,7 @@ function loadClassicScript(relPath, sandbox, captureGlobal) {
   vm.runInContext(code, sandbox, { filename: relPath });
 }
 
-function makeSandbox() {
+function makeSandbox(locationOverrides) {
   const sandbox = {};
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
@@ -48,6 +48,20 @@ function makeSandbox() {
   sandbox.setTimeout = setTimeout;
   sandbox.clearTimeout = clearTimeout;
   sandbox.module = undefined; // suppress the CommonJS guard inside the scripts
+  // A fake `window.location` so loginUrl()/alreadyOnLoginPage() have a page to
+  // read. `assign` is spied via redirectFn in the tests, but keep a real-ish
+  // shape here (origin + pathname + search) so URL() resolution works.
+  sandbox.location = Object.assign(
+    {
+      origin: "https://app.example.com",
+      pathname: "/",
+      search: "",
+      href: "https://app.example.com/",
+      assign() {},
+    },
+    locationOverrides || {},
+  );
+  sandbox.URL = URL;
   vm.createContext(sandbox);
   return sandbox;
 }
@@ -314,6 +328,104 @@ async function run() {
     );
     passed += 1;
     console.log("ok 4 - loadMatters: stale older-token response dropped (run-token guard)");
+  }
+
+  // ---------------------------------------------------------------------------
+  // 6: SELF-HEALING REDIRECT — a 401 on an authenticated request must redirect
+  //    the browser to loginUrl() (session died mid-use -> auto sign-in) AND keep
+  //    the "session expired" banner. Proves the app self-heals instead of looking
+  //    bricked.
+  // ---------------------------------------------------------------------------
+  {
+    const sandbox = makeSandbox({ pathname: "/matters", search: "?tab=review" });
+    loadClassicScript("js/auth-expired.js", sandbox);
+    assert.ok(sandbox.AuthExpired, "AuthExpired global should be defined");
+
+    let bannerCount = 0;
+    let redirectedTo = null;
+    sandbox.AuthExpired.register({
+      notify: () => { bannerCount += 1; },
+      // Capture the redirect instead of navigating (vm cannot navigate).
+      redirect: (url) => { redirectedTo = url; },
+    });
+
+    // The single central seam every authenticated 401 funnels through.
+    sandbox.AuthExpired.handleAuthExpired();
+    // The redirect is scheduled on a short timer; let it fire.
+    await new Promise((resolve) => setTimeout(resolve, 1_400));
+
+    assert.equal(bannerCount, 1, "the session-expired banner still fires (kept, not replaced)");
+    assert.ok(redirectedTo, "an authenticated 401 must redirect to sign-in");
+    const expected = sandbox.AuthExpired.loginUrl();
+    assert.equal(redirectedTo, expected, "redirect target must be exactly loginUrl()");
+    // loginUrl() preserves where the user was (the `next` round-trips them back).
+    assert.match(
+      redirectedTo,
+      /next=%2Fmatters%3Ftab%3Dreview/,
+      "loginUrl() preserves the current path+query as ?next=",
+    );
+    passed += 1;
+    console.log("ok 5 - authenticated 401 -> redirect to loginUrl() (+ banner kept, next preserved)");
+  }
+
+  // ---------------------------------------------------------------------------
+  // 7: NO LOOP FROM THE LOGIN/STATUS ENDPOINT — a 401 while already parked on the
+  //    login page must NOT redirect again (belt-and-braces anti-loop guard).
+  // ---------------------------------------------------------------------------
+  {
+    const sandbox = makeSandbox({
+      // Already on /login: the login/status endpoint 401 would otherwise loop.
+      origin: "https://app.example.com",
+      pathname: "/login",
+      search: "",
+    });
+    loadClassicScript("js/auth-expired.js", sandbox);
+
+    let redirectCount = 0;
+    sandbox.AuthExpired.register({
+      // loginHref pathname resolves to /login, matching window.location.pathname.
+      loginHref: "/login",
+      notify: () => {},
+      redirect: () => { redirectCount += 1; },
+    });
+
+    sandbox.AuthExpired.handleAuthExpired();
+    await new Promise((resolve) => setTimeout(resolve, 1_400));
+
+    assert.equal(
+      redirectCount,
+      0,
+      "a 401 while already on the login page must NOT redirect (no loop)",
+    );
+    passed += 1;
+    console.log("ok 6 - 401 on the login page -> NO redirect (anti-loop guard holds)");
+  }
+
+  // ---------------------------------------------------------------------------
+  // 8: DEBOUNCE — a burst of concurrent 401s (the dashboard fires several
+  //    requests at load) must schedule AT MOST ONE redirect, not one per request.
+  // ---------------------------------------------------------------------------
+  {
+    const sandbox = makeSandbox({ pathname: "/matters", search: "" });
+    loadClassicScript("js/auth-expired.js", sandbox);
+
+    let redirectCount = 0;
+    sandbox.AuthExpired.register({
+      notify: () => {},
+      redirect: () => { redirectCount += 1; },
+    });
+
+    // Five parallel authenticated requests all come back 401 at once.
+    for (let i = 0; i < 5; i += 1) sandbox.AuthExpired.handleAuthExpired();
+    await new Promise((resolve) => setTimeout(resolve, 1_400));
+
+    assert.equal(
+      redirectCount,
+      1,
+      "a burst of concurrent 401s must fire exactly ONE redirect (debounced)",
+    );
+    passed += 1;
+    console.log("ok 7 - concurrent 401 burst -> exactly one redirect (debounced)");
   }
 
   console.log(`\n# ${passed} test group(s) passed`);
