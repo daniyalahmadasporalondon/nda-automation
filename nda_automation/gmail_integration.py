@@ -28,7 +28,6 @@ from .checker import ParagraphAlignmentError  # noqa: F401 - transport dependenc
 from .document_limits import DocumentSizeError, ensure_document_size
 from .docx_text import DocxExtractionError
 from .durable_io import fsync_parent_directory
-from .http_auth import _env_flag_enabled
 from .ingestion_service import (
     create_matter_from_document,  # noqa: F401 - transport dependency for gmail_matter_inbox
     extract_document,  # noqa: F401 - transport dependency for gmail_matter_inbox
@@ -39,10 +38,9 @@ from .pdf_text import PdfExtractionError
 from .review_engine import ActiveReviewEngineError  # noqa: F401 - transport dependency for gmail_matter_inbox
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-# The hardcoded SAFETY FLOOR for the deterministic content scorer. This vocabulary
-# ALWAYS applies to every inbound message regardless of any admin configuration --
-# admin-edited "Signal Terms" are only ever ADDED on top of this floor (and only
-# when NDA_GMAIL_CUSTOM_TERMS_ENABLED is on). See _nda_terms_in_text.
+# The hardcoded vocabulary for the deterministic content scorer. It ALWAYS applies
+# to every inbound message; there is no admin-configurable override. See
+# _nda_terms_in_text.
 NDA_DETECTION_TERMS = (
     ("non-disclosure agreement", r"\bnon[-\s]?disclosure\s+agreement\b"),
     ("non-disclosure", r"\bnon[-\s]?disclosure\b"),
@@ -52,42 +50,6 @@ NDA_DETECTION_TERMS = (
     ("NDA", r"\bNDA\b"),
 )
 
-# HARD FEATURE FLAG, DEFAULT OFF. The Gmail inbound path previously caused an inbox
-# storm -> AI-review flood -> cost/crash, so admin-edited Signal Terms feeding the
-# detector is gated behind this flag. When OFF (the default), detection behaves
-# EXACTLY as it did before this feature existed: the hardcoded NDA_DETECTION_TERMS
-# floor and nothing else. When ON, the admin's validated/capped inbound_search_terms
-# are ADDED to the floor as additive literal-substring scoring signals -- they are
-# fed ONLY into the deterministic CONTENT SCORER (this module's _nda_terms_in_text),
-# NEVER into the Gmail FETCH query (broadening the fetch is the storm vector). The
-# fetch query and the number of messages fetched are unchanged; custom terms can
-# only ADD detections within the already-fetched set, routed through the SAME
-# deferred/on-demand review pipeline. Document in .env.example.
-NDA_GMAIL_CUSTOM_TERMS_ENABLED_ENV = "NDA_GMAIL_CUSTOM_TERMS_ENABLED"
-
-
-def gmail_custom_detection_terms_enabled() -> bool:
-    """Whether admin Signal Terms feed the deterministic content scorer (default OFF)."""
-    return _env_flag_enabled(NDA_GMAIL_CUSTOM_TERMS_ENABLED_ENV)
-
-
-def _custom_detection_terms() -> list[str]:
-    """The validated admin terms to ADD to the hardcoded floor, or [] when the flag
-    is off or nothing safe is configured.
-
-    Defensive on BOTH axes: the flag gate AND a re-validation of the stored terms at
-    read time (a stored blob could predate validation or be hand-edited). A settings
-    read failure degrades to [] -- detection silently falls back to the floor-only
-    behaviour and never raises on this hot inbound path.
-    """
-    if not gmail_custom_detection_terms_enabled():
-        return []
-    try:
-        raw_terms = app_settings.gmail_inbound_search_terms()
-        accepted, _rejected = app_settings.validate_admin_detection_terms(raw_terms)
-    except Exception:  # pragma: no cover - defensive: settings read must never break detection
-        return []
-    return accepted
 EXPLICIT_NDA_TERMS = {"non-disclosure agreement", "non-disclosure", "confidentiality agreement", "NDA"}
 ATTACHMENT_FILENAME_NDA_SIGNALS = (
     ("non-disclosure agreement", r"\bnon[-\s]?disclosure\s+agreement\b", 90, True),
@@ -190,10 +152,8 @@ def _inbound_envelope_query(window_days: int) -> str:
 GMAIL_INBOUND_BASE_QUERY = _inbound_envelope_query(GMAIL_INBOUND_WINDOW_DAYS)
 # A legacy DERIVED Gmail-query string built from the default term list. It is NOT
 # the scorer's vocabulary -- the deterministic content scorer's vocabulary is the
-# hardcoded NDA_DETECTION_TERMS floor (plus, only when NDA_GMAIL_CUSTOM_TERMS_ENABLED
-# is on, the validated admin inbound_search_terms; see _nda_terms_in_text). This
-# string is retained only for back-compat references and is NOT appended to the
-# fetch query.
+# hardcoded NDA_DETECTION_TERMS list (see _nda_terms_in_text). This string is
+# retained only for back-compat references and is NOT appended to the fetch query.
 NDA_MESSAGE_QUERY = _gmail_search_terms_query(app_settings.DEFAULT_GMAIL_INBOUND_SEARCH_TERMS)
 
 # ENVELOPE SENDER EXCLUDES (query-level, kill-switchable). The structural envelope
@@ -534,7 +494,6 @@ def _gmail_readiness_block_reason(
 
 def gmail_inbound_parsing_summary() -> dict[str, object]:
     selector_enabled = gmail_attachment_selector.selector_configured()
-    search_terms = app_settings.gmail_inbound_search_terms()
     return {
         "fields": [
             "subject headers",
@@ -546,13 +505,11 @@ def gmail_inbound_parsing_summary() -> dict[str, object]:
             "attachment-level deterministic NDA/collateral scoring",
             "OpenRouter contextual attachment selection" if selector_enabled else "deterministic attachment selection",
         ],
-        "terms": search_terms,
+        # The scoring/ranking vocabulary surfaced for display. This is a fixed
+        # built-in list (DEFAULT_GMAIL_INBOUND_SEARCH_TERMS), not an admin setting;
+        # it is NOT a fetch gate (see NDA_MESSAGE_QUERY).
+        "terms": list(app_settings.DEFAULT_GMAIL_INBOUND_SEARCH_TERMS),
         "deterministic_terms": [term for term, _pattern in NDA_DETECTION_TERMS],
-        # Honest disclosure of whether the admin Signal Terms actually drive the
-        # deterministic content scorer (default OFF) and, if so, which validated
-        # terms are effectively in play on top of the hardcoded floor.
-        "custom_detection_enabled": gmail_custom_detection_terms_enabled(),
-        "custom_detection_terms": _custom_detection_terms(),
         "mode": (
             "OpenRouter reviews subject, body, snippet, attachment names, extracted attachment text, and deterministic "
             "signals before selecting import attachments. Deterministic rules are used as fallback."
@@ -617,10 +574,10 @@ def _inbound_query_for_window(window_days: int) -> str:
 
 
 def _default_inbound_query() -> str:
-    # Only the structural envelope (+ the sender excludes). The admin keyword terms
-    # are NEVER a fetch gate. They feed the deterministic CONTENT scorer (and only
-    # when NDA_GMAIL_CUSTOM_TERMS_ENABLED is on; see _nda_terms_in_text) --
-    # broadening the fetch with them is the storm vector we deliberately avoid.
+    # Only the structural envelope (+ the sender excludes). The NDA keyword terms
+    # are NEVER a fetch gate -- they feed the deterministic CONTENT scorer (see
+    # _nda_terms_in_text); broadening the fetch with them is the storm vector we
+    # deliberately avoid.
     #
     # The window (``newer_than:{N}d``) is admin-configurable, so build the envelope
     # at CALL time from the stored setting. The reader already falls back to the
@@ -1596,38 +1553,15 @@ def _attachment_explicit_nda_hit(metadata: dict[str, str] | None, filename: str)
     scanned/odd-extraction NDA announced in the email body ("Attached is our NDA"
     + "document (3).pdf") or named explicitly ("Mutual NDA.pdf" with image-only
     content) is never pre-gated away from the model.
-
-    ADMIN CUSTOM TERMS extend the hatch: when NDA_GMAIL_CUSTOM_TERMS_ENABLED is
-    on, a validated Signal Term matched in the subject/body/snippet detection
-    (the detection scan already includes custom terms) or appearing in the
-    FILENAME unlocks the AI exactly like the hardcoded English set -- an admin
-    adding "Acuerdo de Confidencialidad" must not be silently ignored by an
-    English-only hatch.
     """
     if _metadata_has_explicit_nda_signal(metadata):
         return True
-    custom_terms = _custom_detection_terms()
-    if custom_terms and metadata:
-        sources = _metadata_csv_values(metadata.get("gmail_detection_sources"))
-        if any(source in {"subject", "body", "snippet"} for source in sources):
-            detected = {
-                term.casefold()
-                for term in _metadata_csv_values(metadata.get("gmail_detection_terms"))
-            }
-            if any(term.casefold() in detected for term in custom_terms):
-                return True
     _score, _terms, _reasons, strong_filename = _attachment_signal_score(
         filename,
         ATTACHMENT_FILENAME_NDA_SIGNALS,
     )
     if strong_filename:
         return True
-    if custom_terms:
-        # Custom terms are validated literal substrings (never regex); match them
-        # against the filename the same case-insensitive way the detector does.
-        cleaned_filename = str(filename or "").casefold()
-        if any(term.casefold() in cleaned_filename for term in custom_terms):
-            return True
     return False
 
 
@@ -1709,27 +1643,10 @@ def _nda_terms_in_text(text: object) -> list[str]:
     if not value:
         return []
     matches: list[str] = []
-    # The hardcoded SAFETY FLOOR always applies (regex word-boundary patterns).
+    # The hardcoded detection vocabulary (regex word-boundary patterns).
     for term, pattern in NDA_DETECTION_TERMS:
         if re.search(pattern, value, flags=re.IGNORECASE) and term not in matches:
             matches.append(term)
-    # ADDITIVE: admin Signal Terms, only when NDA_GMAIL_CUSTOM_TERMS_ENABLED is on.
-    # These are matched as LITERAL case-insensitive substrings (NO regex compile of
-    # caller-supplied text -- the terms are validated/neutralized so a term can never
-    # be an injection, a ReDoS, or a catch-all). They can only ADD matches on top of
-    # the floor, never remove or weaken it.
-    haystack = value.casefold()
-    for term in _custom_detection_terms():
-        # PER-TERM FAULT ISOLATION: one malformed/odd term can never crash the hot
-        # inbound poll. On any failure we skip the term and fail open to the floor
-        # (already accumulated above).
-        try:
-            if term in matches:
-                continue
-            if term.casefold() in haystack:
-                matches.append(term)
-        except Exception:  # pragma: no cover - defensive: a bad term must never break the poll
-            continue
     return matches
 
 

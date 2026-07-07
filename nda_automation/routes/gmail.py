@@ -310,32 +310,6 @@ def handle_gmail_settings_update(handler) -> None:
             handler._send_json({"error": "Unsupported Gmail sync frequency."}, status=400)
             return
         updates["sync_frequency"] = sync_frequency
-    if "inbound_search_terms" in payload:
-        inbound_search_terms = app_settings.gmail_search_terms_from_payload(
-            payload.get("inbound_search_terms"),
-            fallback=[],
-        )
-        if not inbound_search_terms:
-            handler._send_json(
-                {"error": "Add at least one Gmail search term — it can't be empty."},
-                status=400,
-            )
-            return
-        updates["inbound_search_terms"] = inbound_search_terms
-        # When the (default-OFF) custom-terms detection feature is enabled, these
-        # saved terms ALSO feed the deterministic NDA content scorer. Validate them
-        # against the STRICTER detection rules (min length, generic-word denylist,
-        # literal-substring/regex-neutralization, count cap) and report any that
-        # would be SKIPPED back to the admin, so an invalid signal term is never
-        # silently applied or silently dropped. The terms are still saved as-is for
-        # display/fetch; the scorer re-validates defensively at read time.
-        if gmail_integration.gmail_custom_detection_terms_enabled():
-            _accepted, rejected = app_settings.validate_admin_detection_terms(inbound_search_terms)
-            if rejected:
-                skipped = "; ".join(f"\"{item['term']}\" ({item['reason']})" for item in rejected)
-                warnings.append(
-                    "Some Signal Terms won't be used for NDA detection and were skipped: " + skipped + "."
-                )
     if "inbound_excluded_senders" in payload:
         raw_excluded = payload.get("inbound_excluded_senders")
         if not isinstance(raw_excluded, (list, str)):
@@ -453,7 +427,6 @@ _AUDITED_GMAIL_SETTINGS = (
     "sync_frequency",
     "import_limit",
     "inbound_window_days",
-    "inbound_search_terms",
     "inbound_excluded_senders",
     "intake_playbook",
     "intake_rule",

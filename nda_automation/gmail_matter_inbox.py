@@ -117,9 +117,6 @@ _DETERMINISTIC_PERMANENT_SKIP_REASONS = frozenset(
 #   1. ESCAPE HATCH: an explicit NDA mention in the message metadata (subject/
 #      body/snippet via _metadata_has_explicit_nda_signal) or a strong NDA
 #      filename -- covers scanned/odd-extraction NDAs announced in the email.
-#      Admin custom Signal Terms (NDA_GMAIL_CUSTOM_TERMS_ENABLED on) extend the
-#      hatch, so a configured non-English term ("Acuerdo de Confidencialidad")
-#      unlocks the AI exactly like the hardcoded English set.
 #   2. SCORER-BLIND, two forms -- a blind det-skip means "couldn't judge",
 #      never "not an NDA", so such candidates ALWAYS keep the AI overlay:
 #      (a) EXTRACTION-BLIND: extracted text empty or under ~200 chars

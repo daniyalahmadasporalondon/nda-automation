@@ -696,41 +696,6 @@ def test_pregate_language_blind_spanish_nda_keeps_ai(settings_data_dir):
     assert result["skipped"] == []
 
 
-def test_pregate_admin_custom_terms_unlock_escape_hatch(settings_data_dir, monkeypatch):
-    # F1(b): an admin adding "Acuerdo de Confidencialidad" as a Signal Term (with
-    # the custom-terms flag on) must unlock the AI for matching mail -- via the
-    # detection metadata (subject/body/snippet) AND via the filename.
-    monkeypatch.setenv(gmail_integration.NDA_GMAIL_CUSTOM_TERMS_ENABLED_ENV, "1")
-    app_settings.update_gmail_settings(
-        {"inbound_search_terms": ["Acuerdo de Confidencialidad", "NDA"]}
-    )
-
-    metadata_hit = {
-        **_neutral_metadata(),
-        "gmail_detection_sources": "subject",
-        "gmail_detection_terms": "Acuerdo de Confidencialidad",
-    }
-    assert gmail_integration._attachment_explicit_nda_hit(metadata_hit, "document (3).pdf") is True
-    assert gmail_integration._attachment_explicit_nda_hit(
-        _neutral_metadata(), "Acuerdo de Confidencialidad firmado.pdf"
-    ) is True
-    # A filename-only detection source does NOT satisfy the metadata half (the
-    # subject/body/snippet gate mirrors _metadata_has_explicit_nda_signal).
-    filename_only = {
-        **_neutral_metadata(),
-        "gmail_detection_sources": "attachment_filename",
-        "gmail_detection_terms": "Acuerdo de Confidencialidad",
-    }
-    assert gmail_integration._attachment_explicit_nda_hit(filename_only, "scan.pdf") is False
-
-    # With the custom-terms flag OFF the hatch is the hardcoded English set only.
-    monkeypatch.setenv(gmail_integration.NDA_GMAIL_CUSTOM_TERMS_ENABLED_ENV, "0")
-    assert gmail_integration._attachment_explicit_nda_hit(metadata_hit, "document (3).pdf") is False
-    assert gmail_integration._attachment_explicit_nda_hit(
-        _neutral_metadata(), "Acuerdo de Confidencialidad firmado.pdf"
-    ) is False
-
-
 def test_pregate_selector_runs_when_any_candidate_reaches_triage_band(settings_data_dir):
     # Two attachments: a trusted det-skip and a triage-band candidate. The Pro
     # selector must run (once) and see BOTH candidates -- above-skip behaviour
