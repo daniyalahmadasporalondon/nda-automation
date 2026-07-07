@@ -158,6 +158,16 @@ class MatterRepository(Protocol):
 
     def reset_gmail_inbound_cursor(self, owner_user_id: str = "") -> None: ...
 
+    def gmail_inbound_history_id(self, owner_user_id: str = "") -> str: ...
+
+    def set_gmail_inbound_history_id(self, owner_user_id: str, history_id: str) -> str: ...
+
+    def gmail_inbound_history_poll_count(self, owner_user_id: str = "") -> int: ...
+
+    def bump_gmail_inbound_history_poll_count(self, owner_user_id: str = "") -> int: ...
+
+    def reset_gmail_inbound_history(self, owner_user_id: str = "") -> None: ...
+
     def export_matters_backup(self, owner_user_id: str = "") -> dict[str, Any]: ...
 
     def export_all_matters_backup(self) -> dict[str, Any]: ...
@@ -357,6 +367,21 @@ class DiskMatterRepository:
     def reset_gmail_inbound_cursor(self, owner_user_id: str = "") -> None:
         matter_store.reset_gmail_inbound_cursor(owner_user_id=owner_user_id)
 
+    def gmail_inbound_history_id(self, owner_user_id: str = "") -> str:
+        return matter_store.gmail_inbound_history_id(owner_user_id=owner_user_id)
+
+    def set_gmail_inbound_history_id(self, owner_user_id: str, history_id: str) -> str:
+        return matter_store.set_gmail_inbound_history_id(owner_user_id, history_id)
+
+    def gmail_inbound_history_poll_count(self, owner_user_id: str = "") -> int:
+        return matter_store.gmail_inbound_history_poll_count(owner_user_id=owner_user_id)
+
+    def bump_gmail_inbound_history_poll_count(self, owner_user_id: str = "") -> int:
+        return matter_store.bump_gmail_inbound_history_poll_count(owner_user_id=owner_user_id)
+
+    def reset_gmail_inbound_history(self, owner_user_id: str = "") -> None:
+        matter_store.reset_gmail_inbound_history(owner_user_id=owner_user_id)
+
     def export_matters_backup(self, owner_user_id: str = "") -> dict[str, Any]:
         return matter_store.export_matters_backup(owner_user_id=owner_user_id)
 
@@ -372,6 +397,8 @@ class InMemoryMatterRepository:
         self._matters: list[dict[str, Any]] = []
         self._documents: dict[str, bytes] = {}
         self._gmail_inbound_cursors: dict[str, int] = {}
+        # Per-owner Gmail History-API frontier: {owner: {"history_id": str, "poll_count": int}}.
+        self._gmail_inbound_history: dict[str, dict[str, Any]] = {}
 
     # --- reads ---------------------------------------------------------
     def store_change_token(self) -> Any | None:
@@ -890,6 +917,54 @@ class InMemoryMatterRepository:
         key = _clean_owner_user_id(owner_user_id)
         with self._lock:
             self._gmail_inbound_cursors.pop(key, None)
+
+    def gmail_inbound_history_id(self, owner_user_id: str = "") -> str:
+        key = _clean_owner_user_id(owner_user_id)
+        with self._lock:
+            entry = self._gmail_inbound_history.get(key) or {}
+            return str(entry.get("history_id") or "")
+
+    def set_gmail_inbound_history_id(self, owner_user_id: str, history_id: str) -> str:
+        key = _clean_owner_user_id(owner_user_id)
+        value = str(history_id or "").strip()
+        with self._lock:
+            entry = dict(self._gmail_inbound_history.get(key) or {})
+            if not value:
+                entry.pop("history_id", None)
+            else:
+                entry["history_id"] = value
+            if entry:
+                self._gmail_inbound_history[key] = entry
+            else:
+                self._gmail_inbound_history.pop(key, None)
+            return value
+
+    def gmail_inbound_history_poll_count(self, owner_user_id: str = "") -> int:
+        key = _clean_owner_user_id(owner_user_id)
+        with self._lock:
+            entry = self._gmail_inbound_history.get(key) or {}
+            try:
+                return max(0, int(entry.get("poll_count") or 0))
+            except (TypeError, ValueError):
+                return 0
+
+    def bump_gmail_inbound_history_poll_count(self, owner_user_id: str = "") -> int:
+        key = _clean_owner_user_id(owner_user_id)
+        with self._lock:
+            entry = dict(self._gmail_inbound_history.get(key) or {})
+            try:
+                current = max(0, int(entry.get("poll_count") or 0))
+            except (TypeError, ValueError):
+                current = 0
+            new_value = current + 1
+            entry["poll_count"] = new_value
+            self._gmail_inbound_history[key] = entry
+            return new_value
+
+    def reset_gmail_inbound_history(self, owner_user_id: str = "") -> None:
+        key = _clean_owner_user_id(owner_user_id)
+        with self._lock:
+            self._gmail_inbound_history.pop(key, None)
 
     def export_matters_backup(self, owner_user_id: str = "") -> dict[str, Any]:
         with self._lock:

@@ -32,8 +32,19 @@ UPLOADS_DIR = DATA_DIR / "uploads"
 # lets an arbitrary backlog drain WITHOUT the scan re-paging (and re-``get()``-ing)
 # the imported prefix every poll, the defect that previously stalled the catch-up.
 GMAIL_INBOUND_CURSORS_PATH = DATA_DIR / "gmail_inbound_cursors.json"
+# Persistent per-owner Gmail History-API frontier (flag-gated incremental inbound
+# sync). A SIBLING of the drain cursor above -- NOT an overload of it: the drain
+# cursor is a monotonic-DOWN internalDate low-water-mark that bounds the re-fetch of
+# the re-surfacing newest prefix, whereas this records the last historyId the
+# incremental poll safely consumed (advanced only on a clean, fully-handled poll --
+# NEVER past a message that transiently failed). historyIds are large uint64 values,
+# so they are stored as STRINGS (JSON-safe, never coerced to int). The ledger + the
+# attachment dedup index remain the correctness authority; this only removes the
+# re-fetch cost of re-surfacing mail. Default-OFF flag -> this file is never touched.
+GMAIL_INBOUND_HISTORY_PATH = DATA_DIR / "gmail_inbound_history.json"
 _MATTERS_LOCK = threading.RLock()
 _GMAIL_CURSOR_LOCK = threading.RLock()
+_GMAIL_HISTORY_LOCK = threading.RLock()
 # --- list_matters read cache (perf #25) -------------------------------------
 # ``list_matters`` is hit by the 15s board poll, the notifications poll, the
 # corpus build and the assistant, and each call previously re-opened and
@@ -408,6 +419,140 @@ def _load_gmail_inbound_cursors() -> dict[str, int]:
         except (TypeError, ValueError):
             continue
     return cursors
+
+
+# --------------------------------------------------------------------------- #
+# Gmail History-API frontier store (flag-gated incremental inbound sync).
+#
+# The SIBLING of the drain cursor above. Payload per owner is a small dict
+# ``{"history_id": "<str>", "poll_count": <int>}`` so the full-sweep cadence
+# (bump_gmail_inbound_history_poll_count) travels with the frontier. Keyed by the
+# SAME ``_clean_owner_user_id`` as the cursor + ledger so all three agree on the
+# per-owner key. Every read is best-effort (corrupt/missing -> "" / 0, never
+# raises); every write is the atomic tmp + os.replace pattern under the dedicated
+# ``_GMAIL_HISTORY_LOCK``.
+# --------------------------------------------------------------------------- #
+def gmail_inbound_history_id(owner_user_id: str = "") -> str:
+    """The persisted per-owner Gmail History-API frontier (``""`` if none).
+
+    ``""`` means "no historyId yet" -- the incremental path has never seeded, so the
+    caller must fall back to the HEAD/DRAIN window-scan (and seed the frontier from
+    getProfile.historyId at poll end). Stored as a STRING (Gmail historyIds are large
+    uint64 values); never coerced to int.
+    """
+    key = _clean_owner_user_id(owner_user_id)
+    with _GMAIL_HISTORY_LOCK:
+        history = _load_gmail_inbound_history()
+    entry = history.get(key) or {}
+    return str(entry.get("history_id") or "")
+
+
+def set_gmail_inbound_history_id(owner_user_id: str, history_id: str) -> str:
+    """Store/overwrite the per-owner frontier (NOT monotonic -- may move either way).
+
+    Unlike the drain cursor (monotonic DOWN), the historyId is simply replaced with
+    whatever the caller resolved as the safe advance target (the mailbox head at a
+    clean poll, or a fresh getProfile.historyId re-seed after a fallback scan). The
+    terminal-only advance discipline lives in the CALLER (gmail_matter_inbox); this
+    seam is a dumb setter. An empty ``history_id`` clears the frontier for the owner.
+    Returns the value in force after the call.
+    """
+    key = _clean_owner_user_id(owner_user_id)
+    value = str(history_id or "").strip()
+    with _GMAIL_HISTORY_LOCK:
+        history = _load_gmail_inbound_history()
+        entry = dict(history.get(key) or {})
+        if not value:
+            # An empty write clears the frontier but preserves the poll_count so a
+            # 404-driven re-seed keeps its full-sweep cadence bookkeeping intact.
+            entry.pop("history_id", None)
+        else:
+            entry["history_id"] = value
+        if entry:
+            history[key] = entry
+        else:
+            history.pop(key, None)
+        _write_json_atomic(GMAIL_INBOUND_HISTORY_PATH, history)
+        return value
+
+
+def gmail_inbound_history_poll_count(owner_user_id: str = "") -> int:
+    """The per-owner incremental-poll counter that drives the full-sweep cadence."""
+    key = _clean_owner_user_id(owner_user_id)
+    with _GMAIL_HISTORY_LOCK:
+        history = _load_gmail_inbound_history()
+    entry = history.get(key) or {}
+    try:
+        return max(0, int(entry.get("poll_count") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def bump_gmail_inbound_history_poll_count(owner_user_id: str = "") -> int:
+    """Increment the per-owner incremental-poll counter; returns the new total.
+
+    Bumped ONLY on a clean incremental advance (see the caller's terminal-only gate),
+    so ``(poll_count + 1) % fullsweep_every == 0`` fires the mandatory full window-scan
+    on a fixed cadence of *successful* incremental polls, not wall-clock polls.
+    """
+    key = _clean_owner_user_id(owner_user_id)
+    with _GMAIL_HISTORY_LOCK:
+        history = _load_gmail_inbound_history()
+        entry = dict(history.get(key) or {})
+        try:
+            current = max(0, int(entry.get("poll_count") or 0))
+        except (TypeError, ValueError):
+            current = 0
+        new_value = current + 1
+        entry["poll_count"] = new_value
+        history[key] = entry
+        _write_json_atomic(GMAIL_INBOUND_HISTORY_PATH, history)
+        return new_value
+
+
+def reset_gmail_inbound_history(owner_user_id: str = "") -> None:
+    """Drop the per-owner frontier AND poll_count (e.g. after a 404 expiry).
+
+    A hard reset: the next poll takes the fallback window-scan and re-seeds a fresh
+    frontier from getProfile.historyId. Clears BOTH fields (unlike the empty-string
+    ``set_gmail_inbound_history_id`` which keeps the poll_count) so a re-anchor after
+    expiry starts the full-sweep cadence clean.
+    """
+    key = _clean_owner_user_id(owner_user_id)
+    with _GMAIL_HISTORY_LOCK:
+        history = _load_gmail_inbound_history()
+        if key in history:
+            del history[key]
+            _write_json_atomic(GMAIL_INBOUND_HISTORY_PATH, history)
+
+
+def _load_gmail_inbound_history() -> dict[str, dict]:
+    if not GMAIL_INBOUND_HISTORY_PATH.is_file():
+        return {}
+    try:
+        with GMAIL_INBOUND_HISTORY_PATH.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    history: dict[str, dict] = {}
+    for owner_key, value in payload.items():
+        if not isinstance(value, dict):
+            continue
+        entry: dict[str, Any] = {}
+        history_id = str(value.get("history_id") or "").strip()
+        if history_id:
+            entry["history_id"] = history_id
+        try:
+            poll_count = max(0, int(value.get("poll_count") or 0))
+        except (TypeError, ValueError):
+            poll_count = 0
+        if poll_count:
+            entry["poll_count"] = poll_count
+        if entry:
+            history[str(owner_key)] = entry
+    return history
 
 
 def update_matter_stage(matter_id: str, board_column: str, owner_user_id: str = "") -> dict[str, Any] | None:

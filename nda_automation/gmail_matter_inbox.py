@@ -274,6 +274,89 @@ def _permanent_skip_retry_limit() -> int:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Gmail History-API incremental sync -- transport-seam guards (all callable-
+# guarded + fail-safe so an older/fake transport degrades to the window-scan).
+# --------------------------------------------------------------------------- #
+def _history_sync_enabled_for(transport: Any, owner_user_id: str) -> bool:
+    """Whether the flag-gated incremental path is active for this owner (default OFF).
+
+    Delegates to the transport's ``history_sync_enabled`` (which reads the env flag +
+    optional per-owner allowlist). Passes the owner when the seam accepts it; falls
+    back to the no-arg form for older seams. Any failure -> False (the safe default is
+    the current window-scan behaviour).
+    """
+    probe = getattr(transport, "history_sync_enabled", None)
+    if not callable(probe):
+        return False
+    try:
+        try:
+            return bool(probe(owner_user_id))
+        except TypeError:
+            return bool(probe())
+    except Exception:  # pragma: no cover - flag read is best-effort
+        return False
+
+
+def _history_fullsweep_every(transport: Any) -> int:
+    """The clamped full-sweep cadence (default 6, never < 1). Best-effort -> default."""
+    probe = getattr(transport, "history_fullsweep_every", None)
+    if callable(probe):
+        try:
+            value = int(probe())
+            return value if value >= 1 else 6
+        except Exception:  # pragma: no cover - cadence read is best-effort
+            return 6
+    return 6
+
+
+def _is_history_expired(transport: Any, error: Exception) -> bool:
+    """True iff ``error`` is a Gmail History-API 404 (expired startHistoryId).
+
+    Delegates to the transport's ``is_history_expired_error`` when present; falls back
+    to reading ``resp.status == 404`` directly. Best-effort -> not expired (the safe
+    bias: a false negative merely keeps retrying the incremental list, never advances
+    past unseen mail).
+    """
+    probe = getattr(transport, "is_history_expired_error", None)
+    if callable(probe):
+        try:
+            return bool(probe(error))
+        except Exception:  # pragma: no cover - probe is best-effort
+            pass
+    return getattr(getattr(error, "resp", None), "status", None) == 404
+
+
+def _run_window_scan(
+    inbound_query: str,
+    *,
+    transport: Any,
+    context: _ScanContext,
+    state: _ScanState,
+    cursor_supported: bool,
+    drain_cursor: int,
+    head_window: int,
+    max_scan: int,
+) -> None:
+    """The existing HEAD/DRAIN window-scan, extracted so BOTH the flag-off path and
+    the History-API fallback (first-sync / 404 expiry / full-sweep) drive the IDENTICAL
+    two-pass logic. Byte-for-byte the pre-history behaviour: a head pass + a date-bounded
+    drain pass when the cursor is armed, else a single bounded pass.
+    """
+    if cursor_supported and drain_cursor > 0:
+        # Pass 1: head re-scan for newly-arrived mail above the frontier (bounded).
+        _scan_pass(inbound_query, max_scan=head_window, state=state, context=context)
+        # Pass 2: drain the backlog below the frontier, date-bounded so the drained
+        # prefix never re-surfaces.
+        if not state.rate_limited and state.new_processed < state.import_limit:
+            drain_query = transport.inbound_query_before(inbound_query, drain_cursor)
+            _scan_pass(drain_query, max_scan=max_scan, state=state, context=context, track_floor=True)
+    else:
+        # No cursor support (or no cursor yet): a single bounded pass over the base
+        # query, identical in spirit to the pre-cursor behaviour.
+        _scan_pass(inbound_query, max_scan=max_scan, state=state, context=context, track_floor=True)
+
+
 def import_inbound_matters(
     *,
     transport: Any,
@@ -365,6 +448,59 @@ def import_inbound_matters(
         except Exception:  # pragma: no cover - cursor read is best-effort
             drain_cursor = 0
 
+    # GMAIL HISTORY-API INCREMENTAL SYNC (flag-gated, default OFF). When enabled AND a
+    # frontier historyId has been seeded, the poll processes ONLY messagesAdded since
+    # that frontier (metadata-only history.list -> a pre-resolved id list -> the SAME
+    # per-message body), removing the re-fetch cost of the re-surfacing newest prefix.
+    # The HEAD/DRAIN window-scan below STAYS as the fallback (first-sync, 404 expiry,
+    # periodic full-sweep) and the ledger + attachment dedup index remain the
+    # correctness authority -- history sync is NEVER the dedup authority (R6).
+    #
+    # ENTRY GATES (all must hold to take the incremental path this poll):
+    #   * flag on for this owner; and
+    #   * NOT an explicit caller query (an explicit query always takes the window-scan
+    #     verbatim, mirroring the backfill exemption); and
+    #   * the transport exposes history_list + the cursor seams (older fakes degrade);
+    #     and
+    #   * no ACTIVE first-sync backfill -- the new-user backfill WINS while active
+    #     (defers incremental until the backlog band is secured, R7); and
+    #   * a stored frontier exists AND this is not a scheduled full-sweep poll.
+    history_seams_ok = (
+        callable(getattr(transport, "history_list", None))
+        and callable(getattr(transport, "inbound_history_id", None))
+        and callable(getattr(transport, "history_sync_enabled", None))
+    )
+    history_enabled = bool(
+        history_seams_ok
+        and not explicit_query
+        and cursor_supported
+        and backfill is None
+        and _history_sync_enabled_for(transport, owner_user_id)
+    )
+    stored_hid = ""
+    poll_count = 0
+    if history_enabled:
+        try:
+            stored_hid = str(transport.inbound_history_id(owner_user_id) or "")
+            poll_count = int(transport.inbound_history_poll_count(owner_user_id))
+        except Exception:  # pragma: no cover - frontier read is best-effort
+            stored_hid = ""
+            poll_count = 0
+    fullsweep_every = _history_fullsweep_every(transport)
+    # A scheduled full-sweep re-anchors on the (poll_count+1)-th clean incremental poll:
+    # the mandatory window-scan that catches re-labeled/un-archived old mail messagesAdded
+    # never fires for (R4). fullsweep_every is clamped >=1 in the transport so it can
+    # never be disabled. Only meaningful once a frontier exists (nothing to re-anchor
+    # otherwise).
+    force_fullsweep = bool(
+        history_enabled and stored_hid and ((poll_count + 1) % fullsweep_every == 0)
+    )
+    use_incremental = bool(history_enabled and stored_hid and not force_fullsweep)
+    # True whenever this poll ran a fallback window-scan (first-sync seed, 404 expiry,
+    # or scheduled full-sweep) rather than the incremental path -- the re-seed at poll
+    # end keys off this. Set below when the 404-expiry fallback fires.
+    took_fallback_or_fullsweep = bool(history_enabled and not use_incremental)
+
     if backfill is not None and not cursor_supported:
         # Without a drain cursor the widened band below a processed prefix could
         # never be reliably reached, so a capped window would silently strand old
@@ -439,20 +575,159 @@ def import_inbound_matters(
     # raise_gmail_api_error, or an unexpected store/OS error). Pre-fix, an exception
     # here skipped BOTH, so every terminal outcome already reached this poll was
     # forgotten and re-ran its paid AI calls on the next cycle.
+    # The advance target for the historyId frontier: the mailbox head at read time,
+    # captured from the history.list response(s). Advanced onto the store ONLY on a
+    # clean, fully-handled incremental poll (the terminal-only gate in finally).
+    new_history_id = stored_hid
+    # The ordered-unique candidate ids the incremental history listing produced this
+    # poll (messagesAdded can repeat an id; de-dup preserving first-seen order).
+    candidate_ids: list[str] = []
+    expired = False
+    # True ONLY when the history listing paged to completion WITHOUT raising. The
+    # frontier advance is gated on this so a raised (non-429/non-404) list error never
+    # advances past mail we never finished enumerating -- an empty candidate_ids from a
+    # page-1 raise must NOT read as "all handled" and bump the frontier.
+    history_listing_complete = False
     try:
-        if cursor_supported and drain_cursor > 0:
-            # Pass 1: head re-scan for newly-arrived mail above the frontier (bounded).
-            _scan_pass(inbound_query, max_scan=head_window, state=state, context=context)
-            # Pass 2: drain the backlog below the frontier, date-bounded so the drained
-            # prefix never re-surfaces.
-            if not state.rate_limited and state.new_processed < import_limit:
-                drain_query = transport.inbound_query_before(inbound_query, drain_cursor)
-                _scan_pass(drain_query, max_scan=max_scan, state=state, context=context, track_floor=True)
+        if use_incremental:
+            candidate_seen: set[str] = set()
+            try:
+                page_token = ""
+                while True:
+                    page = transport.history_list(
+                        service,
+                        start_history_id=stored_hid,
+                        label_id="INBOX",
+                        history_types=("messageAdded",),
+                        page_token=page_token,
+                    )
+                    resp_hid = str(page.get("historyId") or "")
+                    if resp_hid:
+                        # The mailbox head at read time = the advance target. Keep the
+                        # LATEST page's head (paging walks forward through history).
+                        new_history_id = resp_hid
+                    for record in (page.get("history") or []):
+                        for added in (record.get("messagesAdded") or []):
+                            msg = added.get("message") or {}
+                            mid = str(msg.get("id") or "")
+                            labels = {str(label).upper() for label in (msg.get("labelIds") or [])}
+                            # messagesAdded fires for EVERY label an added message
+                            # carries; keep only INBOX-labelled ones (an archived/sent
+                            # copy is not inbound). Ordered-unique so a repeated id is
+                            # processed once.
+                            if not mid or "INBOX" not in labels:
+                                continue
+                            if mid in candidate_seen:
+                                continue
+                            candidate_seen.add(mid)
+                            candidate_ids.append(mid)
+                    page_token = str(page.get("nextPageToken") or "")
+                    if not page_token:
+                        break
+                # Reached only when the listing paged to completion without raising.
+                history_listing_complete = True
+            except Exception as exc:
+                # 429 is checked FIRST: a rate-limit must NEVER be mistaken for a 404
+                # expiry (which would wrongly discard the frontier + trigger a full
+                # re-anchor). A genuine 404 = the startHistoryId aged out (routine,
+                # R1/R2) -> fall through to the window-scan THIS poll + re-seed. Any
+                # other error escalates exactly like the list() path.
+                if _is_rate_limited(transport, exc):
+                    state.rate_limited = True
+                elif _is_history_expired(transport, exc):
+                    expired = True
+                else:
+                    transport.raise_gmail_api_error(
+                        exc, "Gmail inbound history sync could not list changes."
+                    )
+                    raise  # unreachable: raise_gmail_api_error always raises
+
+            if expired:
+                # The frontier is gone: drop it, re-anchor via the FULL window-scan this
+                # same poll (the ledger + dedup index prevent any re-import), and let the
+                # re-seed at poll end plant a fresh frontier from getProfile.historyId.
+                try:
+                    transport.reset_inbound_history(owner_user_id)
+                except Exception:  # pragma: no cover - reset is best-effort
+                    LOGGER.warning("Failed to reset expired Gmail history frontier", exc_info=True)
+                use_incremental = False
+                took_fallback_or_fullsweep = True
+                LOGGER.info("Gmail inbound history frontier expired (404); re-anchoring via window-scan.")
+                _run_window_scan(
+                    inbound_query,
+                    transport=transport,
+                    context=context,
+                    state=state,
+                    cursor_supported=cursor_supported,
+                    drain_cursor=drain_cursor,
+                    head_window=head_window,
+                    max_scan=max_scan,
+                )
+            else:
+                # Incremental: process the resolved candidate ids through the SAME
+                # per-message body. track_floor is False inside (history advances the
+                # historyId frontier, never the internalDate drain cursor). Runs EVEN
+                # when a mid-list 429 truncated paging (state.rate_limited True): the
+                # ids collected from the pages that DID return are still imported (case
+                # 10 -- "page-1 imports kept"), and the terminal-only advance gate below
+                # withholds the frontier because the poll is not clean, so the un-listed
+                # tail is re-listed next poll. _process_message_stub itself stops on any
+                # get()-stage 429.
+                _scan_ids(candidate_ids, state=state, context=context)
+                LOGGER.info(
+                    "Gmail inbound history poll: startHistoryId=%s candidates=%d advanced=%s rate_limited=%s",
+                    stored_hid,
+                    len(candidate_ids),
+                    new_history_id,
+                    state.rate_limited,
+                )
         else:
-            # No cursor support (or no cursor yet): a single bounded pass over the base
-            # query, identical in spirit to the pre-cursor behaviour.
-            _scan_pass(inbound_query, max_scan=max_scan, state=state, context=context, track_floor=True)
+            if force_fullsweep:
+                LOGGER.info(
+                    "Gmail inbound history full-sweep re-anchor (poll %d of %d)",
+                    poll_count + 1,
+                    fullsweep_every,
+                )
+            _run_window_scan(
+                inbound_query,
+                transport=transport,
+                context=context,
+                state=state,
+                cursor_supported=cursor_supported,
+                drain_cursor=drain_cursor,
+                head_window=head_window,
+                max_scan=max_scan,
+            )
     finally:
+        # HISTORY-ID TERMINAL-ONLY ADVANCE (invariant #1 -- the load-bearing one).
+        # ORDERING INVARIANT: the frontier advances ONLY when EVERY candidate id
+        # reached a terminal outcome (ledger-marked) AND the poll ended clean (NOT
+        # rate-limited AND NOT budget-truncated). A transiently-failed message is left
+        # UNMARKED to retry; advancing past it would make history.list never surface it
+        # again = silent, permanent NDA loss. This is the exact analogue of the drain
+        # cursor's note_terminal_floor discipline -- mirror of the ORDERING INVARIANT
+        # at the stable-outcome mark site. Runs in finally so a mid-poll raise leaves
+        # the frontier UNCHANGED (re-lists next poll; the ledger skips the done ones
+        # for free and retries the rest). Never advances on the expiry path (the
+        # frontier was reset + re-seeded from the profile head instead).
+        if use_incremental and not expired and history_listing_complete:
+            ledger = context.processed_ledger
+            # Without a ledger we CANNOT verify every candidate reached a terminal
+            # outcome, so we conservatively decline to advance (the safe bias: retry
+            # next poll rather than risk stepping past unverified work). A real
+            # production transport always exposes the ledger; this only guards the
+            # degraded open-failed path.
+            all_handled = ledger is not None and all(
+                ledger.is_processed(mid) for mid in candidate_ids
+            )
+            clean = (not state.rate_limited) and (state.new_processed < import_limit)
+            if all_handled and clean and new_history_id:
+                try:
+                    transport.set_inbound_history_id(owner_user_id, new_history_id)
+                    transport.bump_inbound_history_poll_count(owner_user_id)
+                except Exception:  # pragma: no cover - frontier write is best-effort
+                    LOGGER.warning("Failed to advance Gmail history frontier", exc_info=True)
+            # else: leave the stored frontier UNCHANGED (retry the un-handled ids).
         # Advance (lower) the persistent cursor to the oldest message examined in the
         # drain this poll, so the NEXT poll resumes right below it instead of re-paging
         # the imported prefix. When the drain pass found NO un-imported message older
@@ -478,6 +753,36 @@ def import_inbound_matters(
                 processed_ledger.flush()
             except Exception:  # pragma: no cover - flush is best-effort
                 LOGGER.warning("Failed to flush Gmail processed-message ledger", exc_info=True)
+
+    # RE-SEED the historyId frontier after ANY fallback window-scan (first-sync,
+    # 404 expiry, or scheduled full-sweep) so the NEXT poll can go incremental. The
+    # seed = getProfile.historyId (the mailbox head) -- ALREADY fetched this poll, so
+    # ZERO extra API calls. Safe because the fallback scan + the ledger just handled
+    # everything at/below that head. Skipped when the poll was rate-limited (the scan
+    # did not fully cover the head, so the head is not a safe frontier -- retry next
+    # poll). On a scheduled full-sweep, reset poll_count to 0 so the cadence restarts.
+    # Accepted soft residual (R4/Section 3): a transient-failed RECENT message between
+    # the seed and the next full-sweep is re-tried by that full-sweep's head pass.
+    if history_enabled and (took_fallback_or_fullsweep or not stored_hid) and not state.rate_limited:
+        try:
+            seed_hid = str(
+                transport.profile_history_id(service=service, owner_user_id=owner_user_id) or ""
+            )
+            if seed_hid:
+                if force_fullsweep:
+                    # Restart the full-sweep cadence cleanly: reset (clears hid +
+                    # poll_count to 0) then re-seed the fresh head. poll_count stays 0,
+                    # so the next full-sweep is a clean fullsweep_every incremental polls
+                    # away ((0+1)%N, (1+1)%N, ... -> the Nth is the sweep). No bump here
+                    # -- a full-sweep is the re-anchor, not an incremental advance.
+                    transport.reset_inbound_history(owner_user_id)
+                    transport.set_inbound_history_id(owner_user_id, seed_hid)
+                else:
+                    # First-sync seed or 404 re-anchor: plant the frontier, leave the
+                    # poll_count alone (a 404-reset already cleared it).
+                    transport.set_inbound_history_id(owner_user_id, seed_hid)
+        except Exception:  # pragma: no cover - re-seed is best-effort, never fails the poll
+            LOGGER.warning("Failed to re-seed Gmail history frontier", exc_info=True)
 
     # BACKFILL PROGRESS: record the widened band as drained-through ONLY when this
     # poll ended with the band secured -- either the drain ran to exhaustion, or
@@ -618,6 +923,505 @@ class _ScanContext:
         )
 
 
+# Per-message control signals returned by the ONE shared per-message body
+# (_process_message_stub). The caller's loop keeps looping on _STUB_CONTINUE and
+# aborts the whole pass (keeping what was imported) on _STUB_STOP -- the analogue of
+# the old inline ``continue`` / rate-limit ``return``.
+_STUB_CONTINUE = "continue"
+_STUB_STOP = "stop"
+
+
+class _PassAccounting:
+    """Per-pass paging + cap accounting shared by _scan_pass and _scan_ids.
+
+    ``stubs_scanned`` bounds the fetch/heavy probe (max_scan); ``total_stubs_paged``
+    bounds RAW paging including cheap ledger pre-skips (max_total_paged) so a
+    processed prefix longer than max_scan never walls off the un-processed band behind
+    it. Extracting these into an object is what lets the incremental id-list scan reuse
+    the EXACT per-message body the paged scan uses -- one block, one set of counters.
+    """
+
+    def __init__(self, *, max_scan: int, max_total_paged: int) -> None:
+        self.stubs_scanned = 0
+        self.total_stubs_paged = 0
+        self.max_scan = max_scan
+        self.max_total_paged = max_total_paged
+
+    def cap_reached(self, state: "_ScanState") -> bool:
+        return (
+            state.new_processed >= state.import_limit
+            or self.stubs_scanned >= self.max_scan
+            or self.total_stubs_paged >= self.max_total_paged
+        )
+
+
+def _process_message_stub(
+    message_stub: dict[str, Any],
+    *,
+    state: _ScanState,
+    context: _ScanContext,
+    acct: _PassAccounting,
+    track_floor: bool = False,
+) -> str:
+    """THE ONE shared per-message body (invariant #2).
+
+    Given a single message stub (``{"id": ...}``), runs the ledger pre-skip, the
+    ``messages().get`` with the SAME 429/404 handling, the exclude/dedup gates, the
+    heavy import, and the terminal ledger/floor discipline -- IDENTICALLY for the
+    paged HEAD/DRAIN scan (_scan_pass) and the History-API id-list scan (_scan_ids).
+    There is deliberately NO parallel predicate/filter: junk-import and missed-NDA
+    both require changing ONLY this block. Returns ``_STUB_CONTINUE`` to keep scanning
+    or ``_STUB_STOP`` to abort the pass on a rate-limit (keeping what was imported).
+    """
+    transport = context.transport
+    service = context.service
+    acct.total_stubs_paged += 1
+    message_id = str(message_stub.get("id") or "")
+    if not message_id:
+        # An id-less stub counts toward the hard scan cap exactly as it
+        # always did -- max_scan is the backstop that stops an endless
+        # stream of junk stubs from probing unbounded.
+        acct.stubs_scanned += 1
+        return _STUB_CONTINUE
+
+    # PROCESSED-LEDGER SKIP (REFINEMENT C): this is the whole point of the
+    # ledger -- short-circuit a message that already reached a terminal
+    # outcome on a prior poll BEFORE the messages().get below AND before the
+    # gmail_intake classifier + the gmail_triage attachment-selector AI calls
+    # those downstream paths make. A "processed" skip is a cheap pre-fetch
+    # gate (like the dedup short-circuit): it does NOT count toward
+    # import_limit, does NOT touch the drain cursor, AND does NOT count
+    # toward max_scan (only toward the raw total-paged cap) -- so the scan
+    # pages past an arbitrarily long processed prefix to the next
+    # un-processed (older) batch exactly as it pages past an already-
+    # imported one -- coexisting with the cursor drain (REFINEMENT F),
+    # never stalling its forward progress nor hiding genuinely-new mail (an
+    # unseen id is simply absent from the ledger and falls through).
+    ledger = context.processed_ledger
+    if ledger is not None and ledger.is_processed(message_id):
+        context.skipped.append({"message_id": message_id, "reason": "processed_message"})
+        return _STUB_CONTINUE
+    acct.stubs_scanned += 1
+
+    # SAME-POLL RE-ATTEMPT GUARD: a message that already ran the heavy path
+    # to a TRANSIENT failure THIS poll (head pass) can re-surface in the
+    # drain pass of the same poll (it is deliberately unmarked so it retries
+    # NEXT poll). Skip it silently: no second heavy slot, no second AI call,
+    # and -- critically -- no second attempt increment, so "retry N times"
+    # always means N distinct polls, never N passes seconds apart.
+    if message_id in state.transient_attempted_ids:
+        return _STUB_CONTINUE
+
+    try:
+        message = service.users().messages().get(userId="me", id=message_id, format="full").execute()
+    except Exception as exc:
+        if _is_rate_limited(transport, exc):
+            # A 429 mid-scan: keep everything imported so far this poll and
+            # stop -- the next poll resumes from the persisted cursor.
+            state.rate_limited = True
+            return _STUB_STOP
+        # get-404 = a message that is genuinely GONE (deleted/expunged since it was
+        # listed). This is TERMINAL, not transient: a deleted message stays deleted,
+        # so mark it processed ("message_deleted") -- without this, one deleted id in
+        # a history page would leave ``all_handled`` False forever and PIN the
+        # incremental frontier (R3). A 429 was already handled above; any OTHER
+        # 5xx/timeout with a retry-after escalates, and everything else is an
+        # UNMARKED transient skip that retries next poll (content never seen).
+        # R-2 NOTE: this handler is SHARED, so a get-404 now also marks-processed on
+        # the window-scan (fallback) path. That is benign -- a deleted id never
+        # re-surfaces in a list() page anyway, so the extra ledger mark is harmless
+        # and the drain-cursor floor advance below is gated on track_floor as before.
+        if _is_message_deleted(transport, exc):
+            context.skipped.append({"message_id": message_id, "reason": "message_deleted"})
+            _mark_processed(context, message_id)
+            if track_floor:
+                state.note_floor(_message_internal_date_ms(transport, message_stub))
+            return _STUB_CONTINUE
+        if transport.gmail_retry_after_epoch(exc):
+            transport.raise_gmail_api_error(exc, "Gmail inbound sync could not load a message.")
+        context.skipped.append({"message_id": message_id, "reason": "message_unavailable"})
+        return _STUB_CONTINUE
+
+    # CURSOR-FLOOR (drain) -- DO NOT advance the floor here yet. The floor is
+    # the resume point the persistent per-owner drain cursor is lowered to; a
+    # message must only lower it once we KNOW it reached a terminal/stable
+    # outcome (imported or a stable skip). Recording the floor unconditionally
+    # right after fetch -- before the import outcome is known -- lets the cursor
+    # descend BELOW a message that hit a TRANSIENT failure (stable_outcome is
+    # False: review_failed / attachment_unavailable / extraction crash). Such a
+    # message is intentionally left unmarked to retry next poll, but a cursor
+    # already lowered past it means the next drain (before:<cursor>) and the
+    # head pass never re-examine it -> the inbound NDA is silently lost forever.
+    # So capture the date now and commit it to the floor only at each
+    # terminal/stable outcome below (note_terminal_floor()).
+    # Advance the drain floor for a message only at a terminal/stable outcome.
+    # ``note_terminal_floor()`` excludes transient-failure (stable_outcome
+    # False) messages so the cursor never descends past one still owed a retry.
+    message_floor_ms = _message_internal_date_ms(transport, message) if track_floor else 0
+
+    def note_terminal_floor(_floor_ms: int = message_floor_ms) -> None:
+        if track_floor:
+            state.note_floor(_floor_ms)
+
+    if transport.is_self_or_outbound_message(message, context.account_email):
+        context.skipped.append({"message_id": message_id, "reason": "self_sent_or_outbound"})
+        # TERMINAL outcome (REFINEMENT D): a self-sent/outbound message is
+        # structurally never reviewable -- mark it so the next poll skips it
+        # before the fetch + AI calls. (Marked in-memory; written once at the
+        # end of the poll.)
+        _mark_processed(context, message_id)
+        note_terminal_floor()
+        return _STUB_CONTINUE
+
+    # E-SIGNATURE / CALENDAR platform notification emails (DocuSign,
+    # Adobe Sign, HelloSign, PandaDoc, Google Calendar invites) carry a
+    # PDF/DOCX attachment and pass the structural fetch query, but they are
+    # never inbound counterparty NDAs -- importing them spawns phantom
+    # matters. Skip + ledger-mark them BEFORE the import-budget slot so a
+    # skip costs no budget and future polls re-skip cheaply without a
+    # re-fetch. This code-level check is the AUTHORITATIVE suppression
+    # (the query-level -from: clauses are only a fetch-quota optimization):
+    # it also catches FORWARDED notifications the query cannot see, and
+    # every drop stays visible here in skipped[] + the ledger. The match is
+    # SENDER-ONLY (domain suffix / full address): a real NDA that mentions
+    # DocuSign still imports. Callable-guard via getattr so older/fake
+    # transports lacking the seams degrade gracefully: the broader
+    # excluded_notification_sender seam is preferred, the legacy
+    # DocuSign-only predicate is the fallback, neither means no skip.
+    matched_exclude_entry = ""
+    excluded_sender_probe = getattr(transport, "excluded_notification_sender", None)
+    is_docusign_notification = getattr(transport, "is_docusign_notification", None)
+    if callable(excluded_sender_probe):
+        try:
+            matched_exclude_entry = str(excluded_sender_probe(message) or "")
+        except Exception:  # pragma: no cover - the probe must never break the poll
+            matched_exclude_entry = ""
+    elif callable(is_docusign_notification) and is_docusign_notification(message):
+        matched_exclude_entry = "docusign.net"
+    # EXECUTED-NDA CAPTURE: a platform notification that carries an
+    # EXPLICIT NDA signal (strong NDA filename, or an explicit NDA term in
+    # subject/body/snippet) is a counterparty-initiated envelope's likely
+    # only copy of an executed NDA -- let it THROUGH the intake pipeline
+    # (clamped to at most the triage lane + provenance-stamped below)
+    # instead of terminally dropping it. Platform mail with no explicit
+    # signal keeps the terminal drop. Seam-guarded + env-flagged
+    # (NDA_GMAIL_ESIGN_NDA_CAPTURE, default on): older transports and the
+    # flag-off state keep the unconditional drop.
+    esign_capture_entry = ""
+    if matched_exclude_entry:
+        capture_probe = getattr(transport, "esign_nda_capture_hit", None)
+        content_probe = getattr(transport, "excluded_message_capture_probe", None)
+        capture_attachments: list[dict[str, str]] = []
+        if callable(capture_probe) or callable(content_probe):
+            capture_attachments = list(
+                transport.reviewable_attachments(message.get("payload") or {})
+            )
+        # Stage 1 -- explicit-token capture (free: headers + filenames).
+        if capture_attachments and callable(capture_probe):
+            try:
+                if capture_probe(message, capture_attachments):
+                    esign_capture_entry = matched_exclude_entry
+                    matched_exclude_entry = ""
+            except Exception:  # pragma: no cover - probe must never break the poll
+                esign_capture_entry = ""
+        # Stage 2 -- deterministic CONTENT probe (download + extract, no
+        # AI) before the terminal drop: a genuine NDA envelope without an
+        # English NDA token (Adobe Sign "Signature requested on 'Acme -
+        # Mutual Agreement'") must not be silently dropped -- the base
+        # (pre-exclude) behaviour imported these. Capped per poll so a
+        # backlog of excluded mail cannot out-extract the import budget;
+        # over-cap messages are DEFERRED unmarked (no terminal drop, no
+        # cursor-floor advance) and retry next poll.
+        if matched_exclude_entry and capture_attachments and callable(content_probe):
+            if state.capture_probes_used >= state.import_limit:
+                context.skipped.append(
+                    {"message_id": message_id, "reason": "excluded_probe_deferred"}
+                )
+                return _STUB_CONTINUE
+            state.capture_probes_used += 1
+            try:
+                if content_probe(service, message_id, capture_attachments):
+                    esign_capture_entry = matched_exclude_entry
+                    matched_exclude_entry = ""
+            except Exception as probe_error:
+                if _is_rate_limited(transport, probe_error):
+                    # Provider throttling says nothing about this message:
+                    # keep what was imported this poll and stop, exactly
+                    # like the download-stage 429 path -- never let a 429
+                    # storm terminal-drop a real NDA.
+                    state.rate_limited = True
+                    return _STUB_STOP
+                # A broken probe fails toward the AI-era default for
+                # excluded senders (the terminal drop), never a crash.
+    if matched_exclude_entry:
+        # Keep the live fix's reason label for the DocuSign family so
+        # existing telemetry/greps stay continuous; other platforms get
+        # the generic label with the STATIC exclude-list entry as detail
+        # (config value only -- never the sender address; log hygiene).
+        reason = (
+            "docusign_notification"
+            if "docusign" in matched_exclude_entry
+            else "excluded_sender_notification"
+        )
+        skip_record = {"message_id": message_id, "reason": reason}
+        if reason == "excluded_sender_notification":
+            skip_record["detail"] = matched_exclude_entry
+        context.skipped.append(skip_record)
+        # TERMINAL outcome (mirrors self/outbound above): a platform
+        # notification is structurally never reviewable -- mark it so the
+        # next poll skips it before the fetch + AI calls.
+        _mark_processed(context, message_id)
+        note_terminal_floor()
+        return _STUB_CONTINUE
+
+    attachments = list(transport.reviewable_attachments(message.get("payload") or {}))
+    if not attachments:
+        context.skipped.append({"message_id": message_id, "reason": "no_reviewable_attachment"})
+        # TERMINAL outcome (REFINEMENT D): the message carries no reviewable
+        # attachment and never will -- mark it processed.
+        _mark_processed(context, message_id)
+        note_terminal_floor()
+        return _STUB_CONTINUE
+
+    # Dedup short-circuit AHEAD of any download/extract: a previously-
+    # imported forward (re-surfaced by the inbox query) is skipped here so
+    # the content-scan PDF/DOCX extraction never re-downloads + re-parses its
+    # attachments. This does NOT count toward import_limit -- the scan pages
+    # past these to reach the next un-imported batch. Only genuinely
+    # already-imported messages (every attachment matched on a pre-download
+    # identity key) are short-circuited; anything not provably imported falls
+    # through to the authoritative per-attachment path.
+    if message_attachments_all_already_imported(
+        message_id,
+        attachments,
+        transport=transport,
+        owner_user_id=context.owner_user_id,
+    ):
+        context.skipped.append({"message_id": message_id, "reason": "already_imported"})
+        # TERMINAL outcome (REFINEMENT D): every attachment is already
+        # imported -- mark so future polls skip it before the fetch (the
+        # dedup gate stops the heavy re-work; the ledger now also stops the
+        # re-fetch). Idempotent with the dedup gate; complementary, not a
+        # replacement.
+        _mark_processed(context, message_id)
+        note_terminal_floor()
+        return _STUB_CONTINUE
+
+    # QUARANTINE PRE-CHECK: a message whose recorded transient-failure
+    # attempts already reached the cap (e.g. the limit was lowered, or the
+    # quarantine mark itself failed to persist on the capping poll) is
+    # terminally quarantined HERE -- before the budget slot and before the
+    # selector/intake AI calls -- instead of burning one more heavy cycle.
+    # This backstop deliberately compares against the LARGER environmental
+    # limit (the failure reasons are not known pre-run, so the permanent
+    # stratum's tighter cap is only applied at failure time below, where
+    # the reasons are in hand) and NEVER increments the counter itself.
+    prior_attempts = _ledger_attempt_count(context, message_id)
+    if prior_attempts >= context.transient_retry_limit:
+        _quarantine_message(context, message_id, prior_attempts)
+        note_terminal_floor()
+        return _STUB_CONTINUE
+
+    # This message will hit the heavy import path: count it against the
+    # per-poll NEW-work budget that bounds load on the 2 GB worker.
+    state.new_processed += 1
+
+    # CRASH CONTAINMENT (the untyped-poison case): the typed error handlers
+    # deep inside the heavy path (Pdf/Docx extraction at prepare, the
+    # ActiveReviewEngine/extraction/alignment family around create_matter)
+    # convert KNOWN failures into transient skips with precise reasons. Any
+    # OTHER exception -- a crash in the detection code, a MatterStoreError,
+    # an unwrapped PyMuPDF RuntimeError -- previously propagated out of the
+    # scan with NO attempt recorded: that one message aborted its owner's
+    # poll at the same point every cycle, forever, and the retry cap never
+    # engaged. The broad catch below converts such a crash into a synthetic
+    # transient "import_crashed" skip (environmental stratum, detail =
+    # exception CLASS name only -- log hygiene) and falls through to the
+    # SAME single-site attempt counter, so an untyped poison quarantines
+    # exactly like a typed one and the scan continues to the next message.
+    # A rate-limit surfacing anywhere in the heavy path (e.g. the download
+    # stage) aborts the pass UNCOUNTED instead -- a provider 429 storm says
+    # nothing about this message and must never walk a real NDA toward
+    # quarantine. The server-level per-user catch remains the outer backstop.
+    try:
+        # Defer this CPU-bound per-message step (download + PDF/DOCX
+        # extraction + AI selector/intake) to any in-flight foreground NDA
+        # generation so the single prod worker's GIL/CPU is not starved out
+        # from under a user-facing generate. Bounded + fail-open: blocks at
+        # most a few seconds and never raises, so the poll can never stall
+        # unboundedly behind a stuck generate.
+        from . import generation_priority  # noqa: PLC0415 - light/local import.
+
+        generation_priority.yield_to_active_generation()
+
+        # Always make the per-message detection content-aware: if subject/
+        # body/snippet/filename carry no NDA signal, fall back to scanning
+        # attachment content. There is NO terminal drop here anymore -- the
+        # deterministic per-attachment band classifier is authoritative, so an
+        # attachment-only NDA with a neutral subject is never dropped before
+        # its content is judged.
+        detection = transport.message_nda_detection(message, attachments)
+        if not detection["matched"]:
+            detection = transport.attachment_nda_detection(service, message_id, attachments)
+
+        metadata = message_selector_metadata(
+            message,
+            transport.message_metadata(
+                message, context.account_email, detection=detection if detection["matched"] else None
+            ),
+            transport=transport,
+        )
+        if esign_capture_entry:
+            # Provenance for the executed-NDA capture path: the matched
+            # platform entry rides the intake metadata so the matter is
+            # identifiable/filterable later (static config value only).
+            metadata = {**metadata, "gmail_esign_notification": esign_capture_entry}
+        attachment_result = import_inbound_attachments(
+            service,
+            message_id,
+            attachments,
+            metadata,
+            transport=transport,
+            owner_user_id=context.owner_user_id,
+            intake_playbook=context.intake_playbook,
+            intake_budget=context.intake_budget,
+            esign_capture=bool(esign_capture_entry),
+        )
+    except Exception as error:
+        if _is_rate_limited(transport, error):
+            # Keep everything imported so far this poll and stop -- the next
+            # poll resumes from the persisted cursor. NOT an attempt: the
+            # provider was throttling, the message content was never judged.
+            state.rate_limited = True
+            return _STUB_STOP
+        LOGGER.warning(
+            "Gmail inbound heavy import crashed for message %s (%s); "
+            "recorded as a transient attempt",
+            message_id,
+            error.__class__.__name__,
+            exc_info=True,
+        )
+        attachment_result = {
+            "imported": [],
+            "skipped": [
+                gmail_attachment_skip(
+                    message_id,
+                    "",
+                    "import_crashed",
+                    detail=error.__class__.__name__,
+                )
+            ],
+            "ai_intake": None,
+            "stable_outcome": False,
+        }
+    context.imported.extend(attachment_result["imported"])
+    context.skipped.extend(attachment_result["skipped"])
+    context.sync_tallies.merge(attachment_result.get("ai_intake"))
+    # TERMINAL outcome (REFINEMENT D + P1-1): mark processed when the heavy
+    # import path reached a STABLE, DEFINITIVE outcome for the whole message --
+    # every attachment either imported OR hit a terminal non-NDA/duplicate
+    # skip, with NO transient failure. This is the fix for the sticky
+    # non-NDA message: a message whose only attachment the selector/intake
+    # terminally skips as non-NDA imports nothing yet is fully evaluated, so it
+    # MUST be marked or it re-runs the gmail_triage + gmail_intake AI calls
+    # (and burns an import_limit slot) on EVERY poll forever. We still do NOT
+    # mark when stable_outcome is False -- any transient per-attachment failure
+    # (attachment_unavailable / too_large / extraction crash / review_failed)
+    # leaves the message unmarked so it retries next poll (the safe bias).
+    # ORDERING INVARIANT: ledger marking (and attempt counting) happens
+    # STRICTLY AFTER import_inbound_attachments returns -- the mark must
+    # reflect the message's actual outcome, never precede it. Nothing in
+    # the heavy path above may mark/count this message id.
+    if attachment_result.get("stable_outcome"):
+        _mark_processed(context, message_id)
+        # Terminal/stable: safe to lower the drain cursor past this message.
+        note_terminal_floor()
+    else:
+        # A TRANSIENT failure -- leave the message unmarked so it retries
+        # next poll (the safe bias), and leave the floor where it is so the
+        # cursor never descends past this still-to-retry message (the
+        # data-loss fix). BUT count the attempt -- exactly ONE increment per
+        # message per poll, and ONLY here (this message just consumed the
+        # EXPENSIVE stage: budget slot + selector/intake AI calls). Never
+        # counted: ledger pre-skips, budget/max_scan cut-offs, rate-limit
+        # early returns, or message_unavailable fetch failures (content
+        # never seen). Once the count reaches the applicable stratum's
+        # limit the message is quarantined -- a terminal ledger mark with a
+        # keyed reason record -- so a poisoned message stops burning AI
+        # spend forever. Attempt accounting degrades to a no-op (attempts
+        # stay 0, never quarantining) on a ledger session without the
+        # counter seam.
+        state.transient_attempted_ids.add(message_id)
+        transient_reasons, failing_filename = _transient_failure_summary(
+            attachment_result.get("skipped")
+        )
+        # Reason stratification: a failure set that is ENTIRELY
+        # deterministic-permanent (too_large / needs_ocr -- same bytes, same
+        # outcome, retrying cannot help) quarantines at the tighter limit;
+        # any environmental reason keeps the full retry allowance.
+        deterministic_only = bool(transient_reasons) and all(
+            reason in _DETERMINISTIC_PERMANENT_SKIP_REASONS
+            for reason in transient_reasons
+        )
+        applicable_limit = (
+            context.permanent_skip_retry_limit
+            if deterministic_only
+            else context.transient_retry_limit
+        )
+        attempts = _record_transient_attempt(context, message_id)
+        if attempts >= applicable_limit:
+            _quarantine_message(
+                context,
+                message_id,
+                attempts,
+                reasons=transient_reasons,
+                filename=failing_filename,
+            )
+            # Quarantine IS terminal: the cursor may descend past it (R5 --
+            # without this the drain keeps re-paging the same prefix).
+            note_terminal_floor()
+
+    # Yield the GIL between heavy per-message imports so request threads
+    # (static assets, API calls) can be scheduled while a long sync churns.
+    # Loop-body level, AFTER the outcome accounting: every message that ran
+    # the heavy path -- stable, transient, or quarantined -- yields once.
+    _sync_cpu_yield()
+    return _STUB_CONTINUE
+
+
+def _scan_ids(
+    candidate_ids: list[str],
+    *,
+    state: _ScanState,
+    context: _ScanContext,
+) -> None:
+    """The History-API incremental analogue of ``_scan_pass``.
+
+    Reuses the EXACT per-message body (_process_message_stub) over a PRE-RESOLVED
+    ordered id list (from the messagesAdded history listing) instead of paging
+    ``messages().list``. Everything after the (absent) list call -- ledger pre-skip,
+    get() with the SAME 429/404 handling, dedup, heavy import, terminal discipline --
+    is identical, so junk-import and missed-NDA both require changing ONLY the shared
+    block. ``track_floor`` is deliberately False: the incremental path advances the
+    historyId frontier (terminal-only, in the caller), never the internalDate drain
+    cursor. Aborts on a rate-limit (keeping what was imported), exactly like the paged
+    scan; the caller's terminal-only gate then declines to advance the frontier.
+    """
+    # Same cap shape as the paged scan: bound the fetch/heavy probe by max_scan and
+    # the raw walk by max_total_paged. import_limit still caps NEW work per poll.
+    max_scan = max(state.import_limit * 5, state.import_limit + 100)
+    acct = _PassAccounting(max_scan=max_scan, max_total_paged=max(max_scan * 10, 500))
+    for message_id in candidate_ids:
+        if acct.cap_reached(state):
+            break
+        if _process_message_stub(
+            {"id": message_id}, state=state, context=context, acct=acct, track_floor=False
+        ) == _STUB_STOP:
+            # Rate-limited mid-message: keep what we imported and stop. The caller's
+            # terminal-only gate sees state.rate_limited and leaves the frontier put.
+            return
+
+
 def _scan_pass(
     inbound_query: str,
     *,
@@ -638,23 +1442,19 @@ def _scan_pass(
     transport = context.transport
     service = context.service
     new_stubs_total = 0
-    stubs_scanned = 0
-    # Total stubs PAGED this pass, including cheap ledger pre-skips. Ledger
-    # pre-skips deliberately do NOT count toward max_scan (they cost one in-memory
-    # set lookup, no fetch, no AI) -- otherwise a processed prefix longer than
-    # max_scan would permanently wall off the un-processed band behind it (the
-    # first-sync backfill widen injects exactly such a band BELOW the processed
-    # prefix). This separate, much larger cap bounds the pass's raw paging so a
-    # pathological inbox still terminates.
-    total_stubs_paged = 0
-    max_total_paged = max(max_scan * 10, 500)
+    # Per-pass paging + cap accounting (see _PassAccounting): stubs_scanned bounds the
+    # fetch/heavy probe, total_stubs_paged bounds raw paging so a pathological inbox
+    # still terminates. Extracted into an object so the SINGLE shared per-message body
+    # (_process_message_stub) manages both counters identically for the paged scan and
+    # the History-API id-list scan -- there is exactly ONE per-message block.
+    acct = _PassAccounting(max_scan=max_scan, max_total_paged=max(max_scan * 10, 500))
     page_token = ""
     page_size = min(state.import_limit, 100) or 1
     saw_pages = False
     while (
         state.new_processed < state.import_limit
-        and stubs_scanned < max_scan
-        and total_stubs_paged < max_total_paged
+        and acct.stubs_scanned < acct.max_scan
+        and acct.total_stubs_paged < acct.max_total_paged
     ):
         # Only the list() call is guarded as a "list" error: the per-message work
         # below keeps its own narrow error handling so a genuine processing bug is
@@ -678,406 +1478,17 @@ def _scan_pass(
         page_token = str(page.get("nextPageToken") or "")
         new_stubs_total += len(new_stubs)
         for message_stub in new_stubs:
-            if (
-                state.new_processed >= state.import_limit
-                or stubs_scanned >= max_scan
-                or total_stubs_paged >= max_total_paged
-            ):
+            if acct.cap_reached(state):
                 break
-            total_stubs_paged += 1
-            message_id = str(message_stub.get("id") or "")
-            if not message_id:
-                # An id-less stub counts toward the hard scan cap exactly as it
-                # always did -- max_scan is the backstop that stops an endless
-                # stream of junk stubs from probing unbounded.
-                stubs_scanned += 1
-                continue
-
-            # PROCESSED-LEDGER SKIP (REFINEMENT C): this is the whole point of the
-            # ledger -- short-circuit a message that already reached a terminal
-            # outcome on a prior poll BEFORE the messages().get below AND before the
-            # gmail_intake classifier + the gmail_triage attachment-selector AI calls
-            # those downstream paths make. A "processed" skip is a cheap pre-fetch
-            # gate (like the dedup short-circuit): it does NOT count toward
-            # import_limit, does NOT touch the drain cursor, AND does NOT count
-            # toward max_scan (only toward the raw total-paged cap) -- so the scan
-            # pages past an arbitrarily long processed prefix to the next
-            # un-processed (older) batch exactly as it pages past an already-
-            # imported one -- coexisting with the cursor drain (REFINEMENT F),
-            # never stalling its forward progress nor hiding genuinely-new mail (an
-            # unseen id is simply absent from the ledger and falls through).
-            ledger = context.processed_ledger
-            if ledger is not None and ledger.is_processed(message_id):
-                context.skipped.append({"message_id": message_id, "reason": "processed_message"})
-                continue
-            stubs_scanned += 1
-
-            # SAME-POLL RE-ATTEMPT GUARD: a message that already ran the heavy path
-            # to a TRANSIENT failure THIS poll (head pass) can re-surface in the
-            # drain pass of the same poll (it is deliberately unmarked so it retries
-            # NEXT poll). Skip it silently: no second heavy slot, no second AI call,
-            # and -- critically -- no second attempt increment, so "retry N times"
-            # always means N distinct polls, never N passes seconds apart.
-            if message_id in state.transient_attempted_ids:
-                continue
-
-            try:
-                message = service.users().messages().get(userId="me", id=message_id, format="full").execute()
-            except Exception as exc:
-                if _is_rate_limited(transport, exc):
-                    # A 429 mid-scan: keep everything imported so far this poll and
-                    # stop -- the next poll resumes from the persisted cursor.
-                    state.rate_limited = True
-                    return
-                if transport.gmail_retry_after_epoch(exc):
-                    transport.raise_gmail_api_error(exc, "Gmail inbound sync could not load a message.")
-                context.skipped.append({"message_id": message_id, "reason": "message_unavailable"})
-                continue
-
-            # CURSOR-FLOOR (drain) -- DO NOT advance the floor here yet. The floor is
-            # the resume point the persistent per-owner drain cursor is lowered to; a
-            # message must only lower it once we KNOW it reached a terminal/stable
-            # outcome (imported or a stable skip). Recording the floor unconditionally
-            # right after fetch -- before the import outcome is known -- lets the cursor
-            # descend BELOW a message that hit a TRANSIENT failure (stable_outcome is
-            # False: review_failed / attachment_unavailable / extraction crash). Such a
-            # message is intentionally left unmarked to retry next poll, but a cursor
-            # already lowered past it means the next drain (before:<cursor>) and the
-            # head pass never re-examine it -> the inbound NDA is silently lost forever.
-            # So capture the date now and commit it to the floor only at each
-            # terminal/stable outcome below (note_terminal_floor()).
-            # Advance the drain floor for a message only at a terminal/stable outcome.
-            # ``note_terminal_floor()`` excludes transient-failure (stable_outcome
-            # False) messages so the cursor never descends past one still owed a retry.
-            message_floor_ms = _message_internal_date_ms(transport, message) if track_floor else 0
-
-            def note_terminal_floor(_floor_ms: int = message_floor_ms) -> None:
-                if track_floor:
-                    state.note_floor(_floor_ms)
-
-            if transport.is_self_or_outbound_message(message, context.account_email):
-                context.skipped.append({"message_id": message_id, "reason": "self_sent_or_outbound"})
-                # TERMINAL outcome (REFINEMENT D): a self-sent/outbound message is
-                # structurally never reviewable -- mark it so the next poll skips it
-                # before the fetch + AI calls. (Marked in-memory; written once at the
-                # end of the poll.)
-                _mark_processed(context, message_id)
-                note_terminal_floor()
-                continue
-
-            # E-SIGNATURE / CALENDAR platform notification emails (DocuSign,
-            # Adobe Sign, HelloSign, PandaDoc, Google Calendar invites) carry a
-            # PDF/DOCX attachment and pass the structural fetch query, but they are
-            # never inbound counterparty NDAs -- importing them spawns phantom
-            # matters. Skip + ledger-mark them BEFORE the import-budget slot so a
-            # skip costs no budget and future polls re-skip cheaply without a
-            # re-fetch. This code-level check is the AUTHORITATIVE suppression
-            # (the query-level -from: clauses are only a fetch-quota optimization):
-            # it also catches FORWARDED notifications the query cannot see, and
-            # every drop stays visible here in skipped[] + the ledger. The match is
-            # SENDER-ONLY (domain suffix / full address): a real NDA that mentions
-            # DocuSign still imports. Callable-guard via getattr so older/fake
-            # transports lacking the seams degrade gracefully: the broader
-            # excluded_notification_sender seam is preferred, the legacy
-            # DocuSign-only predicate is the fallback, neither means no skip.
-            matched_exclude_entry = ""
-            excluded_sender_probe = getattr(transport, "excluded_notification_sender", None)
-            is_docusign_notification = getattr(transport, "is_docusign_notification", None)
-            if callable(excluded_sender_probe):
-                try:
-                    matched_exclude_entry = str(excluded_sender_probe(message) or "")
-                except Exception:  # pragma: no cover - the probe must never break the poll
-                    matched_exclude_entry = ""
-            elif callable(is_docusign_notification) and is_docusign_notification(message):
-                matched_exclude_entry = "docusign.net"
-            # EXECUTED-NDA CAPTURE: a platform notification that carries an
-            # EXPLICIT NDA signal (strong NDA filename, or an explicit NDA term in
-            # subject/body/snippet) is a counterparty-initiated envelope's likely
-            # only copy of an executed NDA -- let it THROUGH the intake pipeline
-            # (clamped to at most the triage lane + provenance-stamped below)
-            # instead of terminally dropping it. Platform mail with no explicit
-            # signal keeps the terminal drop. Seam-guarded + env-flagged
-            # (NDA_GMAIL_ESIGN_NDA_CAPTURE, default on): older transports and the
-            # flag-off state keep the unconditional drop.
-            esign_capture_entry = ""
-            if matched_exclude_entry:
-                capture_probe = getattr(transport, "esign_nda_capture_hit", None)
-                content_probe = getattr(transport, "excluded_message_capture_probe", None)
-                capture_attachments: list[dict[str, str]] = []
-                if callable(capture_probe) or callable(content_probe):
-                    capture_attachments = list(
-                        transport.reviewable_attachments(message.get("payload") or {})
-                    )
-                # Stage 1 -- explicit-token capture (free: headers + filenames).
-                if capture_attachments and callable(capture_probe):
-                    try:
-                        if capture_probe(message, capture_attachments):
-                            esign_capture_entry = matched_exclude_entry
-                            matched_exclude_entry = ""
-                    except Exception:  # pragma: no cover - probe must never break the poll
-                        esign_capture_entry = ""
-                # Stage 2 -- deterministic CONTENT probe (download + extract, no
-                # AI) before the terminal drop: a genuine NDA envelope without an
-                # English NDA token (Adobe Sign "Signature requested on 'Acme -
-                # Mutual Agreement'") must not be silently dropped -- the base
-                # (pre-exclude) behaviour imported these. Capped per poll so a
-                # backlog of excluded mail cannot out-extract the import budget;
-                # over-cap messages are DEFERRED unmarked (no terminal drop, no
-                # cursor-floor advance) and retry next poll.
-                if matched_exclude_entry and capture_attachments and callable(content_probe):
-                    if state.capture_probes_used >= state.import_limit:
-                        context.skipped.append(
-                            {"message_id": message_id, "reason": "excluded_probe_deferred"}
-                        )
-                        continue
-                    state.capture_probes_used += 1
-                    try:
-                        if content_probe(service, message_id, capture_attachments):
-                            esign_capture_entry = matched_exclude_entry
-                            matched_exclude_entry = ""
-                    except Exception as probe_error:
-                        if _is_rate_limited(transport, probe_error):
-                            # Provider throttling says nothing about this message:
-                            # keep what was imported this poll and stop, exactly
-                            # like the download-stage 429 path -- never let a 429
-                            # storm terminal-drop a real NDA.
-                            state.rate_limited = True
-                            return
-                        # A broken probe fails toward the AI-era default for
-                        # excluded senders (the terminal drop), never a crash.
-            if matched_exclude_entry:
-                # Keep the live fix's reason label for the DocuSign family so
-                # existing telemetry/greps stay continuous; other platforms get
-                # the generic label with the STATIC exclude-list entry as detail
-                # (config value only -- never the sender address; log hygiene).
-                reason = (
-                    "docusign_notification"
-                    if "docusign" in matched_exclude_entry
-                    else "excluded_sender_notification"
-                )
-                skip_record = {"message_id": message_id, "reason": reason}
-                if reason == "excluded_sender_notification":
-                    skip_record["detail"] = matched_exclude_entry
-                context.skipped.append(skip_record)
-                # TERMINAL outcome (mirrors self/outbound above): a platform
-                # notification is structurally never reviewable -- mark it so the
-                # next poll skips it before the fetch + AI calls.
-                _mark_processed(context, message_id)
-                note_terminal_floor()
-                continue
-
-            attachments = list(transport.reviewable_attachments(message.get("payload") or {}))
-            if not attachments:
-                context.skipped.append({"message_id": message_id, "reason": "no_reviewable_attachment"})
-                # TERMINAL outcome (REFINEMENT D): the message carries no reviewable
-                # attachment and never will -- mark it processed.
-                _mark_processed(context, message_id)
-                note_terminal_floor()
-                continue
-
-            # Dedup short-circuit AHEAD of any download/extract: a previously-
-            # imported forward (re-surfaced by the inbox query) is skipped here so
-            # the content-scan PDF/DOCX extraction never re-downloads + re-parses its
-            # attachments. This does NOT count toward import_limit -- the scan pages
-            # past these to reach the next un-imported batch. Only genuinely
-            # already-imported messages (every attachment matched on a pre-download
-            # identity key) are short-circuited; anything not provably imported falls
-            # through to the authoritative per-attachment path.
-            if message_attachments_all_already_imported(
-                message_id,
-                attachments,
-                transport=transport,
-                owner_user_id=context.owner_user_id,
-            ):
-                context.skipped.append({"message_id": message_id, "reason": "already_imported"})
-                # TERMINAL outcome (REFINEMENT D): every attachment is already
-                # imported -- mark so future polls skip it before the fetch (the
-                # dedup gate stops the heavy re-work; the ledger now also stops the
-                # re-fetch). Idempotent with the dedup gate; complementary, not a
-                # replacement.
-                _mark_processed(context, message_id)
-                note_terminal_floor()
-                continue
-
-            # QUARANTINE PRE-CHECK: a message whose recorded transient-failure
-            # attempts already reached the cap (e.g. the limit was lowered, or the
-            # quarantine mark itself failed to persist on the capping poll) is
-            # terminally quarantined HERE -- before the budget slot and before the
-            # selector/intake AI calls -- instead of burning one more heavy cycle.
-            # This backstop deliberately compares against the LARGER environmental
-            # limit (the failure reasons are not known pre-run, so the permanent
-            # stratum's tighter cap is only applied at failure time below, where
-            # the reasons are in hand) and NEVER increments the counter itself.
-            prior_attempts = _ledger_attempt_count(context, message_id)
-            if prior_attempts >= context.transient_retry_limit:
-                _quarantine_message(context, message_id, prior_attempts)
-                note_terminal_floor()
-                continue
-
-            # This message will hit the heavy import path: count it against the
-            # per-poll NEW-work budget that bounds load on the 2 GB worker.
-            state.new_processed += 1
-
-            # CRASH CONTAINMENT (the untyped-poison case): the typed error handlers
-            # deep inside the heavy path (Pdf/Docx extraction at prepare, the
-            # ActiveReviewEngine/extraction/alignment family around create_matter)
-            # convert KNOWN failures into transient skips with precise reasons. Any
-            # OTHER exception -- a crash in the detection code, a MatterStoreError,
-            # an unwrapped PyMuPDF RuntimeError -- previously propagated out of the
-            # scan with NO attempt recorded: that one message aborted its owner's
-            # poll at the same point every cycle, forever, and the retry cap never
-            # engaged. The broad catch below converts such a crash into a synthetic
-            # transient "import_crashed" skip (environmental stratum, detail =
-            # exception CLASS name only -- log hygiene) and falls through to the
-            # SAME single-site attempt counter, so an untyped poison quarantines
-            # exactly like a typed one and the scan continues to the next message.
-            # A rate-limit surfacing anywhere in the heavy path (e.g. the download
-            # stage) aborts the pass UNCOUNTED instead -- a provider 429 storm says
-            # nothing about this message and must never walk a real NDA toward
-            # quarantine. The server-level per-user catch remains the outer backstop.
-            try:
-                # Defer this CPU-bound per-message step (download + PDF/DOCX
-                # extraction + AI selector/intake) to any in-flight foreground NDA
-                # generation so the single prod worker's GIL/CPU is not starved out
-                # from under a user-facing generate. Bounded + fail-open: blocks at
-                # most a few seconds and never raises, so the poll can never stall
-                # unboundedly behind a stuck generate.
-                from . import generation_priority  # noqa: PLC0415 - light/local import.
-
-                generation_priority.yield_to_active_generation()
-
-                # Always make the per-message detection content-aware: if subject/
-                # body/snippet/filename carry no NDA signal, fall back to scanning
-                # attachment content. There is NO terminal drop here anymore -- the
-                # deterministic per-attachment band classifier is authoritative, so an
-                # attachment-only NDA with a neutral subject is never dropped before
-                # its content is judged.
-                detection = transport.message_nda_detection(message, attachments)
-                if not detection["matched"]:
-                    detection = transport.attachment_nda_detection(service, message_id, attachments)
-
-                metadata = message_selector_metadata(
-                    message,
-                    transport.message_metadata(
-                        message, context.account_email, detection=detection if detection["matched"] else None
-                    ),
-                    transport=transport,
-                )
-                if esign_capture_entry:
-                    # Provenance for the executed-NDA capture path: the matched
-                    # platform entry rides the intake metadata so the matter is
-                    # identifiable/filterable later (static config value only).
-                    metadata = {**metadata, "gmail_esign_notification": esign_capture_entry}
-                attachment_result = import_inbound_attachments(
-                    service,
-                    message_id,
-                    attachments,
-                    metadata,
-                    transport=transport,
-                    owner_user_id=context.owner_user_id,
-                    intake_playbook=context.intake_playbook,
-                    intake_budget=context.intake_budget,
-                    esign_capture=bool(esign_capture_entry),
-                )
-            except Exception as error:
-                if _is_rate_limited(transport, error):
-                    # Keep everything imported so far this poll and stop -- the next
-                    # poll resumes from the persisted cursor. NOT an attempt: the
-                    # provider was throttling, the message content was never judged.
-                    state.rate_limited = True
-                    return
-                LOGGER.warning(
-                    "Gmail inbound heavy import crashed for message %s (%s); "
-                    "recorded as a transient attempt",
-                    message_id,
-                    error.__class__.__name__,
-                    exc_info=True,
-                )
-                attachment_result = {
-                    "imported": [],
-                    "skipped": [
-                        gmail_attachment_skip(
-                            message_id,
-                            "",
-                            "import_crashed",
-                            detail=error.__class__.__name__,
-                        )
-                    ],
-                    "ai_intake": None,
-                    "stable_outcome": False,
-                }
-            context.imported.extend(attachment_result["imported"])
-            context.skipped.extend(attachment_result["skipped"])
-            context.sync_tallies.merge(attachment_result.get("ai_intake"))
-            # TERMINAL outcome (REFINEMENT D + P1-1): mark processed when the heavy
-            # import path reached a STABLE, DEFINITIVE outcome for the whole message --
-            # every attachment either imported OR hit a terminal non-NDA/duplicate
-            # skip, with NO transient failure. This is the fix for the sticky
-            # non-NDA message: a message whose only attachment the selector/intake
-            # terminally skips as non-NDA imports nothing yet is fully evaluated, so it
-            # MUST be marked or it re-runs the gmail_triage + gmail_intake AI calls
-            # (and burns an import_limit slot) on EVERY poll forever. We still do NOT
-            # mark when stable_outcome is False -- any transient per-attachment failure
-            # (attachment_unavailable / too_large / extraction crash / review_failed)
-            # leaves the message unmarked so it retries next poll (the safe bias).
-            # ORDERING INVARIANT: ledger marking (and attempt counting) happens
-            # STRICTLY AFTER import_inbound_attachments returns -- the mark must
-            # reflect the message's actual outcome, never precede it. Nothing in
-            # the heavy path above may mark/count this message id.
-            if attachment_result.get("stable_outcome"):
-                _mark_processed(context, message_id)
-                # Terminal/stable: safe to lower the drain cursor past this message.
-                note_terminal_floor()
-            else:
-                # A TRANSIENT failure -- leave the message unmarked so it retries
-                # next poll (the safe bias), and leave the floor where it is so the
-                # cursor never descends past this still-to-retry message (the
-                # data-loss fix). BUT count the attempt -- exactly ONE increment per
-                # message per poll, and ONLY here (this message just consumed the
-                # EXPENSIVE stage: budget slot + selector/intake AI calls). Never
-                # counted: ledger pre-skips, budget/max_scan cut-offs, rate-limit
-                # early returns, or message_unavailable fetch failures (content
-                # never seen). Once the count reaches the applicable stratum's
-                # limit the message is quarantined -- a terminal ledger mark with a
-                # keyed reason record -- so a poisoned message stops burning AI
-                # spend forever. Attempt accounting degrades to a no-op (attempts
-                # stay 0, never quarantining) on a ledger session without the
-                # counter seam.
-                state.transient_attempted_ids.add(message_id)
-                transient_reasons, failing_filename = _transient_failure_summary(
-                    attachment_result.get("skipped")
-                )
-                # Reason stratification: a failure set that is ENTIRELY
-                # deterministic-permanent (too_large / needs_ocr -- same bytes, same
-                # outcome, retrying cannot help) quarantines at the tighter limit;
-                # any environmental reason keeps the full retry allowance.
-                deterministic_only = bool(transient_reasons) and all(
-                    reason in _DETERMINISTIC_PERMANENT_SKIP_REASONS
-                    for reason in transient_reasons
-                )
-                applicable_limit = (
-                    context.permanent_skip_retry_limit
-                    if deterministic_only
-                    else context.transient_retry_limit
-                )
-                attempts = _record_transient_attempt(context, message_id)
-                if attempts >= applicable_limit:
-                    _quarantine_message(
-                        context,
-                        message_id,
-                        attempts,
-                        reasons=transient_reasons,
-                        filename=failing_filename,
-                    )
-                    # Quarantine IS terminal: the cursor may descend past it (R5 --
-                    # without this the drain keeps re-paging the same prefix).
-                    note_terminal_floor()
-
-            # Yield the GIL between heavy per-message imports so request threads
-            # (static assets, API calls) can be scheduled while a long sync churns.
-            # Loop-body level, AFTER the outcome accounting: every message that ran
-            # the heavy path -- stable, transient, or quarantined -- yields once.
-            _sync_cpu_yield()
+            # THE ONE SHARED PER-MESSAGE BLOCK (invariant #2): ledger pre-skip, get()
+            # with the SAME 429/404 handling, exclude/dedup/heavy-import + terminal
+            # discipline. _scan_ids reuses this verbatim -- junk-import and missed-NDA
+            # both require changing ONLY this call target.
+            if _process_message_stub(
+                message_stub, state=state, context=context, acct=acct, track_floor=track_floor
+            ) == _STUB_STOP:
+                # Rate-limited mid-message: keep what we imported and stop the pass.
+                return
         # Stop on an empty next-page token OR a zero-progress page (a page that
         # advanced the token but returned no messages), mirroring the original
         # paged-fetch termination guards.
@@ -1282,6 +1693,26 @@ def _is_rate_limited(transport: Any, error: Exception) -> bool:
         return bool(transport.gmail_retry_after_epoch(error))
     except Exception:  # pragma: no cover - probe is best-effort
         return False
+
+
+def _is_message_deleted(transport: Any, error: Exception) -> bool:
+    """True iff a ``messages().get`` failed with a 404 (message genuinely gone).
+
+    A deleted/expunged message is a TERMINAL outcome (it stays deleted), distinct
+    from a transient get-5xx/timeout. The caller marks it processed so the incremental
+    historyId frontier can still advance past it (R3 -- one deleted id must never pin
+    the frontier forever). Reuses the same 404-status probe as the History-API
+    expiry check when the transport exposes it; falls back to reading ``resp.status``
+    directly (googleapiclient HttpError). Best-effort: unknown shape -> not deleted
+    (safe bias: treat as transient, retry).
+    """
+    probe = getattr(transport, "is_history_expired_error", None)
+    if callable(probe):
+        try:
+            return bool(probe(error))
+        except Exception:  # pragma: no cover - probe is best-effort
+            pass
+    return getattr(getattr(error, "resp", None), "status", None) == 404
 
 
 def _message_internal_date_ms(transport: Any, message: dict[str, Any]) -> int:

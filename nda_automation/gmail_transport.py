@@ -1,9 +1,30 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from . import app_settings, gmail_attachment_selector, gmail_intake_classifier
 from .matter_repository import DiskMatterRepository
+
+# --------------------------------------------------------------------------- #
+# Gmail History-API incremental inbound sync -- config (env var NAMES only).
+#
+# The whole subsystem is default-OFF: with NDA_GMAIL_HISTORY_SYNC_ENABLED unset (or
+# 0/false/no/off), history.list is NEVER called and the historyId store is NEVER
+# touched -- byte-identical to the current HEAD/DRAIN window-scan behaviour.
+# --------------------------------------------------------------------------- #
+# Master flag. Default OFF (only 1/true/yes/on enables). The incremental path is the
+# MOST storm-prone subsystem; it stays dark until explicitly turned on.
+NDA_GMAIL_HISTORY_SYNC_ENABLED_ENV = "NDA_GMAIL_HISTORY_SYNC_ENABLED"
+# Optional per-owner allowlist of ``google:<sub>`` ids (comma/space separated),
+# mirroring NDA_ADMIN_USERS sub-based gating. Empty/unset = all owners.
+NDA_GMAIL_HISTORY_SYNC_OWNERS_ENV = "NDA_GMAIL_HISTORY_SYNC_OWNERS"
+# Mandatory full-sweep cadence: every Nth successful incremental poll re-runs the
+# full HEAD/DRAIN window-scan to catch re-labeled/un-archived old mail that
+# messagesAdded never fires for. Default 6. A value < 1 CLAMPS to the default -- the
+# full-sweep is the only gap-closer for that class of mail and MUST NOT be disabled.
+NDA_GMAIL_HISTORY_FULLSWEEP_EVERY_ENV = "NDA_GMAIL_HISTORY_FULLSWEEP_EVERY"
+DEFAULT_GMAIL_HISTORY_FULLSWEEP_EVERY = 6
 
 
 def _legacy() -> Any:
@@ -319,6 +340,120 @@ class GmailTransport:
         """Drop the drain frontier once the backlog is fully drained."""
         DiskMatterRepository().reset_gmail_inbound_cursor(owner_user_id=owner_user_id)
 
+    # -- Gmail History-API incremental inbound sync (flag-gated, default OFF) -- #
+    def history_sync_enabled(self, owner_user_id: str = "") -> bool:
+        """Whether the incremental History-API path is active for this owner.
+
+        Two gates, ANDed: the master flag NDA_GMAIL_HISTORY_SYNC_ENABLED must be
+        truthy (default OFF), AND -- when the optional NDA_GMAIL_HISTORY_SYNC_OWNERS
+        allowlist is set -- the ``owner_user_id`` must appear in it (an empty/unset
+        allowlist = all owners). Mirrors NDA_ADMIN_USERS ``google:<sub>`` gating:
+        entries are comma/space separated and matched verbatim against the caller's
+        cleaned owner id, so an allowlist rollout can dark-launch to one account.
+        """
+        raw = os.environ.get(NDA_GMAIL_HISTORY_SYNC_ENABLED_ENV, "")
+        if str(raw or "").strip().lower() not in {"1", "true", "yes", "on"}:
+            return False
+        allow = _history_sync_owner_allowlist()
+        if not allow:
+            return True
+        owner = self.clean_user_token_segment(owner_user_id)
+        return owner in allow
+
+    def history_fullsweep_every(self) -> int:
+        """The full-sweep cadence (every Nth clean incremental poll re-anchors).
+
+        NDA_GMAIL_HISTORY_FULLSWEEP_EVERY, default 6. Any value < 1 (or unparseable)
+        CLAMPS to the default: the mandatory full window-scan catches re-labeled/
+        un-archived old mail that ``messagesAdded`` never surfaces, so it can never be
+        disabled in prod.
+        """
+        raw = str(os.environ.get(NDA_GMAIL_HISTORY_FULLSWEEP_EVERY_ENV, "") or "").strip()
+        try:
+            value = int(raw) if raw else DEFAULT_GMAIL_HISTORY_FULLSWEEP_EVERY
+        except (TypeError, ValueError):
+            return DEFAULT_GMAIL_HISTORY_FULLSWEEP_EVERY
+        return value if value >= 1 else DEFAULT_GMAIL_HISTORY_FULLSWEEP_EVERY
+
+    def inbound_history_id(self, owner_user_id: str = "") -> str:
+        """The persisted per-owner Gmail History-API frontier (``""`` if none)."""
+        return str(DiskMatterRepository().gmail_inbound_history_id(owner_user_id=owner_user_id))
+
+    def set_inbound_history_id(self, owner_user_id: str, history_id: str) -> str:
+        """Store/overwrite the per-owner frontier (NOT monotonic). Returns it."""
+        return str(DiskMatterRepository().set_gmail_inbound_history_id(owner_user_id, history_id))
+
+    def inbound_history_poll_count(self, owner_user_id: str = "") -> int:
+        """The per-owner incremental-poll counter driving the full-sweep cadence."""
+        return int(DiskMatterRepository().gmail_inbound_history_poll_count(owner_user_id=owner_user_id))
+
+    def bump_inbound_history_poll_count(self, owner_user_id: str = "") -> int:
+        """Bump the per-owner incremental-poll counter; returns the new total."""
+        return int(DiskMatterRepository().bump_gmail_inbound_history_poll_count(owner_user_id=owner_user_id))
+
+    def reset_inbound_history(self, owner_user_id: str = "") -> None:
+        """Drop the per-owner frontier AND poll_count (e.g. after a 404 expiry)."""
+        DiskMatterRepository().reset_gmail_inbound_history(owner_user_id=owner_user_id)
+
+    def profile_history_id(self, role: str = "inbound", *, service: Any | None = None, owner_user_id: str = "") -> str:
+        """The mailbox head historyId from getProfile -- the fallback re-seed value.
+
+        getProfile ALREADY runs once per poll (gmail_integration._gmail_profile_for_role,
+        the real getProfile call is at gmail_integration.py:1039) and its response carries
+        ``historyId``, so re-seeding the frontier after a fallback window-scan costs ZERO
+        extra API calls. NOTE: that profile is served from a 15-minute cache
+        (``_PROFILE_CACHE`` / GMAIL_PROFILE_CACHE_SECONDS), so this seed hid can LAG the
+        true mailbox head by up to ~15 min. That is SAFE: a LOWER startHistoryId only
+        makes the next incremental poll re-list slightly more (ledger-deduped), never
+        skip mail -- a lagging seed can only cost a little re-fetch, never lose an NDA.
+        Best-effort: any failure yields ``""`` so a re-seed simply does not happen (the
+        next poll retries).
+        """
+        try:
+            profile = self.gmail_profile_for_role(role, service=service, owner_user_id=owner_user_id)
+        except Exception:  # pragma: no cover - re-seed is best-effort, never fails the poll
+            return ""
+        if not isinstance(profile, dict):
+            return ""
+        return str(profile.get("historyId") or "")
+
+    def history_list(
+        self,
+        service: Any,
+        *,
+        start_history_id: str,
+        label_id: str = "INBOX",
+        history_types: tuple[str, ...] = ("messageAdded",),
+        page_token: str = "",
+    ) -> dict[str, Any]:
+        """Thin wrapper over ``users().history().list`` (metadata-only, cheap).
+
+        Lists change records since ``start_history_id``, scoped to the INBOX label and
+        the ``messageAdded`` history type so the incremental path sees only newly-added
+        INBOX mail. Does NOT interpret the response -- the caller drives paging and the
+        terminal-only frontier advance. A 404 here means the historyId has expired
+        (Gmail retains history ~1 week); the caller distinguishes that from a 429.
+        """
+        response = service.users().history().list(
+            userId="me",
+            startHistoryId=str(start_history_id),
+            labelId=label_id,
+            historyTypes=list(history_types),
+            **({"pageToken": page_token} if page_token else {}),
+        ).execute()
+        return response if isinstance(response, dict) else {}
+
+    def is_history_expired_error(self, error: Exception) -> bool:
+        """True iff ``error`` is a Gmail History-API 404 (expired startHistoryId).
+
+        Gmail purges history older than ~1 week; a startHistoryId that has aged out
+        (or a mailbox that was inactive while the flag was off) returns 404. The caller
+        checks ``is_rate_limit_error`` (429) FIRST, then this, so a rate-limit is never
+        mistaken for an expiry (which would wrongly discard the frontier + full-scan).
+        """
+        status = getattr(getattr(error, "resp", None), "status", None)
+        return status == 404
+
     def message_internal_date_ms(self, message: dict[str, Any]) -> int:
         """Gmail's server-assigned ``internalDate`` (epoch ms) for a fetched message.
 
@@ -369,6 +504,17 @@ class GmailTransport:
 
     def create_matter_from_document(self, **kwargs):
         return _legacy().create_matter_from_document(**kwargs)
+
+
+def _history_sync_owner_allowlist() -> set[str]:
+    """The NDA_GMAIL_HISTORY_SYNC_OWNERS allowlist (``google:<sub>`` ids), or empty.
+
+    Comma/space separated, mirroring NDA_ADMIN_USERS parsing. An empty set means the
+    allowlist is inactive (all owners pass the flag). Entries are matched verbatim
+    against the caller's cleaned owner id.
+    """
+    raw = os.environ.get(NDA_GMAIL_HISTORY_SYNC_OWNERS_ENV, "")
+    return {value.strip() for value in raw.replace(",", " ").split() if value.strip()}
 
 
 _DEFAULT_TRANSPORT = GmailTransport()
