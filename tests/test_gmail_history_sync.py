@@ -24,7 +24,6 @@ The unit round-trip tests (case 12) drive the real ``matter_store`` seams direct
 
 from __future__ import annotations
 
-import importlib
 import os
 
 import pytest
@@ -630,11 +629,11 @@ def test_case7_flag_off_is_noop_history_never_called(import_limit_20):
     assert transport.profile_head_calls == 0, "flag OFF must not re-seed"
 
 
-def test_case7_default_env_is_off_via_real_transport():
+def test_case7_default_env_is_off_via_real_transport(monkeypatch):
     # The REAL transport default: with the env unset, history_sync_enabled is False.
     from nda_automation import gmail_transport as gt
 
-    os.environ.pop("NDA_GMAIL_HISTORY_SYNC_ENABLED", None)
+    monkeypatch.delenv("NDA_GMAIL_HISTORY_SYNC_ENABLED", raising=False)
     assert gt.GmailTransport().history_sync_enabled("owner_1") is False
 
 
@@ -832,16 +831,21 @@ def test_case11_active_backfill_defers_incremental(import_limit_20):
 # --------------------------------------------------------------------------- #
 @pytest.fixture
 def history_store(tmp_path, monkeypatch):
-    """A matter_store reloaded against an isolated DATA_DIR so the history file is
-    tmp-scoped."""
-    monkeypatch.setenv("NDA_DATA_DIR", str(tmp_path))
+    """matter_store scoped to an isolated tmp history file via monkeypatch.
+
+    Deliberately NOT ``importlib.reload(ms)``: reloading the module rebuilds its class
+    objects (e.g. ``MatterStoreError``), so any module that captured the old class
+    (``matter_repository``) and any route that catches ``matter_store.MatterStoreError``
+    stop matching -- which silently breaks the matter-store error tests that run later
+    in the full suite. Patching the DATA_DIR-derived path attributes directly gives the
+    same tmp isolation, auto-restores on teardown, and never touches class identity.
+    """
     import nda_automation.matter_store as ms
 
-    importlib.reload(ms)
+    monkeypatch.setenv("NDA_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(ms, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(ms, "GMAIL_INBOUND_HISTORY_PATH", tmp_path / "gmail_inbound_history.json")
     yield ms
-    # Restore the module's DATA_DIR-derived globals for other tests.
-    monkeypatch.delenv("NDA_DATA_DIR", raising=False)
-    importlib.reload(ms)
 
 
 def test_case12_store_set_get_reset_round_trip(history_store):
