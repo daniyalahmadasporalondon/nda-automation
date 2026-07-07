@@ -104,9 +104,6 @@ const AdminIntegrationsView = (() => {
     gmailSetupPanel,
     gmailToggle,
     gmailFrequencyControl,
-    gmailSearchForm,
-    gmailSearchTermsInput,
-    gmailSearchSaveButton,
     gmailImportLimitForm,
     gmailImportLimitInput,
     gmailImportLimitSaveButton,
@@ -124,10 +121,6 @@ const AdminIntegrationsView = (() => {
     gmailToggle?.addEventListener("click", () => updateGmailToggle());
     gmailFrequencyControl?.querySelectorAll("[data-gmail-frequency]").forEach((button) => {
       button.addEventListener("click", () => updateGmailFrequency(button.dataset.gmailFrequency || DEFAULT_FREQUENCY));
-    });
-    gmailSearchForm?.addEventListener("submit", (event) => {
-      event.preventDefault();
-      updateGmailSearchTerms();
     });
     // The import-limit save lives in a form so Enter submits; also wire the
     // button directly when it is rendered outside a <form>.
@@ -389,40 +382,6 @@ const AdminIntegrationsView = (() => {
       }
     }
 
-    async function updateGmailSearchTerms() {
-      const terms = parseSearchTerms(gmailSearchTermsInput?.value || "");
-      if (!terms.length) {
-        // Mirror the server's honest rejection: an empty field is NOT silently
-        // reverted to the defaults; the admin must add a term for the save to take.
-        setOverall("Add terms", "blocked");
-        setFact("search-terms-copy", "Add at least one Gmail search term — it can't be empty.");
-        return;
-      }
-      setSearchTermsDisabled(true);
-      setOverall("Saving", "pending");
-      try {
-        const payload = await postGmailSettings({ inbound_search_terms: terms }, "Gmail search terms could not save");
-        state.gmailStatus = payload.gmail || state.gmailStatus || {};
-        await load();
-        // Honesty: the backend validates the Signal Terms and silently drops any it
-        // won't use for NDA detection. If it skipped some, surface the warning inline
-        // (after the re-render's "N Gmail search terms." copy) so the admin knows the
-        // saved set is narrower than what they typed rather than assuming all took.
-        if (payload.warning) {
-          setOverall("Some skipped", "blocked");
-          setFact("search-terms-copy", payload.warning);
-        }
-      } catch (error) {
-        setOverall(error.message || "Save failed", "blocked");
-        // Surface the server's 400 inline next to the field, then restore the
-        // last-known-good terms, so the admin sees the save did NOT take.
-        renderSearchTerms(state.gmailStatus || {});
-        setFact("search-terms-copy", error.message || "Gmail search terms could not save.");
-      } finally {
-        setSearchTermsDisabled(false);
-      }
-    }
-
     async function updateGmailIntakePlaybook() {
       // Pull the live main-rule text off the textarea (the chip lists live in the
       // intake model, which the add/remove handlers keep current). Caps are
@@ -493,7 +452,6 @@ const AdminIntegrationsView = (() => {
       renderImportLimit(status);
       renderSyncWindow(status);
       renderFrequencyControl(status.settings?.sync_frequency || DEFAULT_FREQUENCY);
-      renderSearchTerms(status);
       renderIntakePlaybook(status);
       setFact("inbound-email", accountLabel(inbound));
       setFact("outbound-email", accountLabel(outbound));
@@ -656,7 +614,6 @@ const AdminIntegrationsView = (() => {
       renderImportLimit(state.gmailStatus || {});
       renderSyncWindow(state.gmailStatus || {});
       renderFrequencyControl(state.gmailStatus?.settings?.sync_frequency || DEFAULT_FREQUENCY);
-      renderSearchTerms(state.gmailStatus || {});
     }
 
     function setOverall(label, tone) {
@@ -767,17 +724,6 @@ const AdminIntegrationsView = (() => {
       gmailFrequencyControl?.querySelectorAll("[data-gmail-frequency]").forEach((button) => {
         button.disabled = disabled;
       });
-    }
-
-    function renderSearchTerms(status) {
-      const terms = searchTermsFromStatus(status);
-      if (gmailSearchTermsInput) gmailSearchTermsInput.value = terms.join("\n");
-      setFact("search-terms-copy", `${terms.length} Gmail search terms.`);
-    }
-
-    function setSearchTermsDisabled(disabled) {
-      if (gmailSearchTermsInput) gmailSearchTermsInput.disabled = disabled;
-      if (gmailSearchSaveButton) gmailSearchSaveButton.disabled = disabled;
     }
 
     // The intake model backing the three panels. counts/excludes hold the live,
@@ -960,29 +906,6 @@ const AdminIntegrationsView = (() => {
   function parsingTermsLabel(parsing) {
     const terms = Array.isArray(parsing?.terms) ? parsing.terms.filter(Boolean) : [];
     return terms.length ? terms.join(", ") : DEFAULT_PARSED_TERMS;
-  }
-
-  function searchTermsFromStatus(status) {
-    const settingsTerms = Array.isArray(status?.settings?.inbound_search_terms) ? status.settings.inbound_search_terms : [];
-    const parsingTerms = Array.isArray(status?.inbound?.parsing?.terms) ? status.inbound.parsing.terms : [];
-    const terms = settingsTerms.length ? settingsTerms : parsingTerms;
-    return terms.length ? terms.map((term) => String(term)).filter(Boolean) : DEFAULT_SEARCH_TERMS;
-  }
-
-  function parseSearchTerms(value) {
-    const terms = [];
-    const seen = new Set();
-    String(value || "")
-      .split(/\n|,/)
-      .map((term) => term.replace(/^["'()]+|["'()]+$/g, "").trim().replace(/\s+/g, " "))
-      .filter(Boolean)
-      .forEach((term) => {
-        const key = term.toLowerCase();
-        if (seen.has(key)) return;
-        terms.push(term);
-        seen.add(key);
-      });
-    return terms.slice(0, 60);
   }
 
   function importLimitFromStatus(status) {

@@ -1427,11 +1427,8 @@
       <h4>Import limit per poll</h4>
       <p>You can cap how many <em>new</em> NDAs the app pulls in during a single check (default is sensible; the maximum is 40). This is a gentle "catch-up" control: if a big backlog builds up, the app drains it a batch at a time across several checks instead of grabbing everything at once.</p>
 
-      <h4>Inbound search terms</h4>
-      <p>An editable list of words the app shows as hints for deciding whether an email is an NDA (e.g. "NDA," "non-disclosure agreement," "confidentiality agreement"). To edit them, an admin opens <span class="ui">Admin → Gmail</span>, types the words into the <strong>Inbound search terms</strong> box, and clicks <span class="ui">Save terms</span>. Most people never need to touch this.</p>
-      <div class="callout warn">
-        <strong>Heads-up — this field is informational today.</strong> Detection uses a fixed, built-in vocabulary, so your saved words are stored and shown back but don't change which emails get imported as NDAs. It's safe to edit; it just won't change behaviour yet.
-      </div>
+      <h4>NDA signal terms</h4>
+      <p>The Gmail card shows, read-only, the built-in vocabulary of NDA-related words the app uses when deciding whether an email is an NDA (e.g. "NDA," "non-disclosure agreement," "confidentiality agreement"). This list is fixed and baked into the app — there's nothing to edit here; it's shown so you can see what the app looks for.</p>
 
       <h4>Sync history</h4>
       <p>The Gmail card also shows a short history of recent checks: when the app last looked, how many NDAs it imported, and how many it skipped. A quick way to confirm the inbox connection is alive and working.</p>
@@ -1594,7 +1591,7 @@
         <li><strong>Gmail — sync frequency</strong> — Always on (every 1 min), 10 min, 30 min, 1 hour, or 2 hours.</li>
         <li><strong>Gmail — import limit (per-poll cap)</strong> — how many new messages a single scan processes. Set 1–40; the app caps at 40.</li>
         <li><strong>Gmail — inbound window (days)</strong> — how far back the inbox scan looks. Default 90 days; settable from 1 to about 3,650 days (~10 years). <em>This is editable</em> (it was previously a fixed 90).</li>
-        <li><strong>Gmail — inbound search terms</strong> — a list of NDA-related words. <strong>Read the caveat below</strong> — today these are informational; detection uses a fixed, built-in vocabulary.</li>
+        <li><strong>Gmail — NDA signal terms</strong> — a read-only list of the NDA-related words the app looks for. This is a fixed, built-in vocabulary; there's nothing to edit.</li>
         <li><strong>Gmail — NDA intake criteria</strong> — free-text guidance fed to the AI that classifies whether an inbound email is an NDA. Leave empty for the built-in default. It changes <em>only</em> the NDA / NOT-NDA judging criteria, not the fixed security rules or output format. Max ~8,000 characters.</li>
         <li><strong>Personalisation — your signature</strong> — your sign-off, signature name, and full block. Every user sets their own; an admin can set the shared default.</li>
         <li><strong>Drive — connection and auto-filing</strong> — connect Google Drive, choose a folder, toggle auto-filing of new matters.</li>
@@ -1603,9 +1600,8 @@
 
       <h3>Important caveats / known limits</h3>
       <div class="callout warn">
-        <strong>Five things worth knowing before you rely on these settings:</strong>
+        <strong>Four things worth knowing before you rely on these settings:</strong>
         <ul>
-          <li><strong>"Inbound search terms" are informational by default.</strong> The field saves and shows your words, but detection uses a fixed, built-in vocabulary — your saved terms don't change which emails get imported. (An opt-in mode to extend detection with custom terms exists but is off unless a deployment enables it, and even then can only add signals, never widen the mailbox scan.)</li>
           <li><strong>Some settings can be "pinned" by the deployment.</strong> When the environment overrides a control, the UI says so and locks it — e.g. the AI Runtime engine ("pinned by the backend environment," your save is ignored by design), an environment AI key that clearing the in-app key won't remove, or the Gmail import limit falling back to an environment default.</li>
           <li><strong>Changes apply to NEW work, not past work.</strong> Turning AI on/off, changing the engine, or editing the Playbook affects <em>future</em> reviews — it doesn't retroactively re-judge NDAs already reviewed.</li>
           <li><strong>"Bootstrap" admins cannot be removed in-app.</strong> Admins set in the deployment (labelled <span class="ui">Bootstrap</span>) have no Remove button; only in-app admins can be removed. The app also stops you removing the last admin and locking yourself out.</li>
@@ -1690,7 +1686,7 @@
       <div class="letter">F</div>
       <dl>
         <dt>Fail</dt><dd>Verdict meaning the clause clearly breaks a Playbook rule (a required clause is missing, a clause is present but wrong, or a forbidden clause is present). The app flags it and proposes a redline to fix it. The on-screen badge reads <strong>"Fail"</strong> (or <strong>"Prohibited"</strong> for a clause the Playbook forbids outright). Shown in red.</dd>
-        <dt>Flag (feature flag)</dt><dd>A switch, usually set in the environment, that turns a piece of behaviour on or off without changing the app's screens. Some behaviour (for example, the optional setting that lets your custom "inbound search terms" influence detection, or the AI verifier pass) depends on such a switch being enabled in the deployment — so a field can appear in the UI yet have no effect until the switch is on.</dd>
+        <dt>Flag (feature flag)</dt><dd>A switch, usually set in the environment, that turns a piece of behaviour on or off without changing the app's screens. Some behaviour (for example, the AI verifier pass) depends on such a switch being enabled in the deployment — so a field can appear in the UI yet have no effect until the switch is on.</dd>
       </dl>
 
       <div class="letter">G</div>
