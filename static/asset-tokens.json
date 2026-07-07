@@ -60,8 +60,8 @@
     "v": "20260623rwbugs1"
   },
   "js/auth-expired.js": {
-    "sha256": "4cd64e2383c115822a234e335466b9af682f2300210b5fb369c22d9279342399",
-    "v": "20260617a401"
+    "sha256": "a407dca8e071dd1d7d74a5875add8f9ca860f26b2b2a439f03cbae902645657f",
+    "v": "20260707redirect"
   },
   "js/auth-session.js": {
     "sha256": "4d47059433a188f3130ad806b8b5e284bf652985d11c2beefd94929c76b8a217",
