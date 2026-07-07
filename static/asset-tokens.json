@@ -12,8 +12,8 @@
     "v": "20260617sig1"
   },
   "css/repository.css": {
-    "sha256": "90493a6ef245afdc7f2c99f0516666710913aed4a3578ca6eb0b8742081c34b0",
-    "v": "20260706onboardgen1"
+    "sha256": "09d717cd14e198a5d9a9cc52ea711ee74b4ff22f9534c1466938d005adaad3a5",
+    "v": "20260707adminob1"
   },
   "js/admin-access.js": {
     "sha256": "8621b10b9c262e4d450aad87bbe1347245c4e6a6573ae44170b5b082dd7f8af4",
@@ -28,8 +28,8 @@
     "v": "20260617a401"
   },
   "js/admin-drive.js": {
-    "sha256": "d227f61cdf0e9bbf119f7410af7553c3b709d49a151cecb709fcb43ed4e28486",
-    "v": "20260706drivepause1"
+    "sha256": "14714b99362ff858d1414c047689d9b4c163b52376698ff4b01c358a32f518d1",
+    "v": "20260707adminob1"
   },
   "js/admin-entities.js": {
     "sha256": "aad1267817eadb9a7ed45eb0ba36c95ce2aee35d58d4f6c6053e846fd188949c",
@@ -48,8 +48,8 @@
     "v": "20260706featureoff1"
   },
   "js/admin-onboarding.js": {
-    "sha256": "771565cf070e36675ab8238a4b371b5ad7f15f2e12adf19a7b2a2d6eef769a76",
-    "v": "20260706onboard1"
+    "sha256": "7697e4150bb81f44fdd43d01e6f6d5f5e84a610373fc09c0a384c36259af2c25",
+    "v": "20260707adminob1"
   },
   "js/admin-personalisation.js": {
     "sha256": "c2a6b020b39a09c569d32adefb2a9693ceaa9691ee5e3a14b8131b9bc75db5ad",

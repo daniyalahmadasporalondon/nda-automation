@@ -493,6 +493,13 @@ const AdminDriveView = (() => {
 
     function renderDrive(status = {}) {
       state.driveStatus = status;
+      // The first-run setup checklist reads state.driveStatus to tick its "Connect
+      // Drive" step. That status only lands here (on Drive load / connect /
+      // disconnect / settings save), AFTER the checklist last rendered on Admin-tab
+      // activation — so re-render it now, or step 2 stays stuck on "Connect Drive"
+      // until the admin navigates away and back. Guarded: no-op if the module or
+      // its slot is absent.
+      if (typeof AdminOnboarding !== "undefined") AdminOnboarding.render(state);
       const connected = status.connected === true;
       const signedIn = status.signed_in === true;
       const needsConnect = status.needs_connect === true || (!connected && Boolean(status.connect_url));

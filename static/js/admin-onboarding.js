@@ -27,6 +27,40 @@
 // means a checkmark lights up the next time the admin returns to the page after
 // wiring something up.
 const AdminOnboarding = (() => {
+  // localStorage key remembering the admin dismissed the setup checklist, so it
+  // does not nag once they are set up (step 3 has no done-signal, so the card
+  // never self-completes — the × is the way to be "done with it"). Namespaced to
+  // this panel, mirroring PlaybookOnboarding / the Generator onboarding card.
+  const DISMISS_KEY = "nda.admin.onboarding.dismissed";
+
+  // localStorage is unavailable in some privacy modes / the node test harness;
+  // degrade to "not dismissed / cannot persist" rather than throwing.
+  function isDismissed() {
+    try {
+      return window.localStorage.getItem(DISMISS_KEY) === "1";
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function rememberDismissed() {
+    try {
+      window.localStorage.setItem(DISMISS_KEY, "1");
+    } catch (error) {
+      // No persistence: the checklist reappears next load — acceptable degradation.
+    }
+  }
+
+  // Hide the checklist for good on this device and clear its slot.
+  function dismiss() {
+    rememberDismissed();
+    const node = document.querySelector("[data-admin-onboarding]");
+    if (node) {
+      node.hidden = true;
+      node.innerHTML = "";
+    }
+  }
+
   // A step the admin has completed: swap the number badge for a ✓ and drop the
   // call-to-action, exactly like the repository panel's "Gmail is connected".
   function doneStep(title, detail) {
@@ -108,6 +142,7 @@ const AdminOnboarding = (() => {
     );
     return `
       <div class="admin-onboarding-card repository-onboarding-card" role="note" aria-label="Set up your workspace">
+        <button class="admin-onboarding-dismiss" type="button" data-admin-onboarding-dismiss aria-label="Dismiss setup checklist" title="Dismiss">×</button>
         <h2 class="repository-onboarding-title">Set up your workspace</h2>
         <p class="repository-onboarding-lead">A few steps to get the system working end-to-end.</p>
         <ol class="repository-onboarding-steps">
@@ -124,10 +159,37 @@ const AdminOnboarding = (() => {
   function render(state) {
     const node = document.querySelector("[data-admin-onboarding]");
     if (!node) return;
+    if (isDismissed()) {
+      node.hidden = true;
+      node.innerHTML = "";
+      return;
+    }
+    node.hidden = false;
     node.innerHTML = checklistHtml(state || {});
+    // Wire the dismiss × once. The [data-admin-onboarding-goto] CTAs stay owned
+    // by the global delegated handler in app.js; we only claim the dismiss ×.
+    if (!node.__adminOnboardingWired) {
+      node.__adminOnboardingWired = true;
+      node.addEventListener("click", (event) => {
+        const target = event.target;
+        if (target && typeof target.closest === "function"
+            && target.closest("[data-admin-onboarding-dismiss]")) {
+          event.preventDefault();
+          dismiss();
+        }
+      });
+    }
   }
 
-  return { checklistHtml, gmailConnected, driveConnected, render };
+  return {
+    DISMISS_KEY,
+    checklistHtml,
+    dismiss,
+    gmailConnected,
+    driveConnected,
+    isDismissed,
+    render,
+  };
 })();
 
 // Node/test consumption: the frontend .cjs suite requires this file directly.
