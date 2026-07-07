@@ -941,6 +941,72 @@ def test_raised_list_error_does_not_advance_frontier(import_limit_20):
     assert transport.poll_count() == 0
 
 
+# --------------------------------------------------------------------------- #
+# GENERIC ERROR ON PAGE 2 -- the mirror of CASE 10 (429 on page 2) with a generic
+# (non-429/non-404) fault instead. This locks the EXACT guard that separates a
+# correct implementation from a silent-NDA-loss one: page 1 succeeds and reports a
+# head that WOULD be the advance target (and every id it lists is already ledger-
+# marked from a prior poll, so the all_handled/clean halves of the gate would BOTH
+# pass), but page 2 raises. Because ``history_listing_complete`` is only set True
+# after the paging loop drains WITHOUT raising, the page-2 raise leaves it False, so
+# the terminal-only advance gate is never even entered -- the frontier must stay
+# pinned at the pre-poll value, NOT jump to page 1's head. Advancing here would step
+# the frontier past the un-enumerated page-2 tail, which history.list would then
+# never surface again = permanent silent loss (the invariant v2 lacked).
+# --------------------------------------------------------------------------- #
+class _GenericErrorOnPage2History(_ScriptedHistory):
+    """Returns page 1 normally (a head + a next-page token), then raises a generic
+    (non-429/non-404) fault on the second ``list_pages`` call -- the analogue of
+    ``_RateLimitOnPage2History`` but for an ESCALATING error rather than a 429."""
+
+    def list_pages(self, start_history_id: str, page_token: str) -> dict:
+        self.call_count += 1
+        self.calls.append({"start": start_history_id, "page_token": page_token})
+        if (page_token or "0") != "0":
+            # A generic 500 (a ConnectionError/HttpError-5xx would behave identically:
+            # neither the 429 nor the 404 probe matches -> raise_gmail_api_error).
+            raise _FakeHttpError(500)
+        # Page 1: one already-ledger-marked id + a next-page token so the caller pages
+        # again, and a head (5000) that WOULD be the advance target on a clean poll.
+        return _page(["msg_000"], head="5000", next_token="1")
+
+
+def test_generic_error_on_page_2_pins_the_frontier(import_limit_20):
+    getter = _dated_messages(1)
+    history = _GenericErrorOnPage2History()
+    transport = _HistoryInboundTransport(
+        1, import_limit=import_limit_20, scripted_history=history,
+        profile_head="4000", get_messages=getter,
+    )
+    # Pre-poll frontier = 1000; page 1 will report head 5000 (the would-be advance).
+    transport.set_inbound_history_id("owner_1", "1000")
+    # msg_000 (page 1's only candidate) is ALREADY processed from a prior poll, so the
+    # all_handled half of the gate would pass -- proving the pin is due to the listing
+    # never completing, not to an unhandled candidate.
+    transport._ledger_store.add("msg_000")
+
+    # The page-2 fault is generic (non-429/non-404) -> it escalates out of the poll,
+    # exactly like the window-scan list() path and the page-1 generic-error test above.
+    with pytest.raises(gmail_integration.GmailIntegrationError):
+        gmail_matter_inbox.import_inbound_matters(
+            transport=transport, limit=999, owner_user_id="owner_1",
+        )
+
+    # THE GUARD: history_listing_complete stayed False (page 2 raised before the loop
+    # drained), so the terminal-only advance gate was never reached. The frontier is
+    # pinned at the pre-poll frontier -- NOT advanced to page 1's head (5000), and NOT
+    # reset (only a 404 resets). The next poll re-lists the SAME startHistoryId, so the
+    # un-enumerated page-2 tail is retried instead of silently skipped.
+    assert transport.frontier() == "1000", (
+        "a generic error on page 2 must pin the frontier at the pre-poll value, "
+        "never advance to the page-1 head"
+    )
+    assert transport.inbound_history_id("owner_1") == "1000"  # store not cleared/reset
+    assert transport.poll_count() == 0  # poll count only bumps on a clean advance
+    # Page 1 was fetched, then page 2 raised: exactly two history.list calls.
+    assert history.call_count == 2
+
+
 def test_case8_dedup_incremental_then_fallback_one_matter(import_limit_20):
     getter = _dated_messages(1)
     # Poll 1: incremental imports msg_000. Poll 2: history.list 404s -> fallback
