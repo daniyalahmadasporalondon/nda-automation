@@ -368,6 +368,72 @@
   }
   .search-hidden { display: none !important; }
 
+  /* ---------- Workflow diagrams (.wf-*) ----------
+     One reusable block for the inline SVG flow figures. Themed to the
+     guide's own tokens (--brand / --ink / --hairline / --brand-soft) so
+     the diagrams read as one surface with the rest of the guide. The
+     guide has no dark-mode override, so neither do these. */
+  figure.wf-fig {
+    margin: 18px 0 22px;
+    padding: 0;
+  }
+  figure.wf-fig svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-width: 100%;
+    background: var(--card);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-card);
+  }
+  figure.wf-fig figcaption {
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--ink-faint);
+    line-height: 1.5;
+  }
+  /* Boxes: white node with hairline border; .wf-accent = brand-tinted
+     source-of-truth / gate node. */
+  .wf-box {
+    fill: var(--card);
+    stroke: var(--hairline);
+    stroke-width: 1;
+  }
+  .wf-accent {
+    fill: var(--brand-soft);
+    stroke: var(--chip-border);
+    stroke-width: 1;
+  }
+  /* Box titles (13px/600) and subtitles (11px muted). */
+  .wf-th {
+    fill: var(--ink);
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .wf-ts {
+    fill: var(--ink-faint);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 400;
+  }
+  .wf-th.on-accent { fill: var(--brand); }
+  /* Connector arrows: 1.5px stroke terminated by the chevron marker. */
+  .wf-arr {
+    fill: none;
+    stroke: var(--ink-soft);
+    stroke-width: 1.5;
+  }
+  /* Dashed leader — Playbook "rules" feed. */
+  .wf-leader {
+    fill: none;
+    stroke: var(--brand);
+    stroke-width: 1.5;
+    stroke-dasharray: 4 3;
+  }
+  .wf-chevron { fill: var(--ink-soft); }
+
   @media (max-width: 860px) {
     .app { grid-template-columns: 1fr; }
     .sidebar { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--hairline); }
@@ -461,6 +527,67 @@
       <div class="callout">
         <strong>Mental model.</strong> A request walks: host check → (CSRF for writes) → auth → rate-limit → an exact-match function → a JSON or file response. Everything stateful is a JSON file under <code>NDA_DATA_DIR</code>. Everything user-facing is a static file under <code>static/</code>.
       </div>
+
+      <h3>The NDA lifecycle end to end</h3>
+      <p>The whole system exists to walk one NDA through seven stages. The Playbook feeds the clause-review stage its rules; every downstream stage inherits that judgement.</p>
+      <figure class="wf-fig">
+        <svg role="img" viewBox="0 0 720 360" xmlns="http://www.w3.org/2000/svg" aria-labelledby="wf-life-t wf-life-d">
+          <title id="wf-life-t">NDA lifecycle: seven stages from arrival to e-signature</title>
+          <desc id="wf-life-d">An NDA arrives via Gmail or upload, is classified by AI intake, reviewed clause-by-clause against the Playbook, adversarially verified (downgrade only), approved by a human reviewer, coverage-gated into a tracked-change DOCX, then sent for DocuSign e-signature. The Playbook is the single source of truth feeding rules into the clause-review stage.</desc>
+          <defs>
+            <marker id="wf-cv" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path class="wf-chevron" d="M0,0 L6,3 L0,6 Z"></path>
+            </marker>
+          </defs>
+          <!-- Row 1: stages 1-4 -->
+          <rect class="wf-box" x="12" y="70" width="150" height="52" rx="8"></rect>
+          <text class="wf-th" x="87" y="92" text-anchor="middle">1 · NDA arrives</text>
+          <text class="wf-ts" x="87" y="108" text-anchor="middle">Gmail poll / upload</text>
+
+          <rect class="wf-box" x="196" y="70" width="150" height="52" rx="8"></rect>
+          <text class="wf-th" x="271" y="92" text-anchor="middle">2 · AI intake</text>
+          <text class="wf-ts" x="271" y="108" text-anchor="middle">classify · pick file</text>
+
+          <rect class="wf-accent" x="380" y="70" width="150" height="52" rx="8"></rect>
+          <text class="wf-th on-accent" x="455" y="92" text-anchor="middle">3 · AI clause review</text>
+          <text class="wf-ts" x="455" y="108" text-anchor="middle">vs Playbook rules</text>
+
+          <rect class="wf-box" x="564" y="70" width="144" height="52" rx="8"></rect>
+          <text class="wf-th" x="636" y="92" text-anchor="middle">4 · Adversarial</text>
+          <text class="wf-ts" x="636" y="108" text-anchor="middle">verify · downgrade-only</text>
+
+          <!-- Row 2: stages 5-7 (right to left flow) -->
+          <rect class="wf-box" x="564" y="212" width="144" height="52" rx="8"></rect>
+          <text class="wf-th" x="636" y="234" text-anchor="middle">5 · Reviewer</text>
+          <text class="wf-ts" x="636" y="250" text-anchor="middle">approves · Workstation</text>
+
+          <rect class="wf-box" x="380" y="212" width="150" height="52" rx="8"></rect>
+          <text class="wf-th" x="455" y="234" text-anchor="middle">6 · Coverage-gated</text>
+          <text class="wf-ts" x="455" y="250" text-anchor="middle">tracked-change DOCX</text>
+
+          <rect class="wf-accent" x="196" y="212" width="150" height="52" rx="8"></rect>
+          <text class="wf-th on-accent" x="271" y="234" text-anchor="middle">7 · DocuSign</text>
+          <text class="wf-ts" x="271" y="250" text-anchor="middle">e-sign · anchor tabs</text>
+
+          <!-- Playbook source of truth -->
+          <rect class="wf-accent" x="380" y="4" width="150" height="40" rx="8"></rect>
+          <text class="wf-th on-accent" x="455" y="22" text-anchor="middle">Playbook</text>
+          <text class="wf-ts" x="455" y="37" text-anchor="middle">single source of truth</text>
+
+          <!-- Row-1 arrows -->
+          <path class="wf-arr" marker-end="url(#wf-cv)" d="M162,96 L192,96"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv)" d="M346,96 L376,96"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv)" d="M530,96 L560,96"></path>
+          <!-- wrap to row 2 -->
+          <path class="wf-arr" marker-end="url(#wf-cv)" d="M636,122 L636,208"></path>
+          <!-- Row-2 arrows (right to left) -->
+          <path class="wf-arr" marker-end="url(#wf-cv)" d="M564,238 L534,238"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv)" d="M380,238 L350,238"></path>
+          <!-- Playbook dashed leader into stage 3 -->
+          <path class="wf-leader" marker-end="url(#wf-cv)" d="M455,44 L455,66"></path>
+        </svg>
+        <figcaption>The seven-stage lifecycle. Stage 3 (AI clause review) is fed its rules by the Playbook via the dashed leader; the adversarial verifier at stage 4 can only downgrade, never acquit.</figcaption>
+      </figure>
     </section>
 
     <!-- ============ 2. PLAYBOOK ============ -->
@@ -505,6 +632,53 @@
       <h2>The AI review pipeline</h2>
       <p class="panel-lede">Review is <strong>on-demand only</strong> — there is no automatic AI review on inbound documents. A user clicks Review; the server enqueues an async job; the workstation polls for the result.</p>
 
+      <figure class="wf-fig">
+        <svg role="img" viewBox="0 0 720 210" xmlns="http://www.w3.org/2000/svg" aria-labelledby="wf-rev-t wf-rev-d">
+          <title id="wf-rev-t">AI review pipeline: packet through to review_state</title>
+          <desc id="wf-rev-d">The assembled assessment packet goes to the reviewer model (Opus, first pass), then to the verifier model (DeepSeek-Pro, downgrade-only second pass), then the decision arbiter reconciles verdicts, evidence grounding demotes ungrounded findings, and the result is written into review_state.</desc>
+          <defs>
+            <marker id="wf-cv2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path class="wf-chevron" d="M0,0 L6,3 L0,6 Z"></path>
+            </marker>
+          </defs>
+          <!-- Row 1: packet, reviewer, verifier -->
+          <rect class="wf-box" x="12" y="16" width="150" height="54" rx="8"></rect>
+          <text class="wf-th" x="87" y="40" text-anchor="middle">Packet</text>
+          <text class="wf-ts" x="87" y="55" text-anchor="middle">rules + structure + text</text>
+
+          <rect class="wf-accent" x="196" y="16" width="150" height="54" rx="8"></rect>
+          <text class="wf-th on-accent" x="271" y="40" text-anchor="middle">Reviewer model</text>
+          <text class="wf-ts" x="271" y="55" text-anchor="middle">Opus · first pass</text>
+
+          <rect class="wf-box" x="380" y="16" width="164" height="54" rx="8"></rect>
+          <text class="wf-th" x="462" y="40" text-anchor="middle">Verifier model</text>
+          <text class="wf-ts" x="462" y="55" text-anchor="middle">DeepSeek-Pro · downgrade-only</text>
+
+          <!-- Row 2: arbiter, grounding, review_state -->
+          <rect class="wf-box" x="380" y="130" width="164" height="54" rx="8"></rect>
+          <text class="wf-th" x="462" y="154" text-anchor="middle">Decision arbiter</text>
+          <text class="wf-ts" x="462" y="169" text-anchor="middle">reconcile · 0.75 floor</text>
+
+          <rect class="wf-box" x="196" y="130" width="150" height="54" rx="8"></rect>
+          <text class="wf-th" x="271" y="154" text-anchor="middle">Evidence grounding</text>
+          <text class="wf-ts" x="271" y="169" text-anchor="middle">demote ungrounded</text>
+
+          <rect class="wf-accent" x="12" y="130" width="150" height="54" rx="8"></rect>
+          <text class="wf-th on-accent" x="87" y="154" text-anchor="middle">review_state</text>
+          <text class="wf-ts" x="87" y="169" text-anchor="middle">per-clause + rollup</text>
+
+          <!-- arrows row 1 -->
+          <path class="wf-arr" marker-end="url(#wf-cv2)" d="M162,43 L192,43"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv2)" d="M346,43 L376,43"></path>
+          <!-- wrap down -->
+          <path class="wf-arr" marker-end="url(#wf-cv2)" d="M462,70 L462,126"></path>
+          <!-- arrows row 2 right to left -->
+          <path class="wf-arr" marker-end="url(#wf-cv2)" d="M380,157 L350,157"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv2)" d="M196,157 L166,157"></path>
+        </svg>
+        <figcaption>The review pipeline. The verifier is <em>downgrade-only</em> — a refute/uncertain verdict pushes a clause to Review; it never acquits a clause to pass.</figcaption>
+      </figure>
+
       <h3>Entry point &amp; on-demand contract</h3>
       <p>The review is triggered by <code>POST /api/matters/&lt;id&gt;/review-refresh</code> → <code>handle_matter_review_refresh()</code> in <code>nda_automation/routes/matters.py</code>. It <strong>enqueues</strong> a review and returns <code>202</code> immediately — it never runs the AI engine inline (asserted by <code>tests/test_async_review_backend.py</code>). Inbound Gmail matters import as "Not Reviewed" and are reviewed only when a human asks (server.py comment; <code>tests/test_inbound_auto_review.py</code>).</p>
 
@@ -531,6 +705,10 @@
       </ol>
       <p>The semantic confidence floor is <code>SEMANTIC_REVIEW_THRESHOLD = 0.75</code> in <code>decision_arbiter.py</code> — a pass below it is escalated to review. <code>review_state.py</code> (<code>_normalize_clause_decision()</code>) imports the same constant so the floor is single-sourced.</p>
 
+      <div class="callout warn">
+        <strong>The verifier records the truth, not a phantom pass.</strong> When the verifier batch call <em>fails</em> or the response <em>omits</em> a clause, that clause is stamped <strong>unverified</strong> (reason <code>verifier_unavailable</code> on a total failure, <code>verifier_missing_verdict</code> on a per-clause omission) via <code>_skip_record()</code> (ai_verifier.py ~313–317) — it is <strong>never silently affirmed</strong>. <code>ai_verifier_ran</code> reflects reality: on a <em>total</em> failure (every record unverified) the summary reports <code>status="failed"</code> so downstream reads <code>ai_verifier_ran = False</code> (ai_verifier.py ~211–217); a partial failure stays <code>completed</code> but surfaces an <code>unverified_count</code>. It still <strong>fails open</strong> — the first-pass verdict stands and nothing is blocked purely because verification didn't run — but the record never claims a verification that did not happen.
+      </div>
+
       <h3>Evidence grounding</h3>
       <p>Every pass/fail on a <em>present</em> clause must cite a real, verbatim quote. <code>classify_grounding()</code> (evidence_grounding.py) returns grounded / absence / ungrounded. Ungrounded findings are demoted by <code>downgrade_ungrounded_finding()</code> (evidence_grounding.py) → decision <code>REVIEW</code>, <code>blocks_send=True</code>, reason code <code>ungrounded_finding</code>. The two legitimate no-quote cases: a required clause FAILed as missing, and a prohibited clause that correctly does not appear. Wired in via <code>build_grounding()</code> (ai_first_review.py).</p>
 
@@ -548,6 +726,42 @@
       <p class="panel-lede">Two write paths produce documents: redlining marks up a received NDA as Word tracked changes; generation builds a brand-new NDA deterministically from the template + playbook.</p>
 
       <h3>Redlines: propose → diff → anchor → export</h3>
+      <figure class="wf-fig">
+        <svg role="img" viewBox="0 0 720 108" xmlns="http://www.w3.org/2000/svg" aria-labelledby="wf-red-t wf-red-d">
+          <title id="wf-red-t">Redline flow: propose to tracked-change DOCX</title>
+          <desc id="wf-red-d">A proposed fix is diffed against the source, anchored to its paragraph by index, passed through the coverage gate, and emitted as a tracked-change DOCX.</desc>
+          <defs>
+            <marker id="wf-cv5" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path class="wf-chevron" d="M0,0 L6,3 L0,6 Z"></path>
+            </marker>
+          </defs>
+          <rect class="wf-box" x="8" y="30" width="118" height="52" rx="8"></rect>
+          <text class="wf-th" x="67" y="52" text-anchor="middle">Propose</text>
+          <text class="wf-ts" x="67" y="68" text-anchor="middle">redline_guidance</text>
+
+          <rect class="wf-box" x="160" y="30" width="112" height="52" rx="8"></rect>
+          <text class="wf-th" x="216" y="52" text-anchor="middle">Diff</text>
+          <text class="wf-ts" x="216" y="68" text-anchor="middle">ins / del markup</text>
+
+          <rect class="wf-box" x="306" y="30" width="132" height="52" rx="8"></rect>
+          <text class="wf-th" x="372" y="52" text-anchor="middle">Anchor</text>
+          <text class="wf-ts" x="372" y="68" text-anchor="middle">to paragraph_index</text>
+
+          <rect class="wf-accent" x="472" y="30" width="118" height="52" rx="8"></rect>
+          <text class="wf-th on-accent" x="531" y="52" text-anchor="middle">Coverage gate</text>
+          <text class="wf-ts" x="531" y="68" text-anchor="middle">fail-closed</text>
+
+          <rect class="wf-box" x="624" y="30" width="88" height="52" rx="8"></rect>
+          <text class="wf-th" x="668" y="49" text-anchor="middle">Tracked</text>
+          <text class="wf-ts" x="668" y="64" text-anchor="middle">-change DOCX</text>
+
+          <path class="wf-arr" marker-end="url(#wf-cv5)" d="M126,56 L156,56"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv5)" d="M272,56 L302,56"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv5)" d="M438,56 L468,56"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv5)" d="M590,56 L620,56"></path>
+        </svg>
+        <figcaption>The redline path. The coverage gate refuses to emit a DOCX that drops source text or whose accepted-paragraph sequence diverges from the expected one.</figcaption>
+      </figure>
       <ul>
         <li><strong>Propose.</strong> A failed clause's suggested-fix wording comes from the playbook's <code>redline_guidance</code>; the FE edit model lives in <code>static/js/modules/redline-edit-contract.mjs</code> (action types REPLACE_PARAGRAPH / DELETE_PARAGRAPH / INSERT_AFTER_PARAGRAPH / FORMAT_PARAGRAPH).</li>
         <li><strong>Diff.</strong> Word tracked changes are built in <code>nda_automation/redline_xml.py</code> — the <code>_source_tracked_replace_paragraph*</code> / <code>_source_tracked_delete_paragraph</code> / <code>_source_tracked_insert_paragraphs</code> builders emit <code>&lt;w:ins&gt;</code> / <code>&lt;w:del&gt;</code> revision markup. <code>redline_replace_uses_whole_text_markup()</code> (redline_xml.py) decides whole-text vs char-level tokenised diff.</li>
@@ -559,6 +773,37 @@
       <p>The DOCX gate <code>verify_export_content_coverage()</code> (docx_health.py) asserts the export body is non-empty, covers ≥80% of source text, and that the accepted-paragraph sequence matches the expected sequence built from source + redline edits. The PDF path can't do exact sequence comparison (reconstruction reflows), so <code>verify_pdf_reconstruction_redline_coverage()</code> (docx_health.py) instead finds each redline's target paragraph by confident text match and verifies <code>w:ins</code>/<code>w:del</code> markup is present, using one-to-one bipartite matching so identical redlines consume distinct paragraphs. Both fail closed.</p>
 
       <h3>Generation (deterministic)</h3>
+      <figure class="wf-fig">
+        <svg role="img" viewBox="0 0 720 108" xmlns="http://www.w3.org/2000/svg" aria-labelledby="wf-gen-t wf-gen-d">
+          <title id="wf-gen-t">Generation and the gen-verify ship gate</title>
+          <desc id="wf-gen-d">Playbook plus signing entity plus the user's slot values feed a deterministic fill of the template, which passes through gen-verify (the ship gate that re-checks the generated document) before the DOCX is exported.</desc>
+          <defs>
+            <marker id="wf-cv4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path class="wf-chevron" d="M0,0 L6,3 L0,6 Z"></path>
+            </marker>
+          </defs>
+          <rect class="wf-accent" x="8" y="30" width="154" height="52" rx="8"></rect>
+          <text class="wf-th on-accent" x="85" y="52" text-anchor="middle">Playbook + entity</text>
+          <text class="wf-ts" x="85" y="68" text-anchor="middle">+ user slots</text>
+
+          <rect class="wf-box" x="196" y="30" width="150" height="52" rx="8"></rect>
+          <text class="wf-th" x="271" y="52" text-anchor="middle">Deterministic fill</text>
+          <text class="wf-ts" x="271" y="68" text-anchor="middle">template · no AI call</text>
+
+          <rect class="wf-accent" x="380" y="30" width="158" height="52" rx="8"></rect>
+          <text class="wf-th on-accent" x="459" y="52" text-anchor="middle">gen-verify</text>
+          <text class="wf-ts" x="459" y="68" text-anchor="middle">the ship gate · fail-closed</text>
+
+          <rect class="wf-box" x="572" y="30" width="140" height="52" rx="8"></rect>
+          <text class="wf-th" x="642" y="52" text-anchor="middle">Export DOCX</text>
+          <text class="wf-ts" x="642" y="68" text-anchor="middle">persist artifact</text>
+
+          <path class="wf-arr" marker-end="url(#wf-cv4)" d="M162,56 L192,56"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv4)" d="M346,56 L376,56"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv4)" d="M538,56 L568,56"></path>
+        </svg>
+        <figcaption>Generation is deterministic. gen-verify re-extracts the built document and re-runs the checker before anything persists — any native-clause failure blocks the ship.</figcaption>
+      </figure>
       <p><code>POST /api/generate-nda</code> (routed at server.py) delegates to the generation workflow. By default generation is <strong>deterministic</strong>: <code>generation_ai_enabled()</code> (nda_generation.py) reads <code>NDA_GENERATION_AI_ENABLED</code>; in production it is set to <code>false</code>, so no OpenRouter call is made and the document is built purely from the template + playbook. The template is <code>nda_automation/templates/generic_nda.docx</code> (Aspora = second party, counterparty = first), with Term/Survival and Confidential-Information exclusions realigned from the template defaults to the live playbook at generation time.</p>
 
       <h3>gen-verify (the ship gate)</h3>
@@ -652,6 +897,52 @@
       <p class="panel-lede">Three external surfaces: the Gmail poller that auto-imports inbound NDAs, the DocuSign e-signature flow, and the outbound send paths (with a hard recipient-confirmation gate).</p>
 
       <h3>Gmail intake</h3>
+      <figure class="wf-fig">
+        <svg role="img" viewBox="0 0 720 200" xmlns="http://www.w3.org/2000/svg" aria-labelledby="wf-gm-t wf-gm-d">
+          <title id="wf-gm-t">Gmail intake funnel: envelope fetch to matter or human triage</title>
+          <desc id="wf-gm-d">The poller fetches every inbox PDF or DOCX envelope, a deterministic keyword-floor scorer runs, then an AI pre-gate decides whether the document is worth a paid call, then the DeepSeek-Flash intake classifier decides NDA or not. A confident NDA creates a matter; anything uncertain is routed to a human.</desc>
+          <defs>
+            <marker id="wf-cv3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path class="wf-chevron" d="M0,0 L6,3 L0,6 Z"></path>
+            </marker>
+          </defs>
+          <!-- Row 1 -->
+          <rect class="wf-box" x="12" y="16" width="158" height="54" rx="8"></rect>
+          <text class="wf-th" x="91" y="40" text-anchor="middle">Fetch envelope</text>
+          <text class="wf-ts" x="91" y="55" text-anchor="middle">every inbox PDF / DOCX</text>
+
+          <rect class="wf-box" x="204" y="16" width="158" height="54" rx="8"></rect>
+          <text class="wf-th" x="283" y="40" text-anchor="middle">Keyword-floor scorer</text>
+          <text class="wf-ts" x="283" y="55" text-anchor="middle">deterministic</text>
+
+          <rect class="wf-box" x="396" y="16" width="158" height="54" rx="8"></rect>
+          <text class="wf-th" x="475" y="40" text-anchor="middle">AI pre-gate</text>
+          <text class="wf-ts" x="475" y="55" text-anchor="middle">worth a paid call?</text>
+
+          <rect class="wf-accent" x="562" y="16" width="146" height="54" rx="8"></rect>
+          <text class="wf-th on-accent" x="635" y="37" text-anchor="middle">Intake classifier</text>
+          <text class="wf-ts" x="635" y="52" text-anchor="middle">DeepSeek-Flash · NDA?</text>
+
+          <!-- Row 2 outcomes -->
+          <rect class="wf-accent" x="396" y="128" width="158" height="54" rx="8"></rect>
+          <text class="wf-th on-accent" x="475" y="152" text-anchor="middle">Matter created</text>
+          <text class="wf-ts" x="475" y="167" text-anchor="middle">"Not Reviewed"</text>
+
+          <rect class="wf-box" x="204" y="128" width="158" height="54" rx="8"></rect>
+          <text class="wf-th" x="283" y="152" text-anchor="middle">Uncertain</text>
+          <text class="wf-ts" x="283" y="167" text-anchor="middle">to human triage</text>
+
+          <!-- row 1 arrows -->
+          <path class="wf-arr" marker-end="url(#wf-cv3)" d="M170,43 L200,43"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv3)" d="M362,43 L392,43"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv3)" d="M554,43 L558,43"></path>
+          <!-- classifier down to matter -->
+          <path class="wf-arr" marker-end="url(#wf-cv3)" d="M635,70 L635,155 L558,155"></path>
+          <!-- matter branches to uncertain -->
+          <path class="wf-arr" marker-end="url(#wf-cv3)" d="M396,155 L366,155"></path>
+        </svg>
+        <figcaption>The intake funnel. Cheap deterministic screens run before any paid model call; an explicit NDA signal (incl. foreign-language titles) forces a document through the pre-gate regardless.</figcaption>
+      </figure>
       <ul>
         <li><strong>Scheduler:</strong> <code>_gmail_sync_scheduler_loop()</code> (server.py), a daemon thread; each tick runs <code>_run_scheduled_gmail_sync()</code> (server.py). Master kill-switch env <code>NDA_GMAIL_SYNC_ENABLED</code> (server.py).</li>
         <li><strong>Fetch query (fixed structure) + sender exclusion:</strong> <code>_inbound_envelope_query(90)</code> (gmail_integration.py) → <code>in:inbox has:attachment (filename:docx OR filename:pdf) -from:me newer_than:90d</code>, with a <strong><code>-from:</code> exclusion clause</strong> for noise senders appended to the query. The default excluded set (<code>DEFAULT_GMAIL_INBOUND_EXCLUDED_SENDERS</code>, app_settings.py) is the e-sign platforms (<code>docusign.net/.com</code>, <code>adobesign.com</code>, <code>documents.adobe.com</code>, <code>echosign.com</code>, <code>hellosign.com</code>, <code>pandadoc.com</code>) plus <code>calendar-notification@google.com</code>; it's admin-editable, but <code>DOCUSIGN_NOTIFICATION_DOMAINS</code> is a hard floor that always applies. Window default <code>GMAIL_INBOUND_WINDOW_DAYS = 90</code> (admin-configurable). Per-poll limit default 20, hard cap 40 (<code>_MAX_GMAIL_IMPORT_LIMIT_CLAMP</code>, gmail_integration.py; env <code>NDA_GMAIL_IMPORT_LIMIT</code>).</li>
@@ -661,6 +952,16 @@
         <li><strong>Attachment selector / triage:</strong> <code>gmail_attachment_selector.py</code>; model env <code>NDA_GMAIL_TRIAGE_MODEL</code>, default <code>deepseek/deepseek-v4-pro</code>. Injection defense: the model's selection is intersected with the real candidate attachment ids (gmail_attachment_selector.py) — an injected instruction can't import an attachment that was never a candidate.</li>
         <li><strong>Review is deferred.</strong> <code>import_inbound_matters()</code> (gmail_integration.py) fetches, triages, and classifies but does <em>not</em> enqueue AI review — inbound matters land "Not Reviewed" and are reviewed only on demand.</li>
       </ul>
+
+      <h3>Google Drive filing</h3>
+      <p>Drive auto-files matters into a connected Google Drive folder. Handlers live in <code>nda_automation/routes/drive.py</code>; the client seam is <code>nda_automation/drive_integration.py</code>; settings persist through <code>nda_automation/app_settings.py</code>.</p>
+      <div class="callout warn">
+        <strong>The master on/off gate is <code>drive_paused</code> — NOT the legacy <code>enabled</code> field.</strong> Every Drive call-site gates on <code>drive_connected(owner) AND drive_active()</code>, where <code>drive_active()</code> is simply <code>not drive_paused()</code> (<code>app_settings.drive_active()</code> / <code>drive_paused()</code>). The gate <strong>never reads <code>enabled</code></strong>.
+        <ul>
+          <li><strong>Why it's a distinct flag.</strong> Legacy connected users can carry a stale <code>enabled:false</code> on disk (written by an old normalizer). If the gate reused <code>enabled</code>, those working users would be <em>silently switched off</em>. <code>drive_paused</code> defaults <strong>false</strong> and is set <em>only</em> by the new admin pause toggle — so a never-paused connected user always keeps Drive.</li>
+          <li><strong>The gate call-sites:</strong> <code>matter_lifecycle.py</code> (~640: <code>connected = drive_connected(owner)</code>, <code>active = drive_active()</code>), <code>drive_integration.py</code> (~754–757), and every mutating route in <code>routes/drive.py</code> (~234/336/415: <code>if not drive_connected(...)</code> then <code>if not drive_active()</code>).</li>
+        </ul>
+      </div>
 
       <h3>DocuSign</h3>
       <p><code>nda_automation/docusign_integration.py</code> holds the client. <code>HttpDocuSignClient</code> creates envelopes (<code>create_envelope()</code>), reads status (<code>get_envelope_status()</code>) and recipients (<code>get_envelope_recipients()</code>). Signature placement uses <strong>anchor tabs</strong> built in <code>_tabs_for(signer)</code> — <code>signHereTabs</code> + <code>dateSignedTabs</code> anchored to document strings. Two signers: the counterparty and the single Aspora signer (<code>NDA_DOCUSIGN_ASPORA_SIGNER_NAME</code>/<code>_EMAIL</code>). OAuth env (<code>docusign_connection.py</code>): <code>NDA_DOCUSIGN_CLIENT_ID</code>, <code>_CLIENT_SECRET</code>, <code>_OAUTH_REDIRECT_URI</code>, <code>_AUTH_SERVER</code> (<code>demo</code>|<code>prod</code>), <code>_CONNECT_HMAC_KEY</code>.</p>
@@ -705,6 +1006,13 @@
       <h3>Notifications</h3>
       <p><code>static/js/notifications.js</code> (<code>NotificationsView</code>) watches the matter list for new inbound matters and pops a top-right toast stack (max 4, auto-dismiss ~12s). The first seed after page load is silent so an existing inbox doesn't flood.</p>
 
+      <h3>Newer surfaces to know</h3>
+      <ul>
+        <li><strong>Shared onboarding component</strong> — <code>static/js/onboarding.js</code> is the single source of truth for the <strong>first-run setup panels</strong> (the <code>#adminUserGuidePanel</code>-adjacent first-run checklist re-rendered on tab activation, app.js ~1607). The admin/playbook consoles reuse it via <code>admin-onboarding.js</code> / <code>playbook-onboarding.js</code> rather than each hand-rolling its own empty state.</li>
+        <li><strong>Generator "Our signing entity" card</strong> — the generator's entity picker is a <em>consolidated</em> fieldset (<code>&lt;legend&gt;Our signing entity&lt;/legend&gt;</code>, index.html ~262–297) that couples the entity choice to its fixed governing-law/court status line (<code>#draftIntakeLawStatus</code>): picking an entity sets the law, so the law is never an independent input.</li>
+        <li><strong>Dormant-UI honesty badges</strong> — where a config control is wired but its feature is off, the UI says so rather than implying it's live. The model rows in <code>static/js/admin-models.js</code> (~205) render a <span class="ui">Feature off</span> badge (<code>admin-models-featureoff</code>) titled "This feature is turned off, so the selected model isn't used" — so an operator never mistakes a dormant selector for an active one.</li>
+      </ul>
+
       <h3>The Guide tab</h3>
       <p>The whole Guide tab <em>is</em> the embedded guide. <code>activateTab("guide")</code> (app.js) calls <code>activateAdminSurface("guide")</code> + <code>activateAdminSection("user_guide")</code>, which shows the <code>#adminUserGuidePanel</code> section in <code>static/index.html</code> — a header with an "open in new tab" link plus an <code>&lt;iframe&gt;</code> pointing at the guide HTML. The User⇄Developer toggle (this guide) swaps the iframe <code>src</code>, the link <code>href</code>, and the header <code>h1</code>, persisting the choice in <code>localStorage["ndaGuideMode"]</code>.</p>
 
@@ -717,6 +1025,46 @@
     <section class="tab-panel" id="tab-deploy">
       <h2>Deploy &amp; ops</h2>
       <p class="panel-lede">Single Docker service on Render Standard with a persistent disk. The incident levers are environment variables you can flip from the Render dashboard.</p>
+
+      <figure class="wf-fig">
+        <svg role="img" viewBox="0 0 720 108" xmlns="http://www.w3.org/2000/svg" aria-labelledby="wf-ship-t wf-ship-d">
+          <title id="wf-ship-t">Gated ship pipeline: build to Render deploy</title>
+          <desc id="wf-ship-d">A change is built, run past an adversary, held at a mandatory skeptic gate, integrated with the full test suite, fast-forwarded to main, and deployed by Render.</desc>
+          <defs>
+            <marker id="wf-cv6" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path class="wf-chevron" d="M0,0 L6,3 L0,6 Z"></path>
+            </marker>
+          </defs>
+          <rect class="wf-box" x="6" y="30" width="96" height="52" rx="8"></rect>
+          <text class="wf-th" x="54" y="60" text-anchor="middle">Build</text>
+
+          <rect class="wf-box" x="128" y="30" width="104" height="52" rx="8"></rect>
+          <text class="wf-th" x="180" y="60" text-anchor="middle">Adversary</text>
+
+          <rect class="wf-accent" x="258" y="30" width="112" height="52" rx="8"></rect>
+          <text class="wf-th on-accent" x="314" y="52" text-anchor="middle">Skeptic gate</text>
+          <text class="wf-ts" x="314" y="68" text-anchor="middle">mandatory</text>
+
+          <rect class="wf-box" x="396" y="30" width="124" height="52" rx="8"></rect>
+          <text class="wf-th" x="458" y="52" text-anchor="middle">Integrate</text>
+          <text class="wf-ts" x="458" y="68" text-anchor="middle">+ full suite</text>
+
+          <rect class="wf-box" x="546" y="30" width="96" height="52" rx="8"></rect>
+          <text class="wf-th" x="594" y="52" text-anchor="middle">FF to main</text>
+          <text class="wf-ts" x="594" y="68" text-anchor="middle">fast-forward</text>
+
+          <rect class="wf-accent" x="668" y="30" width="46" height="52" rx="8"></rect>
+          <text class="wf-th on-accent" x="691" y="52" text-anchor="middle">Render</text>
+          <text class="wf-ts" x="691" y="68" text-anchor="middle">deploy</text>
+
+          <path class="wf-arr" marker-end="url(#wf-cv6)" d="M102,56 L124,56"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv6)" d="M232,56 L254,56"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv6)" d="M370,56 L392,56"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv6)" d="M520,56 L542,56"></path>
+          <path class="wf-arr" marker-end="url(#wf-cv6)" d="M642,56 L664,56"></path>
+        </svg>
+        <figcaption>The ship pipeline. Every change — even low-risk UI — passes the skeptic gate before integration; the full suite runs at integrate, and only a green suite fast-forwards to main.</figcaption>
+      </figure>
 
       <h3>render.yaml</h3>
       <ul>
@@ -775,6 +1123,21 @@
       <div class="callout warn">
         <strong>Disk-durability blind spot.</strong> The boot guard checks <code>NDA_DATA_DIR</code> is set, not that the disk is actually mounted — an unmounted <code>/var/data</code> can pass the guard. Confirm the disk is attached before trusting persistence.
       </div>
+
+      <h3>Gotchas / known hazards</h3>
+      <p>The things that bite a fresh contributor on day one. None are bugs — they are load-bearing constraints of the single-process, no-build-step design.</p>
+
+      <h4>1 · Single-process server: CPU-heavy background work starves requests</h4>
+      <p>The server is one <code>ThreadingHTTPServer</code> process with no <code>WEB_CONCURRENCY</code>. A CPU-heavy background job — a big <strong>Gmail extraction sweep</strong> or a <strong>corpus fingerprint backfill</strong> — holds the GIL and <strong>starves request threads</strong>, so even static-asset serving stalls and the app can look wedged. This is why the intake loop yields cooperatively (<code>NDA_GMAIL_SYNC_YIELD_MS</code>) and fingerprinting is capped inline + pushed to a single-flight backfill (see <strong>Data Model</strong>). If the UI goes unresponsive, suspect a background CPU spike before a crash.</p>
+
+      <h4>2 · The <code>?v=</code> manifest refuses to record changed bytes under an unchanged token</h4>
+      <p><code>python -m nda_automation.static_versioning --write</code> will <strong>REFUSE</strong> to record an asset whose bytes changed while its <code>?v=</code> token stayed the same — the whole point of the guard is that a bytes-change <em>must</em> ride a token bump. So when you change any <code>.js</code>/<code>.css</code> asset you MUST: <strong>bump its <code>?v=</code> in <code>index.html</code> first</strong>, then <code>--write</code>. <code>.html</code> files are <strong>excluded</strong> from the manifest (they always revalidate), so they need no token there.</p>
+
+      <h4>3 · Never run the whole backend suite in one process (and never in parallel)</h4>
+      <p>A monolithic <code>pytest tests/</code> SIGKILLs partway through under memory pressure on this box, and concurrent full-suite runs across worktrees gridlock the shared machine. Run <strong>targeted files</strong> or <strong>small fresh-process batches</strong> with <code>python -m pytest -q -p no:cacheprovider &lt;files&gt;</code> — full detail in the <strong>Run the tests</strong> recipe.</p>
+
+      <h4>4 · Editing an in-app guide requires bumping its own <code>?v=</code> in <code>app.js</code></h4>
+      <p>The Guide tab loads each guide through an <code>&lt;iframe&gt;</code> whose <code>src</code> comes from <code>GUIDE_SRC</code> in <code>static/app.js</code> (e.g. <code>developer: "/static/developer-guide.html?v=…"</code>). Editing <code>developer-guide.html</code> alone is invisible to a loaded browser — the iframe keeps serving the cached copy until you <strong>bump the guide's <code>?v=</code> token in <code>GUIDE_SRC</code></strong> (then run the manifest ritual, since <code>app.js</code> itself changed). This is separate from the asset-token ritual in <strong>Architecture</strong>.</p>
     </section>
 
     <!-- ============ 10. RECIPES ============ -->
@@ -813,12 +1176,17 @@
       </ol>
 
       <h3>Run the tests</h3>
+      <div class="callout warn">
+        <strong>Do not run the whole backend suite in one process on this box.</strong> A monolithic <code>pytest tests/</code> (all ~210 test files in one interpreter) climbs memory until the OS <strong>SIGKILLs it partway through</strong> — a partial run that reads as a spurious failure. And <strong>never run the full suite in parallel across worktrees</strong>: concurrent full-suite runs gridlock the shared box.
+      </div>
+      <p>The reliable workflow is <strong>targeted files</strong>, or the full suite in <strong>small fresh-process batches</strong> — never all files in one process:</p>
       <div class="card tight">
-        <p><strong>Backend:</strong> <code>python3 -m pytest -q</code><br>
+        <p><strong>Targeted (the default):</strong> <code>python -m pytest -q -p no:cacheprovider tests/test_ai_verifier.py tests/test_async_review_backend.py</code><br>
+        <strong>A batch of the full suite:</strong> run a handful of files per invocation, each a <em>fresh</em> process, e.g. <code>python -m pytest -q -p no:cacheprovider &lt;first ~15 files&gt;</code> then repeat for the next batch.<br>
         <strong>Frontend:</strong> <code>npm run test:frontend:utils &amp;&amp; npm run test:frontend</code><br>
         <strong>Lint:</strong> <code>ruff check nda_automation tests</code></p>
       </div>
-      <p>There is no Makefile; pytest + npm run directly. The pytest suite includes the review eval gate (counsel-style review cases).</p>
+      <p><code>-p no:cacheprovider</code> keeps a batch run from writing a stale cross-batch cache. There is no Makefile; pytest + npm run directly. The pytest suite includes the review eval gate (counsel-style review cases). See <strong>Gotchas / known hazards</strong> for why the single-process ceiling exists.</p>
     </section>
   </main>
 </div>
