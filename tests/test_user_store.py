@@ -167,5 +167,78 @@ class UserStoreTests(unittest.TestCase):
                         self.assertIsNotNone(user_store.user_for_session_token(token))
 
 
+    def test_valid_session_survives_save_failure_and_logs_skip(self):
+        """A full disk (save raises UserStoreError) must NOT 500 a valid session:
+        the last-seen bookkeeping save is fail-soft, so the user still resolves
+        and a single structured skip line is logged (no PII/token)."""
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.user_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patches[3]:
+                base = 5_000_000.0
+                with patch.object(user_store, "_now_epoch", return_value=base):
+                    user = self._seed_user()
+                    token = user_store.create_session(user["id"])
+                # Move far enough past the throttle that the slide wants to persist,
+                # then make that persist fail like a full disk would.
+                touch_at = base + user_store.SESSION_LAST_SEEN_PERSIST_INTERVAL_SECONDS + 5
+                disk_full = OSError(28, "No space left on device")
+                save_error = user_store.UserStoreError("User store could not be saved.")
+                save_error.__cause__ = disk_full
+                with patch.object(user_store, "_now_epoch", return_value=touch_at), \
+                        patch.object(user_store, "_save_store_unlocked", side_effect=save_error), \
+                        patch("builtins.print") as mock_print:
+                    resolved = user_store.user_for_session_token(token)
+
+        # The valid session STILL returns its user despite the failed save.
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved["id"], user["id"])
+        # Exactly one structured skip line was logged, carrying the errno/class
+        # but neither the token nor any PII.
+        printed = [call.args[0] for call in mock_print.call_args_list if call.args]
+        skip_lines = [line for line in printed if "user_store_save_skipped" in str(line)]
+        self.assertEqual(len(skip_lines), 1)
+        event = json.loads(skip_lines[0])
+        self.assertEqual(event["event"], "user_store_save_skipped")
+        self.assertEqual(event["context"], "session_touch")
+        self.assertEqual(event["errno"], 28)
+        self.assertEqual(event["error_class"], "UserStoreError")
+        self.assertNotIn(token, skip_lines[0])
+
+    def test_expired_session_returns_none_even_with_save_failure(self):
+        """An idle-expired session is still rejected (returns None) even when the
+        pruning save fails -- fail-soft must not resurrect a dead session."""
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.user_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patches[3]:
+                base = 6_000_000.0
+                with patch.object(user_store, "_now_epoch", return_value=base):
+                    user = self._seed_user()
+                    token = user_store.create_session(user["id"])
+                idle_future = base + user_store.SESSION_IDLE_TTL_SECONDS + 60
+                with patch.object(user_store, "_now_epoch", return_value=idle_future), \
+                        patch.object(
+                            user_store,
+                            "_save_store_unlocked",
+                            side_effect=user_store.UserStoreError("full disk"),
+                        ):
+                    self.assertIsNone(user_store.user_for_session_token(token))
+
+    def test_session_create_still_raises_on_save_failure(self):
+        """Write-critical paths stay HARD-failing: a login/session-create must
+        surface a save failure so the user knows their login didn't persist.
+        This is deliberately NOT fail-soft."""
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.user_store_patches(data_dir)
+            with patches[0], patches[1], patches[2], patches[3]:
+                user = self._seed_user()
+                with patch.object(
+                    user_store,
+                    "_save_store_unlocked",
+                    side_effect=user_store.UserStoreError("full disk"),
+                ):
+                    with self.assertRaises(user_store.UserStoreError):
+                        user_store.create_session(user["id"])
+
+
 if __name__ == "__main__":
     unittest.main()

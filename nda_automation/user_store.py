@@ -27,6 +27,11 @@ SESSION_TTL_SECONDS = 14 * 24 * 60 * 60
 # even if its 14-day absolute TTL has not elapsed. Caps the blast radius of a
 # stolen cookie on an idle account. last_seen_at is refreshed on each use.
 SESSION_IDLE_TTL_SECONDS = 12 * 60 * 60
+# Throttle for the last_seen_at slide: only persist the idle-window refresh when
+# it would move the timestamp by more than this. Cuts write amplification on hot
+# accounts (a save per request) while staying tiny next to the 12h idle window,
+# so the sliding-expiry guarantee is unaffected.
+SESSION_LAST_SEEN_PERSIST_INTERVAL_SECONDS = 60
 # Per-user session cap: when a user logs in beyond this many live sessions, the
 # oldest (by last activity) are evicted so sessions cannot accumulate unbounded.
 MAX_SESSIONS_PER_USER = 10
@@ -180,12 +185,16 @@ def user_for_session_token(token: str) -> dict[str, Any] | None:
             else:
                 user_id = str(session.get("user_id") or "")
                 user = store.setdefault("users", {}).get(user_id)
-                if isinstance(user, dict):
+                if isinstance(user, dict) and _last_seen_should_persist(session, now=now):
                     # Slide the inactivity window forward on each valid use.
                     session["last_seen_at"] = _iso_from_epoch(now)
                     changed = True
         if changed:
-            _save_store_unlocked(store)
+            # This save is non-essential bookkeeping (last_seen slide + expired
+            # pruning): a VALID session must resolve its user even when the store
+            # cannot be persisted (e.g. a full disk). Fail soft so a bookkeeping
+            # write failure can never 500 an authenticated request.
+            _save_store_best_effort(store, context="session_touch")
     return dict(user) if isinstance(user, dict) else None
 
 
@@ -200,7 +209,10 @@ def list_users() -> list[dict[str, Any]]:
             if isinstance(user, dict)
         ]
         if changed:
-            _save_store_unlocked(store)
+            # Read path: the only write here is opportunistic pruning of expired
+            # sessions/login-states. Never fail a user listing because that
+            # janitorial persist could not land.
+            _save_store_best_effort(store, context="list_users_prune")
     return sorted(users, key=lambda user: (str(user.get("email") or ""), str(user.get("id") or "")))
 
 
@@ -215,7 +227,9 @@ def gmail_sync_status(user_id: str) -> dict[str, Any]:
         user = store.setdefault("users", {}).get(user_id)
         sync = user.get("gmail_sync") if isinstance(user, dict) else None
         if changed:
-            _save_store_unlocked(store)
+            # Read path: the only write here is opportunistic expiry pruning.
+            # Reporting sync status must not fail if that persist could not land.
+            _save_store_best_effort(store, context="gmail_sync_status_prune")
     return gmail_sync_status_from_payload(sync)
 
 
@@ -542,6 +556,58 @@ def _save_store_unlocked(store: dict[str, Any]) -> None:
         except FileNotFoundError:
             pass
         raise UserStoreError("User store could not be saved.") from exc
+
+
+def _save_store_best_effort(store: dict[str, Any], *, context: str) -> bool:
+    """Persist the store on a read/bookkeeping path, swallowing save failures.
+
+    The last-seen slide and opportunistic expiry pruning are NON-ESSENTIAL: a
+    valid session read (or a user listing / sync-status report) must still
+    succeed even when the store cannot be written -- e.g. a full disk raising
+    OSError. A hard failure here would 500 every authenticated request, so we
+    log a single structured line and swallow. The temp+rename save is atomic, so
+    a failed write leaves the on-disk store intact; only the bookkeeping update
+    is lost. Returns True on success, False when the save was skipped.
+
+    Only bookkeeping-on-read saves may use this. Write-critical paths (login /
+    session create, logout / delete, gmail-sync recording) must keep calling
+    _save_store_unlocked directly so their failures surface to the caller.
+    """
+    try:
+        _save_store_unlocked(store)
+        return True
+    except (UserStoreError, OSError) as exc:
+        # No PII, no token, no path: just the failure class and errno so a full
+        # disk (errno 28) is greppable in prod logs.
+        cause = exc.__cause__ if isinstance(exc, UserStoreError) else exc
+        errno = getattr(cause, "errno", None)
+        print(
+            json.dumps({
+                "event": "user_store_save_skipped",
+                "context": context,
+                "error_class": type(exc).__name__,
+                "cause_class": type(cause).__name__ if cause is not None else None,
+                "errno": errno,
+            }),
+            flush=True,
+        )
+        return False
+
+
+def _last_seen_should_persist(session: dict[str, Any], *, now: float) -> bool:
+    """Throttle the last-seen slide so we only persist a meaningful move.
+
+    Refreshing last_seen_at on literally every request amplifies writes to the
+    store (a hot path on a busy account). The slide only guards the idle window,
+    so persisting a move smaller than the throttle interval buys nothing but I/O.
+    Skipping the write here also keeps `changed` false, so a read that touches
+    nothing else does zero disk work.
+    """
+    last_seen_epoch = _epoch_from_iso(session.get("last_seen_at"))
+    if last_seen_epoch <= 0:
+        # Legacy/missing timestamp: always establish one.
+        return True
+    return (now - last_seen_epoch) > SESSION_LAST_SEEN_PERSIST_INTERVAL_SECONDS
 
 
 def _empty_store() -> dict[str, Any]:
