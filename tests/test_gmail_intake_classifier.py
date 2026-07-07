@@ -516,6 +516,21 @@ class DeriveDetectionTermsTests(unittest.TestCase):
         )
         self.assertEqual(derived, [])
 
+    def test_denylist_filters_transmittal_glue_words(self):
+        # Regression (recall-gate): the retired admin denylist blocked e-signature /
+        # transmittal glue words. The derivation must keep blocking them, or a loosely
+        # worded "counts" bullet would fire the escape hatch on routine invoices and
+        # transmittal emails ("please sign the attached file").
+        derived = intake.derive_detection_terms_from_criteria(
+            ["please sign the attached file, email the signature, and review it"]
+        )
+        keys = {t.casefold() for t in derived}
+        for noise in (
+            "attached", "attachment", "email", "file", "please",
+            "review", "sign", "signed", "signature",
+        ):
+            self.assertNotIn(noise, keys)
+
     def test_dedupe_is_casefold_and_first_case_wins(self):
         derived = intake.derive_detection_terms_from_criteria(
             ["a secrecy undertaking", "A SECRECY pact"]

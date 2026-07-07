@@ -190,6 +190,24 @@ DETECTION_TERM_DENYLIST = frozenset(
         "services",
         "general",
         "standard",
+        # Transmittal / e-signature glue words: restored from the retired
+        # ADMIN_DETECTION_TERM_DENYLIST so a loosely-worded "counts" bullet cannot
+        # seed high-frequency routing noise into the escape hatch (recall-gate).
+        "attached",
+        "attachment",
+        "attachments",
+        "email",
+        "emails",
+        "file",
+        "files",
+        "please",
+        "review",
+        "reviews",
+        "sign",
+        "signed",
+        "signing",
+        "signature",
+        "signatures",
     }
 )
 
