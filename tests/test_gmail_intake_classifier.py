@@ -243,6 +243,45 @@ class IntakeClassifierUnitTests(unittest.TestCase):
         system_message = body["messages"][0]["content"]
         self.assertIn(intake.DEFAULT_INTAKE_PLAYBOOK, system_message)
 
+    # Structured-criteria assembly: the block carries the rule + every count + every
+    # exclude + the UNCERTAIN fallback line, and skips an empty list.
+    def test_assemble_intake_criteria_includes_rule_lists_and_uncertain(self):
+        rule = "My one-sentence rule about confidentiality."
+        counts = ["a mutual NDA", "a CDA"]
+        excludes = ["an MSA", "an invoice"]
+        block = intake.assemble_intake_criteria(rule, counts, excludes)
+        self.assertIn(rule, block)
+        for item in counts + excludes:
+            self.assertIn(f"- {item}", block)
+        self.assertIn("label NDA", block)
+        self.assertIn("label NOT_NDA", block)
+        self.assertIn("label UNCERTAIN.", block)
+
+    def test_assemble_intake_criteria_skips_empty_list(self):
+        block = intake.assemble_intake_criteria("R", ["only a count"], [])
+        self.assertIn("- only a count", block)
+        self.assertIn("label NDA", block)
+        # No exclude section header when the excludes list is empty.
+        self.assertNotIn("Don't count it", block)
+        self.assertIn("label UNCERTAIN.", block)
+
+    def test_assemble_intake_criteria_clamps_length(self):
+        huge_rule = "x" * (intake.MAX_INTAKE_PLAYBOOK_CHARS + 500)
+        block = intake.assemble_intake_criteria(huge_rule, [], [])
+        self.assertLessEqual(len(block), intake.MAX_INTAKE_PLAYBOOK_CHARS)
+
+    def test_default_playbook_equals_assembled_defaults(self):
+        # The single-source-of-truth invariant: the built-in default IS the assembled
+        # default so an all-empty structured config == DEFAULT_INTAKE_PLAYBOOK.
+        self.assertEqual(
+            intake.DEFAULT_INTAKE_PLAYBOOK,
+            intake.assemble_intake_criteria(
+                intake.DEFAULT_INTAKE_RULE,
+                intake.DEFAULT_INTAKE_COUNTS,
+                intake.DEFAULT_INTAKE_EXCLUDES,
+            ),
+        )
+
     def test_request_body_cost_controls(self):
         body = intake._request_body({"subject": "s"}, _candidate("x.docx", "y"), "")
         self.assertEqual(body["temperature"], 0)
@@ -265,10 +304,11 @@ class IntakeClassifierUnitTests(unittest.TestCase):
     # behaviour change needs a live-model eval run (flagged in the PR).
     def test_default_playbook_encodes_primary_purpose_distinction(self):
         criteria = intake.DEFAULT_INTAKE_PLAYBOOK.lower()
-        # The decisive rule: judge on operative substance / primary purpose, not the
-        # filename or email subject (the "NDA for review" title trap).
-        self.assertIn("primary", criteria)
-        self.assertIn("operative", criteria)
+        # The decisive rule: judge on what the document actually does, not the
+        # filename / title / email subject (the "NDA for review" title trap), applied
+        # via the strip-out check.
+        self.assertIn("what it actually does", criteria)
+        self.assertIn("strip-out check", criteria)
         self.assertIn("title", criteria)
         # The adjacent commercial-agreement families that must be excluded even when
         # they carry a confidentiality clause are named explicitly.
@@ -278,16 +318,18 @@ class IntakeClassifierUnitTests(unittest.TestCase):
         # explicit, so an embedded confidentiality clause cannot promote a services
         # agreement to NDA.
         self.assertIn("confidentiality clause", criteria)
-        # The HMRC / AML regulatory framing from the confirmed live miss is named as
-        # a commercial-services signal.
-        self.assertTrue("hmrc" in criteria or "aml" in criteria)
+        # The AML / regulatory framing from the confirmed live miss is named as a
+        # commercial-services signal.
+        self.assertIn("aml", criteria)
 
     def test_default_playbook_prefers_uncertain_for_ambiguity(self):
         # Genuine ambiguity must route to counsel review (UNCERTAIN), never a guessed
         # NDA / NOT_NDA. The criteria states this preference so the safe default holds.
         criteria = intake.DEFAULT_INTAKE_PLAYBOOK.lower()
         self.assertIn("uncertain", criteria)
-        self.assertIn("ambiguity", criteria)
+        # A genuine even split between confidentiality and another purpose is the
+        # ambiguity case the UNCERTAIN line routes to counsel review.
+        self.assertIn("genuine even split", criteria)
 
     def test_default_playbook_still_recognizes_genuine_ndas(self):
         # Over-tightening guard: the NDA-positive criteria must remain (a one-way or
@@ -313,10 +355,11 @@ class IntakeClassifierUnitTests(unittest.TestCase):
         # depend on must appear verbatim (case-sensitive) in the prose.
         for label in ("NDA", "NOT_NDA", "UNCERTAIN"):
             self.assertIn(label, raw, label)
-        # The primary-purpose / strip-out test -- the core decision rule.
-        self.assertIn("primary purpose", criteria)
-        self.assertIn("strip", criteria)
-        self.assertIn("operative", criteria)
+        # The strip-out test -- the core decision rule (judge by what the document
+        # actually does, protecting confidential information as the only real job).
+        self.assertIn("strip-out check", criteria)
+        self.assertIn("what it actually does", criteria)
+        self.assertIn("protect confidential information", criteria)
         # A representative slice of the exclusion list (dropping any of these would
         # re-open a mis-classification the criteria closed).
         for term in (
@@ -326,7 +369,6 @@ class IntakeClassifierUnitTests(unittest.TestCase):
             "sow",
             "consultancy",
             "invoice",
-            "hmrc",
             "aml",
         ):
             self.assertIn(term, criteria, term)

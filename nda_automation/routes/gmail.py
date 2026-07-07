@@ -386,6 +386,47 @@ def handle_gmail_settings_update(handler) -> None:
             )
             return
         updates["intake_playbook"] = intake_playbook
+    if "intake_rule" in payload:
+        intake_rule = payload.get("intake_rule")
+        # The rule is trusted admin config (not email content): accept any string and
+        # clamp; reject a non-string with a clear 400 rather than coercing.
+        if not isinstance(intake_rule, str):
+            handler._send_json(
+                {"error": "NDA intake rule must be text."},
+                status=400,
+            )
+            return
+        cleaned_rule = app_settings._clamp_intake_rule(intake_rule)
+        updates["intake_rule"] = cleaned_rule
+        if len(intake_rule.strip()) > app_settings.MAX_GMAIL_INTAKE_RULE_LENGTH:
+            warnings.append(
+                f"NDA intake rule truncated to {app_settings.MAX_GMAIL_INTAKE_RULE_LENGTH} characters."
+            )
+    for list_key, label in (
+        ("intake_counts", '"counts as an NDA"'),
+        ("intake_excludes", '"doesn\'t count" '),
+    ):
+        if list_key not in payload:
+            continue
+        raw_list = payload.get(list_key)
+        # The FE posts JSON arrays; also tolerate a comma/newline string. An empty list
+        # is valid (reset to the built-in default at effective-read time).
+        if not isinstance(raw_list, (list, str)):
+            handler._send_json(
+                {"error": f"NDA intake {label.strip()} examples must be a list of short phrases."},
+                status=400,
+            )
+            return
+        raw_count = len(raw_list) if isinstance(raw_list, list) else len(
+            [part for part in raw_list.replace("\n", ",").split(",") if part.strip()]
+        )
+        cleaned_list = app_settings.intake_criteria_list_from_payload(raw_list)
+        updates[list_key] = cleaned_list
+        if raw_count > app_settings.MAX_GMAIL_INTAKE_LIST_ITEMS:
+            warnings.append(
+                f"NDA intake {label.strip()} examples capped at "
+                f"{app_settings.MAX_GMAIL_INTAKE_LIST_ITEMS} items."
+            )
     if not updates:
         handler._send_json({"error": "Provide a Gmail setting to update."}, status=400)
         return
@@ -415,6 +456,9 @@ _AUDITED_GMAIL_SETTINGS = (
     "inbound_search_terms",
     "inbound_excluded_senders",
     "intake_playbook",
+    "intake_rule",
+    "intake_counts",
+    "intake_excludes",
 )
 
 

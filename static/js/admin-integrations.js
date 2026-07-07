@@ -1,4 +1,8 @@
 const AdminIntegrationsView = (() => {
+  // Mirrors the Playbook clause chip editor's remove glyph so the intake chips
+  // look identical to the Playbook ones (same admin-chip.removable + pb-icon).
+  const ICON_REMOVE = '<svg class="pb-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
+
   function html(value) {
     if (typeof window !== "undefined" && typeof window.escapeHtml === "function") {
       return window.escapeHtml(value);
@@ -110,7 +114,8 @@ const AdminIntegrationsView = (() => {
     gmailSyncWindowInput,
     gmailSyncWindowSaveButton,
     gmailIntakeForm,
-    gmailIntakeInput,
+    gmailIntakePanels,
+    gmailIntakeRuleInput,
     gmailIntakeSaveButton,
     gmailSyncHistory,
     reviewErrorFromPayload,
@@ -149,6 +154,33 @@ const AdminIntegrationsView = (() => {
     gmailIntakeForm?.addEventListener("submit", (event) => {
       event.preventDefault();
       updateGmailIntakePlaybook();
+    });
+    // The three intake panels (main rule + two chip lists) are rendered by JS and
+    // driven by data-* hooks, mirroring the Playbook clause chip editors. One
+    // delegated listener per interaction kind keeps the wiring stable across the
+    // full re-render that every add/remove/reset triggers.
+    gmailIntakePanels?.addEventListener("click", (event) => {
+      const addButton = event.target.closest?.("[data-intake-add]");
+      if (addButton) {
+        addIntakeChip(addButton.dataset.intakeAdd);
+        return;
+      }
+      const removeButton = event.target.closest?.("[data-intake-remove]");
+      if (removeButton) {
+        removeIntakeChip(removeButton.dataset.intakeRemove, removeButton.dataset.intakeValue);
+        return;
+      }
+      const resetButton = event.target.closest?.("[data-intake-reset]");
+      if (resetButton) {
+        resetIntakePanel(resetButton.dataset.intakeReset);
+      }
+    });
+    gmailIntakePanels?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      const input = event.target.closest?.("[data-intake-input]");
+      if (!input) return;
+      event.preventDefault();
+      addIntakeChip(input.dataset.intakeInput);
     });
     gmailSetupPanel?.addEventListener("click", (event) => {
       const disconnectButton = event.target.closest("[data-gmail-disconnect-role]");
@@ -392,26 +424,29 @@ const AdminIntegrationsView = (() => {
     }
 
     async function updateGmailIntakePlaybook() {
-      // Empty is a valid value (resets to the built-in default), so an empty
-      // textarea is allowed -- unlike the search terms, which require at least one.
-      const intakePlaybook = String(gmailIntakeInput?.value || "");
-      if (intakePlaybook.length > 8000) {
-        setOverall("Too long", "blocked");
-        setFact("intake-copy", "NDA intake criteria must be under 8000 characters.");
-        return;
-      }
+      // Pull the live main-rule text off the textarea (the chip lists live in the
+      // intake model, which the add/remove handlers keep current). Caps are
+      // enforced server-side now, so there is no client-side length gate.
+      const intakeRule = String(gmailIntakeRuleInput?.value ?? intakeState.rule ?? "");
+      intakeState.rule = intakeRule;
+      const payloadBody = {
+        intake_rule: intakeRule,
+        intake_counts: intakeState.counts.slice(),
+        intake_excludes: intakeState.excludes.slice(),
+      };
       setIntakeDisabled(true);
       setOverall("Saving", "pending");
       try {
-        const payload = await postGmailSettings({ intake_playbook: intakePlaybook }, "NDA intake criteria could not save");
+        const payload = await postGmailSettings(payloadBody, "NDA intake criteria could not save");
         state.gmailStatus = payload.gmail || state.gmailStatus || {};
         await load();
       } catch (error) {
-        // Surface the 400 inline next to the textarea rather than only in the
-        // overall banner.
+        // Restore the last-known-good render first, THEN write the error inline
+        // (renderIntakePlaybook resets the intake-copy line, so the error must be
+        // set after it or it gets clobbered by the counts summary).
         setOverall(error.message || "Save failed", "blocked");
-        setFact("intake-copy", error.message || "NDA intake criteria could not save.");
         renderIntakePlaybook(state.gmailStatus || {});
+        setFact("intake-copy", error.message || "NDA intake criteria could not save.");
       } finally {
         setIntakeDisabled(false);
       }
@@ -745,20 +780,148 @@ const AdminIntegrationsView = (() => {
       if (gmailSearchSaveButton) gmailSearchSaveButton.disabled = disabled;
     }
 
+    // The intake model backing the three panels. counts/excludes hold the live,
+    // editable chip values; the *Default fields hold the server-seeded defaults so
+    // "Reset to default" can restore a mis-edited panel. Seeded by
+    // renderIntakePlaybook from the gmail status payload.
+    const intakeState = {
+      rule: "",
+      ruleDefault: "",
+      counts: [],
+      countsDefault: [],
+      excludes: [],
+      excludesDefault: [],
+    };
+
+    // Field-name lookup so one set of chip handlers drives both lists.
+    const INTAKE_LIST_FIELDS = {
+      counts: { value: "counts", def: "countsDefault" },
+      excludes: { value: "excludes", def: "excludesDefault" },
+    };
+
+    function normalizeIntakeList(raw) {
+      if (!Array.isArray(raw)) return [];
+      const seen = new Set();
+      const out = [];
+      raw.forEach((item) => {
+        const value = String(item == null ? "" : item).trim();
+        if (!value) return;
+        const key = value.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push(value);
+      });
+      return out;
+    }
+
     function renderIntakePlaybook(status) {
-      if (!gmailIntakeInput) return;
-      // The effective playbook: the stored criteria when set, else the built-in
-      // default surfaced by the server status payload (empty stays empty so the
-      // operator can see they are on the default and the placeholder hint shows).
-      const stored = String(status?.settings?.intake_playbook || "");
-      const effective = stored || String(status?.intake_playbook_default || "");
-      gmailIntakeInput.value = stored;
-      if (effective) gmailIntakeInput.setAttribute("placeholder", effective);
+      if (!gmailIntakePanels && !gmailIntakeRuleInput) return;
+      // The main rule: the stored value when set, else the built-in default,
+      // surfaced as REAL editable text (not a ghost placeholder) so the operator
+      // can see and edit the rule the AI is actually applying.
+      const storedRule = String(status?.intake_rule ?? "");
+      intakeState.ruleDefault = String(status?.intake_rule_default ?? "");
+      intakeState.rule = storedRule || intakeState.ruleDefault;
+
+      const storedCounts = normalizeIntakeList(status?.intake_counts);
+      intakeState.countsDefault = normalizeIntakeList(status?.intake_counts_default);
+      intakeState.counts = storedCounts.length ? storedCounts : intakeState.countsDefault.slice();
+
+      const storedExcludes = normalizeIntakeList(status?.intake_excludes);
+      intakeState.excludesDefault = normalizeIntakeList(status?.intake_excludes_default);
+      intakeState.excludes = storedExcludes.length ? storedExcludes : intakeState.excludesDefault.slice();
+
+      if (gmailIntakeRuleInput) gmailIntakeRuleInput.value = intakeState.rule;
+      renderIntakeChips("counts");
+      renderIntakeChips("excludes");
+      renderIntakeResetLinks();
+      setFact(
+        "intake-copy",
+        `${intakeState.counts.length} counted, ${intakeState.excludes.length} excluded. These are the plain-English guidelines the AI uses.`,
+      );
+    }
+
+    function renderIntakeChips(list) {
+      if (!gmailIntakePanels) return;
+      const fields = INTAKE_LIST_FIELDS[list];
+      if (!fields) return;
+      const row = gmailIntakePanels.querySelector(`[data-intake-chip-row="${list}"]`);
+      if (!row) return;
+      const values = intakeState[fields.value];
+      if (!values.length) {
+        row.innerHTML = '<span class="admin-muted">Nothing added yet</span>';
+        return;
+      }
+      row.innerHTML = values
+        .map((value) => `
+          <button class="admin-chip removable" type="button" role="listitem" data-intake-remove="${html(list)}" data-intake-value="${html(value)}" aria-label="Remove ${html(value)}">
+            ${html(value)} ${ICON_REMOVE}
+          </button>
+        `)
+        .join("");
+    }
+
+    // Show the per-panel "Reset to default" link only when a panel diverges from
+    // its default (so a mis-edit is one click to recover, and a pristine panel
+    // stays uncluttered).
+    function renderIntakeResetLinks() {
+      if (!gmailIntakePanels) return;
+      const diverged = {
+        rule: intakeState.rule.trim() !== intakeState.ruleDefault.trim() && intakeState.ruleDefault !== "",
+        counts: !sameIntakeList(intakeState.counts, intakeState.countsDefault) && intakeState.countsDefault.length > 0,
+        excludes: !sameIntakeList(intakeState.excludes, intakeState.excludesDefault) && intakeState.excludesDefault.length > 0,
+      };
+      gmailIntakePanels.querySelectorAll("[data-intake-reset]").forEach((link) => {
+        const panel = link.dataset.intakeReset;
+        if (diverged[panel]) link.removeAttribute("hidden");
+        else link.setAttribute("hidden", "");
+      });
+    }
+
+    function sameIntakeList(a, b) {
+      if (a.length !== b.length) return false;
+      return a.every((value, index) => value === b[index]);
+    }
+
+    function addIntakeChip(list) {
+      const fields = INTAKE_LIST_FIELDS[list];
+      if (!fields || !gmailIntakePanels) return;
+      const input = gmailIntakePanels.querySelector(`[data-intake-input="${list}"]`);
+      if (!input) return;
+      const value = String(input.value || "").trim();
+      if (!value) return;
+      intakeState[fields.value] = normalizeIntakeList([...intakeState[fields.value], value]);
+      input.value = "";
+      renderIntakeChips(list);
+      renderIntakeResetLinks();
+    }
+
+    function removeIntakeChip(list, value) {
+      const fields = INTAKE_LIST_FIELDS[list];
+      if (!fields) return;
+      intakeState[fields.value] = intakeState[fields.value].filter((item) => item !== value);
+      renderIntakeChips(list);
+      renderIntakeResetLinks();
+    }
+
+    function resetIntakePanel(panel) {
+      if (panel === "rule") {
+        intakeState.rule = intakeState.ruleDefault;
+        if (gmailIntakeRuleInput) gmailIntakeRuleInput.value = intakeState.rule;
+      } else if (INTAKE_LIST_FIELDS[panel]) {
+        const fields = INTAKE_LIST_FIELDS[panel];
+        intakeState[fields.value] = intakeState[fields.def].slice();
+        renderIntakeChips(panel);
+      }
+      renderIntakeResetLinks();
     }
 
     function setIntakeDisabled(disabled) {
-      if (gmailIntakeInput) gmailIntakeInput.disabled = disabled;
+      if (gmailIntakeRuleInput) gmailIntakeRuleInput.disabled = disabled;
       if (gmailIntakeSaveButton) gmailIntakeSaveButton.disabled = disabled;
+      gmailIntakePanels?.querySelectorAll("[data-intake-add], [data-intake-input], [data-intake-remove], [data-intake-reset]").forEach((el) => {
+        el.disabled = disabled;
+      });
     }
 
     return { load, renderGmailStatus: (gmailStatus) => renderGmail(gmailStatus || {}, []) };

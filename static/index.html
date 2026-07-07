@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260706int5">
+    <link rel="stylesheet" href="/static/styles.css?v=20260707intake2">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260707adminob1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260619onboard1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
@@ -1451,11 +1451,46 @@
 
                   <section class="integration-subsection">
                     <h3>NDA intake criteria</h3>
-                    <p class="integration-subsection-help">Plain-English guidelines the AI uses to decide whether an email attachment is an NDA. Edit freely; leave empty to use the built-in default.</p>
-                    <form class="integration-search-form" id="adminGmailIntakeForm">
-                      <textarea id="adminGmailIntakeInput" rows="16" spellcheck="false" aria-label="NDA intake criteria"></textarea>
+                    <p class="integration-subsection-help">The plain-English guidelines the AI uses to decide whether an email attachment is an NDA. Edit freely; the security and output rules are unaffected.</p>
+                    <form class="integration-search-form integration-intake-form" id="adminGmailIntakeForm">
+                      <div class="integration-intake-panels" id="adminGmailIntakePanels">
+                        <section class="admin-special integration-intake-panel" data-intake-panel="rule">
+                          <div class="integration-intake-panel-head">
+                            <h4>The main rule</h4>
+                            <button class="link-button integration-intake-reset" type="button" data-intake-reset="rule" hidden>Reset to default</button>
+                          </div>
+                          <p class="admin-muted">The core test the AI applies. One or two sentences.</p>
+                          <textarea id="adminGmailIntakeRuleInput" rows="3" spellcheck="false" aria-label="The main rule the AI applies to decide whether an attachment is an NDA"></textarea>
+                        </section>
+
+                        <section class="admin-special integration-intake-panel" data-intake-panel="counts">
+                          <div class="integration-intake-panel-head">
+                            <h4>Counts as an NDA</h4>
+                            <button class="link-button integration-intake-reset" type="button" data-intake-reset="counts" hidden>Reset to default</button>
+                          </div>
+                          <p class="admin-muted">Document types that ARE NDAs.</p>
+                          <div class="admin-chip-row" data-intake-chip-row="counts" role="list" aria-label="Document types that count as an NDA"></div>
+                          <div class="admin-inline-add">
+                            <input type="text" data-intake-input="counts" placeholder="e.g. mutual NDA" aria-label="Add a document type that counts as an NDA">
+                            <button class="secondary" type="button" data-intake-add="counts">Add</button>
+                          </div>
+                        </section>
+
+                        <section class="admin-special integration-intake-panel" data-intake-panel="excludes">
+                          <div class="integration-intake-panel-head">
+                            <h4>Doesn't count</h4>
+                            <button class="link-button integration-intake-reset" type="button" data-intake-reset="excludes" hidden>Reset to default</button>
+                          </div>
+                          <p class="admin-muted">Document types that are NOT NDAs, even if titled "NDA".</p>
+                          <div class="admin-chip-row" data-intake-chip-row="excludes" role="list" aria-label="Document types that do not count as an NDA"></div>
+                          <div class="admin-inline-add">
+                            <input type="text" data-intake-input="excludes" placeholder="e.g. services agreement" aria-label="Add a document type that does not count as an NDA">
+                            <button class="secondary" type="button" data-intake-add="excludes">Add</button>
+                          </div>
+                        </section>
+                      </div>
                       <div class="integration-search-actions">
-                        <p data-admin-gmail="intake-copy">Leave empty to use the built-in default. Editing changes only the NDA/NOT_NDA criteria, not the security or output rules.</p>
+                        <p data-admin-gmail="intake-copy">These are the plain-English guidelines the AI uses to decide NDA vs. not-an-NDA — the security and output rules are separate.</p>
                         <button class="secondary" id="adminGmailIntakeSaveButton" type="submit">Save criteria</button>
                       </div>
                     </form>
@@ -2400,7 +2435,7 @@
     <script src="/static/js/admin-ai.js?v=20260706cleanup1"></script>
     <script src="/static/js/admin-models.js?v=20260706featureoff1"></script>
     <script src="/static/js/admin-health.js?v=20260621humanize1"></script>
-    <script src="/static/js/admin-integrations.js?v=20260706warn1"></script>
+    <script src="/static/js/admin-integrations.js?v=20260707intake2"></script>
     <script src="/static/js/admin-drive.js?v=20260707adminob1"></script>
     <script src="/static/js/admin-personalisation.js?v=20260706sigshadow1"></script>
     <script src="/static/js/admin-docusign.js?v=20260617a401"></script>
@@ -2431,6 +2466,6 @@
     <script src="/static/js/notifications.js?v=20260623reviewtabv2-1"></script>
     <script src="/static/js/generator-editor.js?v=20260626editordur1"></script>
     <script src="/static/js/find-replace.js?v=20260621wave3"></script>
-    <script src="/static/app.js?v=20260707guide4"></script>
+    <script src="/static/app.js?v=20260707intake2"></script>
   </body>
 </html>

@@ -77,15 +77,33 @@ class FakeElement {
     child.parentNode = this;
     return child;
   }
-  // Selector support is intentionally tiny: only the [data-admin-gmail="key"]
-  // form the controller uses for its copy spans.
+  // Selector support is intentionally tiny: the [data-admin-gmail="key"] copy
+  // spans plus the [data-*="val"] / [data-*] hooks the intake panels use. A
+  // dataset key like "data-intake-chip-row" maps to camelCase intakeChipRow.
   querySelector(selector) {
-    const match = /^\[data-admin-gmail="(.+)"\]$/.exec(selector);
-    if (match) return this._findByAdminGmail(match[1]) || null;
-    return null;
+    const gmail = /^\[data-admin-gmail="(.+)"\]$/.exec(selector);
+    if (gmail) return this._findByAdminGmail(gmail[1]) || null;
+    return this._queryData(selector)[0] || null;
   }
-  querySelectorAll() {
-    return [];
+  querySelectorAll(selector) {
+    if (!selector) return [];
+    // Comma-separated selector list: union of matches (used by setIntakeDisabled).
+    return selector
+      .split(",")
+      .flatMap((part) => this._queryData(part.trim()));
+  }
+  _queryData(selector) {
+    // [data-foo-bar="value"] or [data-foo-bar]
+    const withValue = /^\[data-([a-z-]+)="(.*)"\]$/.exec(selector);
+    const bare = /^\[data-([a-z-]+)\]$/.exec(selector);
+    const attr = withValue ? withValue[1] : bare ? bare[1] : null;
+    if (!attr) return [];
+    const key = attr.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+    const wanted = withValue ? withValue[2] : undefined;
+    return this.collectDescendants().filter((node) => {
+      if (!node.dataset || !Object.prototype.hasOwnProperty.call(node.dataset, key)) return false;
+      return wanted === undefined || String(node.dataset[key]) === wanted;
+    });
   }
   _findByAdminGmail(key) {
     for (const child of this.collectDescendants()) {
@@ -104,7 +122,22 @@ class FakeElement {
     walk(this);
     return out;
   }
-  closest() {
+  // Walks self-then-ancestors for a [data-foo-bar] / [data-foo-bar="v"] match.
+  closest(selector) {
+    const withValue = /^\[data-([a-z-]+)="(.*)"\]$/.exec(selector);
+    const bare = /^\[data-([a-z-]+)\]$/.exec(selector);
+    const attr = withValue ? withValue[1] : bare ? bare[1] : null;
+    if (!attr) return null;
+    const key = attr.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+    const wanted = withValue ? withValue[2] : undefined;
+    let node = this;
+    while (node) {
+      if (node.dataset && Object.prototype.hasOwnProperty.call(node.dataset, key)
+        && (wanted === undefined || String(node.dataset[key]) === wanted)) {
+        return node;
+      }
+      node = node.parentNode || null;
+    }
     return null;
   }
   async dispatchEvent(event) {
@@ -191,6 +224,7 @@ function mountController(initialStatus) {
   const importLimitCopy = copySpan("import-limit-copy");
   const syncWindowCopy = copySpan("sync-window-copy");
   const searchTermsCopy = copySpan("search-terms-copy");
+  const intakeCopy = copySpan("intake-copy");
   const inboundConfigured = copySpan("inbound-configured");
   const outboundConfigured = copySpan("outbound-configured");
   const inboundEmail = copySpan("inbound-email");
@@ -198,6 +232,7 @@ function mountController(initialStatus) {
   gmailCard.appendChild(importLimitCopy);
   gmailCard.appendChild(syncWindowCopy);
   gmailCard.appendChild(searchTermsCopy);
+  gmailCard.appendChild(intakeCopy);
   gmailCard.appendChild(inboundConfigured);
   gmailCard.appendChild(outboundConfigured);
   gmailCard.appendChild(inboundEmail);
@@ -225,6 +260,48 @@ function mountController(initialStatus) {
   });
   const gmailOverall = new FakeElement("span");
 
+  // --- NDA intake panels (main rule + two chip lists) ----------------------
+  // Build enough of the real subtree that the controller's data-* hooks resolve:
+  // per-list chip row + text input + Add button + a Reset link, plus the rule
+  // textarea. Chip removal buttons are created via innerHTML at render time, so
+  // the tests exercise render/seed + add + save (not innerHTML-parsed removal).
+  const gmailIntakePanels = new FakeElement("div");
+  const gmailIntakeRuleInput = new FakeElement("textarea");
+  const intakeChipRows = {};
+  const intakeInputs = {};
+  const intakeResetLinks = {};
+  ["counts", "excludes"].forEach((list) => {
+    const chipRow = new FakeElement("div");
+    chipRow.dataset.intakeChipRow = list;
+    intakeChipRows[list] = chipRow;
+    gmailIntakePanels.appendChild(chipRow);
+
+    const input = new FakeElement("input");
+    input.dataset.intakeInput = list;
+    intakeInputs[list] = input;
+    gmailIntakePanels.appendChild(input);
+
+    const addButton = new FakeElement("button");
+    addButton.dataset.intakeAdd = list;
+    gmailIntakePanels.appendChild(addButton);
+
+    const resetLink = new FakeElement("button");
+    resetLink.dataset.intakeReset = list;
+    resetLink.setAttribute("hidden", "");
+    intakeResetLinks[list] = resetLink;
+    gmailIntakePanels.appendChild(resetLink);
+  });
+  const intakeRuleReset = new FakeElement("button");
+  intakeRuleReset.dataset.intakeReset = "rule";
+  intakeRuleReset.setAttribute("hidden", "");
+  intakeResetLinks.rule = intakeRuleReset;
+  gmailIntakePanels.appendChild(intakeRuleReset);
+  const gmailIntakeSaveButton = new FakeElement("button");
+  const gmailIntakeForm = new FakeElement("form");
+  gmailIntakeSaveButton.addEventListener("click", async () => {
+    await gmailIntakeForm.submit();
+  });
+
   const state = { gmailStatus: {} };
   const reviewErrorFromPayload = (payload, fallback) =>
     new Error((payload && payload.error) || fallback);
@@ -244,6 +321,10 @@ function mountController(initialStatus) {
     gmailSearchForm,
     gmailSearchTermsInput,
     gmailSearchSaveButton,
+    gmailIntakeForm,
+    gmailIntakePanels,
+    gmailIntakeRuleInput,
+    gmailIntakeSaveButton,
     reviewErrorFromPayload,
   });
 
@@ -270,6 +351,14 @@ function mountController(initialStatus) {
     inboundConfigured,
     outboundConfigured,
     inboundEmail,
+    gmailIntakePanels,
+    gmailIntakeRuleInput,
+    gmailIntakeSaveButton,
+    gmailIntakeForm,
+    intakeChipRows,
+    intakeInputs,
+    intakeResetLinks,
+    intakeCopy,
   };
 }
 
@@ -783,6 +872,202 @@ const ENV_CONNECTED = {
     assert.equal(V.syncWindowFromStatus({ settings: {} }), 90, "defaults to 90");
     assert.equal(V.syncWindowFromStatus({}), 90);
     assert.equal(V.syncWindowFromStatus(null), 90);
+  });
+
+  // --- NDA intake criteria: three-panel structured editor -------------------
+  // The single freeform textarea is replaced by a main-rule textarea plus two
+  // add/remove chip lists. The controller reads intake_rule / intake_counts /
+  // intake_excludes (+ *_default) off the status and POSTs
+  // { intake_rule, intake_counts, intake_excludes } to /api/gmail/settings.
+
+  const INTAKE_STATUS = {
+    ...ENV_CONNECTED,
+    intake_rule: "Flag anything whose primary purpose is confidentiality.",
+    intake_rule_default: "Default rule text.",
+    intake_counts: ["mutual NDA", "one-way NDA"],
+    intake_counts_default: ["mutual NDA"],
+    intake_excludes: ["services agreement"],
+    intake_excludes_default: ["services agreement", "MSA"],
+  };
+
+  // Fire the panels' delegated click on a specific target element (mirrors how a
+  // real click bubbles to the container listener with event.target set).
+  async function delegatedClick(panels, target) {
+    await panels.dispatchEvent({ type: "click", target, preventDefault() {} });
+  }
+
+  await test("intake render seeds the rule textarea and both chip lists from status", async () => {
+    const ui = mountController(INTAKE_STATUS);
+    assert.equal(
+      ui.gmailIntakeRuleInput.value,
+      "Flag anything whose primary purpose is confidentiality.",
+      "main rule is real editable text (stored value), not a placeholder"
+    );
+    // Stored (non-empty) lists win over defaults.
+    assert.match(ui.intakeChipRows.counts.innerHTML, /mutual NDA/);
+    assert.match(ui.intakeChipRows.counts.innerHTML, /one-way NDA/);
+    assert.match(ui.intakeChipRows.excludes.innerHTML, /services agreement/);
+    // Chips carry the remove hooks + accessible label, mirroring the Playbook UI.
+    assert.match(ui.intakeChipRows.counts.innerHTML, /data-intake-remove="counts"/);
+    assert.match(ui.intakeChipRows.counts.innerHTML, /aria-label="Remove mutual NDA"/);
+  });
+
+  await test("intake render falls back to *_default when a stored list is empty", async () => {
+    const ui = mountController({
+      ...ENV_CONNECTED,
+      intake_rule: "",
+      intake_rule_default: "The built-in rule.",
+      intake_counts: [],
+      intake_counts_default: ["mutual NDA", "CDA"],
+      intake_excludes: [],
+      intake_excludes_default: ["MSA"],
+    });
+    // Empty rule shows the DEFAULT as real editable text (operator sees it).
+    assert.equal(ui.gmailIntakeRuleInput.value, "The built-in rule.");
+    assert.match(ui.intakeChipRows.counts.innerHTML, /mutual NDA/);
+    assert.match(ui.intakeChipRows.counts.innerHTML, /CDA/);
+    assert.match(ui.intakeChipRows.excludes.innerHTML, /MSA/);
+  });
+
+  await test("intake save POSTs { intake_rule, intake_counts, intake_excludes }", async () => {
+    const ui = mountController(INTAKE_STATUS);
+    // Edit the rule and add a new counted type through the delegated handler.
+    ui.gmailIntakeRuleInput.value = "Only agreements whose core purpose is confidentiality.";
+    ui.intakeInputs.counts.value = "confidentiality agreement";
+    await delegatedClick(ui.gmailIntakePanels, ui.gmailIntakePanels.querySelector('[data-intake-add="counts"]'));
+    assert.match(ui.intakeChipRows.counts.innerHTML, /confidentiality agreement/, "chip added to the list");
+
+    const calls = installFetch((url) => {
+      if (url === "/api/gmail/status") return { payload: { gmail: INTAKE_STATUS } };
+      if (url === "/api/matters") return { payload: { matters: [] } };
+      if (url === "/api/gmail/settings") return { payload: { gmail: INTAKE_STATUS } };
+      return {};
+    });
+
+    await ui.gmailIntakeSaveButton.click();
+    await flush();
+
+    const save = calls.find((c) => c.url === "/api/gmail/settings");
+    assert.ok(save, "a settings POST is sent");
+    assert.deepEqual(save.body, {
+      intake_rule: "Only agreements whose core purpose is confidentiality.",
+      intake_counts: ["mutual NDA", "one-way NDA", "confidentiality agreement"],
+      intake_excludes: ["services agreement"],
+    }, "posts the structured intake payload");
+  });
+
+  await test("intake add de-dupes case-insensitively and ignores blanks", async () => {
+    const ui = mountController(INTAKE_STATUS);
+    ui.intakeInputs.counts.value = "MUTUAL NDA"; // already present (case-differs)
+    await delegatedClick(ui.gmailIntakePanels, ui.gmailIntakePanels.querySelector('[data-intake-add="counts"]'));
+    ui.intakeInputs.counts.value = "   "; // blank
+    await delegatedClick(ui.gmailIntakePanels, ui.gmailIntakePanels.querySelector('[data-intake-add="counts"]'));
+
+    const calls = installFetch((url) => {
+      if (url === "/api/gmail/status") return { payload: { gmail: INTAKE_STATUS } };
+      if (url === "/api/matters") return { payload: { matters: [] } };
+      if (url === "/api/gmail/settings") return { payload: { gmail: INTAKE_STATUS } };
+      return {};
+    });
+    await ui.gmailIntakeSaveButton.click();
+    await flush();
+
+    const save = calls.find((c) => c.url === "/api/gmail/settings");
+    assert.deepEqual(save.body.intake_counts, ["mutual NDA", "one-way NDA"], "no dupe / no blank added");
+  });
+
+  await test("intake reset restores a list panel from its default", async () => {
+    const ui = mountController(INTAKE_STATUS);
+    // counts stored=[mutual NDA, one-way NDA], default=[mutual NDA]; reset -> default.
+    await delegatedClick(ui.gmailIntakePanels, ui.gmailIntakePanels.querySelector('[data-intake-reset="counts"]'));
+    assert.match(ui.intakeChipRows.counts.innerHTML, /mutual NDA/);
+    assert.doesNotMatch(ui.intakeChipRows.counts.innerHTML, /one-way NDA/, "reverted to the default list");
+
+    const calls = installFetch((url) => {
+      if (url === "/api/gmail/status") return { payload: { gmail: INTAKE_STATUS } };
+      if (url === "/api/matters") return { payload: { matters: [] } };
+      if (url === "/api/gmail/settings") return { payload: { gmail: INTAKE_STATUS } };
+      return {};
+    });
+    await ui.gmailIntakeSaveButton.click();
+    await flush();
+    const save = calls.find((c) => c.url === "/api/gmail/settings");
+    assert.deepEqual(save.body.intake_counts, ["mutual NDA"], "reset value is what gets saved");
+  });
+
+  await test("a 400 on the intake save surfaces inline and restores the render", async () => {
+    const ui = mountController(INTAKE_STATUS);
+    ui.gmailIntakeRuleInput.value = "edited rule";
+    installFetch((url) => {
+      if (url === "/api/gmail/settings") {
+        return { ok: false, status: 400, payload: { error: "NDA intake criteria could not save." } };
+      }
+      if (url === "/api/gmail/status") return { payload: { gmail: INTAKE_STATUS } };
+      if (url === "/api/matters") return { payload: { matters: [] } };
+      return {};
+    });
+    await ui.gmailIntakeSaveButton.click();
+    await flush();
+    assert.match(ui.intakeCopy.textContent, /could not save/, "server 400 shown inline next to the panels");
+    // The render is restored from last-known-good status (rule back to stored).
+    assert.equal(ui.gmailIntakeRuleInput.value, INTAKE_STATUS.intake_rule, "panels restored after the failed save");
+  });
+
+  await test("intake chips HTML-escape malicious values (XSS) but save the raw string", async () => {
+    // Every chip value reaches the DOM via html() (escapeHtml), so a hostile
+    // value must render as inert escaped text, never a live tag/attribute. But
+    // escaping is DISPLAY-ONLY: the stored value round-trips into the Save
+    // payload verbatim (the raw string), so this pins both halves at once.
+    const IMG_XSS = '<img src=x onerror=alert(1)>';
+    const SCRIPT_XSS = '"><script>alert(1)</script>';
+    const ui = mountController({
+      ...ENV_CONNECTED,
+      intake_rule: "rule",
+      intake_rule_default: "rule",
+      intake_counts: [IMG_XSS, SCRIPT_XSS],
+      intake_counts_default: [],
+      intake_excludes: [],
+      intake_excludes_default: [],
+    });
+
+    const rendered = ui.intakeChipRows.counts.innerHTML;
+    // The escaped forms are present...
+    assert.match(rendered, /&lt;img/, "the <img payload is escaped");
+    assert.match(rendered, /&lt;script&gt;/, "the <script payload is escaped");
+    // ...and no live, executable payload tag leaked into the markup. The only
+    // real tags are the chip <button>s; the hostile <img / <script never survive
+    // as live tags. The literal "onerror=alert(1)" persists ONLY as inert text
+    // (escaped body text + a quoted aria-label value), so we assert both angle
+    // brackets of the payload are escaped everywhere it appears -- an unescaped
+    // "<img"/"<script" is the thing that would actually execute, and neither
+    // exists.
+    assert.doesNotMatch(rendered, /<img\b/i, "no live <img tag rendered");
+    assert.doesNotMatch(rendered, /<script\b/i, "no live <script tag rendered");
+    // The quote-break payload ("><script>) is neutralized: its leading `">` is
+    // escaped to `&quot;&gt;`, so it cannot terminate the aria-label attribute.
+    assert.match(rendered, /&quot;&gt;&lt;script&gt;/, "the quote-break payload is fully escaped");
+    // Defensive: every angle bracket that belongs to the payload is escaped -- no
+    // stray raw "<i"/"<s" opener from the payload survived anywhere.
+    assert.equal((rendered.match(/<img/gi) || []).length, 0, "zero raw <img openers");
+    assert.equal((rendered.match(/<script/gi) || []).length, 0, "zero raw <script openers");
+
+    // The raw value round-trips into the Save payload untouched.
+    const calls = installFetch((url) => {
+      if (url === "/api/gmail/status") return { payload: { gmail: { ...ENV_CONNECTED } } };
+      if (url === "/api/matters") return { payload: { matters: [] } };
+      if (url === "/api/gmail/settings") return { payload: { gmail: { ...ENV_CONNECTED } } };
+      return {};
+    });
+    await ui.gmailIntakeSaveButton.click();
+    await flush();
+
+    const save = calls.find((c) => c.url === "/api/gmail/settings");
+    assert.ok(save, "a settings POST is sent");
+    assert.deepEqual(
+      save.body.intake_counts,
+      [IMG_XSS, SCRIPT_XSS],
+      "the raw (unescaped) hostile strings are what get stored"
+    );
   });
 
   process.stdout.write(`\nadmin-integrations.cjs: ${passed} passed\n`);

@@ -11070,6 +11070,51 @@ label.is-hidden {
   margin: 0;
 }
 
+/* NDA intake criteria: three stacked panels (main rule + two chip lists) that
+   reuse the Playbook clause chip editor's .admin-special / .admin-chip styling. */
+.integration-intake-panels {
+  display: grid;
+  gap: 10px;
+}
+
+.integration-intake-panel-head {
+  align-items: baseline;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.integration-intake-panel h4 {
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.integration-intake-panel textarea {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--ink);
+  line-height: 1.45;
+  min-height: 62px;
+  padding: 7px 9px;
+  resize: vertical;
+  width: 100%;
+}
+
+.integration-intake-panel textarea:focus {
+  border-color: var(--brand);
+  outline: none;
+}
+
+.integration-intake-reset {
+  flex: 0 0 auto;
+  font-size: 11px;
+}
+
 .integration-filing-banner {
   margin: 0 0 12px;
   padding: 8px 12px;

@@ -86,90 +86,92 @@ INTAKE_OUTPUT_CONTRACT = (
     "keys."
 )
 
-# DEFAULT_INTAKE_PLAYBOOK is the criteria block from the canonical tournament prompt.
-# It is used whenever the admin settings field is empty.
-DEFAULT_INTAKE_PLAYBOOK = (
-    "The main test (start here)\n"
-    "\n"
-    "An NDA is a standalone agreement whose one primary purpose is to protect "
-    "confidential information. What matters is what the document's actual, operative "
-    "obligations do -- not whether it happens to mention confidentiality, and not what "
-    "the filename or email subject calls it.\n"
-    "\n"
-    "Use this simple strip-out check. Imagine you strip out all the confidentiality "
-    "clauses. If a real commercial deal is still left behind -- services to be "
-    "performed, "
-    "deliverables, research and development work, a licence being granted, goods being "
-    "supplied, employment terms, or payment and fees owed -- then it is NOT an NDA. In "
-    "that case the confidentiality clause is just boilerplate inside a bigger deal. "
-    "Always decide based on what the document actually does, never on its title alone. "
-    "A file called \"NDA for review\" that is really a consultancy or services "
-    "contract is NOT_NDA.\n"
-    "\n"
-    "Count it as an NDA (label NDA)\n"
-    "\n"
-    "Use NDA when the attachment really is a non-disclosure or confidentiality "
-    "agreement, its primary purpose is to protect confidential information, and it "
-    "carries essentially no other real commercial obligation.\n"
-    "\n"
-    "This includes:\n"
-    "- a mutual or one-way NDA or MNDA\n"
-    "- a confidential disclosure agreement (CDA)\n"
-    "- a confidentiality agreement, deed, undertaking, or letter\n"
-    "- a data processing agreement (DPA) whose substance is confidentiality "
-    "obligations\n"
-    "\n"
-    "A document like this is mostly made up of definitions of Confidential "
-    "Information, permitted-use / non-disclosure / return-or-destroy obligations, and "
-    "standard carve-outs. It does not have services, deliverables, fees, a licence "
-    "grant, or employment terms as its main subject.\n"
-    "\n"
-    "Don't count it (label NOT_NDA)\n"
-    "\n"
-    "Use NOT_NDA when the attachment's main purpose is something other than "
-    "confidentiality -- even if it does contain a confidentiality clause, and even if "
-    "it is titled, filed, or emailed as an \"NDA\".\n"
-    "\n"
-    "This includes:\n"
-    "- a consultancy or consulting agreement\n"
-    "- a services or professional-services agreement\n"
-    "- a master services agreement (MSA)\n"
-    "- a statement of work (SOW)\n"
-    "- a research-and-development (R&D) agreement\n"
-    "- a collaboration or joint-development agreement\n"
-    "- an offer or employment letter or contract\n"
-    "- a SaaS or subscription agreement\n"
-    "- a software or other licensing agreement\n"
-    "- a reseller or distribution agreement\n"
-    "- a supply or purchase agreement\n"
-    "- a loan or investment agreement\n"
-    "- an invoice, purchase order, or pricing sheet\n"
-    "- a project proposal or statement\n"
-    "- any commercial contract whose main body is about performing work, supplying "
-    "goods or services, granting rights, or paying money, and only has confidentiality "
-    "language as one supporting clause among many\n"
-    "\n"
-    "A regulatory or sector angle (for example HMRC, AML, tax, or professional-services "
-    "obligations) is a strong sign the document is a commercial services contract, not "
-    "a plain NDA.\n"
-    "\n"
-    "When you're not sure (label UNCERTAIN)\n"
-    "\n"
-    "Use UNCERTAIN when the attachment text is missing or cut off so you cannot apply "
-    "the main test, or when the document is a genuine even split -- confidentiality "
-    "and some other purpose carry roughly equal weight.\n"
-    "\n"
-    "Whenever you cannot clearly tell which purpose dominates, choose UNCERTAIN rather "
-    "than a confident NDA or NOT_NDA. Anything marked UNCERTAIN goes to a human lawyer "
-    "for review, so it is the safe choice for genuine ambiguity.\n"
-    "\n"
-    "Example\n"
-    "\n"
-    "A document titled \"NDA\" or \"NDA for review\" that, once you read it, actually "
-    "sets out R&D or consultancy services to be performed, deliverables or work "
-    "product, fees, and sector or regulatory obligations (for example HMRC AML), with "
-    "confidentiality as just one of its clauses, is NOT_NDA. The title says NDA, but "
-    "what it really does is a services / R&D agreement."
+# The NDA-intake criteria block is now edited by the admin as THREE structured
+# pieces -- a one-sentence rule, a "counts as an NDA" list, and a "doesn't count"
+# list -- and assembled into the criteria-block text by ``assemble_intake_criteria``.
+# These module constants are the built-in defaults, faithful to the prior prose so no
+# classification signal is dropped; ``DEFAULT_INTAKE_PLAYBOOK`` is redefined below as
+# the assembled default and remains the single source of truth for the criteria block.
+DEFAULT_INTAKE_RULE = (
+    "Judge the document by what it actually does, not by its title, filename, or the email subject. "
+    "An NDA's only real job is to protect confidential information. Use a simple strip-out check: imagine "
+    "removing every confidentiality clause -- if a real commercial deal is still left behind (services, "
+    "deliverables, a licence, goods, employment, or payment), then it is NOT an NDA, and the confidentiality "
+    "wording was just boilerplate inside a bigger deal. A regulatory or sector angle (for example tax, AML, "
+    "or professional-services obligations) is a strong sign it is a commercial contract, not a plain NDA."
+)
+DEFAULT_INTAKE_COUNTS = [
+    "a mutual or one-way NDA or MNDA",
+    "a confidential disclosure agreement (CDA)",
+    "a confidentiality agreement, deed, undertaking, or letter",
+    "a data processing agreement (DPA) whose substance is confidentiality obligations",
+]
+DEFAULT_INTAKE_EXCLUDES = [
+    "a consultancy or consulting agreement",
+    "a services or professional-services agreement",
+    "a master services agreement (MSA)",
+    "a statement of work (SOW)",
+    "a research-and-development (R&D) agreement",
+    "a collaboration or joint-development agreement",
+    "an offer or employment letter or contract",
+    "a SaaS or subscription agreement",
+    "a software or other licensing agreement",
+    "a reseller or distribution agreement",
+    "a supply or purchase agreement",
+    "a loan or investment agreement",
+    "an invoice, purchase order, or pricing sheet",
+    "a project proposal or statement",
+    "any commercial contract whose main body is about performing work, supplying goods or services, granting rights, or paying money, with confidentiality as just one supporting clause",
+]
+
+
+def assemble_intake_criteria(rule: str, counts: list[str], excludes: list[str]) -> str:
+    """Build the CRITERIA-block text from the structured rule + two lists.
+
+    The block is: the one-sentence rule, then a "counts as an NDA" section with the
+    ``counts`` bullets, then a "doesn't count" section with the ``excludes`` bullets,
+    then the fixed UNCERTAIN fallback line. A list is skipped entirely when empty (the
+    default lists are non-empty). The assembled result is length-clamped to
+    ``MAX_INTAKE_PLAYBOOK_CHARS`` so a huge structured paste can't blow the prompt.
+    """
+    parts: list[str] = [str(rule or "").strip()]
+
+    clean_counts = [str(item).strip() for item in (counts or []) if str(item).strip()]
+    if clean_counts:
+        count_lines = "\n".join(f"- {item}" for item in clean_counts)
+        parts.append(
+            "Count it as an NDA (label NDA) when the document is essentially only about "
+            "protecting confidential information -- definitions of what is confidential, "
+            "how it may be used, and duties to return or destroy it, with essentially no "
+            "other real commercial obligation. Typical examples:\n" + count_lines
+        )
+
+    clean_excludes = [str(item).strip() for item in (excludes or []) if str(item).strip()]
+    if clean_excludes:
+        exclude_lines = "\n".join(f"- {item}" for item in clean_excludes)
+        parts.append(
+            "Don't count it (label NOT_NDA) when the document's main purpose is something "
+            "other than confidentiality, even if it contains a confidentiality clause and "
+            "even if it is titled, filed, or emailed as an \"NDA\". Typical examples:\n"
+            + exclude_lines
+        )
+
+    parts.append(
+        "When the attachment text is missing or cut off so you cannot apply the test, or "
+        "the document is a genuine even split between confidentiality and another "
+        "purpose, label UNCERTAIN."
+    )
+
+    # Drop any empty leading rule so the block never opens with a blank line.
+    assembled = "\n\n".join(part for part in parts if part)
+    return assembled[:MAX_INTAKE_PLAYBOOK_CHARS]
+
+
+# DEFAULT_INTAKE_PLAYBOOK is the assembled built-in criteria block. It stays the
+# single source of truth (existing tests reference the name) and is used whenever the
+# admin has not configured the structured fields.
+DEFAULT_INTAKE_PLAYBOOK = assemble_intake_criteria(
+    DEFAULT_INTAKE_RULE, DEFAULT_INTAKE_COUNTS, DEFAULT_INTAKE_EXCLUDES
 )
 
 # The <EMAIL_DATA> USER template with the neutralized fields substituted in.
@@ -324,13 +326,18 @@ def resolve_intake_lane(
 
 
 def gmail_intake_playbook() -> str:
-    """The effective NDA-intake criteria block (settings value or built-in default)."""
-    configured = ""
+    """The effective NDA-intake criteria block (settings value or built-in default).
+
+    Delegates to :func:`app_settings.gmail_intake_playbook`, which applies the
+    precedence (legacy freeform ``intake_playbook`` override, else assemble from the
+    structured ``intake_rule`` / ``intake_counts`` / ``intake_excludes`` fields, each
+    falling back to its default). Falls back to the built-in default on a settings
+    error so a corrupt store never breaks intake.
+    """
     try:
-        configured = str(app_settings.gmail_settings().get("intake_playbook") or "").strip()
+        return app_settings.gmail_intake_playbook()
     except app_settings.AppSettingsError:
-        configured = ""
-    return configured or DEFAULT_INTAKE_PLAYBOOK
+        return DEFAULT_INTAKE_PLAYBOOK
 
 
 def _configured_api_key() -> str:

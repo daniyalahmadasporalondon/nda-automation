@@ -367,8 +367,17 @@ def gmail_status(owner_user_id: str = "") -> dict[str, Any]:
         "disconnect_url": "/api/gmail/disconnect" if owner_user_id else "",
         "settings": settings,
         # The built-in NDA-intake criteria, surfaced so the admin textarea can show
-        # it as a placeholder when the editable setting is left empty.
+        # it as a placeholder when the editable setting is left empty. Kept for
+        # backward compat alongside the structured fields below.
         "intake_playbook_default": gmail_intake_classifier.DEFAULT_INTAKE_PLAYBOOK,
+        # Structured NDA-intake criteria: the CURRENT stored values (may be ""/[])
+        # plus the DEFAULTS (so the frontend can seed the rule/counts/excludes panels).
+        "intake_rule": settings.get("intake_rule", ""),
+        "intake_counts": list(settings.get("intake_counts", []) or []),
+        "intake_excludes": list(settings.get("intake_excludes", []) or []),
+        "intake_rule_default": gmail_intake_classifier.DEFAULT_INTAKE_RULE,
+        "intake_counts_default": list(gmail_intake_classifier.DEFAULT_INTAKE_COUNTS),
+        "intake_excludes_default": list(gmail_intake_classifier.DEFAULT_INTAKE_EXCLUDES),
         # The effective inbound sync window (days) + its default/bounds, surfaced so
         # the admin "Sync window" field can show the current value and validate input.
         # The effective value is re-derived (never trusts a corrupt stored value).

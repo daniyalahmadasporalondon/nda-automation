@@ -8105,6 +8105,86 @@ class ServerTests(unittest.TestCase):
                         "custom criteria",
                     )
 
+    def test_structured_intake_fields_round_trip_and_clamp(self):
+        # The three structured NDA-intake settings mirror the inbound_search_terms
+        # cleaning shape: rule clamps to 800; each list caps at 40 items / 120 chars,
+        # de-dupes, drops blanks.
+        empty = app_settings.gmail_settings_from_payload({})
+        self.assertEqual(empty["intake_rule"], "")
+        self.assertEqual(empty["intake_counts"], [])
+        self.assertEqual(empty["intake_excludes"], [])
+
+        # Rule clamps at 800 chars.
+        clamped = app_settings.gmail_settings_from_payload({"intake_rule": "r" * 1000})
+        self.assertEqual(len(clamped["intake_rule"]), 800)
+
+        # Too-many items truncated to 40; over-long item clamped to 120; blanks/dupes
+        # dropped.
+        payload = {
+            "intake_counts": [f"item {n}" for n in range(60)],
+            "intake_excludes": ["z" * 200, "dup", "dup", "  ", ""],
+        }
+        cleaned = app_settings.gmail_settings_from_payload(payload)
+        self.assertEqual(len(cleaned["intake_counts"]), 40)
+        self.assertEqual(cleaned["intake_excludes"], ["z" * 120, "dup"])
+
+    def test_all_empty_structured_config_equals_default_playbook(self):
+        # An all-empty structured config yields byte-identical criteria to the built-in
+        # DEFAULT_INTAKE_PLAYBOOK (so test_empty_playbook_uses_default still holds).
+        from nda_automation import gmail_intake_classifier
+
+        all_empty = {
+            "intake_playbook": "",
+            "intake_rule": "",
+            "intake_counts": [],
+            "intake_excludes": [],
+        }
+        with patch.object(app_settings, "gmail_settings", return_value=all_empty):
+            self.assertEqual(
+                app_settings.gmail_intake_playbook(),
+                gmail_intake_classifier.DEFAULT_INTAKE_PLAYBOOK,
+            )
+            # The classifier delegates to app_settings, so it matches too.
+            self.assertEqual(
+                gmail_intake_classifier.gmail_intake_playbook(),
+                gmail_intake_classifier.DEFAULT_INTAKE_PLAYBOOK,
+            )
+
+    def test_legacy_freeform_override_wins_over_structured(self):
+        # Precedence rule 1: a non-empty legacy intake_playbook wins verbatim even when
+        # structured fields are set.
+        settings = {
+            "intake_playbook": "  legacy override wins  ",
+            "intake_rule": "structured rule",
+            "intake_counts": ["a count"],
+            "intake_excludes": ["an exclude"],
+        }
+        with patch.object(app_settings, "gmail_settings", return_value=settings):
+            self.assertEqual(app_settings.gmail_intake_playbook(), "legacy override wins")
+
+    def test_stored_structured_values_override_defaults_in_effective_criteria(self):
+        # Precedence rule 2: with no legacy override, stored structured values appear in
+        # the assembled criteria and flow through _system_prompt.
+        from nda_automation import gmail_intake_classifier
+
+        settings = {
+            "intake_playbook": "",
+            "intake_rule": "Only a signed confidentiality deed counts.",
+            "intake_counts": ["a confidentiality deed"],
+            "intake_excludes": ["a supply contract"],
+        }
+        with patch.object(app_settings, "gmail_settings", return_value=settings):
+            effective = app_settings.gmail_intake_playbook()
+        self.assertIn("Only a signed confidentiality deed counts.", effective)
+        self.assertIn("- a confidentiality deed", effective)
+        self.assertIn("- a supply contract", effective)
+        # Default excludes are NOT present (structured values replaced the defaults).
+        self.assertNotIn("a master services agreement (MSA)", effective)
+        # It flows through the effective-criteria path into the system prompt.
+        system_message = gmail_intake_classifier._system_prompt(effective)
+        self.assertIn("- a confidentiality deed", system_message)
+        self.assertIn(gmail_intake_classifier.INTAKE_SYSTEM_PREAMBLE, system_message)
+
     def test_gmail_settings_patch_accepts_and_rejects_intake_playbook(self):
         # D18 -- PATCH /api/gmail/settings with valid intake_playbook -> persisted;
         # non-str / over-8000 -> 400; unchanged keys untouched.
@@ -8129,6 +8209,57 @@ class ServerTests(unittest.TestCase):
                 # Non-string is rejected.
                 non_str = self._patch_gmail_settings({"intake_playbook": 123})
                 self.assertEqual(non_str.status, 400)
+
+    def test_gmail_settings_patch_persists_structured_intake_fields(self):
+        # Regression for the route-handler gap: the three structured NDA-intake fields
+        # must be read by handle_gmail_settings_update itself (not just
+        # gmail_settings_from_payload), so a Save from the new UI persists instead of
+        # 400ing. Drives the real route handler + round-trips via gmail_status.
+        from nda_automation import gmail_intake_classifier
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.matter_store_patches(data_dir)
+            with patches[0], patches[1], patches[2]:
+                # Full structured save (lists posted as JSON arrays) -> 200 + persists.
+                ok = self._patch_gmail_settings({
+                    "intake_rule": "Only a signed confidentiality deed counts.",
+                    "intake_counts": ["a mutual NDA"],
+                    "intake_excludes": ["a services agreement"],
+                })
+                self.assertEqual(ok.status, 200)
+                body = json.loads(ok.read().decode("utf-8"))
+                gsettings = body["gmail_settings"]
+                self.assertEqual(gsettings["intake_rule"], "Only a signed confidentiality deed counts.")
+                self.assertEqual(gsettings["intake_counts"], ["a mutual NDA"])
+                self.assertEqual(gsettings["intake_excludes"], ["a services agreement"])
+
+                # The 6 status fields round-trip: current stored + defaults.
+                status = body["gmail"]
+                self.assertEqual(status["intake_rule"], "Only a signed confidentiality deed counts.")
+                self.assertEqual(status["intake_counts"], ["a mutual NDA"])
+                self.assertEqual(status["intake_excludes"], ["a services agreement"])
+                self.assertEqual(
+                    status["intake_rule_default"],
+                    gmail_intake_classifier.DEFAULT_INTAKE_RULE,
+                )
+                self.assertEqual(
+                    status["intake_counts_default"],
+                    list(gmail_intake_classifier.DEFAULT_INTAKE_COUNTS),
+                )
+                self.assertEqual(
+                    status["intake_excludes_default"],
+                    list(gmail_intake_classifier.DEFAULT_INTAKE_EXCLUDES),
+                )
+
+                # A partial update (only the rule) works and leaves the lists intact.
+                partial = self._patch_gmail_settings({"intake_rule": "A newer rule."})
+                self.assertEqual(partial.status, 200)
+                self.assertEqual(app_settings.gmail_settings()["intake_rule"], "A newer rule.")
+                self.assertEqual(app_settings.gmail_settings()["intake_counts"], ["a mutual NDA"])
+
+                # A non-list list-field is rejected with a 400.
+                bad = self._patch_gmail_settings({"intake_counts": 123})
+                self.assertEqual(bad.status, 400)
 
     def test_gmail_settings_patch_accepts_and_rejects_inbound_window_days(self):
         # POST /api/gmail/settings with a valid in-band window persists, drives the

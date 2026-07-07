@@ -118,6 +118,16 @@ DEFAULT_GMAIL_INBOUND_SEARCH_TERMS = [
 # overrides only the NDA/NOT_NDA/UNCERTAIN criteria, never the fixed security
 # preamble or output contract.
 MAX_GMAIL_INTAKE_PLAYBOOK_LENGTH = 8000
+# The NDA-intake criteria are now edited as THREE STRUCTURED pieces the admin owns as
+# panels: a one-sentence ``intake_rule`` plus two lists (``intake_counts`` = "counts as
+# an NDA", ``intake_excludes`` = "doesn't count"). These are clamped at the settings
+# layer so a huge paste can't blow the classifier prompt. The legacy freeform
+# ``intake_playbook`` string is kept as a deprecated raw-override escape hatch (see
+# ``gmail_intake_playbook``). All three empty => the structured defaults => byte-
+# identical criteria to the built-in DEFAULT_INTAKE_PLAYBOOK.
+MAX_GMAIL_INTAKE_RULE_LENGTH = 800
+MAX_GMAIL_INTAKE_LIST_ITEMS = 40
+MAX_GMAIL_INTAKE_LIST_ITEM_LENGTH = 120
 # Upper clamp on the admin-configurable per-poll import limit. This deliberately
 # mirrors gmail_integration._MAX_GMAIL_IMPORT_LIMIT_CLAMP: the quota audit chose 40
 # to keep even the heaviest poll inside Gmail's ~6,000 units/minute budget, so the
@@ -190,7 +200,14 @@ DEFAULT_GMAIL_SETTINGS = {
     # notifications, calendar invites). Editable; [] means "no settings-level
     # excludes" (the hard DocuSign floor in gmail_integration still applies).
     "inbound_excluded_senders": DEFAULT_GMAIL_INBOUND_EXCLUDED_SENDERS,
+    # Legacy freeform criteria override (deprecated escape hatch). Empty => use the
+    # structured fields below.
     "intake_playbook": "",
+    # Structured NDA-intake criteria (admin-edited as panels). All empty => the
+    # built-in structured defaults => the same criteria as DEFAULT_INTAKE_PLAYBOOK.
+    "intake_rule": "",
+    "intake_counts": [],
+    "intake_excludes": [],
     "last_sync_at": "",
     "last_sync_imported_count": 0,
     "last_sync_skipped_count": 0,
@@ -616,16 +633,31 @@ def gmail_inbound_search_terms() -> list[str]:
 
 
 def gmail_intake_playbook() -> str:
-    """The effective NDA-intake criteria block.
+    """The effective NDA-intake criteria block fed to the classifier.
 
-    Returns the stored ``intake_playbook`` setting, or the built-in
-    ``gmail_intake_classifier.DEFAULT_INTAKE_PLAYBOOK`` when the setting is empty
-    (the empty-string sentinel means "use the default"). Imported lazily so the
-    settings layer stays free of the classifier/transport dependency graph.
+    Precedence (imported lazily so the settings layer stays free of the
+    classifier/transport dependency graph):
+
+    1. If the legacy freeform ``intake_playbook`` string is set (non-empty after
+       strip), return it verbatim -- the deprecated raw-override escape hatch that
+       preserves any pre-existing behaviour.
+    2. Otherwise assemble from the structured ``intake_rule`` / ``intake_counts`` /
+       ``intake_excludes`` fields, each falling back to its built-in default when
+       empty. So an all-empty structured config yields byte-identical criteria to
+       ``gmail_intake_classifier.DEFAULT_INTAKE_PLAYBOOK``.
     """
-    from .gmail_intake_classifier import DEFAULT_INTAKE_PLAYBOOK
+    from . import gmail_intake_classifier
 
-    return gmail_settings().get("intake_playbook") or DEFAULT_INTAKE_PLAYBOOK
+    settings = gmail_settings()
+
+    legacy = str(settings.get("intake_playbook") or "").strip()
+    if legacy:
+        return legacy
+
+    rule = str(settings.get("intake_rule") or "").strip() or gmail_intake_classifier.DEFAULT_INTAKE_RULE
+    counts = settings.get("intake_counts") or gmail_intake_classifier.DEFAULT_INTAKE_COUNTS
+    excludes = settings.get("intake_excludes") or gmail_intake_classifier.DEFAULT_INTAKE_EXCLUDES
+    return gmail_intake_classifier.assemble_intake_criteria(rule, list(counts), list(excludes))
 
 
 def gmail_sync_interval_seconds(frequency: object | None = None) -> int:
@@ -873,6 +905,12 @@ def gmail_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
             payload.get("inbound_excluded_senders")
         ),
         "intake_playbook": _clamp_intake_playbook(payload.get("intake_playbook")),
+        # Structured NDA-intake criteria. Each empty is preserved (falls back to its
+        # default at effective-read time); clamped here so a huge paste can't blow the
+        # classifier prompt.
+        "intake_rule": _clamp_intake_rule(payload.get("intake_rule")),
+        "intake_counts": intake_criteria_list_from_payload(payload.get("intake_counts")),
+        "intake_excludes": intake_criteria_list_from_payload(payload.get("intake_excludes")),
         "last_sync_at": str(payload.get("last_sync_at") or DEFAULT_GMAIL_SETTINGS["last_sync_at"]),
         "last_sync_imported_count": _nonnegative_int(
             payload.get("last_sync_imported_count"),
@@ -1109,6 +1147,14 @@ def _valid_gmail_setting(key: str, value: Any) -> bool:
     if key == "intake_playbook":
         # Accept empty (reset-to-default) up to the clamp length.
         return isinstance(value, str) and len(value) <= MAX_GMAIL_INTAKE_PLAYBOOK_LENGTH
+    if key == "intake_rule":
+        # Structured one-sentence rule; empty resets to default. Clamped on write; the
+        # normalizer re-clamps, so accept any string here.
+        return isinstance(value, str)
+    if key in ("intake_counts", "intake_excludes"):
+        # A list (possibly empty -- reset to default) or a comma/newline separated
+        # string. Per-item clamping/de-dupe/cap lives in the normalizer.
+        return isinstance(value, (list, str))
     return False
 
 
@@ -1121,6 +1167,50 @@ def _clamp_intake_playbook(value: object) -> str:
     """
     text = str(value or "").strip()
     return text[:MAX_GMAIL_INTAKE_PLAYBOOK_LENGTH]
+
+
+def _clamp_intake_rule(value: object) -> str:
+    """Coerce + clamp the one-sentence NDA-intake rule.
+
+    Trusted admin config (not email content): coerced to a stripped string and clamped
+    to ``MAX_GMAIL_INTAKE_RULE_LENGTH``. Empty stays empty (falls back to the default).
+    """
+    text = str(value or "").strip()
+    return text[:MAX_GMAIL_INTAKE_RULE_LENGTH]
+
+
+def intake_criteria_list_from_payload(value: object) -> list[str]:
+    """Clean a structured NDA-intake list (``intake_counts`` / ``intake_excludes``).
+
+    Same cleaning shape as the inbound search terms: accepts a list or a comma/newline
+    separated string, drops blanks, clamps each item to
+    ``MAX_GMAIL_INTAKE_LIST_ITEM_LENGTH``, de-dupes (case-insensitive), and caps the
+    list at ``MAX_GMAIL_INTAKE_LIST_ITEMS``. Trusted admin config -- clamped only,
+    never neutralized. A corrupt stored shape (dict/int/...) => empty list.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_items: list[object] = list(value.replace("\n", ",").split(","))
+    elif isinstance(value, list):
+        raw_items = list(value)
+    else:
+        return []
+
+    items: list[str] = []
+    seen: set[str] = set()
+    for raw_item in raw_items:
+        item = " ".join(str(raw_item or "").split())[:MAX_GMAIL_INTAKE_LIST_ITEM_LENGTH].strip()
+        if not item:
+            continue
+        key = item.casefold()
+        if key in seen:
+            continue
+        items.append(item)
+        seen.add(key)
+        if len(items) >= MAX_GMAIL_INTAKE_LIST_ITEMS:
+            break
+    return items
 
 
 def _valid_drive_setting(key: str, value: Any) -> bool:
