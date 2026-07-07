@@ -5259,100 +5259,6 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(disconnect_payload["gmail"]["inbound"]["recovery"]["state"], "missing_token")
         self.assertEqual(disconnect_payload["gmail"]["outbound"]["token"]["source"], "user_data")
 
-    def test_gmail_settings_updates_inbound_search_terms(self):
-        with tempfile.TemporaryDirectory() as data_dir:
-            patches = self.matter_store_patches(data_dir)
-            with patches[0], patches[1], patches[2]:
-                status, payload = self.request(
-                    "POST",
-                    "/api/gmail/settings",
-                    {
-                        "inbound_search_terms": [
-                            "NDA",
-                            "mutual NDA",
-                            "confidentiality deed",
-                            "data processing agreement",
-                        ],
-                    },
-                )
-
-        self.assertEqual(status, 200)
-        self.assertEqual(payload["gmail_settings"]["inbound_search_terms"], [
-            "NDA",
-            "mutual NDA",
-            "confidentiality deed",
-            "data processing agreement",
-        ])
-        # Search terms are now the deterministic scoring/ranking vocabulary, NOT
-        # a fetch gate. Updating them must NOT change the structural fetch query
-        # (it stays the keyword-free envelope); the new vocabulary surfaces in
-        # parsing.terms instead.
-        query = payload["gmail"]["inbound"]["query"]
-        self.assertEqual(query, gmail_integration.DEFAULT_INBOUND_QUERY)
-        self.assertNotIn("mutual NDA", query)
-        self.assertNotIn("confidentiality deed", query)
-        self.assertEqual(payload["gmail"]["inbound"]["parsing"]["terms"], [
-            "NDA",
-            "mutual NDA",
-            "confidentiality deed",
-            "data processing agreement",
-        ])
-
-    def test_gmail_settings_rejects_empty_inbound_search_terms(self):
-        with tempfile.TemporaryDirectory() as data_dir:
-            patches = self.matter_store_patches(data_dir)
-            with patches[0], patches[1], patches[2]:
-                # Seed a non-default baseline so we can prove the rejected empty
-                # submission does NOT silently revert to the built-in defaults.
-                self.request(
-                    "POST",
-                    "/api/gmail/settings",
-                    {"inbound_search_terms": ["custom term"]},
-                )
-                status, payload = self.request(
-                    "POST",
-                    "/api/gmail/settings",
-                    {"inbound_search_terms": ["", "  "]},
-                )
-                settings_after = app_settings.gmail_settings()
-
-        self.assertEqual(status, 400)
-        # Honest, consistent message; the save did NOT take and was NOT silently
-        # defaulted -- the previously-saved custom term is still in force.
-        self.assertEqual(payload["error"], "Add at least one Gmail search term — it can't be empty.")
-        self.assertEqual(settings_after["inbound_search_terms"], ["custom term"])
-        self.assertNotEqual(
-            settings_after["inbound_search_terms"],
-            list(app_settings.DEFAULT_GMAIL_INBOUND_SEARCH_TERMS),
-        )
-
-    def test_gmail_settings_helper_does_not_silently_default_empty_terms(self):
-        # The backend write helper must be HONEST + consistent with the route: an
-        # empty list submitted directly to update_gmail_settings must NOT revive
-        # the defaults; the empty value is dropped and the prior value preserved.
-        with tempfile.TemporaryDirectory() as data_dir:
-            patches = self.matter_store_patches(data_dir)
-            with patches[0], patches[1], patches[2]:
-                app_settings.update_gmail_settings({"inbound_search_terms": ["seed term"]})
-                app_settings.update_gmail_settings({"inbound_search_terms": []})
-                settings_after = app_settings.gmail_settings()
-
-        self.assertEqual(settings_after["inbound_search_terms"], ["seed term"])
-
-    def test_gmail_settings_saves_valid_inbound_search_terms(self):
-        with tempfile.TemporaryDirectory() as data_dir:
-            patches = self.matter_store_patches(data_dir)
-            with patches[0], patches[1], patches[2]:
-                status, payload = self.request(
-                    "POST",
-                    "/api/gmail/settings",
-                    {"inbound_search_terms": ["alpha", "beta"]},
-                )
-
-        self.assertEqual(status, 200)
-        self.assertEqual(payload["gmail_settings"]["inbound_search_terms"], ["alpha", "beta"])
-        self.assertNotIn("warning", payload)
-
     def test_gmail_status_uses_local_data_tokens_when_env_paths_are_missing(self):
         class FakeExecutable:
             def __init__(self, payload):
@@ -8106,8 +8012,8 @@ class ServerTests(unittest.TestCase):
                     )
 
     def test_structured_intake_fields_round_trip_and_clamp(self):
-        # The three structured NDA-intake settings mirror the inbound_search_terms
-        # cleaning shape: rule clamps to 800; each list caps at 40 items / 120 chars,
+        # The three structured NDA-intake settings are cleaned on write: the rule
+        # clamps to 800 chars; each list caps at 40 items / 120 chars per item,
         # de-dupes, drops blanks.
         empty = app_settings.gmail_settings_from_payload({})
         self.assertEqual(empty["intake_rule"], "")
@@ -9297,7 +9203,7 @@ class ServerTests(unittest.TestCase):
 
     def test_gmail_settings_partial_update_preserves_other_settings(self):
         # A partial update must touch ONLY the supplied keys and leave the rest
-        # (sync_frequency, inbound_enabled, import_limit, search terms) intact.
+        # (sync_frequency, inbound_enabled, import_limit, excluded senders) intact.
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.matter_store_patches(data_dir)
             with patches[0], patches[1], patches[2]:
@@ -9309,7 +9215,7 @@ class ServerTests(unittest.TestCase):
                         "sync_frequency": "30_minutes",
                         "inbound_enabled": False,
                         "import_limit": 15,
-                        "inbound_search_terms": ["custom term"],
+                        "inbound_excluded_senders": ["example.com"],
                     },
                 )
                 # Now flip ONLY the master gate.
@@ -9326,7 +9232,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(settings["sync_frequency"], "30_minutes")
         self.assertEqual(settings["inbound_enabled"], False)
         self.assertEqual(settings["import_limit"], 15)
-        self.assertEqual(settings["inbound_search_terms"], ["custom term"])
+        self.assertEqual(settings["inbound_excluded_senders"], ["example.com"])
 
     def test_gmail_import_limit_helper_setting_wins_over_env(self):
         # The stored setting is the source of truth; the env is only the fallback.
