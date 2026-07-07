@@ -1,7 +1,7 @@
 {
   "app.js": {
-    "sha256": "29062d4962fbf75f7e39c3a63ad31bb3a8999bd259ab59bfe0959ea8db99da40",
-    "v": "20260707intake2"
+    "sha256": "ccd00582f1ac8027186a5116d82ade72a3c2c845963d6dde05eb915bada456b0",
+    "v": "20260708noinbox"
   },
   "css/corpus.css": {
     "sha256": "b352644bdd179bc240ade82a32c8ba9ef6062adbe80cf7359e321492aca40a61",
@@ -40,8 +40,8 @@
     "v": "20260621humanize1"
   },
   "js/admin-integrations.js": {
-    "sha256": "b9e376970a7957a805b6acf7d84fa9c07330bb365f965abef02822f26af08ade",
-    "v": "20260707intake2"
+    "sha256": "aafacc16f4ffb011e8e95c38e9c830d6ba07b99a8f043e01a6c2223d6f74d407",
+    "v": "20260708noinbox"
   },
   "js/admin-models.js": {
     "sha256": "5d9c5ddfee3cb7ab6872e4fa73c9e19a7ef01ab3d673681a06b6755a4d0f7745",

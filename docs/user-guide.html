@@ -1159,11 +1159,8 @@
       <h4>Import limit per poll</h4>
       <p>You can cap how many <em>new</em> NDAs the app pulls in during a single check (default is sensible; the maximum is 40). This is a gentle "catch-up" control: if a big backlog builds up, the app drains it a batch at a time across several checks instead of grabbing everything at once.</p>
 
-      <h4>Inbound search terms</h4>
-      <p>An editable list of words the app shows as hints for deciding whether an email is an NDA (e.g. "NDA," "non-disclosure agreement," "confidentiality agreement"). Most people never need to touch this.</p>
-      <div class="callout warn">
-        <strong>Heads-up:</strong> today this field is <strong>informational</strong> — detection uses a fixed, built-in vocabulary, so your saved words are stored and shown back but don't change which emails are detected as NDAs. An optional, off-by-default setting that lets your custom terms influence detection is being added. See the Admin tab for the full explanation.
-      </div>
+      <h4>NDA signal terms</h4>
+      <p>The Gmail card shows, read-only, the built-in vocabulary of NDA-related words the app uses when deciding whether an email is an NDA (e.g. "NDA," "non-disclosure agreement," "confidentiality agreement"). This list is fixed and baked into the app — there's nothing to edit here; it's shown so you can see what the app looks for.</p>
 
       <h4>Sync history</h4>
       <p>The Gmail card also shows a short history of recent checks: when the app last looked, how many NDAs it imported, and how many it skipped. A quick way to confirm the inbox connection is alive and working.</p>
@@ -1251,7 +1248,7 @@
           <tr><td>Playbook</td><td>The rulebook. Clause rules and approved language. Also holds the Signing Entities registry and the Entities &amp; Courts table (governing law + court per entity).</td></tr>
           <tr><td>AI Runtime</td><td>Turn AI review on/off, paste the AI key, see the provider and model.</td></tr>
           <tr><td>Health</td><td>Read-only monitoring of AI review.</td></tr>
-          <tr><td>Gmail</td><td>Connect mailboxes, pause/resume sync, and set the sync window, frequency, search terms, and intake criteria.</td></tr>
+          <tr><td>Gmail</td><td>Connect mailboxes, pause/resume sync, and set the sync window, frequency, and intake criteria.</td></tr>
           <tr><td>Personalisation</td><td>Your email/document sign-off and signature.</td></tr>
           <tr><td>Drive</td><td>Google Drive upload connection and auto-filing.</td></tr>
           <tr><td>DocuSign</td><td>E-signature connection.</td></tr>
@@ -1273,7 +1270,7 @@
         <li><strong>Gmail — sync frequency</strong> — Always on (every 1 min), 10 min, 30 min, 1 hour, or 2 hours.</li>
         <li><strong>Gmail — import limit (per-poll cap)</strong> — how many new messages a single scan processes. Set 1–40; the app caps at 40.</li>
         <li><strong>Gmail — inbound window (days)</strong> — how far back the inbox scan looks. Default 90 days; settable from 1 to about 3,650 days (~10 years). <em>This is editable</em> (it was previously a fixed 90).</li>
-        <li><strong>Gmail — inbound search terms</strong> — a list of NDA-related words. <strong>Read the caveat below</strong> — today these are informational; detection uses a fixed, built-in vocabulary.</li>
+        <li><strong>Gmail — NDA signal terms</strong> — a read-only list of the NDA-related words the app looks for. This is a fixed, built-in vocabulary; there's nothing to edit.</li>
         <li><strong>Gmail — NDA intake criteria</strong> — free-text guidance fed to the AI that classifies whether an inbound email is an NDA. Leave empty for the built-in default. It changes <em>only</em> the NDA / NOT-NDA judging criteria, not the fixed security rules or output format. Max ~8,000 characters.</li>
         <li><strong>Personalisation — your signature</strong> — your sign-off, signature name, and full block. Every user sets their own; an admin can set the shared default.</li>
         <li><strong>Drive — connection and auto-filing</strong> — connect Google Drive, choose a folder, toggle auto-filing of new matters.</li>
@@ -1281,9 +1278,6 @@
       </ul>
 
       <h3>Important caveats / known limits</h3>
-      <div class="callout warn">
-        <strong>"Inbound search terms" are informational today.</strong> The field saves your words and shows them back, <strong>but right now detection uses a fixed, built-in vocabulary — your saved terms don't change which inbound emails get detected and imported as NDAs.</strong> In plain terms: the inbox scan fetches a structural envelope (every Word/PDF attachment in the window that you didn't send) — the keyword list isn't part of that fetch. After fetching, the system scores each attachment for "NDA-ness" using that fixed, built-in vocabulary baked into the code, not the words you typed. So your saved terms are stored and displayed as a hint, but no detection decision reads them yet. Editing the field is safe — it just won't change behaviour. (An optional, off-by-default setting that lets your custom terms influence detection is being added; until you turn it on, the built-in vocabulary is what decides.)
-      </div>
       <div class="callout warn">
         <strong>Some settings can be "pinned" by the deployment.</strong> A few controls can be overridden by the environment the app runs in; when that happens the UI says so and locks the control. For example: the <strong>AI Runtime engine</strong> can be pinned ("Runtime settings are pinned by the backend environment" — your save is ignored by design); the <strong>AI key source</strong> can be an environment key that clearing the in-app key won't remove; the <strong>Gmail import limit</strong> falls back to an environment default when no in-app value is set.
       </div>
@@ -1366,7 +1360,7 @@
       <div class="letter">F</div>
       <dl>
         <dt>Fail</dt><dd>Verdict meaning the clause clearly breaks a Playbook rule (a required clause is missing, a clause is present but wrong, or a forbidden clause is present). The app flags it and proposes a redline to fix it. Shown in red.</dd>
-        <dt>Flag (feature flag)</dt><dd>A switch, usually set in the environment, that turns a piece of behaviour on or off without changing the app's screens. Some behaviour (for example, the optional setting that lets your custom "inbound search terms" influence detection, or the AI verifier pass) depends on such a switch being enabled in the deployment — so a field can appear in the UI yet have no effect until the switch is on. The inbound-search-terms switch is off by default; today those terms are informational and detection uses a fixed, built-in vocabulary.</dd>
+        <dt>Flag (feature flag)</dt><dd>A switch, usually set in the environment, that turns a piece of behaviour on or off without changing the app's screens. Some behaviour (for example, the AI verifier pass) depends on such a switch being enabled in the deployment — so a field can appear in the UI yet have no effect until the switch is on.</dd>
       </dl>
 
       <div class="letter">G</div>
