@@ -1,118 +1,106 @@
-# nda-automation
+# NDA Review OS
 
-**An AI-first NDA review, redline, and generation workstation.**
+**An AI contract desk that reviews, redlines, generates, and e-signs NDAs — clause by clause, with a human in the loop.**
 
-aspora's contract desk imports NDAs from manual upload or Gmail, reviews them against a configurable playbook with grounded, fail-closed AI legal assessment, proposes Word tracked-change redlines, generates first-party NDAs from your own signing entities, and sends documents back to counterparties — all from one repository-first workspace.
+*(Product name: **NDA Review OS**. Repo slug: `nda-automation`. Built for [Aspora](https://aspora.com).)*
 
-> Python 3.9+ · stdlib `http.server` backend · vanilla-JS frontend · AI review on **Claude Opus 4.8 via OpenRouter** (`anthropic/claude-opus-4.8-fast`, the code default; overridable per `NDA_AI_MODEL`)
+An **NDA** (non-disclosure agreement) almost never gets signed exactly as drafted. A counterparty — the other company you're contracting with — sends one back **already redlined**: names filled in, terms changed, whole clauses inserted with Track Changes on. Someone then has to read all of it, decide what's acceptable against company policy, propose counter-edits, and get sign-off before it goes back.
+
+Done by hand, that loop is slow and inconsistent. Positions drift between reviewers. The evidence for a decision lives in someone's head. The "final" file is whichever attachment was emailed last. And a dropped or mis-anchored redline isn't caught until *after* it's been signed. **NDA Review OS** automates that loop without taking the human out of it.
+
+> **New here? Start with the docs, in this order:**
+> 1. **[`docs/OVERVIEW.md`](docs/OVERVIEW.md)** — a one-page tour (what, why, how it works, cost). Read this first.
+> 2. **[`docs/DETAILED.md`](docs/DETAILED.md)** — the full technical reference (architecture, data model, every component, config, operations, troubleshooting, rebuild-from-scratch).
+>
+> This README is the **front door**: it orients you and routes you to depth — it is deliberately *not* the exhaustive reference.
 
 ---
 
 ## Contents
 
 - [What it is](#what-it-is)
-- [The app at a glance](#the-app-at-a-glance)
-- [Key features](#key-features)
-- [How review works](#how-review-works)
-- [PDF extraction and memory](#pdf-extraction-and-memory)
+- [Why it exists](#why-it-exists)
+- [How it works](#how-it-works)
+- [Glossary](#glossary)
 - [Quick start](#quick-start)
-- [Configuration](#configuration)
-- [Gmail: one connection, both directions](#gmail-one-connection-both-directions)
-- [Gmail import throttle](#gmail-import-throttle)
+- [The five ideas that hold it together](#the-five-ideas-that-hold-it-together)
+- [How to change things](#how-to-change-things)
+- [Where to go next](#where-to-go-next)
+- [Configuration (the essentials)](#configuration-the-essentials)
 - [Deployment](#deployment)
-- [Security & data](#security--data)
 - [Testing](#testing)
 - [Project layout](#project-layout)
-- [Roadmap](#roadmap)
 
 ---
 
 ## What it is
 
-The app imports `.docx` Word files and text-based PDFs, stores them as **Repository matters**, and reviews each one against an editable **Playbook**. It returns pass / review / fail clause findings with paragraph-level evidence, AI assessment metadata, deterministic comparison data, proposed fixes, and exportable Word redlines. DOCX matters preserve their original source document so redlines export as **native Word tracked changes**.
+A single-page web app plus a small Python backend that runs the whole NDA loop:
 
-The primary flow is:
+- **Review** — an AI legal assessment of every clause against your editable **playbook** (your rulebook of acceptable clause positions), with quoted evidence and a pass / review / fail verdict per clause.
+- **Redline** — proposed tracked-change edits, exported as a native Word (`.docx`) document whose changes are proven complete before it ships.
+- **Generate** — draft a first-party NDA from your own signing entities and approved governing-law options (no model call — generation is deterministic).
+- **E-sign** — send the approved document to **DocuSign** for real signature.
 
+NDAs **arrive** two ways: a human uploads a `.docx`/PDF, or one is forwarded to a connected **Gmail** mailbox and imported automatically. Each becomes a **matter** — one NDA and everything the app knows about it (source document, review results, redline drafts, stage). Matters move through a fixed lifecycle: **In Review → Reviewed → Approved → Sent**.
+
+It covers **6 core clause families** — mutuality, confidential information, governing law, term & survival, non-circumvention, and signatures — across **5 governing-law options**: India, Delaware, England & Wales, DIFC, and Ontario/Canada.
+
+**Stack at a glance:** vanilla-JS single-page app (no build step) · Python stdlib HTTP server (no web framework) · JSON matter store on a persistent disk (no database) · AI review on **Claude Opus 4.8 via OpenRouter** · `python-docx` / PyMuPDF / pdf2docx for documents · DocuSign for e-sign · Gmail for inbound/outbound.
+
+## Why it exists
+
+The pain it removes, restated plainly:
+
+- **Almost no NDA is signed as drafted** — the counterparty sends it back already redlined, and every one has to be read and re-decided.
+- **Positions drift between reviewers** — the same clause gets a different answer depending on who looked at it.
+- **The "final" file is whichever attachment was emailed last** — nobody is sure which version is authoritative.
+- **A dropped redline isn't caught until after signing** — a change you meant to make silently doesn't make it into the executed document.
+
+NDA Review OS makes the playbook the single source of truth, keeps every verdict grounded in quoted text, gates export on a proof that no redline was dropped, and keeps a human approval step in the middle — so the loop is fast *and* auditable.
+
+## How it works
+
+```mermaid
+flowchart LR
+    U["Upload<br/>(.docx / PDF)"] --> B
+    G["Gmail inbound<br/>(forwarded NDA)"] --> A["AI intake:<br/>classify + pick attachment"]
+    A --> B["Matter created<br/>(In Review)"]
+    B --> C["AI clause review<br/>vs Playbook"]
+    C --> D["Adversarial verify<br/>(downgrade-only)"]
+    D --> E["Reviewer approves<br/>clause by clause"]
+    E --> F["Coverage-gated<br/>tracked-change DOCX"]
+    F --> H["DocuSign<br/>e-sign"]
+    P["Playbook<br/>(single source of truth)"] -. rules / thresholds .-> C
 ```
-intake (upload / Gmail / generate)  →  AI-first review  →  human confirmation  →  DOCX export / Gmail send
-```
 
-Reviews are generated at intake and refreshed when a stored review goes stale. There is no standalone "Review NDA" button — the workstation always operates on a real matter.
+1. **Arrive.** An NDA is uploaded, or forwarded to the connected Gmail mailbox. On the Gmail path an AI **intake** step classifies whether the mail is really an NDA and picks the right attachment.
+2. **Review.** The AI assesses each clause against the **playbook** and emits a verdict + quoted evidence + a proposed **redline** (a tracked-change edit).
+3. **Verify.** An independent adversarial pass re-checks flagged clauses. It can only **downgrade** a verdict, never inflate one — and a verdict not grounded in quoted document text is rejected.
+4. **Approve.** A human works the clause checklist and approves clause by clause. Nothing is exported or sent automatically.
+5. **Export & sign.** The reviewed document is exported as a tracked-change Word file that passes a **coverage gate** (proof that every word of the source plus the redlines is present), then handed to **DocuSign**.
 
-## The app at a glance
+For the exhaustive mechanism — grounding contract, PDF extraction, Gmail throttle/dedup internals, the coverage gate's edge cases — see [`docs/DETAILED.md`](docs/DETAILED.md).
 
-The product is a single-page app with seven tabs:
+## Glossary
 
-| Tab | What it's for |
-| --- | --- |
-| **Dashboard** | A command center: at-a-glance pipeline counts (Inbox / In Review / Reviewed / Sent), an AI-assisted search bar (deterministic chips → natural-language → counterparty grouping), and in-app toasts when a new inbound NDA arrives. |
-| **Generator** | Draft a first-party NDA from one of your signing entities + counterparty details, governing-law options, and a **Years / Months** term (converted and capped to the playbook maximum — 5 years / 60 months — with the clause worded "whichever is earlier"). Output is checked by an independent gen-verify gate before it can be saved. |
-| **Repository** | The matter board (Inbox / In Review / Reviewed / Sent / Generated) with stored source documents, redline drafts, and per-matter review views. |
-| **Review** | The reviewer workstation: clause checklist, contract-structure view, AI evidence and rationale, in-viewer tracked editing, per-clause reviewed toggles, DOCX export, and confirmed outbound send. |
-| **Playbook** | Edit review policy with schema validation, redline-template previews, allowed placeholders, generated governing-law options, version history, and restore. |
-| **Admin** | AI runtime + provider/key, Gmail connection + settings, Drive, deployment health, telemetry, and matter backup. |
-| **Guide** | Read-only methodology: how structure, reference resolution, concept classification, deterministic validation, and AI-first assessment fit together. |
+Load-bearing terms, in one place:
 
-## Key features
-
-**Intake & repository**
-- Import `.docx` and text-based PDFs via manual upload, the Repository, or Gmail.
-- Store matters with source documents, review state, redline drafts, and stage tracking; DOCX sources are preserved for native tracked-change export.
-
-**AI-first review**
-- Grounded, paragraph-level legal assessment with reason codes, citations, confidence, and review-state decisions.
-- An adversarial AI **verifier** second pass that catches polarity/negation mistakes before a verdict is finalized.
-- Deterministic review kept available for comparison, explicit fallback, audit metadata, and backend validation.
-- Contract-structure parsing, clause/section reference resolution, and legal-concept classification before evaluation.
-
-**Redlines & export**
-- Word review reports and source `.docx` redlines with tracked changes; free-form in-viewer edits export as tracked changes too.
-- Stale-review guards prevent exporting against changed source text.
-
-**Dashboard & search**
-- Pipeline stat cards computed from real matters, click-through to the board.
-- AI search bar in phases: deterministic filter chips, natural-language → validated filter spec, and counterparty grouping / document relationships. The AI only parses or summarizes — code runs every query over real data, so result lists are never fabricated.
-- In-app notifications when the Gmail scheduler imports a new inbound NDA.
-
-**NDA generation**
-- Generate NDAs from a registry of signing entities and approved governing-law jurisdictions, gated by an independent verifier so a generated document is checked against its own playbook before it ships.
-- The term is chosen in **years or months**, converted and capped to the playbook maximum (5 years / 60 months), and the term clause is worded "whichever is earlier" so it terminates at the fixed period *or* completion of the purpose. Review surfaces the same cap as a month-equivalence (e.g. "60 months") in the AI packet so a document that states its term in months is compared directly.
-
-**Gmail & Drive**
-- One Gmail connection serves both inbound import and outbound send (see below). Save reviewed documents to Google Drive.
-- Inbound intake filters e-signature-platform and calendar-invite senders (code-level and query-level), runs a deterministic **AI pre-gate** that only pays for the paid intake/selector calls when a candidate shows real signal (with fail-open exemptions for extraction-blind, foreign-language, and explicitly-announced NDAs), captures likely **executed NDAs** arriving as platform completion notifications, and quarantines failures by reason (transient vs deterministic-permanent retry limits). A newly connected account's first sync is backfill-capped (14 days, widening per poll).
-
-**Operations**
-- Editable playbook with versioned history, runtime AI controls, deployment status, non-sensitive telemetry (including a periodic stdout `telemetry_snapshot` and greppable failure lines), an auth-gated matter backup (admin `?owner=__all__` all-owners disaster-recovery dump), and an admin **bulk-archive** tool for auto-imported Gmail noise (dry-run by default, hash-confirmed, fail-closed exclusions).
-
-## How review works
-
-The active review path:
-
-1. **Playbook + document structure** define clause requirements, approved positions, source paragraphs, headings, sections, and references.
-2. **AI-first assessment** applies the playbook to the selected source paragraphs and produces the saved clause verdicts, issue types, rationale, citations, confidence, and proposed redlines. Output is held to a **grounding contract**: ungrounded fails are rejected and ungrounded pass/review verdicts are downgraded.
-3. **AI verifier** re-checks flagged clauses adversarially (e.g. "shall not be restricted from dealing" is freedom-preserving, not a prohibition) and can rewrite a decision before it is finalized.
-4. **Deterministic review + comparison** remain available for audit, generation/internal force-engine checks, reason-code comparison, and stale-review refresh guards.
-5. **Reviewer UI** presents the final clause cards, right-panel analysis, insertable redline options, comments, include/ignore choices, and per-clause reviewed toggles for human sign-off.
-
-The active review engine is **AI-first** and **fails closed**: if AI is unavailable, new review creation returns an error instead of silently substituting deterministic results. Admin can view the runtime from **Admin → AI** and deterministic review remains internal-only for explicit generation checks.
-
-## PDF extraction and memory
-
-PDF support requires the `pdf` extra (`pypdf` / `PyMuPDF` / `pdf2docx`). The two libraries play distinct, non-overlapping roles:
-
-| Library | Role |
-| --- | --- |
-| **pypdf** | Text extraction, paragraph segmentation, geometry (baseline y, font size, indentation). The sole source of clause text sent to the AI reviewer. |
-| **PyMuPDF (fitz)** | Visual profile only: detects coloured text, drawings, and embedded images so the UI can decide whether a source preview is needed. Never used for text extraction. |
-
-**Memory behavior in the visual profile.** PyMuPDF's `page.get_text("dict")` with default flags materialises the decoded pixel bytes of every embedded image into the per-page dict — on an image-heavy PDF this single transient dominates the worker's peak RSS (~50 MB for a 3.8 MB media-rich PDF, vs ~0.2 MB without). Because the visual profile only needs image *presence*, not pixel data, the profile strips `TEXT_PRESERVE_IMAGES` from the text-dict flags and counts images via the lightweight `page.get_image_info()` call instead. The result is the same signal at roughly 250× lower peak memory, which keeps inbound PDF reviews well within the 2 GB Render worker. On PyMuPDF builds that lack the expected flag constants the profile degrades gracefully to the default text-dict behaviour rather than crashing.
-
-Text-based PDFs (the common case) produce no images at all and are unaffected by the above. **Scanned PDFs** (no embedded text layer) are rejected at intake with "No readable text was found in the PDF" — OCR is not currently wired in.
+| Term | Meaning |
+|---|---|
+| **NDA** | Non-disclosure agreement — the contract this tool reviews, redlines, generates, and e-signs. |
+| **Playbook** | Your editable rulebook of acceptable clause positions (`playbook.json`). The AI applies it; it is the single source of truth. |
+| **Matter** | One NDA plus everything the app knows about it: source document, review results, redline drafts, and its stage in the lifecycle. |
+| **Counterparty** | The other company on the NDA — the one that sent (and often already redlined) the document. |
+| **Redline** | A proposed tracked-change edit to a clause, exported as native Word Track Changes. |
+| **Grounded** | A verdict is only valid if it quotes the exact source text it relied on. **Fail-closed**: ungrounded *fail* verdicts are rejected and ungrounded *pass/review* verdicts are downgraded — the engine won't assert something it can't cite. |
+| **Coverage gate** | A pre-export check that proves the tracked-change DOCX contains every word of the source plus the redlines, so a redline can't be silently dropped or mis-anchored. Export is *blocked* if it fails. |
+| **Gen-verify gate** | An independent check on a *generated* NDA: the document is verified against its own playbook before it can be saved. |
+| **Fail-closed / fail-open** | Fail-closed = when in doubt, refuse (block export, reject an ungrounded fail). Fail-open = when a non-critical helper errors, degrade gracefully instead of crashing the request. |
 
 ## Quick start
 
-Requires **Python 3.9+**. DOCX review and export work out of the box (`python-docx` is a core dependency); PDF and Gmail are optional extras.
+Requires **Python 3.9+**. DOCX review and export work out of the box (`python-docx` is the only core dependency). PDF and Gmail are optional extras.
 
 ```bash
 # 1. Install (with optional PDF + Gmail support)
@@ -128,203 +116,116 @@ python3 -m nda_automation.server --port 8787
 
 Then open <http://127.0.0.1:8787>.
 
-Minimum `.env` to enable AI review:
+Minimum `.env` to turn on AI review:
 
 ```bash
 NDA_AI_REVIEW_ENABLED=true
 NDA_AI_PROVIDER=openrouter
-NDA_AI_MODEL=anthropic/claude-opus-4.8-fast
+NDA_AI_MODEL=x-ai/grok-4.3          # cheap local default shipped in .env.example
 OPENROUTER_API_KEY="your-openrouter-api-key"
 ```
 
-`anthropic/claude-opus-4.8-fast` is the built-in reviewer default (`ai_review.DEFAULT_OPENROUTER_MODEL`) and the model prod runs (`render.yaml`). `.env.example` intentionally ships a cheaper `x-ai/grok-4.3` **local** override so local reviews cost less — set `NDA_AI_MODEL` back to the Opus default to mirror prod behaviour.
+> **One model default, stated once.** Production runs **Claude Opus 4.8** — prod slug `anthropic/claude-opus-4.8-fast` (set in `render.yaml`, and the code default in `ai_review.DEFAULT_OPENROUTER_MODEL`). The checked-in `.env.example` ships a cheaper `x-ai/grok-4.3` for local dev, so local reviews cost less and won't behave identically to prod. To mirror prod locally, set `NDA_AI_MODEL=anthropic/claude-opus-4.8-fast`. Source of truth: `render.yaml` (prod) and `.env.example` (local).
 
-You can also paste/save the OpenRouter key from **Admin → AI** after the app is running; saved keys are stored under ignored app data and are never returned to the browser. Connect Gmail and Drive from **Admin** after signing in with Google.
-The optional adversarial verifier uses the same OpenRouter key but is an independent second-opinion pass; set `NDA_AI_VERIFIER=true` and `NDA_AI_VERIFIER_MODEL=deepseek/deepseek-v4-pro` to run it with DeepSeek V4 Pro as a second-opinion model distinct from the Opus reviewer.
+You can also paste the OpenRouter key from **Admin → AI** after the app is running (saved keys are stored under ignored app data and never returned to the browser). Connect Gmail, Drive, and DocuSign from **Admin** after signing in with Google.
 
 **Optional extras**
 
 ```bash
-python3 -m pip install -e ".[pdf]"        # PDF intake + PDF-to-DOCX reconstruction (pypdf / PyMuPDF / pdf2docx)
+python3 -m pip install -e ".[pdf]"        # PDF intake + PDF-to-DOCX (pypdf / PyMuPDF / pdf2docx)
 python3 -m pip install -e ".[gmail]"      # Gmail connector (Google API client)
-python3 -m pip install -e ".[pdf,gmail]"  # both (what the Render blueprint installs)
+python3 -m pip install -e ".[pdf,gmail]"  # both (what the Render image installs)
 ```
 
-Without the `pdf` extra, PDF uploads fail with a clear "PDF support is not installed" error. PDF-to-DOCX
-Word reconstruction is also unavailable without `pdf2docx`; download contracts and export routes report that
-explicitly instead of serving extracted text as a fake Word conversion.
+Without the `pdf` extra, PDF uploads fail with a clear "PDF support is not installed" error rather than degrading silently.
 
-## Configuration
+## The five ideas that hold it together
 
-Common environment variables:
+1. **The Playbook is the single source of truth.** Every rule, threshold, and approved option lives in `playbook.json`. The AI *infers, judges, and applies* from it — it never overwrites it. Hardcoded rules elsewhere are treated as bugs and removed.
+2. **AI-first, adversarially verified.** A strong reviewer proposes verdicts; a second-pass verifier can only **downgrade**, never inflate. An ungrounded verdict doesn't stand.
+3. **A human approval gate.** Nothing is exported or sent until a reviewer has approved it clause by clause.
+4. **Faithful by construction.** The **coverage gate** proves the exported DOCX contains every word of the source plus the redlines — which is what makes counterparty-pre-redlined NDAs safe to export.
+5. **Deterministic where it must be.** NDA generation uses no model call, and the playbook is protected by deterministic structural lint. The AI is used for judgment, not for things that must be exact.
+
+## How to change things
+
+The common "how would I actually add/fix X?" tasks, each with a one-liner and where the real recipe lives:
+
+| I want to… | Start here | Depth |
+|---|---|---|
+| **Add or edit a playbook rule** | Edit it in the app: **Playbook** tab → draft → publish (schema-validated + consistency lint). The tracked file is `playbook.json`. | [`docs/DETAILED.md`](docs/DETAILED.md) · in-app **Guide** tab |
+| **Add a governing-law option or signing entity** | Governing-law options are playbook-driven (Playbook tab); signing entities live in the entity registry (`entity_registry.py`). | [`docs/DETAILED.md`](docs/DETAILED.md) |
+| **Change the AI model** | Set `NDA_AI_MODEL` (reviewer), or override a role from **Admin → AI** at runtime (persists to app settings, takes precedence over env). | [Configuration](#configuration-the-essentials) · [`docs/DETAILED.md`](docs/DETAILED.md) |
+| **Add or change an env var** | Read it in code, declare it in `render.yaml` (prod) and document it in `.env.example` (local). | [`docs/DETAILED.md`](docs/DETAILED.md) — full config reference |
+| **Run the tests** | `python3 -m pytest -q` (backend) · `npm run test:frontend` (Playwright). | [Testing](#testing) |
+| **Deploy** | Merge to `main` — Render continuously deploys from it. | [Deployment](#deployment) |
+| **Edit a static asset** | Edit the file under `static/`, then bump the asset manifest with `python -m nda_automation.static_versioning --write` (else browsers serve the cached file). | [Testing](#testing) |
+
+## Where to go next
+
+- **[`docs/OVERVIEW.md`](docs/OVERVIEW.md)** — one-page tour: what, why, how it works, and cost.
+- **[`docs/DETAILED.md`](docs/DETAILED.md)** — the single source of truth for full config, architecture, data model, operations, troubleshooting, and rebuild-from-scratch.
+- **`docs/SCALE_READINESS.md`** — scaling notes and the single-process limits.
+- **In-app Guide tab** — a read-only walkthrough of how structure parsing, reference resolution, concept classification, deterministic validation, and AI-first assessment fit together.
+
+**A note on cost.** AI is the only usage-based cost (billed through OpenRouter). Each AI feature is a single model call. On the default **Opus 4.8** reviewer path, clause review is ≈ **$0.18/call** and a full inbound pass (intake + triage + review + verify + structure) is ≈ **$0.20**. Routing the reviewer to **DeepSeek** instead drops a full pass to ≈ **$0.04** (per-operation review ≈ **$0.028**) at tied review quality in our own bake-offs. Generation costs **$0** (deterministic). These are estimates — the OpenRouter dashboard is the source of truth for actual spend. Full breakdown: [`docs/OVERVIEW.md`](docs/OVERVIEW.md).
+
+## Configuration (the essentials)
+
+Just the variables a newcomer needs to boot. **[`docs/DETAILED.md`](docs/DETAILED.md) is the single source of truth for the complete set** (Gmail throttle/dedup internals, retry limits, incident levers, and everything else) — that list is deliberately not duplicated here.
 
 | Variable | Purpose |
-| --- | --- |
-| `NDA_DATA_DIR` | Matter records, source uploads, app settings, Gmail sync state. |
-| `NDA_EXPORTS_DIR` | Persisted export downloads. |
-| `NDA_USERS_PATH` | User/session/sync-history storage (e.g. `/var/data/users.json` in prod). |
+|---|---|
+| `NDA_DATA_DIR` | Where matters, uploads, settings, and sync state are stored (prod: `/var/data`). |
 | `NDA_REQUIRE_AUTH` | `true` to require login (auto-required on non-loopback binds). |
-| `NDA_ALLOWED_HOSTS` | Comma-separated allowed request hostnames (e.g. your Render host). |
-| `NDA_GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` | Google login credentials for per-user identity. |
-| `NDA_GOOGLE_OAUTH_REDIRECT_URI` | Fixed redirect, e.g. `https://your-service.onrender.com/auth/google/callback`. |
-| `NDA_GMAIL_OAUTH_REDIRECT_URI` | Fixed Gmail redirect, e.g. `.../auth/gmail/callback`. |
-| `NDA_DOCUSIGN_CLIENT_ID` / `NDA_DOCUSIGN_CLIENT_SECRET` | DocuSign **integration key** (OAuth client id) + secret key (Apps & Keys). Required for "Connect DocuSign". |
-| `NDA_DOCUSIGN_OAUTH_REDIRECT_URI` | Fixed DocuSign redirect, e.g. `.../auth/docusign/callback`. Must match the URI registered on the integration key. |
-| `NDA_DOCUSIGN_AUTH_SERVER` | `demo` (default → `account-d.docusign.com`, free dev accounts) or `production` (`account.docusign.com`). |
-| `NDA_DOCUSIGN_CONNECT_HMAC_KEY` | Optional. DocuSign Connect webhook HMAC secret; when set, the `/api/docusign/webhook` callback is signature-verified. |
-| `NDA_AUTH_USERNAME` / `_PASSWORD` | Optional HTTP Basic fallback. |
-| `NDA_RATE_LIMIT_PER_MINUTE` | Request cap for expensive endpoints (`0` for trusted local testing). |
-| `NDA_AI_REVIEW_ENABLED` | Enables provider-backed AI review. |
-| `OPENROUTER_API_KEY` | Server-side OpenRouter key for review + Gmail attachment selection. |
-| `NDA_AI_PROVIDER` / `NDA_AI_MODEL` | `openrouter` / reviewer model. **Code default `anthropic/claude-opus-4.8-fast`** (Claude Opus 4.8), which is what prod runs; `.env.example` sets a cheaper `x-ai/grok-4.3` local override. |
-| `NDA_AI_VERIFIER` / `NDA_AI_VERIFIER_MODEL` | Optional independent adversarial verifier; default model is `deepseek/deepseek-v4-pro` and it uses the same OpenRouter key. |
-| `NDA_GMAIL_IMPORT_LIMIT` | Max inbound messages processed per poll cycle (default `20`). See [Gmail import throttle](#gmail-import-throttle). |
-| `NDA_GMAIL_TRIAGE_MODEL` | Gmail attachment-selector model (picks the NDA attachment); default `deepseek/deepseek-v4-pro`. |
-| `NDA_GMAIL_INTAKE_MODEL` | Gmail NDA-intake classifier model; default `deepseek/deepseek-v4-flash`. Optional and reuses `OPENROUTER_API_KEY`; with no key it falls back to the deterministic intake gate. |
-| `NDA_ACTIVE_REVIEW_ENGINE` | Review runtime pin; inbound review resolves to `ai_first`. Deterministic remains internal-only for explicit generation `force_engine` paths. |
-| `NDA_AI_FIRST_REVIEW_ENABLED` | Store AI-first shadow/comparison output. |
-| `NDA_ADMIN_USERS` | Comma-separated emails granted admin. |
-| `NDA_ALLOW_EPHEMERAL_DATA` | `true` only for short-lived demos on ephemeral storage. |
-| `NDA_GMAIL_INBOUND_TOKEN_PATH` / `_OUTBOUND_TOKEN_PATH` | Legacy shared token files for local Gmail; leave unset for hosted per-user Gmail. |
-| `NDA_GMAIL_SERVER_INBOUND` | Opt-in (`true`/`1`) for the legacy server-level inbound token fallback. When **no** user has connected Gmail, the scheduler runs the shared/env token only if this is set. Default off ⇒ disconnecting the last account stops the scheduled inbound sync. |
-| `NDA_GMAIL_ENVELOPE_EXCLUDES` | Default **on**. Drop e-signature-platform + calendar-invite senders (code-level check + `-from:` query clauses). `0`/`false` restores the pre-exclude fetch query and the DocuSign-only code check. |
-| `NDA_GMAIL_ESIGN_NDA_CAPTURE` | Default **on**. Capture a platform notification carrying an explicit NDA signal as a likely executed NDA (triage lane, `esign_notification_nda` provenance) instead of dropping it. |
-| `NDA_GMAIL_AI_PREGATE` | Default **on**. Deterministic pre-gate on the paid intake/selector AI calls, with fail-open exemptions for extraction-blind, foreign-language, and explicitly-announced NDAs. `0`/`false` restores the always-call path. |
-| `NDA_GMAIL_FIRST_SYNC_CAP_DAYS` | Default `14`. A newly connected account's first sync scans `min(window, this)` days and widens per successful poll. `0` disables the cap. |
-| `NDA_GMAIL_TRANSIENT_RETRY_LIMIT` / `NDA_GMAIL_PERMANENT_SKIP_RETRY_LIMIT` | Reason-stratified inbound quarantine retry limits: environmental/unknown failures (default `5`), deterministic-permanent skips such as too-large / scanned-needs-OCR (default `2`). |
-| `NDA_GMAIL_SYNC_YIELD_MS` | Default `50`. Per-heavy-unit CPU yield during a sync so request threads aren't starved (capped at 1000ms; `<= 0` disables). |
-| `NDA_GMAIL_CUSTOM_TERMS_ENABLED` | Default **off**. Safety gate; when off, inbound NDA detection uses only the hardcoded term floor. When on, admin "Signal Terms" are added as additive literal content signals (never to the Gmail fetch query). |
-| `NDA_ALLOWED_EMAIL_DOMAINS` / `NDA_ALLOWED_EMAILS` | Optional app-layer sign-in allowlist over the OAuth-verified Google email (domain list / exact-email list). **Both unset ⇒ allowlist is OFF and every verified Google identity is allowed** (fail-safe open); set either to enforce it (fail-closed). Google identities only; basic-auth is never routed through it. |
-| `NDA_VERBOSE_BACKGROUND_ERRORS` | Default **off**. When off, background-error logs carry only the exception class name (PII-safe default); on, they add a 200-char truncated message (never a traceback). |
-| `NDA_TELEMETRY_SNAPSHOT_TICKS` | Default `120` scheduler ticks (≈ hourly). Cadence of the periodic stdout `telemetry_snapshot` counters line; `<= 0` disables it. |
+| `NDA_GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` | Google login for per-user identity (each user sees only their own matters). |
+| `NDA_AI_REVIEW_ENABLED` | Turns on provider-backed AI review. |
+| `OPENROUTER_API_KEY` | Server-side OpenRouter key for review, verify, intake, and Gmail attachment selection. |
+| `NDA_AI_PROVIDER` / `NDA_AI_MODEL` | `openrouter` / the reviewer model (prod default `anthropic/claude-opus-4.8-fast`; local `.env.example` `x-ai/grok-4.3`). |
+| `NDA_AI_VERIFIER` / `NDA_AI_VERIFIER_MODEL` | Optional adversarial verifier (default model `deepseek/deepseek-v4-pro`; reuses the OpenRouter key). |
+| `NDA_GMAIL_SYNC_ENABLED` | Master on/off for the Gmail inbound poller (emergency kill switch). |
+| `NDA_GMAIL_IMPORT_LIMIT` | Max inbound messages processed per poll cycle (default `20`) — keeps a first-connect backlog from OOMing the worker. |
+| `NDA_ADMIN_USERS` | Comma-separated identities granted admin. |
 
-**Optional semantic fallback** — a lazy-loaded callable invoked only when configured:
-
-```bash
-export NDA_SEMANTIC_EVALUATOR=module.path[:callable_name]
-```
-
-It receives `text`, `normalized`, `clause`, `paragraphs`, and `current_result`, and returns `None` or a small decision dict like `{"status": "match", "reason": "...", "matched_paragraph_ids": ["p1"]}`.
-
-## Gmail: one connection, both directions
-
-Inbound import and outbound send share a **single Gmail login**. One **Connect Gmail** grants `gmail.readonly + gmail.send + gmail.metadata` in a single consent, and the backend saves both role tokens from that one grant (each narrowed to its own scopes on refresh). Admin exposes **one** Connect/Disconnect action and **one** on/off toggle; `drive.file` stays a separate connection.
-
-- A server-side scheduler imports recent `.docx`/`.pdf` NDA attachments (matched by subject/content terms) into the Repository on a configurable cadence (Admin → Email).
-- Outbound send generates the same Word redline/report used by export, opens a confirmation composer, and emails it back to the matter sender **only after the operator confirms the exact recipient address** — guarding against a spoofed `Reply-To` redirecting a redline.
-- Gmail web access and Gmail API access are separate: the browser can be logged in while the API token is missing, expired, or rate-limited. The app records recent sync/send failures and backs off after a temporary lockout.
-
-For local shared-token development you can still point at token files (`NDA_GMAIL_INBOUND_TOKEN_PATH` / `_OUTBOUND_TOKEN_PATH`, or ignored `data/gmail/{inbound,outbound}-token.json`). For hosted deployments, leave those unset so one user's token never becomes a shared mailbox fallback. When no user is connected, the scheduled inbound sync polls a server/env token **only** if `NDA_GMAIL_SERVER_INBOUND` is explicitly enabled — so **Disconnect Gmail** (which removes the last user's token) actually stops the scheduled inbound sync rather than silently falling back to a leftover shared token.
-
-## Gmail import throttle
-
-`NDA_GMAIL_IMPORT_LIMIT` (default `20`) caps the number of **new** inbound messages the scheduler hands to the heavy import path per poll cycle. "Heavy import" means: Pro-model attachment selection, Flash intake classification, PyMuPDF visual profiling, and attachment download + text extraction — the work that dominates the 2 GB Render worker's peak RSS.
-
-**Why it matters on (re)connect.** Gmail's inbound query has no already-imported exclusion and applies no label or archive, so the first poll after connecting (or reconnecting) would otherwise attempt to catch up the full 90-day backlog in one burst — a one-time spike that can OOM the worker. `NDA_GMAIL_IMPORT_LIMIT` keeps each burst small.
-
-**How catch-up still makes progress.** The per-poll dedup index (`message_attachments_all_already_imported`) persists across polls and short-circuits already-imported messages **before** any download or extraction. The scheduler pages through the inbox interleaving cheap dedup probes with heavy imports: already-imported messages are skipped without counting against the limit, so each subsequent poll advances to the next un-imported batch until the backlog is drained.
-
-```
-NDA_GMAIL_IMPORT_LIMIT=20   # default: gentle catch-up, ~20 new NDAs per poll cycle
-```
-
-Raise to drain the backlog faster at the cost of a larger per-poll burst; the value is clamped to `>= 1`. The `.env.example` documents the default and override comments for operators.
-
-## DocuSign: send for signature (real e-signature)
-
-After a matter is approved, the finalized NDA can be sent for signature through the **real DocuSign eSignature API** — the user clicks **Connect DocuSign**, completes a real DocuSign login (OAuth Authorization Code Grant), and from then on envelopes, status, the executed PDF and voids are all live DocuSign calls. There is no simulated/demo client in the running app; the only test double lives in the unit tests.
-
-The envelope always signs the **current** reviewed document, never the un-redlined original or a stale copy. At approval the reviewed/redlined DOCX is built and registered eagerly (content-hash idempotent) so approval and send agree on the exact bytes. For a matter that carries reviewer edits, send **rebuilds** the reviewed DOCX from the matter's current state through the same coverage-gated, staleness-checked path used by download and approval — and if that build can't be produced it **raises** rather than falling back to the original.
-
-By default both signers are added at the **same routing order (parallel signing)** — either side can sign in any order. Pass `signing_order: "sequential"` in the request to enforce a sequence.
-
-### Free developer-account quickstart
-
-The auth server defaults to the **DocuSign demo environment** (`account-d.docusign.com` for auth; the eSignature API base URI, e.g. `https://demo.docusign.net`, is resolved per-account from `/oauth/userinfo`), so a **free DocuSign developer account works out of the box**. Demo-account envelopes are watermarked but fully functional end to end.
-
-1. Create a **free DocuSign developer account** at <https://developers.docusign.com>.
-2. In **Apps & Keys**, create an **integration key** (this is your OAuth client id) and generate a **secret key**. Add your **redirect URI** (e.g. `https://your-host/auth/docusign/callback`) to the integration key's list of redirect URIs.
-3. Set the env vars:
-   ```bash
-   export NDA_DOCUSIGN_CLIENT_ID=<integration key>
-   export NDA_DOCUSIGN_CLIENT_SECRET=<secret key>
-   export NDA_DOCUSIGN_OAUTH_REDIRECT_URI=https://your-host/auth/docusign/callback
-   export NDA_DOCUSIGN_AUTH_SERVER=demo            # default; flip to `production` for live
-   # optional, recommended when you wire the Connect webhook:
-   export NDA_DOCUSIGN_CONNECT_HMAC_KEY=<connect hmac secret>
-   ```
-4. Restart the app, click **Connect DocuSign**, complete the real DocuSign login, then send a matter for signature → a real (demo-watermarked) envelope is created.
-
-**Going to production:** flip `NDA_DOCUSIGN_AUTH_SERVER=production` (uses `account.docusign.com`; the live API base URI is again resolved per-account from userinfo), promote your integration key through DocuSign's Go-Live review, and reconnect.
-
-### Endpoints
-
-| Method + path | Purpose |
-| --- | --- |
-| `GET /api/docusign/status` | Connection state: `connected`, `configured`, `production`, `account_label`. |
-| `POST /api/docusign/connect` | Start real OAuth; returns `{authorization_url}` to redirect to. |
-| `GET /auth/docusign/callback` | OAuth callback: exchanges the code, resolves account id + base URI, stores the token. |
-| `POST /api/docusign/disconnect` | Removes the signed-in user's DocuSign token. |
-| `POST /api/matters/<id>/send-for-signature` | Body `{signers?, signing_order?}` → creates + sends a real envelope; returns `{envelope_id, status}`. |
-| `GET /api/matters/<id>/signature-status` | Live envelope status; on `completed` captures the executed PDF as the matter's `signed` artifact. |
-| `GET /api/matters/<id>/signed-document` | Downloads the executed combined PDF. |
-| `POST /api/docusign/webhook` | DocuSign Connect callback (HMAC-verified when a key is set); on `completed` stores the signed artifact and marks the matter fully signed. |
-
-> **Note:** the integration is built and unit-tested against fakes, but the final live click-login → real-envelope round trip requires your DocuSign developer credentials and is the user's verification step.
+DocuSign, Gmail, and Google OAuth also need their fixed redirect URIs configured on the provider side and mirrored into env vars — see [`docs/DETAILED.md`](docs/DETAILED.md).
 
 ## Deployment
 
-The app needs a Python web service because the static frontend calls API routes served by `nda_automation.server`. This repo ships a Render blueprint (`render.yaml`).
+Live production runs on **Render**, and **`main` continuously deploys**: merge to `main` and Render redeploys.
 
-The Render blueprint uses the repo `Dockerfile` instead of the native Python runtime so the Review faithful-source preview can install system rendering dependencies: LibreOffice for DOCX-to-PDF conversion, fontconfig, and metric-compatible Calibri/Cambria substitutes (Carlito/Caladea) plus Liberation/Noto/DejaVu fonts. Without those OS packages, DOCX page-image previews and PDF exports fall back to an unavailable-state message instead of silently flattening layout.
+The service builds from the repo `Dockerfile` (not Render's native Python runtime) so the review faithful-source preview can install system rendering dependencies — LibreOffice for DOCX-to-PDF, fontconfig, and metric-compatible Calibri/Cambria substitutes. Without those OS packages, DOCX page-image previews and PDF exports fall back to an unavailable-state message instead of silently flattening layout.
 
-The checked-in blueprint targets a **short-lived free demo**: free plan + ephemeral `/tmp` storage so it boots without a paid disk. Data, sessions, Gmail tokens, matters, drafts, and exports can disappear on restart/redeploy/sleep.
+**Storage — what's actually true today.** The checked-in `render.yaml` blueprint provisions a **Render Standard plan with a 1 GB persistent disk mounted at `/var/data`**, with `NDA_DATA_DIR=/var/data`, `NDA_USERS_PATH=/var/data/users.json`, and `NDA_EXPORTS_DIR=/var/data/exports`. Matters, sessions, and OAuth tokens are **durable** across restart and redeploy. The `NDA_ALLOW_EPHEMERAL_DATA` escape hatch has been removed, so the startup storage guard is active and refuses to boot if the data dir ever regresses to ephemeral `/tmp`.
 
-For a real private beta, switch to a paid plan with a persistent disk at `/var/data`, set `NDA_DATA_DIR=/var/data`, `NDA_USERS_PATH=/var/data/users.json`, `NDA_EXPORTS_DIR=/var/data/exports`, and remove `NDA_ALLOW_EPHEMERAL_DATA=true`.
+> `docs/PERSISTENT_STORAGE.md` describes the *earlier* free-plan/`/tmp` setup and is marked **SUPERSEDED** — that migration has already been applied. Don't follow its `/tmp` steps.
 
-Production start command:
+Production start command (from the Dockerfile / Render):
 
 ```bash
 python -m nda_automation.server --host 0.0.0.0 --port $PORT
 ```
 
-- Public deployments require authentication. Non-loopback binds auto-require auth; if auth is required but no login method is configured, the server refuses to start.
-- Unauthenticated routes are limited to `/healthz`, `/login`, `/api/auth/status`, `/auth/google/start`, `/auth/google/callback`, `/api/auth/logout`, and the DocuSign Connect webhook `/api/docusign/webhook` (a server-to-server callback authenticated by its HMAC signature, not a session).
-- Configure these redirect URIs in the Google Cloud OAuth client (and matching env vars): `.../auth/google/callback` and `.../auth/gmail/callback`. Configure `.../auth/docusign/callback` on the DocuSign integration key.
-- The server refuses to start on non-loopback hosts when `NDA_DATA_DIR` is missing or points at ephemeral storage, unless `NDA_ALLOW_EPHEMERAL_DATA=true`.
-
-Authenticated admins can inspect `/api/deployment/status`, `/api/auth/status`, `/api/telemetry`, and download `/api/matters/export` (metadata + stored-document manifest; no embedded source bytes). `/api/matters/export?owner=<id>` scopes the backup to one user, and `?owner=__all__` is an admin-only all-owners disaster-recovery dump. `POST /api/admin/matters/bulk-archive` archives auto-imported Gmail noise for an explicit owner + time window — dry-run by default, and an execute requires `dry_run:false` plus a `confirm` equal to the server-recomputed sha256 selection hash (a stale hash gets a 409 with the fresh one), with matters excluded fail-closed.
-
-## Security & data
-
-- Matter list/detail responses expose **metadata only**; extracted NDA text, review results, and redline drafts are returned only through the auth-gated review workflow.
-- **Outbound recipient confirmation** is required before any send (the resolved address must match the operator-confirmed one).
-- **CSRF/Origin** checks and proxy-aware **rate limiting** protect expensive review, upload, export, send, and backup endpoints.
-- **Prompt-injection defenses**: untrusted email/attachment text is neutralized (control chars stripped, line-start role markers defanged) before reaching any AI prompt, and the Gmail attachment selector intersects model output against a candidate-id allow-list so a selector LLM can't be steered.
-- Atomic JSON saves `fsync` file contents and parent directories; DOCX XML parsing rejects unsupported DTD/entity declarations and strips invalid XML characters.
-- Uploaded source documents and matter backups are sensitive legal work product — protect them accordingly.
+- Public deployments require authentication. Non-loopback binds auto-require it; if auth is required but no login method is configured, the server refuses to start.
+- Configure the OAuth redirect URIs in the Google Cloud console (`.../auth/google/callback`, `.../auth/gmail/callback`) and on the DocuSign integration key (`.../auth/docusign/callback`), with matching env vars.
 
 ## Testing
+
+> Don't run the full backend suite casually on a shared box — it's heavy. Prefer targeted runs.
 
 ```bash
 python3 -m pip install -e ".[pdf,gmail]" && python3 -m pip install pytest && npm install
 ```
 
 ```bash
-# Backend (unit + eval gate)
-python3 -m pytest -q
-
-# Frontend (pure modules + real-app Playwright behavior suite)
-npm run test:frontend:utils
-npm run test:frontend
-
-# Lint
-ruff check nda_automation tests
+python3 -m pytest -q                 # backend unit + eval gate
+npm run test:frontend:utils          # frontend pure modules
+npm run test:frontend                # real-app Playwright behavior suite
+ruff check nda_automation tests      # lint
 ```
 
-The Playwright suite runs the real app in Chromium and covers repository/matter loading, review view modes, viewer editing, redline rendering, Gmail/admin surfaces, dashboard search, notifications, and DOCX export. The backend suite includes a counsel-style **eval gate** over review cases.
+The Playwright suite runs the real app in Chromium (repository/matter loading, review view modes, viewer editing, redline rendering, Gmail/admin surfaces, dashboard search, DOCX export). The backend suite includes a counsel-style **eval gate** over review cases.
 
-**Static cache-busting.** Every `<script>`/`<link>` in `static/index.html` carries a `?v=<token>` query, and the tokens are tracked in the committed `static/asset-tokens.json` manifest. After editing any file under `static/`, regenerate the manifest with `python -m nda_automation.static_versioning --write` (a `--check` run verifies the tree matches the manifest and is enforced in CI); a forgotten bump leaves browsers serving the cached file. A separate CI syntax-floor test guards the static JS against parse errors.
+**Static cache-busting.** Every `<script>`/`<link>` in `static/index.html` carries a `?v=<token>` query tracked in `static/asset-tokens.json`. After editing any file under `static/`, regenerate the manifest with `python -m nda_automation.static_versioning --write` (a `--check` run, enforced in CI, verifies the tree matches). A forgotten bump leaves browsers serving the cached file.
 
 ## Project layout
 
@@ -345,22 +246,14 @@ nda_automation/            # Python backend (stdlib http.server)
 └── dashboard_search_intent.py, matter_summary.py, telemetry.py  # dashboard + ops
 static/                    # Vanilla-JS frontend (no build step)
 ├── index.html, app.js, styles.css
-├── js/                    # Controllers: repository, review-workstation, admin-*,
-│                          #   dashboard-search, notifications, auth-session, …
+├── js/                    # Controllers: repository, review-workstation, admin-*, …
 └── js/modules/            # Pure, unit-tested ES modules
 tests/                     # pytest (backend) + Playwright/.mjs (frontend)
-docs/                      # Methodology and design notes
+docs/                      # START HERE: OVERVIEW.md (tour) + DETAILED.md (full reference)
 playbook.json              # Tracked review policy (runtime/history are derived + gitignored)
-render.yaml                # Render deployment blueprint
+render.yaml                # Render deployment blueprint (Standard plan + /var/data disk)
 ```
-
-## Roadmap
-
-- Matter activity timeline across imports, reviews, draft saves, exports, sends, stage changes, and Gmail sync events.
-- Counsel-labelled evaluation set comparing AI-first verdicts, deterministic results, and final human-reviewed outcomes.
-- Review decision memory for recurring counterparty positions.
-- Continued visual modernization across Repository, Review, and Admin, plus Gmail onboarding and recovery guidance.
 
 ---
 
-_aspora — internal NDA review tooling. Not legal advice._
+_Aspora — internal NDA review tooling. Not legal advice._

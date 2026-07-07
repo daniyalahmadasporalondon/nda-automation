@@ -460,14 +460,14 @@
       <button data-tab="ai-review"><span class="num">3</span>AI Review Pipeline</button>
       <button data-tab="redlines"><span class="num">4</span>Redlines &amp; Generation</button>
       <div class="group-label">Documents</div>
-      <button data-tab="rendering"><span class="num">5</span>PDF / DOCX &amp; Approach C</button>
+      <button data-tab="rendering"><span class="num">5</span>PDF / DOCX &amp; Approach C (ingest convert)</button>
       <button data-tab="data-model"><span class="num">6</span>Data Model &amp; Security</button>
       <div class="group-label">Integrations &amp; UI</div>
       <button data-tab="integrations"><span class="num">7</span>Gmail · DocuSign · Outbound</button>
       <button data-tab="frontend"><span class="num">8</span>Frontend Architecture</button>
       <div class="group-label">Operating it</div>
       <button data-tab="deploy"><span class="num">9</span>Deploy &amp; Ops</button>
-      <button data-tab="recipes"><span class="num">10</span>How-To Recipes</button>
+      <button data-tab="recipes"><span class="num">10</span>How to Change the System</button>
     </nav>
   </aside>
 
@@ -475,7 +475,7 @@
     <header class="page-head">
       <p class="eyebrow">engineering handbook</p>
       <h1>NDA Automation — Developer Guide</h1>
-      <p>How the system is wired, with real file:line and symbol references against the deployed code. Pick a topic on the left.</p>
+      <p>How the system is wired, with real file:line and symbol references against the deployed code. Pick a topic on the left. For the exhaustive per-field tables (every env var, the full module map, the review_result contract), see the written reference <code>docs/DETAILED.md</code> — this guide is the visual, navigable companion to it, complete enough to stand alone for understanding plus the common recipes.</p>
     </header>
 
     <!-- ============ 0. QUICK START ============ -->
@@ -520,17 +520,21 @@
         <figcaption>The local bootstrap. On a loopback bind the auth layer is exempt (<code>_is_loopback_host</code> matches <code>127.0.0.1</code>/<code>::1</code>/<code>localhost</code>, http_auth.py), so you don't need OAuth configured just to open the app locally.</figcaption>
       </figure>
 
-      <h3>The five commands</h3>
+      <h3>The commands</h3>
       <div class="card tight">
-        <p><strong>Requires Python 3.9+.</strong> DOCX review/export work out of the box (<code>python-docx</code> is a core dep); PDF and Gmail are optional extras.</p>
+        <p><strong>Requires Python 3.9+</strong> (<code>requires-python = "&gt;=3.9"</code> in <code>pyproject.toml</code>). DOCX review/export work out of the box (<code>python-docx</code> is a core dep); PDF and Gmail are optional extras. There is no <code>[project.scripts]</code> console entry — you launch the module directly with <code>python -m nda_automation.server</code>.</p>
         <p>
           <code>git clone &lt;repo-url&gt; &amp;&amp; cd nda-automation</code><br>
-          <code>python3 -m pip install -e ".[pdf,gmail]"</code><br>
+          <code>python3 -m venv .venv &amp;&amp; source .venv/bin/activate</code>&nbsp; <em>(step 0 — a venv keeps <code>pip install -e</code> off system Python; without it a fresh machine may trip <code>externally-managed-environment</code>)</em><br>
+          <code>python3 -m pip install -e ".[pdf,gmail]"</code>&nbsp; <em>(exact extras from <code>pyproject.toml</code> <code>[project.optional-dependencies]</code>)</em><br>
           <code>cp .env.example .env</code>&nbsp; <em>(then fill in keys — <code>.env</code> is gitignored)</em><br>
           <code>set -a; source .env; set +a</code><br>
           <code>python -m nda_automation.server --port 8787</code>
         </p>
         <p>Then open <code>http://127.0.0.1:8787</code>.</p>
+      </div>
+      <div class="callout warn">
+        <strong>Binding to anything other than loopback? Set auth first.</strong> The loopback exemption only matches <code>127.0.0.1</code>/<code>::1</code>/<code>localhost</code> (<code>_is_loopback_host</code>, http_auth.py). If you bind to a devcontainer, a LAN IP, or <code>--host 0.0.0.0</code>, every request hits the auth wall with a <strong>401</strong> and no signed-in fallback. The quick escape hatch is HTTP Basic — set <code>NDA_AUTH_USERNAME</code> and <code>NDA_AUTH_PASSWORD</code> in your <code>.env</code> (both are read in <code>.env.example</code>) and sign in with them; the full Google-OAuth setup is in <strong>Data Model &amp; Security → OAuth &amp; the sign-in allowlist</strong>. (A non-loopback bind also flips CSRF enforcement ON — see that section.)
       </div>
 
       <h3>The extras matrix</h3>
@@ -575,7 +579,7 @@
       </table>
 
       <div class="callout">
-        <strong>Next stops.</strong> <strong>Architecture</strong> for the request flow and the static-asset ritual; <strong>Deploy &amp; Ops</strong> for the full env-var map and incident levers; <strong>Data Model &amp; Security</strong> for auth/OAuth setup; <strong>How-To Recipes</strong> for running the tests the right way on this box.
+        <strong>Next stops.</strong> <strong>Architecture</strong> for the request flow and the static-asset ritual; <strong>Deploy &amp; Ops</strong> for the full env-var map and incident levers; <strong>Data Model &amp; Security</strong> for auth/OAuth setup; <strong>How to Change the System</strong> for the grounded add/remove/fix recipes and running the tests the right way on this box.
       </div>
     </section>
 
@@ -590,10 +594,10 @@
       <table>
         <thead><tr><th>Dict</th><th>server.py</th><th>Holds</th></tr></thead>
         <tbody>
-          <tr><td>_GET_EXACT_ROUTES</td><td>~224</td><td>Authenticated read endpoints.</td></tr>
-          <tr><td>_PUBLIC_GET_EXACT_ROUTES</td><td>~269</td><td>Public GET (<code>/login</code>, <code>/api/auth/status</code>, OAuth callbacks).</td></tr>
-          <tr><td>_POST_EXACT_ROUTES</td><td>~276</td><td>Authenticated POST (<code>/api/review</code>, <code>/api/matters</code>, <code>/api/generate-nda</code>, …).</td></tr>
-          <tr><td>_PUBLIC_POST_EXACT_ROUTES</td><td>~319</td><td>Public POST (<code>/api/auth/logout</code> only).</td></tr>
+          <tr><td>_GET_EXACT_ROUTES</td><td>~337</td><td>Authenticated read endpoints.</td></tr>
+          <tr><td>_PUBLIC_GET_EXACT_ROUTES</td><td>~386</td><td>Public GET (<code>/login</code>, <code>/api/auth/status</code>, OAuth callbacks).</td></tr>
+          <tr><td>_POST_EXACT_ROUTES</td><td>~393</td><td>Authenticated POST (<code>/api/review</code>, <code>/api/matters</code>, <code>/api/generate-nda</code>, …).</td></tr>
+          <tr><td>_PUBLIC_POST_EXACT_ROUTES</td><td>~448</td><td>Public POST (<code>/api/auth/logout</code> only).</td></tr>
         </tbody>
       </table>
       <p>The dispatchers:</p>
@@ -696,7 +700,7 @@
     <!-- ============ 2. PLAYBOOK ============ -->
     <section class="tab-panel" id="tab-playbook">
       <h2>The Playbook as the source of truth</h2>
-      <p class="panel-lede">The north star of this codebase: <code>playbook.json</code> is the single source for all clause rules, approved options, and thresholds. The engine and the AI <em>infer, judge, and apply</em> from it — they never hardcode a rule that the playbook also owns. Duplicated/hardcoded rules are treated as "deterministic ghosts" to eliminate.</p>
+      <p class="panel-lede">The north star of this codebase: <code>playbook.json</code> is the single source for all clause rules, approved options, and thresholds. The engine and the AI <em>infer, judge, and apply</em> from it — they never hardcode a rule that the playbook also owns. A <strong>"deterministic ghost"</strong> is a rule hardcoded in the engine or JS that duplicates (and can silently override) what the Playbook already owns — these are treated as bugs to eliminate.</p>
 
       <h3>Where it lives &amp; how it loads</h3>
       <ul>
@@ -733,7 +737,7 @@
     <!-- ============ 3. AI REVIEW PIPELINE ============ -->
     <section class="tab-panel" id="tab-ai-review">
       <h2>The AI review pipeline</h2>
-      <p class="panel-lede">Review is <strong>on-demand only</strong> — there is no automatic AI review on inbound documents. A user clicks Review; the server enqueues an async job; the workstation polls for the result.</p>
+      <p class="panel-lede">Review is <strong>on-demand only</strong> — there is no automatic AI review on inbound documents. A user clicks Review; the server enqueues an async job; the <em>Workstation</em> polls for the result. (The <strong>Workstation</strong> is the browser review UI — the Review tab where a reviewer reads clauses, accepts/edits redlines, and approves; its modules are covered in <strong>Frontend Architecture → Review-workstation modules</strong>.)</p>
 
       <figure class="wf-fig">
         <svg role="img" viewBox="0 0 720 210" xmlns="http://www.w3.org/2000/svg" aria-labelledby="wf-rev-t wf-rev-d">
@@ -838,6 +842,9 @@
         </dl>
       </div>
       <p>Both run through OpenRouter; the key (<code>OPENROUTER_API_KEY</code>) lives in backend config and is never exposed to the browser.</p>
+      <div class="callout">
+        <strong>Model slugs drift — verify against config, not this page.</strong> The exact OpenRouter slugs quoted throughout this guide (<code>anthropic/claude-opus-4.8-fast</code>, <code>deepseek/deepseek-v4-pro</code>, <code>deepseek/deepseek-v4-flash</code>, <code>x-ai/grok-4.3</code>) are correct as shipped, but they are the single most likely thing to go stale. The <strong>source of truth is <code>render.yaml</code> (prod) and <code>.env.example</code> (local defaults)</strong>, with the code defaults in <code>ai_review.py</code> / <code>ai_verifier.py</code>. If a slug here disagrees with those, trust the config.
+      </div>
 
       <div class="callout warn">
         <strong>Local reviewer ≠ prod reviewer (deliberate divergence).</strong> <code>.env.example</code> ships <code>NDA_AI_MODEL=x-ai/grok-4.3</code> for local dev (cheaper), while the code default (<code>DEFAULT_OPENROUTER_MODEL</code>, ai_review.py) and prod (<code>render.yaml</code>) both run <code>anthropic/claude-opus-4.8-fast</code>. So a local review can legitimately disagree with prod on borderline clauses — that's the model, not a bug. To mirror prod, set <code>NDA_AI_MODEL=anthropic/claude-opus-4.8-fast</code> in your <code>.env</code>.
@@ -852,9 +859,16 @@
       </ol>
       <p>The semantic confidence floor is <code>SEMANTIC_REVIEW_THRESHOLD = 0.75</code> in <code>decision_arbiter.py</code> — a pass below it is escalated to review. <code>review_state.py</code> (<code>_normalize_clause_decision()</code>) imports the same constant so the floor is single-sourced.</p>
 
-      <div class="callout warn">
-        <strong>The verifier records the truth, not a phantom pass.</strong> When the verifier batch call <em>fails</em> or the response <em>omits</em> a clause, that clause is stamped <strong>unverified</strong> (reason <code>verifier_unavailable</code> on a total failure, <code>verifier_missing_verdict</code> on a per-clause omission) via <code>_skip_record()</code> (ai_verifier.py ~313–317) — it is <strong>never silently affirmed</strong>. <code>ai_verifier_ran</code> reflects reality: on a <em>total</em> failure (every record unverified) the summary reports <code>status="failed"</code> so downstream reads <code>ai_verifier_ran = False</code> (ai_verifier.py ~211–217); a partial failure stays <code>completed</code> but surfaces an <code>unverified_count</code>. It still <strong>fails open</strong> — the first-pass verdict stands and nothing is blocked purely because verification didn't run — but the record never claims a verification that did not happen.
-      </div>
+      <h4>The verifier records the truth, not a phantom pass</h4>
+      <p>When verification doesn't happen for a clause, that clause is stamped <strong>unverified</strong> via <code>_skip_record()</code> (ai_verifier.py ~313–317) — it is <strong>never silently affirmed</strong>. It still <strong>fails open</strong> (the first-pass verdict stands; nothing is blocked purely because verification didn't run), but the record never claims a verification that did not happen:</p>
+      <table>
+        <thead><tr><th>Scenario</th><th>Summary status → <code>ai_verifier_ran</code></th><th>Per-clause reason</th></tr></thead>
+        <tbody>
+          <tr><td>Verifier batch call fails entirely (every record unverified)</td><td><code>status="failed"</code> → <code>ai_verifier_ran = False</code> (ai_verifier.py ~211–217)</td><td><code>verifier_unavailable</code></td></tr>
+          <tr><td>Response omits one clause (partial failure)</td><td><code>status="completed"</code>, but surfaces an <code>unverified_count</code></td><td><code>verifier_missing_verdict</code></td></tr>
+          <tr><td>Clause verified normally</td><td><code>status="completed"</code> → <code>ai_verifier_ran = True</code></td><td>—</td></tr>
+        </tbody>
+      </table>
 
       <h3>Evidence grounding</h3>
       <p>Every pass/fail on a <em>present</em> clause must cite a real, verbatim quote. <code>classify_grounding()</code> (evidence_grounding.py) returns grounded / absence / ungrounded. Ungrounded findings are demoted by <code>downgrade_ungrounded_finding()</code> (evidence_grounding.py) → decision <code>REVIEW</code>, <code>blocks_send=True</code>, reason code <code>ungrounded_finding</code>. The two legitimate no-quote cases: a required clause FAILed as missing, and a prohibited clause that correctly does not appear. Wired in via <code>build_grounding()</code> (ai_first_review.py).</p>
@@ -963,9 +977,9 @@
     <!-- ============ 5. PDF / DOCX & APPROACH C ============ -->
     <section class="tab-panel" id="tab-rendering">
       <h2>PDF / DOCX rendering &amp; Approach C</h2>
-      <p class="panel-lede">"Approach C" converts a PDF-source NDA into a working DOCX <strong>at ingest time</strong>, so the whole redline/export pipeline operates on a real Word document instead of a reconstructed one on the fly. A vendored faithful-render path shows the original DOCX byte-for-byte in the browser.</p>
+      <p class="panel-lede"><strong>"Approach C"</strong> is the third of three strategies the team tried for handling a PDF-source NDA. A (reconstruct on every export) and B (reconstruct on demand in the review worker) both re-derived a DOCX repeatedly from the PDF; <strong>Approach C converts the PDF to a working DOCX exactly once, at ingest</strong>, so the whole redline/export pipeline thereafter operates on a real Word document instead of a reconstruction rebuilt on the fly. The name is the codebase's own — it's stamped across <code>pdf_ingest_conversion.py</code>, <code>ingestion_service.py</code>, and the artifact registry. A separate vendored faithful-render path shows the original DOCX byte-for-byte in the browser.</p>
 
-      <h3>Approach C: convert at ingest</h3>
+      <h3>Approach C: convert the PDF to a DOCX once, at ingest</h3>
       <ul>
         <li><code>convert_pdf_matter_to_docx()</code> lives in <code>nda_automation/pdf_ingest_conversion.py</code>.</li>
         <li>It is wired at <strong>ingest</strong>: <code>ingestion_service.py</code> → <code>_convert_pdf_matter_at_ingest()</code> → <code>_persist_pdf_working_conversion()</code> (ingestion_service.py) → <code>convert_pdf_matter_to_docx()</code>. Non-PDF matters are skipped (document_type guard). The conversion re-keys paragraphs to anchor by source_index and registers a <code>role="working"</code> artifact.</li>
@@ -1019,7 +1033,7 @@
       <ul>
         <li><strong>Module:</strong> <code>nda_automation/matter_store.py</code>. <code>create_matter()</code> (matter_store.py) mints <code>matter_&lt;uuid12&gt;</code> and writes <code>$NDA_DATA_DIR/matters/&lt;id&gt;.json</code>.</li>
         <li><strong>Locking:</strong> <code>_locked_store()</code> (matter_store.py) takes an in-process <code>threading.RLock()</code> (30s timeout) <em>and</em> a cross-process <code>fcntl.flock()</code> on <code>matters.lock</code>, so create/dedupe/update read-modify-write is serialised even across processes. The one historical bug was an <em>unlocked</em> dedupe pre-check; the real R-M-W path was always sound.</li>
-        <li><strong>Dedup:</strong> <code>_find_gmail_duplicate_unlocked()</code> (matter_store.py) runs inside the lock — it indexes attachment id / case-folded filename / SHA256, gates each candidate through ownership, and confirms filename-only matches by hash. Atomic check+write closes the TOCTOU window.</li>
+        <li><strong>Dedup:</strong> <code>_find_gmail_duplicate_unlocked()</code> (matter_store.py) runs inside the lock — it indexes attachment id / case-folded filename / SHA256, gates each candidate through ownership, and confirms filename-only matches by hash. Atomic check+write closes the TOCTOU (time-of-check-to-time-of-use) window — the window where two concurrent imports both pass a "not a duplicate" check before either writes.</li>
       </ul>
 
       <h3>Performance &amp; observability (scale hardening)</h3>
@@ -1363,17 +1377,95 @@
 
     <!-- ============ 10. RECIPES ============ -->
     <section class="tab-panel" id="tab-recipes">
-      <h2>How-to recipes</h2>
-      <p class="panel-lede">Common changes, with the exact place to make them.</p>
+      <h2>How to change the system</h2>
+      <p class="panel-lede">The common changes — add a thing, remove a thing, fix a thing — each named down to the exact file, symbol, and seam. Every recipe is anchored to real code; where a change crosses layers, the layers are listed in order. For the exhaustive per-field tables, this section links to <code>docs/DETAILED.md</code> rather than duplicating them.</p>
 
-      <h3>Add a clause type</h3>
+      <div class="card tight">
+        <h4>On this page</h4>
+        <ul>
+          <li><a href="#rc-golden">The golden rule — change the Playbook, not the engine</a></li>
+          <li><a href="#rc-playbook-rule">Add / edit a Playbook rule</a> · <a href="#rc-clause-type">Add a clause type (native vs dynamic)</a></li>
+          <li><a href="#rc-review-field">Add a review-result field</a> · <a href="#rc-govlaw">Add a governing-law option / signing entity</a></li>
+          <li><a href="#rc-model">Change / add an AI model</a> · <a href="#rc-format">Add a format property</a> · <a href="#rc-endpoint">Add an API endpoint</a></li>
+          <li><a href="#rc-gmail">Gmail intake tuning</a> · <a href="#rc-cachebust">The static-asset cache-bust ritual</a></li>
+          <li><a href="#rc-coverage">Coverage / export internals</a> · <a href="#rc-security">Security seams</a> · <a href="#rc-tests">Run the tests</a> · <a href="#rc-ops">Ops / incident levers</a></li>
+          <li><a href="#rc-debug">Debug a stuck review</a></li>
+        </ul>
+      </div>
+
+      <figure class="wf-fig">
+        <svg role="img" viewBox="0 0 720 132" xmlns="http://www.w3.org/2000/svg" aria-labelledby="wf-chg-t wf-chg-d">
+          <title id="wf-chg-t">Where a change lands: config vs code</title>
+          <desc id="wf-chg-d">Rule and option changes go in the Playbook (data). Clause-type, review-field, model, format, and endpoint changes touch code seams. The static-asset cache-bust ritual and the test discipline gate every change before it ships.</desc>
+          <defs>
+            <marker id="wf-cvR" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path class="wf-chevron" d="M0,0 L6,3 L0,6 Z"></path>
+            </marker>
+          </defs>
+          <rect class="wf-accent" x="8" y="12" width="200" height="46" rx="8"></rect>
+          <text class="wf-th on-accent" x="108" y="32" text-anchor="middle">Rules · options · thresholds</text>
+          <text class="wf-ts" x="108" y="48" text-anchor="middle">edit playbook.json (data)</text>
+
+          <rect class="wf-box" x="8" y="74" width="200" height="46" rx="8"></rect>
+          <text class="wf-th" x="108" y="94" text-anchor="middle">Clause-type · field · model</text>
+          <text class="wf-ts" x="108" y="110" text-anchor="middle">edit code seams</text>
+
+          <rect class="wf-box" x="262" y="43" width="176" height="46" rx="8"></rect>
+          <text class="wf-th" x="350" y="63" text-anchor="middle">Cache-bust ritual</text>
+          <text class="wf-ts" x="350" y="79" text-anchor="middle">if you touched static/</text>
+
+          <rect class="wf-box" x="492" y="43" width="150" height="46" rx="8"></rect>
+          <text class="wf-th" x="567" y="63" text-anchor="middle">Targeted tests</text>
+          <text class="wf-ts" x="567" y="79" text-anchor="middle">never full suite here</text>
+
+          <rect class="wf-accent" x="668" y="43" width="46" height="46" rx="8"></rect>
+          <text class="wf-th on-accent" x="691" y="70" text-anchor="middle">Ship</text>
+
+          <path class="wf-arr" marker-end="url(#wf-cvR)" d="M208,35 L258,58"></path>
+          <path class="wf-arr" marker-end="url(#wf-cvR)" d="M208,97 L258,74"></path>
+          <path class="wf-arr" marker-end="url(#wf-cvR)" d="M438,66 L488,66"></path>
+          <path class="wf-arr" marker-end="url(#wf-cvR)" d="M642,66 L664,66"></path>
+        </svg>
+        <figcaption>The decision that starts every change: is it a rule/option (data — edit the Playbook) or a mechanism (code — edit a seam)? Either way, the cache-bust ritual and targeted tests gate the ship.</figcaption>
+      </figure>
+
+      <h3 id="rc-golden">The golden rule — change the Playbook, not the engine</h3>
+      <p>Before any recipe: if what you're changing is a <em>rule, threshold, approved option, or redline template</em>, it belongs in <code>playbook.json</code> — never hardcoded in the engine or JS. The AI receives the playbook rules in its packet and is told to comply <em>to</em> them; the deterministic checkers read the same playbook. Hardcoding a rule the playbook owns creates a <strong>deterministic ghost</strong> (a hardcoded rule that duplicates and can silently override the Playbook). This one decision routes half the recipes below.</p>
+
+      <h3 id="rc-playbook-rule">Add / edit a Playbook rule</h3>
       <ol class="steps">
-        <li>Add the clause object to the <code>"clauses"</code> array in <code>playbook.json</code> (id, name, <code>type</code> required|prohibited, requirement, <code>rules</code> block, search_terms, taxonomy_groups). The checker indexes it on load.</li>
-        <li><strong>Native vs dynamic:</strong> native clauses have a deterministic engine checker; dynamic clauses (e.g. non_circumvention) are only emitted by the <em>AI</em> engine — the deterministic engine never produces them, so a dynamic clause needs both the playbook entry and an AI-engine seam (and any test must add a backend seam, not just a FE change).</li>
-        <li>Validate via <code>POST /api/playbook/draft</code>, then publish via <code>POST /api/playbook/publish</code> (lint-gated, error-severity blocks).</li>
+        <li><strong>Edit the rule</strong> in the <strong>Playbook</strong> admin UI (or the <code>playbook.json</code> under <code>$NDA_DATA_DIR</code> — the live copy; the repo-root <code>playbook.json</code> is only the first-run seed). A clause object carries <code>id</code>, <code>name</code>, <code>type</code> (<code>required</code>|<code>prohibited</code>), <code>requirement</code>, and a <code>rules</code> block (version, clause_type, acceptable_position, pass_conditions, fail_conditions, review_triggers, evidence_requirements, redline_guidance). The loader is <code>load_playbook()</code> in <code>checker.py</code>; there is no build step, it indexes on load.</li>
+        <li><strong>Validate the draft</strong> — <code>POST /api/playbook/draft</code> → <code>handle_playbook_validate_draft</code> (routes/playbook.py) returns <code>{valid, errors, warnings}</code>. Warnings are advisory; only <strong>error</strong>-severity blocks.</li>
+        <li><strong>Publish</strong> — <code>POST /api/playbook/publish</code> → <code>handle_playbook_publish</code>. The gate is <code>_enforce_playbook_lint()</code> (playbook_authoring.py) → <code>lint_violations_for(playbook, severities={"error"})</code>. Layer-1 lint covers decision-space, condition-well-formedness, redline-template, approved-options, and referential integrity; an optional Layer-2 AI semantic lint (advisory, default-off) layers on top. The gate <strong>fails open</strong> — if the lint itself throws, publish is not blocked.</li>
+      </ol>
+      <div class="callout warn">
+        <strong>Test gotcha (PLAYBOOK_PATH default-arg).</strong> Patching the module constant <code>PLAYBOOK_PATH</code> does <em>not</em> redirect the playbook helpers — many bind the path as a default argument at import time. In tests, <strong>inject an explicit path/runtime</strong> into the helper instead of patching the constant. (Fuller treatment in <strong>Playbook: Source of Truth</strong>.)
+      </div>
+
+      <h3 id="rc-clause-type">Add a clause type (native vs dynamic)</h3>
+      <ol class="steps">
+        <li><strong>Add the clause object</strong> to the <code>"clauses"</code> array in the Playbook (id, name, <code>type</code>, requirement, <code>rules</code>, search_terms, taxonomy_groups). Validate → publish as above.</li>
+        <li><strong>Decide native vs dynamic.</strong> This is an <em>engine</em> distinction, not a JSON key. A <strong>native</strong> clause has a deterministic engine checker that can emit it. A <strong>dynamic</strong> clause (e.g. <code>non_circumvention</code>) is only ever emitted by the <em>AI</em> engine — the deterministic engine never produces it. So a purely-deterministic run will simply never surface a dynamic clause.</li>
+        <li><strong>Wire the engine seam if dynamic.</strong> A dynamic clause needs both the Playbook entry <em>and</em> an AI-engine seam — a front-end change alone is necessary but not sufficient. Any test must add the backend seam, not just assert the FE renders it.</li>
+      </ol>
+      <p>See <strong>docs/DETAILED.md</strong> for the exhaustive clause-shape and engine-marker tables.</p>
+
+      <h3 id="rc-review-field">Add a review-result field</h3>
+      <p><strong>The correct seam is the review-engine metadata layer, NOT the checker.</strong> Add or derive the new field in <code>_with_active_engine_metadata()</code> (<code>review_engine.py:141</code>), which every review path funnels through (it's called from <code>review_engine.py:105</code> and <code>:131</code>) and which already assembles <code>active_review_engine</code>, <code>playbook_runtime</code>, and <code>playbook_version</code> onto the result dict.</p>
+      <div class="callout">
+        <strong>Why not the checker?</strong> <code>checker.review_nda()</code> is the clause oracle — it's shared by the deterministic engine, the AI engine, <em>and</em> the network-free gen-verify self-check (<code>self_check_generated_nda()</code>). A field added there leaks into gen-verify's oracle and can perturb the ship gate. The metadata layer runs once per real review, after the engine, so a review-result field added there is scoped to reviews only. (Memory: "Review-result field engine seam".)
+      </div>
+
+      <h3 id="rc-govlaw">Add a governing-law option / a signing entity</h3>
+      <p>These two are joined: an entity <em>fixes</em> its governing law, so they are never independent inputs.</p>
+      <ol class="steps">
+        <li><strong>Governing-law option</strong> — add it to the <code>governing_law</code> clause's <code>rules.approved_options[]</code> in the Playbook (each option has an <code>id</code>). The five today are <code>india</code>, <code>delaware</code>, <code>england_and_wales</code>, <code>difc</code>, <code>ontario_canada</code>.</li>
+        <li><strong>Signing entity</strong> — add a bundle in <code>entity_registry.py</code>. The bundle's <code>governing_law.playbook_option_id</code> <strong>MUST equal</strong> an <code>approved_options[].id</code> above — that's the join key (entity_registry.py:6–7, 40). Picking an entity in the Generator UI sets the law from this join (the consolidated "Our signing entity" fieldset, index.html), so the law is never a free input.</li>
+        <li><strong>Generation slots</strong> — the template <code>templates/generic_nda.docx</code> fills structured slots (nda_generation.py); the entity's law + court fill the governing-law slot at generation time, realigned from template defaults to the live playbook.</li>
+        <li><strong>gen-verify override check</strong> — governing law is override-aware and locked: in <code>nda_generation.py</code> an <code>override_id</code> differing from the entity default raises <code>NdaGenerationError</code> (equal-to-default is a harmless no-op), and the manifest always records <code>governing_law_overridden = False</code>. This closes the divergence where an override could pull another entity's court into a signed NDA.</li>
       </ol>
 
-      <h3>Change an AI model</h3>
+      <h3 id="rc-model">Change / add an AI model</h3>
       <p>Set the env var and redeploy (or flip live in Render):</p>
       <table>
         <thead><tr><th>Job</th><th>Env var</th><th>Default</th></tr></thead>
@@ -1385,21 +1477,77 @@
           <tr><td>Gmail triage</td><td>NDA_GMAIL_TRIAGE_MODEL</td><td>deepseek/deepseek-v4-pro</td></tr>
         </tbody>
       </table>
+      <p>The <strong>structure-validation overlay</strong> is its own seam: <code>NDA_STRUCTURE_VALIDATION_ENABLED</code> + <code>NDA_STRUCTURE_VALIDATION_MODEL</code> (default <code>deepseek/deepseek-v4-flash</code>, render.yaml). Generation is <strong>deterministic in prod</strong> (<code>NDA_GENERATION_AI_ENABLED=false</code>), so <code>NDA_GENERATION_MODEL</code> is only consulted if that flag is flipped on. The resolution seams: reviewer <code>configured_ai_assessment_reviewer()</code> (ai_assessor.py), verifier <code>resolve_verifier()</code> (ai_verifier.py), intake <code>classify_intake_attachment()</code> (gmail_intake_classifier.py).</p>
       <div class="callout warn">
-        <strong>Reviewer default differs between local and prod.</strong> The <code>anthropic/claude-opus-4.8-fast</code> above is the code/prod default, but <code>.env.example</code> intentionally sets <code>NDA_AI_MODEL=x-ai/grok-4.3</code> for cheaper local dev. If a local review disagrees with prod, this is why — set <code>NDA_AI_MODEL</code> to the Opus model to match prod.
+        <strong>Reviewer default differs between local and prod (deliberate).</strong> The <code>anthropic/claude-opus-4.8-fast</code> above is the code default (<code>DEFAULT_OPENROUTER_MODEL</code>, ai_review.py) and prod (render.yaml), but <code>.env.example</code> intentionally sets <code>NDA_AI_MODEL=x-ai/grok-4.3</code> for cheaper local dev. If a local review disagrees with prod on a borderline clause, this is why — set <code>NDA_AI_MODEL</code> to the Opus model to match prod. (Slugs drift — the source of truth is <code>render.yaml</code> / <code>.env.example</code>, per the AI Review Pipeline note.)
       </div>
 
-      <h3>Change a playbook rule</h3>
-      <p>Edit the rule in the <strong>Playbook</strong>, never the engine. The AI receives the playbook rules in its packet; deterministic checkers read the same playbook. Hardcoding a rule the playbook owns is a "deterministic ghost" — don't.</p>
+      <h3 id="rc-format">Add a format property (format toolbar)</h3>
+      <p>A new formatting property (say, a run-level toggle) touches six layers, front to back:</p>
+      <ol class="steps">
+        <li><strong>Toolbar UI</strong> — a control in <code>static/js/review-workstation-format.js</code> (font-size lives here as <code>applyFontSizeChange()</code> ~300 / <code>paragraph.fontSize</code> ~330–595; alignment as <code>FORMAT_ALIGN_BUTTONS</code>).</li>
+        <li><strong>Edit model</strong> — a <code>FORMAT_PARAGRAPH</code> edit in <code>static/js/modules/redline-edit-contract.mjs</code> (<code>REDLINE_ACTION_FORMAT_PARAGRAPH</code>) carrying the property's from/to.</li>
+        <li><strong>Backend redline builder</strong> — a run-property setter in <code>redline_xml.py</code> (e.g. <code>_set_run_font_size()</code> ~476, alongside <code>_set_run_font</code> / <code>_set_run_toggle</code>), applied to the new <code>rPr</code>.</li>
+        <li><strong>CT_RPr child order</strong> — the new <code>&lt;w:…&gt;</code> child must sort into canonical schema order or Word rejects it. The stable re-sort into CT_RPr order is in <code>redline_xml.py</code> (~368–394); add your tag to the order table or the run silently corrupts.</li>
+        <li><strong>Tracked-format markup</strong> — for a tracked property change, the <code>&lt;w:rPrChange&gt;</code> path (redline_xml.py ~319–368, via <code>_apply_tracked_run_format</code>) records the old rPr so Word shows it as a reviewable change.</li>
+        <li><strong>Coverage gate</strong> — a format-only edit still passes through <code>verify_export_content_coverage()</code>; confirm it doesn't trip the sequence check. (Memory: "Format toolbar end-to-end contract".)</li>
+      </ol>
 
-      <h3>Debug a stuck review</h3>
+      <h3 id="rc-endpoint">Add an API endpoint</h3>
+      <ol class="steps">
+        <li><strong>Write the handler</strong> in the right <code>nda_automation/routes/*.py</code> module (one module per surface). A handler takes the request handler (<code>self</code>/<code>handler</code>) and writes its own response via <code>handler._send_json(...)</code>; there is no middleware stack or decorator registry.</li>
+        <li><strong>Register the route</strong> — add a small dispatch wrapper in <code>server.py</code> and a key in the matching exact-match dict: <code>_GET_EXACT_ROUTES</code> (~337) or <code>_POST_EXACT_ROUTES</code> (server.py:393) for authenticated routes; <code>_PUBLIC_GET_EXACT_ROUTES</code> / <code>_PUBLIC_POST_EXACT_ROUTES</code> for pre-auth ones. Per-<code>&lt;id&gt;</code> sub-resources are matched by suffix in the dispatcher fallback blocks, not the dict.</li>
+        <li><strong>Auth is automatic; admin is opt-in.</strong> Non-public routes already run after <code>_authorize_request()</code>. For an admin-only endpoint call <code>require_admin(handler)</code> (<code>routes/common.py</code>) at the top — it returns <code>True</code> to proceed or sends a <strong>403</strong> and returns <code>False</code>.</li>
+        <li><strong>CSRF + rate-limit are automatic</strong> for the method: state-changing methods pass the <code>Origin</code> check <em>before</em> auth in <code>do_POST</code>/<code>do_DELETE</code>, and every authed request is rate-limited (see <strong>Security seams</strong>). You don't wire these per-route.</li>
+      </ol>
+
+      <h3 id="rc-gmail">Gmail intake tuning</h3>
+      <p>The intake funnel (see <strong>Integrations → Gmail intake</strong> for the diagram) is tuned by these seams — most are always-on floors you extend, not replace:</p>
+      <ul>
+        <li><strong>Detection-term keyword floor (always on)</strong> — the deterministic content scorer uses a fixed built-in NDA vocabulary and a mandatory explicit-signal escape hatch (<code>_metadata_has_explicit_nda_signal</code>, gmail_integration.py) that forces any explicit-NDA document (incl. foreign-language titles) through to the AI. This floor is not disableable.</li>
+        <li><strong>Optional admin custom terms</strong> — <code>NDA_GMAIL_CUSTOM_TERMS_ENABLED</code> (default off) lets admin "inbound search terms" <em>add</em> content-scorer signals via <code>_custom_detection_terms</code>. It only adds scorer signals — it <strong>never widens the fetch query</strong>.</li>
+        <li><strong>AI pre-gate</strong> — <code>NDA_GMAIL_AI_PREGATE</code> (default on) drops obvious non-NDAs below the skip band before the paid intake call. Off restores always-call.</li>
+        <li><strong>Intake classifier</strong> — <code>classify_intake_attachment()</code> (gmail_intake_classifier.py), model <code>NDA_GMAIL_INTAKE_MODEL</code> (default <code>deepseek/deepseek-v4-flash</code>). Any error/timeout falls back to the deterministic lane classifier.</li>
+        <li><strong>Fetch query</strong> is fixed-structure (<code>_inbound_envelope_query</code>, gmail_integration.py) — you tune the <em>excluded senders</em> (admin-editable, with a <code>DOCUSIGN_NOTIFICATION_DOMAINS</code> hard floor) and the window/limit, not the query shape.</li>
+      </ul>
+      <p><strong>Live vs inert:</strong> the keyword floor, pre-gate, intake + triage classifiers, and e-sign-capture (<code>NDA_GMAIL_ESIGN_NDA_CAPTURE</code>, default on) are live. Custom-terms is <strong>inert by default</strong> (opt-in). Inbound AI <em>review</em> is <strong>not</strong> wired — matters land "Not Reviewed".</p>
+
+      <h3 id="rc-cachebust">The static-asset cache-bust ritual</h3>
+      <div class="callout warn">
+        <strong>Editing this very guide requires a <code>?v=</code> bump.</strong> This <code>developer-guide.html</code> is loaded through an <code>&lt;iframe&gt;</code> whose <code>src</code> is <code>GUIDE_SRC</code> in <code>static/app.js</code> (<code>developer: "/static/developer-guide.html?v=…"</code>). Editing the HTML alone is invisible to a loaded browser — an integrator must <strong>bump the guide's <code>?v=</code> token in <code>GUIDE_SRC</code></strong> (then run the manifest ritual below, since <code>app.js</code> itself changed). That bump is handled separately from this guide edit — but know it exists.
+      </div>
+      <ol class="steps">
+        <li><strong>Edit the asset</strong> under <code>static/</code>.</li>
+        <li><strong>Bump its <code>?v=</code> token</strong> in <code>index.html</code> (for a <code>.css</code>/<code>.js</code>) or in <code>app.js</code>'s <code>GUIDE_SRC</code> (for a guide iframe). The manifest tool <em>refuses</em> to record changed bytes under an unchanged token, so this must come first.</li>
+        <li><strong>Regenerate the manifest</strong> — <code>python -m nda_automation.static_versioning --write</code> updates <code>static/asset-tokens.json</code>.</li>
+        <li><strong>Confirm the guard passes</strong> — <code>python -m nda_automation.static_versioning --check</code> (belt-and-braces: <code>scripts/cache_bust_guard.py --tree</code>). CI runs the same check (<code>tests/test_static_asset_manifest.py</code>), so a bytes-changed-token-unchanged slip is a red build.</li>
+      </ol>
+      <p><code>.html</code> guides are <strong>manifest-excluded</strong> (they always revalidate), so they need no <code>asset-tokens.json</code> entry — but their <code>?v=</code> in <code>app.js</code>/<code>index.html</code> must still bump for browsers to reload them.</p>
+
+      <h3 id="rc-coverage">Coverage / export internals</h3>
+      <ul>
+        <li><strong>Content-coverage gate</strong> — <code>verify_export_content_coverage()</code> (docx_health.py) fails closed if the DOCX body is empty, covers &lt;50% of source text (<code>EXPORT_CONTENT_COVERAGE_RATIO = 0.5</code>), or the accepted-paragraph sequence diverges from the expected one. The PDF path can't do exact sequencing (reconstruction reflows), so <code>verify_pdf_reconstruction_redline_coverage()</code> instead confirms each redline's <code>w:ins</code>/<code>w:del</code> markup via confident text match + one-to-one bipartite matching.</li>
+        <li><strong><code>source_index</code> vs <code>paragraph_index</code>/<code>index</code></strong> — <code>source_index</code> is <em>non-unique</em> provenance (split blocks share it); <code>paragraph_index</code> (a.k.a. <code>index</code>) is the <em>unique</em> blank-line-block key. Export + the health gate key on <code>paragraph_index</code> and fall back to <code>source_index</code> (<code>_expected_redline_source_index()</code>, docx_health.py). Get these two confused and redlines anchor to the wrong paragraph.</li>
+        <li><strong>PDF→DOCX for PDF-source NDAs</strong> — Approach C converts once at ingest (<code>convert_pdf_matter_to_docx()</code>, pdf_ingest_conversion.py) so export operates on a real DOCX; the low-level engine is <code>reconstruct_pdf_to_docx()</code> (pdf_docx_reconstruction.py). See <strong>PDF / DOCX &amp; Approach C</strong>.</li>
+      </ul>
+
+      <h3 id="rc-security">Security seams</h3>
+      <ul>
+        <li><strong>Admin gate</strong> — <code>require_admin(handler)</code> (routes/common.py) → <code>request_is_admin()</code> (http_auth.py). Authority = <code>NDA_ADMIN_USERS</code> (entries are <code>google:&lt;sub&gt;</code>, the OAuth sub — not the email) plus an in-app persisted admin list (Google callers only). Basic-auth usernames never inherit admin.</li>
+        <li><strong>CSRF Origin check</strong> — <code>origin_allowed_for_request()</code> (csrf.py) for state-changing methods only, before auth. Flag <code>NDA_ENFORCE_CSRF</code> (default ON for non-loopback, OFF for localhost).</li>
+        <li><strong>Proxy-aware rate limit</strong> — <code>_rate_limit_request()</code> (server.py) + <code>rate_limit.py</code>, bucketed by user id then real client IP (proxy hops from <code>NDA_TRUSTED_PROXY_COUNT</code>); 300/min general, 240/min render, 429 + Retry-After.</li>
+        <li><strong>Fail-closed tenant isolation</strong> — <code>_matter_owner_matches()</code> (matter_store.py) on every matter op. Empty caller = single-tenant wildcard; authed caller must match exactly; an <em>ownerless</em> matter is never a wildcard (it fails closed).</li>
+        <li><strong>Outbound recipient-confirmation guard</strong> — <code>require_confirmed_recipient()</code> (gmail_matter_outbox.py) via <code>validate_outbound_send_ready()</code>; a recipient from an inbound header that isn't confirmed, is empty, or doesn't match the resolved address raises <code>RecipientConfirmationError</code> → <strong>400</strong> before any Gmail call. Blocks spoofed-Reply-To exfiltration.</li>
+      </ul>
+
+      <h3 id="rc-debug">Debug a stuck review</h3>
       <ol>
         <li>Remember review is async — <code>POST /api/matters/&lt;id&gt;/review-refresh</code> returns 202; the result arrives later. "Reviewing…" is normal up to ~4 min; a stale recorded start (~10 min) reads as "stalled", not failed.</li>
         <li>Only a recorded error shows "failed". Check the provider key (<code>OPENROUTER_API_KEY</code>), <code>NDA_AI_REVIEW_ENABLED</code>, and the review-state reason codes.</li>
         <li>Grounding demotions (<code>ungrounded_finding</code>) and the 0.75 confidence floor push borderline clauses to Review by design — that's not a bug.</li>
       </ol>
 
-      <h3>Run the tests</h3>
+      <h3 id="rc-tests">Run the tests</h3>
       <div class="callout warn">
         <strong>Do not run the whole backend suite in one process on this box.</strong> A monolithic <code>pytest tests/</code> (all ~210 test files in one interpreter) climbs memory until the OS <strong>SIGKILLs it partway through</strong> — a partial run that reads as a spurious failure. And <strong>never run the full suite in parallel across worktrees</strong>: concurrent full-suite runs gridlock the shared box.
       </div>
@@ -1414,6 +1562,18 @@
       <div class="callout">
         <strong>The constraint is this box, not the suite.</strong> CI (<code>.github/workflows/ci.yml</code>) runs the <em>full</em> <code>python -m pytest -q</code> on a clean ubuntu runner across <strong>Python 3.9 / 3.11 / 3.12</strong> — the whole suite in one process is fine on a fresh machine; it's only this shared dev box that SIGKILLs a monolithic run under memory pressure. CI has three jobs: <strong><code>test</code></strong> (lint + compile + the OAuth-focused slice + full pytest, matrixed over the three interpreters), <strong><code>frontend</code></strong>, and <strong><code>docker-build</code></strong>. The <code>docker-build</code> job is the one that catches <em>prod-only</em> dependency breaks — a camelot/PyMuPDF ABI or co-resolution failure that only shows up in the full <code>.[pdf,gmail,tables]</code> Docker image — so a green local test run is not a substitute for it.
       </div>
+      <div class="callout">
+        <strong>Frontend runner env.</strong> The FE tests are plain <code>node</code> scripts under <code>tests/frontend/</code> (jsdom / playwright / pngjs from <code>package.json</code>) — <code>npm run test:frontend</code> plus ~34 per-area scripts (<code>test:frontend:utils</code>, <code>:structure</code>, <code>:corpus</code>, …). The ones that boot a server pick a <em>random</em> port (occasional flake — just re-run), and in a shared worktree the <code>node_modules</code> is a per-worktree symlink. (Memory: "Frontend test runner env".)
+      </div>
+
+      <h3 id="rc-ops">Ops / incident levers</h3>
+      <p>The fastest reversions are environment variables you flip from the Render dashboard — no deploy needed. Full map in <strong>Deploy &amp; Ops</strong>; the load-bearing ones:</p>
+      <ul>
+        <li><strong>Data root</strong> — <code>NDA_DATA_DIR</code> (prod <code>/var/data</code>, the Render persistent disk). A boot guard rejects an ephemeral dir but does <em>not</em> confirm the disk is actually mounted — verify the mount before trusting persistence.</li>
+        <li><strong>Disk-space janitor</strong> — the archive-rotation env vars bound the <code>pruned-matters/</code> archive so a full disk can't 500 every authed request; session-save is <strong>fail-soft</strong> so a save failure degrades rather than bricks. (Incident memory: disk-full → user_store 500s.)</li>
+        <li><strong>Global Gmail inbound toggle</strong> — <code>NDA_GMAIL_SYNC_ENABLED=false</code> is the real stop for all scheduled polling (disconnecting one account is not the same). This is the single lever for a Gmail-storm incident.</li>
+        <li><strong>OpenRouter key</strong> — blanking <code>OPENROUTER_API_KEY</code> is the nuclear stop for <em>all</em> provider calls (review, verifier, intake, triage, structure). <code>NDA_AI_REVIEW_ENABLED=false</code> is the narrower stop for just the review pass.</li>
+      </ul>
     </section>
   </main>
 </div>

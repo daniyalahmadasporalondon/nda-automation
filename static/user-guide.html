@@ -494,7 +494,7 @@
         <thead><tr><th>Tab</th><th>Go here to…</th></tr></thead>
         <tbody>
           <tr><td>Dashboard</td><td>See your at-a-glance overview: pipeline counts, connection health, the smart search box, and the intake queue.</td></tr>
-          <tr><td>Generator</td><td>Create a new NDA from scratch — pick your signing entity and counterparty, set the term and purpose, and generate a draft.</td></tr>
+          <tr><td>Generator</td><td>Create a new NDA from scratch — pick your <strong>signing entity</strong> (which of your own legal entities is signing) and the <strong>counterparty</strong> (the other company you're signing with), set the term and purpose, and generate a draft.</td></tr>
           <tr><td>Repository</td><td>Work through your active NDAs on the six-column board (your main work surface).</td></tr>
           <tr><td>Corpus</td><td>Search your library of signed NDAs — group by counterparty or month, filter with facets.</td></tr>
           <tr><td>Review</td><td>Read and mark up a single NDA. You usually reach it by clicking a card in the Repository.</td></tr>
@@ -581,7 +581,7 @@
         <li><strong>Problems get flagged and redlined.</strong> The app gives each clause a verdict — it <strong>passes</strong>, it <strong>needs review</strong> (a human should look), or it <strong>fails</strong> (a clear problem). For problem clauses, it proposes <strong>redlines</strong>: specific edits that would bring the clause in line with your rules.</li>
         <li><strong>A human approves it.</strong> You open the NDA, look at the AI's findings, fix or accept the redlines, and mark each flagged clause <strong>Reviewed</strong> to confirm you've checked it. This unlocks the next step.</li>
         <li><strong>It gets sent.</strong> You send the marked-up NDA back to the counterparty by email, or send a clean copy out for signature via DocuSign.</li>
-        <li><strong>It gets signed and filed.</strong> Once both sides sign, the NDA is <strong>executed</strong>. Executed agreements drop off your active board and move into the <strong>Corpus</strong> — your permanent, searchable library of signed NDAs.</li>
+        <li><strong>It gets signed and filed.</strong> Once both sides sign, the NDA is <strong>executed</strong> (the legal word for "fully signed by both sides"). Executed agreements drop off your active board and move into the <strong>Corpus</strong> — your permanent, searchable library of signed NDAs.</li>
       </ol>
 
       <div class="callout">
@@ -667,6 +667,7 @@
             <li><span class="ui">Reviewing…</span> — a review is running right now in the background.</li>
             <li><span class="ui">Not reviewed</span> — no AI review yet. Open the NDA to run one. "Not reviewed" is a deliberate nudge, not an error.</li>
           </ul>
+          <em>A note on wording:</em> you'll see <span class="ui">Not reviewed</span> on an NDA you haven't run a review on. An NDA that's <em>waiting its turn</em> in the automatic background queue shows the closely-related <span class="ui">Not Reviewed Yet</span> instead. Both simply mean "no verdict has arrived yet." Separately, <span class="ui">In Review</span> is a <em>board column name</em> (a lifecycle stage), not a badge — don't confuse the two.
         </li>
         <li>A <span class="ui">Stale</span> badge if the NDA was edited after its last review (so the review may be out of date).</li>
         <li>An <strong>issue count</strong> (e.g. "3 issues") once a review has run, plus the column it's in.</li>
@@ -759,6 +760,9 @@
 
       <h3>The three verdicts</h3>
       <p>Every important clause gets one of three verdicts. This is the most important thing to understand on the whole screen.</p>
+      <div class="callout warn">
+        <strong>One naming note before you start.</strong> This guide calls the third verdict <strong>FAIL</strong>, because that's what it means — the clause has a real problem. On screen the badge reads <strong>"Fail"</strong> (or <strong>"Prohibited"</strong> when the clause is one the Playbook forbids outright). Both are the FAIL verdict — a real problem the app has flagged and marked up.
+      </div>
       <div class="card">
         <p><span class="verdict pass">PASS</span> &nbsp;<strong>"looks fine."</strong> The clause meets your Playbook's rule. Nothing to do.<br>
         <em>Example:</em> the governing law is England &amp; Wales, which is on your approved list.</p>
@@ -769,8 +773,8 @@
         <strong>What you do:</strong> read the flagged clause, decide if it's acceptable, then acknowledge it (see "the approve gate" on the Redlines tab). A Review clause <strong>blocks you from sending</strong> until a person has signed off on it.</p>
       </div>
       <div class="card">
-        <p><span class="verdict fail">FAIL</span> &nbsp;<strong>"a real problem, flagged and marked up."</strong> The clause clearly breaks a Playbook rule: a required clause is missing, a clause is present but wrong, or a forbidden clause is present. The app flags it and proposes a markup (a redline) to fix it.<br>
-        <em>Example:</em> the governing law isn't one you approve — you'll see a FAIL with the exact sentence highlighted and a proposed redline replacing it with an approved law.<br>
+        <p><span class="verdict fail">FAIL</span> <span class="verdict fail">badge reads "Fail"</span> &nbsp;<strong>"a real problem, flagged and marked up."</strong> The clause clearly breaks a Playbook rule: a required clause is missing, a clause is present but wrong, or a forbidden clause is present. The app flags it and proposes a markup (a redline) to fix it.<br>
+        <em>Example:</em> the governing law isn't one you approve — you'll see this verdict with the exact sentence highlighted and a proposed redline replacing it with an approved law.<br>
         <strong>What you do:</strong> review the proposed fix and include it in the redline you send back (see the Redlines tab).</p>
       </div>
       <p>At the top of the panel you also see an <strong>overall verdict</strong> — a single PASS, REVIEW, or FAIL summary plus a tally like "4/6," telling you how many clauses passed. If no AI review has run yet, this reads <span class="ui">Not reviewed</span> with the prompt "Run Review to see verdicts" — that's normal and just means you haven't clicked <span class="ui">Review</span> yet.</p>
@@ -803,7 +807,7 @@
         <li>and, for flagged clauses, the <strong>proposed redline</strong> with <span class="ui">Include</span> / <span class="ui">Ignore</span> controls.</li>
       </ul>
       <div class="callout">
-        <strong>Reading the term cap.</strong> On the <strong>Term &amp; survival</strong> clause, the <em>Preferred position</em> shows the playbook's term cap with its month equivalent spelled out — e.g. "up to five (5) years (60 months)" — so a counterparty draft that states its term in months (say "48 months") can be compared to the cap at a glance, without you doing the arithmetic. The month figure is derived from the years cap (× 12), not a separate setting.
+        <strong>Reading the term cap.</strong> On the <strong>Term &amp; survival</strong> clause, the <em>Preferred position</em> shows the playbook's term cap with its month equivalent spelled out — e.g. "up to five (5) years (60 months)" — so a counterparty draft that states its term in months (say "48 months") can be compared to the cap at a glance, without you doing the arithmetic.
       </div>
 
       <h3>When a review is slow or interrupted</h3>
@@ -852,7 +856,7 @@
       </div>
 
       <h3>Stage 2 — What each clause checker looks for</h3>
-      <p>Each important clause has its own check with a clear job, its own inputs, and its own conditions for <span class="verdict pass">PASS</span>, <span class="verdict review">REVIEW</span>, or <span class="verdict fail">FAIL</span>. (FAIL is shown in the app as <strong>"Check"</strong> — the clause needs fixing.) Here's each one in plain terms:</p>
+      <p>Each important clause has its own check with a clear job, its own inputs, and its own conditions for <span class="verdict pass">PASS</span>, <span class="verdict review">REVIEW</span>, or <span class="verdict fail">FAIL</span> (shown as a <strong>"Fail"</strong> badge in the app). Here's each one in plain terms:</p>
 
       <div class="card">
         <h4>Mutuality</h4>
@@ -959,13 +963,19 @@
 
       <h3>The approve gate (the safety check before sending)</h3>
       <p>You cannot send an NDA out while clauses are still waiting on a human. This is the <strong>approve gate</strong>.</p>
-      <ul>
-        <li>Each <span class="ui">Review</span> clause shows as a clickable pill. When you've checked it, click it to mark it <span class="ui">Reviewed</span>.</li>
-        <li>There's also a <span class="ui">Reviewed</span> button in the toolbar that marks <strong>all</strong> outstanding "needs review" clauses as reviewed at once (it asks you to confirm first, listing what it will change).</li>
-        <li>Once every flagged clause is acknowledged, the banner tells you <em>"All review clauses marked reviewed. You can send the redline now."</em></li>
-        <li>The final <span class="ui">Approve</span> action lives on the matter's <span class="ui">Overview</span> tab footer.</li>
-      </ul>
-      <p>Until that gate is satisfied, the <span class="ui">Send Redline</span> button stays disabled. (Note: even after you've reviewed everything, a document can still be unsendable for other reasons — a hard <strong>Fail</strong>, a missing recipient email, or the review being out of date — and the banner will tell you exactly which.)</p>
+
+      <div class="callout">
+        <strong>First, where things live.</strong> When you open an NDA, the matter screen has <strong>tabs</strong> across it — chiefly an <span class="ui">Overview</span> tab and a <span class="ui">Review</span> tab. You <em>mark individual clauses Reviewed</em> in the <span class="ui">Review</span> workstation (the document-left / clause-panel-right screen you've been reading about). The final <span class="ui">Approve Review</span> button sits separately, in the <strong>footer of the <span class="ui">Overview</span> tab</strong>. So the flow crosses two tabs: acknowledge clauses on Review, then approve on Overview.
+      </div>
+
+      <p>The full path, click by click:</p>
+      <ol class="steps">
+        <li>On the <span class="ui">Review</span> tab, find each clause with a <span class="verdict review">REVIEW</span> verdict. Each shows as a <strong>clickable pill</strong>. Read the clause, decide it's acceptable, then <strong>click the pill to mark it</strong> <span class="ui">Reviewed</span>. (Or use the <span class="ui">Reviewed</span> button in the toolbar to mark <strong>all</strong> outstanding "needs review" clauses at once — it asks you to confirm first, listing exactly what it will change.)</li>
+        <li>When the last one is acknowledged, a banner confirms <em>"All review clauses marked reviewed. You can send the redline now."</em></li>
+        <li>Go to the <span class="ui">Overview</span> tab and click <span class="ui">Approve Review</span> in its footer to record your sign-off on the matter.</li>
+        <li>Now send: click <span class="ui">Send Redline</span> to email the marked-up document back, or <span class="ui">Send for signature</span> to route a clean copy through DocuSign (see the <strong>Sending &amp; E-Signature</strong> tab).</li>
+      </ol>
+      <p>Until the gate is satisfied, the <span class="ui">Send Redline</span> button stays disabled. (Note: even after you've reviewed everything, a document can still be unsendable for other reasons — a hard <strong>FAIL</strong> clause, a missing recipient email, or the review being out of date — and the banner will tell you exactly which.)</p>
 
       <h3>Saving your work</h3>
       <ul>
@@ -1098,10 +1108,10 @@
       <p>In short: the app will not email a document to an address you haven't explicitly confirmed.</p>
 
       <h3>Sending for e-signature (DocuSign)</h3>
-      <p>Once an NDA is finalised, you can send it out to be signed electronically through DocuSign, without leaving the app. The button is labelled <span class="ui">Send for Signature</span> and appears on a generated or reviewed NDA.</p>
+      <p>Once an NDA is finalised, you can send it out to be signed electronically through DocuSign, without leaving the app. The button is labelled <span class="ui">Send for signature</span> and appears on a generated or reviewed NDA.</p>
       <p><strong>Who signs:</strong> an NDA here is signed by <strong>two parties</strong> — the <strong>counterparty</strong> and the <strong>Aspora signatory</strong> (your side). Both are pre-filled when the composer opens.</p>
       <ol class="steps">
-        <li>Open the finalised NDA and click <span class="ui">Send for Signature</span>. A "Send for signature" dialog opens.</li>
+        <li>Open the finalised NDA and click <span class="ui">Send for signature</span>. A "Send for signature" dialog opens.</li>
         <li>Check the <strong>signer rows</strong> — each shows a name and email for the Counterparty and the Aspora signatory, pre-filled. Edit any field if needed.</li>
         <li><strong>Choose the signing order</strong> if you like: use the up/down arrows on a signer row to set who signs first (a <em>sequential</em> order), or choose <strong>parallel</strong> so both can sign at the same time.</li>
         <li>Click <span class="ui">Send for signature</span>.</li>
@@ -1113,6 +1123,9 @@
         <li>The app <strong>polls the live status</strong> automatically, so the badge advances on its own (e.g. to <span class="ui">Signed / Completed</span>) without you reloading. There's also a <span class="ui">Refresh status</span> option to check on demand.</li>
         <li>Once everything is signed, a <span class="ui">Download signed</span> link appears so you can grab the completed signed PDF.</li>
       </ul>
+      <div class="callout">
+        <strong>Signed outside DocuSign?</strong> If an NDA was signed by some other route (paper, another e-sign tool), use the <span class="ui">Mark as executed</span> action on the matter to file it straight into the executed library (the Corpus), rather than sending it through DocuSign again.
+      </div>
       <p><strong>Safeguards worth knowing:</strong></p>
       <ul>
         <li><strong>It always signs the current, reviewed document.</strong> What goes into the envelope is the <em>up-to-date reviewed / redlined</em> version, rebuilt from the NDA's current state at the moment you send — never a stale earlier copy, and never the un-redlined original. If the NDA has reviewer edits but the reviewed document can't be produced for some reason, the app <strong>refuses to send</strong> rather than quietly sending the original. (This is why you save, and run the review, first.)</li>
@@ -1180,7 +1193,7 @@
       <h3>What you fill in</h3>
       <ol>
         <li><strong>Signing entity</strong> — which one of <em>your company's</em> legal entities is signing. Pick from a dropdown (e.g. "Aspora Technology Services Private Limited"). This is the single most important choice, because it auto-fills several other fields (see Entities &amp; Signatories). Required.</li>
-        <li><strong>Office address</strong> (only shown for some entities) — if the chosen entity has more than one registered address, you pick which office signs. Most entities have one address, so this picker is hidden for them.</li>
+        <li><strong>Signing address</strong> (only shown for some entities) — if the chosen entity has more than one registered address, you pick which office signs. Most entities have one address, so this picker is hidden for them.</li>
         <li><strong>The other party (the counterparty)</strong>:
           <ul>
             <li><strong>Company name</strong> (required) — e.g. "Acme Logistics Ltd."</li>
@@ -1191,7 +1204,13 @@
           </ul>
         </li>
         <li><strong>NDA type</strong> — today the app produces a <strong>mutual</strong> NDA, meaning both sides protect each other's information.</li>
-        <li><strong>Term</strong> — how long the NDA lasts, set with a <span class="ui">+ / −</span> stepper and a <strong>Years / Months unit selector</strong> beside it, so you can enter the term in whichever unit suits (e.g. "3 years" or "18 months"). The minimum is <strong>1</strong> in whichever unit; the maximum is your playbook cap — currently <strong>5 years</strong>, i.e. <strong>60 months</strong> in month mode (the months cap is simply the years cap × 12). If you type a bigger number, it's snapped down to the cap as you type, and the hint tells you it did. Switching units converts the current value sensibly (years → months multiplies by 12, months → years divides by 12) and re-applies the cap. A standing hint — <em>"Playbook caps the term at 5 years"</em> (or <em>"…at 60 months"</em> in month mode) — is always shown beside the field so you know the limit up front. Whichever unit you use, the generated NDA is held to the same cap (whichever is earlier).</li>
+        <li><strong>Term</strong> — how long the NDA lasts. It has a <span class="ui">+ / −</span> stepper with a <strong>Years / Months unit selector</strong> beside it, so you can enter the term in whichever unit suits (e.g. "3 years" or "18 months"):
+          <ul>
+            <li><strong>Minimum</strong> is <strong>1</strong> in whichever unit you're using.</li>
+            <li><strong>Maximum</strong> is your playbook cap — currently <strong>5 years</strong> (shown as <strong>60 months</strong> if you switch to month mode). Type more and it snaps down to the cap as you type, with a hint telling you it did. A standing hint beside the field always shows the limit up front.</li>
+            <li><strong>Switching units converts your value</strong> and re-applies the cap. (Throughout the app, months = years × 12 — so the 5-year cap is the same limit as 60 months.)</li>
+          </ul>
+        </li>
         <li><strong>Purpose / project</strong> (optional) — a short note on why the two companies are talking, e.g. "evaluating a payments partnership."</li>
         <li><strong>Governing law &amp; court</strong> — shown as <strong>read-only text</strong>. You don't fill these in; they're set automatically by the signing entity you picked.</li>
       </ol>
@@ -1277,8 +1296,15 @@
       </ol>
       <p>You still control the <em>deal</em> details: the other party's name and address, the purpose, and the term (within the playbook's cap). But the <em>legal</em> details — who signs, under which law, in which court — are coupled to the entity so they can never be mismatched.</p>
 
-      <h3>Where entities are managed</h3>
-      <p>Day-to-day, you just <em>pick</em> an entity in the Generator. Entities themselves are set up and edited by an administrator in the <span class="ui">Admin → Entities</span> console. A regular user sees the list read-only; only an admin can add or change entities. Their governing law and court are managed in the Playbook editor's <span class="ui">Entities &amp; Courts</span> table, so there's one single source of truth.</p>
+      <h3>Where entities are managed (and how to add one)</h3>
+      <p>Day-to-day, you just <em>pick</em> an entity in the Generator. The entities <em>themselves</em> are set up and edited by an <strong>admin</strong>, and they live in the <strong>Playbook editor</strong> — so there's one single source of truth. A regular user sees the list read-only; only an admin can add or change entities.</p>
+      <p><strong>To add or edit a signing entity (admin):</strong></p>
+      <ol class="steps">
+        <li>Open <span class="ui">Admin → Playbook</span>. In the left rail, under <strong>Registry</strong>, click <span class="ui">Signing Entities</span>.</li>
+        <li>Click <span class="ui">Add entity</span> to create a new one, or click an existing entity to edit it. Fill in its legal name, registered address(es), jurisdiction of incorporation, signatory (name + title), and its governing law &amp; court.</li>
+        <li>Click <span class="ui">Save registry</span> to save. Note: saving <strong>replaces the whole registry</strong>, so finish all your edits before you save.</li>
+      </ol>
+      <p>The governing law you set must be one of your <strong>approved</strong> laws — an unapproved law is rejected on save, and the law and court must match the same legal system.</p>
     </section>
 
     <!-- ============ 12. INBOX ============ -->
@@ -1402,9 +1428,9 @@
       <p>You can cap how many <em>new</em> NDAs the app pulls in during a single check (default is sensible; the maximum is 40). This is a gentle "catch-up" control: if a big backlog builds up, the app drains it a batch at a time across several checks instead of grabbing everything at once.</p>
 
       <h4>Inbound search terms</h4>
-      <p>An editable list of words the app shows as hints for deciding whether an email is an NDA (e.g. "NDA," "non-disclosure agreement," "confidentiality agreement"). Most people never need to touch this.</p>
+      <p>An editable list of words the app shows as hints for deciding whether an email is an NDA (e.g. "NDA," "non-disclosure agreement," "confidentiality agreement"). To edit them, an admin opens <span class="ui">Admin → Gmail</span>, types the words into the <strong>Inbound search terms</strong> box, and clicks <span class="ui">Save terms</span>. Most people never need to touch this.</p>
       <div class="callout warn">
-        <strong>Heads-up:</strong> today this field is <strong>informational</strong> — detection uses a fixed, built-in vocabulary, so your saved words are stored and shown back but don't change which emails are detected as NDAs. An optional, off-by-default setting that lets your custom terms influence detection is being added. See the Admin tab for the full explanation.
+        <strong>Heads-up — this field is informational today.</strong> Detection uses a fixed, built-in vocabulary, so your saved words are stored and shown back but don't change which emails get imported as NDAs. It's safe to edit; it just won't change behaviour yet.
       </div>
 
       <h4>Sync history</h4>
@@ -1464,6 +1490,20 @@
         <strong>Example.</strong> An NDA governed by <strong>"the laws of Texas"</strong> gets <strong>flagged</strong> — Texas isn't on your approved list. An NDA governed by <strong>"England and Wales"</strong> <strong>passes</strong>. If you later add Texas to the approved-options list, the very next Texas NDA passes instead. <em>You</em> control the list; the AI just applies it.
       </div>
 
+      <h3>How to edit a Playbook rule (draft, then publish)</h3>
+      <p>Editing the Playbook is an <strong>admin</strong> task, done in <span class="ui">Admin → Playbook</span>. The editor is designed so your changes sit in a <strong>draft</strong> first — nothing you type affects live reviews until you deliberately publish it. So you can edit freely, review your changes, and only then make them real.</p>
+      <ol class="steps">
+        <li>Open <span class="ui">Admin → Playbook</span>. A left-hand rail lists your clauses under a <strong>Clauses</strong> group (with the <strong>Signing Entities</strong> registry above it under <strong>Registry</strong>).</li>
+        <li><strong>Pick a clause to change</strong> — click it in the rail to open its editor on the right. Or click <span class="ui">Add Clause</span> (the button with a + icon) to create a new rule from scratch.</li>
+        <li><strong>Make your edit</strong> — adjust what good looks like (the standard/position), what to watch for, and the suggested fix language. For a list-style clause like Governing Law, add or remove entries in its <strong>approved options</strong> list (e.g. add "Texas").</li>
+        <li><strong>Save your draft.</strong> Your changes are held as a draft — they don't yet affect any review.</li>
+        <li><strong>Publish</strong> when you're happy. Publishing is what makes the new rules live; from then on, every <em>new</em> review is judged against them. (Changes never re-judge NDAs already reviewed — re-run a review on those if you want them re-checked.)</li>
+      </ol>
+      <div class="callout">
+        <strong>A built-in safety check.</strong> The app validates your Playbook before it accepts a publish, so a self-contradictory or malformed rule is caught rather than silently going live. There's also a <strong>version history</strong> in the Playbook editor: every published version is kept, and you can <strong>restore</strong> an earlier one if a change didn't work out.
+      </div>
+      <p class="panel-lede" style="font-size:14px;">Not an admin? You can still <em>read</em> the Playbook to understand what the AI checks against; only admins can edit and publish it.</p>
+
       <h3>Pass / Review / Fail — the three outcomes</h3>
       <p>For each clause, the Playbook defines the conditions that lead to one of three verdicts:</p>
       <ul>
@@ -1484,6 +1524,45 @@
     <section class="tab-panel" id="tab-admin">
       <h2>Admin: What You Can &amp; Can't Change</h2>
       <p class="panel-lede">The golden rule: the app lets you change the rules and the connections. It does not let you change the engine. Some powerful behaviours (which AI model runs, how an NDA is detected, the safety caps) are set in the deployment — not in the screen — on purpose, so the system stays safe and consistent.</p>
+
+      <figure class="wf-fig">
+        <svg role="img" viewBox="0 0 900 320" aria-labelledby="wf-adm-t wf-adm-d" xmlns="http://www.w3.org/2000/svg">
+          <title id="wf-adm-t">What you can change vs what engineers lock</title>
+          <desc id="wf-adm-d">Two columns. On the left, "Yours to change in the app": the Playbook rules and approved options, signing entities and their law and court, connections such as Gmail, Drive and DocuSign, the AI on/off toggle and key, and sync timing. On the right, "Locked in the deployment": which AI models run, the NDA-detection vocabulary and score floor, the Gmail fetch-query structure, the import-limit ceiling of forty, the AI confidence threshold, and the deterministic checks.</desc>
+          <rect class="wf-accent" x="8"   y="8" width="420" height="304"/>
+          <text class="wf-th wf-accent-th" x="218" y="36" text-anchor="middle" style="font-size:15px;">Yours to change (in the app)</text>
+          <text class="wf-ts" x="218" y="54" text-anchor="middle">rules &amp; connections — the safe, intended path</text>
+
+          <rect class="wf-box" x="28" y="70"  width="380" height="34"/>
+          <text class="wf-th" x="44" y="92" text-anchor="start">Playbook rules &amp; approved options</text>
+          <rect class="wf-box" x="28" y="112" width="380" height="34"/>
+          <text class="wf-th" x="44" y="134" text-anchor="start">Signing entities + their law &amp; court</text>
+          <rect class="wf-box" x="28" y="154" width="380" height="34"/>
+          <text class="wf-th" x="44" y="176" text-anchor="start">Connections: Gmail, Drive, DocuSign</text>
+          <rect class="wf-box" x="28" y="196" width="380" height="34"/>
+          <text class="wf-th" x="44" y="218" text-anchor="start">AI review on/off + the AI key</text>
+          <rect class="wf-box" x="28" y="238" width="380" height="34"/>
+          <text class="wf-th" x="44" y="260" text-anchor="start">Sync timing: frequency, window, limit</text>
+          <text class="wf-ts" x="218" y="296" text-anchor="middle">Change these; new work follows your changes.</text>
+
+          <rect class="wf-box" x="472" y="8" width="420" height="304"/>
+          <text class="wf-th" x="682" y="36" text-anchor="middle" style="font-size:15px;">Locked in the deployment</text>
+          <text class="wf-ts" x="682" y="54" text-anchor="middle">the engine — set by engineers, not by clicking</text>
+
+          <rect class="wf-box" x="492" y="70"  width="380" height="34"/>
+          <text class="wf-ts" x="508" y="92" text-anchor="start">Which AI models run</text>
+          <rect class="wf-box" x="492" y="112" width="380" height="34"/>
+          <text class="wf-ts" x="508" y="134" text-anchor="start">NDA-detection vocabulary &amp; score floor</text>
+          <rect class="wf-box" x="492" y="154" width="380" height="34"/>
+          <text class="wf-ts" x="508" y="176" text-anchor="start">Gmail fetch-query structure</text>
+          <rect class="wf-box" x="492" y="196" width="380" height="34"/>
+          <text class="wf-ts" x="508" y="218" text-anchor="start">Import-limit ceiling (max 40)</text>
+          <rect class="wf-box" x="492" y="238" width="380" height="34"/>
+          <text class="wf-ts" x="508" y="260" text-anchor="start">Confidence threshold &amp; deterministic checks</text>
+          <text class="wf-ts" x="682" y="296" text-anchor="middle">Locked for safety &amp; consistency across accounts.</text>
+        </svg>
+        <figcaption>The core mental model: <strong>the rules and connections are yours</strong>; <strong>the engine is locked</strong>. If you want NDAs judged differently, change the Playbook — never go hunting for a hidden engine switch.</figcaption>
+      </figure>
 
       <h3>The Admin area — what's in it</h3>
       <p>The Admin area is a settings console, split into sections you pick from a left-hand list.</p>
@@ -1524,19 +1603,14 @@
 
       <h3>Important caveats / known limits</h3>
       <div class="callout warn">
-        <strong>"Inbound search terms" are informational by default.</strong> The field saves your words and shows them back, <strong>but by default detection uses a fixed, built-in vocabulary — your saved terms don't change which inbound emails get detected and imported as NDAs.</strong> In plain terms: the inbox scan fetches a structural envelope (every Word/PDF attachment in the window that you didn't send) — the keyword list isn't part of that fetch. After fetching, the system scores each attachment for "NDA-ness" using that fixed, built-in vocabulary baked into the code, not the words you typed. So your saved terms are stored and displayed as a hint, but no detection decision reads them. Editing the field is safe — it just won't change behaviour. (An <em>opt-in</em> mode that lets your custom terms extend detection now exists but is <strong>off unless a deployment enables it</strong>; until it's turned on, the built-in vocabulary is what decides. The fetch query and how many messages are fetched never change either way — custom terms can only <em>add</em> content-scorer signals, never widen the mailbox scan.)
-      </div>
-      <div class="callout warn">
-        <strong>Some settings can be "pinned" by the deployment.</strong> A few controls can be overridden by the environment the app runs in; when that happens the UI says so and locks the control. For example: the <strong>AI Runtime engine</strong> can be pinned ("Runtime settings are pinned by the backend environment" — your save is ignored by design); the <strong>AI key source</strong> can be an environment key that clearing the in-app key won't remove; the <strong>Gmail import limit</strong> falls back to an environment default when no in-app value is set.
-      </div>
-      <div class="callout warn">
-        <strong>Changes apply to NEW work, not past work.</strong> Turning AI on/off, changing the engine, or editing the Playbook affects <em>future</em> reviews. It does not retroactively re-judge NDAs already reviewed.
-      </div>
-      <div class="callout warn">
-        <strong>"Bootstrap" admins cannot be removed in-app.</strong> Admins set in the deployment (labelled <span class="ui">Bootstrap</span>) are immutable — there's no Remove button. Only admins added in-app can be removed. The app also prevents you from removing the last admin / locking yourself out.
-      </div>
-      <div class="callout warn">
-        <strong>The Gmail master toggle is the real stop.</strong> It's the actual on/off for scheduled sync. The per-role inbound/outbound rows are secondary; when the master sync is off, those rows are inert no matter how they're configured.
+        <strong>Five things worth knowing before you rely on these settings:</strong>
+        <ul>
+          <li><strong>"Inbound search terms" are informational by default.</strong> The field saves and shows your words, but detection uses a fixed, built-in vocabulary — your saved terms don't change which emails get imported. (An opt-in mode to extend detection with custom terms exists but is off unless a deployment enables it, and even then can only add signals, never widen the mailbox scan.)</li>
+          <li><strong>Some settings can be "pinned" by the deployment.</strong> When the environment overrides a control, the UI says so and locks it — e.g. the AI Runtime engine ("pinned by the backend environment," your save is ignored by design), an environment AI key that clearing the in-app key won't remove, or the Gmail import limit falling back to an environment default.</li>
+          <li><strong>Changes apply to NEW work, not past work.</strong> Turning AI on/off, changing the engine, or editing the Playbook affects <em>future</em> reviews — it doesn't retroactively re-judge NDAs already reviewed.</li>
+          <li><strong>"Bootstrap" admins cannot be removed in-app.</strong> Admins set in the deployment (labelled <span class="ui">Bootstrap</span>) have no Remove button; only in-app admins can be removed. The app also stops you removing the last admin and locking yourself out.</li>
+          <li><strong>The Gmail master toggle is the real stop.</strong> It's the actual on/off for scheduled sync; the per-role inbound/outbound rows are inert whenever the master sync is off.</li>
+        </ul>
       </div>
 
       <h3>Operator tools (admin API, not buttons in the app)</h3>
@@ -1558,7 +1632,7 @@
         <li><strong>The AI confidence threshold and target clauses</strong> — come from environment configuration / the Playbook; shown read-only in AI Runtime.</li>
         <li><strong>The deterministic (rules-based) checks</strong> — the non-AI structural checks are part of the program logic, not settings, so results stay repeatable regardless of AI state.</li>
       </ul>
-      <p><strong>Why are these locked?</strong> Two reasons: <strong>safety</strong> (a wrong value could miss real NDAs, leak documents, or hit rate limits) and <strong>consistency</strong> (every account behaves the same, so results are predictable and auditable). Engineers change these through configuration with review — not through a click anyone could make by accident.</p>
+      <p>They're locked for the two reasons in the diagram above — <strong>safety</strong> (a wrong value could miss real NDAs, leak documents, or hit rate limits) and <strong>consistency</strong> (every account behaves the same). Engineers change these through reviewed configuration, not a click anyone could make by accident.</p>
 
       <h3>Safety notes</h3>
       <ul>
@@ -1580,7 +1654,7 @@
         <dt>Admin</dt><dd>A signed-in user allowed into the settings console to change the rulebook, signing entities, connections, and who else can administer. Most admin sections are hidden from non-admins, who see a "managed by an administrator" message instead.</dd>
         <dt>AI model</dt><dd>The specific artificial-intelligence system that does a job (reviewing a clause, classifying an inbound email, etc.). You can choose <em>whether</em> AI runs, but <em>which model</em> is set by the environment, not by clicking.</dd>
         <dt>AI summary</dt><dd>A short, on-demand AI-written summary of a single NDA, shown inline from a search result via the Summarize button. Always labelled "AI summary" so it's never mistaken for verified fact.</dd>
-        <dt>Approve gate</dt><dd>The safety check that stops you sending an NDA while clauses still need a human. You mark each flagged clause (or all of them) as Reviewed; the final Approve action lives on the matter's Overview tab. Until the gate is satisfied, Send Redline stays disabled.</dd>
+        <dt>Approve gate</dt><dd>The safety check that stops you sending an NDA while clauses still need a human. On the matter's <strong>Review</strong> tab you mark each flagged clause (or all of them) as Reviewed; the final <strong>Approve Review</strong> action then sits in the footer of the <strong>Overview</strong> tab. Until the gate is satisfied, Send Redline stays disabled.</dd>
         <dt>Approved law</dt><dd>A governing law on the company's allowed list (currently India, Delaware, England and Wales, DIFC, and Ontario, Canada). Only approved laws may be used; the app refuses to generate or save an NDA using a law outside this list.</dd>
         <dt>Approved option</dt><dd>A list of allowed choices inside a clause. The clearest example is the list of approved governing laws. An NDA that picks something off the list (e.g. Texas law) gets flagged.</dd>
       </dl>
@@ -1615,8 +1689,8 @@
 
       <div class="letter">F</div>
       <dl>
-        <dt>Fail</dt><dd>Verdict meaning the clause clearly breaks a Playbook rule (a required clause is missing, a clause is present but wrong, or a forbidden clause is present). The app flags it and proposes a redline to fix it. Shown in red.</dd>
-        <dt>Flag (feature flag)</dt><dd>A switch, usually set in the environment, that turns a piece of behaviour on or off without changing the app's screens. Some behaviour (for example, the optional setting that lets your custom "inbound search terms" influence detection, or the AI verifier pass) depends on such a switch being enabled in the deployment — so a field can appear in the UI yet have no effect until the switch is on. The inbound-search-terms switch is off by default; today those terms are informational and detection uses a fixed, built-in vocabulary.</dd>
+        <dt>Fail</dt><dd>Verdict meaning the clause clearly breaks a Playbook rule (a required clause is missing, a clause is present but wrong, or a forbidden clause is present). The app flags it and proposes a redline to fix it. The on-screen badge reads <strong>"Fail"</strong> (or <strong>"Prohibited"</strong> for a clause the Playbook forbids outright). Shown in red.</dd>
+        <dt>Flag (feature flag)</dt><dd>A switch, usually set in the environment, that turns a piece of behaviour on or off without changing the app's screens. Some behaviour (for example, the optional setting that lets your custom "inbound search terms" influence detection, or the AI verifier pass) depends on such a switch being enabled in the deployment — so a field can appear in the UI yet have no effect until the switch is on.</dd>
       </dl>
 
       <div class="letter">G</div>
@@ -1681,7 +1755,7 @@
       <div class="letter">T</div>
       <dl>
         <dt>Template</dt><dd>The company's standard, pre-written NDA document (the "Generic NDA"). It supplies the fixed structure and boilerplate legal wording; the Generator fills in the blanks (party names, term, law, etc.) for each new deal.</dd>
-        <dt>Term</dt><dd>How long the NDA stays in force, in years. Set with a +/− stepper in the Generator. The minimum is 1 year and the maximum is capped by the playbook (currently 5 years); a larger number is automatically reduced to the cap.</dd>
+        <dt>Term</dt><dd>How long the NDA stays in force. Set in the Generator with a +/− stepper and a <strong>Years / Months unit selector</strong>, so you can enter it in either unit (e.g. 3 years or 18 months). The minimum is 1 in whichever unit; the maximum is the playbook cap — currently 5 years, i.e. 60 months (months = years × 12). A larger number is automatically snapped down to the cap.</dd>
       </dl>
 
       <div class="letter">V</div>
