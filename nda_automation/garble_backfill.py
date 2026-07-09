@@ -18,6 +18,11 @@ CONTRACT (each deliberate):
   with an optimistic-concurrency guard on the exact garbled text assessed.
 * PDF-SOURCE ONLY. DOCX imports never went through the broken geometry grouping,
   so a DOCX matter is never a candidate no matter what its text looks like.
+* EXECUTED/APPROVED MATTERS ARE NEVER MUTATED. An approved or executed matter's
+  stored record stays byte-identical at all times (``matter_is_executed_or_
+  approved`` — the product's own executed contract + approve-transition triad);
+  a garble-detected one is LISTED in the report as ``excluded_executed`` so the
+  owner knows it exists, but execute never re-extracts or writes it.
 * STALENESS, NOT REPAIR. ``review_result`` / redlines / reviewer decisions are
   never touched; the existing staleness contract
   (``routes/matters._matter_review_text_changed`` comparing the matter's
@@ -66,7 +71,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from . import matter_store, telemetry
+from . import matter_store, telemetry, workflow
 from .review_result_contract import extracted_text_from_paragraphs
 
 LOGGER = logging.getLogger(__name__)
@@ -148,6 +153,43 @@ def garble_fingerprint(blocks: list[str]) -> dict[str, Any]:
         "exploded_count": exploded_count,
         "garbled": garbled,
     }
+
+
+def matter_is_executed_or_approved(matter: dict[str, Any]) -> bool:
+    """The exclusion predicate: an approved OR executed matter is never mutated.
+
+    Product-owner rule: a matter whose NDA is already approved/executed keeps its
+    stored record byte-identical at all times — even a garble-detected one is
+    only REPORTED (``excluded_executed``), never re-extracted or written.
+
+    Reuses the product's own classifications rather than inventing one:
+
+    * EXECUTED — ``workflow.is_matter_executed`` (workflow.py), the shared
+      executed contract (``executed`` / ``executed_at`` / the executed phase
+      marker) that ``lifecycle_signed.mark_matter_executed`` stamps
+      (``executed=True`` / ``status="fully_signed"`` / ``executed_at``) and the
+      board / DocuSign-completion sync read.
+    * APPROVED — the canonical approve transition's own triad:
+      ``matter_store.record_matter_approval`` stamps ``status="approved"`` +
+      ``approver`` + ``approved_at``; ``status == "approved"`` / ``approved_at``
+      are exactly the approval signals ``docusign_workflow.
+      matter_cleared_for_signature`` and ``matter_store.
+      _matter_was_cleared_for_signature`` key on. Any one of the three excludes
+      (inclusive: a partial/legacy stamp still counts as approved).
+
+    Deliberately NOT excluded: ``human_reviewed`` alone (the board's
+    "mark reviewed" — a human sign-off on the review, not an approval) and a
+    clean auto-review — neither means an approved/executed document exists, and
+    both are exactly the matters whose garbled text still needs healing before
+    any approval bakes it into a reviewed artifact.
+    """
+    if not isinstance(matter, dict):
+        return False
+    if workflow.is_matter_executed(matter):
+        return True
+    if str(matter.get("status") or "").strip().lower() == "approved":
+        return True
+    return bool(matter.get("approved_at") or matter.get("approver"))
 
 
 def _matter_has_pdf_filename(matter: dict[str, Any]) -> bool:
@@ -276,22 +318,36 @@ def run_garble_backfill(*, dry_run: bool = True, limit: int = GARBLE_BACKFILL_DE
     limit = max(1, min(int(limit), GARBLE_BACKFILL_MAX_LIMIT))
     matters = matter_store.list_matters("")
     entries: list[dict[str, Any]] = []
+    selected = 0
+    excluded_executed = 0
     garbled_matched = 0
     for matter in matters:
         assessment = matter_garble_assessment(matter)
         if not assessment["candidate"]:
             continue
         garbled_matched += 1
-        if len(entries) >= limit:
+        # EXECUTED/APPROVED EXCLUSION: still LISTED (the owner must know a signed/
+        # approved matter carries garbled text) but never selected for healing —
+        # its stored record stays byte-identical. Listed entries are capped at
+        # ``limit`` like the heal selection so a huge store can't bloat the report.
+        if matter_is_executed_or_approved(matter):
+            if excluded_executed < limit:
+                assessment["action"] = "excluded_executed"
+                entries.append(assessment)
+            excluded_executed += 1
+            continue
+        if selected >= limit:
             continue
         assessment["action"] = "would_reextract"
         entries.append(assessment)
+        selected += 1
 
     report: dict[str, Any] = {
         "dry_run": bool(dry_run),
         "scanned": len(matters),
         "garbled_matched": garbled_matched,
-        "selected": len(entries),
+        "selected": selected,
+        "excluded_executed": excluded_executed,
         "limit": limit,
         "healed": 0,
         "unchanged": 0,
@@ -307,6 +363,9 @@ def run_garble_backfill(*, dry_run: bool = True, limit: int = GARBLE_BACKFILL_DE
         return report
 
     for entry in entries:
+        if entry.get("action") == "excluded_executed":
+            # Never re-extracted, never written — report-only presence.
+            continue
         matter_id = entry["id"]
         try:
             # Re-read fresh + re-assert the fingerprint right before mutating —
@@ -316,6 +375,12 @@ def run_garble_backfill(*, dry_run: bool = True, limit: int = GARBLE_BACKFILL_DE
             if not isinstance(fresh, dict) or not matter_garble_assessment(fresh)["candidate"]:
                 entry["action"] = "no_longer_garbled"
                 report["no_longer_garbled"] += 1
+                continue
+            # Re-check the exclusion on the FRESH record: a matter approved or
+            # executed after selection must not be written either.
+            if matter_is_executed_or_approved(fresh):
+                entry["action"] = "excluded_executed"
+                report["excluded_executed"] += 1
                 continue
             _heal_matter(fresh, entry)
         except Exception as error:  # noqa: BLE001 - atomic per matter: collect, continue.

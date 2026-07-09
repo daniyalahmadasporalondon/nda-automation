@@ -412,6 +412,94 @@ def test_one_matters_failure_does_not_abort_the_run(monkeypatch):
     assert by_id[healthy["id"]]["action"] == "healed"
 
 
+# --- executed/approved exclusion ------------------------------------------------
+# The mark-executed triad lifecycle_signed.mark_matter_executed stamps, plus the
+# partial legacy variants workflow.is_matter_executed also treats as executed.
+_EXECUTED_VARIANTS = [
+    {"executed": True, "executed_at": "2026-06-20T00:00:00+00:00", "status": "fully_signed"},
+    {"executed_at": "2026-06-20T00:00:00+00:00"},
+    {"executed": True},
+]
+# The approve-transition triad matter_store.record_matter_approval stamps, plus
+# the partial signals docusign_workflow.matter_cleared_for_signature keys on.
+_APPROVED_VARIANTS = [
+    {"status": "approved", "approver": "counsel@example.com", "approved_at": "2026-06-20T00:00:00+00:00"},
+    {"status": "approved"},
+    {"approved_at": "2026-06-20T00:00:00+00:00"},
+]
+
+
+@pytest.mark.parametrize("overrides", _EXECUTED_VARIANTS + _APPROVED_VARIANTS)
+def test_executed_or_approved_matter_is_detected_reported_but_never_written(
+    _isolated_store, overrides
+):
+    protected = _garbled_matter(**overrides)
+    healable = _garbled_matter()
+    record_path = matter_store._matter_records_dir() / f"{protected['id']}.json"
+    protected_before = record_path.read_bytes()
+
+    # Dry-run LISTS it with the distinct status (the owner must know it exists)
+    # and it never consumes a heal slot.
+    dry = _run({})
+    assert dry.status == 200
+    assert dry.response["garbled_matched"] == 2
+    assert dry.response["excluded_executed"] == 1
+    assert dry.response["selected"] == 1
+    dry_by_id = {entry["id"]: entry for entry in dry.response["matters"]}
+    assert dry_by_id[protected["id"]]["action"] == "excluded_executed"
+    assert dry_by_id[protected["id"]]["fingerprint"]["garbled"] is True
+    assert dry_by_id[healable["id"]]["action"] == "would_reextract"
+
+    # Execute: still listed excluded, never written — byte-identical record —
+    # while the unprotected sibling heals normally.
+    handler = _run({"dry_run": False, "confirm": True})
+    assert handler.status == 200
+    body = handler.response
+    assert body["excluded_executed"] == 1
+    assert body["healed"] == 1
+    by_id = {entry["id"]: entry for entry in body["matters"]}
+    assert by_id[protected["id"]]["action"] == "excluded_executed"
+    assert by_id[healable["id"]]["action"] == "healed"
+    assert record_path.read_bytes() == protected_before
+    protected_after = matter_store.get_matter(protected["id"], owner_user_id="")
+    assert protected_after["extracted_text"] == GARBLED_TEXT
+
+
+def test_matter_executed_between_selection_and_write_is_not_written(monkeypatch):
+    """The exclusion is re-checked on the FRESH record right before healing."""
+    garbled = _garbled_matter()
+    record_path = matter_store._matter_records_dir() / f"{garbled['id']}.json"
+
+    real_get = garble_backfill.matter_store.get_matter
+
+    def _get_and_execute(matter_id, owner_user_id=""):
+        fresh = real_get(matter_id, owner_user_id=owner_user_id)
+        if isinstance(fresh, dict):
+            # A DocuSign completion landing mid-run: the re-read sees it executed.
+            return {**fresh, "executed": True, "executed_at": "2026-06-20T00:00:00+00:00"}
+        return fresh
+
+    monkeypatch.setattr(garble_backfill.matter_store, "get_matter", _get_and_execute)
+    before = record_path.read_bytes()
+    handler = _run({"dry_run": False, "confirm": True})
+    assert handler.status == 200
+    assert handler.response["healed"] == 0
+    assert handler.response["excluded_executed"] == 1
+    assert handler.response["matters"][0]["action"] == "excluded_executed"
+    assert record_path.read_bytes() == before
+
+
+def test_human_reviewed_alone_is_not_excluded():
+    """Predicate boundary (deliberate): the board's 'mark reviewed' is a human
+    sign-off on the REVIEW, not an approval/execution — such a matter still heals
+    (its garble should be fixed BEFORE any approval bakes it into an artifact)."""
+    matter = _garbled_matter(human_reviewed=True)
+    assert garble_backfill.matter_is_executed_or_approved(matter) is False
+    handler = _run({"dry_run": False, "confirm": True})
+    assert handler.response["healed"] == 1
+    assert handler.response["excluded_executed"] == 0
+
+
 # --- (e) gates ----------------------------------------------------------------
 def test_non_admin_is_403(_isolated_store):
     _garbled_matter()
