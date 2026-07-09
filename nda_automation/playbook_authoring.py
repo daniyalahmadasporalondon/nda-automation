@@ -81,6 +81,64 @@ class PlaybookAuthoringError(RuntimeError):
         self.status = status
 
 
+def _reset_playbook_derived_caches() -> None:
+    """Invalidate module caches derived from the active Playbook after a mutation.
+
+    ``governing_law_view`` (dashboard search-intent / corpus-facet option maps),
+    ``law_forum_check`` (approved-law/forum JURISDICTIONS buckets) and
+    ``dashboard_search_intent`` (the ``has_clause`` clause-id allowlist) cache data
+    derived from the active Playbook at first use / import. Without this call,
+    publish/save/restore leaves those modules serving the OLD option/clause set
+    until the process restarts. This is IN-PROCESS invalidation only -- a future
+    multi-process deploy needs hash-keyed staleness detection instead.
+
+    CRITICAL: this must be called AFTER ``locked_playbook`` is released (i.e. outside
+    the ``with locked_playbook(...)`` block). ``law_forum_check.reset_buckets()``
+    rebuilds EAGERLY: it re-reads the Playbook through
+    ``ensure_active_playbook_bundle`` -> ``locked_playbook``, and a second flock
+    acquisition on the same file from a new fd in the same process deadlocks.
+
+    Called from a ``finally`` on every mutation path: the playbook-file write is the
+    commit point, and a LATER step (parent-dir fsync, transaction unlink, draft-file
+    removal) can raise OSError after the active playbook already changed on disk --
+    a success-only reset would strand stale caches behind a 500. A reset after a
+    pure validation rejection is a harmless extra rebuild.
+
+    Each reset is individually guarded: cache invalidation must NEVER turn a
+    successful publish into a 500.
+    """
+    try:
+        from . import governing_law_view  # noqa: PLC0415 -- avoid import cycle at load.
+
+        governing_law_view.reset_caches()
+    except Exception:  # noqa: BLE001 -- invalidation must never fail the mutation.
+        LOGGER.warning(
+            "governing_law_view.reset_caches() failed after a Playbook mutation; "
+            "the process may serve stale governing-law options until restart.",
+            exc_info=True,
+        )
+    try:
+        from . import law_forum_check  # noqa: PLC0415 -- avoid import cycle at load.
+
+        law_forum_check.reset_buckets()
+    except Exception:  # noqa: BLE001 -- invalidation must never fail the mutation.
+        LOGGER.warning(
+            "law_forum_check.reset_buckets() failed after a Playbook mutation; "
+            "the process may serve stale law/forum buckets until restart.",
+            exc_info=True,
+        )
+    try:
+        from . import dashboard_search_intent  # noqa: PLC0415 -- avoid import cycle at load.
+
+        dashboard_search_intent.reset_clause_id_cache()
+    except Exception:  # noqa: BLE001 -- invalidation must never fail the mutation.
+        LOGGER.warning(
+            "dashboard_search_intent.reset_clause_id_cache() failed after a Playbook "
+            "mutation; the process may serve a stale clause-id allowlist until restart.",
+            exc_info=True,
+        )
+
+
 _LINT_FAILURE_PREFIX = "Playbook is self-contradictory and cannot be published: "
 
 
@@ -438,6 +496,10 @@ def publish_playbook(
         raise PlaybookAuthoringError(error.payload, status=error.status) from error
     except OSError as error:
         raise PlaybookAuthoringError({"error": "Playbook draft could not be published."}, status=500) from error
+    finally:
+        # AFTER the lock is released (the with-block has exited); runs on failure
+        # paths too -- see the helper's docstring for both constraints.
+        _reset_playbook_derived_caches()
 
     return {
         "playbook": publish_playbook,
@@ -506,6 +568,10 @@ def save_active_playbook(
         raise PlaybookAuthoringError({"error": str(error)}, status=400) from error
     except OSError as error:
         raise PlaybookAuthoringError({"error": "Playbook could not be saved."}, status=500) from error
+    finally:
+        # AFTER the lock is released (the with-block has exited); runs on failure
+        # paths too -- see the helper's docstring for both constraints.
+        _reset_playbook_derived_caches()
 
     return {
         "playbook": playbook,
@@ -577,6 +643,10 @@ def restore_playbook_history_entry(
         raise PlaybookAuthoringError({"error": str(error)}, status=400) from error
     except OSError as error:
         raise PlaybookAuthoringError({"error": "Playbook could not be restored."}, status=500) from error
+    finally:
+        # AFTER the lock is released (the with-block has exited); runs on failure
+        # paths too -- see the helper's docstring for both constraints.
+        _reset_playbook_derived_caches()
 
     return {
         "playbook": restored_playbook,
