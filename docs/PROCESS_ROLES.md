@@ -45,6 +45,21 @@ nanosecond-mtime+size stat granularity. The settings read cache is likewise
 stat-fingerprinted. Per-process render/list caches are read-path
 optimizations only.
 
+Two whole-file writers were hardened FOR this split (they were in-process-safe
+only):
+
+* **Gmail processed ledger** (`gmail_processed_ledger.py`): session/one-shot
+  flushes now MERGE with the re-read on-disk state under an `fcntl` flock on
+  `<ledger>.lock`, so the worker's poll flush, a web manual import
+  (`POST /api/gmail/import`), and the web bulk-archive re-import guard can
+  never erase each other's marks (which would mean duplicate imports, re-spent
+  AI intake, and bulk-archived junk resurrecting).
+* **Gmail inbound drain cursor** (`matter_store.advance_gmail_inbound_cursor`
+  / `reset_gmail_inbound_cursor`): the read-compare-write now also runs under
+  an flock on `gmail_inbound_cursors.json.lock` (the in-process RLock is
+  kept), so interleaved cross-process advances cannot clobber another owner's
+  cursor.
+
 This does NOT hold across hosts or separate volumes — each instance remains a
 data island (one PVC, one pod).
 

@@ -903,6 +903,85 @@ class GmailInboundCursorTests(unittest.TestCase):
                 for p in patches:
                     p.stop()
 
+    def test_cursor_interleaved_cross_process_advances_both_survive(self):
+        """Web/worker split: interleaved advances must not clobber each other.
+
+        The cursor advance is a whole-file read-compare-write; before the
+        _gmail_cursor_flock fix it was guarded ONLY by the in-process
+        _GMAIL_CURSOR_LOCK, so two PROCESSES (worker scheduled poll + web manual
+        import) interleaving read/read/write/write silently lost one owner's
+        cursor advancement. Simulate two processes by neutralizing the
+        in-process RLock (each real process has its OWN RLock, so cross-process
+        there is no shared one) and racing two threads: the fcntl flock alone
+        must serialize the critical section, and both owners' cursors must
+        survive. (fcntl flocks contend between separate file descriptors even
+        within one process, so two threads with the RLock removed are a
+        faithful stand-in.)
+        """
+
+        class _NoopLock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            patches = self.cursor_patches(data_dir)
+            for p in patches:
+                p.start()
+            try:
+                with patch.object(matter_store, "_GMAIL_CURSOR_LOCK", _NoopLock()):
+                    # Track overlap of the R-M-W critical section via the loader.
+                    active = threading.Semaphore(1)
+                    overlaps: list[str] = []
+                    real_load = matter_store._load_gmail_inbound_cursors
+
+                    def tracked_load():
+                        if not active.acquire(blocking=False):
+                            overlaps.append("overlap")
+                            return real_load()
+                        try:
+                            result = real_load()
+                            # Widen the race window: without the flock both
+                            # threads sit here concurrently, then clobber.
+                            import time as _time
+
+                            _time.sleep(0.05)
+                            return result
+                        finally:
+                            active.release()
+
+                    errors: list[Exception] = []
+
+                    def advance(owner: str, value: int) -> None:
+                        try:
+                            matter_store.advance_gmail_inbound_cursor(owner, value)
+                        except Exception as error:  # pragma: no cover - fail loudly
+                            errors.append(error)
+
+                    with patch.object(
+                        matter_store, "_load_gmail_inbound_cursors", tracked_load
+                    ):
+                        threads = [
+                            threading.Thread(target=advance, args=("owner_1", 3000)),
+                            threading.Thread(target=advance, args=("owner_2", 7000)),
+                        ]
+                        for thread in threads:
+                            thread.start()
+                        for thread in threads:
+                            thread.join(timeout=30)
+
+                    self.assertEqual(errors, [])
+                    # The flock serialized the critical section...
+                    self.assertEqual(overlaps, [])
+                    # ...so BOTH owners' cursors survived (no lost update).
+                    self.assertEqual(matter_store.gmail_inbound_cursor("owner_1"), 3000)
+                    self.assertEqual(matter_store.gmail_inbound_cursor("owner_2"), 7000)
+            finally:
+                for p in patches:
+                    p.stop()
+
     def test_cursor_survives_corrupt_store_file(self):
         with tempfile.TemporaryDirectory() as data_dir:
             patches = self.cursor_patches(data_dir)
