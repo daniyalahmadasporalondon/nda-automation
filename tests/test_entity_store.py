@@ -400,6 +400,107 @@ class EntityAuthoringTests(unittest.TestCase):
         self.assertFalse(capped.endswith("_"))
         self.assertEqual(capped, slug(long_name))
 
+    def test_suffixed_ids_never_exceed_the_cap(self):
+        long_name = "Very " * 30 + "Long Name Co"
+        entities = [
+            {"id": "", "legal_name": long_name},
+            {"id": "", "legal_name": long_name},
+        ]
+        entity_authoring._assign_generated_ids(entities)
+        first, second = entities[0]["id"], entities[1]["id"]
+        self.assertEqual(first, entity_authoring._slugify_entity_id(long_name))
+        self.assertLessEqual(len(first), entity_authoring._GENERATED_ID_MAX_LENGTH)
+        self.assertTrue(second.endswith("_2"))
+        self.assertLessEqual(len(second), entity_authoring._GENERATED_ID_MAX_LENGTH)
+        # Deterministic: the same names re-run yield the same suffixed ids.
+        again = [
+            {"id": "", "legal_name": long_name},
+            {"id": "", "legal_name": long_name},
+        ]
+        entity_authoring._assign_generated_ids(again)
+        self.assertEqual([e["id"] for e in again], [first, second])
+
+    # ---- Lost-id tripwire: a dropped key must never be silently re-keyed ------
+
+    def test_blank_id_reusing_a_stored_name_whose_id_vanished_is_rejected(self):
+        # First save persists "Tripwire Co" with its generated id.
+        store_path = _tmp_store()
+        entity_authoring.save_entities_registry(
+            {"entities": self._seed() + [self._new_entity("Tripwire Co")]},
+            store_path=store_path,
+        )
+        before = store_path.read_text()
+        # Second save: the stored entity's id is GONE from the payload and a
+        # blank-id card carries the same legal name — a dropped key in transit.
+        # Minting a fresh id would orphan the matter/bundle joins on tripwire_co.
+        with self.assertRaises(entity_authoring.EntityAuthoringError) as ctx:
+            entity_authoring.save_entities_registry(
+                {"entities": self._seed() + [self._new_entity("Tripwire Co")]},
+                store_path=store_path,
+            )
+        self.assertEqual(ctx.exception.status, 400)
+        message = str(ctx.exception)
+        self.assertIn('"Tripwire Co" already exists (id tripwire_co)', message)
+        self.assertIn("Reload and try again", message)
+        # The store is untouched (a rejected save is a strict no-op).
+        self.assertEqual(store_path.read_text(), before)
+
+    def test_validate_payload_flags_the_lost_id_too(self):
+        # Preview-gate parity: the same dropped-key payload is flagged, no write.
+        store_path = _tmp_store()
+        entity_authoring.save_entities_registry(
+            {"entities": self._seed() + [self._new_entity("Tripwire Co")]},
+            store_path=store_path,
+        )
+        before = store_path.read_text()
+        # Build the dropped-key payload BEFORE patching the store path: _seed()
+        # reads the live registry, and inside the patch it would read the tmp
+        # store and innocently include tripwire_co WITH its id (no drop at all).
+        payload = {"entities": self._seed() + [self._new_entity("Tripwire Co")]}
+        with patch.object(entity_store, "ENTITY_STORE_PATH", store_path):
+            result = entity_authoring.validate_entities_payload(payload)
+        self.assertFalse(result["valid"])
+        self.assertTrue(
+            any("already exists (id tripwire_co)" in e for e in result["errors"]),
+            result["errors"],
+        )
+        self.assertEqual(store_path.read_text(), before)
+
+    def test_renaming_an_existing_entity_with_its_id_present_still_works(self):
+        store_path = _tmp_store()
+        entity_authoring.save_entities_registry(
+            {"entities": self._seed() + [self._new_entity("Rename Co")]},
+            store_path=store_path,
+        )
+        stored = json.loads(store_path.read_text())["entities"]
+        renamed = [dict(e) for e in stored]
+        target = next(e for e in renamed if e["id"] == "rename_co")
+        target["legal_name"] = "Renamed Co Ltd"
+        entity_authoring.save_entities_registry(
+            {"entities": renamed}, store_path=store_path
+        )
+        after = json.loads(store_path.read_text())["entities"]
+        kept = next(e for e in after if e["legal_name"] == "Renamed Co Ltd")
+        self.assertEqual(kept["id"], "rename_co", "a rename must keep the join key")
+
+    def test_duplicate_name_is_allowed_when_the_existing_entity_keeps_its_id(self):
+        # A genuinely NEW entity may share a legal name with an existing one, as
+        # long as the existing entity is still in the payload WITH its id — the
+        # newcomer gets a suffixed slug and nothing trips.
+        store_path = _tmp_store()
+        entity_authoring.save_entities_registry(
+            {"entities": self._seed() + [self._new_entity("Dup Name Co")]},
+            store_path=store_path,
+        )
+        stored = json.loads(store_path.read_text())["entities"]
+        entity_authoring.save_entities_registry(
+            {"entities": [dict(e) for e in stored] + [self._new_entity("Dup Name Co")]},
+            store_path=store_path,
+        )
+        after = json.loads(store_path.read_text())["entities"]
+        ids = [e["id"] for e in after if e["legal_name"] == "Dup Name Co"]
+        self.assertEqual(sorted(ids), ["dup_name_co", "dup_name_co_2"])
+
     def test_validate_payload_accepts_blank_id_with_legal_name(self):
         # The preview gate mirrors the save path's id assignment, so a new card
         # (blank id) with a legal name is VALID, not a "missing id" error.
