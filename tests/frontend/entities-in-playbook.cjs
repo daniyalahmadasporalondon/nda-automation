@@ -12,9 +12,12 @@
 //      machine entity-id is NOT rendered anywhere user-visible (no caption, no
 //      editable field) but the hidden id input STILL carries the persistent key;
 //      the address-id field is HIDDEN (a hidden input, not a visible row).
-//   4. CRUD: "Add entity" reveals the editable entity-id field (new entity only);
-//      authoring + Save registry POSTs the correct {entities:[...]} payload with the
-//      entity_id preserved as the persistent key (the id-round-trip invariant).
+//   4. CRUD + SYSTEM-ASSIGNED IDS: "Add entity" shows NO id field anywhere (the
+//      old new-entity id field is gone — the backend assigns ids); authoring +
+//      Save registry POSTs the correct {entities:[...]} payload with a BLANK id
+//      for the new entity and the existing entity_ids preserved as persistent
+//      keys (the id-round-trip invariant). The save returns 200 and the reloaded
+//      workspace carries the backend-generated id (slug of the legal name).
 //
 // The server runs on a loopback host (admin-trusted), Gmail HARD-OFF, throwaway
 // data dir, on a free port (never 8787).
@@ -159,13 +162,13 @@ async function main() {
     );
     assert.ok(legalNameLeads, "the legal name must lead as the card heading");
 
-    // The editable entity-id field (data-entity-new-id-field) is hidden for an
-    // existing entity.
-    const idFieldHidden = await page.$eval(
-      `${firstCard} [data-entity-new-id-field]`,
-      (el) => el.hidden
+    // The editable entity-id field (the old data-entity-new-id-field block) must
+    // not exist AT ALL — ids are system-assigned, never authored.
+    const idFieldCount = await page.$$eval(
+      "[data-entity-new-id-field]",
+      (els) => els.length
     );
-    assert.equal(idFieldHidden, true, "entity-id editable field must be HIDDEN on an existing entity");
+    assert.equal(idFieldCount, 0, "no editable entity-id field may exist anywhere (system-assigned ids)");
 
     // REDESIGN INVARIANT: the id is NOT rendered anywhere user-visible. There must be
     // no id caption element at all, and no visible text on the card containing the raw
@@ -177,13 +180,15 @@ async function main() {
     assert.equal(captionCount, 0, "no id caption element must render on an existing entity card");
 
     // The id INPUT still carries the persistent key (hidden form state, not surfaced).
-    const idValue = await page.$eval(
+    const idState = await page.$eval(
       `${firstCard} [data-entity-field="id"]`,
-      (el) => el.value
+      (el) => ({ value: el.value, type: el.type })
     );
+    const idValue = idState.value;
     assert.ok(idValue.length > 0, "the entity-id input must still hold the persistent key");
-    // The raw id must NOT appear in any visible text on the card (the id input lives
-    // inside the hidden data-entity-new-id-field label, so it never paints).
+    assert.equal(idState.type, "hidden", "the entity-id input must be a hidden input");
+    // The raw id must NOT appear in any visible text on the card (the id input is
+    // type=hidden, so it never paints).
     const visibleText = await page.$eval(firstCard, (el) => (el.innerText || "").trim());
     assert.ok(
       !visibleText.includes(idValue) && !/\bid:\s*\S/i.test(visibleText),
@@ -242,18 +247,23 @@ async function main() {
     const hintCount = await page.$$eval(".entity-readonly-hint", (els) => els.length);
     assert.equal(hintCount, 0, "the read-only law/court hint must be gone (fields are editable)");
 
-    // --- 4. Add entity -> the editable entity-id field is REVEALED (new only) ---
+    // --- 4. Add entity -> STILL no id field anywhere (ids are system-assigned) ---
     await page.click("#playbookEntitiesAddButton");
     const newCard = "#playbookEntitiesList .entity-card:last-child";
-    await page.waitForSelector(`${newCard} [data-entity-new-id-field]:not([hidden])`);
-    const newIdFieldShown = await page.$eval(
-      `${newCard} [data-entity-new-id-field]`,
-      (el) => !el.hidden
+    await page.waitForSelector(`${newCard} [data-entity-field="legal_name"]`);
+    const newIdFieldCount = await page.$$eval(
+      "[data-entity-new-id-field]",
+      (els) => els.length
     );
-    assert.ok(newIdFieldShown, "Add entity must reveal the editable entity-id field");
+    assert.equal(newIdFieldCount, 0, "Add entity must NOT reveal any id field (backend assigns the id)");
+    const newIdInput = await page.$eval(
+      `${newCard} [data-entity-field="id"]`,
+      (el) => ({ value: el.value, type: el.type })
+    );
+    assert.equal(newIdInput.type, "hidden", "the new card's id input must be hidden form state");
+    assert.equal(newIdInput.value, "", "the new card's id must stay blank for the backend to assign");
 
-    // Author the new entity.
-    await page.fill(`${newCard} [data-entity-field="id"]`, "test_co");
+    // Author the new entity — no id is typed anywhere.
     await page.fill(`${newCard} [data-entity-field="legal_name"]`, "Test Co Limited");
     await page.fill(`${newCard} [data-entity-field="short_name"]`, "Test Co");
     // incorporation_jurisdiction is a required field (pre-existing validation rule).
@@ -298,9 +308,9 @@ async function main() {
     const req = await saveReq;
     const body = JSON.parse(req.postData() || "{}");
     assert.ok(Array.isArray(body.entities), "save payload must be {entities:[...]}");
-    const saved = body.entities.find((e) => e.id === "test_co");
-    assert.ok(saved, "the new entity must be in the save payload with its entity_id preserved");
-    assert.equal(saved.legal_name, "Test Co Limited", "legal name must be in the payload");
+    const saved = body.entities.find((e) => e.legal_name === "Test Co Limited");
+    assert.ok(saved, "the new entity must be in the save payload");
+    assert.equal(saved.id, "", "the new entity must POST a BLANK id (the backend assigns it)");
     assert.equal(
       saved.governing_law && saved.governing_law.playbook_option_id,
       "england_and_wales",
@@ -319,6 +329,26 @@ async function main() {
     );
     const resp = await saveResp;
     assert.equal(resp.status(), 200, "save registry should return 200");
+
+    // --- 6. The saved workspace reloads with the BACKEND-ASSIGNED id -----------
+    // The 200 payload re-renders the registry; the new entity's hidden id input
+    // must now carry the system-generated slug of its legal name.
+    const respPayload = await resp.json();
+    const savedEntity = (respPayload.entities || []).find(
+      (e) => e.legal_name === "Test Co Limited"
+    );
+    assert.ok(savedEntity, "the saved workspace must include the new entity");
+    assert.equal(
+      savedEntity.id,
+      "test_co_limited",
+      "the backend must assign the id as the slug of the legal name"
+    );
+    await page.waitForFunction(() => {
+      const inputs = Array.from(
+        document.querySelectorAll('#playbookEntitiesList [data-entity-field="id"]')
+      );
+      return inputs.some((el) => el.value === "test_co_limited");
+    });
 
     await page.screenshot({ path: path.join(SHOTS_DIR, "02-after-save.png"), fullPage: true });
 

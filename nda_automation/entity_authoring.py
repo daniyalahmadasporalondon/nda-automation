@@ -36,6 +36,9 @@ never silently corrupt the registry.
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
+from pathlib import Path
 from typing import Any
 
 from . import entity_registry, entity_store
@@ -53,6 +56,124 @@ _ALLOWED_ENTITY_KEYS = {
     "signatory",
 }
 _ALLOWED_ADDRESS_KEYS = {"id", "label", "lines", "country", "default"}
+
+# Longest system-generated entity id (the slug of the legal name). Long enough to
+# keep real legal names distinct, short enough to stay a sane join key in matter/
+# bundle/governing-law records.
+_GENERATED_ID_MAX_LENGTH = 48
+
+
+def _slugify_entity_id(legal_name: str) -> str:
+    """Derive a deterministic entity-id slug from a legal name.
+
+    Lowercase, best-effort ASCII fold (NFKD, non-ASCII dropped), every run of
+    non-alphanumeric characters collapsed to a single underscore, underscores
+    trimmed, capped at :data:`_GENERATED_ID_MAX_LENGTH`. Never empty: a name that
+    folds to nothing (e.g. fully non-Latin) falls back to ``"entity"`` so the
+    collision suffixing can still key it. No randomness — the same name always
+    yields the same slug.
+
+    "Acme Co Limited" -> "acme_co_limited"; "Aspora (UK) Ltd." -> "aspora_uk_ltd".
+    """
+    folded = unicodedata.normalize("NFKD", str(legal_name or ""))
+    ascii_name = folded.encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-z0-9]+", "_", ascii_name.lower()).strip("_")
+    slug = slug[:_GENERATED_ID_MAX_LENGTH].rstrip("_")
+    return slug or "entity"
+
+
+def _assign_generated_ids(entities: list[dict[str, Any]]) -> None:
+    """Give every id-less entity a system-generated id (in place).
+
+    The entity id is a permanent JOIN KEY (matters/bundles/governing-law), so:
+
+    * An entity that ARRIVES with an id keeps it verbatim — existing entities
+      round-trip their key untouched, and API clients may still choose ids.
+    * A blank/missing id (the UI no longer collects one) is filled with the slug
+      of the legal name. A collision with any other id in the incoming registry —
+      pre-supplied or generated earlier in this pass — is resolved by appending
+      ``_2``, ``_3``, … deterministically.
+    * A blank legal name is left for :func:`entity_registry.validate_registry`
+      to reject (its missing-id error now points at the legal name, since the id
+      is no longer user-visible).
+
+    ``validate_registry``'s duplicate-id check stays as the final backstop.
+    """
+    taken = {entity["id"] for entity in entities if entity.get("id")}
+    for entity in entities:
+        if entity.get("id") or not entity.get("legal_name"):
+            continue
+        base = _slugify_entity_id(entity["legal_name"])
+        candidate = base
+        suffix = 2
+        while candidate in taken:
+            # Truncate the base so base + "_N" never exceeds the id cap (a
+            # full-length slug would otherwise overflow it once suffixed).
+            tail = f"_{suffix}"
+            head = base[: _GENERATED_ID_MAX_LENGTH - len(tail)].rstrip("_")
+            candidate = f"{head}{tail}"
+            suffix += 1
+        entity["id"] = candidate
+        taken.add(candidate)
+
+
+def _stored_entities_snapshot(store_path) -> list[dict[str, Any]]:
+    """Read-only view of the persisted registry for the lost-id tripwire.
+
+    A store that does not exist yet means nothing has been persisted: the seeded
+    defaults are the effective registry then, and they are returned WITHOUT
+    materialising the seed on disk — a rejected save must stay a strict no-op.
+    Fail-soft: an unreadable store yields [] so the tripwire simply cannot fire
+    and the normal validation path still governs the save.
+    """
+    try:
+        if not Path(store_path).exists():
+            return [dict(entity) for entity in entity_registry.DEFAULT_SIGNING_ENTITIES]
+        return entity_store.load_entities(
+            defaults=entity_registry.DEFAULT_SIGNING_ENTITIES, store_path=store_path
+        )
+    except OSError:
+        return []
+
+
+def _reject_lost_stored_ids(entities: list[dict[str, Any]], *, store_path) -> None:
+    """TRIPWIRE: never mint a fresh id for a name whose stored id went missing.
+
+    A blank-id entity whose legal name exactly matches a STORED entity whose id
+    is ABSENT from the incoming payload means "an existing entity lost its id in
+    transit" (a buggy client dropped the hidden key). Minting a new slug would
+    silently RE-KEY that entity and orphan every matter/bundle/governing-law
+    join on the old id — so the save is REJECTED (400) with a reload hint.
+
+    Adding a genuinely NEW entity that happens to share a legal name with an
+    existing one stays allowed: the existing entity is then still present in the
+    payload WITH its id, so the name's stored id is not lost and the newcomer
+    just gets a suffixed slug. Runs BEFORE :func:`_assign_generated_ids` so the
+    check sees exactly the ids the client supplied.
+    """
+    supplied_ids = {entity["id"] for entity in entities if entity.get("id")}
+    lost_id_by_name: dict[str, str] = {}
+    for stored in _stored_entities_snapshot(store_path):
+        stored_id = str(stored.get("id") or "")
+        stored_name = str(stored.get("legal_name") or "").strip()
+        if stored_id and stored_name and stored_id not in supplied_ids:
+            lost_id_by_name[stored_name] = stored_id
+    if not lost_id_by_name:
+        return
+    for entity in entities:
+        if entity.get("id"):
+            continue
+        name = str(entity.get("legal_name") or "").strip()
+        if name in lost_id_by_name:
+            raise EntityAuthoringError(
+                {
+                    "error": (
+                        f'"{name}" already exists (id {lost_id_by_name[name]}) — '
+                        "its id went missing from the save. Reload and try again."
+                    )
+                },
+                status=400,
+            )
 
 
 def _reject_bracket_identity_fields(entities: list[dict[str, Any]]) -> None:
@@ -296,6 +417,16 @@ def save_entities_registry(
 
     entities = [_coerce_entity(raw) for raw in entities_raw]
 
+    # SYSTEM-ASSIGNED IDS: the UI no longer collects an entity id, so a new card
+    # arrives with a blank id and the backend derives one from the legal name
+    # (slug + deterministic collision suffix). Entities arriving WITH an id keep
+    # it verbatim — for existing entities the id is a permanent join key. The
+    # lost-id tripwire runs first: a blank-id entity re-using a STORED name whose
+    # id vanished from the payload is a dropped key, not a new entity — rejected
+    # rather than silently re-keyed.
+    _reject_lost_stored_ids(entities, store_path=store_path)
+    _assign_generated_ids(entities)
+
     # Bracket guard on admin-writable identity fields (legal_name + address lines),
     # parity with the counterparty intake gate: a '[' / ']' would collide with the
     # engine's fill tokens (address corruption / generation DoS). Reject before any
@@ -412,6 +543,15 @@ def validate_entities_payload(payload: dict[str, Any]) -> dict[str, Any]:
         entities = [_coerce_entity(raw) for raw in entities_raw]
     except EntityAuthoringError as error:
         return {"valid": False, "errors": [str(error)]}
+
+    # Mirror the save path's system-assigned ids (and its lost-id tripwire) so the
+    # preview gate never flags a blank id the save would in fact fill in, and DOES
+    # flag a dropped key the save would reject.
+    try:
+        _reject_lost_stored_ids(entities, store_path=entity_store.ENTITY_STORE_PATH)
+    except EntityAuthoringError as error:
+        errors.append(str(error))
+    _assign_generated_ids(entities)
 
     # Surface the bracket-identity-field rejection (C2) in the preview gate too, so
     # the editor flags it before a save attempt rather than only at persist time.

@@ -300,6 +300,216 @@ class EntityAuthoringTests(unittest.TestCase):
         new_co = next(e for e in stored if e["id"] == "new_co")
         self.assertEqual(new_co["governing_law"]["label"], "England and Wales")
 
+    # ---- System-assigned entity ids (the UI no longer collects an id) --------
+
+    def _new_entity(self, legal_name: str, **overrides) -> dict:
+        entity = {
+            "id": "",
+            "legal_name": legal_name,
+            "short_name": "New",
+            "addresses": [
+                {"id": "reg", "label": "Registered office", "lines": ["1 Test St", "London"], "country": "UK", "default": True}
+            ],
+            "governing_law": {"playbook_option_id": "england_and_wales", "label": "England and Wales"},
+            "jurisdiction": "courts in England and Wales",
+            "incorporation_jurisdiction": "England and Wales",
+            "signatory": {"name": "X", "title": "Y"},
+        }
+        entity.update(overrides)
+        return entity
+
+    def _save_and_read(self, entities, store_path=None) -> list[dict]:
+        store_path = store_path or _tmp_store()
+        entity_authoring.save_entities_registry(
+            {"entities": entities}, actor="tester", store_path=store_path
+        )
+        return json.loads(store_path.read_text())["entities"]
+
+    def test_blank_id_is_assigned_slug_of_legal_name(self):
+        stored = self._save_and_read(self._seed() + [self._new_entity("Acme Co Limited")])
+        ids = [e["id"] for e in stored]
+        self.assertIn("acme_co_limited", ids)
+        acme = next(e for e in stored if e["id"] == "acme_co_limited")
+        self.assertEqual(acme["legal_name"], "Acme Co Limited")
+
+    def test_symbols_collapse_to_single_underscores(self):
+        stored = self._save_and_read(self._seed() + [self._new_entity("Aspora (UK) Ltd.")])
+        self.assertIn("aspora_uk_ltd", [e["id"] for e in stored])
+
+    def test_collision_appends_numeric_suffix(self):
+        stored = self._save_and_read(
+            self._seed()
+            + [
+                self._new_entity("Acme Co Limited"),
+                self._new_entity("Acme Co. Limited"),  # same slug once folded
+                self._new_entity("Acme Co Limited!"),
+            ]
+        )
+        ids = [e["id"] for e in stored]
+        self.assertIn("acme_co_limited", ids)
+        self.assertIn("acme_co_limited_2", ids)
+        self.assertIn("acme_co_limited_3", ids)
+
+    def test_collision_with_presupplied_id_is_suffixed(self):
+        stored = self._save_and_read(
+            self._seed()
+            + [
+                self._new_entity("Taken Co", id="taken_co"),  # arrives WITH the id
+                self._new_entity("Taken Co"),  # blank id, same slug -> suffixed
+            ]
+        )
+        ids = [e["id"] for e in stored]
+        self.assertIn("taken_co", ids)
+        self.assertIn("taken_co_2", ids)
+
+    def test_entity_arriving_with_id_keeps_it_verbatim(self):
+        stored = self._save_and_read(
+            self._seed() + [self._new_entity("Custom Keyed Co", id="my_custom_key_99")]
+        )
+        keyed = next(e for e in stored if e["legal_name"] == "Custom Keyed Co")
+        self.assertEqual(keyed["id"], "my_custom_key_99")
+
+    def test_blank_legal_name_yields_clear_legal_name_error(self):
+        store_path = _tmp_store()
+        with self.assertRaises(entity_authoring.EntityAuthoringError) as ctx:
+            entity_authoring.save_entities_registry(
+                {"entities": self._seed() + [self._new_entity("")]},
+                store_path=store_path,
+            )
+        self.assertEqual(ctx.exception.status, 400)
+        self.assertIn("legal name", str(ctx.exception))
+        self.assertNotIn("missing an id", str(ctx.exception))
+        self.assertFalse(store_path.exists())
+
+    def test_unicode_name_is_ascii_folded(self):
+        stored = self._save_and_read(self._seed() + [self._new_entity("Ünïcode Söciété GmbH")])
+        self.assertIn("unicode_societe_gmbh", [e["id"] for e in stored])
+
+    def test_fully_non_ascii_name_falls_back_to_entity(self):
+        stored = self._save_and_read(self._seed() + [self._new_entity("株式会社")])
+        self.assertIn("entity", [e["id"] for e in stored])
+
+    def test_slug_is_deterministic_and_capped(self):
+        slug = entity_authoring._slugify_entity_id
+        self.assertEqual(slug("Acme Co Limited"), "acme_co_limited")
+        self.assertEqual(slug("Acme Co Limited"), slug("Acme Co Limited"))
+        self.assertEqual(slug("Aspora (UK) Ltd."), "aspora_uk_ltd")
+        long_name = "Very " * 30 + "Long Name Co"
+        capped = slug(long_name)
+        self.assertLessEqual(len(capped), entity_authoring._GENERATED_ID_MAX_LENGTH)
+        self.assertFalse(capped.endswith("_"))
+        self.assertEqual(capped, slug(long_name))
+
+    def test_suffixed_ids_never_exceed_the_cap(self):
+        long_name = "Very " * 30 + "Long Name Co"
+        entities = [
+            {"id": "", "legal_name": long_name},
+            {"id": "", "legal_name": long_name},
+        ]
+        entity_authoring._assign_generated_ids(entities)
+        first, second = entities[0]["id"], entities[1]["id"]
+        self.assertEqual(first, entity_authoring._slugify_entity_id(long_name))
+        self.assertLessEqual(len(first), entity_authoring._GENERATED_ID_MAX_LENGTH)
+        self.assertTrue(second.endswith("_2"))
+        self.assertLessEqual(len(second), entity_authoring._GENERATED_ID_MAX_LENGTH)
+        # Deterministic: the same names re-run yield the same suffixed ids.
+        again = [
+            {"id": "", "legal_name": long_name},
+            {"id": "", "legal_name": long_name},
+        ]
+        entity_authoring._assign_generated_ids(again)
+        self.assertEqual([e["id"] for e in again], [first, second])
+
+    # ---- Lost-id tripwire: a dropped key must never be silently re-keyed ------
+
+    def test_blank_id_reusing_a_stored_name_whose_id_vanished_is_rejected(self):
+        # First save persists "Tripwire Co" with its generated id.
+        store_path = _tmp_store()
+        entity_authoring.save_entities_registry(
+            {"entities": self._seed() + [self._new_entity("Tripwire Co")]},
+            store_path=store_path,
+        )
+        before = store_path.read_text()
+        # Second save: the stored entity's id is GONE from the payload and a
+        # blank-id card carries the same legal name — a dropped key in transit.
+        # Minting a fresh id would orphan the matter/bundle joins on tripwire_co.
+        with self.assertRaises(entity_authoring.EntityAuthoringError) as ctx:
+            entity_authoring.save_entities_registry(
+                {"entities": self._seed() + [self._new_entity("Tripwire Co")]},
+                store_path=store_path,
+            )
+        self.assertEqual(ctx.exception.status, 400)
+        message = str(ctx.exception)
+        self.assertIn('"Tripwire Co" already exists (id tripwire_co)', message)
+        self.assertIn("Reload and try again", message)
+        # The store is untouched (a rejected save is a strict no-op).
+        self.assertEqual(store_path.read_text(), before)
+
+    def test_validate_payload_flags_the_lost_id_too(self):
+        # Preview-gate parity: the same dropped-key payload is flagged, no write.
+        store_path = _tmp_store()
+        entity_authoring.save_entities_registry(
+            {"entities": self._seed() + [self._new_entity("Tripwire Co")]},
+            store_path=store_path,
+        )
+        before = store_path.read_text()
+        # Build the dropped-key payload BEFORE patching the store path: _seed()
+        # reads the live registry, and inside the patch it would read the tmp
+        # store and innocently include tripwire_co WITH its id (no drop at all).
+        payload = {"entities": self._seed() + [self._new_entity("Tripwire Co")]}
+        with patch.object(entity_store, "ENTITY_STORE_PATH", store_path):
+            result = entity_authoring.validate_entities_payload(payload)
+        self.assertFalse(result["valid"])
+        self.assertTrue(
+            any("already exists (id tripwire_co)" in e for e in result["errors"]),
+            result["errors"],
+        )
+        self.assertEqual(store_path.read_text(), before)
+
+    def test_renaming_an_existing_entity_with_its_id_present_still_works(self):
+        store_path = _tmp_store()
+        entity_authoring.save_entities_registry(
+            {"entities": self._seed() + [self._new_entity("Rename Co")]},
+            store_path=store_path,
+        )
+        stored = json.loads(store_path.read_text())["entities"]
+        renamed = [dict(e) for e in stored]
+        target = next(e for e in renamed if e["id"] == "rename_co")
+        target["legal_name"] = "Renamed Co Ltd"
+        entity_authoring.save_entities_registry(
+            {"entities": renamed}, store_path=store_path
+        )
+        after = json.loads(store_path.read_text())["entities"]
+        kept = next(e for e in after if e["legal_name"] == "Renamed Co Ltd")
+        self.assertEqual(kept["id"], "rename_co", "a rename must keep the join key")
+
+    def test_duplicate_name_is_allowed_when_the_existing_entity_keeps_its_id(self):
+        # A genuinely NEW entity may share a legal name with an existing one, as
+        # long as the existing entity is still in the payload WITH its id — the
+        # newcomer gets a suffixed slug and nothing trips.
+        store_path = _tmp_store()
+        entity_authoring.save_entities_registry(
+            {"entities": self._seed() + [self._new_entity("Dup Name Co")]},
+            store_path=store_path,
+        )
+        stored = json.loads(store_path.read_text())["entities"]
+        entity_authoring.save_entities_registry(
+            {"entities": [dict(e) for e in stored] + [self._new_entity("Dup Name Co")]},
+            store_path=store_path,
+        )
+        after = json.loads(store_path.read_text())["entities"]
+        ids = [e["id"] for e in after if e["legal_name"] == "Dup Name Co"]
+        self.assertEqual(sorted(ids), ["dup_name_co", "dup_name_co_2"])
+
+    def test_validate_payload_accepts_blank_id_with_legal_name(self):
+        # The preview gate mirrors the save path's id assignment, so a new card
+        # (blank id) with a legal name is VALID, not a "missing id" error.
+        result = entity_authoring.validate_entities_payload(
+            {"entities": self._seed() + [self._new_entity("Preview Co")]}
+        )
+        self.assertEqual(result["errors"], [])
+        self.assertTrue(result["valid"])
+
     def test_orphan_guard_rejects_unapproved_law(self):
         store_path = _tmp_store()
         entities = self._seed()
