@@ -1181,12 +1181,18 @@ def _read_load_probe() -> tuple[int | None, float | None, int | None, float]:
 
 
 class WorkerHealthHandler(BaseHTTPRequestHandler):
-    """Liveness-only listener for NDA_PROCESS_ROLE=worker (k8s liveness probe).
+    """Liveness listener for NDA_PROCESS_ROLE=worker (k8s liveness probe).
 
-    Serves EXACTLY /healthz (GET/HEAD, always 200 while the process is alive,
-    same in-memory load fields as the app's /healthz). Every other path is 404:
-    the worker must never serve app routes -- no auth stack runs here, and the
-    web container is the only place user traffic belongs.
+    Serves EXACTLY /healthz (GET/HEAD). Every other path is 404: the worker
+    must never serve app routes -- no auth stack runs here, and the web
+    container is the only place user traffic belongs.
+
+    /healthz is NOT unconditional: the worker's entire job is the Gmail sync
+    scheduler loop, so a dead (or never-started) scheduler thread means a dead
+    worker -- it answers 503 with a reason so k8s restarts the container,
+    instead of sitting permanently "healthy" while doing nothing. (The app
+    handler's always-200 /healthz is a deliberate DEPLOY-GATE property of the
+    web/all roles and is unchanged.)
     """
 
     server_version = "nda-automation-worker"
@@ -1206,23 +1212,42 @@ class WorkerHealthHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
-        if path == "/healthz":
-            try:
-                queue_depth, used_fraction, generation_in_flight, _ = _read_load_probe()
-                self._respond(
-                    {
-                        "status": "ok",
-                        "role": app_settings.PROCESS_ROLE_WORKER,
-                        "queue_depth": queue_depth,
-                        "used_fraction": used_fraction,
-                        "generation_in_flight": generation_in_flight,
-                    },
-                    200,
-                )
-            except Exception:  # fail-open: a probe bug must never take liveness down
-                self._respond({"status": "ok", "role": app_settings.PROCESS_ROLE_WORKER}, 200)
+        if path != "/healthz":
+            self._respond({"error": "Not found"}, 404)
             return
-        self._respond({"error": "Not found"}, 404)
+        # Scheduler-thread liveness FIRST, outside the fail-open probe guard:
+        # a probe bug must never mask a dead scheduler, and a dead scheduler
+        # must never be reported ok.
+        scheduler_thread = _GMAIL_SYNC_SCHEDULER_THREAD
+        if scheduler_thread is None or not scheduler_thread.is_alive():
+            reason = (
+                "gmail sync scheduler thread was never started"
+                if scheduler_thread is None
+                else "gmail sync scheduler thread is not alive"
+            )
+            self._respond(
+                {
+                    "status": "error",
+                    "role": app_settings.PROCESS_ROLE_WORKER,
+                    "reason": reason,
+                },
+                503,
+            )
+            return
+        try:
+            queue_depth, used_fraction, generation_in_flight, _ = _read_load_probe()
+            self._respond(
+                {
+                    "status": "ok",
+                    "role": app_settings.PROCESS_ROLE_WORKER,
+                    "queue_depth": queue_depth,
+                    "used_fraction": used_fraction,
+                    "generation_in_flight": generation_in_flight,
+                },
+                200,
+            )
+        except Exception:  # fail-open: a probe bug must never take liveness down
+            self._respond({"status": "ok", "role": app_settings.PROCESS_ROLE_WORKER}, 200)
 
     def do_HEAD(self) -> None:
         self.do_GET()
@@ -1416,6 +1441,13 @@ def _record_data_dir_boot_sentinel() -> None:
         print(f"WARNING: {NON_PERSISTENT_DATA_DIR_WARNING}")
 
 
+# The live Gmail-sync scheduler thread, retained so the WORKER role's /healthz
+# can report honest liveness: a worker whose scheduler thread died is a dead
+# worker (its entire job is that loop) and must probe 503 so k8s restarts it,
+# not sit permanently "healthy". None until _start_gmail_sync_scheduler runs.
+_GMAIL_SYNC_SCHEDULER_THREAD: threading.Thread | None = None
+
+
 def _start_gmail_sync_scheduler() -> None:
     # PROCESS ROLES: called from main() for roles "all" and "worker" ONLY --
     # never for role "web". Exactly ONE container per data volume may run a
@@ -1437,8 +1469,10 @@ def _start_gmail_sync_scheduler() -> None:
         disk_janitor.maybe_run_archive_rotation(force=True)
     except Exception as error:  # pragma: no cover - defensive background logging.
         _log_background_error("Startup archive-rotation disk janitor failed", error)
+    global _GMAIL_SYNC_SCHEDULER_THREAD
     scheduler = threading.Thread(target=_gmail_sync_scheduler_loop, daemon=True)
     scheduler.start()
+    _GMAIL_SYNC_SCHEDULER_THREAD = scheduler
 
 
 @contextmanager

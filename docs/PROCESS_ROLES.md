@@ -14,7 +14,7 @@ so web request threads never share a container with bulk background work.
 | --- | --- | --- | --- |
 | `all` (default / unset) | Full app | Yes | Exactly today's single-process behavior. **Render and local dev use this — no change needed.** |
 | `web` | Full app | **Never starts** | Serves all routes, including admin-triggered background jobs (garble backfill, pdf-docx backfill) — those stay runnable for `all`-parity but log a hint that the worker is the better home. |
-| `worker` | **None** — a minimal listener serving ONLY `/healthz` (everything else 404) on `--port` (default 8787) | Yes | k8s liveness probe target. Exits cleanly on SIGTERM (no scheduler stop-event exists; the daemon thread dies with the process — safe because store writes are atomic + flock-serialized and interrupted reviews heal at next boot). |
+| `worker` | **None** — a minimal listener serving ONLY `/healthz` (everything else 404) on `--port` (default 8787) | Yes | k8s liveness probe target. `/healthz` is honest: **503** (JSON `reason`) when the scheduler thread never started or died — the worker's entire job is that loop, so k8s restarts it instead of keeping a permanently-"healthy" dead worker. (Web/all `/healthz` stays always-200 by design: it gates deploys, see `server._send_healthz`.) Exits cleanly on SIGTERM (no scheduler stop-event exists; the daemon thread dies with the process — safe because store writes are atomic + flock-serialized and interrupted reviews heal at next boot). |
 
 An **invalid** value refuses to boot with a clear error (it does not silently
 default): a typo like `webb` falling back to `all` would start a second Gmail

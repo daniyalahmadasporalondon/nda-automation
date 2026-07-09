@@ -13447,40 +13447,99 @@ class ProcessRoleTests(unittest.TestCase):
         sig.assert_called_once()
         self.assertEqual(sig.call_args.args[0], server_module.signal.SIGTERM)
 
-    def test_worker_health_listener_serves_only_healthz(self):
-        # Real socket: the worker listener answers /healthz and 404s app routes.
+    @contextmanager
+    def _worker_health_server(self):
+        """A live WorkerHealthHandler on a random port; yields (host, port)."""
         health_server = ThreadingHTTPServer(("127.0.0.1", 0), server_module.WorkerHealthHandler)
         thread = threading.Thread(target=health_server.serve_forever, daemon=True)
         thread.start()
-        host, port = health_server.server_address
         try:
-            connection = http.client.HTTPConnection(host, port, timeout=10)
-            try:
-                connection.request("GET", "/healthz")
-                response = connection.getresponse()
-                body = json.loads(response.read().decode("utf-8"))
-                self.assertEqual(response.status, 200)
-                self.assertEqual(body["status"], "ok")
-                self.assertEqual(body["role"], "worker")
-
-                # App routes must NOT be served by the worker.
-                for path in ("/api/matters", "/", "/login", "/api/admin/telemetry"):
-                    connection.request("GET", path)
-                    response = connection.getresponse()
-                    response.read()
-                    self.assertEqual(response.status, 404, path)
-
-                # HEAD liveness works too (no body).
-                connection.request("HEAD", "/healthz")
-                response = connection.getresponse()
-                self.assertEqual(response.status, 200)
-                self.assertEqual(response.read(), b"")
-            finally:
-                connection.close()
+            yield health_server.server_address
         finally:
             health_server.shutdown()
             health_server.server_close()
             thread.join(timeout=10)
+
+    @staticmethod
+    def _live_stub_thread():
+        """A genuinely-alive daemon thread standing in for the scheduler."""
+        stop = threading.Event()
+        stub = threading.Thread(target=stop.wait, daemon=True)
+        stub.start()
+        return stub, stop
+
+    def test_worker_health_listener_serves_only_healthz(self):
+        # Real socket: the worker listener answers /healthz (with a LIVE
+        # scheduler thread) and 404s app routes.
+        stub, stop = self._live_stub_thread()
+        try:
+            with patch.object(server_module, "_GMAIL_SYNC_SCHEDULER_THREAD", stub):
+                with self._worker_health_server() as (host, port):
+                    connection = http.client.HTTPConnection(host, port, timeout=10)
+                    try:
+                        connection.request("GET", "/healthz")
+                        response = connection.getresponse()
+                        body = json.loads(response.read().decode("utf-8"))
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(body["status"], "ok")
+                        self.assertEqual(body["role"], "worker")
+
+                        # App routes must NOT be served by the worker.
+                        for path in ("/api/matters", "/", "/login", "/api/admin/telemetry"):
+                            connection.request("GET", path)
+                            response = connection.getresponse()
+                            response.read()
+                            self.assertEqual(response.status, 404, path)
+
+                        # HEAD liveness works too (no body).
+                        connection.request("HEAD", "/healthz")
+                        response = connection.getresponse()
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(response.read(), b"")
+                    finally:
+                        connection.close()
+        finally:
+            stop.set()
+            stub.join(timeout=10)
+
+    def test_worker_healthz_503_when_scheduler_thread_dead_or_missing(self):
+        # A worker whose scheduler thread died (or never started) is a DEAD
+        # worker: /healthz must go 503 so the k8s liveness probe restarts the
+        # container, instead of a permanently-"healthy" process doing nothing.
+        def _get_healthz(host, port):
+            connection = http.client.HTTPConnection(host, port, timeout=10)
+            try:
+                connection.request("GET", "/healthz")
+                response = connection.getresponse()
+                return response.status, json.loads(response.read().decode("utf-8"))
+            finally:
+                connection.close()
+
+        # Never started (thread reference is None).
+        with patch.object(server_module, "_GMAIL_SYNC_SCHEDULER_THREAD", None):
+            with self._worker_health_server() as (host, port):
+                status, body = _get_healthz(host, port)
+        self.assertEqual(status, 503)
+        self.assertEqual(body["status"], "error")
+        self.assertEqual(body["role"], "worker")
+        self.assertIn("never started", body["reason"])
+
+        # Started, then died: healthy (200) while alive, 503 once dead.
+        stub, stop = self._live_stub_thread()
+        with patch.object(server_module, "_GMAIL_SYNC_SCHEDULER_THREAD", stub):
+            with self._worker_health_server() as (host, port):
+                status, body = _get_healthz(host, port)
+                self.assertEqual(status, 200)
+                self.assertEqual(body["status"], "ok")
+
+                stop.set()
+                stub.join(timeout=10)
+                self.assertFalse(stub.is_alive())
+
+                status, body = _get_healthz(host, port)
+        self.assertEqual(status, 503)
+        self.assertEqual(body["status"], "error")
+        self.assertIn("not alive", body["reason"])
 
 
 if __name__ == "__main__":

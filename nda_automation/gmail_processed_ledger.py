@@ -140,24 +140,33 @@ def _ledger_flock(owner: str):
 
 def _merge_with_on_disk(
     on_disk: dict[str, object],
-    session_ordered: list[str],
+    session_marked: list[str],
     session_attempts: dict[str, int],
     session_quarantined: dict[str, dict[str, object]],
 ) -> tuple[list[str], dict[str, int], dict[str, dict[str, object]]]:
-    """UNION a session's buffered ledger state with the current on-disk state.
+    """UNION the current on-disk state with a session's DELTA (never its snapshot).
 
     Called under ``_ledger_flock`` so the on-disk view cannot move beneath us.
-    Sessions only ever ADD (marks, attempt counts, quarantine records) or
-    terminate retry counting, so a union is lossless:
+    The inputs are only what the session itself CHANGED since load -- ids it
+    marked (``session_marked``), attempt counters it touched, quarantine
+    records it added -- NOT the full load-time snapshot. Merging the snapshot
+    would resurrect another writer's REMOVALS (an admin
+    ``requeue_quarantined_message`` racing an open session): the on-disk state
+    is the removal authority, and a delta the session never touched cannot
+    overrule it. Sessions themselves only ever ADD or terminate retry
+    counting, so this union is lossless in both directions:
 
     * ``message_ids``: on-disk order first (it keeps its oldest-first order),
-      then the session's ids not already on disk, in session order. The write
-      re-applies the size cap, so an id the OTHER writer evicted while we held
-      it merely re-enters at the tail (most-recent, correct).
-    * ``quarantined``: keyed union; the session's record wins for the same id
-      (it is the newer observation).
-    * ``attempts``: keyed union taking max(disk, session) per id -- two
-      processes that each counted failures never LOSE progress toward the
+      then the session's newly-marked ids not already on disk, in mark order.
+      The write re-applies the size cap, so an id the OTHER writer evicted
+      while we held it merely re-enters at the tail (most-recent, correct)
+      IF this session re-marked it -- an untouched id stays evicted/removed.
+    * ``quarantined``: keyed union; the session's record wins for an id the
+      session actually quarantined (it is the newer observation). On-disk
+      records the session never touched pass through untouched -- and on-disk
+      ABSENCE of a record the session never touched stays absent.
+    * ``attempts``: keyed union taking max(disk, session) per touched id --
+      two processes that each counted failures never LOSE progress toward the
       quarantine threshold (max undercounts a true sum, which only delays
       quarantine by a poll -- safe). Then every id terminal in the merged view
       (marked processed) drops its counter, preserving the invariant that the
@@ -167,7 +176,7 @@ def _merge_with_on_disk(
     disk_ids_raw = on_disk.get("message_ids")
     disk_ids: list[str] = list(disk_ids_raw) if isinstance(disk_ids_raw, list) else []
     disk_id_set = set(disk_ids)
-    merged_ids = disk_ids + [mid for mid in session_ordered if mid not in disk_id_set]
+    merged_ids = disk_ids + [mid for mid in session_marked if mid not in disk_id_set]
 
     disk_quarantined = on_disk.get("quarantined")
     merged_quarantined: dict[str, dict[str, object]] = (
@@ -330,6 +339,18 @@ def _cap_most_recent_first(ordered_ids: list[str]) -> list[str]:
     return ordered_ids[-MAX_LEDGER_ENTRIES:]
 
 
+def _cap_mapping_most_recent(mapping: dict, cap: int = MAX_ATTEMPT_ENTRIES) -> dict:
+    """Keep the most-recently-touched entries (insertion-order tail) of a mapping.
+
+    Shared by ``_write_ids`` (the attempts/quarantined size caps) and the
+    session's post-flush adoption, so the in-memory view after a flush is
+    capped EXACTLY as the persisted payload was.
+    """
+    if len(mapping) <= cap:
+        return mapping
+    return dict(list(mapping.items())[-cap:])
+
+
 def _write_ids(
     owner: str,
     ordered_ids: list[str],
@@ -347,14 +368,9 @@ def _write_ids(
     capped = _cap_most_recent_first(ordered_ids)
     payload: dict[str, object] = {"message_ids": capped}
     if attempts:
-        if len(attempts) > MAX_ATTEMPT_ENTRIES:
-            # Keep the most-recently-touched counters (insertion order tail).
-            attempts = dict(list(attempts.items())[-MAX_ATTEMPT_ENTRIES:])
-        payload["attempts"] = attempts
+        payload["attempts"] = _cap_mapping_most_recent(attempts)
     if quarantined:
-        if len(quarantined) > MAX_ATTEMPT_ENTRIES:
-            quarantined = dict(list(quarantined.items())[-MAX_ATTEMPT_ENTRIES:])
-        payload["quarantined"] = quarantined
+        payload["quarantined"] = _cap_mapping_most_recent(quarantined)
     path = _ledger_path(owner)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_name(f"{path.name}.tmp")
@@ -475,6 +491,17 @@ class ProcessedLedgerSession:
         # marks. flush() sidelines the corrupt file first (forensics + safety).
         self._load_degraded = bool(payload.get("degraded"))
         self._dirty = False
+        # DELTA tracking (web/worker split): flush() merges ONLY what THIS
+        # session actually changed -- ids marked, attempt counters touched,
+        # quarantine records added -- with the re-read on-disk state. Merging
+        # the whole load-time SNAPSHOT instead would resurrect another writer's
+        # REMOVALS: an admin ``requeue_quarantined_message`` racing an open poll
+        # session would see its released id (and its stale quarantine record)
+        # silently re-added by the poll's flush, putting the message back into
+        # never-reprocess state.
+        self._session_marked: list[str] = []
+        self._session_attempts: dict[str, int] = {}
+        self._session_quarantined: dict[str, dict[str, object]] = {}
 
     def is_processed(self, message_id: str) -> bool:
         target = str(message_id or "").strip()
@@ -489,13 +516,17 @@ class ProcessedLedgerSession:
             return
         if target in self._attempts:
             # A terminal outcome ends retry counting; drop the counter so the
-            # attempts blob only ever holds still-retrying ids.
+            # attempts blob only ever holds still-retrying ids. Dropped from the
+            # session delta too -- the merge's terminal-drop (any id processed in
+            # the merged view loses its counter) makes the deletion durable.
             del self._attempts[target]
+            self._session_attempts.pop(target, None)
             self._dirty = True
         if target in self._known:
             return
         self._known.add(target)
         self._ordered.append(target)
+        self._session_marked.append(target)
         self._dirty = True
 
     # -- transient-failure attempt counting (poison-message quarantine) ------ #
@@ -518,6 +549,8 @@ class ProcessedLedgerSession:
             return 0
         count = int(self._attempts.pop(target, 0)) + 1
         self._attempts[target] = count
+        self._session_attempts.pop(target, None)
+        self._session_attempts[target] = count
         self._dirty = True
         return count
 
@@ -537,12 +570,14 @@ class ProcessedLedgerSession:
             return
         self.mark(target)
         if target not in self._quarantined:
-            self._quarantined[target] = {
+            record: dict[str, object] = {
                 "attempts": max(0, int(attempts or 0)),
                 "reason": str(reason or "")[:200],
                 "last_at": datetime.now(timezone.utc).isoformat(),
                 "filename": str(filename or "")[:200],
             }
+            self._quarantined[target] = record
+            self._session_quarantined[target] = record
             self._dirty = True
 
     def quarantined_ids(self) -> set[str]:
@@ -560,11 +595,15 @@ class ProcessedLedgerSession:
         """MERGE-UNDER-FLOCK write of the ledger if anything new was marked.
 
         Cross-process safe (web/worker split): under ``_ledger_flock`` the
-        on-disk ledger is RE-READ and UNIONED with this session's buffered state
-        (``_merge_with_on_disk``) before the atomic tmp+os.replace write, so a
-        concurrent writer in another process (worker scheduled poll vs web
-        manual import vs web bulk-archive guard) can never have its marks
-        silently erased by a last-writer-wins whole-file rewrite.
+        on-disk ledger is RE-READ and UNIONED with this session's DELTA -- only
+        what this session itself marked/counted/quarantined, never the whole
+        load-time snapshot (``_merge_with_on_disk``) -- before the atomic
+        tmp+os.replace write. That gives both directions of safety: a concurrent
+        writer's MARKS survive (no last-writer-wins erasure between the worker
+        poll, a web manual import, and the web bulk-archive guard), and a
+        concurrent writer's REMOVALS survive too (an admin
+        ``requeue_quarantined_message`` that raced this session is not undone by
+        replaying our stale snapshot of the removed id).
 
         Best-effort: a write/lock failure is logged and swallowed (the unwritten
         ids simply re-process next poll -- correct, just not free), so
@@ -592,7 +631,10 @@ class ProcessedLedgerSession:
                     self._sideline_corrupt_file()
                     on_disk = {"message_ids": [], "attempts": {}, "quarantined": {}}
                 merged_ids, merged_attempts, merged_quarantined = _merge_with_on_disk(
-                    on_disk, self._ordered, self._attempts, self._quarantined
+                    on_disk,
+                    self._session_marked,
+                    self._session_attempts,
+                    self._session_quarantined,
                 )
                 _write_ids(self._owner, merged_ids, merged_attempts, merged_quarantined)
         except OSError:
@@ -601,12 +643,19 @@ class ProcessedLedgerSession:
                 exc_info=True,
             )
             return False
-        # Adopt the merged view so later marks/flushes on this session build on
-        # what was actually persisted (including the other writer's marks).
-        self._ordered = merged_ids
-        self._known = set(merged_ids)
-        self._attempts = merged_attempts
-        self._quarantined = merged_quarantined
+        # Adopt EXACTLY the persisted view (same caps _write_ids applied) so
+        # later marks/flushes on this session build on the on-disk truth --
+        # including the other writer's marks AND removals -- and never keep an
+        # uncapped superset alive in memory. The delta trackers reset: their
+        # changes are durable now, so the next flush merges only what comes
+        # after this point.
+        self._ordered = _cap_most_recent_first(merged_ids)
+        self._known = set(self._ordered)
+        self._attempts = _cap_mapping_most_recent(merged_attempts)
+        self._quarantined = _cap_mapping_most_recent(merged_quarantined)
+        self._session_marked = []
+        self._session_attempts = {}
+        self._session_quarantined = {}
         self._dirty = False
         return True
 

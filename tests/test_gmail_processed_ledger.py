@@ -897,3 +897,42 @@ def test_merge_preserves_both_writers_quarantine_records(ledger_data_dir):
     assert set(records) == {"msg_qa", "msg_qb"}
     assert records["msg_qb"]["reason"] == "poison-b"
     assert records["msg_qa"]["reason"] == "poison-a"
+
+
+def test_stale_session_flush_does_not_resurrect_requeued_message(ledger_data_dir):
+    """A session's flush merges its DELTA only -- never its load-time snapshot.
+
+    Regression for the requeue-resurrection defect: a poll session that loaded
+    BEFORE an admin's requeue_quarantined_message removal used to re-add the
+    released id (marks AND quarantine record with stale attempts) on its next
+    flush -- the admin saw removed=True while the message silently returned to
+    never-reprocess state.
+    """
+    owner = "owner_1"
+    # A message reaches terminal quarantine on disk.
+    seed = ledger.ProcessedLedgerSession(owner)
+    seed.quarantine("msg_bad", reason="poison", attempts=3)
+    assert seed.flush() is True
+    assert ledger.is_message_processed("msg_bad", owner) is True
+
+    # A poll session loads (its snapshot contains msg_bad)...
+    poll_session = ledger.ProcessedLedgerSession(owner)
+    assert poll_session.is_processed("msg_bad") is True
+
+    # ...then the admin releases the message for retry.
+    assert ledger.requeue_quarantined_message("msg_bad", owner) is True
+
+    # The stale session marks an UNRELATED id and flushes. msg_bad must stay
+    # gone from ids, quarantine records, and attempts.
+    poll_session.mark("msg_other")
+    assert poll_session.flush() is True
+
+    assert ledger.is_message_processed("msg_bad", owner) is False
+    assert "msg_bad" not in ledger.quarantined_messages(owner)
+    assert ledger.load_processed_message_ids(owner) == {"msg_other"}
+    payload = json.loads(
+        (ledger_data_dir / "gmail" / owner / "gmail-processed-messages.json").read_text()
+    )
+    assert payload.get("attempts") in (None, {})
+    # The flushing session adopted the on-disk truth (removal included).
+    assert poll_session.is_processed("msg_bad") is False
