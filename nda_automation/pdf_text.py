@@ -106,6 +106,15 @@ def _fitz_visual_text_flags(fitz_module: Any) -> int | None:
 # Two chunks whose baselines differ by less than this many points belong to the
 # same visual line (sub/superscript jitter, split runs on one line).
 _SAME_LINE_Y_TOLERANCE = 3.0
+# GLYPH-FRAGMENTED page detection: this many CONSECUTIVE single-character text
+# operations (in drawing order) marks the page as rendered glyph-by-glyph — the
+# signature-block/overlay style where every character is its own positioned Tj.
+# Word-processor output draws whole runs per operation, so a run of 6 lone glyphs
+# essentially never occurs outside per-glyph rendering; the shortest signature-
+# block labels ("Signed") already reach it. Kept deliberately high so normal
+# documents can never trip it (a stray superscript or standalone clause number is
+# a run of 1).
+_GLYPH_FRAGMENT_RUN_MIN = 6
 # A heading-sized font jump relative to the body font.
 _HEADING_FONT_FACTOR = 1.15
 # Expected wrap pitch as a multiple of the body font size. Single-spaced text
@@ -458,16 +467,69 @@ def _extract_geo_lines(page: Any) -> list[GeoLine]:
         chunks = []
 
     geo_lines = _group_chunks_into_lines(chunks)
-    if geo_lines:
+    if geo_lines and not _chunks_are_glyph_fragmented(chunks):
         return geo_lines
 
-    # Fallback: no usable geometry (e.g. visitor unsupported). Use flat text with
-    # no coordinates so the splitter relies purely on never-merge-safe text rules.
+    # Fallback: flat text with no coordinates so the splitter relies purely on
+    # never-merge-safe text rules. Taken in two cases:
+    #
+    # 1. No usable geometry at all (e.g. visitor unsupported) — the original case.
+    # 2. The page is GLYPH-FRAGMENTED: its text is drawn one character per
+    #    positioned operation (per-glyph Tj/Tm — typical of signature-block
+    #    overlays and some DOCX->PDF converters). The visitor layer CANNOT
+    #    faithfully reassemble such a page: pypdf's ``visitor_text`` exposes no
+    #    glyph widths and reports stale/duplicated ``tm`` translations for
+    #    back-to-back single-glyph operations, so baseline-bucketing the chunks
+    #    stacks same-line glyphs into one-character vertical "lines" ("C"/"E"/"O"
+    #    as three paragraphs) and space-joins the rest into scrambled fragments
+    #    ("B r i n e" + an orphan "a"). pypdf's own ``extract_text`` walks the
+    #    content stream WITH real font metrics, so it reassembles the same page
+    #    into coherent lines ("CEO", "Moorwand Limited") without inventing or
+    #    dropping characters — strictly better text than any join we could do
+    #    from the width-less visitor geometry. The cost is losing geometry for
+    #    the page, which only fail-safes the splitter into per-line paragraphs
+    #    (fragmenting, never merging) and keeps the ``pdf_confident`` trust tier
+    #    closed — the documented safe degradation.
     try:
         page_text = page.extract_text() or ""
     except Exception:
         page_text = ""
-    return [GeoLine(text=line, left_x=None, y=None, font_size=None) for line in _normalized_lines(page_text)]
+    flat_lines = [GeoLine(text=line, left_x=None, y=None, font_size=None) for line in _normalized_lines(page_text)]
+    if flat_lines:
+        return flat_lines
+    # A glyph-fragmented page whose flat extraction came back empty: mangled
+    # grouped text still beats silently dropping the page's text entirely.
+    return geo_lines
+
+
+def _chunks_are_glyph_fragmented(
+    chunks: list[tuple[float, float, Optional[float], str]],
+) -> bool:
+    """True when the page draws its text one glyph per positioned operation.
+
+    Detection is a run test in DRAWING ORDER: ``_GLYPH_FRAGMENT_RUN_MIN``
+    consecutive single-character chunks. Per-glyph writers emit long runs of
+    lone characters (a six-letter word is already six), while word-processor
+    output draws whole runs/lines per operation, so ordinary pages never reach
+    the threshold — an isolated superscript, page number or standalone clause
+    number is a run of one. Space glyphs never break a run because the visitor
+    drops whitespace-only chunks before they are recorded.
+
+    When this fires, ``_extract_geo_lines`` abandons the visitor-geometry path
+    for the page: the width-less, stale-``tm`` visitor chunks cannot be grouped
+    back into faithful lines (see the fallback comment there), and pypdf's own
+    metrics-aware ``extract_text`` must supply the page text instead.
+    """
+
+    run = 0
+    for _x, _y, _size, text in chunks:
+        if len(text) == 1:
+            run += 1
+            if run >= _GLYPH_FRAGMENT_RUN_MIN:
+                return True
+        else:
+            run = 0
+    return False
 
 
 def _group_chunks_into_lines(

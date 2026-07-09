@@ -2514,6 +2514,94 @@ class PdfSourceBackedTrustTierTests(unittest.TestCase):
         )
 
 
+@requires_pypdf
+class PdfGlyphFragmentedSignaturePageTests(unittest.TestCase):
+    """A signature page rendered ONE GLYPH PER positioned text operation (per-glyph
+    Tm+Tj with baseline jitter — signature-block overlays, some DOCX->PDF
+    converters) must extract as coherent lines, not as vertically stacked
+    one-character paragraphs ("C" / "E" / "O") or scrambled space-joined fragments
+    ("B r i n e" plus an orphan "a"). pypdf's ``visitor_text`` exposes no glyph
+    widths and reports stale ``tm`` translations for back-to-back single-glyph
+    operations, so the geometry grouping CANNOT reassemble such a page; the fix
+    detects the per-glyph shape and takes the flat metrics-aware ``extract_text``
+    path for that page only."""
+
+    def test_per_glyph_signature_block_extracts_coherent_lines(self):
+        paragraphs = extract_pdf_paragraphs(make_pdf_glyph_fragmented_signature_page())
+        texts = [str(p["text"]) for p in paragraphs]
+
+        # The drifting-baseline role acronym is ONE coherent paragraph...
+        self.assertIn("CEO", texts)
+        # ...never three stacked one-character paragraphs, and nothing else on the
+        # page fragments into one/two-character shards either.
+        shards = [text for text in texts if len(text) <= 2]
+        self.assertEqual(shards, [], f"one-char shard paragraphs extracted: {texts}")
+
+        # Every signature-block line survives with its words intact.
+        self.assertIn("Moorwand Limited", texts)
+        self.assertIn("Signed: _______________ Briane Lucas", texts)
+        self.assertIn("Luc Guerand", texts)
+        self.assertIn("Authorised Signatory Name Position/Title", texts)
+        self.assertIn("Date", texts)
+
+        # The normal whole-line body ops on the same page still extract verbatim.
+        self.assertTrue(
+            any(text.startswith("The parties agree to keep all Confidential Information") for text in texts),
+            texts,
+        )
+
+        # No characters were invented or dropped: the extraction's non-whitespace
+        # character multiset matches the fixture's exactly.
+        drawn = (
+            "The parties agree to keep all Confidential Information secret and secure at all"
+            "times during the term of this Agreement."
+            "Moorwand Limited" "Signed: _______________" "Briane Lucas" "CEO"
+            "Luc Guerand" "Authorised Signatory Name Position/Title" "Date"
+        )
+        self.assertEqual(
+            sorted("".join(drawn.split())),
+            sorted("".join("".join(texts).split())),
+        )
+
+    def test_flat_demotion_is_page_scoped_normal_page_keeps_geometry(self):
+        paragraphs = extract_pdf_paragraphs(make_pdf_normal_body_plus_glyph_signature_page())
+        page_one = [p for p in paragraphs if p["page_number"] == 1]
+        page_two = [p for p in paragraphs if p["page_number"] == 2]
+
+        # Page 1 (whole-line ops) keeps the visitor-geometry path: its heading still
+        # carries pdf_geometry, so the pdf_confident trust tier is unaffected.
+        self.assertTrue(page_one)
+        self.assertTrue(
+            any("pdf_geometry" in p for p in page_one),
+            f"normal page lost its geometry: {page_one}",
+        )
+
+        # Page 2 (per-glyph) extracts coherently with no one-char shards.
+        page_two_texts = [str(p["text"]) for p in page_two]
+        self.assertIn("CEO", page_two_texts)
+        self.assertIn("Moorwand Limited", page_two_texts)
+        self.assertEqual([t for t in page_two_texts if len(t) <= 2], [], page_two_texts)
+        # The signature page's paragraphs have NO geometry (fail-safe tier closed).
+        self.assertFalse(any("pdf_geometry" in p for p in page_two), page_two)
+
+    def test_glyph_fragment_detection_requires_a_long_single_char_run(self):
+        detect = pdf_text._chunks_are_glyph_fragmented
+
+        def chunk(text):
+            return (72.0, 700.0, 10.0, text)
+
+        # Whole-line chunks (normal documents): never fragmented.
+        self.assertFalse(detect([chunk("The parties agree to keep it secret."), chunk("2. TERM")]))
+        # Standalone clause numbers / a stray superscript: short runs stay safe.
+        self.assertFalse(detect([chunk("2"), chunk("Confidentiality obligations."), chunk("3")]))
+        # Five lone glyphs — still below the threshold.
+        self.assertFalse(detect([chunk(c) for c in "Brian"]))
+        # Six consecutive lone glyphs — the per-glyph signature shape.
+        self.assertTrue(detect([chunk(c) for c in "Signed"]))
+        # A whole-line chunk in between resets the run.
+        self.assertFalse(detect([chunk(c) for c in "Bri"] + [chunk("Signed by the parties.")] + [chunk(c) for c in "ane"]))
+
+
 def make_pdf(text):
     return make_pdf_pages([[text]])
 
@@ -2542,6 +2630,122 @@ def make_pdf_positioned(lines_with_geometry):
         f"4 0 obj << /Length {len(stream.encode('latin-1'))} >> stream\n{stream}endstream endobj\n",
         f"{object_count} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n",
     ]
+    return _pdf_package(objects)
+
+
+# Helvetica AFM advance widths (per mille of the font size) for the glyphs the
+# per-glyph signature fixture draws. Per-glyph rendering positions EVERY character
+# at its own Tm; using the REAL font advances makes the fixture geometrically
+# faithful to a converter-generated signature page (pypdf's metrics-aware
+# ``extract_text`` can then reassemble the words, exactly as it does in prod).
+_HELVETICA_WIDTHS = {
+    " ": 278, ":": 278, "_": 556, "/": 278, ".": 278, ",": 278, "-": 333,
+    "0": 556, "1": 556, "2": 556, "3": 556, "4": 556, "5": 556, "6": 556, "7": 556, "8": 556, "9": 556,
+    "A": 667, "B": 667, "C": 722, "D": 722, "E": 667, "F": 611, "G": 778, "H": 722, "I": 278,
+    "J": 500, "K": 667, "L": 556, "M": 833, "N": 722, "O": 778, "P": 667, "Q": 778, "R": 722,
+    "S": 667, "T": 611, "U": 722, "V": 667, "W": 944, "X": 667, "Y": 667, "Z": 611,
+    "a": 556, "b": 556, "c": 500, "d": 556, "e": 556, "f": 278, "g": 556, "h": 556, "i": 222,
+    "j": 222, "k": 500, "l": 222, "m": 833, "n": 556, "o": 556, "p": 556, "q": 556, "r": 333,
+    "s": 500, "t": 278, "u": 556, "v": 500, "w": 722, "x": 500, "y": 500, "z": 500,
+}
+
+# Per-glyph baseline jitter (points) cycled across a run — the +-2pt wobble a
+# signature-block overlay / DOCX->PDF converter leaves on hand-positioned glyphs.
+# Its 3.5pt total span exceeds pdf_text._SAME_LINE_Y_TOLERANCE (3.0), which is
+# what fragments the visitor-geometry grouping on unfixed code.
+_SIGNATURE_JITTER = [0.0, 1.4, -1.6, 0.8, -1.1, 1.9, -0.4]
+
+
+def _per_glyph_ops(text, x, y, font_size, jitter=None):
+    """Content-stream ops drawing ``text`` ONE GLYPH PER Tm+Tj at true Helvetica
+    advances, with optional per-glyph baseline jitter — the signature-block
+    rendering style that fragments visitor-geometry grouping."""
+
+    ops = []
+    cursor = x
+    for index, char in enumerate(text):
+        offset = jitter[index % len(jitter)] if jitter else 0.0
+        if char != " ":
+            ops.append(
+                f"/F1 {font_size} Tf 1 0 0 1 {round(cursor, 2)} {round(y + offset, 2)} Tm "
+                f"({_escape_pdf_text(char)}) Tj"
+            )
+        cursor += font_size * _HELVETICA_WIDTHS[char] / 1000.0
+    return ops
+
+
+def _signature_block_ops():
+    """The mangled-in-prod signature-block shape: labels, names, a role acronym
+    with a slowly DRIFTING baseline (each glyph >3pt below the previous — fully
+    stacks one-char lines on unfixed code) and an underscore signing line."""
+
+    ops = []
+    ops += _per_glyph_ops("Moorwand Limited", 72, 640, 10, jitter=_SIGNATURE_JITTER)
+    ops += _per_glyph_ops("Signed: _______________", 72, 620, 10, jitter=_SIGNATURE_JITTER)
+    ops += _per_glyph_ops("Briane Lucas", 300, 620, 10, jitter=_SIGNATURE_JITTER)
+    ops += _per_glyph_ops("CEO", 300, 590, 10, jitter=[0.0, -3.2, -6.4])
+    ops += _per_glyph_ops("Luc Guerand", 72, 560, 10, jitter=_SIGNATURE_JITTER)
+    ops += _per_glyph_ops("Authorised Signatory Name Position/Title", 72, 540, 10, jitter=_SIGNATURE_JITTER)
+    ops += _per_glyph_ops("Date", 72, 520, 10, jitter=_SIGNATURE_JITTER)
+    return ops
+
+
+def make_pdf_glyph_fragmented_signature_page():
+    """Single page: two normal whole-line body ops + a per-glyph signature block."""
+
+    object_count = 5
+    operations = ["BT"]
+    for text, x, y, font_size in [
+        ("The parties agree to keep all Confidential Information secret and secure at all", 72, 720, 11),
+        ("times during the term of this Agreement.", 72, 706, 11),
+    ]:
+        operations.append(f"/F1 {font_size} Tf 1 0 0 1 {x} {y} Tm ({_escape_pdf_text(text)}) Tj")
+    operations += _signature_block_ops()
+    operations.append("ET")
+    stream = " ".join(operations) + "\n"
+    objects = [
+        "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n",
+        "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n",
+        "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        f"/Resources << /Font << /F1 {object_count} 0 R >> >> /Contents 4 0 R >> endobj\n",
+        f"4 0 obj << /Length {len(stream.encode('latin-1'))} >> stream\n{stream}endstream endobj\n",
+        f"{object_count} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n",
+    ]
+    return _pdf_package(objects)
+
+
+def make_pdf_normal_body_plus_glyph_signature_page():
+    """Two pages: page 1 is a NORMAL whole-line-ops page (large-font heading +
+    body), page 2 is the per-glyph signature page. Proves the flat-text demotion
+    is PAGE-SCOPED: page 1 keeps its visitor geometry."""
+
+    page_one_ops = ["BT"]
+    for text, x, y, font_size in [
+        ("1. CONFIDENTIALITY", 72, 720, 16),
+        ("The receiving party shall keep information confidential at all times.", 72, 700, 11),
+    ]:
+        page_one_ops.append(f"/F1 {font_size} Tf 1 0 0 1 {x} {y} Tm ({_escape_pdf_text(text)}) Tj")
+    page_one_ops.append("ET")
+    page_two_ops = ["BT"] + _signature_block_ops() + ["ET"]
+    streams = [" ".join(page_one_ops) + "\n", " ".join(page_two_ops) + "\n"]
+
+    font_object_number = 3 + len(streams) * 2
+    kids = " ".join(f"{3 + index * 2} 0 R" for index in range(len(streams)))
+    objects = [
+        "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n",
+        f"2 0 obj << /Type /Pages /Kids [{kids}] /Count {len(streams)} >> endobj\n",
+    ]
+    for index, stream in enumerate(streams):
+        page_object_number = 3 + index * 2
+        content_object_number = page_object_number + 1
+        objects.append(
+            f"{page_object_number} 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            f"/Resources << /Font << /F1 {font_object_number} 0 R >> >> /Contents {content_object_number} 0 R >> endobj\n"
+        )
+        objects.append(
+            f"{content_object_number} 0 obj << /Length {len(stream.encode('latin-1'))} >> stream\n{stream}endstream endobj\n"
+        )
+    objects.append(f"{font_object_number} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n")
     return _pdf_package(objects)
 
 
