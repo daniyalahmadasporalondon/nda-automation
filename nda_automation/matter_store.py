@@ -617,6 +617,59 @@ def update_redline_draft(
         return updated_matter
 
 
+def update_matter_extracted_text(
+    matter_id: str,
+    extracted_text: str,
+    *,
+    expected_extracted_text: str | None = None,
+    owner_user_id: str = "",
+) -> dict[str, Any] | None:
+    """Persist a re-extracted source text for a matter (locked R-M-W).
+
+    NARROW writer for the admin garble backfill (re-running the fixed PDF
+    extractor over the stored original bytes). It deliberately writes ONLY the
+    text + bookkeeping and touches NOTHING review-shaped: ``review_result``,
+    ``reviewer_decisions``, ``redline_draft`` and approvals are preserved
+    verbatim, so the existing review-staleness contract
+    (``routes/matters._matter_review_text_changed``, which compares the matter's
+    current ``extracted_text`` to the ``review_result["extracted_text"]``
+    snapshot) flags the stored review as ``matter_text_changed`` on its own —
+    exactly the "staleness, not repair" behaviour the backfill wants. No review
+    is enqueued here or anywhere near this writer.
+
+    ``expected_extracted_text`` is an optimistic-concurrency guard: when
+    provided, the write applies only while the matter's CURRENT text still
+    equals it (re-checked under the store lock) and returns ``None`` otherwise,
+    so a backfill can never clobber a text that changed after it was assessed.
+
+    The cached corpus ``content_fingerprint`` is POPPED, not recomputed: it is a
+    pure function of ``extracted_text`` (corpus_index computes it lazily on
+    first build and scalar-compares the stored value thereafter), so leaving the
+    old value would serve a stale duplicate-document signal forever. Popping
+    restores the exact fresh-import state — absent — and the next corpus build
+    recomputes it from the new text, the same way it would for a new upload.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _locked_store():
+        _ensure_matter_records_from_legacy()
+        matter = _load_matter_record_by_id(matter_id)
+        if matter is None or not _matter_owner_matches(matter, owner_user_id):
+            return None
+        if (
+            expected_extracted_text is not None
+            and str(matter.get("extracted_text") or "") != expected_extracted_text
+        ):
+            return None
+        updated_matter = {
+            **matter,
+            "extracted_text": extracted_text,
+            "updated_at": now,
+        }
+        updated_matter.pop("content_fingerprint", None)
+        _save_matter_record(updated_matter)
+        return updated_matter
+
+
 def update_matter_review(
     matter_id: str,
     review_result: dict[str, Any],

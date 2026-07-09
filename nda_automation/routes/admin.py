@@ -859,6 +859,74 @@ def handle_pdf_docx_backfill_status(handler, *, send_body: bool = True) -> None:
     )
 
 
+def handle_matters_garble_backfill(handler) -> None:
+    """POST /api/admin/matters/garble-backfill — heal glyph-garbled PDF extractions.
+
+    Matters imported before the per-glyph extraction fix
+    (``pdf_text._chunks_are_glyph_fragmented``) carry garbled stored text (stacked
+    one-char paragraphs + space-joined glyph fragments). This re-extracts those
+    documents' RETAINED original bytes through the fixed extractor and swaps the
+    stored ``extracted_text`` — nothing else. Admin-gated; CSRF/auth/host/rate-limit
+    are enforced centrally by server.do_POST before dispatch (registered in
+    _POST_EXACT_ROUTES like every sibling write).
+
+    Body: ``{"dry_run": default true, "confirm": must be exactly true for an
+    execute run, "limit": per-invocation cap (default 50, max 200)}``.
+
+    * DRY-RUN (default) is detection-only: a per-matter report (matter id, doc,
+      fingerprint hit counts, would_reextract) with NO writes, NO byte reads and
+      no re-extraction.
+    * EXECUTE (``dry_run: false``) additionally requires ``"confirm": true``
+      (missing/mistyped confirm is a 400 and nothing runs). Serial, capped,
+      atomic per matter; missing source bytes are reported + skipped; the
+      existing review-staleness contract flags healed matters' stored reviews as
+      ``matter_text_changed`` — reviews/redlines/decisions are never touched and
+      NO review is enqueued (no AI calls anywhere on this path).
+    """
+    if not require_admin(handler):
+        return
+    from .. import garble_backfill  # noqa: PLC0415 - keep the import local/light.
+
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+
+    dry_run = payload.get("dry_run", True)
+    if not isinstance(dry_run, bool):
+        handler._send_json({"error": "dry_run must be true or false."}, status=400)
+        return
+
+    raw_limit = payload.get("limit", garble_backfill.GARBLE_BACKFILL_DEFAULT_LIMIT)
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        limit = 0
+    if isinstance(raw_limit, bool) or limit < 1 or limit > garble_backfill.GARBLE_BACKFILL_MAX_LIMIT:
+        handler._send_json(
+            {"error": f"limit must be an integer between 1 and {garble_backfill.GARBLE_BACKFILL_MAX_LIMIT}."},
+            status=400,
+        )
+        return
+
+    if not dry_run and payload.get("confirm") is not True:
+        # Execute demands an EXPLICIT boolean confirm on top of dry_run:false —
+        # a missing/truthy-string confirm never mutates.
+        handler._send_json(
+            {"error": 'Executing the garble backfill requires "confirm": true alongside "dry_run": false.'},
+            status=400,
+        )
+        return
+
+    telemetry.increment("garble_backfill_requests")
+    try:
+        report = garble_backfill.run_garble_backfill(dry_run=dry_run, limit=limit)
+    except matter_store.MatterStoreError as error:
+        logger.warning("Garble backfill failed: %s", error)
+        handler._send_json({"error": matter_store.friendly_matter_store_message(error)}, status=500)
+        return
+    handler._send_json(report)
+
+
 def handle_matter_backup(handler, *, send_body: bool = True) -> None:
     # The backup dumps full extracted NDA text and matter metadata, so it is an
     # admin-only endpoint on top of the per-owner scoping applied below.

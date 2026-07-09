@@ -444,6 +444,11 @@ _POST_EXACT_ROUTES = {
     # requires a confirm hash of the current selection). Admin-gated inside the
     # handler; CSRF enforced by do_POST before dispatch.
     "/api/admin/matters/bulk-archive": admin_routes.handle_matters_bulk_archive,
+    # Admin backfill healing glyph-garbled stored PDF extractions (dry-run by
+    # default; execute requires an explicit "confirm": true). Re-extraction only —
+    # NEVER triggers an AI review. Admin-gated inside the handler; CSRF enforced
+    # by do_POST before dispatch.
+    "/api/admin/matters/garble-backfill": admin_routes.handle_matters_garble_backfill,
 }
 
 _PUBLIC_POST_EXACT_ROUTES = {
