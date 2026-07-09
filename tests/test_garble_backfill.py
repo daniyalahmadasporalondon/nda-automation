@@ -15,8 +15,13 @@ Covers the full safety contract against a REAL on-disk fixture store:
   stale corpus content_fingerprint is dropped, and other matters stay
   byte-identical;
 * missing original bytes -> skip + report, record untouched;
-* non-admin -> 403; execute without "confirm": true -> 400 (string "true"
-  included), nothing mutated.
+* non-admin -> 403 (all three endpoints); starting an execute without
+  "confirm": true -> 400 (string "true" included), nothing mutated;
+* the EXECUTE path is the background /start route (+ GET /status): driven here
+  with the daemon thread patched to run INLINE for determinism; the bare
+  endpoint's synchronous execute is REMOVED (dry_run:false -> 400);
+* the in-store-lock veto (reject_when) stops an approval landing DURING the
+  re-extraction window from being overwritten (excluded_executed_late).
 
 The route body is driven through a fake handler (the same pattern
 test_bulk_archive / test_admin_manager use); the store is the REAL matter store
@@ -27,6 +32,7 @@ from __future__ import annotations
 
 import copy
 import json
+import types
 from pathlib import Path
 
 import pytest
@@ -78,6 +84,31 @@ def _isolated_store(tmp_path, monkeypatch):
     monkeypatch.setenv("NDA_ADMIN_USERS", ADMIN_USER["id"])
     yield tmp_path
     matter_store._invalidate_list_cache()
+
+
+class _InlineThread:
+    """threading.Thread stand-in that runs the target synchronously on start()."""
+
+    def __init__(self, target=None, name=None, daemon=None):
+        self._target = target
+
+    def start(self):
+        if self._target is not None:
+            self._target()
+
+
+@pytest.fixture(autouse=True)
+def _inline_backfill_thread(monkeypatch):
+    """Deterministic execute runs: patch ONLY garble_backfill's thread spawn to
+    run inline (start_garble_backfill_async resolves ``threading.Thread`` at call
+    time through its module global), and reset the module run/status state."""
+    monkeypatch.setattr(garble_backfill, "threading", types.SimpleNamespace(Thread=_InlineThread))
+    monkeypatch.setattr(garble_backfill, "_RUNNING", False)
+    with garble_backfill._STATUS_LOCK:
+        garble_backfill._LAST_STATUS.clear()
+    yield
+    with garble_backfill._STATUS_LOCK:
+        garble_backfill._LAST_STATUS.clear()
 
 
 class _FakeServer:
@@ -177,6 +208,27 @@ def _normal_matter(**overrides):
 def _run(payload, *, user=ADMIN_USER):
     handler = _FakeHandler(user=user, payload=payload)
     admin_routes.handle_matters_garble_backfill(handler)
+    return handler
+
+
+def _execute(payload=None, *, user=ADMIN_USER):
+    """Drive the EXECUTE path end to end: POST .../start (thread runs inline via
+    the autouse fixture), then return (start_handler, final report from the
+    status snapshot — None when the run never started)."""
+    handler = _FakeHandler(
+        user=user,
+        payload={"confirm": True, **(payload or {})},
+        path="/api/admin/matters/garble-backfill/start",
+    )
+    admin_routes.handle_matters_garble_backfill_start(handler)
+    status = garble_backfill.garble_backfill_status()
+    report = status.get("report") if isinstance(status, dict) else None
+    return handler, report
+
+
+def _status(*, user=ADMIN_USER):
+    handler = _FakeHandler(user=user, payload=None, path="/api/admin/matters/garble-backfill/status")
+    admin_routes.handle_matters_garble_backfill_status(handler)
     return handler
 
 
@@ -315,9 +367,9 @@ def test_execute_heals_blocks_flags_review_stale_and_leaves_others_untouched(_is
     _may, reasons = matters_routes._review_may_be_stale(stored, playbook_stale=False)
     assert "matter_text_changed" not in reasons
 
-    handler = _run({"dry_run": False, "confirm": True})
-    assert handler.status == 200
-    body = handler.response
+    handler, body = _execute()
+    assert handler.status == 202
+    assert handler.response["started"] is True
     assert body["dry_run"] is False
     assert body["healed"] == 1
     assert body["failed"] == 0
@@ -349,12 +401,58 @@ def test_execute_heals_blocks_flags_review_stale_and_leaves_others_untouched(_is
 
 def test_execute_run_is_idempotent():
     _garbled_matter()
-    first = _run({"dry_run": False, "confirm": True})
-    assert first.response["healed"] == 1
-    second = _run({"dry_run": False, "confirm": True})
-    assert second.status == 200
-    assert second.response["garbled_matched"] == 0
-    assert second.response["healed"] == 0
+    _first_handler, first_report = _execute()
+    assert first_report["healed"] == 1
+    second_handler, second_report = _execute()
+    assert second_handler.status == 202
+    assert second_report["garbled_matched"] == 0
+    assert second_report["healed"] == 0
+
+
+def test_status_endpoint_serves_progress_and_final_report():
+    garbled = _garbled_matter()
+    # Before any run: empty snapshot.
+    empty = _status()
+    assert empty.status == 200
+    assert empty.response == {"status": {}}
+
+    _handler, report = _execute()
+    status_handler = _status()
+    assert status_handler.status == 200
+    snapshot = status_handler.response["status"]
+    assert snapshot["state"] == "done"
+    assert snapshot["run_id"].startswith("garble-backfill-")
+    assert snapshot["healed"] == 1
+    assert snapshot["report"] == report
+    assert snapshot["report"]["matters"][0]["id"] == garbled["id"]
+
+
+def test_start_while_a_run_is_in_flight_is_409(_isolated_store, monkeypatch):
+    garbled = _garbled_matter()
+    before = _store_snapshot(_isolated_store)
+    monkeypatch.setattr(garble_backfill, "_RUNNING", True)
+    handler, report = _execute()
+    assert handler.status == 409
+    assert handler.response["already_running"] is True
+    assert report is None
+    # Nothing ran, nothing written.
+    assert _store_snapshot(_isolated_store) == before
+    assert matter_store.get_matter(garbled["id"], owner_user_id="")["extracted_text"] == GARBLED_TEXT
+
+
+def test_dry_run_never_reads_document_bytes(monkeypatch):
+    """The dry-run is detection-only — record reads, zero byte reads — which is
+    why it may stay synchronous on the request thread."""
+    _garbled_matter()
+
+    def _boom(matter):
+        raise AssertionError("dry-run must not read document bytes")
+
+    monkeypatch.setattr(garble_backfill.matter_store, "get_source_document_bytes", _boom)
+    handler = _run({})
+    assert handler.status == 200
+    assert handler.response["dry_run"] is True
+    assert handler.response["selected"] == 1
 
 
 def test_execute_does_not_write_when_reextraction_is_still_garbled(_isolated_store, monkeypatch):
@@ -364,12 +462,12 @@ def test_execute_does_not_write_when_reextraction_is_still_garbled(_isolated_sto
     before = (matter_store._matter_records_dir() / f"{garbled['id']}.json").read_bytes()
     # Force the re-extraction to reproduce the garbled shape (as pre-fix code would).
     monkeypatch.setattr(pdf_text, "_GLYPH_FRAGMENT_RUN_MIN", 10**9)
-    handler = _run({"dry_run": False, "confirm": True})
-    assert handler.status == 200
-    assert handler.response["healed"] == 0
+    handler, report = _execute()
+    assert handler.status == 202
+    assert report["healed"] == 0
     # 'unchanged' when the reproduction is byte-identical, else 'still_garbled':
     # either way NOTHING was written.
-    assert handler.response["matters"][0]["action"] in ("unchanged", "still_garbled")
+    assert report["matters"][0]["action"] in ("unchanged", "still_garbled")
     assert (matter_store._matter_records_dir() / f"{garbled['id']}.json").read_bytes() == before
 
 
@@ -379,9 +477,8 @@ def test_missing_source_bytes_skips_and_reports(_isolated_store):
     (matter_store.UPLOADS_DIR / garbled["stored_filename"]).unlink()
     before = _store_snapshot(_isolated_store)
 
-    handler = _run({"dry_run": False, "confirm": True})
-    assert handler.status == 200
-    body = handler.response
+    handler, body = _execute()
+    assert handler.status == 202
     assert body["healed"] == 0
     assert body["skipped_missing_bytes"] == 1
     assert body["matters"][0]["action"] == "skipped_missing_bytes"
@@ -401,9 +498,8 @@ def test_one_matters_failure_does_not_abort_the_run(monkeypatch):
         return real_extract(matter)
 
     monkeypatch.setattr(garble_backfill.matter_store, "get_source_document_bytes", _bytes)
-    handler = _run({"dry_run": False, "confirm": True})
-    assert handler.status == 200
-    body = handler.response
+    handler, body = _execute()
+    assert handler.status == 202
     assert body["healed"] == 1
     assert body["failed"] == 1
     assert body["errors"] and body["errors"][0]["id"] == broken["id"]
@@ -419,6 +515,10 @@ _EXECUTED_VARIANTS = [
     {"executed": True, "executed_at": "2026-06-20T00:00:00+00:00", "status": "fully_signed"},
     {"executed_at": "2026-06-20T00:00:00+00:00"},
     {"executed": True},
+    # BARE status=fully_signed (legacy/partial stamp): the product treats this
+    # status alone as signed elsewhere (drive_integration's signed filter,
+    # corpus_index._SIGNED_TRUE_STATUSES), so it must exclude here too.
+    {"status": "fully_signed"},
 ]
 # The approve-transition triad matter_store.record_matter_approval stamps, plus
 # the partial signals docusign_workflow.matter_cleared_for_signature keys on.
@@ -452,9 +552,8 @@ def test_executed_or_approved_matter_is_detected_reported_but_never_written(
 
     # Execute: still listed excluded, never written — byte-identical record —
     # while the unprotected sibling heals normally.
-    handler = _run({"dry_run": False, "confirm": True})
-    assert handler.status == 200
-    body = handler.response
+    handler, body = _execute()
+    assert handler.status == 202
     assert body["excluded_executed"] == 1
     assert body["healed"] == 1
     by_id = {entry["id"]: entry for entry in body["matters"]}
@@ -481,12 +580,55 @@ def test_matter_executed_between_selection_and_write_is_not_written(monkeypatch)
 
     monkeypatch.setattr(garble_backfill.matter_store, "get_matter", _get_and_execute)
     before = record_path.read_bytes()
-    handler = _run({"dry_run": False, "confirm": True})
-    assert handler.status == 200
-    assert handler.response["healed"] == 0
-    assert handler.response["excluded_executed"] == 1
-    assert handler.response["matters"][0]["action"] == "excluded_executed"
+    handler, report = _execute()
+    assert handler.status == 202
+    assert report["healed"] == 0
+    assert report["excluded_executed"] == 1
+    assert report["matters"][0]["action"] == "excluded_executed"
     assert record_path.read_bytes() == before
+
+
+def test_approval_landing_during_reextraction_is_vetoed_inside_the_store_lock(monkeypatch):
+    """TOCTOU closer: the run loop's exclusion pre-check runs BEFORE the
+    seconds-long re-extraction. An approval landing in THAT window does not touch
+    extracted_text (so the expected-text guard alone would let the write
+    through) — the writer's in-lock ``reject_when`` re-evaluation must veto it,
+    reported distinctly as excluded_executed_late."""
+    garbled = _garbled_matter()
+
+    real_bytes = garble_backfill.matter_store.get_source_document_bytes
+
+    def _bytes_then_approve(matter):
+        data = real_bytes(matter)
+        # Approval lands AFTER the pre-write exclusion re-check (which wraps the
+        # get_matter re-read), DURING the byte-read/re-extraction window, via the
+        # REAL approve transition writer.
+        matter_store.record_matter_approval(
+            str(matter.get("id") or ""),
+            approver="counsel@example.com",
+            approved_at="2026-06-20T00:00:00+00:00",
+            timeline_event={
+                "type": "matter_approved",
+                "actor": "counsel@example.com",
+                "at": "2026-06-20T00:00:00+00:00",
+            },
+        )
+        return data
+
+    monkeypatch.setattr(
+        garble_backfill.matter_store, "get_source_document_bytes", _bytes_then_approve
+    )
+    handler, report = _execute()
+    assert handler.status == 202
+    assert report["healed"] == 0
+    assert report["excluded_executed_late"] == 1
+    assert report["matters"][0]["action"] == "excluded_executed_late"
+    after = matter_store.get_matter(garbled["id"], owner_user_id="")
+    # The approval survived intact and the garbled text was NEVER overwritten.
+    assert after["status"] == "approved"
+    assert after["approver"] == "counsel@example.com"
+    assert after["extracted_text"] == GARBLED_TEXT
+    assert after["review_result"] == garbled["review_result"]
 
 
 def test_human_reviewed_alone_is_not_excluded():
@@ -495,33 +637,64 @@ def test_human_reviewed_alone_is_not_excluded():
     (its garble should be fixed BEFORE any approval bakes it into an artifact)."""
     matter = _garbled_matter(human_reviewed=True)
     assert garble_backfill.matter_is_executed_or_approved(matter) is False
-    handler = _run({"dry_run": False, "confirm": True})
-    assert handler.response["healed"] == 1
-    assert handler.response["excluded_executed"] == 0
+    _handler, report = _execute()
+    assert report["healed"] == 1
+    assert report["excluded_executed"] == 0
 
 
 # --- (e) gates ----------------------------------------------------------------
-def test_non_admin_is_403(_isolated_store):
+def test_non_admin_is_403_on_all_three_endpoints(_isolated_store):
     _garbled_matter()
     before = _store_snapshot(_isolated_store)
-    handler = _run({"dry_run": False, "confirm": True}, user=NON_ADMIN_USER)
-    assert handler.status == 403
+
+    dry = _run({}, user=NON_ADMIN_USER)
+    assert dry.status == 403
+
+    start, report = _execute(user=NON_ADMIN_USER)
+    assert start.status == 403
+    assert report is None
+
+    status = _status(user=NON_ADMIN_USER)
+    assert status.status == 403
+
     assert _store_snapshot(_isolated_store) == before
 
 
 @pytest.mark.parametrize("confirm", [None, False, "true", 1, "yes"])
-def test_execute_without_boolean_confirm_true_is_400(_isolated_store, confirm):
+def test_start_without_boolean_confirm_true_is_400(_isolated_store, confirm):
     _garbled_matter()
     before = _store_snapshot(_isolated_store)
-    payload = {"dry_run": False}
-    if confirm is not None:
-        payload["confirm"] = confirm
-    handler = _run(payload)
+    payload = {} if confirm is None else {"confirm": confirm}
+    handler = _FakeHandler(payload=payload, path="/api/admin/matters/garble-backfill/start")
+    admin_routes.handle_matters_garble_backfill_start(handler)
     assert handler.status == 400
     assert "confirm" in handler.response["error"]
+    # Nothing started, nothing mutated.
+    assert garble_backfill.garble_backfill_status() == {}
+    assert _store_snapshot(_isolated_store) == before
+
+
+def test_synchronous_execute_path_is_removed(_isolated_store):
+    """The bare endpoint is dry-run ONLY: dry_run:false is a 400 pointing at the
+    background /start route — even with confirm — and nothing mutates."""
+    _garbled_matter()
+    before = _store_snapshot(_isolated_store)
+    handler = _run({"dry_run": False, "confirm": True})
+    assert handler.status == 400
+    assert "/start" in handler.response["error"]
     assert _store_snapshot(_isolated_store) == before
 
 
 def test_dry_run_must_be_boolean():
     handler = _run({"dry_run": "false"})
     assert handler.status == 400
+
+
+def test_invalid_limit_on_start_is_400():
+    handler = _FakeHandler(
+        payload={"confirm": True, "limit": 0},
+        path="/api/admin/matters/garble-backfill/start",
+    )
+    admin_routes.handle_matters_garble_backfill_start(handler)
+    assert handler.status == 400
+    assert garble_backfill.garble_backfill_status() == {}

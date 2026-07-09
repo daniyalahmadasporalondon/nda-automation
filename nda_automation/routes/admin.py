@@ -859,29 +859,41 @@ def handle_pdf_docx_backfill_status(handler, *, send_body: bool = True) -> None:
     )
 
 
+def _garble_backfill_limit(handler, payload) -> int | None:
+    """Validate the shared ``limit`` param (default 50, 1..200); None => 400 sent."""
+    from .. import garble_backfill  # noqa: PLC0415 - keep the import local/light.
+
+    raw_limit = payload.get("limit", garble_backfill.GARBLE_BACKFILL_DEFAULT_LIMIT)
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        limit = 0
+    if isinstance(raw_limit, bool) or limit < 1 or limit > garble_backfill.GARBLE_BACKFILL_MAX_LIMIT:
+        handler._send_json(
+            {"error": f"limit must be an integer between 1 and {garble_backfill.GARBLE_BACKFILL_MAX_LIMIT}."},
+            status=400,
+        )
+        return None
+    return limit
+
+
 def handle_matters_garble_backfill(handler) -> None:
-    """POST /api/admin/matters/garble-backfill — heal glyph-garbled PDF extractions.
+    """POST /api/admin/matters/garble-backfill — DRY-RUN garble detection report.
 
     Matters imported before the per-glyph extraction fix
     (``pdf_text._chunks_are_glyph_fragmented``) carry garbled stored text (stacked
-    one-char paragraphs + space-joined glyph fragments). This re-extracts those
-    documents' RETAINED original bytes through the fixed extractor and swaps the
-    stored ``extracted_text`` — nothing else. Admin-gated; CSRF/auth/host/rate-limit
-    are enforced centrally by server.do_POST before dispatch (registered in
-    _POST_EXACT_ROUTES like every sibling write).
+    one-char paragraphs + space-joined glyph fragments). This endpoint is the
+    detection-only DRY-RUN: a per-matter report (matter id, doc, fingerprint hit
+    counts, would_reextract / excluded_executed) with NO writes, NO document byte
+    reads and no re-extraction — cheap record reads only, so it stays a
+    synchronous response. Admin-gated; CSRF/auth/host/rate-limit are enforced
+    centrally by server.do_POST before dispatch.
 
-    Body: ``{"dry_run": default true, "confirm": must be exactly true for an
-    execute run, "limit": per-invocation cap (default 50, max 200)}``.
-
-    * DRY-RUN (default) is detection-only: a per-matter report (matter id, doc,
-      fingerprint hit counts, would_reextract) with NO writes, NO byte reads and
-      no re-extraction.
-    * EXECUTE (``dry_run: false``) additionally requires ``"confirm": true``
-      (missing/mistyped confirm is a 400 and nothing runs). Serial, capped,
-      atomic per matter; missing source bytes are reported + skipped; the
-      existing review-staleness contract flags healed matters' stored reviews as
-      ``matter_text_changed`` — reviews/redlines/decisions are never touched and
-      NO review is enqueued (no AI calls anywhere on this path).
+    Body: ``{"dry_run": true (optional; false is a 400), "limit": 1..200,
+    default 50}``. MUTATION LIVES ELSEWHERE: the execute run is minutes of
+    GIL-heavy pypdf CPU, so it runs on a background thread via
+    ``POST /api/admin/matters/garble-backfill/start`` (+ the GET status route),
+    mirroring the PDF->DOCX backfill precedent — this endpoint never mutates.
     """
     if not require_admin(handler):
         return
@@ -895,36 +907,109 @@ def handle_matters_garble_backfill(handler) -> None:
     if not isinstance(dry_run, bool):
         handler._send_json({"error": "dry_run must be true or false."}, status=400)
         return
-
-    raw_limit = payload.get("limit", garble_backfill.GARBLE_BACKFILL_DEFAULT_LIMIT)
-    try:
-        limit = int(raw_limit)
-    except (TypeError, ValueError):
-        limit = 0
-    if isinstance(raw_limit, bool) or limit < 1 or limit > garble_backfill.GARBLE_BACKFILL_MAX_LIMIT:
+    if not dry_run:
+        # The synchronous execute path is REMOVED: pypdf re-extraction must never
+        # run on the request thread (sync-CPU incident history).
         handler._send_json(
-            {"error": f"limit must be an integer between 1 and {garble_backfill.GARBLE_BACKFILL_MAX_LIMIT}."},
+            {
+                "error": (
+                    "This endpoint is dry-run only. Execute via POST "
+                    "/api/admin/matters/garble-backfill/start (background run; "
+                    'requires "confirm": true) and poll GET '
+                    "/api/admin/matters/garble-backfill/status."
+                )
+            },
             status=400,
         )
         return
 
-    if not dry_run and payload.get("confirm") is not True:
-        # Execute demands an EXPLICIT boolean confirm on top of dry_run:false —
-        # a missing/truthy-string confirm never mutates.
-        handler._send_json(
-            {"error": 'Executing the garble backfill requires "confirm": true alongside "dry_run": false.'},
-            status=400,
-        )
+    limit = _garble_backfill_limit(handler, payload)
+    if limit is None:
         return
 
     telemetry.increment("garble_backfill_requests")
     try:
-        report = garble_backfill.run_garble_backfill(dry_run=dry_run, limit=limit)
+        report = garble_backfill.run_garble_backfill(dry_run=True, limit=limit)
     except matter_store.MatterStoreError as error:
-        logger.warning("Garble backfill failed: %s", error)
+        logger.warning("Garble backfill dry-run failed: %s", error)
         handler._send_json({"error": matter_store.friendly_matter_store_message(error)}, status=500)
         return
     handler._send_json(report)
+
+
+def handle_matters_garble_backfill_start(handler) -> None:
+    """POST /api/admin/matters/garble-backfill/start — kick the EXECUTE run.
+
+    Runs the heal loop on ONE background daemon thread (mirrors
+    ``handle_pdf_docx_backfill_start``): the request returns 202 immediately and
+    the GET status route serves progress + the final report. Body:
+    ``{"confirm": must be exactly true, "limit": 1..200 default 50}`` — a
+    missing/mistyped confirm is a 400 and nothing starts. 409 when a run is
+    already in flight (at most one at a time; it is serial by design).
+    Admin-gated; CSRF enforced by do_POST before dispatch. The run itself never
+    touches reviews/redlines/decisions, never calls AI, and never writes an
+    approved/executed matter (excluded at scan, pre-write re-check, AND an
+    in-store-lock veto).
+    """
+    if not require_admin(handler):
+        return
+    from .. import garble_backfill  # noqa: PLC0415 - keep the import local/light.
+
+    payload = handler._read_json_payload()
+    if payload is None:
+        return
+
+    if payload.get("confirm") is not True:
+        # Execute demands an EXPLICIT boolean confirm — a missing/truthy-string
+        # confirm never starts a mutating run.
+        handler._send_json(
+            {"error": 'Executing the garble backfill requires "confirm": true.'},
+            status=400,
+        )
+        return
+
+    limit = _garble_backfill_limit(handler, payload)
+    if limit is None:
+        return
+
+    telemetry.increment("garble_backfill_execute_requests")
+    result = garble_backfill.start_garble_backfill_async(limit=limit)
+    if result.get("already_running"):
+        handler._send_json(
+            {
+                "error": "A garble backfill run is already in flight.",
+                "already_running": True,
+                "run_id": result.get("run_id", ""),
+                "status": garble_backfill.garble_backfill_status(),
+            },
+            status=409,
+        )
+        return
+    handler._send_json(
+        {
+            "started": True,
+            "already_running": False,
+            "run_id": result.get("run_id", ""),
+            "status": garble_backfill.garble_backfill_status(),
+        },
+        status=202,
+    )
+
+
+def handle_matters_garble_backfill_status(handler, *, send_body: bool = True) -> None:
+    """GET /api/admin/matters/garble-backfill/status — latest/in-flight run tally.
+
+    Cheap snapshot (no re-scan): ``{"status": {state, run_id, processed, ...}}``;
+    a finished run's snapshot carries the full ``report``.
+    """
+    if not require_admin(handler, send_body=send_body):
+        return
+    from .. import garble_backfill  # noqa: PLC0415 - keep the import local/light.
+
+    handler._send_json(
+        {"status": garble_backfill.garble_backfill_status()},
+        send_body=send_body,
+    )
 
 
 def handle_matter_backup(handler, *, send_body: bool = True) -> None:

@@ -617,13 +617,30 @@ def update_redline_draft(
         return updated_matter
 
 
+class RejectedTextUpdate:
+    """Distinct ``update_matter_extracted_text`` result: the caller's
+    ``reject_when`` predicate vetoed the write inside the store lock (nothing
+    was written). Deliberately NOT ``None`` (missing/raced) and not a matter
+    dict (written) — the three outcomes must stay distinguishable.
+    """
+
+    __slots__ = ("reason",)
+
+    def __init__(self, reason: str) -> None:
+        self.reason = str(reason or "rejected")
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging convenience only.
+        return f"RejectedTextUpdate(reason={self.reason!r})"
+
+
 def update_matter_extracted_text(
     matter_id: str,
     extracted_text: str,
     *,
     expected_extracted_text: str | None = None,
+    reject_when: Callable[[dict[str, Any]], str | None] | None = None,
     owner_user_id: str = "",
-) -> dict[str, Any] | None:
+) -> dict[str, Any] | RejectedTextUpdate | None:
     """Persist a re-extracted source text for a matter (locked R-M-W).
 
     NARROW writer for the admin garble backfill (re-running the fixed PDF
@@ -642,6 +659,16 @@ def update_matter_extracted_text(
     equals it (re-checked under the store lock) and returns ``None`` otherwise,
     so a backfill can never clobber a text that changed after it was assessed.
 
+    ``reject_when`` is a GENERIC in-lock veto seam: it is called with the FRESH
+    in-lock record and, when it returns a non-empty reason string, nothing is
+    written and a ``RejectedTextUpdate`` carrying that reason is returned. This
+    closes the caller's check-then-write TOCTOU window — a state transition
+    landing between the caller's own pre-check and this write (e.g. an approval,
+    which does not touch ``extracted_text`` and so passes the expected-text
+    guard) is re-evaluated under the SAME lock every state writer serializes on.
+    The predicate's semantics belong entirely to the caller; the store stays
+    policy-free.
+
     The cached corpus ``content_fingerprint`` is POPPED, not recomputed: it is a
     pure function of ``extracted_text`` (corpus_index computes it lazily on
     first build and scalar-compares the stored value thereafter), so leaving the
@@ -655,6 +682,10 @@ def update_matter_extracted_text(
         matter = _load_matter_record_by_id(matter_id)
         if matter is None or not _matter_owner_matches(matter, owner_user_id):
             return None
+        if reject_when is not None:
+            reason = reject_when(matter)
+            if reason:
+                return RejectedTextUpdate(str(reason))
         if (
             expected_extracted_text is not None
             and str(matter.get("extracted_text") or "") != expected_extracted_text

@@ -29,8 +29,12 @@ CONTRACT (each deliberate):
   ``extracted_text`` to the review's ``extracted_text`` snapshot) flags the
   stored review as ``matter_text_changed`` by itself. NO AI CALLS anywhere in
   this module and no review is ever enqueued (review-storm history).
-* RESOURCE-GUARDED. Serial (no thread fan-out), capped by ``limit`` per
-  invocation; re-extraction reuses the ingest path's existing caps
+* RESOURCE-GUARDED. Serial (no fan-out), capped by ``limit`` per invocation;
+  the EXECUTE run happens on ONE background daemon thread
+  (``start_garble_backfill_async``, mirroring the PDF->DOCX backfill) so its
+  minutes of GIL-heavy pypdf CPU never sit on the web worker's request thread,
+  while the detection-only dry-run (record reads, no byte reads) stays a cheap
+  synchronous response; re-extraction reuses the ingest path's existing caps
   (``pdf_text.MAX_PDF_PAGES`` / byte / character guards) and skips the PyMuPDF
   visual profile (``include_visual_profile=False`` — the same cheap variant the
   Gmail poll uses; paragraphs are byte-identical and the profile is recomputed
@@ -69,6 +73,8 @@ garbled = exploded_count >= 2  OR  (exploded_count >= 1 AND shard_run >= 3)
 from __future__ import annotations
 
 import logging
+import threading
+from datetime import datetime, timezone
 from typing import Any
 
 from . import matter_store, telemetry, workflow
@@ -168,7 +174,11 @@ def matter_is_executed_or_approved(matter: dict[str, Any]) -> bool:
       executed contract (``executed`` / ``executed_at`` / the executed phase
       marker) that ``lifecycle_signed.mark_matter_executed`` stamps
       (``executed=True`` / ``status="fully_signed"`` / ``executed_at``) and the
-      board / DocuSign-completion sync read.
+      board / DocuSign-completion sync read. A BARE ``status == "fully_signed"``
+      (legacy/partial stamp) also counts: the product elsewhere treats that
+      status alone as signed (``drive_integration``'s signed filter and
+      ``corpus_index._SIGNED_TRUE_STATUSES`` both key on
+      ``workflow.STATUS_FULLY_SIGNED``).
     * APPROVED — the canonical approve transition's own triad:
       ``matter_store.record_matter_approval`` stamps ``status="approved"`` +
       ``approver`` + ``approved_at``; ``status == "approved"`` / ``approved_at``
@@ -187,7 +197,8 @@ def matter_is_executed_or_approved(matter: dict[str, Any]) -> bool:
         return False
     if workflow.is_matter_executed(matter):
         return True
-    if str(matter.get("status") or "").strip().lower() == "approved":
+    status = str(matter.get("status") or "").strip().lower()
+    if status in ("approved", workflow.STATUS_FULLY_SIGNED):
         return True
     return bool(matter.get("approved_at") or matter.get("approver"))
 
@@ -294,8 +305,22 @@ def _heal_matter(matter: dict[str, Any], entry: dict[str, Any]) -> None:
         # Optimistic-concurrency guard: only replace the exact garbled text this
         # run assessed; anything else raced us and must not be clobbered.
         expected_extracted_text=old_text,
+        # TOCTOU closer: the run loop's exclusion pre-check runs BEFORE the
+        # seconds-long re-extraction above, and an approval/execution landing in
+        # that window does NOT touch extracted_text (so the expected-text guard
+        # alone would let the write through). Re-evaluating the exclusion on the
+        # fresh record INSIDE the store lock — the same lock every approval /
+        # executed writer serializes on — makes "approved/executed is never
+        # written" airtight.
+        reject_when=_reject_executed_or_approved,
         owner_user_id="",
     )
+    if isinstance(updated, matter_store.RejectedTextUpdate):
+        # Approved/executed landed between the pre-check and the write: vetoed
+        # in-lock, nothing written. Reported distinctly from the scan-time
+        # exclusion so the operator can see the race happened.
+        entry["action"] = "excluded_executed_late"
+        return
     if updated is None:
         entry["action"] = "write_conflict"
         return
@@ -304,7 +329,17 @@ def _heal_matter(matter: dict[str, Any], entry: dict[str, Any]) -> None:
     telemetry.increment("garble_backfill_matters_healed")
 
 
-def run_garble_backfill(*, dry_run: bool = True, limit: int = GARBLE_BACKFILL_DEFAULT_LIMIT) -> dict[str, Any]:
+def _reject_executed_or_approved(matter: dict[str, Any]) -> str | None:
+    """``reject_when`` adapter for the store writer's in-lock veto seam."""
+    return "executed_or_approved" if matter_is_executed_or_approved(matter) else None
+
+
+def run_garble_backfill(
+    *,
+    dry_run: bool = True,
+    limit: int = GARBLE_BACKFILL_DEFAULT_LIMIT,
+    status_run_id: str = "",
+) -> dict[str, Any]:
     """Scan the whole store for garble-fingerprinted PDF matters; heal up to
     ``limit`` of them when ``dry_run`` is False. SERIAL — no thread fan-out.
 
@@ -314,6 +349,10 @@ def run_garble_backfill(*, dry_run: bool = True, limit: int = GARBLE_BACKFILL_DE
     fingerprint immediately before healing, so a matter healed by a concurrent
     run (or edited meanwhile) is skipped, and processes matters one at a time,
     collecting per-matter failures into the report instead of aborting.
+
+    ``status_run_id`` (set only by ``start_garble_backfill_async``) publishes a
+    per-matter progress snapshot for the GET status route; a synchronous dry-run
+    never publishes, so it can't clobber the last execute run's status.
     """
     limit = max(1, min(int(limit), GARBLE_BACKFILL_MAX_LIMIT))
     matters = matter_store.list_matters("")
@@ -355,6 +394,7 @@ def run_garble_backfill(*, dry_run: bool = True, limit: int = GARBLE_BACKFILL_DE
         "skipped_missing_bytes": 0,
         "write_conflicts": 0,
         "no_longer_garbled": 0,
+        "excluded_executed_late": 0,
         "failed": 0,
         "matters": entries,
         "errors": [],
@@ -362,6 +402,7 @@ def run_garble_backfill(*, dry_run: bool = True, limit: int = GARBLE_BACKFILL_DE
     if dry_run:
         return report
 
+    processed = 0
     for entry in entries:
         if entry.get("action") == "excluded_executed":
             # Never re-extracted, never written — report-only presence.
@@ -403,4 +444,90 @@ def run_garble_backfill(*, dry_run: bool = True, limit: int = GARBLE_BACKFILL_DE
             report["skipped_missing_bytes"] += 1
         elif action == "write_conflict":
             report["write_conflicts"] += 1
+        elif action == "excluded_executed_late":
+            report["excluded_executed_late"] += 1
+        processed += 1
+        if status_run_id:
+            _publish_status({
+                "state": "running",
+                "run_id": status_run_id,
+                "processed": processed,
+                "selected": selected,
+                "healed": report["healed"],
+                "failed": report["failed"],
+            })
     return report
+
+
+# --------------------------------------------------------------------------- #
+# Background execute runner + status snapshot.
+#
+# Mirrors ingestion_service's PDF->DOCX backfill pattern exactly (run lock +
+# daemon thread + best-effort status dict behind its own lock): the execute run
+# is minutes of GIL-heavy pypdf CPU, so it must NEVER run on the single web
+# worker's request thread (sync-CPU incident history). At most one run at a
+# time; the HTTP trigger returns immediately and the GET status route serves
+# the latest snapshot (final snapshot carries the full report).
+# --------------------------------------------------------------------------- #
+_RUN_LOCK = threading.Lock()
+_RUNNING = False
+_STATUS_LOCK = threading.Lock()
+_LAST_STATUS: dict[str, Any] = {}
+
+
+def _publish_status(status: dict[str, Any]) -> None:
+    """Best-effort snapshot of the latest run for the GET status route."""
+    try:
+        with _STATUS_LOCK:
+            _LAST_STATUS.clear()
+            _LAST_STATUS.update(status)
+    except Exception:  # pragma: no cover - status snapshot is best-effort
+        pass
+
+
+def garble_backfill_status() -> dict[str, Any]:
+    """Snapshot of the most recent / in-flight execute run (cheap, no re-scan)."""
+    with _STATUS_LOCK:
+        return dict(_LAST_STATUS)
+
+
+def start_garble_backfill_async(*, limit: int = GARBLE_BACKFILL_DEFAULT_LIMIT) -> dict[str, Any]:
+    """Start an EXECUTE run on a background daemon thread; return immediately.
+
+    Returns ``{"started": bool, "run_id": str, "already_running": bool}``. At
+    most one run at a time (it is serial by design): a second trigger while one
+    is in flight reports the in-flight run instead of starting another.
+    """
+    global _RUNNING
+    with _RUN_LOCK:
+        if _RUNNING:
+            with _STATUS_LOCK:
+                run_id = str(_LAST_STATUS.get("run_id") or "")
+            return {"started": False, "run_id": run_id, "already_running": True}
+        _RUNNING = True
+    run_id = datetime.now(timezone.utc).strftime("garble-backfill-%Y%m%dT%H%M%SZ")
+    _publish_status({"state": "running", "run_id": run_id, "processed": 0})
+
+    def _run() -> None:
+        global _RUNNING
+        try:
+            report = run_garble_backfill(dry_run=False, limit=limit, status_run_id=run_id)
+            _publish_status({
+                "state": "done",
+                "run_id": run_id,
+                "processed": report["selected"],
+                "selected": report["selected"],
+                "healed": report["healed"],
+                "failed": report["failed"],
+                "report": report,
+            })
+        except Exception:  # pragma: no cover - run_garble_backfill is already fail-open per matter
+            LOGGER.warning("Garble backfill thread crashed", exc_info=True)
+            _publish_status({"state": "error", "run_id": run_id})
+        finally:
+            with _RUN_LOCK:
+                _RUNNING = False
+
+    thread = threading.Thread(target=_run, name="garble-backfill", daemon=True)
+    thread.start()
+    return {"started": True, "run_id": run_id, "already_running": False}

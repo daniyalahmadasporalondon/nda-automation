@@ -382,6 +382,9 @@ _GET_EXACT_ROUTES = {
     # inside the handler, like the other admin GET routes. The POST trigger is in
     # _POST_EXACT_ROUTES below.
     "/api/admin/pdf-docx-backfill": admin_routes.handle_pdf_docx_backfill_status,
+    # Garble-backfill execute status (progress + final report). Admin-gated inside
+    # the handler; the POST triggers are in _POST_EXACT_ROUTES below.
+    "/api/admin/matters/garble-backfill/status": admin_routes.handle_matters_garble_backfill_status,
 }
 
 _PUBLIC_GET_EXACT_ROUTES = {
@@ -444,11 +447,14 @@ _POST_EXACT_ROUTES = {
     # requires a confirm hash of the current selection). Admin-gated inside the
     # handler; CSRF enforced by do_POST before dispatch.
     "/api/admin/matters/bulk-archive": admin_routes.handle_matters_bulk_archive,
-    # Admin backfill healing glyph-garbled stored PDF extractions (dry-run by
-    # default; execute requires an explicit "confirm": true). Re-extraction only —
-    # NEVER triggers an AI review. Admin-gated inside the handler; CSRF enforced
+    # Admin backfill healing glyph-garbled stored PDF extractions. The bare route
+    # is the synchronous detection-only DRY-RUN; the execute run (minutes of
+    # pypdf CPU) starts on a background thread via /start (requires an explicit
+    # "confirm": true; progress on the GET status route). Re-extraction only —
+    # NEVER triggers an AI review. Admin-gated inside the handlers; CSRF enforced
     # by do_POST before dispatch.
     "/api/admin/matters/garble-backfill": admin_routes.handle_matters_garble_backfill,
+    "/api/admin/matters/garble-backfill/start": admin_routes.handle_matters_garble_backfill_start,
 }
 
 _PUBLIC_POST_EXACT_ROUTES = {
