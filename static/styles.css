@@ -12770,6 +12770,13 @@ label.is-hidden {
   gap: 3px;
 }
 
+/* The address Label input's visible caption wrapper (mirrors the lines field:
+   a small hint caption above the control). */
+.entity-address-label-field {
+  display: grid;
+  gap: 3px;
+}
+
 .entity-address-lines-hint {
   color: var(--ink-muted);
   font-size: 11px;
@@ -12781,7 +12788,9 @@ label.is-hidden {
   font: inherit;
   font-size: 13px;
   line-height: 1.4;
-  min-height: 38px;
+  /* Floor kept in LOCKSTEP with the autoGrow() floor (86) in
+     js/admin-entities.js -- change both together. */
+  min-height: 86px;
   overflow: hidden;
   padding: 7px 9px;
   resize: none;
@@ -13325,11 +13334,13 @@ label.is-hidden {
   letter-spacing: 0.03em;
 }
 
-/* The Entities-tab read-only law/court hint. */
-.entity-readonly-hint {
-  color: var(--ink-soft);
-  font-size: 11px;
-  margin: 0;
+/* Unsaved-changes affordance on the registry Save button: admin-entities.js's
+   syncSaveButton() adds this class + relabels the CTA "Save changes" while
+   edits are pending, and reverts both once the registry is clean again. Purely
+   visual -- never gates the button's enabled/disabled state. */
+#playbookEntitiesSaveButton.has-unsaved-changes::after {
+  content: "\2022";
+  margin-left: 6px;
 }
 
 /* ---------------------------------------------------------------------------

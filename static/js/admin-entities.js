@@ -5,10 +5,15 @@
 // working copy edited card-by-card, and a publish-style Save that POSTs the full
 // replacement registry.
 //
-// GOVERNING-LAW/COURT RESTRUCTURE: an entity's governing law + court are now
-// EDITED in the Playbook editor's "Entities & Courts" table (one source of
-// truth), and shown READ-ONLY here. The card still carries hidden law/court
-// inputs so collectEntities() round-trips both unchanged on every save.
+// GOVERNING-LAW/COURT: an entity's governing law is a CONSTRAINED pick of the
+// playbook's approved options (an editable <select> on every card) and its
+// court a free-text input, with the same law->court auto-suggest coupling as
+// the Playbook editor's "Entities & Courts" table. That table remains a second
+// edit surface for the same fields -- both go through the same endpoint and the
+// shared entityLawCourtWire helper, so they cannot drift on shape. The
+// single-source-of-truth invariant is "law must be an approved playbook option"
+// (enforced by the select + backend validation), NOT "only one screen may edit
+// it".
 const AdminEntitiesView = (() => {
   // Shared single-entity law/court wire-shape builder. Reused by BOTH this
   // console's collectEntities AND the Playbook "Entities & Courts" table, so the
@@ -69,6 +74,9 @@ const AdminEntitiesView = (() => {
     // every other rest it is a ready PURPLE CTA (a no-pending-changes click is a
     // harmless no-op re-save), so a finished save never leaves it disabled-grey.
     let saving = false;
+    // The Save button's at-rest label, captured once so the dirty-state
+    // "Save changes" relabel (syncSaveButton) can revert to it exactly.
+    const saveButtonRestLabel = (saveButton && saveButton.textContent) || "Save registry";
 
     refreshButton?.addEventListener("click", () => {
       load();
@@ -101,6 +109,13 @@ const AdminEntitiesView = (() => {
     function syncSaveButton() {
       if (!saveButton) return;
       saveButton.disabled = saving || !loaded;
+      // Unsaved-changes AFFORDANCE only (never gates enabled/disabled): pending
+      // edits relabel the CTA "Save changes" + mark it with a class (styled in
+      // styles.css); both revert once the registry is clean again (successful
+      // save or reload).
+      const showDirty = dirty && loaded && !saving;
+      saveButton.classList.toggle("has-unsaved-changes", showDirty);
+      saveButton.textContent = showDirty ? "Save changes" : saveButtonRestLabel;
     }
 
     function setControlsDisabled(disabled) {
@@ -119,6 +134,59 @@ const AdminEntitiesView = (() => {
         return window.humanizeId(id);
       }
       return id;
+    }
+
+    // Fill a card's governing-law <select> with the approved playbook options.
+    // A card with NO stored law (a brand-new entity) starts on a disabled
+    // "Select governing law…" placeholder so an explicit pick is required (no
+    // silent defaulting to the first option). A card whose stored law is no
+    // longer an approved option (orphan) shows that value as a disabled
+    // selected entry so the admin SEES it and must re-pick an approved law
+    // (updateLawWarning flags it too).
+    function populateLawSelect(select, currentLaw) {
+      if (!select) return;
+      select.innerHTML = "";
+      const doc = select.ownerDocument;
+      const addOption = (value, label, { disabled = false, selected = false } = {}) => {
+        const option = doc.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        if (disabled) option.disabled = true;
+        if (selected) option.selected = true;
+        select.appendChild(option);
+      };
+      const known = lawOptions.some((o) => o.id === currentLaw);
+      if (!currentLaw) {
+        addOption("", "Select governing law…", { disabled: true, selected: true });
+      } else if (!known) {
+        addOption(currentLaw, `${humanizeLawId(currentLaw)} (not an approved option)`, {
+          disabled: true,
+          selected: true,
+        });
+      }
+      lawOptions.forEach((option) => {
+        addOption(option.id, option.label || option.id, { selected: option.id === currentLaw });
+      });
+    }
+
+    // The canonical court a given law option expects, and the option's
+    // jurisdiction key. MINIMAL duplicates of suggestedCourtForLaw()/
+    // lawForumKey() in playbook-view.js's "Entities & Courts" table (the source
+    // of this law->court coupling behaviour) -- both surfaces read the same
+    // court_name / forum_jurisdiction fields off the same
+    // /api/admin/signing-entities governing_law_options payload.
+    function suggestedCourtForLaw(lawId) {
+      const opt = lawOptions.find((o) => o.id === lawId);
+      if (!opt) return "";
+      const courtName = String(opt.court_name || "").trim();
+      if (courtName) return courtName;
+      const forum = String(opt.forum_jurisdiction || "").trim();
+      return forum ? `courts in ${forum}` : "";
+    }
+
+    function lawForumKey(lawId) {
+      const opt = lawOptions.find((o) => o.id === lawId);
+      return opt ? String(opt.forum_jurisdiction || opt.id || "").trim().toLowerCase() : "";
     }
 
     async function load() {
@@ -253,17 +321,13 @@ const AdminEntitiesView = (() => {
       card.dataset.entityNew = isNew ? "true" : "false";
       applyIdSurface(card, isNew);
 
-      // Governing law + court are READ-ONLY here (edited in the Playbook table).
-      // The hidden inputs carry the values for round-trip; the display shows the
-      // human label / court text.
+      // Governing law: an editable <select> constrained to the playbook's
+      // approved options. Court: an editable text input (already filled from
+      // entity.jurisdiction above). Both are edited directly on the card; the
+      // Playbook "Entities & Courts" table remains a second surface for the
+      // same fields via the same wire helper.
       const currentLaw = String(entity.governing_law?.playbook_option_id || "");
-      field(card, "governing_law").value = currentLaw;
-      const lawDisplay = field(card, "governing_law-display");
-      if (lawDisplay) lawDisplay.textContent = currentLaw ? humanizeLawId(currentLaw) : "—";
-      const courtDisplay = field(card, "jurisdiction-display");
-      if (courtDisplay) {
-        courtDisplay.textContent = String(entity.jurisdiction || "").trim() || "—";
-      }
+      populateLawSelect(field(card, "governing_law"), currentLaw);
       updateLawWarning(card, currentLaw);
 
       const addressList = field(card, "address-list");
@@ -313,7 +377,9 @@ const AdminEntitiesView = (() => {
     function autoGrow(textarea) {
       if (!textarea || typeof textarea.scrollHeight !== "number") return;
       textarea.style.height = "auto";
-      const next = Math.max(textarea.scrollHeight, 38);
+      // Floor kept in LOCKSTEP with .entity-address-lines { min-height: 86px }
+      // in styles.css -- change both together.
+      const next = Math.max(textarea.scrollHeight, 86);
       textarea.style.height = `${next}px`;
     }
 
@@ -338,8 +404,41 @@ const AdminEntitiesView = (() => {
       card.addEventListener("input", () => setDirty(true));
       card.addEventListener("change", () => setDirty(true));
 
-      // Governing law + court are read-only here (edited in the Playbook table),
-      // so there is no law-select change to wire.
+      // Law <-> court COUPLING (mirrors the Playbook "Entities & Courts" table,
+      // playbook-view.js render()): when a law change moves the entity to a
+      // DIFFERENT jurisdiction and the current court doesn't already match it,
+      // re-suggest the matching court so a lone law change can't trip the
+      // backend forum-reconciliation guard (HTTP 400 "forum drift") on save. An
+      // inline note says the court was updated so nothing happens silently; a
+      // deliberately-specific in-jurisdiction court is preserved.
+      const lawSelect = field(card, "governing_law");
+      if (lawSelect) {
+        lawSelect.dataset.prevLaw = lawSelect.value;
+        lawSelect.addEventListener("change", () => {
+          const newLawId = lawSelect.value;
+          const prevLawId = lawSelect.dataset.prevLaw || "";
+          lawSelect.dataset.prevLaw = newLawId;
+          updateLawWarning(card, newLawId);
+          const courtInput = field(card, "jurisdiction");
+          const note = field(card, "court-note");
+          if (!courtInput) return;
+          const jurisdictionChanged = lawForumKey(newLawId) !== lawForumKey(prevLawId);
+          const suggested = suggestedCourtForLaw(newLawId);
+          if (!suggested) return;
+          // Already matches the new law's jurisdiction phrase -> leave the court.
+          const currentCourt = String(courtInput.value || "").trim().toLowerCase();
+          const forumKey = lawForumKey(newLawId);
+          const alreadyMatches = forumKey && currentCourt.includes(forumKey);
+          if (jurisdictionChanged && !alreadyMatches) {
+            courtInput.value = suggested;
+            if (note) {
+              note.textContent = `Court updated to “${suggested}” to match the new governing law. Edit it if a more specific court applies.`;
+              note.hidden = false;
+            }
+          }
+        });
+      }
+
       field(card, "legal_name").addEventListener("input", (event) => {
         field(card, "legal_name-display").textContent =
           event.target.value || "New entity";
@@ -365,10 +464,15 @@ const AdminEntitiesView = (() => {
       });
       card.querySelector("[data-entity-address-add]")?.addEventListener("click", () => {
         const addressList = field(card, "address-list");
-        addressList.appendChild(
-          buildAddress({ id: "", label: "", lines: [], country: "", default: false }, radioGroup),
+        const row = buildAddress(
+          { id: "", label: "", lines: [], country: "", default: false },
+          radioGroup,
         );
+        addressList.appendChild(row);
         setDirty(true);
+        // Mirror addEntity()'s focus handoff: drop the caret straight into the
+        // new row's Label so the admin can start typing immediately.
+        row.querySelector('[data-address-field="label"]')?.focus();
       });
       // Event-delegated address removal (rows are added dynamically).
       field(card, "address-list").addEventListener("click", (event) => {
@@ -406,7 +510,10 @@ const AdminEntitiesView = (() => {
           legal_name: "",
           short_name: "",
           addresses: [{ id: "registered", label: "Registered office", lines: [], country: "", default: true }],
-          governing_law: { playbook_option_id: lawOptions[0]?.id || "" },
+          // NO default law: the select starts on the disabled "Select governing
+          // law…" placeholder so the admin must pick explicitly (defaulting to
+          // lawOptions[0] silently made every new entity Indian-law).
+          governing_law: { playbook_option_id: "" },
           jurisdiction: "",
           incorporation_jurisdiction: "",
           signatory: { name: "[Authorised Signatory]", title: "[Title]" },
@@ -462,6 +569,20 @@ const AdminEntitiesView = (() => {
 
     async function save() {
       if (!loaded || saving) return;
+      // An unpicked governing law (the placeholder) would 400 on the backend
+      // anyway ("law must be an approved playbook option"); surface it as a
+      // clear inline message instead of a server round-trip.
+      const missingLaw = Array.from(
+        list ? list.querySelectorAll("[data-entity-card]") : [],
+      ).find((card) => !field(card, "governing_law").value);
+      if (missingLaw) {
+        const label =
+          field(missingLaw, "legal_name").value.trim() ||
+          field(missingLaw, "id").value.trim() ||
+          "the new entity";
+        setMessage(`Pick a governing law for ${label} before saving.`, "error");
+        return;
+      }
       const entities = collectEntities();
       // In-flight: grey out the Save button (and Add) for the "Saving registry..."
       // moment only. saving=true is the single condition syncSaveButton() reads.

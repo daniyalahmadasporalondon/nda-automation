@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260707intake2">
+    <link rel="stylesheet" href="/static/styles.css?v=20260709entityedit1">
     <link rel="stylesheet" href="/static/css/repository.css?v=20260707adminob1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260619onboard1">
     <link rel="stylesheet" href="/static/css/overview.css?v=20260617sig1">
@@ -1953,22 +1953,21 @@
             <span>Short name</span>
             <input type="text" data-entity-field="short_name" autocomplete="off" placeholder="Acme">
           </label>
-          <!-- Governing law + court are EDITED in the Playbook "Entities & Courts"
-               table (one source of truth) and shown READ-ONLY here. The hidden
-               inputs carry the values so collectEntities() round-trips them on save. -->
-          <div class="entity-field">
-            <span class="entity-field-label">Governing law</span>
-            <div class="readonly-display" data-entity-field="governing_law-display" data-readonly-display>—</div>
-            <input type="hidden" data-entity-field="governing_law">
-          </div>
-          <div class="entity-field">
-            <span class="entity-field-label">Court / jurisdiction</span>
-            <div class="readonly-display" data-entity-field="jurisdiction-display" data-readonly-display>—</div>
-            <input type="hidden" data-entity-field="jurisdiction">
-          </div>
-          <p class="entity-field entity-field-wide entity-readonly-hint">
-            Governing law &amp; court are managed in the Playbook editor &rarr; Governing Law &rarr; Entities &amp; Courts.
-          </p>
+          <!-- Governing law is a CONSTRAINED pick of the playbook's approved
+               options (the invariant is "law must be an approved option" —
+               enforced by this select + backend validation — not "only one
+               screen may edit it"). Court is free text with the same law->court
+               auto-suggest as the Playbook "Entities & Courts" table, which
+               edits the same fields via the same endpoint + wire helper. -->
+          <label class="entity-field">
+            <span>Governing law</span>
+            <select data-entity-field="governing_law"></select>
+          </label>
+          <label class="entity-field">
+            <span>Court / jurisdiction</span>
+            <input type="text" data-entity-field="jurisdiction" autocomplete="off" placeholder="courts in England and Wales">
+            <span class="admin-field-note" data-entity-field="court-note" hidden></span>
+          </label>
           <label class="entity-field">
             <span>Incorporation jurisdiction</span>
             <input type="text" data-entity-field="incorporation_jurisdiction" autocomplete="off" placeholder="England and Wales">
@@ -2003,10 +2002,13 @@
       <div class="entity-address" data-entity-address>
         <input type="hidden" data-address-field="id">
         <div class="entity-address-body">
-          <input type="text" class="entity-address-label" data-address-field="label" autocomplete="off" placeholder="Registered office">
+          <label class="entity-address-label-field">
+            <span class="entity-address-lines-hint">Address label</span>
+            <input type="text" class="entity-address-label" data-address-field="label" autocomplete="off" placeholder="Registered office">
+          </label>
           <label class="entity-address-lines-field">
             <span class="entity-address-lines-hint">Address lines (one per line)</span>
-            <textarea class="entity-address-lines" data-address-field="lines" rows="2" placeholder="1 Test Street&#10;London"></textarea>
+            <textarea class="entity-address-lines" data-address-field="lines" rows="4" placeholder="1 Test Street&#10;London"></textarea>
           </label>
           <label class="entity-field entity-address-country">
             <span>Country</span>
@@ -2430,7 +2432,7 @@
     <script src="/static/js/admin-docusign.js?v=20260617a401"></script>
     <script src="/static/js/admin-access.js?v=20260620integ1"></script>
     <script src="/static/js/admin-onboarding.js?v=20260707adminob1"></script>
-    <script src="/static/js/admin-entities.js?v=20260622entityroundtrip1"></script>
+    <script src="/static/js/admin-entities.js?v=20260709entityedit1"></script>
     <script src="/static/js/docusign-send.js?v=20260621nda1"></script>
     <script src="/static/js/contract-structure-view.js?v=20260621wave4"></script>
     <script src="/static/js/review-fill.js?v=20260617occ1"></script>
