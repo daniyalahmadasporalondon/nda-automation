@@ -340,6 +340,8 @@ def _build_approved_law_buckets() -> dict[str, dict[str, list[str]]]:
 # JURISDICTIONS is the merged bucket map: derived approved-law buckets +
 # foreign-forum buckets. Built at import; re-derivable via ``reset_buckets`` after
 # a Playbook republish (mirrors ``governing_law_view.reset_caches``).
+# ``playbook_authoring`` now actually calls ``reset_buckets()`` on publish/save/
+# restore, so a republish takes effect in-process without a restart.
 JURISDICTIONS: dict[str, dict[str, list[str]]] = {}
 
 
@@ -355,12 +357,16 @@ def reset_buckets() -> None:
     buckets are constant. Mutates JURISDICTIONS in place so existing references stay
     valid.
     """
-    JURISDICTIONS.clear()
-    JURISDICTIONS.update(_build_approved_law_buckets())
+    merged = _build_approved_law_buckets()
     for name, bucket in _FOREIGN_FORUM_BUCKETS.items():
         # A foreign-forum name must never shadow a derived approved-law bucket of the
         # same id (defensive -- the two id spaces are disjoint today).
-        JURISDICTIONS.setdefault(name, {"law": list(bucket["law"]), "forum": list(bucket["forum"])})
+        merged.setdefault(name, {"law": list(bucket["law"]), "forum": list(bucket["forum"])})
+    # Concurrent readers (ThreadingHTTPServer requests) race this in-place swap:
+    # building the merged map FIRST shrinks the empty/partial window from a Playbook
+    # disk read under flock to just the clear()+update() below.
+    JURISDICTIONS.clear()
+    JURISDICTIONS.update(merged)
 
 
 reset_buckets()
