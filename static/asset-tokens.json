@@ -32,8 +32,8 @@
     "v": "20260707adminob1"
   },
   "js/admin-entities.js": {
-    "sha256": "aad1267817eadb9a7ed45eb0ba36c95ce2aee35d58d4f6c6053e846fd188949c",
-    "v": "20260622entityroundtrip1"
+    "sha256": "c7f9c87a2769dfc1710cf15b3dfb8804243379deec9bab63c8719a4ec9dae7cd",
+    "v": "20260709entityedit1"
   },
   "js/admin-health.js": {
     "sha256": "472ee808cce3fef6c1635e813547070c9ef3fb849e6ef7fd66a16be731f27fa0",
@@ -296,7 +296,7 @@
     "v": "20260623rwbugs1"
   },
   "styles.css": {
-    "sha256": "3b7e12e66e896aa3dc4294036cf0cb56b9cfc796c33f0ac3a351e1e24a6bc713",
-    "v": "20260707intake2"
+    "sha256": "62d43bec94be4022d4568d3f950c5f3c5596e6cf126af4b6a929caccf53e2a4e",
+    "v": "20260709entityedit1"
   }
 }
