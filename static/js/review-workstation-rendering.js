@@ -4594,22 +4594,37 @@ function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequ
         notice.setAttribute("data-faithful-fallback-notice", "");
         notice.setAttribute("role", "status");
         const showingLabel = candidate.label === "clean" ? "accepted (clean)" : "original";
-        notice.innerHTML = `
-          <div class="review-faithful-fallback-notice-text">
-            <strong>Tracked redlines couldn't be displayed</strong>
-            <span>${escapeHtml(redlineFallbackReasonText(failureReason))} Showing the faithful ${escapeHtml(showingLabel)} document instead.</span>
-          </div>
-          <button type="button" class="review-faithful-fallback-retry" data-faithful-fallback-retry>Retry redlines</button>
-        `;
-        const retryButton = notice.querySelector("[data-faithful-fallback-retry]");
-        if (retryButton) {
-          retryButton.addEventListener("click", () => {
-            // Full repaint of the current view: paints the reconstruction floor and
-            // re-attempts the faithful redline upgrade end-to-end. If it fails
-            // again, this fallback (and its notice) repaints.
-            renderStudioDocumentHighlights();
-          });
-        }
+        // Built with DOM APIs + textContent, NOT innerHTML + escapeHtml: escapeHtml
+        // is a window global assigned by the DEFERRED module bridge
+        // (modules/global-bridge.mjs), not by this classic script. A bare
+        // escapeHtml() call here throws ReferenceError whenever the bridge hasn't
+        // loaded (or in any bridge-less embedding of this file), and the
+        // surrounding .catch() swallowed that error and moved to the next
+        // candidate -- silently killing the ENTIRE redline-409 faithful fallback
+        // (regression caught by tests/frontend/faithful-redline-clean-upgrade.mjs).
+        // textContent needs no escaper and keeps the same injection-safety.
+        const noticeText = document.createElement("div");
+        noticeText.className = "review-faithful-fallback-notice-text";
+        const noticeTitle = document.createElement("strong");
+        noticeTitle.textContent = "Tracked redlines couldn't be displayed";
+        const noticeDetail = document.createElement("span");
+        noticeDetail.textContent =
+          `${redlineFallbackReasonText(failureReason)} Showing the faithful ${showingLabel} document instead.`;
+        noticeText.appendChild(noticeTitle);
+        noticeText.appendChild(noticeDetail);
+        const retryButton = document.createElement("button");
+        retryButton.type = "button";
+        retryButton.className = "review-faithful-fallback-retry";
+        retryButton.setAttribute("data-faithful-fallback-retry", "");
+        retryButton.textContent = "Retry redlines";
+        retryButton.addEventListener("click", () => {
+          // Full repaint of the current view: paints the reconstruction floor and
+          // re-attempts the faithful redline upgrade end-to-end. If it fails
+          // again, this fallback (and its notice) repaints.
+          renderStudioDocumentHighlights();
+        });
+        notice.appendChild(noticeText);
+        notice.appendChild(retryButton);
         wrapper.appendChild(notice);
         wrapper.appendChild(host);
         studioDocumentRender.innerHTML = "";
