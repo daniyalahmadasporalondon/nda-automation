@@ -32,8 +32,8 @@
     "v": "20260707adminob1"
   },
   "js/admin-entities.js": {
-    "sha256": "aad1267817eadb9a7ed45eb0ba36c95ce2aee35d58d4f6c6053e846fd188949c",
-    "v": "20260622entityroundtrip1"
+    "sha256": "c7f9c87a2769dfc1710cf15b3dfb8804243379deec9bab63c8719a4ec9dae7cd",
+    "v": "20260709entityedit1"
   },
   "js/admin-health.js": {
     "sha256": "472ee808cce3fef6c1635e813547070c9ef3fb849e6ef7fd66a16be731f27fa0",
@@ -276,8 +276,8 @@
     "v": "20260622docxphase2-1"
   },
   "js/review-workstation-rendering.js": {
-    "sha256": "d1a13857e9367eb34747b3951b9b50352b90fffe0eeb64028fed06cef5345ea6",
-    "v": "20260706onboard1"
+    "sha256": "060123850a0d83dbf47e84d2bdb0e33307ce7973d87f8a9f136543897903a0c7",
+    "v": "20260709clobber1"
   },
   "js/review-workstation-source.js": {
     "sha256": "dc075665414f8a245e0e0b1f7f6d8b3b689ad9ea54138dcac1348cfc07660105",
@@ -292,11 +292,11 @@
     "v": "20260606i"
   },
   "js/viewer-controls.js": {
-    "sha256": "7f46bcd9a8a5255761ff9a69a8739d9aaba328e57e51363fbf3b8ca192b5ab40",
-    "v": "20260623rwbugs1"
+    "sha256": "f039de5cc7a9798af17a32999fafa2195b001436ae6f1ce5950bca79cb8f16ab",
+    "v": "20260709clobber1"
   },
   "styles.css": {
-    "sha256": "3b7e12e66e896aa3dc4294036cf0cb56b9cfc796c33f0ac3a351e1e24a6bc713",
-    "v": "20260707intake2"
+    "sha256": "64933d8f3d3e1e079256f1e61871758e804c15dfc0712f5309a6ee969a927cd4",
+    "v": "20260709ship2"
   }
 }

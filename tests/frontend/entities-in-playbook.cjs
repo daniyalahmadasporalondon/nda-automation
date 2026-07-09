@@ -205,35 +205,42 @@ async function main() {
     );
     assert.ok(linesVisible, "the address lines (content) must be visible and populated");
 
-    // --- 3c. Governing law + court are READ-ONLY here (edited in the Playbook
-    //         "Entities & Courts" table). The displays render the values; the law
-    //         is NOT an editable <select> and the court is NOT an editable input;
-    //         hidden inputs still carry both for round-trip. ---------------------
-    const lawIsSelect = await page.$$eval(
-      `${firstCard} select[data-entity-field="governing_law"]`,
-      (els) => els.length
-    );
-    assert.equal(lawIsSelect, 0, "the Entities-tab governing law must NOT be an editable select");
-    const lawHidden = await page.$eval(
+    // --- 3c. Governing law + court are EDITABLE on the card (the deadlock fix):
+    //         the law is a visible <select> CONSTRAINED to the playbook's
+    //         approved options, initialised to the stored option; the court is a
+    //         visible text input initialised to the stored jurisdiction. ---------
+    const lawState = await page.$eval(
       `${firstCard} [data-entity-field="governing_law"]`,
-      (el) => el.tagName === "INPUT" && el.type === "hidden" && el.value.length > 0
+      (el) => ({
+        tag: el.tagName,
+        visible: el.offsetParent !== null,
+        value: el.value,
+        optionValues: Array.from(el.options || []).map((o) => o.value),
+      })
     );
-    assert.ok(lawHidden, "governing law must be a hidden input carrying the value for round-trip");
-    const courtHidden = await page.$eval(
+    assert.equal(lawState.tag, "SELECT", "governing law must be an editable <select>");
+    assert.ok(lawState.visible, "the governing-law select must be visible");
+    assert.ok(lawState.value.length > 0, "the select must be initialised to the stored law");
+    assert.ok(
+      lawState.optionValues.includes(lawState.value),
+      "the stored law must be one of the offered options"
+    );
+    const courtState = await page.$eval(
       `${firstCard} [data-entity-field="jurisdiction"]`,
-      (el) => el.tagName === "INPUT" && el.type === "hidden"
+      (el) => ({
+        tag: el.tagName,
+        type: el.type,
+        visible: el.offsetParent !== null,
+        value: el.value,
+      })
     );
-    assert.ok(courtHidden, "court/jurisdiction must be a hidden input (read-only display)");
-    const lawDisplayShown = await page.$eval(
-      `${firstCard} [data-entity-field="governing_law-display"]`,
-      (el) => el.offsetParent !== null && (el.textContent || "").trim().length > 0
-    );
-    assert.ok(lawDisplayShown, "the read-only governing-law display must render the law label");
-    const courtDisplayShown = await page.$eval(
-      `${firstCard} [data-entity-field="jurisdiction-display"]`,
-      (el) => el.offsetParent !== null
-    );
-    assert.ok(courtDisplayShown, "the read-only court display must render");
+    assert.equal(courtState.tag, "INPUT", "court/jurisdiction must be an editable input");
+    assert.equal(courtState.type, "text", "the court input must be visible text, not hidden");
+    assert.ok(courtState.visible, "the court input must be visible");
+    assert.ok(courtState.value.length > 0, "the court input must carry the stored jurisdiction");
+    // The old "managed in the Playbook editor" read-only hint is GONE.
+    const hintCount = await page.$$eval(".entity-readonly-hint", (els) => els.length);
+    assert.equal(hintCount, 0, "the read-only law/court hint must be gone (fields are editable)");
 
     // --- 4. Add entity -> the editable entity-id field is REVEALED (new only) ---
     await page.click("#playbookEntitiesAddButton");
@@ -252,17 +259,33 @@ async function main() {
     // incorporation_jurisdiction is a required field (pre-existing validation rule).
     await page.fill(`${newCard} [data-entity-field="incorporation_jurisdiction"]`, "England and Wales");
     await page.fill(`${newCard} .entity-address [data-address-field="lines"]`, "1 Test Street\nLondon");
-    // RESTRUCTURE: governing law + court are EDITED in the Playbook "Entities &
-    // Courts" table now and are READ-ONLY here (hidden inputs carry the value for
-    // round-trip). Set them directly on the hidden inputs to a reconciling pair
-    // (england_and_wales law + an England court) so the save passes reconciliation.
-    await page.evaluate((cardSel) => {
-      const card = document.querySelector(cardSel);
-      const law = card.querySelector('[data-entity-field="governing_law"]');
-      const court = card.querySelector('[data-entity-field="jurisdiction"]');
-      law.value = "england_and_wales";
-      court.value = "courts in England and Wales";
-    }, newCard);
+    // DEADLOCK FIX: governing law + court are edited directly on the card. A NEW
+    // card starts on the disabled "Select governing law…" placeholder (value "",
+    // NOT defaulted to the first option) with an empty court.
+    const newLawStart = await page.$eval(
+      `${newCard} [data-entity-field="governing_law"]`,
+      (el) => ({ value: el.value, first: el.options[0].textContent, firstDisabled: el.options[0].disabled })
+    );
+    assert.equal(newLawStart.value, "", "a new card's law must default to empty (explicit pick required)");
+    assert.ok(newLawStart.firstDisabled, "the placeholder option must be disabled");
+    assert.ok(/select governing law/i.test(newLawStart.first), "the placeholder must prompt a pick");
+    assert.equal(
+      await page.$eval(`${newCard} [data-entity-field="jurisdiction"]`, (el) => el.value),
+      "",
+      "a new card's court must default empty"
+    );
+    // Pick the law from the constrained select -> the matching court is
+    // AUTO-SUGGESTED (same coupling as the Entities & Courts table), so the save
+    // passes the backend forum-reconciliation guard.
+    await page.selectOption(`${newCard} select[data-entity-field="governing_law"]`, "england_and_wales");
+    const suggestedCourt = await page.$eval(
+      `${newCard} [data-entity-field="jurisdiction"]`,
+      (el) => el.value
+    );
+    assert.ok(
+      /england/i.test(suggestedCourt),
+      `picking the law must auto-suggest its court; got "${suggestedCourt}"`
+    );
 
     // --- 5. Save registry -> POST carries the correct {entities:[...]} payload ---
     const saveReq = page.waitForRequest(
@@ -278,6 +301,12 @@ async function main() {
     const saved = body.entities.find((e) => e.id === "test_co");
     assert.ok(saved, "the new entity must be in the save payload with its entity_id preserved");
     assert.equal(saved.legal_name, "Test Co Limited", "legal name must be in the payload");
+    assert.equal(
+      saved.governing_law && saved.governing_law.playbook_option_id,
+      "england_and_wales",
+      "the law picked on the card must POST in the wire shape"
+    );
+    assert.equal(saved.jurisdiction, suggestedCourt, "the auto-suggested court must POST");
     assert.deepEqual(
       saved.addresses[0].lines,
       ["1 Test Street", "London"],
