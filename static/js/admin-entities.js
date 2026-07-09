@@ -299,11 +299,10 @@ const AdminEntitiesView = (() => {
       const card = fragment.querySelector("[data-entity-card]");
       const radioGroup = `entity-default-${(radioGroupSeq += 1)}`;
 
-      // The entity id is the persistent key. It stays the under-the-hood identifier
-      // (the hidden input is always present so collectEntities reads it back), but it
-      // is only SURFACED + editable when ADDING a new entity. For an existing entity
-      // the id is NOT rendered anywhere user-visible (no caption) — it lives only in
-      // the hidden input that save reads.
+      // The entity id is the persistent key, SYSTEM-ASSIGNED by the backend from
+      // the legal name on first save. It is never rendered or editable anywhere —
+      // it lives only in the hidden input that save reads: an existing entity
+      // round-trips its key, a new card posts "" and the backend fills it in.
       field(card, "id").value = String(entity.id || "");
       field(card, "legal_name").value = String(entity.legal_name || "");
       field(card, "short_name").value = String(entity.short_name || "");
@@ -319,7 +318,6 @@ const AdminEntitiesView = (() => {
       // Mark whether this card represents an already-persisted entity, so Remove can
       // confirm before deleting one (a new, unsaved card removes silently).
       card.dataset.entityNew = isNew ? "true" : "false";
-      applyIdSurface(card, isNew);
 
       // Governing law: an editable <select> constrained to the playbook's
       // approved options. Court: an editable text input (already filled from
@@ -342,17 +340,6 @@ const AdminEntitiesView = (() => {
 
       wireCard(card, radioGroup);
       return card;
-    }
-
-    // Surface the entity id ONLY when adding a brand-new entity (it is the permanent
-    // key, set once at creation). For an EXISTING entity the id is never shown — no
-    // caption, no editable field — it lives only in the hidden data-entity-field="id"
-    // input so collectEntities() still carries the key on save. The redesign removed
-    // the de-emphasised "id: <slug>" caption entirely; the id must not render anywhere
-    // user-visible for an existing entity.
-    function applyIdSurface(card, isNew) {
-      const idField = card.querySelector("[data-entity-new-id-field]");
-      if (idField) idField.hidden = !isNew;
     }
 
     function buildAddress(address, radioGroup) {
@@ -522,8 +509,9 @@ const AdminEntitiesView = (() => {
       );
       list.appendChild(card);
       setDirty(true);
-      // Focus the legal name (the identity heading the redesign leads with); the
-      // permanent entity-id field is revealed just below for the new entity.
+      // Focus the legal name (the identity heading the redesign leads with). There
+      // is no id field to fill: the backend assigns the permanent id from the
+      // legal name when the new entity is first saved.
       card.querySelector('[data-entity-field="legal_name"]')?.focus();
     }
 

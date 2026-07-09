@@ -36,6 +36,8 @@ never silently corrupt the registry.
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from typing import Any
 
 from . import entity_registry, entity_store
@@ -53,6 +55,61 @@ _ALLOWED_ENTITY_KEYS = {
     "signatory",
 }
 _ALLOWED_ADDRESS_KEYS = {"id", "label", "lines", "country", "default"}
+
+# Longest system-generated entity id (the slug of the legal name). Long enough to
+# keep real legal names distinct, short enough to stay a sane join key in matter/
+# bundle/governing-law records.
+_GENERATED_ID_MAX_LENGTH = 48
+
+
+def _slugify_entity_id(legal_name: str) -> str:
+    """Derive a deterministic entity-id slug from a legal name.
+
+    Lowercase, best-effort ASCII fold (NFKD, non-ASCII dropped), every run of
+    non-alphanumeric characters collapsed to a single underscore, underscores
+    trimmed, capped at :data:`_GENERATED_ID_MAX_LENGTH`. Never empty: a name that
+    folds to nothing (e.g. fully non-Latin) falls back to ``"entity"`` so the
+    collision suffixing can still key it. No randomness — the same name always
+    yields the same slug.
+
+    "Acme Co Limited" -> "acme_co_limited"; "Aspora (UK) Ltd." -> "aspora_uk_ltd".
+    """
+    folded = unicodedata.normalize("NFKD", str(legal_name or ""))
+    ascii_name = folded.encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-z0-9]+", "_", ascii_name.lower()).strip("_")
+    slug = slug[:_GENERATED_ID_MAX_LENGTH].rstrip("_")
+    return slug or "entity"
+
+
+def _assign_generated_ids(entities: list[dict[str, Any]]) -> None:
+    """Give every id-less entity a system-generated id (in place).
+
+    The entity id is a permanent JOIN KEY (matters/bundles/governing-law), so:
+
+    * An entity that ARRIVES with an id keeps it verbatim — existing entities
+      round-trip their key untouched, and API clients may still choose ids.
+    * A blank/missing id (the UI no longer collects one) is filled with the slug
+      of the legal name. A collision with any other id in the incoming registry —
+      pre-supplied or generated earlier in this pass — is resolved by appending
+      ``_2``, ``_3``, … deterministically.
+    * A blank legal name is left for :func:`entity_registry.validate_registry`
+      to reject (its missing-id error now points at the legal name, since the id
+      is no longer user-visible).
+
+    ``validate_registry``'s duplicate-id check stays as the final backstop.
+    """
+    taken = {entity["id"] for entity in entities if entity.get("id")}
+    for entity in entities:
+        if entity.get("id") or not entity.get("legal_name"):
+            continue
+        base = _slugify_entity_id(entity["legal_name"])
+        candidate = base
+        suffix = 2
+        while candidate in taken:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        entity["id"] = candidate
+        taken.add(candidate)
 
 
 def _reject_bracket_identity_fields(entities: list[dict[str, Any]]) -> None:
@@ -296,6 +353,12 @@ def save_entities_registry(
 
     entities = [_coerce_entity(raw) for raw in entities_raw]
 
+    # SYSTEM-ASSIGNED IDS: the UI no longer collects an entity id, so a new card
+    # arrives with a blank id and the backend derives one from the legal name
+    # (slug + deterministic collision suffix). Entities arriving WITH an id keep
+    # it verbatim — for existing entities the id is a permanent join key.
+    _assign_generated_ids(entities)
+
     # Bracket guard on admin-writable identity fields (legal_name + address lines),
     # parity with the counterparty intake gate: a '[' / ']' would collide with the
     # engine's fill tokens (address corruption / generation DoS). Reject before any
@@ -412,6 +475,10 @@ def validate_entities_payload(payload: dict[str, Any]) -> dict[str, Any]:
         entities = [_coerce_entity(raw) for raw in entities_raw]
     except EntityAuthoringError as error:
         return {"valid": False, "errors": [str(error)]}
+
+    # Mirror the save path's system-assigned ids so the preview gate never flags a
+    # blank id the save would in fact fill in.
+    _assign_generated_ids(entities)
 
     # Surface the bracket-identity-field rejection (C2) in the preview gate too, so
     # the editor flags it before a save attempt rather than only at persist time.

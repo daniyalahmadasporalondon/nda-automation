@@ -32,8 +32,8 @@
     "v": "20260707adminob1"
   },
   "js/admin-entities.js": {
-    "sha256": "c7f9c87a2769dfc1710cf15b3dfb8804243379deec9bab63c8719a4ec9dae7cd",
-    "v": "20260709entityedit1"
+    "sha256": "0b0b9942b6b602c86b1353396eb257c2a481f034de2dcd205743e74cea509464",
+    "v": "20260709idgen1"
   },
   "js/admin-health.js": {
     "sha256": "472ee808cce3fef6c1635e813547070c9ef3fb849e6ef7fd66a16be731f27fa0",
@@ -296,7 +296,7 @@
     "v": "20260709clobber1"
   },
   "styles.css": {
-    "sha256": "64933d8f3d3e1e079256f1e61871758e804c15dfc0712f5309a6ee969a927cd4",
-    "v": "20260709ship2"
+    "sha256": "bff289d4d0e86187e6c506137c7c10d48884d29639b54386c52d739cffc34281",
+    "v": "20260709idgen1"
   }
 }

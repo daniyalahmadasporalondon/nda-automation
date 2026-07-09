@@ -300,6 +300,115 @@ class EntityAuthoringTests(unittest.TestCase):
         new_co = next(e for e in stored if e["id"] == "new_co")
         self.assertEqual(new_co["governing_law"]["label"], "England and Wales")
 
+    # ---- System-assigned entity ids (the UI no longer collects an id) --------
+
+    def _new_entity(self, legal_name: str, **overrides) -> dict:
+        entity = {
+            "id": "",
+            "legal_name": legal_name,
+            "short_name": "New",
+            "addresses": [
+                {"id": "reg", "label": "Registered office", "lines": ["1 Test St", "London"], "country": "UK", "default": True}
+            ],
+            "governing_law": {"playbook_option_id": "england_and_wales", "label": "England and Wales"},
+            "jurisdiction": "courts in England and Wales",
+            "incorporation_jurisdiction": "England and Wales",
+            "signatory": {"name": "X", "title": "Y"},
+        }
+        entity.update(overrides)
+        return entity
+
+    def _save_and_read(self, entities, store_path=None) -> list[dict]:
+        store_path = store_path or _tmp_store()
+        entity_authoring.save_entities_registry(
+            {"entities": entities}, actor="tester", store_path=store_path
+        )
+        return json.loads(store_path.read_text())["entities"]
+
+    def test_blank_id_is_assigned_slug_of_legal_name(self):
+        stored = self._save_and_read(self._seed() + [self._new_entity("Acme Co Limited")])
+        ids = [e["id"] for e in stored]
+        self.assertIn("acme_co_limited", ids)
+        acme = next(e for e in stored if e["id"] == "acme_co_limited")
+        self.assertEqual(acme["legal_name"], "Acme Co Limited")
+
+    def test_symbols_collapse_to_single_underscores(self):
+        stored = self._save_and_read(self._seed() + [self._new_entity("Aspora (UK) Ltd.")])
+        self.assertIn("aspora_uk_ltd", [e["id"] for e in stored])
+
+    def test_collision_appends_numeric_suffix(self):
+        stored = self._save_and_read(
+            self._seed()
+            + [
+                self._new_entity("Acme Co Limited"),
+                self._new_entity("Acme Co. Limited"),  # same slug once folded
+                self._new_entity("Acme Co Limited!"),
+            ]
+        )
+        ids = [e["id"] for e in stored]
+        self.assertIn("acme_co_limited", ids)
+        self.assertIn("acme_co_limited_2", ids)
+        self.assertIn("acme_co_limited_3", ids)
+
+    def test_collision_with_presupplied_id_is_suffixed(self):
+        stored = self._save_and_read(
+            self._seed()
+            + [
+                self._new_entity("Taken Co", id="taken_co"),  # arrives WITH the id
+                self._new_entity("Taken Co"),  # blank id, same slug -> suffixed
+            ]
+        )
+        ids = [e["id"] for e in stored]
+        self.assertIn("taken_co", ids)
+        self.assertIn("taken_co_2", ids)
+
+    def test_entity_arriving_with_id_keeps_it_verbatim(self):
+        stored = self._save_and_read(
+            self._seed() + [self._new_entity("Custom Keyed Co", id="my_custom_key_99")]
+        )
+        keyed = next(e for e in stored if e["legal_name"] == "Custom Keyed Co")
+        self.assertEqual(keyed["id"], "my_custom_key_99")
+
+    def test_blank_legal_name_yields_clear_legal_name_error(self):
+        store_path = _tmp_store()
+        with self.assertRaises(entity_authoring.EntityAuthoringError) as ctx:
+            entity_authoring.save_entities_registry(
+                {"entities": self._seed() + [self._new_entity("")]},
+                store_path=store_path,
+            )
+        self.assertEqual(ctx.exception.status, 400)
+        self.assertIn("legal name", str(ctx.exception))
+        self.assertNotIn("missing an id", str(ctx.exception))
+        self.assertFalse(store_path.exists())
+
+    def test_unicode_name_is_ascii_folded(self):
+        stored = self._save_and_read(self._seed() + [self._new_entity("Ünïcode Söciété GmbH")])
+        self.assertIn("unicode_societe_gmbh", [e["id"] for e in stored])
+
+    def test_fully_non_ascii_name_falls_back_to_entity(self):
+        stored = self._save_and_read(self._seed() + [self._new_entity("株式会社")])
+        self.assertIn("entity", [e["id"] for e in stored])
+
+    def test_slug_is_deterministic_and_capped(self):
+        slug = entity_authoring._slugify_entity_id
+        self.assertEqual(slug("Acme Co Limited"), "acme_co_limited")
+        self.assertEqual(slug("Acme Co Limited"), slug("Acme Co Limited"))
+        self.assertEqual(slug("Aspora (UK) Ltd."), "aspora_uk_ltd")
+        long_name = "Very " * 30 + "Long Name Co"
+        capped = slug(long_name)
+        self.assertLessEqual(len(capped), entity_authoring._GENERATED_ID_MAX_LENGTH)
+        self.assertFalse(capped.endswith("_"))
+        self.assertEqual(capped, slug(long_name))
+
+    def test_validate_payload_accepts_blank_id_with_legal_name(self):
+        # The preview gate mirrors the save path's id assignment, so a new card
+        # (blank id) with a legal name is VALID, not a "missing id" error.
+        result = entity_authoring.validate_entities_payload(
+            {"entities": self._seed() + [self._new_entity("Preview Co")]}
+        )
+        self.assertEqual(result["errors"], [])
+        self.assertTrue(result["valid"])
+
     def test_orphan_guard_rejects_unapproved_law(self):
         store_path = _tmp_store()
         entities = self._seed()

@@ -10,7 +10,10 @@
 //      law…" placeholder (value ""), and Court/jurisdiction as an editable
 //      text input (empty). Picking a law auto-suggests the matching court
 //      (same coupling as the Playbook "Entities & Courts" table), and save
-//      POSTs the picked values in the entityLawCourtWire shape.
+//      POSTs the picked values in the entityLawCourtWire shape. The entity id
+//      is SYSTEM-ASSIGNED: there is no id field on the card at all (the old
+//      data-entity-new-id-field block is gone) and a new card POSTs id:"" for
+//      the backend to fill from the legal name.
 //   2. An EXISTING entity card renders the SAME editable controls initialised
 //      from the stored values, and an EDITED law/court round-trips through the
 //      save POST. An orphan stored law (no longer an approved option) appears
@@ -191,14 +194,26 @@ async function run() {
     const note = card.querySelector('[data-entity-field="court-note"]');
     assert.ok(note && !note.hidden, "the court-updated note must be visible");
 
-    card.querySelector('[data-entity-field="id"]').value = "test_co";
+    // SYSTEM-ASSIGNED IDS: the card carries NO user-visible/editable id field —
+    // the old data-entity-new-id-field block must be gone entirely, and the id
+    // input that remains is hidden form state only.
+    assert.equal(
+      card.querySelector("[data-entity-new-id-field]"),
+      null,
+      "the new-entity id field block must not exist (ids are system-assigned)",
+    );
+    const idInput = card.querySelector('[data-entity-field="id"]');
+    assert.equal(idInput.type, "hidden", "the id input must be hidden form state");
+    assert.equal(idInput.value, "", "a new card's id must stay blank for the backend");
+
     card.querySelector('[data-entity-field="legal_name"]').value = "Test Co Limited";
     doc.querySelector("#saveBtn").click();
     await flush();
     const post = lastPost(calls);
     assert.ok(post, "save must POST");
-    const saved = post.body.entities.find((e) => e.id === "test_co");
+    const saved = post.body.entities.find((e) => e.legal_name === "Test Co Limited");
     assert.ok(saved, "the new entity must be in the POST payload");
+    assert.equal(saved.id, "", "a new entity must POST a blank id (backend assigns it)");
     assert.deepEqual(
       saved.governing_law,
       { playbook_option_id: "england_and_wales", label: "England and Wales" },

@@ -444,7 +444,10 @@ def validate_registry(entities: list[dict[str, Any]] | None = None) -> None:
             raise ValueError("Each signing entity must be an object.")
         entity_id = entity.get("id")
         if not entity_id:
-            raise ValueError("Signing entity is missing an id.")
+            # The id is system-generated from the legal name (never user-visible),
+            # so a still-blank id here means the entity had no legal name to derive
+            # one from — point the error at the field the user can actually fix.
+            raise ValueError("Give the entity a legal name before saving.")
         if entity_id in seen_ids:
             raise ValueError(f"Duplicate signing entity id: {entity_id}.")
         seen_ids.add(entity_id)

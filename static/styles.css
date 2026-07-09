@@ -12682,9 +12682,9 @@ label.is-hidden {
   min-width: 0;
 }
 
-/* The machine entity-id is NEVER surfaced on an existing entity (no caption). It
-   is carried only in the hidden data-entity-field="id" input so save keeps the
-   key. The id is shown as an editable field ONLY when adding a new entity. */
+/* The machine entity-id is NEVER surfaced (it is system-assigned by the backend
+   from the legal name). It is carried only in the hidden data-entity-field="id"
+   input so save keeps the key for existing entities. */
 
 .entity-card-title strong {
   font-size: 16px;
@@ -12692,19 +12692,9 @@ label.is-hidden {
   overflow-wrap: anywhere;
 }
 
-/* The editable entity-id field only appears when ADDING a new entity. */
-.entity-new-id[hidden] {
-  display: none;
-}
-
-.entity-new-id > span small {
-  color: var(--ink-muted);
-  font-weight: 500;
-}
-
-/* At most 2 fields per row, with breathing room. Legal name (and the new-entity
-   id field) span the full width via .entity-field-wide; the rest pair up. Stacks
-   to 1-per-row on narrow widths so the card never reads as a spreadsheet row. */
+/* At most 2 fields per row, with breathing room. Legal name spans the full
+   width via .entity-field-wide; the rest pair up. Stacks to 1-per-row on narrow
+   widths so the card never reads as a spreadsheet row. */
 .entity-field-grid {
   display: grid;
   gap: 14px 18px;
