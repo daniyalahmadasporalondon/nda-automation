@@ -3956,6 +3956,23 @@ function createSelectionSearchIndex(value) {
   return { map, normalized: normalized.trim() };
 }
 
+// True when a faithful DOCX surface (the redline/clean upgrade, its read-only
+// fallback, or the faithful Original) is currently DISPLAYED in the document pane
+// FOR THE CURRENT VIEW MODE. Used to stop late async page-image completions
+// (/render-status resolving seconds later on a cold cache) from repainting -- and
+// thereby destroying -- a live faithful surface the user is already reading. DOM
+// presence is the source of truth here: the faithful upgrade swaps itself in
+// asynchronously WITHOUT bumping reviewDocumentRenderRequestSequence, so the
+// existing sequence + matter-id staleness guards cannot see it.
+function faithfulDocxSurfaceActiveForCurrentView() {
+  if (typeof studioDocumentRender === "undefined" || !studioDocumentRender) return false;
+  const surface = studioDocumentRender.querySelector("[data-faithful-docx]");
+  if (!surface) return false;
+  const viewMode = state.documentViewMode || VIEW_MODE_REDLINE;
+  if (viewMode === VIEW_MODE_ORIGINAL) return surface.hasAttribute("data-original-surface");
+  return (surface.getAttribute("data-faithful-view-mode") || "") === viewMode;
+}
+
 function renderStudioDocumentHighlights() {
   if (!studioDocumentRender) return;
 
@@ -4014,7 +4031,20 @@ function renderStudioDocumentHighlights() {
       selectedClauseId: state.selectedReviewClauseId,
       viewMode,
     });
-    studioDocumentRender.innerHTML = `${renderPdfDocumentSurface(state.reviewDocumentRender)}${documentHtml}`;
+    // RENDER-CLOBBER GUARD (root-cause fix): the page images in
+    // state.reviewDocumentRender are a rasterization of the ORIGINAL source
+    // document -- they belong to the Original/source view only. When the surface
+    // currently on screen is the faithful redline/clean DOCX for THIS view, a
+    // repaint (a late /render-status completion, a clause re-render) must NOT
+    // prepend the ORIGINAL's page tiles above the reconstruction: the tiles would
+    // take over the top of the pane and flip the pager to the ORIGINAL's page
+    // count (the live "redline 7/7 silently reverts to original 4/5" symptom).
+    // The reconstruction floor is still painted; maybeUpgradeSurfaceToFaithfulDocx
+    // below immediately re-engages the faithful surface.
+    const pdfSurfaceHtml = faithfulDocxSurfaceActiveForCurrentView()
+      ? ""
+      : renderPdfDocumentSurface(state.reviewDocumentRender);
+    studioDocumentRender.innerHTML = `${pdfSurfaceHtml}${documentHtml}`;
 
     studioDocumentRender.querySelectorAll("[data-clause-ids]").forEach((paragraph) => {
       paragraph.addEventListener("click", (event) => {
@@ -4411,7 +4441,7 @@ function maybeUpgradeSurfaceToFaithfulDocx(viewMode) {
         // true document. Never blank: if even that yields no bytes, the reconstruction
         // floor stands.
         faithfulMappingTelemetry(`redline_bytes_unavailable:${result?.reason || "unknown"}`);
-        attemptFaithfulRedlineFallback(faithful, viewMode, matterId, sequence);
+        attemptFaithfulRedlineFallback(faithful, viewMode, matterId, sequence, result?.reason || "unknown");
         return;
       }
 
@@ -4421,7 +4451,7 @@ function maybeUpgradeSurfaceToFaithfulDocx(viewMode) {
       // overlay map is what is unsafe, not the faithful render itself).
       const mapped = bindFaithfulDocxInteractions(host, viewMode);
       if (!mapped) {
-        attemptFaithfulRedlineFallback(faithful, viewMode, matterId, sequence);
+        attemptFaithfulRedlineFallback(faithful, viewMode, matterId, sequence, "mapping_aborted");
         return; // guard aborted -> faithful Clean/Original (never the plain reconstruction)
       }
 
@@ -4453,7 +4483,7 @@ function maybeUpgradeSurfaceToFaithfulDocx(viewMode) {
         // ignore logging failure
       }
       try {
-        attemptFaithfulRedlineFallback(faithful, viewMode, matterId, sequence);
+        attemptFaithfulRedlineFallback(faithful, viewMode, matterId, sequence, "upgrade_threw");
       } catch (_fallbackError) {
         // never let the fallback itself break the never-blank floor
       }
@@ -4484,7 +4514,10 @@ function maybeUpgradeSurfaceToFaithfulDocx(viewMode) {
 //
 // `faithful` is the window.FaithfulDocxRender bridge; matterId + sequence are the
 // staleness keys captured by the caller so a view/matter change mid-flight drops the swap.
-function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequence) {
+// `failureReason` is the upgrade's failure class (e.g. "no_bytes" for a
+// 409/500/404 on /reviewed-docx, "mapping_aborted", "upgrade_threw") -- display
+// only, used to word the persistent in-viewer notice.
+function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequence, failureReason) {
   if (!faithful || typeof faithful.render !== "function") return;
   if (!studioDocumentRender) return;
 
@@ -4540,9 +4573,14 @@ function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequ
           return;
         }
         // Painted. Swap in a READ-ONLY faithful surface (no interactive redline
-        // overlay). The document renders CLEANLY -- no in-surface banner; the honest
-        // "tracked redlines aren't on this tab" status is surfaced through the app's
-        // notification system (a transient toast) instead, fired once per fallback.
+        // overlay), announced TWICE: the existing once-per-key transient toast
+        // (notifyRedlineFaithfulFallback below) AND a PERSISTENT in-viewer notice
+        // strip at the top of the surface. The toast auto-dismisses in seconds;
+        // without the strip the viewer would keep silently showing a non-redline
+        // document on the Redline tab after the toast dies -- indistinguishable
+        // from the "review silently reverted" bug. The strip states what failed
+        // (why-ish, from failureReason) and carries a retry affordance that
+        // re-runs the render path (which re-attempts the faithful redline upgrade).
         const wrapper = document.createElement("section");
         wrapper.className = "review-faithful-surface review-faithful-redline review-faithful-redline-fallback ready";
         wrapper.setAttribute("data-review-render-surface", "");
@@ -4551,6 +4589,28 @@ function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequ
         wrapper.setAttribute("data-faithful-fallback", candidate.label);
         wrapper.setAttribute("data-render-status", "ready");
         wrapper.setAttribute("aria-label", `Faithful document preview (tracked redlines unavailable; showing ${candidate.label})`);
+        const notice = document.createElement("div");
+        notice.className = "review-faithful-fallback-notice";
+        notice.setAttribute("data-faithful-fallback-notice", "");
+        notice.setAttribute("role", "status");
+        const showingLabel = candidate.label === "clean" ? "accepted (clean)" : "original";
+        notice.innerHTML = `
+          <div class="review-faithful-fallback-notice-text">
+            <strong>Tracked redlines couldn't be displayed</strong>
+            <span>${escapeHtml(redlineFallbackReasonText(failureReason))} Showing the faithful ${escapeHtml(showingLabel)} document instead.</span>
+          </div>
+          <button type="button" class="review-faithful-fallback-retry" data-faithful-fallback-retry>Retry redlines</button>
+        `;
+        const retryButton = notice.querySelector("[data-faithful-fallback-retry]");
+        if (retryButton) {
+          retryButton.addEventListener("click", () => {
+            // Full repaint of the current view: paints the reconstruction floor and
+            // re-attempts the faithful redline upgrade end-to-end. If it fails
+            // again, this fallback (and its notice) repaints.
+            renderStudioDocumentHighlights();
+          });
+        }
+        wrapper.appendChild(notice);
         wrapper.appendChild(host);
         studioDocumentRender.innerHTML = "";
         studioDocumentRender.appendChild(wrapper);
@@ -4569,13 +4629,29 @@ function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequ
   tryCandidate(0);
 }
 
-// The honest "tracked redlines aren't on this tab" status for the faithful redline
-// fallback, surfaced through the app's existing notification system (the toast
-// controller created in app.js) rather than a banner painted INSIDE the document
-// surface -- so the faithful document renders cleanly. Reuses the same transient,
-// auto-dismissing role="status" toast primitive as the other in-app advisories
-// (notificationsController.notify), so callers get one consistent notification
-// mechanism rather than a bespoke in-document banner.
+// Human wording for the PERSISTENT fallback notice, keyed off the upgrade's
+// failure class. The faithful bridge collapses HTTP failures (409 no-artifact,
+// 500 coverage gate, 404) into "no_bytes", so that is the server-fetch class;
+// "mapping_aborted" is the 1:1 overlay guard; the rest are render-side failures.
+function redlineFallbackReasonText(failureReason) {
+  const reason = String(failureReason || "");
+  if (reason === "no_bytes") {
+    return "The reviewed (tracked-changes) document could not be fetched from the server.";
+  }
+  if (reason === "mapping_aborted") {
+    return "The tracked changes could not be safely aligned to this document.";
+  }
+  if (reason === "render_threw" || reason === "empty_render" || reason === "upgrade_threw") {
+    return "The reviewed (tracked-changes) document could not be rendered.";
+  }
+  return "The reviewed (tracked-changes) document could not be displayed.";
+}
+
+// The transient-toast half of the fallback announcement (the persistent half is
+// the in-surface notice strip painted by attemptFaithfulRedlineFallback).
+// Surfaced through the app's existing notification system (the toast controller
+// created in app.js), reusing the same transient, auto-dismissing role="status"
+// toast primitive as the other in-app advisories (notificationsController.notify).
 //
 // Fired ONCE per distinct fallback (keyed by matter + failed view + which faithful
 // document we fell back to) so a re-render of the same fallback does not re-toast,
@@ -5371,7 +5447,10 @@ function requestMatterDocumentRenderPreview() {
     source_label: /\.docx$/i.test(filename) ? "Converted DOCX" : "Rendered PDF",
     status: "loading",
   });
-  renderStudioDocumentHighlights();
+  // RENDER-CLOBBER GUARD: never tear down a live faithful surface just to paint
+  // the "loading" state of the ORIGINAL's page images -- those images are not
+  // displayed over a faithful view anyway (see the resolve handler below).
+  if (!faithfulDocxSurfaceActiveForCurrentView()) renderStudioDocumentHighlights();
 
   fetch(`/api/matters/${encodeURIComponent(matterId)}/render-status`)
     .then(async (response) => {
@@ -5388,6 +5467,15 @@ function requestMatterDocumentRenderPreview() {
       state.reviewDocumentRender = normalizeReviewDocumentRender(
         payload.document_render || payload.rendered_document || payload.pdf_render || null,
       );
+      // RENDER-CLOBBER GUARD (root-cause fix): the backend rasterizes the
+      // ORIGINAL source document, so on a cold cache this resolves SECONDS after
+      // the review painted -- by which time the faithful redline/clean upgrade
+      // may already be on screen. Repainting here used to destroy that faithful
+      // surface and prepend the ORIGINAL's page tiles (the "reviewed document
+      // silently reverts to the original" symptom). Keep the arrived page images
+      // in state (the Original view and future paints read them from there) but
+      // do NOT repaint over a live faithful surface.
+      if (faithfulDocxSurfaceActiveForCurrentView()) return;
       renderStudioDocumentHighlights();
     })
     .catch((error) => {
@@ -5397,6 +5485,9 @@ function requestMatterDocumentRenderPreview() {
         source_label: "Rendered PDF",
         status: "error",
       });
+      // Same guard as the resolve handler: a late render-status FAILURE must not
+      // clobber a live faithful surface with an error repaint either.
+      if (faithfulDocxSurfaceActiveForCurrentView()) return;
       renderStudioDocumentHighlights();
     });
 }

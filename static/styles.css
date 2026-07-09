@@ -3914,6 +3914,59 @@ h3 {
   font-weight: 600;
 }
 
+/* Persistent notice painted at the top of the faithful FALLBACK surface: the
+   tracked-redlines document could not be displayed, so the faithful clean/original
+   document is shown instead. Complements the transient toast -- this strip stays
+   visible for as long as the fallback surface is on screen. */
+.review-faithful-fallback-notice {
+  align-items: center;
+  background: #fff7ed;
+  border: 1px solid rgba(251, 146, 60, 0.45);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  font-family: var(--text-font);
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+}
+
+.review-faithful-fallback-notice-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.review-faithful-fallback-notice strong {
+  color: #9a3412;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.review-faithful-fallback-notice span {
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.review-faithful-fallback-retry {
+  background: #ffffff;
+  border: 1px solid rgba(154, 52, 18, 0.35);
+  border-radius: 6px;
+  color: #9a3412;
+  cursor: pointer;
+  flex-shrink: 0;
+  font-family: var(--text-font);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 10px;
+}
+
+.review-faithful-fallback-retry:hover {
+  background: #ffedd5;
+}
+
 .review-pdf-frame {
   background: #ffffff;
   border: 1px solid rgba(148, 163, 184, 0.45);

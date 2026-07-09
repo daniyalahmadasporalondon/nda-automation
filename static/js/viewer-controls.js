@@ -74,6 +74,14 @@
     // are no tiles (DOCX / faithful reconstruction = genuine continuous scroll) we
     // keep the original viewport-slice pagination unchanged.
     function pageTiles() {
+      // Page tiles paginate ONLY the page-image (source render) surface. When the
+      // pane is showing a faithful DOCX surface (continuous scroll), any page tile
+      // still in the DOM is a stray from a stale repaint -- counting it would flip
+      // the pager to the ORIGINAL's page count (the "redline / 7 silently becomes
+      // original / 5" symptom). So while a faithful surface is displayed the tile
+      // pagination is disabled entirely and the viewport-slice pagination below
+      // paginates the faithful document instead.
+      if (scrollEl.querySelector("[data-faithful-docx]")) return [];
       return Array.prototype.slice.call(
         scrollEl.querySelectorAll("[data-review-render-page]"),
       );
