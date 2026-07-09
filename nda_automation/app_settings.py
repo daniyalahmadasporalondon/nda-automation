@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
 from typing import Any
@@ -272,6 +273,52 @@ GMAIL_SYNC_FREQUENCIES = {
     "1_hour": 60 * 60,
     "2_hours": 2 * 60 * 60,
 }
+
+
+# --- process role (web/worker split) -----------------------------------------
+# NDA_PROCESS_ROLE splits background work from web serving so a Gmail trawl /
+# AI import storm can never starve the UI (the "Atul brick" incident class):
+#
+#   "all"    (default) single process, exactly today's behavior: full HTTP app
+#            server + the Gmail sync scheduler. Render + local dev use this.
+#   "web"    full HTTP app server; the Gmail sync scheduler (and every other
+#            boot-time background loop) NEVER starts.
+#   "worker" NO app HTTP server. Runs the Gmail sync scheduler; exposes a
+#            minimal /healthz-only listener for k8s liveness.
+#
+# SINGLE-POLLER GUARANTEE: exactly one container per data volume may run
+# role="worker" (or "all"). The k8s pod spec pinning ONE worker container is the
+# guarantee -- no election is needed. Defense-in-depth: the scheduler also takes
+# a non-blocking flock on DATA_DIR/gmail_sync.lock per step (server.py
+# _gmail_sync_process_lock), so even a mis-deployed second poller on the same
+# volume can never run a sync step concurrently.
+PROCESS_ROLE_ENV = "NDA_PROCESS_ROLE"
+PROCESS_ROLE_ALL = "all"
+PROCESS_ROLE_WEB = "web"
+PROCESS_ROLE_WORKER = "worker"
+PROCESS_ROLES = frozenset({PROCESS_ROLE_ALL, PROCESS_ROLE_WEB, PROCESS_ROLE_WORKER})
+
+
+def process_role() -> str:
+    """The process role from NDA_PROCESS_ROLE: "all" (default), "web" or "worker".
+
+    Unset/blank means "all" (today's single-process behavior, so Render and dev
+    are unchanged). An INVALID value raises ``ValueError`` rather than silently
+    defaulting: a typo like "webb" falling back to "all" would start a second
+    Gmail poller inside the web container -- the exact background-starves-web
+    failure class this split exists to prevent -- and a crashed container is the
+    loud, k8s-native way to surface the misconfiguration (boot converts this to
+    a clean startup error).
+    """
+    raw = os.environ.get(PROCESS_ROLE_ENV, "").strip().lower()
+    if not raw:
+        return PROCESS_ROLE_ALL
+    if raw not in PROCESS_ROLES:
+        raise ValueError(
+            f"Invalid {PROCESS_ROLE_ENV} value {raw!r}: expected one of "
+            f"'{PROCESS_ROLE_ALL}', '{PROCESS_ROLE_WEB}', '{PROCESS_ROLE_WORKER}'."
+        )
+    return raw
 
 
 AppSettingsError = OperationalSettingsError

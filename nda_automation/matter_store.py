@@ -1663,6 +1663,16 @@ def create_matter(
 
 @contextmanager
 def _locked_store():
+    # CROSS-PROCESS SAFETY (verified for the web/worker split, NDA_PROCESS_ROLE):
+    # every read-modify-write on the store runs under BOTH locks below -- the
+    # in-process threading.RLock AND an exclusive fcntl.flock on
+    # DATA_DIR/matters.lock. flock serializes across PROCESSES on the same host
+    # sharing the same filesystem, so two containers in one k8s pod mounting the
+    # same PVC at NDA_DATA_DIR (web + worker) get the same mutual exclusion two
+    # threads in one process get today. This does NOT hold across hosts /
+    # separate volumes (each instance is a data island). See
+    # docs/PROCESS_ROLES.md.
+    #
     # --- in-process lock (threading.RLock) with timeout ---
     # RLock.acquire(timeout=N) still succeeds immediately when the *same* thread
     # already holds the lock (re-entrancy is preserved), so nested _locked_store()
@@ -1777,6 +1787,16 @@ def _records_dir_fingerprint() -> tuple[tuple[str, int, int], ...]:
     identical mtime would still be caught whenever the byte length differs. The
     cache is additionally write-through-invalidated on every store write, so a
     same-process write is never even at the mercy of stat granularity.
+
+    CROSS-PROCESS COHERENCE (web/worker split, NDA_PROCESS_ROLE): this
+    fingerprint is re-computed by stat-ing EVERY record file on EVERY
+    ``list_matters`` read, so a write by ANOTHER process on the same volume
+    (e.g. the worker importing a Gmail matter while web serves the board) is
+    observed by the web process's very next read -- fingerprint mismatch ->
+    full reload. There is no TTL and no cross-process staleness window beyond
+    the stat-granularity caveat above (mitigated by mtime_ns + size). The
+    write-through invalidation only serves the WRITER's own process; readers
+    never rely on it.
     """
     records_dir = _matter_records_dir()
     if not records_dir.is_dir():

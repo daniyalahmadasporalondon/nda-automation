@@ -806,6 +806,28 @@ def _operational_warnings() -> list[dict[str, str]]:
     return warnings
 
 
+def _log_web_role_backfill_hint(job_name: str) -> None:
+    """One stdout hint when an admin backfill starts in a web-role process.
+
+    Admin-triggered background jobs (garble backfill, pdf-docx backfill) stay
+    RUNNABLE in every role -- they are admin-rare and blocking them buys nothing
+    -- but under the web/worker split (NDA_PROCESS_ROLE, docs/PROCESS_ROLES.md)
+    they compete with request threads in a web-role process, so hint that the
+    worker container is the better home. Fail-open: a hint must never break the
+    request (process_role() raises on an invalid env value, which cannot happen
+    post-boot, but stay defensive).
+    """
+    try:
+        if app_settings.process_role() == app_settings.PROCESS_ROLE_WEB:
+            print(
+                f"hint: {job_name} started in a NDA_PROCESS_ROLE=web process; "
+                "it runs here, but the worker-role container is the better home "
+                "for background jobs."
+            )
+    except Exception:
+        pass
+
+
 def handle_pdf_docx_backfill_start(handler) -> None:
     """POST: start the one-time PDF->working-DOCX backfill on a background thread.
 
@@ -835,6 +857,7 @@ def handle_pdf_docx_backfill_start(handler) -> None:
             handler._send_json({"error": "limit must be a non-negative integer."}, status=400)
             return
     telemetry.increment("pdf_docx_backfill_requests")
+    _log_web_role_backfill_hint("pdf-docx backfill")
     result = ingestion_service.start_pdf_docx_backfill_async(limit=limit)
     handler._send_json(
         {
@@ -973,6 +996,7 @@ def handle_matters_garble_backfill_start(handler) -> None:
         return
 
     telemetry.increment("garble_backfill_execute_requests")
+    _log_web_role_backfill_hint("garble backfill")
     result = garble_backfill.start_garble_backfill_async(limit=limit)
     if result.get("already_running"):
         handler._send_json(

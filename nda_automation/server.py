@@ -8,13 +8,14 @@ import math
 import mimetypes
 import os
 import re
+import signal
 import sys
 import threading
 import time
 from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -644,46 +645,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         self._send_json({"error": "Not found"}, status=404, send_body=send_body)
 
     def _read_load_probe(self) -> tuple[int | None, float | None, int | None, float]:
-        """Read the cheap, in-memory-only load counters used by /healthz+/readyz.
-
-        Returns ``(queue_depth, used_fraction, generation_in_flight,
-        warn_fraction)``. Reads only in-memory counters (no store I/O): the
-        inbound review queue depth, process memory used-fraction, and in-flight
-        generation count, plus the deployment memory warn fraction. Every probe
-        read is individually guarded (a missing/broken probe yields ``None`` for
-        that field, never an exception) and all helpers are imported lazily to
-        avoid import cycles.
-        """
-        queue_depth: int | None = None
-        used_fraction: float | None = None
-        generation_in_flight: int | None = None
-        warn_fraction = 0.85
-        try:
-            from . import ingestion_service
-
-            queue_depth = int(ingestion_service._INBOUND_REVIEW_POOL.queue_depth())
-        except Exception:
-            queue_depth = None
-        try:
-            from . import process_memory
-
-            raw_fraction = process_memory.memory_usage().get("used_fraction")
-            used_fraction = float(raw_fraction) if raw_fraction is not None else None
-        except Exception:
-            used_fraction = None
-        try:
-            from . import generation_priority
-
-            generation_in_flight = int(generation_priority.active_generation_count())
-        except Exception:
-            generation_in_flight = None
-        try:
-            from . import deployment
-
-            warn_fraction = deployment.MEMORY_HEADROOM_WARN_FRACTION
-        except Exception:
-            warn_fraction = 0.85
-        return queue_depth, used_fraction, generation_in_flight, warn_fraction
+        # Module-level so the worker role's /healthz-only listener
+        # (WorkerHealthHandler) can reuse the identical probe.
+        return _read_load_probe()
 
     def _send_healthz(self, *, send_body: bool) -> None:
         """Cheap, unauthenticated, in-memory-only LIVENESS probe.
@@ -1172,24 +1136,178 @@ def _log_background_error(message: str, error: Exception) -> None:
         print(f"{message}: {error.__class__.__name__}")
 
 
+def _read_load_probe() -> tuple[int | None, float | None, int | None, float]:
+    """Read the cheap, in-memory-only load counters used by /healthz+/readyz.
+
+    Returns ``(queue_depth, used_fraction, generation_in_flight,
+    warn_fraction)``. Reads only in-memory counters (no store I/O): the
+    inbound review queue depth, process memory used-fraction, and in-flight
+    generation count, plus the deployment memory warn fraction. Every probe
+    read is individually guarded (a missing/broken probe yields ``None`` for
+    that field, never an exception) and all helpers are imported lazily to
+    avoid import cycles. Module-level (not a handler method) so both the full
+    app handler and the worker role's liveness-only listener share it.
+    """
+    queue_depth: int | None = None
+    used_fraction: float | None = None
+    generation_in_flight: int | None = None
+    warn_fraction = 0.85
+    try:
+        from . import ingestion_service
+
+        queue_depth = int(ingestion_service._INBOUND_REVIEW_POOL.queue_depth())
+    except Exception:
+        queue_depth = None
+    try:
+        from . import process_memory
+
+        raw_fraction = process_memory.memory_usage().get("used_fraction")
+        used_fraction = float(raw_fraction) if raw_fraction is not None else None
+    except Exception:
+        used_fraction = None
+    try:
+        from . import generation_priority
+
+        generation_in_flight = int(generation_priority.active_generation_count())
+    except Exception:
+        generation_in_flight = None
+    try:
+        from . import deployment
+
+        warn_fraction = deployment.MEMORY_HEADROOM_WARN_FRACTION
+    except Exception:
+        warn_fraction = 0.85
+    return queue_depth, used_fraction, generation_in_flight, warn_fraction
+
+
+class WorkerHealthHandler(BaseHTTPRequestHandler):
+    """Liveness-only listener for NDA_PROCESS_ROLE=worker (k8s liveness probe).
+
+    Serves EXACTLY /healthz (GET/HEAD, always 200 while the process is alive,
+    same in-memory load fields as the app's /healthz). Every other path is 404:
+    the worker must never serve app routes -- no auth stack runs here, and the
+    web container is the only place user traffic belongs.
+    """
+
+    server_version = "nda-automation-worker"
+
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+        # Quiet: the kubelet probes every few seconds; don't spam stderr.
+        return
+
+    def _respond(self, payload: dict[str, object], status: int) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        path = urlparse(self.path).path
+        if path == "/healthz":
+            try:
+                queue_depth, used_fraction, generation_in_flight, _ = _read_load_probe()
+                self._respond(
+                    {
+                        "status": "ok",
+                        "role": app_settings.PROCESS_ROLE_WORKER,
+                        "queue_depth": queue_depth,
+                        "used_fraction": used_fraction,
+                        "generation_in_flight": generation_in_flight,
+                    },
+                    200,
+                )
+            except Exception:  # fail-open: a probe bug must never take liveness down
+                self._respond({"status": "ok", "role": app_settings.PROCESS_ROLE_WORKER}, 200)
+            return
+        self._respond({"error": "Not found"}, 404)
+
+    def do_HEAD(self) -> None:
+        self.do_GET()
+
+
+def _run_worker(host: str, port: int) -> None:
+    """NDA_PROCESS_ROLE=worker entrypoint: background loops + /healthz only.
+
+    Starts the Gmail sync scheduler (the inbound pipeline driver: poll -> triage
+    -> import -> cost-capped AI intake, plus the hourly archive-rotation disk
+    janitor riding its loop), then blocks serving the liveness-only
+    ``WorkerHealthHandler``. No app HTTP server runs in this role.
+
+    Shutdown: k8s sends SIGTERM. There is no stop-event on the scheduler loop
+    (``_gmail_sync_scheduler_loop`` is a ``while True`` daemon thread), so we
+    translate SIGTERM into ``SystemExit`` -- the daemon thread dies with the
+    process. That is acceptable by design: every matter-store write is an
+    atomic write-then-rename under the cross-process flock, and an interrupted
+    review is healed by ``_reconcile_interrupted_reviews`` on the next boot.
+    """
+    _start_gmail_sync_scheduler()
+    health_server = ThreadingHTTPServer((host, port), WorkerHealthHandler)
+
+    def _handle_sigterm(signum: int, frame: object) -> None:
+        raise SystemExit(0)
+
+    try:
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+    except ValueError:
+        # Not on the main thread (tests): daemon threads die with the process
+        # anyway, so shutdown semantics are unchanged.
+        pass
+    print(f"nda-automation worker running (healthz only) at http://{host}:{port}/healthz")
+    try:
+        health_server.serve_forever()
+    finally:
+        health_server.server_close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the nda-automation local app.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8787, type=int)
     args = parser.parse_args()
     try:
+        # Invalid role fails boot loudly (see app_settings.process_role): a typo
+        # silently defaulting to "all" would start a SECOND Gmail poller in the
+        # web container -- the failure class this split exists to prevent.
+        role = app_settings.process_role()
+    except ValueError as error:
+        parser.error(str(error))
+        return  # pragma: no cover - parser.error raises SystemExit.
+    try:
         _validate_public_auth(args.host)
         _validate_public_storage(args.host)
     except RuntimeError as error:
         parser.error(str(error))
 
+    # Boot maintenance runs in EVERY role. Each step is idempotent, fail-soft,
+    # and store writes are serialized by the matter store's cross-process flock,
+    # so web + worker containers booting against the same NDA_DATA_DIR volume
+    # can both run them safely.
     _record_data_dir_boot_sentinel()
     _migrate_entity_signatory_fills()
     _validate_entity_registry_against_playbook()
     _reconcile_interrupted_reviews()
 
+    if role == app_settings.PROCESS_ROLE_WORKER:
+        # SINGLE-POLLER GUARANTEE: exactly one container per data volume runs
+        # this role (the pod spec pins one worker container -- the flag IS the
+        # guarantee, no election). See docs/PROCESS_ROLES.md.
+        _run_worker(args.host, args.port)
+        return
+
     server = ThreadingHTTPServer((args.host, args.port), NdaAutomationHandler)
-    _start_gmail_sync_scheduler()
+    if role == app_settings.PROCESS_ROLE_WEB:
+        # Web role: the Gmail sync scheduler NEVER starts here -- it (and the
+        # archive-rotation janitor riding its loop) belongs to the worker
+        # container, so an inbound trawl/import storm cannot starve the UI.
+        print(
+            f"{app_settings.PROCESS_ROLE_ENV}=web: Gmail sync scheduler NOT started "
+            "(runs in the worker-role container)."
+        )
+    else:
+        _start_gmail_sync_scheduler()
     print(f"nda-automation running at http://{args.host}:{args.port}")
     server.serve_forever()
 
@@ -1299,6 +1417,15 @@ def _record_data_dir_boot_sentinel() -> None:
 
 
 def _start_gmail_sync_scheduler() -> None:
+    # PROCESS ROLES: called from main() for roles "all" and "worker" ONLY --
+    # never for role "web". Exactly ONE container per data volume may run a
+    # role that starts this scheduler; the pod spec pinning a single worker
+    # container is the single-poller guarantee (no election needed). Belt and
+    # braces: each sync step additionally takes a non-blocking flock on
+    # DATA_DIR/gmail_sync.lock (_gmail_sync_process_lock below), so even a
+    # mis-deployed second poller on the same volume cannot run a step
+    # concurrently. See docs/PROCESS_ROLES.md.
+    #
     # Inbound NDAs are intentionally NOT auto-reviewed (they import "Not Reviewed"
     # and are reviewed only on-demand), so there is no startup recovery sweep to
     # re-enqueue them -- that sweep was the Gmail-storm re-enqueue engine and is

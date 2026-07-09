@@ -11,7 +11,7 @@ import threading
 import time
 import unittest
 from copy import deepcopy
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from http.server import ThreadingHTTPServer
 from io import BytesIO, StringIO
 import urllib.error
@@ -13321,6 +13321,166 @@ class TelemetryHealthSummaryTest(unittest.TestCase):
             "active_review_ai_first_fail_closed": 10,
         })
         self.assertEqual(summary["status"], "alert")
+
+
+class ProcessRoleTests(unittest.TestCase):
+    """The web/worker split: NDA_PROCESS_ROLE parsing + main() role dispatch."""
+
+    # --- role parsing (app_settings.process_role) ---------------------------
+
+    def test_process_role_defaults_to_all_when_unset_or_blank(self):
+        for raw in (None, "", "   "):
+            env = {} if raw is None else {app_settings.PROCESS_ROLE_ENV: raw}
+            with patch.dict(os.environ, env, clear=False):
+                if raw is None:
+                    os.environ.pop(app_settings.PROCESS_ROLE_ENV, None)
+                self.assertEqual(app_settings.process_role(), app_settings.PROCESS_ROLE_ALL)
+
+    def test_process_role_normalizes_case_and_whitespace(self):
+        for raw, expected in (
+            (" WEB ", "web"),
+            ("Worker", "worker"),
+            ("ALL", "all"),
+        ):
+            with patch.dict(os.environ, {app_settings.PROCESS_ROLE_ENV: raw}):
+                self.assertEqual(app_settings.process_role(), expected)
+
+    def test_process_role_invalid_value_raises_clear_error(self):
+        # Deliberately an ERROR, not a silent default: a typo ("webb") falling
+        # back to "all" would start a second Gmail poller in the web container.
+        with patch.dict(os.environ, {app_settings.PROCESS_ROLE_ENV: "webb"}):
+            with self.assertRaisesRegex(ValueError, "NDA_PROCESS_ROLE.*webb"):
+                app_settings.process_role()
+
+    # --- main() role dispatch ------------------------------------------------
+
+    @contextmanager
+    def _boot_seams(self):
+        """Neutralize main()'s side effects; yield the patched seam mocks."""
+        with patch.object(sys, "argv", ["nda_automation.server"]):
+            with patch.object(server_module, "_validate_public_auth") as auth, \
+                    patch.object(server_module, "_validate_public_storage") as storage, \
+                    patch.object(server_module, "_record_data_dir_boot_sentinel") as sentinel, \
+                    patch.object(server_module, "_migrate_entity_signatory_fills") as migrate, \
+                    patch.object(server_module, "_validate_entity_registry_against_playbook") as drift, \
+                    patch.object(server_module, "_reconcile_interrupted_reviews") as reconcile, \
+                    patch.object(server_module, "_start_gmail_sync_scheduler") as scheduler, \
+                    patch.object(server_module, "ThreadingHTTPServer") as http_server, \
+                    patch.object(server_module, "_run_worker") as run_worker:
+                yield {
+                    "auth": auth,
+                    "storage": storage,
+                    "boot_steps": (sentinel, migrate, drift, reconcile),
+                    "scheduler": scheduler,
+                    "http_server": http_server,
+                    "run_worker": run_worker,
+                }
+
+    def test_main_all_role_starts_scheduler_and_full_server(self):
+        with patch.dict(os.environ, {app_settings.PROCESS_ROLE_ENV: ""}):
+            with self._boot_seams() as seams:
+                with redirect_stdout(StringIO()):
+                    server_module.main()
+        seams["scheduler"].assert_called_once_with()
+        seams["http_server"].assert_called_once_with(
+            ("127.0.0.1", 8787), server_module.NdaAutomationHandler
+        )
+        seams["http_server"].return_value.serve_forever.assert_called_once_with()
+        seams["run_worker"].assert_not_called()
+        for step in seams["boot_steps"]:
+            step.assert_called_once_with()
+
+    def test_main_web_role_never_starts_the_scheduler(self):
+        with patch.dict(os.environ, {app_settings.PROCESS_ROLE_ENV: "web"}):
+            with self._boot_seams() as seams:
+                with redirect_stdout(StringIO()):
+                    server_module.main()
+        seams["scheduler"].assert_not_called()
+        seams["http_server"].assert_called_once_with(
+            ("127.0.0.1", 8787), server_module.NdaAutomationHandler
+        )
+        seams["http_server"].return_value.serve_forever.assert_called_once_with()
+        seams["run_worker"].assert_not_called()
+        for step in seams["boot_steps"]:
+            step.assert_called_once_with()
+
+    def test_main_worker_role_dispatches_to_worker_and_skips_app_server(self):
+        with patch.dict(os.environ, {app_settings.PROCESS_ROLE_ENV: "worker"}):
+            with self._boot_seams() as seams:
+                with redirect_stdout(StringIO()):
+                    server_module.main()
+        seams["run_worker"].assert_called_once_with("127.0.0.1", 8787)
+        seams["http_server"].assert_not_called()
+        # The scheduler is _run_worker's job; main() must not start a second one.
+        seams["scheduler"].assert_not_called()
+        for step in seams["boot_steps"]:
+            step.assert_called_once_with()
+
+    def test_main_invalid_role_refuses_boot(self):
+        with patch.dict(os.environ, {app_settings.PROCESS_ROLE_ENV: "bogus"}):
+            with self._boot_seams() as seams:
+                stderr = StringIO()
+                with self.assertRaises(SystemExit) as ctx:
+                    with redirect_stderr(stderr):
+                        server_module.main()
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("NDA_PROCESS_ROLE", stderr.getvalue())
+        seams["scheduler"].assert_not_called()
+        seams["http_server"].assert_not_called()
+        seams["run_worker"].assert_not_called()
+        for step in seams["boot_steps"]:
+            step.assert_not_called()
+
+    # --- worker role internals ------------------------------------------------
+
+    def test_run_worker_starts_scheduler_and_serves_health_handler(self):
+        with patch.object(server_module, "_start_gmail_sync_scheduler") as scheduler, \
+                patch.object(server_module, "ThreadingHTTPServer") as http_server, \
+                patch.object(server_module.signal, "signal") as sig:
+            with redirect_stdout(StringIO()):
+                server_module._run_worker("127.0.0.1", 8788)
+        scheduler.assert_called_once_with()
+        http_server.assert_called_once_with(
+            ("127.0.0.1", 8788), server_module.WorkerHealthHandler
+        )
+        http_server.return_value.serve_forever.assert_called_once_with()
+        sig.assert_called_once()
+        self.assertEqual(sig.call_args.args[0], server_module.signal.SIGTERM)
+
+    def test_worker_health_listener_serves_only_healthz(self):
+        # Real socket: the worker listener answers /healthz and 404s app routes.
+        health_server = ThreadingHTTPServer(("127.0.0.1", 0), server_module.WorkerHealthHandler)
+        thread = threading.Thread(target=health_server.serve_forever, daemon=True)
+        thread.start()
+        host, port = health_server.server_address
+        try:
+            connection = http.client.HTTPConnection(host, port, timeout=10)
+            try:
+                connection.request("GET", "/healthz")
+                response = connection.getresponse()
+                body = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(response.status, 200)
+                self.assertEqual(body["status"], "ok")
+                self.assertEqual(body["role"], "worker")
+
+                # App routes must NOT be served by the worker.
+                for path in ("/api/matters", "/", "/login", "/api/admin/telemetry"):
+                    connection.request("GET", path)
+                    response = connection.getresponse()
+                    response.read()
+                    self.assertEqual(response.status, 404, path)
+
+                # HEAD liveness works too (no body).
+                connection.request("HEAD", "/healthz")
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.read(), b"")
+            finally:
+                connection.close()
+        finally:
+            health_server.shutdown()
+            health_server.server_close()
+            thread.join(timeout=10)
 
 
 if __name__ == "__main__":
