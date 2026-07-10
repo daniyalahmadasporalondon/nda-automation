@@ -34,18 +34,25 @@ before they are sent. It is cheap and a no-op for DOCX without EMF/WMF media.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
+import hashlib
 from io import BytesIO
+import logging
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 from typing import Callable
 import xml.etree.ElementTree as ET
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from .docx_xml import _default_namespace_registration
+
+LOGGER = logging.getLogger(__name__)
 
 CONTENT_TYPES_PART = "[Content_Types].xml"
 CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
@@ -59,6 +66,27 @@ PNG_CONTENT_TYPE = "image/png"
 VECTOR_IMAGE_EXTENSIONS = {"emf": EMF_CONTENT_TYPE, "wmf": WMF_CONTENT_TYPE}
 
 DEFAULT_CONVERSION_TIMEOUT_SECONDS = 30
+
+# Per-document conversion bounds. Each EMF/WMF -> PNG conversion spawns a
+# heavyweight soffice child, so a document with hundreds of embedded vector
+# images could otherwise hold a request thread for many minutes and DoS the
+# 1-CPU/2GB box. We cap how many images we will CONVERT per document (cache hits
+# are free and never counted) and the total wall-clock spent converting; past
+# either bound the remaining vector parts are left un-normalized (they render as
+# a blank box -- the degraded-but-safe fallback) and a warning is logged.
+MAX_IMAGES_CONVERTED_PER_DOCUMENT = 20
+CONVERSION_WALL_CLOCK_BUDGET_SECONDS = 60.0
+
+# On-disk conversion cache. The same letterhead logo recurs on essentially every
+# reviewed-docx / source-docx request and across process restarts, so conversions
+# are memoized by content hash. Bounded by entry count with LRU-by-mtime eviction.
+IMAGE_CONVERSION_CACHE_DIRNAME = "image-normalize"
+MAX_IMAGE_CONVERSION_CACHE_ENTRIES = 512
+MAX_IMAGE_CONVERSION_MEMORY_ENTRIES = 256
+
+# Sentinel so callers can distinguish "use the shared production cache" (default)
+# from "explicitly disable caching" (image_cache=None) and "use this cache".
+_UNSET_CACHE: object = object()
 
 # A VALID 1x1 transparent RGBA PNG. Used as the guaranteed fallback when no
 # EMF/WMF conversion tool is available (or a specific image fails to convert), so
@@ -98,12 +126,30 @@ def normalize_docx_emf_wmf_images(
     docx_bytes: bytes,
     *,
     converter: ImageConverter | None = None,
+    image_cache: "_ImageConversionCache | None | object" = _UNSET_CACHE,
+    max_images: int = MAX_IMAGES_CONVERTED_PER_DOCUMENT,
+    time_budget_seconds: float = CONVERSION_WALL_CLOCK_BUDGET_SECONDS,
 ) -> bytes:
     """Return DOCX bytes with EMF/WMF media parts converted to PNG.
 
     Pure: does not mutate the input. A DOCX with no EMF/WMF media is returned
     unchanged (the original bytes). ``converter`` is injectable for testing; the
     default tries LibreOffice/soffice then ImageMagick, then a placeholder PNG.
+
+    Conversion is bounded three ways so a hostile or pathological document can
+    never turn a single serve request into a soffice storm:
+
+    * ``image_cache`` memoizes conversions by content hash (in-process + bounded
+      disk). Defaulted to the shared production cache for the default converter,
+      so the same letterhead logo is converted once per process, not per request.
+      Pass ``None`` to disable caching, or a specific cache to control it (tests).
+    * ``max_images`` caps how many images we CONVERT per document (cache hits are
+      free and do not count).
+    * ``time_budget_seconds`` caps the total wall-clock spent converting.
+
+    Once a bound is hit the remaining vector parts are left un-normalized and a
+    warning is logged -- a document with 200 EMFs must never hold a request thread
+    for 100 minutes. Conversion failures fail soft to a placeholder PNG.
     """
     try:
         with ZipFile(BytesIO(docx_bytes)) as archive:
@@ -119,16 +165,61 @@ def normalize_docx_emf_wmf_images(
         return docx_bytes
 
     active_converter = converter or _default_image_converter()
+    if image_cache is _UNSET_CACHE:
+        # Default: production serve paths pass no converter and get the shared
+        # disk-backed cache. A test injecting its own converter (but no explicit
+        # cache) keeps the historical uncached behavior so call-count assertions
+        # stay meaningful.
+        cache = _shared_image_cache() if converter is None else None
+    else:
+        cache = image_cache  # explicit: a specific cache, or None to disable
 
     rename_map: dict[str, str] = {}  # old archive path -> new archive path
     new_members: dict[str, bytes] = dict(members)
 
+    started = time.monotonic()
+    conversions_done = 0
+    skipped = 0
+
     for part in vector_parts:
-        png_bytes = _convert_or_placeholder(active_converter, members[part.name], part.extension)
+        data = members[part.name]
+
+        png_bytes = cache.lookup(data) if cache is not None else None
+        if png_bytes is None:
+            budget_left = conversions_done < max_images and (
+                time.monotonic() - started
+            ) < time_budget_seconds
+            if not budget_left:
+                # Cap/budget exhausted: leave this vector part untouched. It will
+                # render as a blank box, but the request thread is protected.
+                skipped += 1
+                continue
+            if cache is not None:
+                png_bytes, converted = cache.convert_and_store(
+                    data, part.extension, active_converter
+                )
+                if converted:
+                    conversions_done += 1
+            else:
+                png_bytes = _convert_or_placeholder(active_converter, data, part.extension)
+                conversions_done += 1
+
         new_name = _png_part_name(part.name)
         new_members.pop(part.name, None)
         new_members[new_name] = png_bytes
         rename_map[part.name] = new_name
+
+    if skipped:
+        LOGGER.warning(
+            "EMF/WMF normalization capped: converted %d image(s), skipped %d of %d "
+            "vector part(s) after hitting the per-document cap (%d) / wall-clock "
+            "budget (%.0fs); skipped parts left un-normalized.",
+            conversions_done,
+            skipped,
+            len(vector_parts),
+            max_images,
+            time_budget_seconds,
+        )
 
     new_members = _rewrite_relationships(new_members, rename_map)
     new_members[CONTENT_TYPES_PART] = _rewrite_content_types(
@@ -163,6 +254,203 @@ def _convert_or_placeholder(converter: ImageConverter, data: bytes, extension: s
     if converted and converted.startswith(b"\x89PNG\r\n\x1a\n"):
         return converted
     return PLACEHOLDER_PNG_BYTES
+
+
+# --------------------------------------------------------------------------- #
+# Content-hash conversion cache (in-process LRU + bounded disk)
+# --------------------------------------------------------------------------- #
+
+
+class _ImageConversionCache:
+    """Memoize EMF/WMF -> PNG conversions keyed on ``sha256(image bytes)``.
+
+    Two tiers because the same letterhead logo recurs on nearly every serve
+    request AND across process restarts:
+
+    * an in-process LRU (``OrderedDict``) for hot reuse within a worker, and
+    * a bounded on-disk store (``<dir>/<sha256>.png``) so a freshly started
+      worker does not reconvert what a previous one already produced.
+
+    The document-render cache (``document_rendering._enforce_render_cache_bound``)
+    is keyed on ``(document bytes + owner)`` with per-entry metadata directories
+    and is not cleanly reusable for a flat bytes->bytes image store, so this is a
+    small purpose-built cache that MIRRORS its eviction policy (bounded entry
+    count, LRU by file mtime). Keying purely on content is correct and safe to
+    share across tenants: the PNG is a deterministic function of the input image
+    bytes and carries no tenant data.
+
+    Every disk operation is best-effort: a cache error must never fail (or slow to
+    a crawl) the serve request that triggered it, so failures degrade to a miss.
+    Conversions for the SAME content are deduplicated under a per-key lock, so two
+    concurrent first-time requests for one logo convert once, not twice.
+    """
+
+    def __init__(self, cache_dir: Path | None = None, *, max_entries: int = MAX_IMAGE_CONVERSION_CACHE_ENTRIES) -> None:
+        self._explicit_dir = cache_dir
+        self._max_entries = max_entries
+        self._memory: "OrderedDict[str, bytes]" = OrderedDict()
+        self._memory_lock = threading.Lock()
+        self._key_locks: dict[str, threading.Lock] = {}
+        self._key_locks_guard = threading.Lock()
+
+    @staticmethod
+    def _key(data: bytes) -> str:
+        # Target format is always PNG here, so the image bytes fully determine the
+        # output; no need to fold a format token into the key.
+        return hashlib.sha256(data).hexdigest()
+
+    def _cache_dir(self) -> Path | None:
+        if self._explicit_dir is not None:
+            return self._explicit_dir
+        try:
+            from . import matter_store  # lazy: avoid import cost when unused
+
+            return matter_store.DATA_DIR / "cache" / IMAGE_CONVERSION_CACHE_DIRNAME
+        except Exception:
+            return None
+
+    def lookup(self, data: bytes) -> bytes | None:
+        """Return cached PNG bytes for ``data`` from memory or disk, or None."""
+        key = self._key(data)
+        with self._memory_lock:
+            hit = self._memory.get(key)
+            if hit is not None:
+                self._memory.move_to_end(key)
+                return hit
+        disk = self._disk_get(key)
+        if disk is not None:
+            self._memory_put(key, disk)
+        return disk
+
+    def convert_and_store(
+        self, data: bytes, extension: str, converter: ImageConverter
+    ) -> tuple[bytes, bool]:
+        """Convert ``data`` (once per content, under a per-key lock) and cache the
+        resolved PNG. Returns ``(png_bytes, converted)`` where ``converted`` is
+        True only if this call actually invoked the converter (so the caller can
+        count it against the per-document cap)."""
+        key = self._key(data)
+        with self._key_lock(key):
+            hit = self._memory_get(key)
+            if hit is None:
+                hit = self._disk_get(key)
+                if hit is not None:
+                    self._memory_put(key, hit)
+            if hit is not None:
+                return hit, False
+            resolved = _convert_or_placeholder(converter, data, extension)
+            self._memory_put(key, resolved)
+            self._disk_put(key, resolved)
+            return resolved, True
+
+    def _key_lock(self, key: str) -> threading.Lock:
+        with self._key_locks_guard:
+            # Opportunistically bound the lock table; dropping a lock only risks a
+            # rare benign double-convert, never corruption.
+            if len(self._key_locks) > 4 * self._max_entries:
+                self._key_locks.clear()
+            lock = self._key_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._key_locks[key] = lock
+            return lock
+
+    def _memory_get(self, key: str) -> bytes | None:
+        with self._memory_lock:
+            hit = self._memory.get(key)
+            if hit is not None:
+                self._memory.move_to_end(key)
+            return hit
+
+    def _memory_put(self, key: str, value: bytes) -> None:
+        with self._memory_lock:
+            self._memory[key] = value
+            self._memory.move_to_end(key)
+            while len(self._memory) > MAX_IMAGE_CONVERSION_MEMORY_ENTRIES:
+                self._memory.popitem(last=False)
+
+    def _disk_get(self, key: str) -> bytes | None:
+        cache_dir = self._cache_dir()
+        if cache_dir is None:
+            return None
+        path = cache_dir / f"{key}.png"
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return None
+        try:  # bump mtime so LRU eviction spares a hot entry
+            os.utime(path, None)
+        except OSError:
+            pass
+        return data
+
+    def _disk_put(self, key: str, value: bytes) -> None:
+        cache_dir = self._cache_dir()
+        if cache_dir is None:
+            return
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            path = cache_dir / f"{key}.png"
+            # Atomic publish: write a temp file then rename so a concurrent reader
+            # never sees a half-written PNG.
+            fd, tmp_name = tempfile.mkstemp(dir=str(cache_dir), suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(value)
+                os.replace(tmp_name, path)
+            except OSError:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+                return
+        except OSError:
+            return
+        self._enforce_disk_bound(cache_dir, keep=path)
+
+    def _enforce_disk_bound(self, cache_dir: Path, *, keep: Path) -> None:
+        """Evict least-recently-used cache files (by mtime) beyond the bound.
+
+        Mirrors ``document_rendering._enforce_render_cache_bound`` for a flat file
+        cache. Best-effort: a prune failure must never fail the conversion."""
+        try:
+            entries = [child for child in cache_dir.iterdir() if child.suffix == ".png" and child.is_file()]
+        except OSError:
+            return
+        if len(entries) <= self._max_entries:
+            return
+        keep_resolved = keep.resolve()
+
+        def _mtime(path: Path) -> float:
+            try:
+                return path.stat().st_mtime
+            except OSError:
+                return 0.0
+
+        for entry in sorted(entries, key=_mtime):
+            if len(entries) <= self._max_entries:
+                break
+            if entry.resolve() == keep_resolved:
+                continue
+            try:
+                entry.unlink()
+            except OSError:
+                pass
+            entries.remove(entry)
+
+
+_SHARED_IMAGE_CACHE: _ImageConversionCache | None = None
+_SHARED_IMAGE_CACHE_LOCK = threading.Lock()
+
+
+def _shared_image_cache() -> _ImageConversionCache:
+    """Process-wide singleton cache used by the default (production) serve paths."""
+    global _SHARED_IMAGE_CACHE
+    if _SHARED_IMAGE_CACHE is None:
+        with _SHARED_IMAGE_CACHE_LOCK:
+            if _SHARED_IMAGE_CACHE is None:
+                _SHARED_IMAGE_CACHE = _ImageConversionCache()
+    return _SHARED_IMAGE_CACHE
 
 
 # --------------------------------------------------------------------------- #
@@ -344,6 +632,14 @@ def _default_image_converter() -> ImageConverter:
 
 
 def _convert_with_soffice(executable: str, data: bytes, extension: str) -> bytes | None:
+    # Route through the SAME process-wide soffice controls the DOCX->PDF path
+    # uses: the shared BoundedSemaphore (do NOT spin up a second one -- that would
+    # double real concurrency on the 1-CPU box), plus the RLIMIT_AS/RLIMIT_CPU
+    # child limits and process-group kill baked into ``_run_soffice_command``.
+    # Lazily imported so this module stays importable (and cheap) without pulling
+    # in the rendering stack, and to avoid any import cycle.
+    from . import document_rendering as _dr
+
     with tempfile.TemporaryDirectory(prefix="nda-emf-") as tmp_name:
         tmp_dir = Path(tmp_name)
         source = tmp_dir / f"image.{extension}"
@@ -357,24 +653,28 @@ def _convert_with_soffice(executable: str, data: bytes, extension: str) -> bytes
             str(tmp_dir),
             str(source),
         ]
+        # Backpressure: if no slot frees within the queue wait, fall through to a
+        # placeholder rather than block a request thread (fail-soft).
+        if not _dr._SOFFICE_CONVERSION_SEMAPHORE.acquire(timeout=_dr.CONVERSION_QUEUE_WAIT_SECONDS):
+            return None
         try:
-            subprocess.run(
+            returncode, _stdout, _stderr = _dr._run_soffice_command(
                 command,
                 cwd=str(tmp_dir),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=DEFAULT_CONVERSION_TIMEOUT_SECONDS,
-                check=False,
+                timeout_seconds=DEFAULT_CONVERSION_TIMEOUT_SECONDS,
             )
-        except (subprocess.SubprocessError, OSError):
-            return None
-        output = tmp_dir / "image.png"
-        if output.is_file():
-            try:
-                return output.read_bytes()
-            except OSError:
+            if returncode != 0:
                 return None
-        return None
+            output = tmp_dir / "image.png"
+            if output.is_file():
+                return output.read_bytes()
+            return None
+        except Exception:
+            # Timeout / conversion error / missing executable / OSError: every
+            # failure fails soft to the placeholder; normalization never raises.
+            return None
+        finally:
+            _dr._SOFFICE_CONVERSION_SEMAPHORE.release()
 
 
 def _convert_with_imagemagick(executable: str, data: bytes, extension: str) -> bytes | None:

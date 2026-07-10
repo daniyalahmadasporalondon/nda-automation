@@ -1,21 +1,59 @@
 from __future__ import annotations
 
 from io import BytesIO
+from pathlib import Path
+import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 import xml.etree.ElementTree as ET
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import nda_automation.docx_image_normalize as image_normalize
 from nda_automation.docx_image_normalize import (
     CONTENT_TYPES_NS,
     PLACEHOLDER_PNG_BYTES,
     PNG_CONTENT_TYPE,
     RELATIONSHIPS_NS,
+    _ImageConversionCache,
     _serialize_xml,
     normalize_docx_emf_wmf_images,
 )
 from nda_automation.docx_xml import _xml_bytes
+
+
+def _docx_with_emf_media(media_by_name: dict[str, bytes]) -> bytes:
+    """A DOCX whose ``word/media/*.emf`` parts are the given bytes (for cap /
+    cache / concurrency tests that need several vector parts)."""
+    content_types = (
+        b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        b'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        b'<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        b'<Default Extension="xml" ContentType="application/xml"/>'
+        b'<Default Extension="emf" ContentType="image/x-emf"/>'
+        b'<Override PartName="/word/document.xml" '
+        b'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        b"</Types>"
+    )
+    document_rels = (
+        b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        b'<Relationship Id="rId5" '
+        b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+        b'Target="media/placeholder.emf"/></Relationships>'
+    )
+    return _build_docx(
+        media=media_by_name, content_types=content_types, document_rels=document_rels
+    )
+
+
+def _media_png_names(docx_bytes: bytes) -> list[str]:
+    return [n for n in _names(docx_bytes) if n.startswith("word/media/") and n.endswith(".png")]
+
+
+def _media_emf_names(docx_bytes: bytes) -> list[str]:
+    return [n for n in _names(docx_bytes) if n.startswith("word/media/") and n.endswith(".emf")]
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -397,6 +435,162 @@ class SerializeXmlNamespaceLeakTests(unittest.TestCase):
             pre_snapshot,
             "ET._namespace_map was not restored to its pre-test contents after "
             "concurrent scoped registrations",
+        )
+
+
+class ConversionCachingAndBoundsTests(unittest.TestCase):
+    """EMF/WMF->PNG normalization runs on the reviewed-docx / source-docx SERVE
+    paths, one soffice subprocess per image. Without bounds that is a self-DoS on
+    the 1-CPU/2GB box (the same letterhead reconverted every request; unbounded
+    concurrency; a 200-image document pinning a request thread for ~100 minutes).
+    These tests pin the fix: content-hash cache (in-proc + disk), the SHARED
+    soffice semaphore, a per-document conversion cap, and fail-soft."""
+
+    def test_cache_converts_identical_bytes_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = _ImageConversionCache(cache_dir=Path(tmp))
+            converter = FakeConverter(PNG_SIGNATURE + b"payload")
+            docx = _docx_with_emf_media(
+                {
+                    "word/media/image1.emf": b"SAME-EMF-BYTES",
+                    "word/media/image2.emf": b"SAME-EMF-BYTES",
+                }
+            )
+            result = normalize_docx_emf_wmf_images(docx, converter=converter, image_cache=cache)
+        # Two parts, identical bytes -> the converter runs exactly ONCE.
+        self.assertEqual(len(converter.calls), 1)
+        self.assertEqual(sorted(_media_png_names(result)), ["word/media/image1.png", "word/media/image2.png"])
+
+    def test_disk_cache_survives_a_fresh_cache_instance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            docx = _docx_with_emf_media({"word/media/image1.emf": b"LETTERHEAD-LOGO"})
+
+            first = FakeConverter(PNG_SIGNATURE + b"first-output")
+            normalize_docx_emf_wmf_images(
+                docx, converter=first, image_cache=_ImageConversionCache(cache_dir=cache_dir)
+            )
+            self.assertEqual(len(first.calls), 1)
+
+            # A brand-new cache instance over the same dir models a fresh process
+            # (empty in-memory tier). The conversion must come off DISK -- the
+            # second converter is never invoked.
+            second = FakeConverter(PNG_SIGNATURE + b"second-output")
+            result = normalize_docx_emf_wmf_images(
+                docx, converter=second, image_cache=_ImageConversionCache(cache_dir=cache_dir)
+            )
+            self.assertEqual(second.calls, [])
+            self.assertEqual(_read_member(result, "word/media/image1.png"), PNG_SIGNATURE + b"first-output")
+
+    def test_cache_hits_do_not_count_against_the_per_document_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = _ImageConversionCache(cache_dir=Path(tmp))
+            converter = FakeConverter(PNG_SIGNATURE + b"payload")
+            docx = _docx_with_emf_media(
+                {f"word/media/image{i}.emf": b"IDENTICAL-LOGO" for i in range(3)}
+            )
+            # Cap of 1 conversion, but all three parts share one hash: 1 convert +
+            # 2 free cache hits -> all three normalized, only one conversion spent.
+            result = normalize_docx_emf_wmf_images(
+                docx, converter=converter, image_cache=cache, max_images=1
+            )
+        self.assertEqual(len(converter.calls), 1)
+        self.assertEqual(len(_media_png_names(result)), 3)
+        self.assertEqual(_media_emf_names(result), [])
+
+    def test_per_document_conversion_cap_is_enforced_and_logged(self):
+        converter = FakeConverter(PNG_SIGNATURE + b"payload")
+        docx = _docx_with_emf_media(
+            {f"word/media/image{i}.emf": f"DISTINCT-EMF-{i}".encode() for i in range(5)}
+        )
+        with self.assertLogs("nda_automation.docx_image_normalize", level="WARNING") as logs:
+            result = normalize_docx_emf_wmf_images(
+                docx, converter=converter, image_cache=None, max_images=2
+            )
+        # Only the first two distinct images convert; the remaining three are left
+        # un-normalized (still .emf) and a warning is emitted.
+        self.assertEqual(len(converter.calls), 2)
+        self.assertEqual(len(_media_png_names(result)), 2)
+        self.assertEqual(len(_media_emf_names(result)), 3)
+        self.assertTrue(any("capped" in line for line in logs.output))
+
+    def test_wall_clock_budget_stops_further_conversions(self):
+        # A converter that sleeps past the budget: the first conversion blows the
+        # whole wall-clock allowance, so no further images convert.
+        def slow(data: bytes, extension: str) -> bytes:
+            time.sleep(0.05)
+            return PNG_SIGNATURE + b"slow"
+
+        docx = _docx_with_emf_media(
+            {f"word/media/image{i}.emf": f"DISTINCT-{i}".encode() for i in range(4)}
+        )
+        with self.assertLogs("nda_automation.docx_image_normalize", level="WARNING"):
+            result = normalize_docx_emf_wmf_images(
+                docx, converter=slow, image_cache=None, time_budget_seconds=0.01
+            )
+        # One conversion is always allowed (budget checked before each); the rest
+        # are skipped once the elapsed time exceeds the budget.
+        self.assertEqual(len(_media_png_names(result)), 1)
+        self.assertEqual(len(_media_emf_names(result)), 3)
+
+    def test_conversion_failure_still_produces_a_valid_docx(self):
+        def boom(data: bytes, extension: str) -> bytes:
+            raise RuntimeError("converter exploded")
+
+        docx = _docx_with_emf_media({"word/media/image1.emf": b"EMF-BYTES"})
+        result = normalize_docx_emf_wmf_images(docx, converter=boom, image_cache=None)
+        # The export still succeeds; the un-convertable image becomes the
+        # guaranteed placeholder PNG rather than raising or leaving a blank part.
+        self.assertTrue(_read_member(result, "word/media/image1.png").startswith(PNG_SIGNATURE))
+
+    def test_default_soffice_path_bounded_to_two_concurrent_children(self):
+        # The default converter's soffice conversions must go through the SAME
+        # process-wide BoundedSemaphore(2) the DOCX->PDF path uses. Drive it from
+        # four threads with distinct images and instrument the soffice runner:
+        # concurrency must never exceed two.
+        import nda_automation.document_rendering as document_rendering
+
+        state = {"now": 0, "max": 0}
+        state_lock = threading.Lock()
+        errors: list[str] = []
+        errors_lock = threading.Lock()
+
+        def fake_run_soffice(command, *, cwd, timeout_seconds):
+            with state_lock:
+                state["now"] += 1
+                state["max"] = max(state["max"], state["now"])
+            try:
+                time.sleep(0.02)
+                (Path(cwd) / "image.png").write_bytes(PLACEHOLDER_PNG_BYTES)
+                return 0, b"", b""
+            finally:
+                with state_lock:
+                    state["now"] -= 1
+
+        def worker(seed: int) -> None:
+            try:
+                media = {
+                    f"word/media/img{seed}_{i}.emf": f"EMF-{seed}-{i}".encode() for i in range(3)
+                }
+                # image_cache=None + default converter -> real soffice path (faked
+                # at the runner), no caching, so every image actually "converts".
+                normalize_docx_emf_wmf_images(_docx_with_emf_media(media), image_cache=None)
+            except Exception as exc:  # pragma: no cover - failure path
+                with errors_lock:
+                    errors.append(repr(exc))
+
+        with mock.patch.object(document_rendering, "_run_soffice_command", side_effect=fake_run_soffice), \
+                mock.patch.object(image_normalize.shutil, "which", return_value="/fake/soffice"):
+            threads = [threading.Thread(target=worker, args=(s,)) for s in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        self.assertEqual(errors, [])
+        self.assertGreater(state["max"], 0, "no soffice conversions ran; the test did not exercise the path")
+        self.assertLessEqual(
+            state["max"], 2, "soffice conversions exceeded the shared BoundedSemaphore(2) cap"
         )
 
 
