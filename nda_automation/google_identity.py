@@ -112,7 +112,19 @@ def verify_google_id_token(id_token: str, *, expected_nonce: str = "") -> dict[s
         raise GoogleIdentityError("Google ID token audience does not match this app.")
     if not str(tokeninfo.get("sub") or "").strip():
         raise GoogleIdentityError("Google ID token did not include a subject.")
-    if str(tokeninfo.get("email_verified") or "true").lower() == "false":
+    # email_verified must be an EXPLICIT true. _claim_verified() FAILS CLOSED: a
+    # JSON boolean False, the string "false", 0, None, a MISSING claim, or an
+    # unexpected type all count as NOT verified. The old `... or "true"` default
+    # was fail-OPEN -- `False or "true"` is the truthy string "true", so a JSON
+    # boolean False (or 0/None/"") let an UNVERIFIED email pass.
+    # DECISION -- missing claim -> REJECT (strictest): this consumes the tokeninfo
+    # HTTP response, and the login flow ALWAYS requests the "email" scope
+    # (GOOGLE_IDENTITY_SCOPES), for which Google returns email + email_verified
+    # together. A response missing email_verified therefore also lacks email, and
+    # the caller (routes/auth.py) requires a VERIFIED email downstream for the
+    # allowlist and user upsert -- so such a sign-in fails regardless. Rejecting
+    # missing here cannot break a real sign-in that would otherwise succeed.
+    if not _claim_verified(tokeninfo.get("email_verified")):
         raise GoogleIdentityError("Google account email is not verified.")
     # Issuer: a token from any issuer other than Google's two canonical values is
     # forged. tokeninfo validated the signature, but NOT the issuer, so an attacker
@@ -143,6 +155,30 @@ def verify_google_id_token(id_token: str, *, expected_nonce: str = "") -> dict[s
         if not secrets.compare_digest(token_nonce, expected_nonce):
             raise GoogleIdentityError("Google ID token nonce does not match this login request.")
     return tokeninfo
+
+
+# The only accepted truthy strings for a security-relevant boolean claim -- the
+# same set the rest of the codebase uses for flag parsing (http_auth._env_flag,
+# server verbose flags, etc.). Reused here rather than reinvented.
+_VERIFIED_CLAIM_TRUE = {"1", "true", "yes", "on"}
+
+
+def _claim_verified(value: object) -> bool:
+    """Fail-closed truthiness for a security-relevant boolean claim.
+
+    Accepts ONLY an explicit true: the JSON boolean ``True`` or a string that
+    case-insensitively matches the shared truthy set. Everything else -- boolean
+    ``False``, the string ``"false"``, ``0``, ``None``, a MISSING claim, or an
+    unexpected type (list/dict/int) -- is treated as NOT verified. Deliberately
+    does NOT use ``value or default``: ``False or "true"`` is a truthy string and
+    would let an unverified email pass (the bug this replaces). ``bool`` is
+    checked before ``str`` because ``bool`` is a subclass of ``int``, not ``str``.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in _VERIFIED_CLAIM_TRUE
+    return False
 
 
 def _claim_epoch(value: object) -> float | None:

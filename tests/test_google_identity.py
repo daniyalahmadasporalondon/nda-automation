@@ -210,3 +210,84 @@ def test_matching_nonce_passes():
     with _tokeninfo(_valid_claims(nonce="the-nonce")):
         profile = google_identity.verify_google_id_token("id-token", expected_nonce="the-nonce")
     assert profile["nonce"] == "the-nonce"
+
+
+# --- email_verified must FAIL CLOSED (latent fail-open fix) ------------------
+# The old coercion `str(tokeninfo.get("email_verified") or "true")` short-circuits
+# on ANY falsy value: a JSON boolean False becomes the string "true", so an
+# UNVERIFIED email passed. It only worked because Google's tokeninfo happens to
+# return the STRING "false"; a boolean False (or 0/None/"") slipped through.
+
+
+def test_email_verified_boolean_false_is_rejected():
+    """THE BUG: a JSON boolean False (not the string "false") must be REJECTED.
+
+    On origin/main this ASSERTION FAILS -- `False or "true"` == "true", so the
+    unverified email is accepted. Verified red->green: run against the unfixed
+    source and this test errors (no exception raised); with the fix it passes.
+    """
+    with _tokeninfo(_valid_claims(email_verified=False)):
+        try:
+            google_identity.verify_google_id_token("id-token")
+        except google_identity.GoogleIdentityError as error:
+            assert "verified" in str(error).lower()
+        else:
+            raise AssertionError("Expected email_verified=False (bool) to be rejected")
+
+
+def test_email_verified_string_false_is_rejected():
+    """Regression: the string "false" was rejected before and must stay rejected."""
+    with _tokeninfo(_valid_claims(email_verified="false")):
+        try:
+            google_identity.verify_google_id_token("id-token")
+        except google_identity.GoogleIdentityError as error:
+            assert "verified" in str(error).lower()
+        else:
+            raise AssertionError('Expected email_verified="false" to be rejected')
+
+
+def test_email_verified_boolean_true_is_accepted():
+    with _tokeninfo(_valid_claims(email_verified=True)):
+        profile = google_identity.verify_google_id_token("id-token")
+    assert profile["sub"] == "google-user-123"
+
+
+def test_email_verified_string_true_is_accepted():
+    with _tokeninfo(_valid_claims(email_verified="true")):
+        profile = google_identity.verify_google_id_token("id-token")
+    assert profile["sub"] == "google-user-123"
+
+
+def test_email_verified_falsy_and_unexpected_values_are_rejected():
+    """0, None, "", "no", and unexpected types (list/dict) all fail closed."""
+    for bad in (0, None, "", "no", ["true"], {"verified": True}):
+        with _tokeninfo(_valid_claims(email_verified=bad)):
+            try:
+                google_identity.verify_google_id_token("id-token")
+            except google_identity.GoogleIdentityError as error:
+                assert "verified" in str(error).lower()
+            else:
+                raise AssertionError(f"Expected email_verified={bad!r} to be rejected")
+
+
+def test_missing_email_verified_claim_is_rejected():
+    """DECISION: a MISSING email_verified claim is REJECTED (strictest).
+
+    Justified from the code path: verify_google_id_token consumes the tokeninfo
+    HTTP response, and the login flow ALWAYS requests the "email" scope
+    (routes/auth.py builds GOOGLE_IDENTITY_SCOPES, which includes "email"), for
+    which Google returns email + email_verified together. A response missing
+    email_verified therefore also lacks a usable email, and the caller requires a
+    VERIFIED email downstream (allowlist + user upsert) -- so such a sign-in
+    fails regardless. Rejecting here cannot break a real sign-in that would
+    otherwise succeed, and it closes the fail-open on an omitted claim.
+    """
+    claims = _valid_claims()
+    claims.pop("email_verified")
+    with _tokeninfo(claims):
+        try:
+            google_identity.verify_google_id_token("id-token")
+        except google_identity.GoogleIdentityError as error:
+            assert "verified" in str(error).lower()
+        else:
+            raise AssertionError("Expected a missing email_verified claim to be rejected")
