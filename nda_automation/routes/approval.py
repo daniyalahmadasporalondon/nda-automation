@@ -11,6 +11,7 @@ from .. import (
     pdf_docx_reconstruction,
     pdf_export_service,
     redline_export_service,
+    reviewed_docx_cache,
     telemetry,
 )
 from ..docx_export import DOCX_MIME, DocxExportError, accept_all_revisions
@@ -30,6 +31,53 @@ def _repository(handler) -> MatterRepository:
     if repository is not None:
         return repository
     return DiskMatterRepository()
+
+
+def _reviewed_docx_if_none_match(handler) -> str:
+    """The request's If-None-Match validator, or "" when absent/unavailable.
+
+    Guarded so it works with both the real HTTP handler (``handler.headers`` is an
+    email.message.Message) and the lightweight test doubles that omit ``headers``.
+    """
+    headers = getattr(handler, "headers", None)
+    if headers is None:
+        return ""
+    try:
+        return headers.get("If-None-Match") or ""
+    except Exception:  # noqa: BLE001 -- a malformed header store is just "no validator"
+        return ""
+
+
+def _serve_reviewed_docx(
+    handler,
+    *,
+    data: bytes,
+    filename: str,
+    content_type: str,
+    headers: dict[str, str],
+    etag: str,
+    send_body: bool,
+) -> None:
+    """Serve the reviewed DOCX with its strong ETag attached.
+
+    Routed through ``handler._send_download`` so it stays compatible with every
+    existing handler (real + test doubles); the ETag rides in the header map, and
+    the caller has already honored any matching If-None-Match with a 304.
+    """
+    response_headers = dict(headers or {})
+    response_headers["ETag"] = etag
+    handler._send_download(
+        data,
+        filename,
+        content_type or DOCX_MIME,
+        headers=response_headers,
+        send_body=send_body,
+    )
+
+
+def _send_reviewed_docx_not_modified(handler, etag: str) -> None:
+    """A 304 Not Modified carrying the ETag, no body."""
+    handler._send_json({}, status=304, headers={"ETag": etag}, send_body=False)
 
 
 def parse_clause_decision_path(path: str) -> tuple[str, str] | None:
@@ -349,6 +397,55 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
         )
         return
 
+    # ------------------------------------------------------------------ #
+    # Composed-bytes cache (Defect B). The composition below is expensive and ran
+    # on EVERY GET/HEAD, per view mode, and for the FE's fallback fetch. Fingerprint
+    # everything that affects the bytes (source text + reviewer draft + review
+    # result + view mode) so repeat views serve from disk, a conditional GET
+    # short-circuits to 304, and HEAD never runs the full build.
+    fingerprint = reviewed_docx_cache.reviewed_docx_fingerprint(
+        matter_id, matter, changes_mode=changes_mode, owner_user_id=owner_user_id
+    )
+    etag = reviewed_docx_cache.etag_for(fingerprint)
+
+    if _reviewed_docx_if_none_match(handler) == etag:
+        # The client's copy is current -> 304, no composition, no body.
+        _send_reviewed_docx_not_modified(handler, etag)
+        return
+
+    cached = reviewed_docx_cache.load(fingerprint)
+    if cached is not None:
+        # Cache hit: serve the previously composed bytes WITHOUT recomposing (and,
+        # for HEAD, without a body). No re-registration side effect either.
+        telemetry.increment("reviewed_docx_cache_hits")
+        _serve_reviewed_docx(
+            handler,
+            data=cached.data,
+            filename=cached.filename,
+            content_type=cached.content_type,
+            headers=cached.headers,
+            etag=etag,
+            send_body=send_body,
+        )
+        return
+
+    if not send_body:
+        # HEAD with a cold cache: do NOT run the full build. Serve the validator so
+        # the client can issue a conditional GET; the body-bearing GET populates the
+        # cache. Content-Length is 0 because there is no composed body to measure yet.
+        _serve_reviewed_docx(
+            handler,
+            data=b"",
+            filename=f"reviewed-{matter_id}.docx",
+            content_type=DOCX_MIME,
+            headers={"X-Reviewed-Changes": changes_mode},
+            etag=etag,
+            send_body=False,
+        )
+        return
+
+    telemetry.increment("reviewed_docx_cache_misses")
+
     # The except-chain below mirrors the sibling on-demand export route
     # (routes/review.py :: handle_review_docx_export) so the two redline producers
     # return CONSISTENT statuses for the same failure. Two structural rules:
@@ -491,11 +588,25 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
     # an un-normalizable archive is returned unchanged, never raising.
     export_bytes = normalize_docx_emf_wmf_images(export_bytes)
 
-    handler._send_download(
+    content_type = redline_export.content_type or DOCX_MIME
+    # Populate the composed-bytes cache so the next view / fallback fetch / HEAD /
+    # conditional GET for this exact fingerprint serves from disk (see the cache
+    # short-circuits above). Best-effort: a store failure never blocks serving.
+    reviewed_docx_cache.store(
+        fingerprint,
         export_bytes,
-        export_filename,
-        redline_export.content_type or DOCX_MIME,
+        filename=export_filename,
+        content_type=content_type,
         headers=headers,
+    )
+
+    _serve_reviewed_docx(
+        handler,
+        data=export_bytes,
+        filename=export_filename,
+        content_type=content_type,
+        headers=headers,
+        etag=etag,
         send_body=send_body,
     )
 
