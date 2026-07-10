@@ -4380,12 +4380,14 @@ function maybeUpgradeOriginalSurfaceToFaithfulDocx() {
 // Feature-flagged faithful-DOCX upgrade of a NON-Original view (redline/clean).
 // The reconstruction is already painted + bound (the never-blank floor). This
 // fetches the REVIEWED .docx (tracked or accepted, per viewMode), renders it into
-// a detached host, then MAPS the rendered .docx paragraphs 1:1 onto
-// state.reviewParagraphs so every interaction (clause-click, comments, evidence
-// highlights, text + formatting edits) works on the real document. If the mapping
-// GUARD aborts -- or the render fails/empties, or a stale request returns -- the
-// painted reconstruction is left untouched. A wrong mapping is far worse than no
-// faithful render, so we abort to reconstruction rather than risk mis-attaching
+// a detached host, then ALIGNS the rendered .docx paragraphs onto
+// state.reviewParagraphs by ordered text alignment (each review paragraph owns a
+// contiguous RUN of rendered blocks; blank spacers/furniture are skipped) so every
+// interaction (clause-click, comments, evidence highlights, text + formatting
+// edits) works on the real document. If the alignment aborts -- or the render
+// fails/empties, or a stale request returns -- the painted reconstruction is left
+// untouched. A wrong mapping is far worse than no faithful render, so we abort
+// (to the read-only fallback below) rather than risk mis-attaching
 // redlines/comments to the wrong clause.
 function maybeUpgradeSurfaceToFaithfulDocx(viewMode) {
   const faithful = (typeof window !== "undefined" && window.FaithfulDocxRender) || null;
@@ -4461,13 +4463,19 @@ function maybeUpgradeSurfaceToFaithfulDocx(viewMode) {
       }
 
       // MAP the rendered .docx paragraphs onto the review model. Aborts (returns
-      // false) on any guard failure, in which case we DON'T keep the plain
-      // reconstruction -- we fall back to the faithful Clean/Original surface (the
-      // overlay map is what is unsafe, not the faithful render itself).
+      // false) on any alignment failure, in which case we DON'T keep the plain
+      // reconstruction -- we fall back to showing THIS already-composed host
+      // READ-ONLY (the overlay map is what is unsafe, not the faithful render
+      // itself: the backend-composed tracked/accepted bytes are correct, so the
+      // reviewer should still SEE them even when interactions cannot bind).
+      // bindFaithfulDocxInteractions never mutates the DOM on abort, so the host
+      // is guaranteed unstamped (no stale hooks) when passed on.
       const mapped = bindFaithfulDocxInteractions(host, viewMode);
       if (!mapped) {
-        attemptFaithfulRedlineFallback(faithful, viewMode, matterId, sequence, "mapping_aborted");
-        return; // guard aborted -> faithful Clean/Original (never the plain reconstruction)
+        attemptFaithfulRedlineFallback(faithful, viewMode, matterId, sequence, "mapping_aborted", {
+          preRenderedHost: host,
+        });
+        return; // alignment aborted -> read-only tracked host (never the plain reconstruction)
       }
 
       const wrapper = document.createElement("section");
@@ -4506,19 +4514,26 @@ function maybeUpgradeSurfaceToFaithfulDocx(viewMode) {
 }
 
 // REDLINE/CLEAN -> FAITHFUL fallback. When the tracked/accepted reviewed-docx
-// surface can't be obtained (409 no-artifact / 404 / parse / empty / mapping abort),
-// we render the FAITHFUL document anyway -- read-only, no interactive redline
-// overlay -- rather than dropping to the PLAIN reconstruction/page-image. The
-// reviewer still sees the byte-faithful document (styles, tables, numbering); a small
-// honest note explains that tracked redlines live on the Clean/Original tabs.
+// surface can't be obtained (409 no-artifact / 404 / parse / empty) or its
+// interactive mapping aborts, we render the FAITHFUL document anyway -- read-only,
+// no interactive redline overlay -- rather than dropping to the PLAIN
+// reconstruction/page-image. The reviewer still sees the byte-faithful document
+// (styles, tables, numbering); a small honest note explains what is (and is not)
+// on this tab.
 //
-// WHY read-only / no overlay: layering tracked-change redlines on top of the faithful
-// SOURCE surface is the known-unsafe path -- docx-preview surfaces tracked-DELETION
-// text that our review model has resolved away, so a 1:1 source_index overlay drifts
-// and could MIS-ATTACH redlines/comments. So the fallback NEVER runs
-// bindFaithfulDocxInteractions; it paints a faithful read-only surface only.
+// WHY read-only / no overlay: layering interactive redline hooks on top of a
+// surface whose paragraphs could not be safely aligned is the known-unsafe path --
+// a drifting overlay could MIS-ATTACH redlines/comments to the wrong clause. So
+// the fallback NEVER runs bindFaithfulDocxInteractions; it paints a faithful
+// read-only surface only.
 //
 // Candidate order (first that paints wins):
+//   0. The ALREADY-COMPOSED tracked/accepted host (options.preRenderedHost) --
+//      passed by the upgrade when the reviewed-docx bytes DID render but the
+//      interactive mapping aborted. The backend composition is text-anchored and
+//      fail-closed (docx_export/redline_export_service), so these bytes are the
+//      truest thing we can show: the reviewer sees the REAL redlines, read-only,
+//      instead of being bounced to a clean/original document.
 //   1. From REDLINE: the faithful CLEAN (accepted-changes) reviewed-docx -- if a
 //      reviewed artifact DOES exist but only the tracked composition failed, accepted
 //      bytes may still resolve. (Skipped when the failing view IS clean.)
@@ -4531,8 +4546,11 @@ function maybeUpgradeSurfaceToFaithfulDocx(viewMode) {
 // staleness keys captured by the caller so a view/matter change mid-flight drops the swap.
 // `failureReason` is the upgrade's failure class (e.g. "no_bytes" for a
 // 409/500/404 on /reviewed-docx, "mapping_aborted", "upgrade_threw") -- display
-// only, used to word the persistent in-viewer notice.
-function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequence, failureReason) {
+// only, used to word the persistent in-viewer notice. `options.preRenderedHost`
+// (optional) is a detached host whose faithful render ALREADY SUCCEEDED; it must
+// be unstamped (the upgrade only passes it when the mapping aborted cleanly,
+// i.e. before any DOM mutation).
+function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequence, failureReason, options) {
   if (!faithful || typeof faithful.render !== "function") return;
   if (!studioDocumentRender) return;
 
@@ -4540,9 +4558,26 @@ function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequ
   const renderState = state.reviewDocumentRender;
   if (!matter || !matterId) return;
   const encodedId = encodeURIComponent(matterId);
+  const opts = options || {};
 
-  // Build the ordered candidate list. Each entry: { url, renderChanges, label }.
+  // Build the ordered candidate list. Each entry: { url | preRenderedHost,
+  // renderChanges, label, readOnly }.
   const candidates = [];
+  // (0) READ-ONLY already-composed host: the document the user actually asked for
+  // (tracked redlines on the Redline tab; accepted text on the Clean tab), shown
+  // without the interactive overlay because the alignment refused to bind.
+  const preRenderedHost = opts.preRenderedHost
+    && typeof opts.preRenderedHost.querySelector === "function"
+    && opts.preRenderedHost.querySelector(".docx")
+    ? opts.preRenderedHost
+    : null;
+  if (preRenderedHost) {
+    candidates.push({
+      preRenderedHost,
+      label: failedViewMode === VIEW_MODE_CLEAN ? "clean" : "tracked",
+      readOnly: true,
+    });
+  }
   // (1) Faithful CLEAN (accepted) -- only when we failed on the REDLINE view.
   if (failedViewMode !== VIEW_MODE_CLEAN) {
     const cleanEligible = matterIsDocxSource(matter)
@@ -4564,6 +4599,90 @@ function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequ
 
   if (!candidates.length) return; // no faithful bytes available -> reconstruction stands.
 
+  // Swap in a READ-ONLY faithful surface (no interactive redline overlay),
+  // announced TWICE: the existing once-per-key transient toast
+  // (notifyRedlineFaithfulFallback below) AND a PERSISTENT in-viewer notice
+  // strip at the top of the surface. The toast auto-dismisses in seconds;
+  // without the strip the viewer would keep silently showing a degraded
+  // document on the Redline tab after the toast dies -- indistinguishable
+  // from the "review silently reverted" bug. The strip states what failed
+  // (why-ish, from failureReason) and carries a retry affordance that
+  // re-runs the render path (which re-attempts the faithful redline upgrade).
+  // Kept NESTED in this function on purpose: review-render-clobber.cjs
+  // brace-extracts attemptFaithfulRedlineFallback as a single unit.
+  const commitFallbackSurface = (candidate, host) => {
+    const wrapper = document.createElement("section");
+    wrapper.className = "review-faithful-surface review-faithful-redline review-faithful-redline-fallback ready";
+    wrapper.setAttribute("data-review-render-surface", "");
+    wrapper.setAttribute("data-faithful-docx", "");
+    wrapper.setAttribute("data-faithful-view-mode", String(failedViewMode));
+    wrapper.setAttribute("data-faithful-fallback", candidate.label);
+    wrapper.setAttribute("data-render-status", "ready");
+    if (candidate.readOnly) {
+      // The tracked/accepted document itself is shown (correct bytes, interactions
+      // disabled) -- distinguish it from the degraded clean/original candidates.
+      wrapper.setAttribute("data-faithful-readonly", "");
+      wrapper.setAttribute("aria-label", `Reviewed document faithful preview (read-only ${candidate.label})`);
+    } else {
+      wrapper.setAttribute("aria-label", `Faithful document preview (tracked redlines unavailable; showing ${candidate.label})`);
+    }
+    const notice = document.createElement("div");
+    notice.className = "review-faithful-fallback-notice";
+    notice.setAttribute("data-faithful-fallback-notice", "");
+    notice.setAttribute("role", "status");
+    // Built with DOM APIs + textContent, NOT innerHTML + escapeHtml: escapeHtml
+    // is a window global assigned by the DEFERRED module bridge
+    // (modules/global-bridge.mjs), not by this classic script. A bare
+    // escapeHtml() call here throws ReferenceError whenever the bridge hasn't
+    // loaded (or in any bridge-less embedding of this file), and the
+    // surrounding .catch() swallowed that error and moved to the next
+    // candidate -- silently killing the ENTIRE redline-409 faithful fallback
+    // (regression caught by tests/frontend/faithful-redline-clean-upgrade.mjs).
+    // textContent needs no escaper and keeps the same injection-safety.
+    const noticeText = document.createElement("div");
+    noticeText.className = "review-faithful-fallback-notice-text";
+    const noticeTitle = document.createElement("strong");
+    const noticeDetail = document.createElement("span");
+    if (candidate.readOnly) {
+      noticeTitle.textContent = candidate.label === "tracked"
+        ? "Showing redlines read-only"
+        : "Showing the document read-only";
+      noticeDetail.textContent =
+        `${redlineFallbackReasonText(failureReason)} The document below is the real `
+        + `${candidate.label === "tracked" ? "tracked-changes (redline)" : "accepted (clean)"} version, `
+        + "shown read-only; use the structured view for clause-by-clause interaction.";
+    } else {
+      const showingLabel = candidate.label === "clean" ? "accepted (clean)" : "original";
+      noticeTitle.textContent = "Tracked redlines couldn't be displayed";
+      noticeDetail.textContent =
+        `${redlineFallbackReasonText(failureReason)} Showing the faithful ${showingLabel} document instead.`;
+    }
+    noticeText.appendChild(noticeTitle);
+    noticeText.appendChild(noticeDetail);
+    const retryButton = document.createElement("button");
+    retryButton.type = "button";
+    retryButton.className = "review-faithful-fallback-retry";
+    retryButton.setAttribute("data-faithful-fallback-retry", "");
+    retryButton.textContent = "Retry redlines";
+    retryButton.addEventListener("click", () => {
+      // Full repaint of the current view: paints the reconstruction floor and
+      // re-attempts the faithful redline upgrade end-to-end. If it fails
+      // again, this fallback (and its notice) repaints.
+      renderStudioDocumentHighlights();
+    });
+    notice.appendChild(noticeText);
+    notice.appendChild(retryButton);
+    wrapper.appendChild(notice);
+    wrapper.appendChild(host);
+    studioDocumentRender.innerHTML = "";
+    studioDocumentRender.appendChild(wrapper);
+    showStudioDocumentRender();
+    notifyFillHighlights();
+    highlightSelectedClauseRefs();
+    notifyRedlineFaithfulFallback(matterId, failedViewMode, candidate.label);
+    faithfulMappingTelemetry(`redline_faithful_fallback:${candidate.label}`);
+  };
+
   // Try the candidates in order; the first that paints into a detached host wins.
   const tryCandidate = (index) => {
     if (index >= candidates.length) return; // exhausted -> reconstruction stands (never blank).
@@ -4573,6 +4692,12 @@ function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequ
     if ((state.documentViewMode || VIEW_MODE_REDLINE) !== failedViewMode) return;
 
     const candidate = candidates[index];
+    if (candidate.preRenderedHost) {
+      // Already painted by the upgrade -- no re-fetch/re-render needed; commit
+      // read-only immediately (staleness was just checked above).
+      commitFallbackSurface(candidate, candidate.preRenderedHost);
+      return;
+    }
     const host = document.createElement("div");
     host.className = "review-faithful-docx-surface";
 
@@ -4587,68 +4712,7 @@ function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequ
           tryCandidate(index + 1); // this candidate yielded no bytes -> try the next.
           return;
         }
-        // Painted. Swap in a READ-ONLY faithful surface (no interactive redline
-        // overlay), announced TWICE: the existing once-per-key transient toast
-        // (notifyRedlineFaithfulFallback below) AND a PERSISTENT in-viewer notice
-        // strip at the top of the surface. The toast auto-dismisses in seconds;
-        // without the strip the viewer would keep silently showing a non-redline
-        // document on the Redline tab after the toast dies -- indistinguishable
-        // from the "review silently reverted" bug. The strip states what failed
-        // (why-ish, from failureReason) and carries a retry affordance that
-        // re-runs the render path (which re-attempts the faithful redline upgrade).
-        const wrapper = document.createElement("section");
-        wrapper.className = "review-faithful-surface review-faithful-redline review-faithful-redline-fallback ready";
-        wrapper.setAttribute("data-review-render-surface", "");
-        wrapper.setAttribute("data-faithful-docx", "");
-        wrapper.setAttribute("data-faithful-view-mode", String(failedViewMode));
-        wrapper.setAttribute("data-faithful-fallback", candidate.label);
-        wrapper.setAttribute("data-render-status", "ready");
-        wrapper.setAttribute("aria-label", `Faithful document preview (tracked redlines unavailable; showing ${candidate.label})`);
-        const notice = document.createElement("div");
-        notice.className = "review-faithful-fallback-notice";
-        notice.setAttribute("data-faithful-fallback-notice", "");
-        notice.setAttribute("role", "status");
-        const showingLabel = candidate.label === "clean" ? "accepted (clean)" : "original";
-        // Built with DOM APIs + textContent, NOT innerHTML + escapeHtml: escapeHtml
-        // is a window global assigned by the DEFERRED module bridge
-        // (modules/global-bridge.mjs), not by this classic script. A bare
-        // escapeHtml() call here throws ReferenceError whenever the bridge hasn't
-        // loaded (or in any bridge-less embedding of this file), and the
-        // surrounding .catch() swallowed that error and moved to the next
-        // candidate -- silently killing the ENTIRE redline-409 faithful fallback
-        // (regression caught by tests/frontend/faithful-redline-clean-upgrade.mjs).
-        // textContent needs no escaper and keeps the same injection-safety.
-        const noticeText = document.createElement("div");
-        noticeText.className = "review-faithful-fallback-notice-text";
-        const noticeTitle = document.createElement("strong");
-        noticeTitle.textContent = "Tracked redlines couldn't be displayed";
-        const noticeDetail = document.createElement("span");
-        noticeDetail.textContent =
-          `${redlineFallbackReasonText(failureReason)} Showing the faithful ${showingLabel} document instead.`;
-        noticeText.appendChild(noticeTitle);
-        noticeText.appendChild(noticeDetail);
-        const retryButton = document.createElement("button");
-        retryButton.type = "button";
-        retryButton.className = "review-faithful-fallback-retry";
-        retryButton.setAttribute("data-faithful-fallback-retry", "");
-        retryButton.textContent = "Retry redlines";
-        retryButton.addEventListener("click", () => {
-          // Full repaint of the current view: paints the reconstruction floor and
-          // re-attempts the faithful redline upgrade end-to-end. If it fails
-          // again, this fallback (and its notice) repaints.
-          renderStudioDocumentHighlights();
-        });
-        notice.appendChild(noticeText);
-        notice.appendChild(retryButton);
-        wrapper.appendChild(notice);
-        wrapper.appendChild(host);
-        studioDocumentRender.innerHTML = "";
-        studioDocumentRender.appendChild(wrapper);
-        showStudioDocumentRender();
-        notifyFillHighlights();
-        highlightSelectedClauseRefs();
-        notifyRedlineFaithfulFallback(matterId, failedViewMode, candidate.label);
-        faithfulMappingTelemetry(`redline_faithful_fallback:${candidate.label}`);
+        commitFallbackSurface(candidate, host);
       })
       .catch(() => {
         // render() is contracted never to throw; if it somehow does, try the next
@@ -4669,7 +4733,10 @@ function redlineFallbackReasonText(failureReason) {
     return "The reviewed (tracked-changes) document could not be fetched from the server.";
   }
   if (reason === "mapping_aborted") {
-    return "The tracked changes could not be safely aligned to this document.";
+    // NOTE: the tracked-changes DOCUMENT usually still displays (read-only, via
+    // the pre-rendered fallback candidate) -- what failed is mapping its
+    // paragraphs to interactive hooks. Word it accordingly.
+    return "The tracked changes could not be safely mapped for interaction.";
   }
   if (reason === "render_threw" || reason === "empty_render" || reason === "upgrade_threw") {
     return "The reviewed (tracked-changes) document could not be rendered.";
@@ -4700,12 +4767,22 @@ function notifyRedlineFaithfulFallback(matterId, failedViewMode, label) {
       notificationsController &&
       typeof notificationsController.notify === "function"
     ) {
-      const showing = label === "clean" ? "the accepted (clean) document" : "the original document";
-      notificationsController.notify(
-        "Tracked redlines aren't on this tab",
-        `${showing.charAt(0).toUpperCase()}${showing.slice(1)} is shown faithfully here. `
-          + "Use the structured Redline view for the change-by-change detail.",
-      );
+      if (label === "tracked") {
+        // The read-only tracked host: the redlines ARE on this tab, just without
+        // the interactive overlay (the alignment refused to bind).
+        notificationsController.notify(
+          "Redlines are shown read-only",
+          "The tracked-changes document rendered, but its paragraphs couldn't be "
+            + "safely mapped for interaction. Use the structured Redline view to edit.",
+        );
+      } else {
+        const showing = label === "clean" ? "the accepted (clean) document" : "the original document";
+        notificationsController.notify(
+          "Tracked redlines aren't on this tab",
+          `${showing.charAt(0).toUpperCase()}${showing.slice(1)} is shown faithfully here. `
+            + "Use the structured Redline view for the change-by-change detail.",
+        );
+      }
     }
   } catch (_notifyError) {
     // The notification is advisory; never let it break the faithful fallback render.
@@ -4730,6 +4807,32 @@ function faithfulNormalizeText(value) {
   return String(value == null ? "" : value).replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+// Whitespace tokens of a fragment, on the shared normalized footing. All the
+// alignment machinery compares TOKENS, never raw strings, so <br>/NBSP/case noise
+// can never fake or break a match.
+function faithfulTokens(value) {
+  return faithfulNormalizeText(value).split(" ").filter(Boolean);
+}
+
+// Greedy in-order token match: walks `blockTokens` and advances a cursor `j`
+// through `target` whenever the next expected target token appears. Returns the
+// advanced cursor. This is the same greedy walk faithfulIsTokenSubsequence has
+// always used, exposed incrementally so a match can CONTINUE across a run of
+// several rendered blocks (the wrapped-line 2:1 case).
+function faithfulAdvanceTokenMatch(target, j, blockTokens) {
+  let cursor = j;
+  for (const token of blockTokens) {
+    if (cursor < target.length && token === target[cursor]) cursor += 1;
+  }
+  return cursor;
+}
+
+// True when EVERY token of `small` appears, in order, as a subsequence of `big`
+// (both already tokenized). Empty `small` never matches (guards a trivial pass).
+function faithfulTokensAreSubsequence(small, big) {
+  return small.length > 0 && faithfulAdvanceTokenMatch(small, 0, big) === small.length;
+}
+
 // True when EVERY whitespace-token of `small` appears, in order, as a subsequence
 // of `big`'s tokens. This is the PROVEN-SAFE allowance from /tmp/drift/
 // final_guard.mjs: a legit inline tracked-INSERT makes the rendered text a
@@ -4739,42 +4842,231 @@ function faithfulNormalizeText(value) {
 // prefix-checksum SILENTLY mis-attaches redlines on NDA boilerplate, so we require
 // an ORDERED TOKEN subsequence over the whole text, not a leading match.
 function faithfulIsTokenSubsequence(small, big) {
-  const a = faithfulNormalizeText(small).split(" ").filter(Boolean);
-  const b = faithfulNormalizeText(big).split(" ").filter(Boolean);
-  let j = 0;
-  for (const token of b) {
-    if (j < a.length && token === a[j]) j += 1;
-  }
-  return j === a.length && a.length > 0;
+  return faithfulTokensAreSubsequence(faithfulTokens(small), faithfulTokens(big));
 }
 
-// THE GUARD (ports /tmp/drift/final_guard.mjs exactly):
-//   (1) COUNT exact, tolerance 0: N(rendered) !== N(structured) -> ABORT.
-//   (2) Per-pair CHECKSUM with ordered token-subsequence allowance: a pair matches
-//       iff norm-equal OR structured ⊑ rendered (token subseq) OR rendered ⊑
-//       structured. ABORT on the FIRST non-matching pair.
-// `rendered` is an array of strings (already header/footer-excluded by the caller);
-// `structured` is the ordered state.reviewParagraphs slice. Returns true to COMMIT,
-// false to ABORT (and emits a telemetry reason on abort).
+// Group the ordered structured paragraphs into ALIGNMENT UNITS. Adjacent
+// paragraphs sharing a source_index are ONE unit (the extractor split one
+// physical <w:p> into several model paragraphs -- the block-split case), because
+// on the rendered side their text lives in a single block (or a single run of
+// blocks) and must be matched as a whole. Paragraphs without a usable
+// source_index each form their own unit.
+function faithfulStructuredUnits(structured) {
+  const units = [];
+  let current = null;
+  (Array.isArray(structured) ? structured : []).forEach((paragraph) => {
+    const si = paragraph?.source_index;
+    const hasSourceIndex = si !== undefined && si !== null && Number.isFinite(Number(si));
+    const key = hasSourceIndex ? `si:${String(si)}` : null;
+    if (current && key !== null && current.key === key) {
+      current.members.push(paragraph);
+    } else {
+      current = { key, members: [paragraph], hasSourceIndex };
+      units.push(current);
+    }
+  });
+  units.forEach((unit) => {
+    unit.text = unit.members.map((member) => String(member?.text || "")).join("\n");
+  });
+  return units;
+}
+
+// Match ONE unit's tokens against a CONTIGUOUS run of rendered blocks starting at
+// `start`. Returns { end, contentBlocks } (end = exclusive block cursor for the
+// next unit; contentBlocks = the non-empty blocks the run owns) or null when the
+// unit does not match here.
+//
+// Phase 1 -- greedy ordered growth: each consecutive block must ADVANCE the
+// unit's token cursor (a block contributing nothing ends the run -- wrapped lines
+// continue immediately; they are never separated by unrelated text). Extra tokens
+// INSIDE a contributing block are tolerated (inline tracked-inserts / filled-in
+// values), exactly like the old per-pair guard's structured ⊑ rendered allowance.
+//
+// Phase 2 -- contiguous insertion absorption: once every unit token has matched,
+// immediately-following non-empty blocks that could NOT start the next unit are
+// absorbed into this run (a long insertion -- e.g. a filled-in address -- can wrap
+// onto its own rendered block). Absorption stops at the first blank block (a real
+// paragraph boundary) or the first block that could open the next unit.
+//
+// Rendered-subset allowance (the old guard's rare rendered ⊑ structured
+// direction) is accepted ONLY for a single-block run at the first non-empty
+// candidate position (`allowRenderedSubset`): it is the weakest form of match, so
+// it is never trusted after skipping past decoration.
+function faithfulMatchUnitAt(blocks, start, unitTokens, nextUnitTokens, allowRenderedSubset) {
+  let j = 0;
+  let k = start;
+  const contentBlocks = [];
+  while (k < blocks.length && j < unitTokens.length) {
+    const tokens = blocks[k].tokens;
+    if (!tokens.length) {
+      // Blank spacer INSIDE a wrapped run: step over it (contiguity is
+      // modulo-furniture -- a paragraph split across visual lines can have a blank
+      // <w:p> between its halves). It is never a content block, never stamped.
+      if (j === 0) return null; // defensive: callers start at a non-empty block
+      k += 1;
+      continue;
+    }
+    const before = j;
+    j = faithfulAdvanceTokenMatch(unitTokens, j, tokens);
+    if (j === before) {
+      if (j === 0) return null; // the unit does not start at this block
+      break; // dead block mid-run: stop growing
+    }
+    contentBlocks.push(k);
+    k += 1;
+  }
+  if (j < unitTokens.length) {
+    if (
+      allowRenderedSubset
+      && contentBlocks.length === 1
+      && faithfulTokensAreSubsequence(blocks[contentBlocks[0]].tokens, unitTokens)
+    ) {
+      return { end: contentBlocks[0] + 1, contentBlocks, absorbedBlocks: [] };
+    }
+    return null;
+  }
+  // Absorbed blocks joined the run WITHOUT matching any unit token (pure
+  // insertions). Reported separately so the aligner's waiver tripwire can still
+  // see their text as "never token-matched" (a lost-source_index body paragraph
+  // must not hide inside an absorption).
+  const absorbedBlocks = [];
+  while (k < blocks.length) {
+    const tokens = blocks[k].tokens;
+    if (!tokens.length) break; // blank block = paragraph boundary: stop absorbing
+    if (!nextUnitTokens || !nextUnitTokens.length) break; // last unit: leave trailing blocks as furniture
+    if (faithfulAdvanceTokenMatch(nextUnitTokens, 0, tokens) > 0) break; // could open the next unit
+    contentBlocks.push(k);
+    absorbedBlocks.push(k);
+    k += 1;
+  }
+  return { end: k, contentBlocks, absorbedBlocks };
+}
+
+// THE ALIGNER (replaces the old count-equality guard -- DELIBERATE contract
+// change). The old guard demanded N(rendered) === N(structured) with tolerance 0,
+// which aborted for essentially EVERY real document: docx renders blank <w:p>
+// spacers the review model filters out, pdf2docx emits ~one block per visual line
+// while pdf_text merges wrapped lines, and filled-in values appear as insertions.
+// (Live evidence: Moorwand NDA, rendered=81 vs structured=43 -- 37 of the 81 were
+// blank spacers.)
+//
+// The replacement mirrors the BACKEND's alignment semantics
+// (review_document.align_document_paragraphs: source_text.find(part, cursor) --
+// ordered, monotonic-cursor, first-match-from-cursor) at the token level:
+//   - Each structured unit maps to a CONTIGUOUS run of rendered blocks; runs are
+//     ordered and monotonic (never overlap, never reorder).
+//   - Blank/whitespace blocks and unmatched decoration between runs (page
+//     furniture, punctuation-only stragglers) are skippable.
+//   - Per aligned unit the token-subsequence checksum SURVIVES: a run is accepted
+//     only when the unit's tokens all appear in order within it (or the proven
+//     single-block rendered-subset edge) -- boilerplate can still never mis-bind,
+//     and the anti-mis-attach contract (tests/frontend/faithful-mapping.mjs M4b)
+//     still aborts on divergent text.
+//   - FAIL-CLOSED stays: a structured BODY unit (it HAS a source_index) whose text
+//     genuinely cannot be found in order aborts the whole mapping (return null).
+//     A paragraph with a valid source_index is NEVER waivable.
+//   - Tolerated holes: ONLY structured paragraphs with NO usable source_index
+//     (when the rest of the model carries source_index -- i.e. source_index is the
+//     model's live ordering signal) may be UNMATCHED without aborting: the review
+//     model includes FOOTER paragraphs that faithfulMappableParagraphs
+//     deliberately excludes from the surface (live evidence: Moorwand i41-43).
+//     They bind nothing. As a lost-source_index tripwire, the waiver additionally
+//     refuses (aborts) when the unit's text IS findable inside an unconsumed
+//     rendered body block -- a body paragraph that merely lost its source_index
+//     must not become a silent unmapped hole.
+//
+// Returns an array parallel to `units`: { matched, blocks } where `blocks` are the
+// rendered block indices the unit owns (empty for tolerated-unmatched / blank
+// units), or null to ABORT (telemetry emitted).
+function faithfulAlignRenderedToStructured(renderedTexts, units) {
+  if (!Array.isArray(renderedTexts) || !Array.isArray(units)) return null;
+  const blocks = renderedTexts.map((text) => ({ tokens: faithfulTokens(text) }));
+  // tokenMatched marks blocks whose text was actually MATCHED against a unit's
+  // tokens (phase-1). Blocks merely ABSORBED as insertions stay false: for the
+  // waiver tripwire below they still count as "text sitting unmatched on the
+  // surface", so a lost-source_index body paragraph can never hide inside an
+  // absorption.
+  const tokenMatched = blocks.map(() => false);
+  const anyBodySourceIndex = units.some((unit) => unit.hasSourceIndex);
+  const runs = [];
+  let cursor = 0;
+  for (let u = 0; u < units.length; u += 1) {
+    const unit = units[u];
+    const unitTokens = faithfulTokens(unit.text);
+    if (!unitTokens.length) {
+      runs.push({ matched: true, blocks: [] }); // blank unit: zero-width, binds nothing
+      continue;
+    }
+    const nextUnit = units[u + 1];
+    const nextUnitTokens = nextUnit ? faithfulTokens(nextUnit.text) : null;
+    let match = null;
+    let firstNonEmpty = -1;
+    for (let start = cursor; start < blocks.length; start += 1) {
+      if (!blocks[start].tokens.length) continue; // blank spacer: skip freely
+      if (firstNonEmpty === -1) firstNonEmpty = start;
+      const attempt = faithfulMatchUnitAt(
+        blocks,
+        start,
+        unitTokens,
+        nextUnitTokens,
+        start === firstNonEmpty,
+      );
+      if (attempt) {
+        match = attempt;
+        break;
+      }
+      // Non-matching non-empty block: decoration between runs; keep scanning
+      // (mirrors the backend's find-from-cursor; a wrong bind cannot survive
+      // because every LATER unit must still match monotonically after it).
+    }
+    if (!match) {
+      // Waiver discriminator (fail-closed by design):
+      //   (1) NEVER waive a unit that has a source_index -- genuine body text
+      //       missing from the surface aborts, full stop.
+      //   (2) Waive a no-source_index unit only when source_index is actually in
+      //       use elsewhere (otherwise "no si" carries no footer signal), AND
+      //   (3) its text is NOT findable inside any never-token-matched rendered
+      //       block (unconsumed OR merely absorbed-as-insertion) -- a body
+      //       paragraph that lost its source_index (the known lost-id tripwire)
+      //       sorts to the end and would otherwise be silently waived while its
+      //       real text sits unmapped (or wrongly absorbed) on the surface.
+      const waivable = !unit.hasSourceIndex && anyBodySourceIndex;
+      const textPresentUnmatched = waivable && blocks.some((block, index) => (
+        !tokenMatched[index]
+        && block.tokens.length > 0
+        && faithfulTokensAreSubsequence(unitTokens, block.tokens)
+      ));
+      if (waivable && !textPresentUnmatched) {
+        runs.push({ matched: false, blocks: [] }); // e.g. footer text excluded from the surface
+        continue; // cursor unchanged: tolerated holes consume nothing
+      }
+      faithfulMappingTelemetry(
+        `alignment_unmatched unit=${u} cursor=${cursor} of=${blocks.length}`
+        + (textPresentUnmatched ? " lost_source_index_suspected" : ""),
+      );
+      return null; // fail-closed: a body unit's text is genuinely absent in order
+    }
+    match.contentBlocks.forEach((index) => { tokenMatched[index] = true; });
+    (match.absorbedBlocks || []).forEach((index) => { tokenMatched[index] = false; });
+    runs.push({ matched: true, blocks: match.contentBlocks });
+    cursor = match.end;
+  }
+  return runs;
+}
+
+// Boolean seam over the aligner, kept under the old guard's name for its tests and
+// any external callers. NOTE the DELIBERATE contract change vs the old port of
+// /tmp/drift/final_guard.mjs: count mismatch alone no longer aborts -- rendered
+// furniture (blank blocks, trailing decoration) is skippable, and one structured
+// paragraph may own a RUN of rendered blocks. What still aborts: any structured
+// body paragraph whose tokens cannot be found in order (the M4b anti-mis-attach
+// contract).
 function faithfulMappingGuardPasses(rendered, structured) {
   if (!Array.isArray(rendered) || !Array.isArray(structured)) {
     faithfulMappingTelemetry("guard_bad_input");
     return false;
   }
-  if (rendered.length !== structured.length) {
-    faithfulMappingTelemetry(`count_mismatch rendered=${rendered.length} structured=${structured.length}`);
-    return false;
-  }
-  for (let i = 0; i < rendered.length; i += 1) {
-    const r = rendered[i];
-    const s = String(structured[i]?.text || "");
-    if (faithfulNormalizeText(r) === faithfulNormalizeText(s)) continue;
-    if (faithfulIsTokenSubsequence(s, r)) continue; // legit inline tracked-insert
-    if (faithfulIsTokenSubsequence(r, s)) continue; // legit (rare) rendered-subset
-    faithfulMappingTelemetry(`checksum_drift index=${i}`);
-    return false;
-  }
-  return true;
+  return Boolean(faithfulAlignRenderedToStructured(rendered, faithfulStructuredUnits(structured)));
 }
 
 // The faithful paragraph elements to map, in TREE order, EXCLUDING header/footer
@@ -4887,13 +5179,16 @@ function faithfulParagraphEditLockReason(el, paragraph, sourceIndexCounts) {
   return "";
 }
 
-// T5b: walk the rendered .docx paragraphs in TREE order, GUARD them 1:1 against
-// state.reviewParagraphs (ordered by source_index), and -- only if the guard
-// commits -- stamp the SAME hooks the reconstruction frame uses
-// (studio-doc-paragraph + data-paragraph-id + data-clause-ids + comment tools)
-// and run the existing DOM-walking binders so clause-click / comments / evidence /
-// fill / clause-ref highlights all reattach for free. Then (T5d) make each mapped
-// paragraph RICH-editable and bind the text + formatting editors.
+// T5b: walk the rendered .docx paragraphs in TREE order, ALIGN them against
+// state.reviewParagraphs (ordered by source_index) via ordered text alignment
+// (faithfulAlignRenderedToStructured), and -- only if the alignment commits --
+// stamp the SAME hooks the reconstruction frame uses (studio-doc-paragraph +
+// data-paragraph-id + data-clause-ids + comment tools) onto EVERY block of each
+// paragraph's aligned run, and run the existing DOM-walking binders so
+// clause-click / comments / evidence / fill / clause-ref highlights all reattach
+// for free. Then (T5d) make each SINGLE-BLOCK mapped paragraph RICH-editable and
+// bind the text + formatting editors (multi-block runs are mapped read-only: an
+// edit on one block of a run could not be attributed back to the whole paragraph).
 //
 // Returns true on COMMIT (the caller swaps in the faithful surface), false on
 // ABORT (the caller keeps the reconstruction). NEVER mutates the live DOM on abort.
@@ -4911,8 +5206,15 @@ function bindFaithfulDocxInteractions(container, viewMode) {
       return an - bn;
     });
 
-  // (1)+(2) THE GUARD. Abort to reconstruction on any failure.
-  if (!faithfulMappingGuardPasses(rendered.map(faithfulParagraphText), structured)) {
+  // THE ALIGNMENT. Abort (return false, DOM untouched) when any structured body
+  // paragraph's text cannot be found, in order, on the rendered surface.
+  // Structured paragraphs with no source_index (footer lines the review model
+  // keeps but faithfulMappableParagraphs excludes) may be tolerated as unmatched
+  // holes -- see the waiver discriminator inside the aligner.
+  const renderedTexts = rendered.map(faithfulParagraphText);
+  const units = faithfulStructuredUnits(structured);
+  const alignment = faithfulAlignRenderedToStructured(renderedTexts, units);
+  if (!alignment) {
     return false;
   }
 
@@ -4937,67 +5239,166 @@ function bindFaithfulDocxInteractions(container, viewMode) {
 
   const ownerDoc = container.ownerDocument || (typeof document !== "undefined" ? document : null);
 
-  rendered.forEach((el, index) => {
-    const paragraph = structured[index];
-    const paragraphId = String(paragraph?.id || "");
-    // The .docx <p> becomes the FRAME (mirrors renderStudioParagraphFrame's
-    // studio-doc-paragraph): data-paragraph-id + clause ids + comment tools live on
-    // it. The run content is moved into an INNER editable wrapper so that, exactly
-    // like the reconstruction, the editable holds ONLY the rich text -- the comment
-    // tools/badge are SIBLINGS, never inside the editable. (If they were inside,
-    // syncViewerParagraphEdit's innerText read would fold the comment count/icon
-    // text into paragraph.text and corrupt it.)
-    el.classList.add("studio-doc-paragraph");
-    if (paragraphId) el.setAttribute("data-paragraph-id", paragraphId);
-    const clauseIds = clauseIdsByParagraphId.get(paragraphId) || "";
-    if (clauseIds) {
-      el.setAttribute("data-clause-ids", clauseIds);
-    } else {
-      el.removeAttribute("data-clause-ids");
+  // Stamp every unit's aligned RUN. Rendered blocks that belong to NO run (blank
+  // spacers, skipped decoration, trailing furniture, whole-paragraph tracked
+  // inserts with no structured counterpart) are left completely untouched: they
+  // still render, but carry no interactions -- text we could not attribute must
+  // never carry another paragraph's hooks.
+  //
+  // Attachment rules (each deliberate):
+  //  - data-clause-ids + the frame class attach to EVERY block of a run, so
+  //    clicking anywhere in a wrapped paragraph (including a filled-in insertion
+  //    line) selects its clause -- no dead zones mid-paragraph.
+  //  - data-paragraph-id + comment tools + the comment count attach ONLY to a
+  //    paragraph's PRIMARY (first) block: several consumers resolve a paragraph
+  //    id via first-match querySelector, so a duplicate id across a run would
+  //    silently split them from the visible highlight/comment anchors, and
+  //    per-block comment tools would render duplicate buttons for one paragraph.
+  //  - EDITABLE only when the paragraph is a SINGLE block whose normalized text
+  //    EQUALS the model text (plus the pre-existing lock classes). Anything
+  //    weaker corrupts data: a multi-block run syncs ONE block's text over the
+  //    whole paragraph on edit, and an insertion-tolerated block would sync the
+  //    rendered variant (e.g. "... Vance Inc ...") over the model text.
+  let editableCount = 0;
+  units.forEach((unit, unitIndex) => {
+    const run = alignment[unitIndex];
+    if (!run || !run.matched || !run.blocks.length) return; // tolerated hole / blank unit: binds nothing
+    const blockEls = run.blocks.map((blockIndex) => rendered[blockIndex]);
+    const members = unit.members;
+    const idsFor = (paragraph) => clauseIdsByParagraphId.get(String(paragraph?.id || "")) || "";
+
+    // Distribute the unit's member paragraphs over the run's blocks:
+    //  - single member: every block belongs to it (a wrapped/multi-line run);
+    //  - block-split unit rendered as one block per member (each block pair-matches
+    //    its member): per-member stamping, identical to the old 1:1 behavior;
+    //  - otherwise (a TRUE shared block: several members' text inside fewer
+    //    blocks): anchor on the FIRST member -- its id/comments own the block(s),
+    //    the clause ids are the UNION over all members so clicking still reaches
+    //    every involved clause, and everything is edit-locked (block_split).
+    let perBlockMember = null;
+    if (members.length === 1) {
+      perBlockMember = blockEls.map(() => members[0]);
+    } else if (members.length === blockEls.length) {
+      const pairwise = blockEls.every((blockEl, i) => {
+        const memberText = String(members[i]?.text || "");
+        const blockText = renderedTexts[run.blocks[i]];
+        return faithfulNormalizeText(blockText) === faithfulNormalizeText(memberText)
+          || faithfulIsTokenSubsequence(memberText, blockText)
+          || faithfulIsTokenSubsequence(blockText, memberText);
+      });
+      if (pairwise) perBlockMember = blockEls.map((_, i) => members[i]);
     }
-    const commentCount = paragraphCommentCount(paragraphId, comments);
-    if (commentCount) el.classList.add("has-comments");
+    const unionClauseIds = perBlockMember ? "" : Array.from(new Set(
+      members.map(idsFor).filter(Boolean).join(" ").split(" ").filter(Boolean),
+    )).join(" ");
 
-    // Move the existing run children into an inner editable wrapper.
-    const lockReason = paragraphId
-      ? faithfulParagraphEditLockReason(el, paragraph, sourceIndexCounts)
-      : "no_paragraph_id";
-    const editable = ownerDoc ? ownerDoc.createElement("div") : null;
-    if (editable) {
-      editable.className = "paragraph-editable faithful-paragraph-editable";
-      while (el.firstChild) editable.appendChild(el.firstChild);
-      el.appendChild(editable);
-
-      // Comment tools at the TOP of the frame (sibling of the editable), matching
-      // renderStudioParagraphFrame. contenteditable=false so they stay out of text.
-      if (paragraphId && typeof renderParagraphCommentTools === "function") {
-        const tools = renderParagraphCommentTools(paragraphId, commentCount).trim();
-        if (tools) el.insertAdjacentHTML("afterbegin", tools);
+    blockEls.forEach((el, i) => {
+      const paragraph = perBlockMember ? perBlockMember[i] : members[0];
+      const paragraphId = String(paragraph?.id || "");
+      // First block of this member's contiguous slice of the run: carries the
+      // paragraph id + comment tools/count; later blocks carry clause hooks only.
+      const isPrimary = perBlockMember
+        ? (i === 0 || perBlockMember[i - 1] !== paragraph)
+        : i === 0;
+      // A member spread over SEVERAL blocks can never be edited in place: an edit
+      // inside one block would sync only that block's text into paragraph.text.
+      const memberBlockCount = perBlockMember
+        ? perBlockMember.filter((member) => member === paragraph).length
+        : blockEls.length;
+      let runLockReason = !perBlockMember
+        ? "block_split" // true shared block: attribution is per-unit, not per-member
+        : (memberBlockCount > 1 ? "run_split" : "");
+      // Insertion-tolerated single block: the rendered text carries tokens the
+      // model text lacks (filled-in values / inline inserts). Editing it would
+      // sync the RENDERED variant over the model text, so the editability bar is
+      // strict normalized EQUALITY, not the subsequence match that aligned it.
+      if (!runLockReason && memberBlockCount === 1
+        && faithfulNormalizeText(renderedTexts[run.blocks[i]])
+          !== faithfulNormalizeText(String(paragraph?.text || ""))) {
+        runLockReason = "text_drift";
       }
 
-      // (T5d) RICH-editable -- but ONLY for the paragraph classes that round-trip
-      // CLEANLY. The adversarial round-trip pass proved FOUR classes cannot be made
-      // safe by read-back normalization (tracked changes resolve OPPOSITE to the
-      // model; table cells / non-text inline trip the backend export guard; block
-      // splits can't be attributed). For those we MAP read-only (clause-ids /
-      // comments / highlights all still work) and route EDITING to the
-      // reconstruction view, one toggle away -- never risk a silent corruption the
-      // backend's text-only gate would pass. Normal prose (bold/italic/font/color/
-      // size/alignment over plain runs) stays fully editable.
-      if (paragraphId && !lockReason) {
-        editable.setAttribute("data-editable-paragraph-id", paragraphId);
-        editable.setAttribute("contenteditable", "true");
-        editable.setAttribute("spellcheck", "true");
-        editable.setAttribute("role", "textbox");
-        editable.setAttribute("aria-multiline", "true");
-        editable.setAttribute("data-faithful-editable", "");
+      // The .docx <p> becomes the FRAME (mirrors renderStudioParagraphFrame's
+      // studio-doc-paragraph): data-paragraph-id + clause ids + comment tools live on
+      // it. The run content is moved into an INNER editable wrapper so that, exactly
+      // like the reconstruction, the editable holds ONLY the rich text -- the comment
+      // tools/badge are SIBLINGS, never inside the editable. (If they were inside,
+      // syncViewerParagraphEdit's innerText read would fold the comment count/icon
+      // text into paragraph.text and corrupt it.)
+      el.classList.add("studio-doc-paragraph");
+      if (paragraphId && isPrimary) el.setAttribute("data-paragraph-id", paragraphId);
+      const clauseIds = perBlockMember ? idsFor(paragraph) : unionClauseIds;
+      if (clauseIds) {
+        el.setAttribute("data-clause-ids", clauseIds);
       } else {
-        editable.setAttribute("contenteditable", "false");
-        el.classList.add("faithful-edit-locked");
-        if (lockReason) el.setAttribute("data-faithful-lock-reason", lockReason);
+        el.removeAttribute("data-clause-ids");
       }
-    }
+      const commentCount = isPrimary ? paragraphCommentCount(paragraphId, comments) : 0;
+      if (commentCount) el.classList.add("has-comments");
+
+      // Move the existing run children into an inner editable wrapper.
+      let lockReason = paragraphId
+        ? faithfulParagraphEditLockReason(el, paragraph, sourceIndexCounts)
+        : "no_paragraph_id";
+      if (!lockReason && runLockReason) lockReason = runLockReason;
+      const editable = ownerDoc ? ownerDoc.createElement("div") : null;
+      if (editable) {
+        editable.className = "paragraph-editable faithful-paragraph-editable";
+        while (el.firstChild) editable.appendChild(el.firstChild);
+        el.appendChild(editable);
+
+        // Comment tools at the TOP of the frame (sibling of the editable), matching
+        // renderStudioParagraphFrame. contenteditable=false so they stay out of text.
+        if (isPrimary && paragraphId && typeof renderParagraphCommentTools === "function") {
+          const tools = renderParagraphCommentTools(paragraphId, commentCount).trim();
+          if (tools) el.insertAdjacentHTML("afterbegin", tools);
+        }
+
+        // (T5d) RICH-editable -- but ONLY for the paragraph classes that round-trip
+        // CLEANLY. The adversarial round-trip pass proved FOUR classes cannot be made
+        // safe by read-back normalization (tracked changes resolve OPPOSITE to the
+        // model; table cells / non-text inline trip the backend export guard; block
+        // splits can't be attributed) -- and the run-alignment adds TWO more:
+        // run_split (a multi-block run syncs one block over the whole paragraph)
+        // and text_drift (an insertion-tolerated block syncs the rendered variant
+        // over the model text). For those we MAP read-only (clause-ids / comments /
+        // highlights all still work) and route EDITING to the reconstruction view,
+        // one toggle away -- never risk a silent corruption the backend's text-only
+        // gate would pass. Normal exact single-block prose (bold/italic/font/color/
+        // size/alignment over plain runs) stays fully editable.
+        if (paragraphId && !lockReason && isPrimary) {
+          editable.setAttribute("data-editable-paragraph-id", paragraphId);
+          editable.setAttribute("contenteditable", "true");
+          editable.setAttribute("spellcheck", "true");
+          editable.setAttribute("role", "textbox");
+          editable.setAttribute("aria-multiline", "true");
+          editable.setAttribute("data-faithful-editable", "");
+          editableCount += 1;
+        } else {
+          editable.setAttribute("contenteditable", "false");
+          el.classList.add("faithful-edit-locked");
+          if (lockReason) el.setAttribute("data-faithful-lock-reason", lockReason);
+        }
+      }
+    });
   });
+
+  // COMMIT-SIDE debug signal (deliberately NOT via faithfulMappingTelemetry, whose
+  // messages are prefixed "faithful_mapping_aborted"): gives live verification a
+  // positive ground truth -- how many units aligned, how many were waived footer
+  // holes, how many rendered blocks were bound, and how many stayed editable.
+  try {
+    const matchedRuns = alignment.filter((run) => run.matched && run.blocks.length).length;
+    const waived = alignment.filter((run) => !run.matched).length;
+    const boundBlocks = alignment.reduce((sum, run) => sum + run.blocks.length, 0);
+    // eslint-disable-next-line no-console
+    console.info(
+      `faithful_mapping_committed units=${units.length} runs=${matchedRuns} waived=${waived} `
+      + `blocks_bound=${boundBlocks} blocks_total=${rendered.length} editable=${editableCount}`,
+    );
+  } catch (_loggingError) {
+    // telemetry is advisory; never let it break the commit
+  }
 
   // Now run the SAME binders the reconstruction path uses. They are DOM-walkers
   // scoped to studioDocumentRender / the container, so they reattach for free.

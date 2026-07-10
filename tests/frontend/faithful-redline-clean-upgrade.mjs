@@ -63,6 +63,11 @@ function buildSandbox({
   redlineDraftDirty = false,
   matter = { id: "m-rc", source_filename: "nda.docx" },
   reviewDocumentRender = null,
+  // Review model paragraphs. Default [] keeps the legacy behavior (an empty model
+  // aligns trivially, so the upgrade's mapping commits). Pass body paragraphs to
+  // force a mapping ABORT (the render stub paints no .docx <p> blocks, so any
+  // body paragraph is unmatchable) and exercise the read-only tracked fallback.
+  reviewParagraphs = [],
   // Optional per-URL render outcome override. Receives the requested URL and returns
   // either "ok" (paints faithful content), "fail" (resolves { ok:false }), or
   // an explicit { ok, reason }. Defaults to always-ok (the legacy behavior).
@@ -107,9 +112,11 @@ function buildSandbox({
     reviewDocumentRender,
     documentViewMode: "redline",
     redlineDraftDirty,
-    // Empty review model so the real surface-level binders the upgrade re-runs
-    // (highlightSelectedClauseRefs) find no clauses and no-op cleanly.
+    // Empty review model (unless overridden) so the real surface-level binders the
+    // upgrade re-runs (highlightSelectedClauseRefs) find no clauses and no-op cleanly.
     reviewClauses: [],
+    reviewParagraphs,
+    reviewComments: [],
     selectedReviewClauseId: null,
   };
 
@@ -353,11 +360,77 @@ async function testNoDocxBytesKeepsReconstruction() {
   console.log("PASS (#5) no docx bytes: reconstruction floor stands (never blank) when even faithful original fails.");
 }
 
+// ---------------------------------------------------------------------------
+// (#7) MAPPING ABORT -> READ-ONLY TRACKED HOST (new contract, 2026-07-10).
+//      When the tracked reviewed-docx bytes RENDER fine but the interactive
+//      paragraph alignment aborts (genuine structured/rendered text mismatch),
+//      the fallback must show THE ALREADY-COMPOSED TRACKED HOST read-only --
+//      the reviewer keeps seeing the real redlines -- instead of re-fetching the
+//      clean/original document. The clean->original chain stays reserved for the
+//      no_bytes class (#4 above pins that ordering).
+// ---------------------------------------------------------------------------
+async function testMappingAbortShowsTrackedReadOnly() {
+  const { sandbox, studioDocumentRender, calls, toasts } = buildSandbox({
+    // A body paragraph (has source_index) that cannot exist on the stub's rendered
+    // surface (the stub paints a .docx div with NO <p> blocks) -> alignment aborts.
+    reviewParagraphs: [
+      { id: "p1", index: 1, source_index: 0, text: "Structured body text that is not on the surface." },
+    ],
+  });
+  const upgrade = vm.runInContext("maybeUpgradeSurfaceToFaithfulDocx", sandbox);
+  upgrade("redline");
+  await flushMicrotasks();
+  await flushMicrotasks();
+  await flushMicrotasks();
+
+  // The tracked bytes rendered; the fallback must NOT re-fetch clean/original.
+  assert.equal(calls.render, 1,
+    "mapping abort must reuse the already-rendered tracked host (no clean/original re-fetch)");
+  assert.ok(calls.urls[0].includes("changes=tracked"), "the one render call was the tracked document");
+
+  const surface = studioDocumentRender.querySelector("[data-faithful-docx]");
+  assert.ok(surface, "a faithful surface must be swapped in on mapping abort");
+  assert.equal(surface.getAttribute("data-faithful-fallback"), "tracked",
+    "the surface is the READ-ONLY TRACKED host, not the clean/original fallback");
+  assert.ok(surface.hasAttribute("data-faithful-readonly"), "the surface is tagged read-only");
+  // Clobber-guard protection: faithfulDocxSurfaceActiveForCurrentView keys off
+  // data-faithful-view-mode -- without it a late /render-status completion would
+  // overwrite this fallback with the ORIGINAL's page tiles.
+  assert.equal(surface.getAttribute("data-faithful-view-mode"), "redline",
+    "the read-only tracked surface must carry data-faithful-view-mode (clobber-guard key)");
+  assert.ok(surface.textContent.includes("FAITHFUL CONTENT"),
+    "the tracked host's own rendered content is what is displayed");
+  assert.ok(!studioDocumentRender.textContent.includes("EXISTING RECONSTRUCTION FLOOR"),
+    "the plain reconstruction must NOT be the final surface");
+
+  // Interactions are DISABLED: nothing on the surface is stamped or editable.
+  assert.equal(surface.querySelectorAll("[data-editable-paragraph-id]").length, 0,
+    "no editable hooks on the read-only tracked surface");
+  assert.equal(surface.querySelectorAll("[data-paragraph-id]").length, 0,
+    "no paragraph anchors on the read-only tracked surface");
+
+  // The persistent notice says READ-ONLY (the redlines ARE on this tab now) and
+  // keeps the retry affordance.
+  const notice = surface.querySelector("[data-faithful-fallback-notice]");
+  assert.ok(notice, "a persistent in-viewer notice is painted");
+  assert.match(notice.textContent, /read.?only/i, "the notice says the redlines are shown read-only");
+  assert.ok(notice.querySelector("[data-faithful-fallback-retry]"), "the notice carries the retry affordance");
+
+  // The toast wording is honest for this class: the redlines ARE displayed.
+  assert.equal(toasts.length, 1, "exactly one toast for the read-only tracked fallback");
+  assert.match(toasts[0].title, /read.?only/i,
+    "the toast must NOT claim redlines aren't on this tab (they are; interactions aren't)");
+
+  console.log("PASS (#7) mapping abort -> the already-composed tracked host is shown READ-ONLY "
+    + "(no re-fetch; notice + toast say read-only; clobber-guard attributes present).");
+}
+
 await testCleanRendersAcceptedText();
 await testDirtyDraftNotOverwritten();
 await testRedline409FallsBackToFaithful();
 await testNoDocxBytesKeepsReconstruction();
 await testFallbackToastFiresOncePerFallback();
+await testMappingAbortShowsTrackedReadOnly();
 console.log("\nALL PASS: faithful-redline-clean-upgrade (#2 clean accepted-text + #3 dirty-draft guard "
   + "+ #4 redline-409 faithful fallback [no banner; toast surfaces status] + #5 no-bytes reconstruction floor "
-  + "+ #6 toast-once-per-fallback).");
+  + "+ #6 toast-once-per-fallback + #7 mapping-abort read-only tracked host).");
