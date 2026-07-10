@@ -1,0 +1,37 @@
+{
+  "extracted_text": "This Agreement may be executed in counterparts, each of which shall\n\nbe deemed an original and all of which together constitute one instrument.\n\nMutual NDA -- Confidential Page 1 of 1",
+  "name": "neg_right_aligned_page_number",
+  "paragraphs": [
+    {
+      "page_number": 1,
+      "text": "This Agreement may be executed in counterparts, each of which shall"
+    },
+    {
+      "page_number": 1,
+      "text": "be deemed an original and all of which together constitute one instrument."
+    },
+    {
+      "page_number": 1,
+      "text": "Mutual NDA -- Confidential Page 1 of 1"
+    }
+  ],
+  "quality": {
+    "extracted_characters": 183,
+    "extracted_paragraphs": 3,
+    "page_count": 1,
+    "pages_with_text": 1,
+    "pages_without_text": 0,
+    "repeated_margin_lines_removed": 0,
+    "visual_profile": {
+      "requires_source_preview": false,
+      "status": "ready",
+      "visual_features": []
+    },
+    "warnings": [
+      {
+        "message": "The PDF produced a small amount of extractable text; review the source carefully.",
+        "type": "pdf_sparse_text"
+      }
+    ]
+  }
+}

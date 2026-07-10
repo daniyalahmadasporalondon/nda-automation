@@ -1,0 +1,49 @@
+{
+  "extracted_text": "The parties agree to keep all Confidential Information secret at all\n\ntimes during the term of this Agreement.\n\nMoorwand Limited\n\nSigned: _______________ Briane Lucas\n\nCEO\n\nAuthorised Signatory",
+  "name": "garble_per_glyph_normal_advance",
+  "paragraphs": [
+    {
+      "page_number": 1,
+      "text": "The parties agree to keep all Confidential Information secret at all"
+    },
+    {
+      "page_number": 1,
+      "text": "times during the term of this Agreement."
+    },
+    {
+      "page_number": 1,
+      "text": "Moorwand Limited"
+    },
+    {
+      "page_number": 1,
+      "text": "Signed: _______________ Briane Lucas"
+    },
+    {
+      "page_number": 1,
+      "text": "CEO"
+    },
+    {
+      "page_number": 1,
+      "text": "Authorised Signatory"
+    }
+  ],
+  "quality": {
+    "extracted_characters": 193,
+    "extracted_paragraphs": 6,
+    "page_count": 1,
+    "pages_with_text": 1,
+    "pages_without_text": 0,
+    "repeated_margin_lines_removed": 0,
+    "visual_profile": {
+      "requires_source_preview": false,
+      "status": "ready",
+      "visual_features": []
+    },
+    "warnings": [
+      {
+        "message": "The PDF produced a small amount of extractable text; review the source carefully.",
+        "type": "pdf_sparse_text"
+      }
+    ]
+  }
+}

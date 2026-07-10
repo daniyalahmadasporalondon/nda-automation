@@ -1,0 +1,41 @@
+{
+  "extracted_text": "1. The Receiving Party shall keep the Confidential Information\n\nsecret and shall not disclose it to any third party.\n\n2. The Receiving Party shall use the Confidential Information\n\nonly for the Purpose described in this Agreement.",
+  "name": "neg_numbered_list_far_left_number",
+  "paragraphs": [
+    {
+      "page_number": 1,
+      "text": "1. The Receiving Party shall keep the Confidential Information"
+    },
+    {
+      "page_number": 1,
+      "text": "secret and shall not disclose it to any third party."
+    },
+    {
+      "page_number": 1,
+      "text": "2. The Receiving Party shall use the Confidential Information"
+    },
+    {
+      "page_number": 1,
+      "text": "only for the Purpose described in this Agreement."
+    }
+  ],
+  "quality": {
+    "extracted_characters": 230,
+    "extracted_paragraphs": 4,
+    "page_count": 1,
+    "pages_with_text": 1,
+    "pages_without_text": 0,
+    "repeated_margin_lines_removed": 0,
+    "visual_profile": {
+      "requires_source_preview": false,
+      "status": "ready",
+      "visual_features": []
+    },
+    "warnings": [
+      {
+        "message": "The PDF produced a small amount of extractable text; review the source carefully.",
+        "type": "pdf_sparse_text"
+      }
+    ]
+  }
+}

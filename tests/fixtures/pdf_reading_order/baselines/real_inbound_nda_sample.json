@@ -1,0 +1,45 @@
+{
+  "extracted_text": "MUTUAL NON-DISCLOSURE AGREEMENT\n\nThis Mutual Non-Disclosure Agreement is entered into by both parties.\n\nEach party agrees to keep the other party Confidential Information secret.\n\nThis Agreement shall be governed by the laws of England and Wales.\n\nThe confidentiality obligations survive for three years from disclosure.",
+  "name": "real_inbound_nda_sample",
+  "paragraphs": [
+    {
+      "page_number": 1,
+      "text": "MUTUAL NON-DISCLOSURE AGREEMENT"
+    },
+    {
+      "page_number": 1,
+      "text": "This Mutual Non-Disclosure Agreement is entered into by both parties."
+    },
+    {
+      "page_number": 1,
+      "text": "Each party agrees to keep the other party Confidential Information secret."
+    },
+    {
+      "page_number": 1,
+      "text": "This Agreement shall be governed by the laws of England and Wales."
+    },
+    {
+      "page_number": 1,
+      "text": "The confidentiality obligations survive for three years from disclosure."
+    }
+  ],
+  "quality": {
+    "extracted_characters": 320,
+    "extracted_paragraphs": 5,
+    "page_count": 1,
+    "pages_with_text": 1,
+    "pages_without_text": 0,
+    "repeated_margin_lines_removed": 0,
+    "visual_profile": {
+      "requires_source_preview": false,
+      "status": "ready",
+      "visual_features": []
+    },
+    "warnings": [
+      {
+        "message": "The PDF produced a small amount of extractable text; review the source carefully.",
+        "type": "pdf_sparse_text"
+      }
+    ]
+  }
+}

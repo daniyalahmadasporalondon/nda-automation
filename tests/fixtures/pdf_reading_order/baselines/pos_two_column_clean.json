@@ -1,0 +1,80 @@
+{
+  "extracted_text": "1. Confidential Information means any 3. The obligations of confidentiality\n\nand all non-public information disclosed shall survive termination of this\n\nby one party to the other, whether oral Agreement for a period of five years\n\nor written, marked confidential. from the date of disclosure.\n\n2. The Receiving Party shall hold the 4. Nothing in this Agreement grants the\n\nConfidential Information in strict Receiving Party any licence or right in\n\nconfidence and not disclose it to any the Confidential Information other than\n\nthird party without prior written consent. as expressly set out herein.\n\n5. Each party shall promptly notify the 7. The parties submit to the exclusive\n\nother of any unauthorised disclosure of jurisdiction of the courts of England\n\nthe Confidential Information of which it and Wales in respect of any dispute\n\nbecomes aware. arising out of this Agreement.\n\n6. This Agreement shall be governed by 8. This Agreement constitutes the entire\n\nand construed in accordance with the agreement between the parties relating\n\nlaws of England and Wales. to its subject matter.",
+  "name": "pos_two_column_clean",
+  "paragraphs": [
+    {
+      "page_number": 1,
+      "text": "1. Confidential Information means any 3. The obligations of confidentiality"
+    },
+    {
+      "page_number": 1,
+      "text": "and all non-public information disclosed shall survive termination of this"
+    },
+    {
+      "page_number": 1,
+      "text": "by one party to the other, whether oral Agreement for a period of five years"
+    },
+    {
+      "page_number": 1,
+      "text": "or written, marked confidential. from the date of disclosure."
+    },
+    {
+      "page_number": 1,
+      "text": "2. The Receiving Party shall hold the 4. Nothing in this Agreement grants the"
+    },
+    {
+      "page_number": 1,
+      "text": "Confidential Information in strict Receiving Party any licence or right in"
+    },
+    {
+      "page_number": 1,
+      "text": "confidence and not disclose it to any the Confidential Information other than"
+    },
+    {
+      "page_number": 1,
+      "text": "third party without prior written consent. as expressly set out herein."
+    },
+    {
+      "page_number": 2,
+      "text": "5. Each party shall promptly notify the 7. The parties submit to the exclusive"
+    },
+    {
+      "page_number": 2,
+      "text": "other of any unauthorised disclosure of jurisdiction of the courts of England"
+    },
+    {
+      "page_number": 2,
+      "text": "the Confidential Information of which it and Wales in respect of any dispute"
+    },
+    {
+      "page_number": 2,
+      "text": "becomes aware. arising out of this Agreement."
+    },
+    {
+      "page_number": 2,
+      "text": "6. This Agreement shall be governed by 8. This Agreement constitutes the entire"
+    },
+    {
+      "page_number": 2,
+      "text": "and construed in accordance with the agreement between the parties relating"
+    },
+    {
+      "page_number": 2,
+      "text": "laws of England and Wales. to its subject matter."
+    }
+  ],
+  "quality": {
+    "extracted_characters": 1092,
+    "extracted_paragraphs": 15,
+    "page_count": 2,
+    "pages_with_text": 2,
+    "pages_without_text": 0,
+    "repeated_margin_lines_removed": 0,
+    "visual_profile": {
+      "requires_source_preview": false,
+      "status": "ready",
+      "visual_features": []
+    },
+    "warnings": []
+  }
+}
