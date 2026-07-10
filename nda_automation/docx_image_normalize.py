@@ -164,69 +164,87 @@ def normalize_docx_emf_wmf_images(
         # thing that breaks serving one.
         return docx_bytes
 
-    active_converter = converter or _default_image_converter()
-    if image_cache is _UNSET_CACHE:
-        # Default: production serve paths pass no converter and get the shared
-        # disk-backed cache. A test injecting its own converter (but no explicit
-        # cache) keeps the historical uncached behavior so call-count assertions
-        # stay meaningful.
-        cache = _shared_image_cache() if converter is None else None
-    else:
-        cache = image_cache  # explicit: a specific cache, or None to disable
+    # Belt-and-suspenders: everything below touches the disk cache, spawns
+    # converters and rewrites XML. A cache/eviction/rewrite error must NEVER
+    # escape to the (unguarded) serve call sites and 500 the request -- a document
+    # served UNTOUCHED is valid (its vector images render blank, the
+    # degraded-but-safe fallback). So any unexpected error falls back to the
+    # original bytes. The per-op guards above (fail-soft converter, _disk_put,
+    # _enforce_disk_bound) are the first line; this is the last line.
+    try:
+        active_converter = converter or _default_image_converter()
+        if image_cache is _UNSET_CACHE:
+            # Default: production serve paths pass no converter and get the shared
+            # disk-backed cache. A test injecting its own converter (but no explicit
+            # cache) keeps the historical uncached behavior so call-count assertions
+            # stay meaningful.
+            cache = _shared_image_cache() if converter is None else None
+        else:
+            cache = image_cache  # explicit: a specific cache, or None to disable
 
-    rename_map: dict[str, str] = {}  # old archive path -> new archive path
-    new_members: dict[str, bytes] = dict(members)
+        rename_map: dict[str, str] = {}  # old archive path -> new archive path
+        new_members: dict[str, bytes] = dict(members)
 
-    started = time.monotonic()
-    conversions_done = 0
-    skipped = 0
+        started = time.monotonic()
+        conversions_done = 0
+        skipped = 0
 
-    for part in vector_parts:
-        data = members[part.name]
+        for part in vector_parts:
+            data = members[part.name]
 
-        png_bytes = cache.lookup(data) if cache is not None else None
-        if png_bytes is None:
-            budget_left = conversions_done < max_images and (
-                time.monotonic() - started
-            ) < time_budget_seconds
-            if not budget_left:
-                # Cap/budget exhausted: leave this vector part untouched. It will
-                # render as a blank box, but the request thread is protected.
-                skipped += 1
-                continue
-            if cache is not None:
-                png_bytes, converted = cache.convert_and_store(
-                    data, part.extension, active_converter
-                )
-                if converted:
+            png_bytes = cache.lookup(data) if cache is not None else None
+            if png_bytes is None:
+                budget_left = conversions_done < max_images and (
+                    time.monotonic() - started
+                ) < time_budget_seconds
+                if not budget_left:
+                    # Cap/budget exhausted: leave this vector part untouched. It
+                    # will render as a blank box, but the request thread is
+                    # protected.
+                    skipped += 1
+                    continue
+                if cache is not None:
+                    png_bytes, converted = cache.convert_and_store(
+                        data, part.extension, active_converter
+                    )
+                    if converted:
+                        conversions_done += 1
+                else:
+                    png_bytes = _convert_or_placeholder(active_converter, data, part.extension)
                     conversions_done += 1
-            else:
-                png_bytes = _convert_or_placeholder(active_converter, data, part.extension)
-                conversions_done += 1
 
-        new_name = _png_part_name(part.name)
-        new_members.pop(part.name, None)
-        new_members[new_name] = png_bytes
-        rename_map[part.name] = new_name
+            new_name = _png_part_name(part.name)
+            new_members.pop(part.name, None)
+            new_members[new_name] = png_bytes
+            rename_map[part.name] = new_name
 
-    if skipped:
-        LOGGER.warning(
-            "EMF/WMF normalization capped: converted %d image(s), skipped %d of %d "
-            "vector part(s) after hitting the per-document cap (%d) / wall-clock "
-            "budget (%.0fs); skipped parts left un-normalized.",
-            conversions_done,
-            skipped,
-            len(vector_parts),
-            max_images,
-            time_budget_seconds,
+        if skipped:
+            LOGGER.warning(
+                "EMF/WMF normalization capped: converted %d image(s), skipped %d of %d "
+                "vector part(s) after hitting the per-document cap (%d) / wall-clock "
+                "budget (%.0fs); skipped parts left un-normalized.",
+                conversions_done,
+                skipped,
+                len(vector_parts),
+                max_images,
+                time_budget_seconds,
+            )
+
+        new_members = _rewrite_relationships(new_members, rename_map)
+        new_members[CONTENT_TYPES_PART] = _rewrite_content_types(
+            new_members.get(CONTENT_TYPES_PART, b""),
+            rename_map,
+            _surviving_vector_extensions(new_members),
         )
 
-    new_members = _rewrite_relationships(new_members, rename_map)
-    new_members[CONTENT_TYPES_PART] = _rewrite_content_types(
-        new_members.get(CONTENT_TYPES_PART, b""), rename_map
-    )
-
-    return _repackage(new_members, original_order=names, rename_map=rename_map)
+        return _repackage(new_members, original_order=names, rename_map=rename_map)
+    except Exception:
+        LOGGER.warning(
+            "EMF/WMF normalization failed unexpectedly; serving the document "
+            "untouched.",
+            exc_info=True,
+        )
+        return docx_bytes
 
 
 def _vector_media_parts(names: list[str]) -> list[_MediaPart]:
@@ -244,6 +262,26 @@ def _vector_media_parts(names: list[str]) -> list[_MediaPart]:
 def _png_part_name(name: str) -> str:
     head = name.rsplit(".", 1)[0] if "." in name else name
     return f"{head}.png"
+
+
+def _surviving_vector_extensions(members: dict[str, bytes]) -> set[str]:
+    """Vector (emf/wmf) extensions that STILL have at least one media part.
+
+    Computed from the FINAL member list, so a part left un-normalized by the
+    per-document cap / wall-clock budget still counts. Its ``<Default>`` content
+    type must be preserved: an ``.emf``/``.wmf`` survivor with neither an
+    ``<Override>`` nor a ``<Default Extension="emf|wmf">`` is a spec-invalid OPC
+    package. ``rename_map`` alone cannot see survivors (it lists only CONVERTED
+    parts), so the drop decision must be made from what actually remains."""
+    surviving: set[str] = set()
+    for name in members:
+        lowered = name.lower()
+        if not lowered.startswith("word/media/"):
+            continue
+        extension = lowered.rsplit(".", 1)[-1] if "." in lowered else ""
+        if extension in VECTOR_IMAGE_EXTENSIONS:
+            surviving.add(extension)
+    return surviving
 
 
 def _convert_or_placeholder(converter: ImageConverter, data: bytes, extension: str) -> bytes:
@@ -404,9 +442,11 @@ class _ImageConversionCache:
                 except OSError:
                     pass
                 return
+            # Eviction runs INSIDE the try: a prune/eviction error must degrade to
+            # a no-op, never escape _disk_put to the (unguarded) serve call site.
+            self._enforce_disk_bound(cache_dir, keep=path)
         except OSError:
             return
-        self._enforce_disk_bound(cache_dir, keep=path)
 
     def _enforce_disk_bound(self, cache_dir: Path, *, keep: Path) -> None:
         """Evict least-recently-used cache files (by mtime) beyond the bound.
@@ -419,7 +459,10 @@ class _ImageConversionCache:
             return
         if len(entries) <= self._max_entries:
             return
-        keep_resolved = keep.resolve()
+        try:  # resolve() can raise (symlink loop, transient FS error); degrade
+            keep_resolved = keep.resolve()
+        except OSError:
+            keep_resolved = keep
 
         def _mtime(path: Path) -> float:
             try:
@@ -430,7 +473,11 @@ class _ImageConversionCache:
         for entry in sorted(entries, key=_mtime):
             if len(entries) <= self._max_entries:
                 break
-            if entry.resolve() == keep_resolved:
+            try:
+                same_as_keep = entry.resolve() == keep_resolved
+            except OSError:
+                same_as_keep = entry == keep
+            if same_as_keep:
                 continue
             try:
                 entry.unlink()
@@ -524,12 +571,23 @@ def _relative_target(base_dir: str, part_name: str) -> str:
     return relative.replace(os.sep, "/")
 
 
-def _rewrite_content_types(data: bytes, rename_map: dict[str, str]) -> bytes:
+def _rewrite_content_types(
+    data: bytes,
+    rename_map: dict[str, str],
+    surviving_vector_extensions: set[str],
+) -> bytes:
     """Ensure png is declared and prune now-unused emf/wmf declarations.
 
     Adds a ``<Default Extension="png" ContentType="image/png"/>`` if absent,
     rewrites any ``<Override>`` that named a renamed part, and removes
     ``<Default Extension="emf|wmf">`` declarations that no remaining part uses.
+
+    ``surviving_vector_extensions`` names the vector extensions that STILL have a
+    media part (because the per-document cap / wall-clock budget left them
+    un-normalized). Their ``<Default>`` MUST be kept -- stripping a declaration a
+    surviving part relies on yields a spec-invalid package. When nothing was
+    skipped this set is empty and every emf/wmf Default is dropped, so the output
+    is byte-identical to the all-converted path.
     """
     try:
         root = ET.fromstring(data) if data else ET.Element(f"{{{CONTENT_TYPES_NS}}}Types")
@@ -553,9 +611,14 @@ def _rewrite_content_types(data: bytes, rename_map: dict[str, str]) -> bytes:
             child.set("PartName", "/" + rename_map[part_name])
             child.set("ContentType", PNG_CONTENT_TYPE)
 
-    # Drop Default declarations for emf/wmf (the parts no longer exist).
+    # Drop Default declarations for a vector extension ONLY when NO part with that
+    # extension survives. A capped/budget-skipped .emf/.wmf part still needs its
+    # Default-by-extension, so we must not strip a declaration a survivor relies on.
     for child in list(root):
-        if child.tag == default_tag and (child.get("Extension") or "").lower() in VECTOR_IMAGE_EXTENSIONS:
+        if child.tag != default_tag:
+            continue
+        extension = (child.get("Extension") or "").lower()
+        if extension in VECTOR_IMAGE_EXTENSIONS and extension not in surviving_vector_extensions:
             root.remove(child)
 
     if not have_png_default:
