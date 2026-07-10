@@ -282,13 +282,25 @@ def _xml_namespace_declarations(xml: bytes) -> Dict[str, str]:
 
 
 def _register_xml_namespaces(namespaces: Dict[str, str]) -> None:
-    for prefix, uri in namespaces.items():
-        if not _can_preserve_namespace_prefix(prefix):
-            continue
-        try:
-            ET.register_namespace(prefix, uri)
-        except ValueError:
-            continue
+    # ``ET.register_namespace`` mutates the PROCESS-GLOBAL ``ET._namespace_map``:
+    # it snapshots the items, deletes every matching key, then re-adds. Run
+    # UNLOCKED it races ``_default_namespace_registration`` (which mutates the same
+    # map under ``_NAMESPACE_MAP_LOCK``): the concurrent restore can delete a key
+    # this loop's snapshot still lists, so the internal ``del`` raises KeyError -- a
+    # rare (~1/30000 under adversarial key collision) 500 on the live serve paths.
+    # Serialize both mutators on the one lock. Deadlock-safe: this is never called
+    # from inside a held ``_NAMESPACE_MAP_LOCK`` (that lock only ever wraps
+    # ``ET.tostring``; this runs on PARSE paths), and the lock is not re-entered.
+    # Output is unchanged -- the SAME prefixes are registered, just not concurrently
+    # with a restore.
+    with _NAMESPACE_MAP_LOCK:
+        for prefix, uri in namespaces.items():
+            if not _can_preserve_namespace_prefix(prefix):
+                continue
+            try:
+                ET.register_namespace(prefix, uri)
+            except ValueError:
+                continue
 
 
 def _can_preserve_namespace_prefix(prefix: str) -> bool:
