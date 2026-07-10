@@ -2602,6 +2602,245 @@ class PdfGlyphFragmentedSignaturePageTests(unittest.TestCase):
         self.assertFalse(detect([chunk(c) for c in "Bri"] + [chunk("Signed by the parties.")] + [chunk(c) for c in "ane"]))
 
 
+def _warning_types(extraction):
+    return [w["type"] for w in extraction.quality.get("warnings", [])]
+
+
+def _two_column_lines():
+    """A left column (clauses 1 & 2) and a right column (clauses 3 & 4) that SHARE
+    baselines — the interleave defect. Drawn column 1 then column 2 per row (real
+    reading order), each column a self-contained clause with a blank line between."""
+    left = [
+        "1. Confidential Information means",
+        "all technical and commercial",
+        "information disclosed by either",
+        "party under this Agreement.",
+        "",
+        "2. The Receiving Party shall keep",
+        "the Confidential Information",
+        "strictly confidential.",
+    ]
+    right = [
+        "3. The obligations of this",
+        "Agreement survive for five years",
+        "from the date of disclosure.",
+        "",
+        "4. This Agreement is governed by",
+        "the laws of England and Wales",
+        "and the courts of London have",
+        "exclusive jurisdiction.",
+    ]
+    lines = []
+    y = 700
+    for index in range(max(len(left), len(right))):
+        if index < len(left) and left[index]:
+            lines.append((left[index], 72, y, 10))
+        if index < len(right) and right[index]:
+            lines.append((right[index], 330, y, 10))
+        y -= 13
+    return lines
+
+
+class PdfTwoColumnLayoutTests(unittest.TestCase):
+    """DEFECT 1: two columns that share baselines must NOT interleave into scrambled
+    run-ons ("1. Confidential Information means 3. The obligations of this"). The
+    splitter reconstructs the page COLUMN-MAJOR and raises a quality warning."""
+
+    @requires_pypdf
+    def test_two_column_page_is_ordered_column_major_not_interleaved(self):
+        extraction = extract_pdf_document(make_pdf_positioned(_two_column_lines()))
+        texts = [str(p["text"]) for p in extraction.paragraphs]
+        joined = "\n".join(texts)
+
+        # The cardinal bug: a left-column line space-joined to a right-column line.
+        self.assertNotIn("1. Confidential Information means 3. The obligations", joined)
+        for line in texts:
+            self.assertFalse(
+                ("Confidential Information means" in line and "obligations of this" in line),
+                f"columns interleaved into one line: {line!r}",
+            )
+
+        # Column-major: the whole of column 1 (clause 1's three body lines) precedes
+        # the whole of column 2 (clause 3's body lines).
+        order = {text: index for index, text in enumerate(texts)}
+        self.assertLess(order["information disclosed by either"], order["3. The obligations of this"])
+        self.assertLess(order["3. The obligations of this"], order["4. This Agreement is governed by"])
+
+        # The multi-column reconstruction is surfaced, never silent.
+        self.assertIn("pdf_column_layout_uncertain", _warning_types(extraction))
+
+    @requires_pypdf
+    def test_right_aligned_page_numbers_and_signature_line_are_not_columns(self):
+        # Body lines each trailed by a right-aligned folio, plus a bottom
+        # "Signed ____   Date ____" line: same-baseline PAIRS, but NOT a persistent
+        # multi-line band, so they must NOT be treated as a column layout.
+        extraction = extract_pdf_document(make_pdf_positioned([
+            ("MUTUAL NON-DISCLOSURE AGREEMENT", 72, 720, 12),
+            ("1. The parties agree to keep information confidential.", 72, 700, 11),
+            ("Page 1 of 3", 500, 700, 11),
+            ("2. The Receiving Party shall protect it at all times.", 72, 680, 11),
+            ("Page 2 of 3", 500, 680, 11),
+            ("3. The term of this Agreement is three years.", 72, 660, 11),
+            ("Page 3 of 3", 500, 660, 11),
+            ("Signed ______________", 72, 120, 11),
+            ("Date ______________", 330, 120, 11),
+        ]))
+        self.assertNotIn("pdf_column_layout_uncertain", _warning_types(extraction))
+        texts = [str(p["text"]) for p in extraction.paragraphs]
+        # Clause bodies stay in document order (never reordered column-major).
+        joined = " ".join(texts)
+        self.assertLess(joined.index("parties agree"), joined.index("three years"))
+
+    @requires_pypdf
+    def test_single_column_document_raises_no_column_warning(self):
+        extraction = extract_pdf_document(make_pdf_positioned([
+            ("MUTUAL NON-DISCLOSURE AGREEMENT", 72, 720, 14),
+            ("1. Confidential Information means all information disclosed by either party.", 72, 700, 11),
+            ("2. The Receiving Party shall protect the Confidential Information.", 72, 680, 11),
+            ("3. This Agreement is governed by the laws of England and Wales.", 72, 660, 11),
+        ]))
+        self.assertNotIn("pdf_column_layout_uncertain", _warning_types(extraction))
+
+
+class PdfCtmCompositionTests(unittest.TestCase):
+    """DEFECT 3: the visitor reports the text matrix (tm) and the CTM (cm) separately;
+    the chunk's true device origin is tm x cm. Blocks positioned via ``q ... cm`` share
+    small LOCAL tm coordinates and must NOT collapse onto one baseline."""
+
+    def test_compose_text_position_matches_matrix_product(self):
+        compose = pdf_text._compose_text_position
+        # Pure translation: local tm (6, 223) under cm translate (61, 382).
+        self.assertEqual(compose([1, 0, 0, 1, 61, 382], [1, 0, 0, 1, 6, 223]), (67.0, 605.0))
+        # Identity cm reduces to the raw tm translation (the historical behaviour).
+        self.assertEqual(compose([1, 0, 0, 1, 0, 0], [1, 0, 0, 1, 72, 700]), (72.0, 700.0))
+        # A scaling cm folds into BOTH axes (not a bare translation add).
+        self.assertEqual(compose([2, 0, 0, 2, 5, 7], [1, 0, 0, 1, 10, 20]), (25.0, 47.0))
+        # A 90-degree rotation cm maps local (x, y) to device (-y, x)+offset.
+        self.assertEqual(compose([0, 1, -1, 0, 100, 50], [1, 0, 0, 1, 10, 20]), (80.0, 60.0))
+
+    def test_compose_text_position_degrades_to_tm_on_bad_ctm(self):
+        # A malformed cm must not drop the chunk; it degrades to the tm translation.
+        self.assertEqual(pdf_text._compose_text_position(None, [1, 0, 0, 1, 72, 700]), (72.0, 700.0))
+        # A malformed tm drops the chunk (no trustworthy position).
+        self.assertIsNone(pdf_text._compose_text_position([1, 0, 0, 1, 0, 0], None))
+
+    @requires_pypdf
+    def test_cm_positioned_blocks_do_not_collapse_onto_one_baseline(self):
+        # Two blocks with IDENTICAL local tm (6, 40) but different cm translations:
+        # naive tm-only reading stacks them on one baseline and merges the clauses.
+        data = make_pdf_cm_positioned([
+            ((1, 0, 0, 1, 61, 600), [("1. First clause about confidential information.", 6, 40, 10)]),
+            ((1, 0, 0, 1, 61, 400), [("2. Second clause about the term of the agreement.", 6, 40, 10)]),
+        ])
+        texts = [str(p["text"]) for p in extract_pdf_paragraphs(data)]
+        joined = "\n".join(texts)
+        self.assertIn("First clause", joined)
+        self.assertIn("Second clause", joined)
+        # The two blocks stay on separate baselines -> separate clauses, never merged.
+        for line in texts:
+            self.assertFalse(
+                "First clause" in line and "Second clause" in line,
+                f"cm-positioned blocks merged onto one line: {line!r}",
+            )
+
+
+class PdfLetterSpacedGarbleTests(unittest.TestCase):
+    """DEFECT 2: letter-spaced glyph garble ("I N WI TNESS WHEREOF, t he par t i es")
+    is invisible to the symbol-only ``_garbled_text_ratio`` (its only odd characters
+    are inserted spaces). The sibling metric flags it and fires ``pdf_garbled_text``."""
+
+    def test_letter_spaced_metric_flags_pervasive_garble(self):
+        metric = pdf_text._letter_spaced_garble_ratio
+        garble = (
+            "I N WI TNESS WHEREOF, t he par t i es have execut ed t hi s Agr eement "
+            "as of t he dat e f i r st wr i t t en above."
+        )
+        self.assertGreater(metric(garble), pdf_text._LETTER_SPACED_GARBLE_RATIO)
+
+    def test_letter_spaced_metric_ignores_clean_prose_and_lone_spaced_heading(self):
+        metric = pdf_text._letter_spaced_garble_ratio
+        clean = (
+            "Confidential Information means all technical and commercial information "
+            "disclosed by either party under this Agreement between the parties."
+        )
+        self.assertEqual(metric(clean), 0.0)
+        # A single legitimately spaced heading is ONE contiguous run of lone letters,
+        # discounted as a heading -> not garble.
+        heading = (
+            "C O N F I D E N T I A L This Agreement is made between the parties for the "
+            "mutual protection of information disclosed during their discussions."
+        )
+        self.assertLessEqual(metric(heading), pdf_text._LETTER_SPACED_GARBLE_RATIO)
+
+    @requires_pypdf
+    def test_per_glyph_flattened_page_fires_garbled_warning(self):
+        # A per-glyph page (every glyph its own Tm+Tj, advances that do not match the
+        # font metrics) reassembles into letter-spaced garble. The symbol ratio stays
+        # low, so ONLY the new letter-spacing metric raises pdf_garbled_text.
+        extraction = extract_pdf_document(make_pdf_positioned(_per_glyph_no_jitter_lines([
+            ("IN WITNESS WHEREOF the parties have executed this Agreement", 72, 700, 11),
+            ("as of the date first written above by their duly authorised officers", 72, 680, 11),
+        ])))
+        text = "\n\n".join(str(p["text"]) for p in extraction.paragraphs)
+        self.assertLessEqual(pdf_text._garbled_text_ratio(text), 0.25)  # symbol test is blind to it
+        self.assertIn("pdf_garbled_text", _warning_types(extraction))
+
+    @requires_pypdf
+    def test_legitimately_spaced_heading_is_neither_garbled_nor_run_on(self):
+        # A heading typed with letter spacing ("C O N F I D E N T I A L") is a single
+        # whole-line op: it must survive verbatim (NOT collapsed to "CONFIDENTIAL")
+        # and must NOT raise a garble warning when the body is clean prose.
+        extraction = extract_pdf_document(make_pdf_positioned([
+            ("C O N F I D E N T I A L", 72, 720, 14),
+            ("The parties agree to keep all information secret and secure at all times "
+             "during the term of this Agreement and for three years after its termination.", 72, 700, 11),
+        ]))
+        texts = [str(p["text"]) for p in extraction.paragraphs]
+        self.assertIn("C O N F I D E N T I A L", texts)
+        self.assertNotIn("pdf_garbled_text", _warning_types(extraction))
+
+
+class PdfGapAwareJoinTests(unittest.TestCase):
+    """DEFECT 2a: same-baseline chunks are joined with a space UNLESS the next chunk
+    begins essentially where the previous one ended (per-glyph fragments of one word),
+    while a stale/collapsed start x keeps the safe joining space."""
+
+    def _bucket(self, chunks):
+        return pdf_text._merge_line_bucket(list(chunks))
+
+    def test_adjacent_fragments_join_without_spurious_space(self):
+        # "WITN" ends ~ where "ESS" begins (advances ~0.5em at size 10): one word.
+        line = self._bucket([
+            (72.0, 700.0, 10.0, "WITN"),
+            (72.0 + 4 * 10.0 * 0.5, 700.0, 10.0, "ESS"),
+        ])
+        self.assertEqual(line.text, "WITNESS")
+
+    def test_real_gap_keeps_the_space(self):
+        # A genuine word gap (a space glyph's width beyond the estimated end) is kept.
+        line = self._bucket([
+            (72.0, 700.0, 10.0, "hello"),
+            (72.0 + 5 * 10.0 * 0.5 + 10.0, 700.0, 10.0, "world"),
+        ])
+        self.assertEqual(line.text, "hello world")
+
+    def test_collapsed_start_x_keeps_the_space(self):
+        # The pypdf memo collapse: a second same-baseline run reports the SAME stale
+        # start x. Adjacency is unprovable, so the historical joining space is kept.
+        line = self._bucket([
+            (72.0, 700.0, 11.0, "1. The parties agree to keep information confidential."),
+            (72.0, 700.0, 11.0, "Page 1 of 3"),
+        ])
+        self.assertEqual(
+            line.text,
+            "1. The parties agree to keep information confidential. Page 1 of 3",
+        )
+
+    def test_single_chunk_bucket_is_unchanged(self):
+        line = self._bucket([(72.0, 700.0, 12.0, "A single ordinary line of text.")])
+        self.assertEqual(line.text, "A single ordinary line of text.")
+
+
 def make_pdf(text):
     return make_pdf_pages([[text]])
 
@@ -2631,6 +2870,50 @@ def make_pdf_positioned(lines_with_geometry):
         f"{object_count} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n",
     ]
     return _pdf_package(objects)
+
+
+def make_pdf_cm_positioned(blocks):
+    """Build a single-page PDF whose text blocks are positioned via ``q ... cm ... Q``.
+
+    ``blocks`` is a list of ``(cm_tuple, lines)`` where ``cm_tuple`` is the 6-number
+    current-transformation matrix pushed for the block and ``lines`` is a list of
+    ``(text, local_x, local_y, font_size)`` drawn under it. This reproduces reportlab
+    Platypus / LibreOffice-frame output where several blocks share small LOCAL text
+    coordinates and are separated only by their ``cm`` — the Defect 3 shape.
+    """
+
+    object_count = 5
+    operations = []
+    for cm_tuple, lines in blocks:
+        cm = " ".join(str(value) for value in cm_tuple)
+        operations.append(f"q {cm} cm BT")
+        for text, x, y, font_size in lines:
+            operations.append(f"/F1 {font_size} Tf 1 0 0 1 {x} {y} Tm ({_escape_pdf_text(text)}) Tj")
+        operations.append("ET Q")
+    stream = " ".join(operations) + "\n"
+    objects = [
+        "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n",
+        "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n",
+        "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        f"/Resources << /Font << /F1 {object_count} 0 R >> >> /Contents 4 0 R >> endobj\n",
+        f"4 0 obj << /Length {len(stream.encode('latin-1'))} >> stream\n{stream}endstream endobj\n",
+        f"{object_count} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n",
+    ]
+    return _pdf_package(objects)
+
+
+def _per_glyph_no_jitter_lines(lines_with_geometry):
+    """Explode each line into ONE (char, x, y, size) op per glyph on a CLEAN baseline
+    (no jitter), advancing x by a fixed fraction of the font size — the flattened
+    per-glyph shape that pypdf reassembles into letter-spaced garble."""
+    ops = []
+    for text, x0, y, size in lines_with_geometry:
+        x = x0
+        for char in text:
+            if char != " ":
+                ops.append((char, round(x, 2), y, size))
+            x += size * 0.55
+    return ops
 
 
 # Helvetica AFM advance widths (per mille of the font size) for the glyphs the

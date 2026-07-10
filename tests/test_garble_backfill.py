@@ -66,14 +66,27 @@ NORMAL_PDF_BYTES = make_pdf("The parties agree to keep all Confidential Informat
 
 def _pre_fix_extracted_text(pdf_bytes: bytes) -> str:
     """The text the PRE-FIX extractor stored for these bytes: run the current
-    extractor with the per-glyph demotion disabled (the exact code path old
-    imports took), reproducing the historical garbled stored shape."""
-    original = pdf_text._GLYPH_FRAGMENT_RUN_MIN
+    extractor with BOTH post-fix behaviours that touch the per-glyph geometry path
+    disabled, reproducing the historical garbled stored shape old imports produced.
+
+    Two knobs must be neutralised, not one:
+      * ``_GLYPH_FRAGMENT_RUN_MIN`` — the per-glyph flat-text demotion (forces the
+        visitor-geometry path the old importer used); and
+      * ``_ADJACENCY_GAP_FACTOR`` — the newer gap-aware bucket join, which would
+        reassemble per-glyph fragments ("M o r w a n d" -> "Morwand") and so no longer
+        reproduce the exploded space-joined shape the old ``" ".join`` stored on disk.
+        Set to ``-inf`` so the adjacency test never fires and every same-baseline chunk
+        is space-joined exactly as before.
+    """
+    original_demotion = pdf_text._GLYPH_FRAGMENT_RUN_MIN
+    original_adjacency = pdf_text._ADJACENCY_GAP_FACTOR
     pdf_text._GLYPH_FRAGMENT_RUN_MIN = 10**9
+    pdf_text._ADJACENCY_GAP_FACTOR = float("-inf")
     try:
         paragraphs = pdf_text.extract_pdf_paragraphs(pdf_bytes)
     finally:
-        pdf_text._GLYPH_FRAGMENT_RUN_MIN = original
+        pdf_text._GLYPH_FRAGMENT_RUN_MIN = original_demotion
+        pdf_text._ADJACENCY_GAP_FACTOR = original_adjacency
     return extracted_text_from_paragraphs(paragraphs)
 
 

@@ -129,6 +129,56 @@ _WRAP_PITCH_FLOOR_POINTS = 13.2
 # error in the gap >= threshold comparisons.
 _GAP_EPSILON = 0.5
 
+# --- Two-column / multi-column detection -----------------------------------
+# A run of at least this many CONSECUTIVE baselines that each carry the same
+# count (>= 2) of substantial text chunks is treated as a column band. Kept high
+# so a lone right-aligned page number or a "Signed ____  Date ____" line (a
+# single or a pair of same-baseline runs) can NEVER be mistaken for a column:
+# a genuine multi-column region persists over several consecutive lines, a
+# folio/signature line does not.
+_MIN_COLUMN_BAND_BASELINES = 3
+# Consecutive band baselines must sit within this vertical gap to belong to the same
+# band: a multiple of the font size (to allow paragraph spacing) but never below an
+# absolute floor. This is what stops a far-away signature line from chaining onto the
+# body rows above it just because it is the next bucket in the array.
+_COLUMN_BAND_MAX_LINE_GAP_EM = 3.0
+_COLUMN_BAND_MIN_LINE_GAP_POINTS = 40.0
+# EVERY column of a band must carry substantial prose (this median text length). A
+# genuine prose column clears it easily; a right-aligned folio column ("Page 1 of 3")
+# or a short table cell ("S1.1", "1,250") does not — so a body line trailed by a page
+# number on several rows is NOT mistaken for a two-column layout, and a numeric table
+# is linearised row-by-row (its natural reading order) rather than column-major.
+_COLUMN_MIN_MEDIAN_CHARS = 15
+
+# --- Letter-spaced garble detection (Defect 2b) ----------------------------
+# A baseline that carries text drawn one glyph per positioned operation collapses,
+# after ``page.extract_text`` reassembly, into letter-spaced fragments
+# ("I N WI TNESS WHEREOF, t he par t i es") whose only unusual characters are the
+# INSERTED SPACES — so the symbol-based ``_garbled_text_ratio`` scores it ~0 and
+# never fires. The signature of that corruption is instead a high fraction of
+# length-1 ALPHABETIC tokens spread across the text. We flag when that fraction
+# (after discounting the single longest contiguous single-letter run, which is
+# how a legitimately spaced heading — "C O N F I D E N T I A L" — appears) exceeds
+# this threshold. 0.20 sits well above legitimate prose (0.0) and a lone spaced
+# heading (0.0 after the discount) but below the observed garble (0.26–0.33).
+_LETTER_SPACED_GARBLE_RATIO = 0.20
+# Too few alpha tokens to judge letter-spacing reliably; a 3-word spaced heading
+# alone must not be called garble.
+_MIN_ALPHA_TOKENS_FOR_GARBLE = 8
+
+# --- Gap-aware bucket join (Defect 2a) -------------------------------------
+# The visitor exposes each chunk's START x but NO glyph widths, so a chunk's right
+# edge is only ESTIMATED (char count x font size x mean advance). We use that
+# estimate solely to SUPPRESS a spurious join-space when the next chunk begins
+# essentially where the previous one ended (per-glyph fragments of one word); we
+# never ADD a space or reorder on the estimate. When the next chunk's start x is
+# not strictly greater than the previous one's — the pypdf "memo" collapse where
+# same-baseline runs report a stale start x — adjacency is unprovable and the safe
+# default (a single joining space, the historical behaviour) is kept.
+_MEAN_GLYPH_ADVANCE_EM = 0.5
+_SPACE_ADVANCE_EM = 0.25
+_ADJACENCY_GAP_FACTOR = 0.5
+
 
 @dataclass(frozen=True)
 class PdfExtraction:
@@ -216,11 +266,13 @@ def extract_pdf_document(data: bytes, *, include_visual_profile: bool = True) ->
     pages_with_text = 0
     extracted_character_count = 0
     repeated_margins: set[str] = set()
+    column_layout_uncertain = False
     for page in reader.pages:
         try:
-            geo_lines = _extract_geo_lines(page)
+            geo_lines, page_column_uncertain = _extract_geo_lines(page)
         except Exception as exc:
             raise PdfExtractionError("The PDF text could not be extracted.") from exc
+        column_layout_uncertain = column_layout_uncertain or page_column_uncertain
         extracted_character_count += sum(len(geo_line.text) for geo_line in geo_lines)
         if extracted_character_count > MAX_PDF_EXTRACTED_CHARACTERS:
             raise PdfExtractionError(
@@ -287,6 +339,7 @@ def extract_pdf_document(data: bytes, *, include_visual_profile: bool = True) ->
         paragraph_count=len(paragraphs),
         repeated_margin_count=len(repeated_margins),
         visual_profile=visual_profile,
+        column_layout_uncertain=column_layout_uncertain,
     )
     # ADDITIVE, default-OFF table recovery. When NDA_TABLE_AUGMENTATION_ENABLED is
     # unset/false this is a strict no-op (the quality block is returned unchanged
@@ -435,29 +488,34 @@ def _guard_pdf_image_pixel_area(data: bytes, page_count: int) -> None:
                 pass
 
 
-def _extract_geo_lines(page: Any) -> list[GeoLine]:
+def _extract_geo_lines(page: Any) -> tuple[list[GeoLine], bool]:
     """Extract per-line text plus the geometry ``visitor_text`` exposes.
 
     pypdf's ``visitor_text`` callback fires once per drawn text chunk with the
-    text-matrix translation (start x via ``tm[4]``, baseline y via ``tm[5]``)
-    and the font size. We group those chunks into visual lines by baseline y so
-    the splitter can use vertical gaps, indentation and font size — the only
-    geometric signals reliably available at this layer. If the visitor yields
-    nothing usable we fall back to flat ``extract_text`` lines with no geometry,
-    which keeps the never-merge-safe text heuristics in force.
+    TEXT matrix (``tm``) and the CURRENT TRANSFORMATION matrix (``cm``). The chunk's
+    device-space origin is the composition ``tm x cm`` — reading ``tm[4]/tm[5]`` alone
+    is correct only when ``cm`` is the identity (see ``_compose_text_position``). We
+    group the composed chunks into visual lines by baseline y so the splitter can use
+    vertical gaps, indentation and font size — the geometric signals available at this
+    layer. If the visitor yields nothing usable we fall back to flat ``extract_text``
+    lines with no geometry, which keeps the never-merge-safe text heuristics in force.
+
+    Returns ``(geo_lines, column_layout_uncertain)`` — the second element is True when
+    a multi-column band was detected and the page's lines were re-ordered column-major
+    (a best-effort reconstruction the caller must surface as a quality warning, because
+    the width-less visitor geometry cannot guarantee the column assignment).
     """
 
     chunks: list[tuple[float, float, Optional[float], str]] = []
 
-    def _visitor(text: str, _cm: Any, tm: Any, _font_dict: Any, font_size: Any) -> None:
+    def _visitor(text: str, cm: Any, tm: Any, _font_dict: Any, font_size: Any) -> None:
         cleaned = " ".join(str(text).split())
         if not cleaned:
             return
-        try:
-            x = float(tm[4])
-            y = float(tm[5])
-        except (TypeError, ValueError, IndexError):
+        position = _compose_text_position(cm, tm)
+        if position is None:
             return
+        x, y = position
         size = _safe_float(font_size)
         chunks.append((x, y, size, cleaned))
 
@@ -466,9 +524,9 @@ def _extract_geo_lines(page: Any) -> list[GeoLine]:
     except Exception:
         chunks = []
 
-    geo_lines = _group_chunks_into_lines(chunks)
+    geo_lines, column_layout_uncertain = _group_chunks_into_lines(chunks)
     if geo_lines and not _chunks_are_glyph_fragmented(chunks):
-        return geo_lines
+        return geo_lines, column_layout_uncertain
 
     # Fallback: flat text with no coordinates so the splitter relies purely on
     # never-merge-safe text rules. Taken in two cases:
@@ -496,10 +554,51 @@ def _extract_geo_lines(page: Any) -> list[GeoLine]:
         page_text = ""
     flat_lines = [GeoLine(text=line, left_x=None, y=None, font_size=None) for line in _normalized_lines(page_text)]
     if flat_lines:
-        return flat_lines
+        # Flat text carries no geometry, so no column reconstruction was performed;
+        # the caller must not raise a column-layout warning for this page.
+        return flat_lines, False
     # A glyph-fragmented page whose flat extraction came back empty: mangled
     # grouped text still beats silently dropping the page's text entirely.
-    return geo_lines
+    return geo_lines, column_layout_uncertain
+
+
+def _compose_text_position(cm: Any, tm: Any) -> Optional[tuple[float, float]]:
+    """Device-space (x, y) origin of a drawn text chunk = text matrix x CTM.
+
+    pypdf's ``visitor_text`` reports the text matrix (``tm``) and the current
+    transformation matrix (``cm``) SEPARATELY. The old code read x/y from
+    ``tm[4]/tm[5]`` and discarded ``cm`` — correct ONLY when ``cm`` is the identity.
+    Producers that position a block with ``q ... cm ... Q`` (reportlab Platypus
+    tables, LibreOffice/InDesign frames, stamped overlays) draw with small LOCAL
+    ``tm`` translations under a non-identity ``cm``; several physically separate
+    blocks then share the same local ``tm`` and collapse onto one baseline, merging
+    distinct clauses. The true origin is the standard PDF row-vector composition
+    ``tm x cm`` — its translation folds in the block's ``cm`` offset AND any scale or
+    rotation the ``cm`` carries (not a bare translation add):
+
+        x = tm[4]*cm[0] + tm[5]*cm[2] + cm[4]
+        y = tm[4]*cm[1] + tm[5]*cm[3] + cm[5]
+
+    which is exactly ``pypdf._text_extraction.mult(tm, cm)[4:6]``. A malformed/absent
+    ``cm`` degrades to the identity (the historical ``tm``-only behaviour) rather than
+    dropping the chunk; a malformed ``tm`` or a non-finite result drops the chunk.
+    """
+
+    try:
+        e = float(tm[4])
+        f = float(tm[5])
+    except (TypeError, ValueError, IndexError):
+        return None
+    try:
+        a0, b0, c0, d0, e0, f0 = (float(cm[i]) for i in range(6))
+    except (TypeError, ValueError, IndexError):
+        # Identity CTM: composition reduces to the raw text-matrix translation.
+        a0, b0, c0, d0, e0, f0 = 1.0, 0.0, 0.0, 1.0, 0.0, 0.0
+    x = e * a0 + f * c0 + e0
+    y = e * b0 + f * d0 + f0
+    if x != x or y != y:  # NaN guard
+        return None
+    return x, y
 
 
 def _chunks_are_glyph_fragmented(
@@ -534,14 +633,32 @@ def _chunks_are_glyph_fragmented(
 
 def _group_chunks_into_lines(
     chunks: list[tuple[float, float, Optional[float], str]],
-) -> list[GeoLine]:
-    """Group visitor chunks that share a baseline into single visual lines."""
+) -> tuple[list[GeoLine], bool]:
+    """Group visitor chunks into visual lines, reconstructing column order.
+
+    Chunks are bucketed by baseline y (as before). A single-column page has one
+    chunk per baseline, so each baseline collapses to one line unchanged. A
+    MULTI-COLUMN page draws two (or more) columns that SHARE baselines; naively
+    space-joining a shared baseline interleaves the columns into scrambled run-ons
+    ("1. Confidential Information means 3. The obligations of this"). We instead
+    detect a COLUMN BAND — a run of >= ``_MIN_COLUMN_BAND_BASELINES`` consecutive
+    baselines that each carry the same count (>= 2) of substantial chunks — and emit
+    that band COLUMN-MAJOR (all of column 1's lines top-to-bottom, then column 2's),
+    so each clause stays contiguous. Baselines outside a band keep the historical
+    single-line merge, so a lone right-aligned page number or a "Signed __ Date __"
+    line (which never forms a persistent band) is untouched.
+
+    Returns ``(lines, column_layout_uncertain)``. The flag is True when at least one
+    band was reordered: the visitor exposes no glyph widths and collapses stale start
+    x's on shared baselines, so the column ASSIGNMENT (which chunk belongs to which
+    column) cannot be guaranteed — the caller must surface that as a quality warning.
+    """
 
     if not chunks:
-        return []
+        return [], False
     # Preserve reading order: top-to-bottom (descending y), then left-to-right.
     ordered = sorted(chunks, key=lambda chunk: (-chunk[1], chunk[0]))
-    lines: list[GeoLine] = []
+    buckets: list[list[tuple[float, float, Optional[float], str]]] = []
     bucket: list[tuple[float, float, Optional[float], str]] = []
     bucket_y: Optional[float] = None
     for x, y, size, text in ordered:
@@ -549,22 +666,211 @@ def _group_chunks_into_lines(
             bucket.append((x, y, size, text))
             bucket_y = y if bucket_y is None else bucket_y
         else:
-            lines.append(_merge_line_bucket(bucket))
+            buckets.append(bucket)
             bucket = [(x, y, size, text)]
             bucket_y = y
     if bucket:
-        lines.append(_merge_line_bucket(bucket))
-    return [line for line in lines if line.text]
+        buckets.append(bucket)
+
+    lines, columnar = _emit_lines_with_columns(buckets)
+    return [line for line in lines if line.text], columnar
+
+
+def _is_column_baseline(bucket: list[tuple[float, float, Optional[float], str]]) -> bool:
+    """True when a baseline looks like a row of >= 2 real columns (not glyph noise).
+
+    A per-glyph page below the glyph-fragment threshold can leave several LONE
+    characters on a baseline; those are fragmentation, not columns, so a baseline is
+    only column-eligible when at most half of its chunks are single characters.
+    """
+
+    if len(bucket) < 2:
+        return False
+    single_char = sum(1 for chunk in bucket if len(chunk[3]) == 1)
+    return single_char <= len(bucket) // 2
+
+
+def _baseline_y(bucket: list[tuple[float, float, Optional[float], str]]) -> float:
+    ys = [chunk[1] for chunk in bucket]
+    return sum(ys) / len(ys) if ys else 0.0
+
+
+def _baseline_font(bucket: list[tuple[float, float, Optional[float], str]]) -> Optional[float]:
+    sizes = [chunk[2] for chunk in bucket if chunk[2] is not None]
+    return max(sizes) if sizes else None
+
+
+def _baselines_vertically_adjacent(
+    upper: list[tuple[float, float, Optional[float], str]],
+    lower: list[tuple[float, float, Optional[float], str]],
+) -> bool:
+    """True when two baselines sit a line's-height apart (one continuous column band).
+
+    A column band's rows are evenly spaced by the line height; a jump to a distant
+    block (a signature line hundreds of points below the last body row) is NOT part of
+    the band. Without this guard, page numbers on two body lines plus a far-away
+    "Signed __  Date __" line would chain into a spurious 3-baseline band purely
+    because they are adjacent in the bucket array. The permitted gap scales with the
+    font size (paragraph spacing) but never below an absolute floor.
+    """
+
+    gap = abs(_baseline_y(upper) - _baseline_y(lower))
+    font = _baseline_font(upper) or _baseline_font(lower)
+    limit = max(
+        _COLUMN_BAND_MIN_LINE_GAP_POINTS,
+        (font or 0.0) * _COLUMN_BAND_MAX_LINE_GAP_EM,
+    )
+    return gap <= limit
+
+
+def _band_columns_are_substantial(
+    band: list[list[tuple[float, float, Optional[float], str]]],
+) -> bool:
+    """True when EVERY column of a candidate band carries substantial prose.
+
+    Guards against a body line trailed by a short right-aligned page number on several
+    rows (a folio "column" of ~11 characters) and against numeric table grids (cells
+    like "S1.1"/"1,250") — neither is a real prose column, so both fall back to the
+    row-wise merge rather than being reordered column-major.
+    """
+
+    column_count = len(band[0])
+    for column_index in range(column_count):
+        lengths = [len(baseline[column_index][3]) for baseline in band]
+        if median(lengths) < _COLUMN_MIN_MEDIAN_CHARS:
+            return False
+    return True
+
+
+def _emit_lines_with_columns(
+    buckets: list[list[tuple[float, float, Optional[float], str]]],
+) -> tuple[list[GeoLine], bool]:
+    """Emit baseline buckets as lines, reordering detected column bands column-major."""
+
+    # Left-to-right within each baseline. On a shared baseline the visitor collapses
+    # the columns' start x's to the same (stale) value, but still reports them as
+    # separate chunks in drawing order (column 1 before column 2), which the stable
+    # sort preserves; where the x's ARE distinct (e.g. table cells) it orders them.
+    sorted_buckets = [sorted(b, key=lambda chunk: chunk[0]) for b in buckets]
+    n = len(sorted_buckets)
+
+    # Mark each baseline with the id of the column band it belongs to (or None).
+    band_of: list[Optional[int]] = [None] * n
+    band_id = 0
+    i = 0
+    while i < n:
+        if _is_column_baseline(sorted_buckets[i]):
+            count = len(sorted_buckets[i])
+            j = i + 1
+            while (
+                j < n
+                and _is_column_baseline(sorted_buckets[j])
+                and len(sorted_buckets[j]) == count
+                and _baselines_vertically_adjacent(sorted_buckets[j - 1], sorted_buckets[j])
+            ):
+                j += 1
+            if j - i >= _MIN_COLUMN_BAND_BASELINES and _band_columns_are_substantial(
+                sorted_buckets[i:j]
+            ):
+                for k in range(i, j):
+                    band_of[k] = band_id
+                band_id += 1
+                i = j
+                continue
+        i += 1
+
+    lines: list[GeoLine] = []
+    columnar = False
+    i = 0
+    while i < n:
+        current_band = band_of[i]
+        if current_band is None:
+            lines.append(_merge_line_bucket(sorted_buckets[i]))
+            i += 1
+            continue
+        # Gather the contiguous band and emit it column-major.
+        j = i
+        while j < n and band_of[j] == current_band:
+            j += 1
+        band = sorted_buckets[i:j]  # already in descending-y (top-to-bottom) order
+        columnar = True
+        column_count = len(band[0])
+        for column_index in range(column_count):
+            for baseline in band:
+                lines.append(_chunk_to_geoline(baseline[column_index]))
+        i = j
+    return lines, columnar
+
+
+def _chunk_to_geoline(chunk: tuple[float, float, Optional[float], str]) -> GeoLine:
+    x, y, size, text = chunk
+    return GeoLine(text=" ".join(text.split()), left_x=x, y=y, font_size=size)
 
 
 def _merge_line_bucket(bucket: list[tuple[float, float, Optional[float], str]]) -> GeoLine:
     bucket = sorted(bucket, key=lambda chunk: chunk[0])
-    text = " ".join(" ".join(chunk[3].split()) for chunk in bucket if chunk[3].split())
+    parts = [
+        (chunk[0], chunk[2], " ".join(chunk[3].split()))
+        for chunk in bucket
+        if chunk[3].split()
+    ]
+    text = _join_bucket_parts(parts)
     left_x = min((chunk[0] for chunk in bucket), default=None)
     y = bucket[0][1] if bucket else None
     sizes = [chunk[2] for chunk in bucket if chunk[2] is not None]
     font_size = max(sizes) if sizes else None
     return GeoLine(text=text, left_x=left_x, y=y, font_size=font_size)
+
+
+def _join_bucket_parts(
+    parts: list[tuple[Optional[float], Optional[float], str]],
+) -> str:
+    """Join same-baseline chunks, dropping the space only on proven adjacency.
+
+    Historically every chunk on a baseline was joined with a single space. When a
+    single visual word is drawn as back-to-back positioned fragments (per-glyph
+    output below the glyph-fragment threshold) that inserts spurious spaces
+    ("WITN ESS"). We drop the joining space only when the next chunk begins essentially
+    where the previous one ended — estimated from character count x font size, since
+    the visitor exposes no glyph widths. In every ambiguous case (equal/stale start x,
+    an unknown font size, a real gap) the historical joining space is kept, so a
+    single-chunk baseline and any collapsed-x pair are byte-identical to before.
+    """
+
+    if not parts:
+        return ""
+    out = parts[0][2]
+    for index in range(1, len(parts)):
+        prev_x, prev_size, prev_text = parts[index - 1]
+        start_x, _size, text = parts[index]
+        if _chunks_are_adjacent(prev_x, prev_size, prev_text, start_x):
+            out += text
+        else:
+            out += " " + text
+    return out
+
+
+def _chunks_are_adjacent(
+    prev_x: Optional[float],
+    prev_size: Optional[float],
+    prev_text: str,
+    start_x: Optional[float],
+) -> bool:
+    """True when ``start_x`` falls within the previous chunk's estimated end.
+
+    Adjacency is only claimed when the next chunk starts STRICTLY to the right of the
+    previous one (``start_x > prev_x``); an equal or smaller start x is the pypdf
+    "memo" collapse (a stale start x reported for a second run on the same baseline),
+    where the true gap is unknown and a space must be kept.
+    """
+
+    if prev_x is None or start_x is None or prev_size is None or prev_size <= 0:
+        return False
+    if start_x <= prev_x:
+        return False
+    estimated_advance = len(prev_text) * prev_size * _MEAN_GLYPH_ADVANCE_EM
+    gap = start_x - (prev_x + estimated_advance)
+    return gap < _ADJACENCY_GAP_FACTOR * (prev_size * _SPACE_ADVANCE_EM)
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -1126,6 +1432,7 @@ def _pdf_quality_report(
     paragraph_count: int,
     repeated_margin_count: int,
     visual_profile: dict[str, object] | None = None,
+    column_layout_uncertain: bool = False,
 ) -> dict[str, object]:
     extracted_characters = len(extracted_text)
     warnings: list[dict[str, object]] = []
@@ -1144,10 +1451,26 @@ def _pdf_quality_report(
             "type": "pdf_low_paragraph_count",
             "message": "The PDF text may have been extracted as overly large paragraphs.",
         })
-    if _garbled_text_ratio(extracted_text) > 0.25:
+    # ``pdf_garbled_text`` fires on EITHER signature of corruption: symbol/spacing
+    # noise (``_garbled_text_ratio``) OR letter-spaced glyph garble
+    # (``_letter_spaced_garble_ratio``), which is invisible to the symbol test
+    # because its only unusual characters are inserted spaces between real letters.
+    if (
+        _garbled_text_ratio(extracted_text) > 0.25
+        or _letter_spaced_garble_ratio(extracted_text) > _LETTER_SPACED_GARBLE_RATIO
+    ):
         warnings.append({
             "type": "pdf_garbled_text",
             "message": "The PDF extraction contains an unusual amount of symbols or spacing.",
+        })
+    if column_layout_uncertain:
+        warnings.append({
+            "type": "pdf_column_layout_uncertain",
+            "message": (
+                "The PDF appears to use a multi-column layout; the reading order was "
+                "reconstructed best-effort and some clauses may be out of order. Review "
+                "against the original document."
+            ),
         })
     if _visual_profile_requires_source_preview(visual_profile):
         warnings.append({
@@ -1368,3 +1691,36 @@ def _garbled_text_ratio(text: str) -> float:
         if not character.isalnum() and not character.isspace() and character not in allowed_punctuation
     )
     return suspicious / max(1, len(text))
+
+
+def _letter_spaced_garble_ratio(text: str) -> float:
+    """Fraction of alpha tokens that are LONE letters — the letter-spaced garble tell.
+
+    A per-glyph page reassembled by ``page.extract_text`` collapses into letter-spaced
+    fragments ("I N WI TNESS WHEREOF, t he par t i es"); its only unusual characters
+    are inserted spaces, so ``_garbled_text_ratio`` (which counts symbols) scores it ~0
+    and ``pdf_garbled_text`` never fires. That corruption instead shows up as a high
+    fraction of length-1 alphabetic whitespace tokens scattered through the text.
+
+    A LEGITIMATELY spaced heading ("C O N F I D E N T I A L") is also a burst of lone
+    letters, but a CONTIGUOUS one, whereas garble scatters them among broken words. We
+    discount the single longest contiguous run of lone letters (the heading) before
+    computing the ratio, so a lone spaced heading scores 0 while pervasive garble stays
+    high. Returns 0.0 when there is too little alpha text to judge.
+    """
+
+    tokens = text.split()
+    alpha_tokens = [token for token in tokens if any(character.isalpha() for character in token)]
+    if len(alpha_tokens) < _MIN_ALPHA_TOKENS_FOR_GARBLE:
+        return 0.0
+    is_lone_letter = [len(token) == 1 and token.isalpha() for token in alpha_tokens]
+    total_lone = sum(is_lone_letter)
+    if not total_lone:
+        return 0.0
+    longest_run = current_run = 0
+    for lone in is_lone_letter:
+        current_run = current_run + 1 if lone else 0
+        if current_run > longest_run:
+            longest_run = current_run
+    scattered_lone = max(0, total_lone - longest_run)
+    return scattered_lone / len(alpha_tokens)
