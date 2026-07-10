@@ -744,24 +744,167 @@ class ConversionCachingAndBoundsTests(unittest.TestCase):
         # guaranteed placeholder PNG rather than raising or leaving a blank part.
         self.assertTrue(_read_member(result, "word/media/image1.png").startswith(PNG_SIGNATURE))
 
-    def test_default_soffice_path_bounded_to_two_concurrent_children(self):
+    # -- P2-b: eviction / cache errors must NEVER escape to the serve path -------
+    # normalize_docx_emf_wmf_images is invoked with NO try/except at both live
+    # call sites (routes/approval.py, routes/matters.py). A cache/eviction error
+    # that escaped would 500 the serve request for a document that must always be
+    # served. These pin the never-raises contract at the failure seams.
+
+    def test_eviction_error_is_swallowed_and_document_still_served(self):
+        # (f) _enforce_disk_bound raises: the conversion + disk write already
+        # succeeded, so normalize returns the fully NORMALIZED document, the error
+        # is swallowed, and a WARNING is logged. It never escapes to the caller.
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = _ImageConversionCache(cache_dir=Path(tmp))
+            docx = _docx_with_emf_media({"word/media/image1.emf": b"EMF-BYTES"})
+            with mock.patch.object(
+                _ImageConversionCache, "_enforce_disk_bound", side_effect=OSError("evict boom")
+            ):
+                with self.assertLogs(
+                    "nda_automation.docx_image_normalize", level="WARNING"
+                ) as logs:
+                    result = normalize_docx_emf_wmf_images(
+                        docx, converter=FakeConverter(PNG_SIGNATURE + b"p"), image_cache=cache
+                    )
+        # Document served, normalized (not the untouched fallback): image is a PNG.
+        self.assertEqual(_media_emf_names(result), [])
+        self.assertTrue(
+            _read_member(result, "word/media/image1.png").startswith(PNG_SIGNATURE)
+        )
+        with ZipFile(BytesIO(result)) as archive:
+            self.assertIsNone(archive.testzip())
+        self.assertTrue(any("eviction failed" in line for line in logs.output))
+
+    def test_eviction_non_oserror_also_swallowed(self):
+        # Belt: a non-OSError from eviction (e.g. keep.resolve() RuntimeError on a
+        # symlink loop) must also be caught, not just OSError.
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = _ImageConversionCache(cache_dir=Path(tmp))
+            docx = _docx_with_emf_media({"word/media/image1.emf": b"EMF-BYTES"})
+            with mock.patch.object(
+                _ImageConversionCache, "_enforce_disk_bound", side_effect=RuntimeError("loop")
+            ):
+                with self.assertLogs("nda_automation.docx_image_normalize", level="WARNING"):
+                    result = normalize_docx_emf_wmf_images(
+                        docx, converter=FakeConverter(PNG_SIGNATURE + b"p"), image_cache=cache
+                    )
+        self.assertTrue(
+            _read_member(result, "word/media/image1.png").startswith(PNG_SIGNATURE)
+        )
+
+    def test_disk_put_write_enospc_is_a_silent_no_op(self):
+        # (g) A disk-full (ENOSPC) on the cache WRITE must fail soft SILENTLY (a
+        # persistently full /var/data must not spam the log every serve) and never
+        # escape. The document is still served normalized (conversion is in-memory;
+        # the disk cache is just skipped this round).
+        import errno
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = _ImageConversionCache(cache_dir=Path(tmp))
+            docx = _docx_with_emf_media({"word/media/image1.emf": b"EMF-BYTES"})
+            with mock.patch.object(
+                image_normalize.tempfile,
+                "mkstemp",
+                side_effect=OSError(errno.ENOSPC, "No space left on device"),
+            ):
+                result = normalize_docx_emf_wmf_images(
+                    docx, converter=FakeConverter(PNG_SIGNATURE + b"p"), image_cache=cache
+                )
+        self.assertEqual(_media_emf_names(result), [])
+        self.assertTrue(
+            _read_member(result, "word/media/image1.png").startswith(PNG_SIGNATURE)
+        )
+        with ZipFile(BytesIO(result)) as archive:
+            self.assertIsNone(archive.testzip())
+
+    def test_unreadable_cache_dir_still_serves(self):
+        # (h) Cache dir that cannot be created (its parent is a regular file, so
+        # mkdir raises NotADirectoryError, a subclass of OSError): the disk tier is
+        # unusable, but the document must still be served normalized.
+        with tempfile.TemporaryDirectory() as tmp:
+            blocker = Path(tmp) / "not-a-dir"
+            blocker.write_bytes(b"i am a file, not a directory")
+            cache = _ImageConversionCache(cache_dir=blocker / "cache")
+            docx = _docx_with_emf_media({"word/media/image1.emf": b"EMF-BYTES"})
+            result = normalize_docx_emf_wmf_images(
+                docx, converter=FakeConverter(PNG_SIGNATURE + b"p"), image_cache=cache
+            )
+        self.assertEqual(_media_emf_names(result), [])
+        self.assertTrue(
+            _read_member(result, "word/media/image1.png").startswith(PNG_SIGNATURE)
+        )
+
+    # -- P3(i): the disk eviction bound is real ---------------------------------
+
+    def test_disk_eviction_removes_oldest_by_mtime_and_spares_keep(self):
+        # Fill the cache past a small bound with files of increasing mtime, then
+        # enforce the bound keeping the NEWEST. The oldest-by-mtime files beyond
+        # the bound are removed; `keep` survives; the survivor count == the bound.
+        import os as _os
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            cache = _ImageConversionCache(cache_dir=cache_dir, max_entries=3)
+            paths = []
+            for i in range(5):
+                p = cache_dir / f"{i:064x}.png"
+                p.write_bytes(PNG_SIGNATURE + f"e{i}".encode())
+                _os.utime(p, (1000 + i, 1000 + i))  # strictly increasing mtime
+                paths.append(p)
+            keep = paths[-1]  # newest
+
+            cache._enforce_disk_bound(cache_dir, keep=keep)
+
+            survivors = sorted(p.name for p in cache_dir.iterdir() if p.suffix == ".png")
+            self.assertEqual(len(survivors), 3, survivors)
+            self.assertTrue(keep.exists(), "the freshly-written keep entry was evicted")
+            # The two OLDEST (mtime 1000, 1001) are the ones removed.
+            self.assertFalse(paths[0].exists())
+            self.assertFalse(paths[1].exists())
+            self.assertTrue(paths[2].exists() and paths[3].exists())
+
+    def test_disk_put_enforces_bound_end_to_end(self):
+        # End-to-end through the real convert->store->evict path: storing more
+        # distinct images than the bound leaves the on-disk cache at (not above)
+        # the bound, and the most recently written entry survives.
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            cache = _ImageConversionCache(cache_dir=cache_dir, max_entries=4)
+            last_key = None
+            for i in range(9):
+                data = f"DISTINCT-IMG-{i}".encode()
+                cache.convert_and_store(data, "emf", FakeConverter(PNG_SIGNATURE + f"{i}".encode()))
+                last_key = _ImageConversionCache._key(data)
+            on_disk = [p for p in cache_dir.iterdir() if p.suffix == ".png"]
+            self.assertLessEqual(len(on_disk), 4, [p.name for p in on_disk])
+            self.assertTrue((cache_dir / f"{last_key}.png").exists(), "most-recent entry evicted")
+
+    def test_default_soffice_path_bounded_to_exactly_two_concurrent_children(self):
         # The default converter's soffice conversions must go through the SAME
         # process-wide BoundedSemaphore(2) the DOCX->PDF path uses. Drive it from
-        # four threads with distinct images and instrument the soffice runner:
-        # concurrency must never exceed two.
+        # four threads (12 distinct images total, an EVEN count) and instrument the
+        # runner. A Barrier(2) INSIDE the fake runner forces a partner to be
+        # in-flight before either proceeds, so the observed concurrency is not
+        # merely "<= 2" but EXACTLY 2: the barrier proves >= 2 actually overlapped
+        # (the semaphore genuinely admits a second child) and the semaphore caps it
+        # at 2. A mistakenly-private semaphore, or a per-call one, would either
+        # deadlock the barrier (never 2 in flight) or blow past 2.
         import nda_automation.document_rendering as document_rendering
 
         state = {"now": 0, "max": 0}
         state_lock = threading.Lock()
         errors: list[str] = []
         errors_lock = threading.Lock()
+        pair_barrier = threading.Barrier(2, timeout=30)
 
         def fake_run_soffice(command, *, cwd, timeout_seconds):
             with state_lock:
                 state["now"] += 1
                 state["max"] = max(state["max"], state["now"])
             try:
-                time.sleep(0.02)
+                # Block until a second conversion is also in-flight. Only reachable
+                # if the shared semaphore admits two children at once.
+                pair_barrier.wait()
                 (Path(cwd) / "image.png").write_bytes(PLACEHOLDER_PNG_BYTES)
                 return 0, b"", b""
             finally:
@@ -789,9 +932,12 @@ class ConversionCachingAndBoundsTests(unittest.TestCase):
                 thread.join()
 
         self.assertEqual(errors, [])
-        self.assertGreater(state["max"], 0, "no soffice conversions ran; the test did not exercise the path")
-        self.assertLessEqual(
-            state["max"], 2, "soffice conversions exceeded the shared BoundedSemaphore(2) cap"
+        self.assertEqual(
+            state["max"],
+            2,
+            "soffice concurrency was not exactly 2 under the shared "
+            "BoundedSemaphore(2) (a barrier forced two in-flight; the cap holds it "
+            f"at two): observed max {state['max']}",
         )
 
 
