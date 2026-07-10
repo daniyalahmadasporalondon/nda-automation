@@ -14,11 +14,15 @@ the FE's fallback fetch. These tests prove:
 from __future__ import annotations
 
 import copy
+from io import BytesIO
 
 import pytest
+from docx import Document
 
 from nda_automation import (
     approval,
+    artifact_registry,
+    artifact_service,
     matter_document_artifacts,
     matter_store,
     reviewed_docx_cache,
@@ -134,7 +138,9 @@ def test_head_does_not_invoke_composer_cold_cache(monkeypatch):
     assert calls["n"] == 0
     assert head.download["send_body"] is False
     assert head.download["data"] == b""
-    assert head.download_headers.get("ETag")
+    # Defect P2: a cold HEAD must NOT advertise a validator for bytes it never
+    # composed. No ETag until the body-bearing GET produces + stores the bytes.
+    assert head.download_headers.get("ETag") is None
 
 
 def test_head_does_not_invoke_composer_warm_cache(monkeypatch):
@@ -187,6 +193,169 @@ def test_changing_reviewer_draft_misses_cache(monkeypatch):
 
     _get(matter_id)
     # Draft changed -> fingerprint changed -> recompose.
+    assert calls["n"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# Defect P1: cache poisoning by OMISSION. The composer reads the raw source bytes
+# fresh (or SUBSTITUTES the role="working" DOCX for a PDF matter). Neither is
+# captured by extracted_text/source_filename, so a rebuilt working DOCX or edited
+# source used to keep the SAME fingerprint -> composer never re-run -> stale bytes
+# served. The fingerprint now folds in the composition SOURCE IDENTITY.
+# --------------------------------------------------------------------------- #
+def _working_docx_with_title(paragraphs, title):
+    """A byte-DIFFERENT working DOCX with IDENTICAL body text: only a core-property
+    changes, so the redline still anchors/covers exactly (recompose succeeds) while
+    the artifact content hash changes (the composed output bytes differ). This is the
+    gate's scenario -- a working DOCX rebuilt in place, extracted_text untouched."""
+    document = Document()
+    for text in paragraphs:
+        document.add_paragraph(text)
+    document.core_properties.title = title
+    buffer = BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def test_reregistering_a_different_working_docx_misses_and_recomposes(monkeypatch):
+    # The gate's EXACT repro: PDF matter with a working DOCX. GET composes + stores.
+    # Then re-register a DIFFERENT working DOCX (register_working_docx replaces the
+    # working artifact) WITHOUT touching extracted_text / review_result / source_filename.
+    matter_id = _seed_approved_matter_with_redline(source_docx=False, working_docx=True)
+    calls = _spy_composer(monkeypatch)
+
+    first = _get(matter_id)
+    assert first.status == 200, first.json
+    assert calls["n"] == 1
+    first_bytes = first.download["data"]
+
+    new_working = _working_docx_with_title(NDA_PARAGRAPHS, "healed-v2")
+    registered = artifact_service.register_working_docx(matter_id, new_working, owner_user_id="owner-1")
+    assert registered is not None  # different bytes -> a real new working artifact
+
+    second = _get(matter_id)
+    assert second.status == 200, second.json
+    # The working bytes changed -> fingerprint changed -> MISS -> recompose.
+    assert calls["n"] == 2
+    # And the freshly composed bytes reflect the new working DOCX (not the stale entry).
+    assert second.download["data"] != first_bytes
+
+
+def test_reregistering_identical_working_docx_still_hits(monkeypatch):
+    # Re-registering the SAME working bytes must NOT spuriously invalidate: the
+    # content-hash key is byte-derived, and register_working_docx is idempotent on it.
+    matter_id = _seed_approved_matter_with_redline(source_docx=False, working_docx=True)
+    calls = _spy_composer(monkeypatch)
+
+    first = _get(matter_id)
+    assert first.status == 200, first.json
+    assert calls["n"] == 1
+
+    # Re-register the EXACT current working bytes.
+    stored = matter_store.get_matter(matter_id, owner_user_id="owner-1")
+    working = artifact_registry.latest_artifact_for_role(stored, artifact_registry.ROLE_WORKING)
+    same_bytes = artifact_service.get_artifact_bytes(matter_id, working.id, owner_user_id="owner-1")
+    assert artifact_service.register_working_docx(matter_id, same_bytes, owner_user_id="owner-1") is None
+
+    second = _get(matter_id)
+    assert second.status == 200, second.json
+    # Same bytes -> same content hash -> same fingerprint -> HIT (no recompose).
+    assert calls["n"] == 1
+    assert second.download["data"] == first.download["data"]
+
+
+def test_changing_source_document_bytes_misses(monkeypatch):
+    # Native DOCX matter (no working artifact): the composer reads the raw source
+    # bytes. Overwriting them (body text unchanged, so the redline still composes)
+    # must MISS -- the source-identity hash moves.
+    matter_id = _seed_approved_matter_with_redline(source_docx=True)
+    calls = _spy_composer(monkeypatch)
+
+    first = _get(matter_id)
+    assert first.status == 200, first.json
+    assert calls["n"] == 1
+
+    matter = matter_store.get_matter(matter_id, owner_user_id="owner-1")
+    source_path = matter_store.source_document_path(matter)
+    assert source_path is not None
+    source_path.write_bytes(_working_docx_with_title(NDA_PARAGRAPHS, "source-edited"))
+
+    second = _get(matter_id)
+    assert second.status == 200, second.json
+    # Source bytes changed -> fingerprint changed -> MISS -> recompose.
+    assert calls["n"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# Defect P2: 304 / cold-HEAD must never advertise a validator for bytes never
+# composed. The ETag derives from fingerprint INPUTS, so a match alone does not
+# prove the bytes exist -- the route must gate 304 (and any advertised validator)
+# on load() actually returning a representation.
+# --------------------------------------------------------------------------- #
+def test_cold_head_issues_no_etag_and_conditional_get_composes_not_304(monkeypatch):
+    matter_id = _seed_approved_matter_with_redline(source_docx=True)
+    calls = _spy_composer(monkeypatch)
+
+    head = _get(matter_id, send_body=False)
+    assert head.status == 200
+    assert calls["n"] == 0
+    assert head.download_headers.get("ETag") is None  # cold HEAD advertises nothing
+
+    # Even if a client fabricated the input-derived validator, nothing is cached, so
+    # the conditional GET must NOT 304 -- it composes and returns 200 with real bytes.
+    matter = matter_store.get_matter(matter_id, owner_user_id="owner-1")
+    fp = reviewed_docx_cache.reviewed_docx_fingerprint(
+        matter_id, matter, changes_mode="tracked", owner_user_id="owner-1"
+    )
+    forged_etag = reviewed_docx_cache.etag_for(fp)
+    conditional = _get(matter_id, if_none_match=forged_etag)
+    assert conditional.status == 200, conditional.json
+    assert conditional.download is not None and conditional.download["data"][:2] == b"PK"
+    assert calls["n"] == 1  # it composed rather than short-circuiting to 304
+
+
+def test_warm_head_advertises_etag_and_conditional_get_304s(monkeypatch):
+    matter_id = _seed_approved_matter_with_redline(source_docx=True)
+    calls = _spy_composer(monkeypatch)
+
+    _get(matter_id)  # compose + store
+    assert calls["n"] == 1
+
+    head = _get(matter_id, send_body=False)
+    assert head.status == 200
+    assert calls["n"] == 1  # warm HEAD serves from cache, no build
+    etag = head.download_headers.get("ETag")
+    assert etag  # warm HEAD DOES advertise the validator
+
+    conditional = _get(matter_id, if_none_match=etag)
+    assert conditional.status == 304
+    assert conditional.download is None
+    assert calls["n"] == 1
+
+
+def test_no_304_when_cache_lacks_the_representation(monkeypatch):
+    # A fingerprint match with the bytes GONE (evicted / file deleted) must recompose,
+    # never 304 with an empty body.
+    matter_id = _seed_approved_matter_with_redline(source_docx=True)
+    calls = _spy_composer(monkeypatch)
+
+    first = _get(matter_id)
+    assert first.status == 200, first.json
+    etag = first.download_headers["ETag"]
+    assert calls["n"] == 1
+
+    # Delete the .bin behind the entry so load() misses despite the fingerprint match.
+    matter = matter_store.get_matter(matter_id, owner_user_id="owner-1")
+    fp = reviewed_docx_cache.reviewed_docx_fingerprint(
+        matter_id, matter, changes_mode="tracked", owner_user_id="owner-1"
+    )
+    (reviewed_docx_cache.cache_root() / f"{fp}.bin").unlink()
+    assert reviewed_docx_cache.load(fp) is None
+
+    conditional = _get(matter_id, if_none_match=etag)
+    # No representation held -> NOT 304 -> recompose + 200 with bytes.
+    assert conditional.status == 200, conditional.json
+    assert conditional.download is not None and conditional.download["data"][:2] == b"PK"
     assert calls["n"] == 2
 
 

@@ -8,12 +8,27 @@ for every view mode, for the FE's faithful-fallback fetch, and even for HEAD
 (which ran the identical full build with send_body=False).
 
 This module caches the FINAL served bytes (post accept + normalize) keyed on a
-fingerprint of everything that affects them: the matter's source text, the
-reviewer draft (decisions), the stored review result, the source identity, and
-the view mode. Repeat views, the fallback fetch, and HEAD serve from disk; a
-change to the text, the draft, the review result, or the mode changes the
-fingerprint and misses. The fingerprint doubles as the strong ETag so a
-conditional GET (If-None-Match) short-circuits to 304.
+fingerprint of everything the composer actually reads:
+
+  * the matter's source text (``extracted_text``),
+  * the reviewer draft (per-clause decisions -> ``reviewed_docx_payload``),
+  * the stored review result,
+  * the view mode (tracked|accepted),
+  * the COMPOSITION SOURCE IDENTITY -- the content hash of the exact bytes the
+    redline is composed against: the role="working" DOCX's stored content hash
+    when a working artifact exists (the composer substitutes it for the source),
+    else a hash of the raw source-document bytes. Neither the source bytes nor the
+    working artifact are captured by ``extracted_text``/``source_filename`` (those
+    are only a PROXY), so without this a rebuilt working DOCX -- e.g. the
+    garble_backfill admin tool healing a garbled PDF matter -- would keep serving
+    the stale, still-garbled composed bytes off a durable ``/var/data``.
+
+Repeat views, the fallback fetch, and HEAD serve from disk; a change to ANY of
+those inputs changes the fingerprint and misses. The fingerprint doubles as the
+strong ETag, but a conditional GET only short-circuits to 304 when the cache
+ACTUALLY holds the representation (the route checks ``load`` before honoring an
+If-None-Match) -- the ETag names inputs, not a produced body, so a fingerprint
+match alone never authorizes "Not Modified" for bytes we cannot serve.
 
 The cache reuses document_rendering's eviction bound (MAX_RENDER_CACHE_ENTRIES)
 and lives under the same durable cache root, so the whole render/export cache
@@ -29,12 +44,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import document_rendering, matter_store
+from . import artifact_registry, document_rendering, matter_store
 
 CACHE_DIRNAME = "reviewed-docx"
-# Bumped when the composition or fingerprint composition changes so stale entries
-# from an older build can never be served.
-CACHE_VERSION = "reviewed-docx:v1"
+# COORDINATION RULE: bump this on ANY change to what the composer produces or to
+# what this fingerprint reads -- i.e. the redline composition, the accept-all pass,
+# the EMF/WMF image normalization, the DOCX content-coverage gate, OR the set of
+# inputs folded into reviewed_docx_fingerprint below. On a durable /var/data a
+# pre-change entry survives a deploy, so a stale-composition entry could be served
+# after a behavioural change that DID NOT bump this. (Example the gate flagged: a
+# sibling branch changed the image normalizer without bumping -- that MUST bump.)
+# v2: folded the composition source identity (source/working-artifact content hash)
+# into the fingerprint so a rebuilt working DOCX or changed source bytes misses.
+CACHE_VERSION = "reviewed-docx:v2"
 
 _FINGERPRINT_RE = re.compile(r"[0-9a-f]{64}")
 
@@ -51,6 +73,47 @@ def cache_root() -> Path:
     return (matter_store.DATA_DIR / "cache" / CACHE_DIRNAME).resolve()
 
 
+def _composition_source_identity(matter: dict[str, Any]) -> str:
+    """The identity of the exact bytes the composer reads for the SOURCE document.
+
+    ``redline_export_service`` composes against the raw source-document bytes --
+    UNLESS the matter carries a role="working" DOCX (a PDF reconstructed once at
+    ingest), in which case it SUBSTITUTES the working DOCX bytes for the source
+    (``_working_docx_for_matter``). So the fingerprint must key on whichever the
+    composer will actually use; ``extracted_text``/``source_filename`` are only a
+    proxy and do NOT move when those bytes are rebuilt in place (the garble_backfill
+    working-DOCX rebuild is the proven case). Returns a short tagged token:
+
+    * ``"working:<content_hash>"`` -- the working artifact's stored sha256 (computed
+      at registration; NO disk read, NO rehash). It is byte-derived, so
+      re-registering IDENTICAL bytes yields the same token (still a HIT) while a
+      rebuilt/different working DOCX yields a new token (a MISS). Falls back to the
+      artifact id only if a legacy record somehow lacks a content hash.
+    * ``"source:<sha256>"`` -- for a matter with NO working artifact, a hash of the
+      raw source bytes the composer reads. This is a single small file read + a
+      sha256, negligible beside the multi-second compose this cache exists to skip,
+      and runs only for native-DOCX / legacy-PDF matters (no cheaper stored hash is
+      guaranteed for the raw source, so we hash it directly for correctness).
+
+    Never raises: any error degrades to an empty token (the other fingerprint
+    inputs still apply), never a crash of the GET.
+    """
+    try:
+        working = artifact_registry.latest_artifact_for_role(
+            matter, artifact_registry.ROLE_WORKING
+        )
+        if working is not None:
+            return "working:" + (working.content_hash or working.id or "")
+        source_bytes = matter_store.get_source_document_bytes(matter)
+        if not source_bytes:
+            return "source:"
+        return "source:" + hashlib.sha256(source_bytes).hexdigest()
+    except Exception:  # noqa: BLE001 -- identity is best-effort; a failure must not
+        # crash the fingerprint. An empty token is stable (the source_filename +
+        # extracted_text proxies still contribute), so it degrades safely.
+        return "source:error"
+
+
 def reviewed_docx_fingerprint(
     matter_id: str,
     matter: dict[str, Any],
@@ -60,8 +123,8 @@ def reviewed_docx_fingerprint(
 ) -> str:
     """A stable content fingerprint of the composed reviewed-DOCX bytes.
 
-    Folds in every input that changes the output so two GETs with no change hit
-    the same entry, while a change to any input misses:
+    Folds in every input the composer reads so two GETs with no change hit the same
+    entry, while a change to any input misses:
 
     * ``matter_id`` + owner -- so no two matters ever collide on one entry.
     * ``changes_mode`` (tracked|accepted) -- accepted flattens the revisions, so
@@ -71,6 +134,11 @@ def reviewed_docx_fingerprint(
       review comments derived from the per-clause decisions).
     * the stored ``review_result`` (redline_edits + playbook_version hash + clauses).
     * ``source_filename`` -- a coarse source-identity guard.
+    * ``source_identity`` -- the CONTENT hash of the actual bytes the composer reads
+      (the working DOCX's stored hash, or a hash of the raw source bytes). This is
+      the load-bearing addition: without it a rebuilt working DOCX or edited source
+      keeps the same key and the composer is never re-run (stale bytes served).
+      See ``_composition_source_identity``.
     """
     from . import approval  # local import avoids any import cycle at module load
 
@@ -87,6 +155,7 @@ def reviewed_docx_fingerprint(
         "changes_mode": str(changes_mode),
         "extracted_text": matter.get("extracted_text") or "",
         "source_filename": str(matter.get("source_filename") or ""),
+        "source_identity": _composition_source_identity(matter),
         "draft": draft,
         "review_result": matter.get("review_result"),
     }

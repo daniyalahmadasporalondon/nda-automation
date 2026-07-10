@@ -55,17 +55,22 @@ def _serve_reviewed_docx(
     filename: str,
     content_type: str,
     headers: dict[str, str],
-    etag: str,
+    etag: str | None,
     send_body: bool,
 ) -> None:
-    """Serve the reviewed DOCX with its strong ETag attached.
+    """Serve the reviewed DOCX, attaching the strong ETag when one is supplied.
 
     Routed through ``handler._send_download`` so it stays compatible with every
     existing handler (real + test doubles); the ETag rides in the header map, and
     the caller has already honored any matching If-None-Match with a 304.
+
+    ``etag`` is None ONLY for a cold HEAD (no representation exists yet): we must not
+    advertise a validator for bytes we have not produced, so the ETag header is
+    omitted rather than lying about what we hold.
     """
     response_headers = dict(headers or {})
-    response_headers["ETag"] = etag
+    if etag:
+        response_headers["ETag"] = etag
     handler._send_download(
         data,
         filename,
@@ -400,21 +405,26 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
     # ------------------------------------------------------------------ #
     # Composed-bytes cache (Defect B). The composition below is expensive and ran
     # on EVERY GET/HEAD, per view mode, and for the FE's fallback fetch. Fingerprint
-    # everything that affects the bytes (source text + reviewer draft + review
-    # result + view mode) so repeat views serve from disk, a conditional GET
-    # short-circuits to 304, and HEAD never runs the full build.
+    # everything the composer reads (source identity + source text + reviewer draft
+    # + review result + view mode) so repeat views serve from disk, a conditional
+    # GET short-circuits to 304, and HEAD never runs the full build.
     fingerprint = reviewed_docx_cache.reviewed_docx_fingerprint(
         matter_id, matter, changes_mode=changes_mode, owner_user_id=owner_user_id
     )
-    etag = reviewed_docx_cache.etag_for(fingerprint)
 
-    if _reviewed_docx_if_none_match(handler) == etag:
-        # The client's copy is current -> 304, no composition, no body.
-        _send_reviewed_docx_not_modified(handler, etag)
-        return
-
+    # Load BEFORE honoring any validator: etag_for() derives the ETag from the
+    # fingerprint INPUTS, not from a stored representation, so a fingerprint match
+    # alone does NOT prove we hold bytes (the entry may have been evicted, deleted,
+    # or never composed -- e.g. a prior cold HEAD). A conditional request may only
+    # 304, and a validator may only be advertised, when we ACTUALLY hold the bytes.
     cached = reviewed_docx_cache.load(fingerprint)
+
     if cached is not None:
+        etag = reviewed_docx_cache.etag_for(fingerprint)
+        if _reviewed_docx_if_none_match(handler) == etag:
+            # The client's copy matches the representation we hold -> 304, no body.
+            _send_reviewed_docx_not_modified(handler, etag)
+            return
         # Cache hit: serve the previously composed bytes WITHOUT recomposing (and,
         # for HEAD, without a body). No re-registration side effect either.
         telemetry.increment("reviewed_docx_cache_hits")
@@ -430,16 +440,19 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
         return
 
     if not send_body:
-        # HEAD with a cold cache: do NOT run the full build. Serve the validator so
-        # the client can issue a conditional GET; the body-bearing GET populates the
-        # cache. Content-Length is 0 because there is no composed body to measure yet.
+        # HEAD with a COLD cache: do NOT run the full build, and do NOT advertise an
+        # ETag. A validator here would name bytes we have not composed -- a client's
+        # subsequent conditional GET would (correctly, per the load-gated 304 above)
+        # NOT match and would recompose, so the validator only lies about what we
+        # hold and burns a round-trip. Keep HEAD cheap: 200, no body, NO ETag. The
+        # body-bearing GET composes + stores and is the first to mint the validator.
         _serve_reviewed_docx(
             handler,
             data=b"",
             filename=f"reviewed-{matter_id}.docx",
             content_type=DOCX_MIME,
             headers={"X-Reviewed-Changes": changes_mode},
-            etag=etag,
+            etag=None,
             send_body=False,
         )
         return
@@ -600,6 +613,8 @@ def handle_matter_reviewed_docx(handler, path: str, *, send_body: bool = True) -
         headers=headers,
     )
 
+    # The representation now exists, so it is honest to advertise its validator.
+    etag = reviewed_docx_cache.etag_for(fingerprint)
     _serve_reviewed_docx(
         handler,
         data=export_bytes,
