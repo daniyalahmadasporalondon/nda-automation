@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
 from typing import Dict, List, NamedTuple
 
 from .docx_xml import (
@@ -22,6 +21,13 @@ from .docx_xml import (
     _w_tag,
     _xml_bytes,
 )
+
+# Fallback comment ``w:date`` when a comment carries no explicit ``created_at``.
+# Must be a fixed constant, not datetime.now(): a wall-clock date makes the
+# composed reviewed-DOCX byte-different between two builds of the same matter,
+# defeating artifact de-dup and keeping the reviewed-PDF render cache cold. A
+# caller that wants a real timestamp still sets ``created_at`` explicitly.
+_FIXED_COMMENT_DATE = "1980-01-01T00:00:00Z"
 
 # Word 2010 wordml (carries the per-paragraph w14:paraId that ties a comment to
 # its commentsExtended thread entry).
@@ -73,11 +79,12 @@ def _comments_xml_with_appended_comments(
     comments_root, namespaces = _comments_root(existing_comments_xml)
     next_id = _next_comment_id(comments_root)
     used_para_ids = _existing_para_ids(comments_root)
+    para_id_counter = _PARA_ID_SEED
     assigned: List[dict] = []
     for comment in comments:
         comment_id = str(next_id)
         next_id += 1
-        para_id = _allocate_para_id(used_para_ids)
+        para_id, para_id_counter = _allocate_para_id(used_para_ids, para_id_counter)
         comments_root.append(_word_comment(comment_id, para_id, comment))
         assigned.append({**comment, "_word_comment_id": comment_id, "_word_para_id": para_id})
     return AppendedComments(assigned, _xml_bytes(comments_root, namespace_declarations=namespaces))
@@ -167,23 +174,33 @@ def _existing_para_ids(comments_root: ET.Element) -> set[str]:
             used.add(para_id.upper())
     return used
 
-def _allocate_para_id(used_para_ids: set[str]) -> str:
-    """A fresh 8-uppercase-hex w14:paraId, unique within this build pass. Seeded from
-    a counter so a single build is deterministic; skips any value already taken."""
+# Seed high enough to look like a real Word paraId and stay clear of 00000000.
+_PARA_ID_SEED = 0x10000000
+
+
+def _allocate_para_id(used_para_ids: set[str], counter: int) -> tuple[str, int]:
+    """A fresh 8-uppercase-hex w14:paraId, unique within this build pass, plus the
+    advanced counter.
+
+    The counter is passed IN and returned (seeded per-build at ``_PARA_ID_SEED``)
+    rather than kept in process-global state: a global counter drifts between
+    builds, so two builds of the SAME reviewed matter with comments produced
+    DIFFERENT paraIds -> byte-different DOCX -> re-registered artifact + cold
+    reviewed-PDF render cache. A per-build counter makes the paraIds depend only on
+    this document's inputs (deterministic across builds) and is thread-safe.
+    ``used_para_ids`` still guards uniqueness against paraIds already in the source.
+    """
     while True:
-        _allocate_para_id._counter += 1  # type: ignore[attr-defined]
-        candidate = f"{_allocate_para_id._counter & 0xFFFFFFFF:08X}"  # type: ignore[attr-defined]
+        counter += 1
+        candidate = f"{counter & 0xFFFFFFFF:08X}"
         if candidate not in used_para_ids:
             used_para_ids.add(candidate)
-            return candidate
-
-# Seed high enough to look like a real Word paraId and stay clear of 00000000.
-_allocate_para_id._counter = 0x10000000  # type: ignore[attr-defined]
+            return candidate, counter
 
 def _word_comment(comment_id: str, para_id: str, comment: dict) -> ET.Element:
     created_at = str(comment.get("created_at") or "").strip()
     if not created_at:
-        created_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        created_at = _FIXED_COMMENT_DATE
     element = ET.Element(_w_tag("comment"), {
         _w_tag("id"): comment_id,
         _w_tag("author"): str(comment.get("author") or "Reviewer")[:255],

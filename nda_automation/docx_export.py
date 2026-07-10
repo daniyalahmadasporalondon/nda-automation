@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from io import BytesIO
 from typing import Dict, List, NamedTuple, Tuple
-from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
+from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile, ZipInfo
 
 from . import redline_edit_contract
 from .docx_paragraph_index import iter_body_paragraphs
@@ -72,6 +72,28 @@ Paragraph = Dict[str, object]
 RedlineEdit = Dict[str, object]
 ReviewResult = Dict[str, object]
 LOGGER = logging.getLogger(__name__)
+
+# Deterministic ZIP timestamp for NEWLY-ADDED parts. ``ZipFile.writestr(str, data)``
+# stamps the CURRENT wall clock into the entry's ZipInfo, so two builds of identical
+# inputs seconds apart produce byte-DIFFERENT archives -- which defeats artifact
+# de-dup (a fresh reviewed-DOCX artifact re-registered on every GET) and keeps the
+# reviewed-PDF render cache (keyed on the DOCX byte hash) permanently cold. Parts we
+# ADD that are not present in the source archive are therefore written with a FIXED
+# ZipInfo timestamp so identical inputs yield identical bytes. 1980-01-01 is the ZIP
+# format's minimum representable date. Parts that DO exist in the source keep their
+# original ZipInfo (we write them via the source ``item``), preserving their timestamp.
+_DETERMINISTIC_ZIP_DATE_TIME = (1980, 1, 1, 0, 0, 0)
+
+
+def _deterministic_zipinfo(name: str, *, compress_type: int = ZIP_DEFLATED) -> ZipInfo:
+    """A ZipInfo with a FIXED timestamp for an added part, so identical inputs
+    produce byte-identical archives. Mirrors what ``ZipFile.writestr(str, ...)``
+    sets (compress_type = archive default; regular-file external_attr) EXCEPT the
+    timestamp, which writestr(str) stamps from the wall clock."""
+    info = ZipInfo(filename=name, date_time=_DETERMINISTIC_ZIP_DATE_TIME)
+    info.compress_type = compress_type
+    info.external_attr = 0o600 << 16  # matches ZipFile.writestr(str) for a file
+    return info
 
 
 class SourceParagraph(NamedTuple):
@@ -358,7 +380,10 @@ def _build_source_redline_docx_package(
                         written.add(item.filename)
                     for name, data in overrides.items():
                         if name not in written:
-                            redlined_archive.writestr(name, data)
+                            # Added part (not in the source archive) -- fixed
+                            # timestamp so identical inputs stay byte-identical.
+                            redlined_archive.writestr(_deterministic_zipinfo(name), data)
+                            written.add(name)
                 return SourceRedlinePackage(
                     data=output.getvalue(),
                     anchor_uncertain_redlines=anchor_uncertain_redlines,
@@ -415,7 +440,10 @@ def accept_all_revisions(docx_bytes: bytes) -> bytes:
                         written.add(item.filename)
                     for name, data in overrides.items():
                         if name not in written:
-                            clean_archive.writestr(name, data)
+                            # Added part (not in the source archive) -- fixed
+                            # timestamp so identical inputs stay byte-identical.
+                            clean_archive.writestr(_deterministic_zipinfo(name), data)
+                            written.add(name)
                 return output.getvalue()
     except (BadZipFile, DocxExtractionError, KeyError, ET.ParseError, UnsafeDocxXmlError) as exc:
         raise DocxExportError("The redlined document could not be flattened to a clean copy.") from exc

@@ -11,11 +11,19 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
 from typing import List, Tuple
 
 from .inline_diff import diff_text_char_operations, diff_text_operations
 from .docx_xml import _clone_element, _escape_attr, _escape_xml, _w_tag, _word_paragraph_from_xml
+
+# Tracked-change ``w:date`` is stamped onto every <w:ins>/<w:del>. It MUST be a
+# fixed constant (not datetime.now()): a wall-clock date makes two builds of the
+# SAME reviewed matter byte-different, which re-registers a fresh reviewed-DOCX
+# artifact on every GET and keeps the reviewed-PDF render cache (keyed on the DOCX
+# byte hash) permanently cold. The date is cosmetic (Word's reviewing pane only),
+# so a constant is safe; 1980-01-01 matches the ZIP epoch used elsewhere and the
+# w:date="YYYY-MM-DDThh:mm:ssZ" format tests assert.
+_FIXED_REVISION_DATE = "1980-01-01T00:00:00Z"
 
 
 def _source_tracked_replace_paragraph(
@@ -1131,5 +1139,4 @@ def _needs_inline_space(previous_token: str, token: str) -> bool:
     return True
 
 def _revision_attrs(revision_id: int) -> str:
-    timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    return f'w:id="{revision_id}" w:author="nda-automation" w:date="{timestamp}"'
+    return f'w:id="{revision_id}" w:author="nda-automation" w:date="{_FIXED_REVISION_DATE}"'
