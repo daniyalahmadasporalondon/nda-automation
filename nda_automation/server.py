@@ -8,13 +8,15 @@ import math
 import mimetypes
 import os
 import re
+import signal
+import subprocess
 import sys
 import threading
 import time
-from collections import Counter
+from collections import Counter, deque
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -644,46 +646,9 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
         self._send_json({"error": "Not found"}, status=404, send_body=send_body)
 
     def _read_load_probe(self) -> tuple[int | None, float | None, int | None, float]:
-        """Read the cheap, in-memory-only load counters used by /healthz+/readyz.
-
-        Returns ``(queue_depth, used_fraction, generation_in_flight,
-        warn_fraction)``. Reads only in-memory counters (no store I/O): the
-        inbound review queue depth, process memory used-fraction, and in-flight
-        generation count, plus the deployment memory warn fraction. Every probe
-        read is individually guarded (a missing/broken probe yields ``None`` for
-        that field, never an exception) and all helpers are imported lazily to
-        avoid import cycles.
-        """
-        queue_depth: int | None = None
-        used_fraction: float | None = None
-        generation_in_flight: int | None = None
-        warn_fraction = 0.85
-        try:
-            from . import ingestion_service
-
-            queue_depth = int(ingestion_service._INBOUND_REVIEW_POOL.queue_depth())
-        except Exception:
-            queue_depth = None
-        try:
-            from . import process_memory
-
-            raw_fraction = process_memory.memory_usage().get("used_fraction")
-            used_fraction = float(raw_fraction) if raw_fraction is not None else None
-        except Exception:
-            used_fraction = None
-        try:
-            from . import generation_priority
-
-            generation_in_flight = int(generation_priority.active_generation_count())
-        except Exception:
-            generation_in_flight = None
-        try:
-            from . import deployment
-
-            warn_fraction = deployment.MEMORY_HEADROOM_WARN_FRACTION
-        except Exception:
-            warn_fraction = 0.85
-        return queue_depth, used_fraction, generation_in_flight, warn_fraction
+        # Module-level so the worker role's /healthz-only listener
+        # (WorkerHealthHandler) can reuse the identical probe.
+        return _read_load_probe()
 
     def _send_healthz(self, *, send_body: bool) -> None:
         """Cheap, unauthenticated, in-memory-only LIVENESS probe.
@@ -1172,24 +1137,559 @@ def _log_background_error(message: str, error: Exception) -> None:
         print(f"{message}: {error.__class__.__name__}")
 
 
+# The live Gmail-sync scheduler thread, retained so the WORKER role's /healthz
+# can report honest liveness: a worker whose scheduler thread died is a dead
+# worker (its entire job is that loop) and must probe 503 so its supervisor /
+# k8s restarts it, not sit permanently "healthy". None until
+# _start_gmail_sync_scheduler runs.
+_GMAIL_SYNC_SCHEDULER_THREAD: threading.Thread | None = None
+
+
+def _read_load_probe() -> tuple[int | None, float | None, int | None, float]:
+    """Read the cheap, in-memory-only load counters used by /healthz+/readyz.
+
+    Returns ``(queue_depth, used_fraction, generation_in_flight,
+    warn_fraction)``. Reads only in-memory counters (no store I/O): the
+    inbound review queue depth, process memory used-fraction, and in-flight
+    generation count, plus the deployment memory warn fraction. Every probe
+    read is individually guarded (a missing/broken probe yields ``None`` for
+    that field, never an exception) and all helpers are imported lazily to
+    avoid import cycles. Module-level (not a handler method) so both the full
+    app handler and the worker role's liveness-only listener share it.
+    """
+    queue_depth: int | None = None
+    used_fraction: float | None = None
+    generation_in_flight: int | None = None
+    warn_fraction = 0.85
+    try:
+        from . import ingestion_service
+
+        queue_depth = int(ingestion_service._INBOUND_REVIEW_POOL.queue_depth())
+    except Exception:
+        queue_depth = None
+    try:
+        from . import process_memory
+
+        raw_fraction = process_memory.memory_usage().get("used_fraction")
+        used_fraction = float(raw_fraction) if raw_fraction is not None else None
+    except Exception:
+        used_fraction = None
+    try:
+        from . import generation_priority
+
+        generation_in_flight = int(generation_priority.active_generation_count())
+    except Exception:
+        generation_in_flight = None
+    try:
+        from . import deployment
+
+        warn_fraction = deployment.MEMORY_HEADROOM_WARN_FRACTION
+    except Exception:
+        warn_fraction = 0.85
+    return queue_depth, used_fraction, generation_in_flight, warn_fraction
+
+
+class WorkerHealthHandler(BaseHTTPRequestHandler):
+    """Liveness listener for NDA_PROCESS_ROLE=worker.
+
+    Serves EXACTLY /healthz (GET/HEAD). Every other path is 404: the worker
+    must never serve app routes -- no auth stack runs here, and the web
+    process is the only place user traffic belongs.
+
+    /healthz is NOT unconditional: the worker's entire job is the Gmail sync
+    scheduler loop, so a dead (or never-started) scheduler thread means a dead
+    worker -- it answers 503 with a reason so its supervisor / k8s restarts the
+    process, instead of sitting permanently "healthy" while doing nothing. (The
+    app handler's always-200 /healthz is a deliberate DEPLOY-GATE property of
+    the web/all roles and is unchanged.)
+    """
+
+    server_version = "nda-automation-worker"
+
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+        # Quiet: liveness is probed frequently; don't spam stderr.
+        return
+
+    def _respond(self, payload: dict[str, object], status: int) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        path = urlparse(self.path).path
+        if path != "/healthz":
+            self._respond({"error": "Not found"}, 404)
+            return
+        # Scheduler-thread liveness FIRST, outside the fail-open probe guard:
+        # a probe bug must never mask a dead scheduler, and a dead scheduler
+        # must never be reported ok.
+        scheduler_thread = _GMAIL_SYNC_SCHEDULER_THREAD
+        if scheduler_thread is None or not scheduler_thread.is_alive():
+            reason = (
+                "gmail sync scheduler thread was never started"
+                if scheduler_thread is None
+                else "gmail sync scheduler thread is not alive"
+            )
+            self._respond(
+                {
+                    "status": "error",
+                    "role": app_settings.PROCESS_ROLE_WORKER,
+                    "reason": reason,
+                },
+                503,
+            )
+            return
+        try:
+            queue_depth, used_fraction, generation_in_flight, _ = _read_load_probe()
+            self._respond(
+                {
+                    "status": "ok",
+                    "role": app_settings.PROCESS_ROLE_WORKER,
+                    "queue_depth": queue_depth,
+                    "used_fraction": used_fraction,
+                    "generation_in_flight": generation_in_flight,
+                },
+                200,
+            )
+        except Exception:  # fail-open: a probe bug must never take liveness down
+            self._respond({"status": "ok", "role": app_settings.PROCESS_ROLE_WORKER}, 200)
+
+    def do_HEAD(self) -> None:
+        self.do_GET()
+
+
+# --- worker process split: env knobs + parent-death watchdog ----------------
+# Escape hatch: NDA_WORKER_PROCESS=0 (or false/no/off) reverts role="all" to
+# the exact legacy single-process behavior (scheduler thread runs IN the web
+# process). Default (unset / any other value) = worker split ENABLED. This env
+# var NAME is the documented control; never write a secret VALUE anywhere.
+WORKER_PROCESS_ENV = "NDA_WORKER_PROCESS"
+# Set by the supervisor in the spawned child ONLY. It arms the parent-death
+# watchdog so a supervised worker never outlives the web parent it belongs to;
+# a STANDALONE k8s worker (this var unset) must NOT self-exit and stays put.
+WORKER_SUPERVISED_ENV = "NDA_WORKER_SUPERVISED"
+
+
+def _worker_process_enabled() -> bool:
+    """Whether role="all" spawns a supervised worker child (default: yes)."""
+    raw = os.environ.get(WORKER_PROCESS_ENV, "").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _worker_is_supervised() -> bool:
+    return os.environ.get(WORKER_SUPERVISED_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _start_parent_death_watchdog(*, poll_seconds: float = 1.0) -> None:
+    """Exit this supervised worker if its parent (the web process) dies.
+
+    macOS has no ``PR_SET_PDEATHSIG``, so this is the portable equivalent: a
+    daemon thread polls ``os.getppid()``; when the supervising parent dies this
+    orphaned child is reparented (getppid changes -- to 1 on Linux, or launchd
+    on macOS) and we ``os._exit`` so a background poller can NEVER outlive the
+    web process it belongs to. Only armed when NDA_WORKER_SUPERVISED is set (the
+    supervisor sets it); a standalone k8s worker whose parent is the container
+    init must not self-exit, so this is never started there.
+    """
+    original_ppid = os.getppid()
+
+    def _watch() -> None:
+        while True:
+            time.sleep(poll_seconds)
+            try:
+                current_ppid = os.getppid()
+            except OSError:  # pragma: no cover - getppid does not fail on POSIX
+                return
+            if current_ppid != original_ppid or current_ppid == 1:
+                print(
+                    f"{app_settings.PROCESS_ROLE_ENV}=worker: parent process gone "
+                    f"(ppid {original_ppid} -> {current_ppid}); exiting so no orphan "
+                    "poller survives the web process.",
+                    flush=True,
+                )
+                os._exit(0)
+
+    threading.Thread(target=_watch, name="parent-death-watchdog", daemon=True).start()
+
+
+def _run_worker(host: str, port: int) -> None:
+    """NDA_PROCESS_ROLE=worker entrypoint: background loops + /healthz only.
+
+    Starts the Gmail sync scheduler (the inbound pipeline driver: poll -> triage
+    -> import -> cost-capped AI intake, plus the hourly archive-rotation disk
+    janitor riding its loop), then blocks serving the liveness-only
+    ``WorkerHealthHandler``. No app HTTP server runs in this role.
+
+    Shutdown: the supervisor (or k8s) sends SIGTERM. There is no stop-event on
+    the scheduler loop (``_gmail_sync_scheduler_loop`` is a ``while True`` daemon
+    thread), so we translate SIGTERM/SIGINT into ``SystemExit`` -- the daemon
+    thread dies with the process. That is acceptable by design: every
+    matter-store write is an atomic write-then-rename under the cross-process
+    flock, and an interrupted review is healed by
+    ``_reconcile_interrupted_reviews`` on the next boot.
+    """
+    if _worker_is_supervised():
+        _start_parent_death_watchdog()
+    _start_gmail_sync_scheduler()
+    health_server = ThreadingHTTPServer((host, port), WorkerHealthHandler)
+
+    def _handle_worker_signal(signum: int, frame: object) -> None:
+        raise SystemExit(0)
+
+    for _sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(_sig, _handle_worker_signal)
+        except ValueError:
+            # Not on the main thread (tests): daemon threads die with the
+            # process anyway, so shutdown semantics are unchanged.
+            pass
+    bound_host, bound_port = health_server.server_address[:2]
+    print(
+        f"nda-automation worker running (healthz only) at "
+        f"http://{bound_host}:{bound_port}/healthz",
+        flush=True,
+    )
+    try:
+        health_server.serve_forever()
+    finally:
+        health_server.server_close()
+
+
+# --- worker supervisor (role="all" single-deploy) ---------------------------
+# Restart backoff ladder for an unexpectedly-dead worker child: 1s, 2s, 4s, 8s,
+# 16s, capped at 30s. NEVER a tight respawn loop.
+_WORKER_BACKOFF_INITIAL_SECONDS = 1.0
+_WORKER_BACKOFF_CAP_SECONDS = 30.0
+# A child that stayed up at least this long counts as a HEALTHY run: its death
+# resets the backoff ladder so a rare one-off crash after hours of uptime is
+# not penalised with a 30s delay.
+_WORKER_HEALTHY_UPTIME_SECONDS = 60.0
+# Crash-storm circuit breaker: this many child deaths inside the rolling window
+# trips the breaker (restarts STOP; web keeps serving).
+_WORKER_CRASH_WINDOW_SECONDS = 60.0
+_WORKER_CRASH_THRESHOLD = 5
+# Grace after SIGTERM before the child is SIGKILLed on shutdown.
+_WORKER_STOP_GRACE_SECONDS = 10.0
+
+
+def _spawn_worker_child() -> subprocess.Popen:
+    """Re-exec ``python -m nda_automation.server`` as a role=worker child.
+
+    subprocess spawn (NOT ``os.fork``): the parent already runs threads (the
+    HTTP server), and fork-with-threads deadlocks and is broken on macOS. The
+    child inherits our stdout/stderr (so its logs interleave into one stream),
+    gets NDA_PROCESS_ROLE=worker + NDA_WORKER_SUPERVISED=1, and is pinned to
+    NDA_WORKER_PROCESS=0 so it can NEVER itself try to supervise a grandchild.
+    It binds its /healthz on an EPHEMERAL loopback port (127.0.0.1:0) so it can
+    never collide with the parent's app port on the same host; the supervisor
+    tracks liveness by process exit, not by probing that port.
+    """
+    env = dict(os.environ)
+    env[app_settings.PROCESS_ROLE_ENV] = app_settings.PROCESS_ROLE_WORKER
+    env[WORKER_SUPERVISED_ENV] = "1"
+    env[WORKER_PROCESS_ENV] = "0"
+    popen_kwargs: dict[str, object] = {"env": env}
+    if hasattr(os, "setsid"):
+        # Own session/process group: the child is not hit by the controlling
+        # terminal's Ctrl-C directly -- the parent owns its lifecycle and
+        # propagates shutdown explicitly (start_new_session == os.setsid).
+        popen_kwargs["start_new_session"] = True
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "nda_automation.server",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "0",
+            "--role",
+            app_settings.PROCESS_ROLE_WORKER,
+        ],
+        **popen_kwargs,
+    )
+
+
+class WorkerSupervisor:
+    """Spawns + supervises ONE worker child for role="all" single-deploy.
+
+    The parent process serves HTTP (web role -- the scheduler is NOT started
+    in-process); this supervisor runs the Gmail sync + AI + PDF pipeline in a
+    SEPARATE child process so its GIL/CPU contention can never starve web
+    request handling (the "Atul brick" 502 incident class). Duties:
+
+      * spawn the child (subprocess re-exec, NEVER os.fork);
+      * restart it on unexpected exit with EXPONENTIAL BACKOFF + a cap
+        (1s -> 30s), never a tight loop;
+      * a CRASH-STORM CIRCUIT BREAKER: if the child dies too many times in a
+        short window, stop restarting, log loudly, and keep WEB serving -- web
+        must never die because the worker is sick;
+      * clean shutdown: SIGTERM the child, wait a grace period, then SIGKILL,
+        and reap it (no zombies, no orphans).
+
+    ``spawn`` is injectable for tests (default spawns the real worker child);
+    ``clock``/``sleep`` are injectable to drive backoff timing deterministically.
+    """
+
+    def __init__(
+        self,
+        spawn=None,
+        *,
+        backoff_initial: float = _WORKER_BACKOFF_INITIAL_SECONDS,
+        backoff_cap: float = _WORKER_BACKOFF_CAP_SECONDS,
+        healthy_uptime: float = _WORKER_HEALTHY_UPTIME_SECONDS,
+        crash_window: float = _WORKER_CRASH_WINDOW_SECONDS,
+        crash_threshold: int = _WORKER_CRASH_THRESHOLD,
+        stop_grace: float = _WORKER_STOP_GRACE_SECONDS,
+        clock=time.monotonic,
+        sleep=None,
+    ) -> None:
+        self._spawn = spawn or _spawn_worker_child
+        self._backoff_initial = backoff_initial
+        self._backoff_cap = backoff_cap
+        self._healthy_uptime = healthy_uptime
+        self._crash_window = crash_window
+        self._crash_threshold = crash_threshold
+        self._stop_grace = stop_grace
+        self._clock = clock
+        self._stop = threading.Event()
+        # Interruptible sleep: default waits on the stop event so a shutdown
+        # cuts a pending backoff short. Returns True when stop was requested.
+        self._sleep = sleep if sleep is not None else self._stop.wait
+        self._child: object | None = None
+        self._monitor: threading.Thread | None = None
+        self._deaths: "deque[float]" = deque()
+        self._consecutive_failures = 0
+        # Observable state (asserted by tests / useful in logs):
+        self.breaker_tripped = False
+        self.restart_delays: list[float] = []
+
+    # -- lifecycle -----------------------------------------------------------
+    def start(self) -> None:
+        """Spawn the first child and start the monitor thread."""
+        if self._monitor is not None:
+            return
+        self._child = self._spawn()
+        self._monitor = threading.Thread(
+            target=self._monitor_loop, name="worker-supervisor", daemon=True
+        )
+        self._monitor.start()
+
+    @property
+    def child(self) -> object | None:
+        return self._child
+
+    def _monitor_loop(self) -> None:
+        while not self._stop.is_set():
+            child = self._child
+            if child is None:
+                return
+            spawned_at = self._clock()
+            returncode = child.wait()
+            if self._stop.is_set():
+                return
+            now = self._clock()
+            uptime = now - spawned_at
+            self._record_death(now)
+            if len(self._deaths) >= self._crash_threshold:
+                self.breaker_tripped = True
+                self._child = None
+                print(
+                    "WORKER SUPERVISOR: crash storm -- worker child died "
+                    f"{len(self._deaths)} times within {self._crash_window:.0f}s "
+                    f"(last rc={returncode}). NOT restarting; web serving "
+                    f"continues. Set {WORKER_PROCESS_ENV}=0 and investigate.",
+                    flush=True,
+                )
+                return
+            if uptime >= self._healthy_uptime:
+                self._consecutive_failures = 0
+            delay = min(
+                self._backoff_cap,
+                self._backoff_initial * (2 ** self._consecutive_failures),
+            )
+            self._consecutive_failures += 1
+            self.restart_delays.append(delay)
+            print(
+                f"WORKER SUPERVISOR: worker child exited (rc={returncode}, "
+                f"uptime={uptime:.1f}s); restarting in {delay:.1f}s "
+                f"(failure #{self._consecutive_failures}).",
+                flush=True,
+            )
+            if self._sleep(delay):
+                return
+            if self._stop.is_set():
+                return
+            self._child = self._spawn()
+
+    def _record_death(self, now: float) -> None:
+        self._deaths.append(now)
+        while self._deaths and now - self._deaths[0] > self._crash_window:
+            self._deaths.popleft()
+
+    def stop(self, *, grace: float | None = None) -> None:
+        """Signal the monitor to quit and terminate + reap the child.
+
+        Idempotent. SIGTERM the child, wait ``grace`` seconds, then SIGKILL and
+        reap. Never leaves a zombie or an orphan.
+        """
+        grace = self._stop_grace if grace is None else grace
+        self._stop.set()
+        child = self._child
+        self._child = None
+        if child is not None:
+            self._terminate_child(child, grace)
+        monitor = self._monitor
+        if monitor is not None and monitor is not threading.current_thread():
+            monitor.join(timeout=grace + 5)
+
+    def _terminate_child(self, child, grace: float) -> None:
+        if child.poll() is not None:
+            self._reap(child)
+            return
+        try:
+            child.terminate()  # SIGTERM
+        except (ProcessLookupError, OSError):
+            pass
+        try:
+            child.wait(timeout=grace)
+        except subprocess.TimeoutExpired:
+            try:
+                child.kill()  # SIGKILL
+            except (ProcessLookupError, OSError):
+                pass
+            self._reap(child)
+
+    @staticmethod
+    def _reap(child) -> None:
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:  # pragma: no cover - kill should land
+            pass
+        except (ProcessLookupError, OSError):  # pragma: no cover - already reaped
+            pass
+
+
+def _serve_forever_with_shutdown(server: ThreadingHTTPServer, supervisor: "WorkerSupervisor") -> None:
+    """Serve HTTP until SIGTERM/SIGINT, then stop the worker child + the server.
+
+    The signal handler must NOT call ``server.shutdown()`` inline: shutdown()
+    blocks until serve_forever() returns, and we ARE the thread about to run
+    serve_forever, so an inline call would deadlock. It hands teardown to a
+    one-shot daemon thread instead. Web keeps answering until the worker child
+    is cleanly gone.
+    """
+    shutting_down = threading.Event()
+
+    def _handle(signum: int, frame: object) -> None:
+        if shutting_down.is_set():
+            return
+        shutting_down.set()
+        print(
+            f"Received signal {signum}; shutting down worker child + web server.",
+            flush=True,
+        )
+        threading.Thread(
+            target=lambda: (supervisor.stop(), server.shutdown()),
+            name="web-shutdown",
+            daemon=True,
+        ).start()
+
+    for _sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(_sig, _handle)
+        except ValueError:  # pragma: no cover - not on main thread (odd embeddings)
+            pass
+    try:
+        server.serve_forever()
+    finally:
+        supervisor.stop()
+        server.server_close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the nda-automation local app.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8787, type=int)
+    parser.add_argument(
+        "--role",
+        default=None,
+        choices=sorted(app_settings.PROCESS_ROLES),
+        help=(
+            "Process role. 'all' (default): web server + a supervised worker "
+            "child process running the Gmail pipeline. 'web': HTTP only, no "
+            "scheduler, no worker child. 'worker': Gmail scheduler + a "
+            "/healthz-only listener, no app HTTP. Overrides NDA_PROCESS_ROLE "
+            "for this process."
+        ),
+    )
     args = parser.parse_args()
+    if args.role is not None:
+        os.environ[app_settings.PROCESS_ROLE_ENV] = args.role
+    try:
+        # An invalid NDA_PROCESS_ROLE fails boot loudly (see
+        # app_settings.process_role): a typo silently defaulting to "all" would
+        # start a SECOND Gmail poller -- the failure class this split prevents.
+        role = app_settings.process_role()
+    except ValueError as error:
+        parser.error(str(error))
+        return  # pragma: no cover - parser.error raises SystemExit.
     try:
         _validate_public_auth(args.host)
         _validate_public_storage(args.host)
     except RuntimeError as error:
         parser.error(str(error))
 
+    # Boot maintenance runs in EVERY role. Each step is idempotent, fail-soft,
+    # and store writes are serialized by the matter store's cross-process flock,
+    # so the web parent and the supervised worker child (or separate web/worker
+    # containers) booting against the same NDA_DATA_DIR can all run them safely.
     _record_data_dir_boot_sentinel()
     _migrate_entity_signatory_fills()
     _validate_entity_registry_against_playbook()
     _reconcile_interrupted_reviews()
 
+    if role == app_settings.PROCESS_ROLE_WORKER:
+        # Standalone worker (k8s worker container, or the supervised child of a
+        # role=all parent): the scheduler + a /healthz-only listener, no app.
+        _run_worker(args.host, args.port)
+        return
+
     server = ThreadingHTTPServer((args.host, args.port), NdaAutomationHandler)
-    _start_gmail_sync_scheduler()
+
+    if role == app_settings.PROCESS_ROLE_ALL and _worker_process_enabled():
+        # role=all + worker split ENABLED (default): the web PARENT serves HTTP
+        # and does NOT start the scheduler thread; a SUPERVISED worker CHILD
+        # process runs the Gmail sync + AI + PDF pipeline off its own GIL, so
+        # that work can never starve web request handling (the "Atul brick" 502
+        # incident class). NDA_WORKER_PROCESS=0 reverts to the single-process
+        # monolith path below.
+        supervisor = WorkerSupervisor()
+        supervisor.start()
+        print(
+            f"nda-automation running at http://{args.host}:{args.port} "
+            "(web parent; Gmail pipeline in a supervised worker child process)"
+        )
+        _serve_forever_with_shutdown(server, supervisor)
+        return
+
+    if role == app_settings.PROCESS_ROLE_WEB:
+        # Web role: the Gmail sync scheduler NEVER starts here -- it (and the
+        # archive-rotation janitor riding its loop) belongs to the worker
+        # process, so an inbound trawl/import storm cannot starve the UI.
+        print(
+            f"{app_settings.PROCESS_ROLE_ENV}=web: Gmail sync scheduler NOT started "
+            "(runs in the worker-role process)."
+        )
+    else:
+        # role=all with NDA_WORKER_PROCESS=0: legacy single-process behavior --
+        # the scheduler thread runs IN the web process, exactly as before the
+        # worker split existed.
+        _start_gmail_sync_scheduler()
     print(f"nda-automation running at http://{args.host}:{args.port}")
     server.serve_forever()
 
@@ -1299,6 +1799,15 @@ def _record_data_dir_boot_sentinel() -> None:
 
 
 def _start_gmail_sync_scheduler() -> None:
+    # PROCESS ROLES: called from main() for roles "all" (only when the worker
+    # split is DISABLED via NDA_WORKER_PROCESS=0) and "worker" -- never for role
+    # "web", and never in the role="all" web PARENT (the supervised worker child
+    # runs it). Exactly ONE process per data volume starts this scheduler.
+    # Belt and braces: each sync step additionally takes a non-blocking flock on
+    # DATA_DIR/gmail_sync.lock (_gmail_sync_process_lock below), so even a
+    # mis-deployed second poller on the same volume cannot run a step
+    # concurrently.
+    #
     # Inbound NDAs are intentionally NOT auto-reviewed (they import "Not Reviewed"
     # and are reviewed only on-demand), so there is no startup recovery sweep to
     # re-enqueue them -- that sweep was the Gmail-storm re-enqueue engine and is
@@ -1310,8 +1819,10 @@ def _start_gmail_sync_scheduler() -> None:
         disk_janitor.maybe_run_archive_rotation(force=True)
     except Exception as error:  # pragma: no cover - defensive background logging.
         _log_background_error("Startup archive-rotation disk janitor failed", error)
+    global _GMAIL_SYNC_SCHEDULER_THREAD
     scheduler = threading.Thread(target=_gmail_sync_scheduler_loop, daemon=True)
     scheduler.start()
+    _GMAIL_SYNC_SCHEDULER_THREAD = scheduler
 
 
 @contextmanager

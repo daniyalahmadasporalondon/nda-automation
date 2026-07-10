@@ -126,18 +126,22 @@ def test_session_load_once_mark_many_write_once(ledger_data_dir, monkeypatch):
 
     for i in range(50):
         session.mark(f"msg_{i}")
-    # Marking is in-memory only: NO writes yet.
+    # Marking is in-memory only: NO writes yet, and the read count never grew
+    # during the mark loop.
     assert write_calls == []
+    assert len(read_calls) == 1
     assert session.dirty is True
 
     wrote = session.flush()
     assert wrote is True
     assert len(write_calls) == 1  # written exactly ONCE
-    # ... and a second flush with nothing new is a no-op.
+    # flush performs exactly ONE merge re-read under the cross-process flock
+    # (web/worker split: union with any concurrent writer's marks, never clobber).
+    assert len(read_calls) == 2
+    # ... and a second flush with nothing new is a no-op (no read, no write).
     assert session.flush() is False
     assert len(write_calls) == 1
-    # The read count never grew during the mark loop.
-    assert len(read_calls) == 1
+    assert len(read_calls) == 2
 
     # The 50 marks are durable.
     assert ledger.load_processed_message_ids(owner) == {f"msg_{i}" for i in range(50)}
@@ -808,3 +812,127 @@ def test_transient_drain_failure_message_is_eventually_imported_not_lost(import_
     assert transport._failed_once, "the transient attachment failure never fired"
     assert "msg_020" in imported_ids(), "transiently-failed message was lost"
     assert imported_ids() == {f"msg_{i:03d}" for i in range(30)}
+
+
+# --------------------------------------------------------------------------- #
+# Unit: cross-process write safety (web/worker split, NDA_PROCESS_ROLE)
+#
+# Two ledger WRITERS can now live in different processes sharing one volume:
+# the worker's scheduled-poll session flush, the web manual-import session
+# flush (POST /api/gmail/import), and the web bulk-archive re-import guard
+# (mark_messages_processed). flush() therefore MERGES with the re-read on-disk
+# state under an fcntl flock instead of blind last-writer-wins. Two sessions in
+# ONE process with interleaved load/flush exercise exactly the cross-process
+# schedule (each session has its own in-memory view, and flock contends across
+# file descriptors), so these tests fail without the merge.
+# --------------------------------------------------------------------------- #
+def test_interleaved_session_flushes_both_survive(ledger_data_dir):
+    owner = "owner_1"
+    # Simulates web + worker: BOTH sessions load the (empty) ledger up front.
+    session_a = ledger.ProcessedLedgerSession(owner)  # e.g. worker scheduled poll
+    session_b = ledger.ProcessedLedgerSession(owner)  # e.g. web manual import
+
+    session_b.mark("msg_x")
+    assert session_b.flush() is True
+
+    # Without merge-under-flock this flush would clobber msg_x (A loaded before
+    # B's write, so A's in-memory view never contained it).
+    session_a.mark("msg_y")
+    assert session_a.flush() is True
+
+    assert ledger.load_processed_message_ids(owner) == {"msg_x", "msg_y"}
+    # And the flushing session adopted the merged view (later marks build on it).
+    assert session_a.is_processed("msg_x") is True
+
+
+def test_bulk_archive_guard_marks_survive_racing_session_flush(ledger_data_dir):
+    owner = "owner_1"
+    # A poll session (worker) is mid-flight...
+    poll_session = ledger.ProcessedLedgerSession(owner)
+    poll_session.mark("msg_poll")
+
+    # ...when the web bulk-archive guard one-shots its deleted-message marks.
+    assert ledger.mark_messages_processed(["msg_arch_1", "msg_arch_2"], owner) == 2
+
+    # The poll's later flush must not resurrect the archived junk by erasing
+    # the guard's marks (the Atul-regression the guard exists to prevent).
+    assert poll_session.flush() is True
+    assert ledger.load_processed_message_ids(owner) == {
+        "msg_poll",
+        "msg_arch_1",
+        "msg_arch_2",
+    }
+
+
+def test_merge_drops_attempt_counter_when_other_writer_marked_terminal(ledger_data_dir):
+    owner = "owner_1"
+    session_a = ledger.ProcessedLedgerSession(owner)
+    session_b = ledger.ProcessedLedgerSession(owner)
+
+    # A records a transient failure for msg_p; B independently completes it.
+    session_a.record_attempt("msg_p")
+    session_b.mark("msg_p")
+    assert session_b.flush() is True
+    assert session_a.flush() is True
+
+    # Terminal in the merged view: processed everywhere, no lingering counter.
+    assert ledger.is_message_processed("msg_p", owner) is True
+    payload = json.loads(
+        (ledger_data_dir / "gmail" / owner / "gmail-processed-messages.json").read_text()
+    )
+    assert payload.get("attempts") in (None, {})
+
+
+def test_merge_preserves_both_writers_quarantine_records(ledger_data_dir):
+    owner = "owner_1"
+    session_a = ledger.ProcessedLedgerSession(owner)
+    session_b = ledger.ProcessedLedgerSession(owner)
+
+    session_b.quarantine("msg_qb", reason="poison-b", attempts=3)
+    assert session_b.flush() is True
+    session_a.quarantine("msg_qa", reason="poison-a", attempts=2)
+    assert session_a.flush() is True
+
+    records = ledger.quarantined_messages(owner)
+    assert set(records) == {"msg_qa", "msg_qb"}
+    assert records["msg_qb"]["reason"] == "poison-b"
+    assert records["msg_qa"]["reason"] == "poison-a"
+
+
+def test_stale_session_flush_does_not_resurrect_requeued_message(ledger_data_dir):
+    """A session's flush merges its DELTA only -- never its load-time snapshot.
+
+    Regression for the requeue-resurrection defect: a poll session that loaded
+    BEFORE an admin's requeue_quarantined_message removal used to re-add the
+    released id (marks AND quarantine record with stale attempts) on its next
+    flush -- the admin saw removed=True while the message silently returned to
+    never-reprocess state.
+    """
+    owner = "owner_1"
+    # A message reaches terminal quarantine on disk.
+    seed = ledger.ProcessedLedgerSession(owner)
+    seed.quarantine("msg_bad", reason="poison", attempts=3)
+    assert seed.flush() is True
+    assert ledger.is_message_processed("msg_bad", owner) is True
+
+    # A poll session loads (its snapshot contains msg_bad)...
+    poll_session = ledger.ProcessedLedgerSession(owner)
+    assert poll_session.is_processed("msg_bad") is True
+
+    # ...then the admin releases the message for retry.
+    assert ledger.requeue_quarantined_message("msg_bad", owner) is True
+
+    # The stale session marks an UNRELATED id and flushes. msg_bad must stay
+    # gone from ids, quarantine records, and attempts.
+    poll_session.mark("msg_other")
+    assert poll_session.flush() is True
+
+    assert ledger.is_message_processed("msg_bad", owner) is False
+    assert "msg_bad" not in ledger.quarantined_messages(owner)
+    assert ledger.load_processed_message_ids(owner) == {"msg_other"}
+    payload = json.loads(
+        (ledger_data_dir / "gmail" / owner / "gmail-processed-messages.json").read_text()
+    )
+    assert payload.get("attempts") in (None, {})
+    # The flushing session adopted the on-disk truth (removal included).
+    assert poll_session.is_processed("msg_bad") is False

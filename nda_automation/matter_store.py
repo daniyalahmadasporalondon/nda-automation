@@ -343,6 +343,44 @@ def find_gmail_attachment(
         )
 
 
+@contextmanager
+def _gmail_cursor_flock():
+    """Cross-process lock for the inbound drain-cursor read-compare-write.
+
+    NDA_PROCESS_ROLE (web/worker split, docs/PROCESS_ROLES.md) means the cursor
+    file can have writers in TWO processes on one shared volume (the worker's
+    scheduled poll and a web-process manual import). The in-process
+    ``_GMAIL_CURSOR_LOCK`` alone cannot stop a cross-process interleaved
+    read-compare-write from clobbering another owner's just-advanced cursor
+    (whole-file rewrite), so writers additionally take this flock -- the same
+    idiom as ``_locked_store`` (LOCK_EX|LOCK_NB polled at 10ms, bounded
+    deadline). Reads stay lock-free: the file is written via atomic
+    tmp+os.replace and is never torn.
+    """
+    lock_path = GMAIL_INBOUND_CURSORS_PATH.with_name(f"{GMAIL_INBOUND_CURSORS_PATH.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        if fcntl is not None:
+            _deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as exc:
+                    if time.monotonic() >= _deadline:
+                        raise MatterStoreError(
+                            "Gmail inbound-cursor file lock could not be acquired "
+                            f"within the timeout ({_LOCK_TIMEOUT_SECONDS}s). Another "
+                            "process may be holding the lock. Please retry."
+                        ) from exc
+                    time.sleep(0.01)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def gmail_inbound_cursor(owner_user_id: str = "") -> int:
     """The persisted per-owner inbound drain cursor (oldest reached internalDate, ms).
 
@@ -377,7 +415,10 @@ def advance_gmail_inbound_cursor(owner_user_id: str, internal_date_ms: int) -> i
         candidate = 0
     if candidate <= 0:
         return gmail_inbound_cursor(owner_user_id)
-    with _GMAIL_CURSOR_LOCK:
+    # In-process RLock kept (thread safety); the flock adds cross-process safety
+    # for the web/worker split -- the RE-READ happens INSIDE the flock so another
+    # process's just-written cursor (any owner) is never clobbered.
+    with _GMAIL_CURSOR_LOCK, _gmail_cursor_flock():
         cursors = _load_gmail_inbound_cursors()
         existing = 0
         try:
@@ -395,7 +436,8 @@ def advance_gmail_inbound_cursor(owner_user_id: str, internal_date_ms: int) -> i
 def reset_gmail_inbound_cursor(owner_user_id: str = "") -> None:
     """Drop the per-owner drain cursor (e.g. after a full backlog drain or reset)."""
     key = _clean_owner_user_id(owner_user_id)
-    with _GMAIL_CURSOR_LOCK:
+    # Same cross-process R-M-W protection as advance_gmail_inbound_cursor.
+    with _GMAIL_CURSOR_LOCK, _gmail_cursor_flock():
         cursors = _load_gmail_inbound_cursors()
         if key in cursors:
             del cursors[key]
