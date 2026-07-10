@@ -33,13 +33,21 @@ from __future__ import annotations
 import copy
 import json
 import types
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 
 pytest.importorskip("pypdf")
 
-from nda_automation import garble_backfill, matter_store, pdf_text
+from nda_automation import (
+    artifact_registry,
+    garble_backfill,
+    ingestion_service,
+    matter_store,
+    pdf_ingest_conversion,
+    pdf_text,
+)
 from nda_automation.review_result_contract import extracted_text_from_paragraphs
 from nda_automation.routes import admin as admin_routes
 from nda_automation.routes import matters as matters_routes
@@ -698,3 +706,374 @@ def test_invalid_limit_on_start_is_400():
     admin_routes.handle_matters_garble_backfill_start(handler)
     assert handler.status == 400
     assert garble_backfill.garble_backfill_status() == {}
+
+
+# --- (f) post-heal working-DOCX rebuild ----------------------------------------
+# A retro-converted pre-fix matter persisted the OLD garbled pypdf paragraphs as
+# working_docx_paragraphs. Healing extracted_text alone leaves them garbled
+# FOREVER (the retro conversion is idempotent), so the execute path must
+# force-rebuild the working DOCX through the SAME reconstruction machinery a
+# fresh import uses (garble_backfill._rebuild_working_docx ->
+# ingestion_service.rebuild_pdf_working_docx), fail-soft per matter: a rebuild
+# failure never rolls back the healed text and never fails the heal.
+
+def _make_body_docx(paragraph_texts) -> bytes:
+    from docx import Document  # noqa: PLC0415 - python-docx, product core dep
+
+    document = Document()
+    for text in paragraph_texts:
+        document.add_paragraph(text)
+    buffer = BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+class _StubPdfConverter:
+    """pdf2docx stand-in: 'reconstructs' the fixture PDF to a DOCX whose body is
+    the given paragraphs. The real engine (RLIMIT subprocess etc.) is covered by
+    tests/test_pdf_docx_reconstruction*.py; here everything AROUND the engine is
+    real — mapping, re-keying, empty-body guard, persistence, artifact
+    registration — only the subprocess converter is swapped."""
+
+    name = "stub-pdf2docx"
+
+    def __init__(self, paragraphs):
+        self._paragraphs = list(paragraphs)
+
+    def is_available(self):
+        return True
+
+    def convert_pdf_to_docx(self, source_path, output_path):
+        output_path.write_bytes(_make_body_docx(self._paragraphs))
+
+
+def _healed_paragraph_texts():
+    """The texts the FIXED extractor yields for the fixture PDF — what the heal
+    stores, and what a faithful reconstruction's body carries."""
+    return [str(p["text"]) for p in pdf_text.extract_pdf_paragraphs(GARBLED_PDF_BYTES)]
+
+
+def _pre_fix_working_paragraphs():
+    """``working_docx_paragraphs`` as the retro conversion persisted them for a
+    pre-fix matter: the GARBLED pypdf paragraphs, re-keyed by body index."""
+    original = pdf_text._GLYPH_FRAGMENT_RUN_MIN
+    pdf_text._GLYPH_FRAGMENT_RUN_MIN = 10**9
+    try:
+        paragraphs = pdf_text.extract_pdf_paragraphs(GARBLED_PDF_BYTES)
+    finally:
+        pdf_text._GLYPH_FRAGMENT_RUN_MIN = original
+    return [
+        {"id": f"wp{index}", "text": str(p["text"]), "source_index": index}
+        for index, p in enumerate(paragraphs)
+    ]
+
+
+def _garbled_working_matter(**overrides):
+    """A pre-fix matter in the exact shape this feature exists for: garbled
+    stored text AND garbled persisted working paragraphs."""
+    return _garbled_matter(
+        working_docx_paragraphs=_pre_fix_working_paragraphs(), **overrides
+    )
+
+
+def _route_rebuild_conversion_through_stub(monkeypatch, spy):
+    """Route the shared conversion seam through the REAL
+    ``convert_pdf_matter_to_docx`` with the stub engine, counting invocations —
+    ``spy['n']`` is how a test asserts the rebuild machinery ran (or did NOT)."""
+    real_convert = pdf_ingest_conversion.convert_pdf_matter_to_docx
+
+    def _counting_convert(pdf_bytes, source_filename, paragraphs, **_):
+        spy["n"] += 1
+        return real_convert(
+            pdf_bytes,
+            source_filename,
+            paragraphs,
+            converter=_StubPdfConverter(_healed_paragraph_texts()),
+        )
+
+    monkeypatch.setattr(
+        ingestion_service.pdf_ingest_conversion,
+        "convert_pdf_matter_to_docx",
+        _counting_convert,
+    )
+
+
+def test_fixture_working_paragraphs_really_are_garbled():
+    """Sanity-pin the working-paragraph fixture shape + the detector's contract:
+    True on the pre-fix shape, False on healed texts, None when absent."""
+    garbled = {"working_docx_paragraphs": _pre_fix_working_paragraphs()}
+    assert garble_backfill.working_docx_paragraphs_garbled(garbled) is True
+    healthy = {
+        "working_docx_paragraphs": [
+            {"id": f"wp{i}", "text": text, "source_index": i}
+            for i, text in enumerate(_healed_paragraph_texts())
+        ]
+    }
+    assert garble_backfill.working_docx_paragraphs_garbled(healthy) is False
+    assert garble_backfill.working_docx_paragraphs_garbled({}) is None
+    assert garble_backfill.working_docx_paragraphs_garbled(
+        {"working_docx_paragraphs": []}
+    ) is None
+
+
+def test_execute_rebuilds_garbled_working_docx_after_heal(monkeypatch):
+    matter = _garbled_working_matter()
+    spy = {"n": 0}
+    _route_rebuild_conversion_through_stub(monkeypatch, spy)
+
+    handler, report = _execute()
+    assert handler.status == 202
+    assert report["healed"] == 1
+    assert report["docx_rebuilt"] == 1
+    assert report["docx_rebuild_failed"] == 0
+    entry = report["matters"][0]
+    assert entry["action"] == "healed"
+    assert entry["docx_rebuild"] == "rebuilt"
+    assert entry["working_docx_paragraphs_garbled"] is False
+    assert spy["n"] == 1
+
+    fresh = matter_store.get_matter(matter["id"], owner_user_id="")
+    working = fresh["working_docx_paragraphs"]
+    assert isinstance(working, list) and working
+    blocks = garble_backfill.stored_paragraph_blocks(
+        extracted_text_from_paragraphs(working)
+    )
+    # Coherent working paragraphs: no one/two-char shard runs, fingerprint clean.
+    assert [b for b in blocks if len(b) <= 2] == []
+    assert garble_backfill.garble_fingerprint(blocks)["garbled"] is False
+    # Re-keyed exactly as a fresh import: DOCX body index anchors, the
+    # source_part="pdf" marker dropped.
+    assert all(isinstance(p.get("source_index"), int) for p in working)
+    assert all(p.get("source_part") != "pdf" for p in working)
+    # Same provenance a fresh import records: a role="working" artifact (actor=ai)
+    # and the converted status stamp.
+    artifact = artifact_registry.latest_artifact_for_role(
+        fresh, artifact_registry.ROLE_WORKING
+    )
+    assert artifact is not None
+    assert fresh.get("working_docx_status") == "converted"
+    # And the heal itself is intact: coherent stored text, stale-review contract.
+    text_blocks = garble_backfill.stored_paragraph_blocks(fresh["extracted_text"])
+    assert garble_backfill.garble_fingerprint(text_blocks)["garbled"] is False
+    assert matters_routes._matter_review_text_changed(fresh, fresh["review_result"]) is True
+
+
+def test_rebuild_failure_keeps_healed_text_and_garbled_flag(monkeypatch):
+    """FAIL-SOFT: a reconstruction failure never rolls back the healed text,
+    never turns the heal into 'failed', and leaves the flag pointing at the
+    matter for the next run/human."""
+    matter = _garbled_working_matter()
+    working_before = copy.deepcopy(matter["working_docx_paragraphs"])
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("pdf2docx exploded")
+
+    monkeypatch.setattr(
+        ingestion_service.pdf_ingest_conversion, "convert_pdf_matter_to_docx", _boom
+    )
+
+    handler, report = _execute()
+    assert handler.status == 202
+    assert report["healed"] == 1
+    assert report["failed"] == 0
+    assert report["docx_rebuilt"] == 0
+    assert report["docx_rebuild_failed"] == 1
+    entry = report["matters"][0]
+    assert entry["action"] == "healed"
+    assert entry["docx_rebuild"] == "failed"
+    assert entry["working_docx_paragraphs_garbled"] is True
+
+    fresh = matter_store.get_matter(matter["id"], owner_user_id="")
+    # Healed TEXT kept...
+    blocks = garble_backfill.stored_paragraph_blocks(fresh["extracted_text"])
+    assert garble_backfill.garble_fingerprint(blocks)["garbled"] is False
+    # ...working paragraphs untouched (still the old garbled ones, flag persists),
+    # and no working artifact was registered by the failed rebuild.
+    assert fresh["working_docx_paragraphs"] == working_before
+    assert garble_backfill.working_docx_paragraphs_garbled(fresh) is True
+    assert (
+        artifact_registry.latest_artifact_for_role(fresh, artifact_registry.ROLE_WORKING)
+        is None
+    )
+
+
+def test_dry_run_reports_garbled_working_flag_without_bytes_or_rebuild(monkeypatch):
+    """The dry-run stays detection-only even for a garbled-working matter: the
+    flag is surfaced, but zero byte reads and zero reconstruction attempts."""
+    _garbled_working_matter()
+
+    def _boom(matter):
+        raise AssertionError("dry-run must not read document bytes")
+
+    monkeypatch.setattr(garble_backfill.matter_store, "get_source_document_bytes", _boom)
+    spy = {"n": 0}
+    _route_rebuild_conversion_through_stub(monkeypatch, spy)
+
+    handler = _run({})
+    assert handler.status == 200
+    assert handler.response["dry_run"] is True
+    entry = handler.response["matters"][0]
+    assert entry["action"] == "would_reextract"
+    assert entry["working_docx_paragraphs_garbled"] is True
+    assert "docx_rebuild" not in entry
+    assert spy["n"] == 0
+
+
+@pytest.mark.parametrize("overrides", [_EXECUTED_VARIANTS[0], _APPROVED_VARIANTS[0]])
+def test_executed_or_approved_matter_is_fully_excluded_from_the_rebuild(
+    _isolated_store, monkeypatch, overrides
+):
+    """The executed/approved exclusion covers the rebuild too — it is a mutation:
+    the protected record stays byte-identical and the reconstruction machinery is
+    never even invoked."""
+    protected = _garbled_working_matter(**overrides)
+    record_path = matter_store._matter_records_dir() / f"{protected['id']}.json"
+    before = record_path.read_bytes()
+    spy = {"n": 0}
+    _route_rebuild_conversion_through_stub(monkeypatch, spy)
+
+    handler, report = _execute()
+    assert handler.status == 202
+    assert report["excluded_executed"] == 1
+    assert report["docx_rebuilt"] == 0
+    assert report["docx_rebuild_failed"] == 0
+    assert report["matters"][0]["action"] == "excluded_executed"
+    assert spy["n"] == 0
+    assert record_path.read_bytes() == before
+
+
+def test_healthy_working_docx_is_never_rebuilt(monkeypatch):
+    """A matter whose working paragraphs are already coherent heals its text
+    only — the rebuild is not invoked and the working representation is
+    byte-identically preserved."""
+    healthy_working = [
+        {"id": f"wp{i}", "text": text, "source_index": i}
+        for i, text in enumerate(_healed_paragraph_texts())
+    ]
+    matter = _garbled_matter(working_docx_paragraphs=copy.deepcopy(healthy_working))
+    spy = {"n": 0}
+    _route_rebuild_conversion_through_stub(monkeypatch, spy)
+
+    handler, report = _execute()
+    assert handler.status == 202
+    assert report["healed"] == 1
+    assert report["docx_rebuilt"] == 0
+    assert report["docx_rebuild_failed"] == 0
+    entry = report["matters"][0]
+    assert entry["action"] == "healed"
+    assert "docx_rebuild" not in entry
+    assert entry["working_docx_paragraphs_garbled"] is False
+    assert spy["n"] == 0
+
+    fresh = matter_store.get_matter(matter["id"], owner_user_id="")
+    assert fresh["working_docx_paragraphs"] == healthy_working
+
+
+def test_in_lock_heal_veto_also_prevents_the_rebuild(monkeypatch):
+    """Mid-run approval (excluded_executed_late): when the writer's in-lock
+    reject_when vetoes the HEAL, the rebuild never runs either — no
+    reconstruction attempt, working paragraphs untouched."""
+    matter = _garbled_working_matter()
+    working_before = copy.deepcopy(matter["working_docx_paragraphs"])
+    spy = {"n": 0}
+    _route_rebuild_conversion_through_stub(monkeypatch, spy)
+
+    real_bytes = garble_backfill.matter_store.get_source_document_bytes
+
+    def _bytes_then_approve(m):
+        data = real_bytes(m)
+        matter_store.record_matter_approval(
+            str(m.get("id") or ""),
+            approver="counsel@example.com",
+            approved_at="2026-06-20T00:00:00+00:00",
+            timeline_event={
+                "type": "matter_approved",
+                "actor": "counsel@example.com",
+                "at": "2026-06-20T00:00:00+00:00",
+            },
+        )
+        return data
+
+    monkeypatch.setattr(
+        garble_backfill.matter_store, "get_source_document_bytes", _bytes_then_approve
+    )
+
+    handler, report = _execute()
+    assert handler.status == 202
+    assert report["healed"] == 0
+    assert report["excluded_executed_late"] == 1
+    assert report["docx_rebuilt"] == 0
+    assert report["docx_rebuild_failed"] == 0
+    entry = report["matters"][0]
+    assert entry["action"] == "excluded_executed_late"
+    assert "docx_rebuild" not in entry
+    assert spy["n"] == 0
+
+    fresh = matter_store.get_matter(matter["id"], owner_user_id="")
+    assert fresh["status"] == "approved"
+    assert fresh["extracted_text"] == GARBLED_TEXT
+    assert fresh["working_docx_paragraphs"] == working_before
+
+
+def test_approval_landing_during_reconstruction_vetoes_the_rebuild_write(monkeypatch):
+    """TOCTOU closer for the rebuild itself: the heal committed BEFORE the
+    approval (correct order), but an approval landing DURING the seconds-long
+    reconstruction window must veto the rebuild's writes — no paragraphs, no
+    artifact, not even a status stamp — reported as docx_rebuild failed."""
+    matter = _garbled_working_matter()
+    working_before = copy.deepcopy(matter["working_docx_paragraphs"])
+    real_convert = pdf_ingest_conversion.convert_pdf_matter_to_docx
+    spy = {"n": 0}
+
+    def _convert_then_approve(pdf_bytes, source_filename, paragraphs, **_):
+        spy["n"] += 1
+        result = real_convert(
+            pdf_bytes,
+            source_filename,
+            paragraphs,
+            converter=_StubPdfConverter(_healed_paragraph_texts()),
+        )
+        # Approval lands via the REAL approve-transition writer while the
+        # reconstruction is (conceptually) still in flight.
+        matter_store.record_matter_approval(
+            matter["id"],
+            approver="counsel@example.com",
+            approved_at="2026-06-20T00:00:00+00:00",
+            timeline_event={
+                "type": "matter_approved",
+                "actor": "counsel@example.com",
+                "at": "2026-06-20T00:00:00+00:00",
+            },
+        )
+        return result
+
+    monkeypatch.setattr(
+        ingestion_service.pdf_ingest_conversion,
+        "convert_pdf_matter_to_docx",
+        _convert_then_approve,
+    )
+
+    handler, report = _execute()
+    assert handler.status == 202
+    assert report["healed"] == 1
+    assert report["docx_rebuilt"] == 0
+    assert report["docx_rebuild_failed"] == 1
+    entry = report["matters"][0]
+    assert entry["action"] == "healed"
+    assert entry["docx_rebuild"] == "failed"
+    assert entry["working_docx_paragraphs_garbled"] is True
+    assert spy["n"] == 1
+
+    fresh = matter_store.get_matter(matter["id"], owner_user_id="")
+    # The approval survived; the vetoed rebuild wrote NOTHING.
+    assert fresh["status"] == "approved"
+    assert fresh["approver"] == "counsel@example.com"
+    assert fresh["working_docx_paragraphs"] == working_before
+    assert (
+        artifact_registry.latest_artifact_for_role(fresh, artifact_registry.ROLE_WORKING)
+        is None
+    )
+    assert "working_docx_status" not in fresh
+    # The heal itself stands (it committed before the approval landed).
+    blocks = garble_backfill.stored_paragraph_blocks(fresh["extracted_text"])
+    assert garble_backfill.garble_fingerprint(blocks)["garbled"] is False

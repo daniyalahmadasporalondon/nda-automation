@@ -1584,6 +1584,23 @@ def _persist_pdf_working_conversion(
     their existing behavior byte-identical.
     """
     started = time.monotonic()
+
+    def _persistence_vetoed() -> str | None:
+        """Fresh-read re-evaluation of the caller's exclusion (rebuild only).
+
+        Returns the veto reason (truthy) when NOTHING may be written to this
+        matter — not the paragraphs, not the artifact, and not even the
+        observability status stamp (each is a mutation of the protected
+        record). Always ``None`` for ingest/retro (``pre_persist_veto=None``).
+        """
+        if pre_persist_veto is None:
+            return None
+        try:
+            fresh = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+        except Exception:  # pragma: no cover - read failure: fail-safe, do not write
+            fresh = None
+        return pre_persist_veto(fresh) if isinstance(fresh, dict) else "matter_unreadable"
+
     try:
         working = pdf_ingest_conversion.convert_pdf_matter_to_docx(
             document_bytes,
@@ -1601,6 +1618,8 @@ def _persist_pdf_working_conversion(
             matter_id,
             exc_info=True,
         )
+        if _persistence_vetoed():
+            return matter  # Protected matter: not even the status stamp.
         _record_working_docx_status(
             matter_id,
             WORKING_DOCX_STATUS_EMPTY_BODY,
@@ -1616,6 +1635,8 @@ def _persist_pdf_working_conversion(
             matter_id,
             exc_info=True,
         )
+        if _persistence_vetoed():
+            return matter  # Protected matter: not even the status stamp.
         _record_working_docx_status(
             matter_id,
             WORKING_DOCX_STATUS_FAILED,
@@ -1630,19 +1651,14 @@ def _persist_pdf_working_conversion(
     # done and the writes are about to start. A veto exits WRITE-FREE — no
     # paragraphs, no artifact, and deliberately no status stamp either (recording
     # a status would itself mutate the matter the veto protects).
-    if pre_persist_veto is not None:
-        try:
-            fresh = repository.get_matter(matter_id, owner_user_id=owner_user_id)
-        except Exception:  # pragma: no cover - read failure: fail-safe, do not write
-            fresh = None
-        veto_reason = pre_persist_veto(fresh) if isinstance(fresh, dict) else "matter_unreadable"
-        if veto_reason:
-            LOGGER.warning(
-                "PDF->working-DOCX persistence vetoed for matter %s (%s); nothing written",
-                matter_id,
-                veto_reason,
-            )
-            return matter
+    veto_reason = _persistence_vetoed()
+    if veto_reason:
+        LOGGER.warning(
+            "PDF->working-DOCX persistence vetoed for matter %s (%s); nothing written",
+            matter_id,
+            veto_reason,
+        )
+        return matter
     # ORDER MATTERS (half-persist guard): the working artifact is what makes the
     # export substitute the working DOCX + light up working_docx_ready, and the
     # re-keyed paragraphs are what make the review produce redlines that anchor into
