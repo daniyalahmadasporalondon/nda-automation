@@ -1553,6 +1553,8 @@ def _persist_pdf_working_conversion(
     extracted_paragraphs: list[dict[str, Any]],
     repository: MatterRepository,
     owner_user_id: str,
+    rollback_paragraphs: list[dict[str, Any]] | None = None,
+    pre_persist_veto: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> dict[str, Any]:
     """Run the SAME PDF→working-DOCX conversion + persistence both ingest and the
     retro-conversion path use.
@@ -1563,6 +1565,23 @@ def _persist_pdf_working_conversion(
     half-persist rollback: on ANY error the matter is returned as-passed and the caller
     proceeds. The empty-body guard inside ``convert_pdf_matter_to_docx`` means a
     scanned / text-empty PDF raises here and is left on the PDF page-image view.
+
+    ``rollback_paragraphs`` is what the half-persist rollback writes back when
+    artifact registration fails AFTER the paragraphs write. Default ``None``
+    (ingest / retro: the matter had no working paragraphs, so the rollback clears
+    the orphan field). The garble-backfill FORCE-rebuild passes the matter's OLD
+    working paragraphs so a failed rebuild restores the exact pre-rebuild state
+    (old artifact + matching old paragraphs) instead of leaving a registered
+    working artifact with no paragraphs behind it.
+
+    ``pre_persist_veto`` (set ONLY by the garble-backfill rebuild) is re-evaluated
+    on a FRESH record read AFTER the seconds-long reconstruction and BEFORE the
+    first write: an approval/execution landing during the pdf2docx window vetoes
+    the whole persistence (nothing written — not even the status field, which
+    would itself mutate the protected matter). Not an in-lock veto
+    (``update_matter_fields`` has no reject seam), but it shrinks the race window
+    from the ~60s conversion to milliseconds; ingest/retro pass None and keep
+    their existing behavior byte-identical.
     """
     started = time.monotonic()
     try:
@@ -1606,6 +1625,24 @@ def _persist_pdf_working_conversion(
             elapsed_seconds=time.monotonic() - started,
         )
         return matter
+    # PRE-PERSIST VETO (garble-backfill rebuild only): re-evaluate the caller's
+    # exclusion on a FRESH record read now that the seconds-long reconstruction is
+    # done and the writes are about to start. A veto exits WRITE-FREE — no
+    # paragraphs, no artifact, and deliberately no status stamp either (recording
+    # a status would itself mutate the matter the veto protects).
+    if pre_persist_veto is not None:
+        try:
+            fresh = repository.get_matter(matter_id, owner_user_id=owner_user_id)
+        except Exception:  # pragma: no cover - read failure: fail-safe, do not write
+            fresh = None
+        veto_reason = pre_persist_veto(fresh) if isinstance(fresh, dict) else "matter_unreadable"
+        if veto_reason:
+            LOGGER.warning(
+                "PDF->working-DOCX persistence vetoed for matter %s (%s); nothing written",
+                matter_id,
+                veto_reason,
+            )
+            return matter
     # ORDER MATTERS (half-persist guard): the working artifact is what makes the
     # export substitute the working DOCX + light up working_docx_ready, and the
     # re-keyed paragraphs are what make the review produce redlines that anchor into
@@ -1613,7 +1650,8 @@ def _persist_pdf_working_conversion(
     # are never out of step in the harmful direction: a registered working artifact
     # ALWAYS has its re-keyed paragraphs behind it. If artifact registration fails
     # after the field write, roll the orphan field back so the matter falls cleanly
-    # to the legacy un-converted PDF path rather than the divergent (artifact-only /
+    # to the legacy un-converted PDF path (or, on a rebuild, the exact pre-rebuild
+    # state via ``rollback_paragraphs``) rather than the divergent (artifact-only /
     # paragraphs-only) state Approach C exists to remove.
     try:
         updated = repository.update_matter_fields(
@@ -1645,7 +1683,7 @@ def _persist_pdf_working_conversion(
         try:
             rolled_back = repository.update_matter_fields(
                 matter_id,
-                {WORKING_DOCX_PARAGRAPHS_FIELD: None},
+                {WORKING_DOCX_PARAGRAPHS_FIELD: rollback_paragraphs},
                 owner_user_id=owner_user_id,
             )
         except Exception:
@@ -1868,6 +1906,106 @@ def retro_convert_pdf_matter(
         extracted_paragraphs=list(extracted_paragraphs),
         repository=repository,
         owner_user_id=owner_user_id,
+    )
+
+
+def rebuild_pdf_working_docx(
+    matter: dict[str, Any],
+    *,
+    repository: MatterRepository,
+    owner_user_id: str = "",
+    document_bytes: bytes | None = None,
+    extracted_paragraphs: list[dict[str, Any]] | None = None,
+    reject_when: Callable[[dict[str, Any]], str | None] | None = None,
+) -> dict[str, Any]:
+    """FORCE-rebuild a PDF matter's working DOCX from its original bytes.
+
+    Used ONLY by the garble backfill (``garble_backfill``), after it heals the
+    stored ``extracted_text`` of a matter whose persisted ``working_docx_paragraphs``
+    still carry the garble fingerprint. The retro conversion
+    (``retro_convert_pdf_matter``) is deliberately IDEMPOTENT — a matter with a
+    working DOCX is a no-op — so without this path a healed matter keeps its
+    garbled working paragraphs forever: every on-demand review's paragraph
+    alignment fails (the garbled working text is not in the healed source →
+    ``ParagraphAlignmentError``) and permanently degrades to text-only anchoring,
+    and the tracked-changes reviewed-DOCX keeps failing its alignment.
+
+    This skips EXACTLY TWO things the retro path does:
+
+    * the ``matter_has_working_docx`` idempotency no-op (the point is to replace
+      the garbled working representation), and
+    * the prior-review paragraph preference (a garbled matter's stored review
+      paragraphs ARE the garble being healed; the caller passes the freshly
+      re-extracted healed paragraphs, or they are re-extracted here — the same
+      deterministic pypdf pass a fresh import runs).
+
+    Everything else is the SAME shared conversion + persistence a fresh import
+    uses (``_persist_pdf_working_conversion``): the same reconstruction engine
+    with its existing guards (RLIMIT-bounded subprocess, 2-concurrent semaphore,
+    page cap — nothing bypassed or duplicated), the same storage fields
+    (``working_docx_paragraphs`` + role="working" artifact with the same
+    provenance/lineage), the same half-persist ordering, the same status stamps.
+    ``register_working_docx`` stays idempotent on the content hash, so a
+    byte-identical reconstruction re-registers nothing and only the paragraphs
+    are replaced. The stored ``review_result`` keeps its old indices exactly like
+    the retro path: the heal already made it stale (``matter_text_changed``) and
+    the next on-demand review re-runs over the rebuilt working paragraphs, the
+    same reconciliation a fresh import relies on.
+
+    FAIL-OPEN, never raises past the shared path's guards: on ANY failure the
+    matter keeps its pre-rebuild working representation (``rollback_paragraphs``
+    restores the old paragraphs if artifact registration fails mid-way) and its
+    already-healed text — the caller inspects the returned/re-read record to
+    report ``docx_rebuilt`` vs ``docx_rebuild_failed``. ``reject_when`` is the
+    caller's executed/approved exclusion, re-evaluated write-free right before
+    persistence (see ``pre_persist_veto``). NO AI calls anywhere on this path.
+    """
+    if not isinstance(matter, dict):
+        return matter
+    matter_id = str(matter.get("id") or "")
+    if not matter_id or not _matter_is_pdf_source(matter):
+        return matter
+    source_filename = str(matter.get("source_filename") or matter.get("stored_filename") or "")
+    if document_bytes is None:
+        try:
+            document_bytes = repository.get_source_document_bytes(matter)
+        except Exception:
+            LOGGER.warning(
+                "Working-DOCX rebuild: reading original PDF bytes failed for matter %s",
+                matter_id,
+                exc_info=True,
+            )
+            return matter
+    if not document_bytes:
+        return matter
+    if extracted_paragraphs is None:
+        # Same deterministic pypdf pass ingest runs; the visual profile is not
+        # needed to reconstruct/map (paragraphs are byte-identical without it).
+        try:
+            _document_type, extracted_paragraphs, _quality = extract_document(
+                source_filename or "document.pdf", document_bytes, include_visual_profile=False
+            )
+        except Exception:
+            LOGGER.warning(
+                "Working-DOCX rebuild: re-extracting paragraphs failed for matter %s",
+                matter_id,
+                exc_info=True,
+            )
+            return matter
+    if not extracted_paragraphs:
+        return matter
+    old_working = matter.get(WORKING_DOCX_PARAGRAPHS_FIELD)
+    LOGGER.info("Working-DOCX FORCE rebuild starting for matter %s", matter_id)
+    return _persist_pdf_working_conversion(
+        matter,
+        matter_id=matter_id,
+        source_filename=source_filename,
+        document_bytes=document_bytes,
+        extracted_paragraphs=list(extracted_paragraphs),
+        repository=repository,
+        owner_user_id=owner_user_id,
+        rollback_paragraphs=old_working if isinstance(old_working, list) else None,
+        pre_persist_veto=reject_when,
     )
 
 

@@ -203,6 +203,23 @@ def matter_is_executed_or_approved(matter: dict[str, Any]) -> bool:
     return bool(matter.get("approved_at") or matter.get("approver"))
 
 
+def working_docx_paragraphs_garbled(matter: dict[str, Any]) -> bool | None:
+    """Garble verdict over the matter's persisted ``working_docx_paragraphs``.
+
+    ``None`` when the matter has no working paragraphs (never retro-converted,
+    or a native DOCX); otherwise the same read-only fingerprint the stored-text
+    detection uses. This is BOTH the report flag (``working_docx_paragraphs_
+    garbled``) and the trigger/verdict for the post-heal working-DOCX rebuild.
+    """
+    working = matter.get("working_docx_paragraphs")
+    if not isinstance(working, list) or not working:
+        return None
+    working_blocks = stored_paragraph_blocks(extracted_text_from_paragraphs(
+        [p for p in working if isinstance(p, dict) and "text" in p]
+    ))
+    return bool(garble_fingerprint(working_blocks)["garbled"])
+
+
 def _matter_has_pdf_filename(matter: dict[str, Any]) -> bool:
     """PDF-source check keyed on the filename, the SAME signal ``extract_document``
     routes on — so a candidate here is guaranteed to take the PDF extraction path
@@ -230,19 +247,17 @@ def matter_garble_assessment(matter: dict[str, Any]) -> dict[str, Any]:
         "candidate": False,
         "skip_reason": "",
     }
-    # Report-only visibility: a retro-converted matter re-keys the (garbled)
-    # pypdf paragraphs into working_docx_paragraphs. Healing extracted_text does
-    # not rewrite those; the next on-demand review self-corrects (its alignment
-    # guard rejects paragraphs that no longer match the healed text and retries
-    # text-only), so we surface the flag rather than touching artifact machinery.
-    working = matter.get("working_docx_paragraphs")
-    if isinstance(working, list) and working:
-        working_blocks = stored_paragraph_blocks(extracted_text_from_paragraphs(
-            [p for p in working if isinstance(p, dict) and "text" in p]
-        ))
-        entry["working_docx_paragraphs_garbled"] = bool(
-            garble_fingerprint(working_blocks)["garbled"]
-        )
+    # A retro-converted matter re-keyed the (garbled) pypdf paragraphs into
+    # working_docx_paragraphs. Healing extracted_text alone does not rewrite
+    # those — and the retro conversion is idempotent (working DOCX present →
+    # no-op) so nothing else ever would: reviews would permanently degrade to
+    # text-only anchoring (alignment of the garbled working text against the
+    # healed source raises ParagraphAlignmentError forever). The flag is
+    # therefore BOTH surfaced here (read-only) and, in an execute run, the
+    # trigger for the post-heal working-DOCX rebuild (_rebuild_working_docx).
+    working_garbled = working_docx_paragraphs_garbled(matter)
+    if working_garbled is not None:
+        entry["working_docx_paragraphs_garbled"] = working_garbled
     if not str(matter.get("id") or "").strip():
         entry["skip_reason"] = "missing_matter_id"
         return entry
@@ -327,10 +342,91 @@ def _heal_matter(matter: dict[str, Any], entry: dict[str, Any]) -> None:
     entry["action"] = "healed"
     entry["new_paragraphs"] = len(paragraphs)
     telemetry.increment("garble_backfill_matters_healed")
+    # TEXT healed. If this matter's PERSISTED working-DOCX representation is
+    # still garbled (the retro conversion re-keyed the old garbled pypdf
+    # paragraphs and is idempotent — it would never rebuild them), force-rebuild
+    # it from the same original bytes, reusing the healed paragraphs extracted
+    # above. FAIL-SOFT by construction: the healed text write above is already
+    # committed and is NEVER rolled back by a rebuild failure.
+    _rebuild_working_docx(
+        updated if isinstance(updated, dict) else matter,
+        entry,
+        document_bytes=document_bytes,
+        healed_paragraphs=paragraphs,
+    )
+
+
+def _rebuild_working_docx(
+    matter: dict[str, Any],
+    entry: dict[str, Any],
+    *,
+    document_bytes: bytes,
+    healed_paragraphs: list[dict[str, Any]],
+) -> None:
+    """Rebuild a healed matter's GARBLED working-DOCX representation from the
+    original bytes (execute runs only — reached exclusively via ``_heal_matter``,
+    so never on a dry-run and never on an excluded matter).
+
+    Delegates to ``ingestion_service.rebuild_pdf_working_docx`` — the SAME
+    reconstruction + persistence a fresh import uses (same pdf2docx engine with
+    its RLIMIT/semaphore/page-cap guards, same storage fields + artifact
+    provenance) minus only the idempotency no-op and the stored-review-paragraph
+    preference. Passes the executed/approved predicate as the write-free
+    pre-persist veto (a rebuild is a mutation; an approval landing during the
+    reconstruction window must still win). Reports per matter:
+
+    * ``docx_rebuild: "rebuilt"`` — the persisted working paragraphs are now
+      coherent (verdict re-read from the store, not trusted from a return code);
+    * ``docx_rebuild: "failed"`` — reconstruction failed / was vetoed / rolled
+      back; the healed TEXT is kept and ``working_docx_paragraphs_garbled``
+      stays True so the report still points at the matter.
+
+    NEVER raises (a rebuild failure must not turn the heal into ``failed``) and
+    makes NO AI calls — pdf2docx is deterministic local work.
+    """
+    if working_docx_paragraphs_garbled(matter) is not True:
+        return  # No working DOCX, or a healthy one: rebuild not needed.
+    matter_id = str(matter.get("id") or "")
+    entry["working_docx_paragraphs_garbled"] = True
+    # Local import mirrors _heal_matter's: keeps module import light, no cycle.
+    from .ingestion_service import rebuild_pdf_working_docx  # noqa: PLC0415
+    from .matter_repository import DiskMatterRepository  # noqa: PLC0415
+
+    try:
+        rebuild_pdf_working_docx(
+            matter,
+            repository=DiskMatterRepository(),
+            owner_user_id="",
+            document_bytes=document_bytes,
+            extracted_paragraphs=healed_paragraphs,
+            reject_when=_reject_executed_or_approved,
+        )
+        # Verdict from the STORE, not the return value: success is "the persisted
+        # working paragraphs are no longer garbled" (the shared path is fail-open
+        # and restores the old garbled paragraphs on a mid-way rollback).
+        fresh = matter_store.get_matter(matter_id, owner_user_id="")
+        rebuilt = (
+            isinstance(fresh, dict) and working_docx_paragraphs_garbled(fresh) is False
+        )
+    except Exception:  # noqa: BLE001 - fail-soft: the heal must survive any rebuild error.
+        LOGGER.warning(
+            "Garble backfill: working-DOCX rebuild raised for matter %s; healed text kept",
+            matter_id,
+            exc_info=True,
+        )
+        rebuilt = False
+    if rebuilt:
+        entry["docx_rebuild"] = "rebuilt"
+        entry["working_docx_paragraphs_garbled"] = False
+        telemetry.increment("garble_backfill_working_docx_rebuilt")
+    else:
+        entry["docx_rebuild"] = "failed"
+        telemetry.increment("garble_backfill_working_docx_rebuild_failed")
 
 
 def _reject_executed_or_approved(matter: dict[str, Any]) -> str | None:
-    """``reject_when`` adapter for the store writer's in-lock veto seam."""
+    """``reject_when`` adapter for the store writer's in-lock veto seam (and the
+    rebuild path's write-free pre-persist veto)."""
     return "executed_or_approved" if matter_is_executed_or_approved(matter) else None
 
 
@@ -395,6 +491,8 @@ def run_garble_backfill(
         "write_conflicts": 0,
         "no_longer_garbled": 0,
         "excluded_executed_late": 0,
+        "docx_rebuilt": 0,
+        "docx_rebuild_failed": 0,
         "failed": 0,
         "matters": entries,
         "errors": [],
@@ -434,6 +532,11 @@ def run_garble_backfill(
             report["errors"].append({"id": matter_id, "error": entry["error"]})
             continue
         action = str(entry.get("action") or "")
+        rebuild = str(entry.get("docx_rebuild") or "")
+        if rebuild == "rebuilt":
+            report["docx_rebuilt"] += 1
+        elif rebuild == "failed":
+            report["docx_rebuild_failed"] += 1
         if action == "healed":
             report["healed"] += 1
         elif action == "unchanged":
