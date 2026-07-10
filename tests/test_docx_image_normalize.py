@@ -153,6 +153,87 @@ class FakeConverter:
         return self.png_payload
 
 
+_EXT_CONTENT_TYPES = {"emf": "image/x-emf", "wmf": "image/x-wmf", "png": "image/png"}
+
+
+def _media_wmf_names(docx_bytes: bytes) -> list[str]:
+    return [n for n in _names(docx_bytes) if n.startswith("word/media/") and n.endswith(".wmf")]
+
+
+def _docx_with_referenced_vector_media(media_by_name: "dict[str, bytes]") -> bytes:
+    """A DOCX where EVERY vector media part has a MATCHING image relationship, so a
+    strict OPC reader (python-docx) can walk the whole package. ``[Content_Types]``
+    declares a ``<Default>`` for each distinct media extension present. Media are
+    written -- and relationships emitted -- in ``media_by_name`` iteration order,
+    so a caller can control which parts convert first under a per-document cap."""
+    extensions = {name.rsplit(".", 1)[-1].lower() for name in media_by_name if "." in name}
+    ext_defaults = b"".join(
+        f'<Default Extension="{ext}" ContentType="{_EXT_CONTENT_TYPES[ext]}"/>'.encode()
+        for ext in ("emf", "wmf", "png")
+        if ext in extensions
+    )
+    content_types = (
+        b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        b'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        b'<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        b'<Default Extension="xml" ContentType="application/xml"/>'
+        + ext_defaults
+        + b'<Override PartName="/word/document.xml" '
+        b'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        b"</Types>"
+    )
+    rel_entries = b"".join(
+        (
+            f'<Relationship Id="rId{100 + idx}" '
+            f'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+            f'Target="{name[len("word/"):]}"/>'
+        ).encode()
+        for idx, name in enumerate(media_by_name)
+    )
+    document_rels = (
+        b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        + rel_entries
+        + b"</Relationships>"
+    )
+    return _build_docx(media=media_by_name, content_types=content_types, document_rels=document_rels)
+
+
+def _content_type_defaults(docx_bytes: bytes) -> dict[str, str]:
+    root = ET.fromstring(_read_member(docx_bytes, "[Content_Types].xml"))
+    return {
+        (child.get("Extension") or "").lower(): child.get("ContentType")
+        for child in root
+        if child.tag == f"{{{CONTENT_TYPES_NS}}}Default"
+    }
+
+
+def _assert_every_part_has_content_type(testcase: unittest.TestCase, docx_bytes: bytes) -> None:
+    """OPC sanity: every part (except ``[Content_Types].xml`` itself) must resolve
+    to a ``<Default>``-by-extension or an ``<Override>``. A part with neither is a
+    spec-invalid package -- exactly the P2-a regression."""
+    with ZipFile(BytesIO(docx_bytes)) as archive:
+        part_names = [n for n in archive.namelist() if n != "[Content_Types].xml"]
+    root = ET.fromstring(_read_member(docx_bytes, "[Content_Types].xml"))
+    defaults = {
+        (c.get("Extension") or "").lower()
+        for c in root
+        if c.tag == f"{{{CONTENT_TYPES_NS}}}Default"
+    }
+    overrides = {
+        (c.get("PartName") or "").lstrip("/")
+        for c in root
+        if c.tag == f"{{{CONTENT_TYPES_NS}}}Override"
+    }
+    for part in part_names:
+        ext = part.rsplit(".", 1)[-1].lower() if "." in part else ""
+        testcase.assertTrue(
+            ext in defaults or part in overrides,
+            f"part {part!r} has neither a Default-by-extension nor an Override "
+            f"(defaults={sorted(defaults)}, overrides={sorted(overrides)})",
+        )
+
+
 class PlaceholderPngTests(unittest.TestCase):
     """The placeholder is the module's never-blank guarantee, so it must be a
     GENUINELY DECODABLE PNG -- not merely non-empty bytes. A malformed placeholder
@@ -297,6 +378,126 @@ class NormalizeEmfWmfTests(unittest.TestCase):
         self.assertIn("word/media/image2.png", _names(result))
         self.assertNotIn("word/media/image2.wmf", _names(result))
         self.assertEqual(converter.calls, ["wmf"])
+
+
+class CappedSurvivorContentTypesTests(unittest.TestCase):
+    """P2-a regression guard. When the per-document cap / wall-clock budget leaves
+    some ``.emf``/``.wmf`` parts un-normalized, ``_rewrite_content_types`` must NOT
+    strip the ``<Default Extension="emf|wmf">`` those survivors still rely on --
+    doing so yields a spec-invalid OPC package (a part with neither Override nor
+    Default-by-extension) on the LIVE serve paths for any doc with >20 distinct
+    vector images. It is a regression: pre-feature such a doc was served untouched
+    and valid."""
+
+    def test_cap_keeps_default_for_surviving_emf_parts(self):
+        # cap=2 with 5 DISTINCT EMFs: 2 convert to PNG, 3 survive as .emf.
+        media = {f"word/media/image{i}.emf": f"DISTINCT-EMF-{i}".encode() for i in range(5)}
+        docx = _docx_with_referenced_vector_media(media)
+        converter = FakeConverter(PNG_SIGNATURE + b"png")
+        with self.assertLogs("nda_automation.docx_image_normalize", level="WARNING"):
+            result = normalize_docx_emf_wmf_images(
+                docx, converter=converter, image_cache=None, max_images=2
+            )
+
+        self.assertEqual(len(converter.calls), 2)
+        self.assertEqual(len(_media_png_names(result)), 2)  # 2 renamed
+        self.assertEqual(len(_media_emf_names(result)), 3)  # 3 survivors untouched
+        # Survivors keep their content bytes -- they were NOT rewritten.
+        for i in range(2, 5):
+            self.assertEqual(
+                _read_member(result, f"word/media/image{i}.emf"),
+                f"DISTINCT-EMF-{i}".encode(),
+            )
+
+        defaults = _content_type_defaults(result)
+        self.assertEqual(defaults.get("emf"), "image/x-emf")  # retained for survivors
+        self.assertEqual(defaults.get("png"), PNG_CONTENT_TYPE)  # png addition kept
+        # The package is spec-valid: every part is declared, and python-docx opens.
+        _assert_every_part_has_content_type(self, result)
+        self._assert_python_docx_opens(result)
+
+    def test_budget_trip_keeps_default_for_surviving_emf_parts(self):
+        # Same invariant but tripped by the WALL-CLOCK budget, not the count cap.
+        # Monkeypatch the clock so only the first image converts, the rest blow the
+        # budget and survive as .emf.
+        media = {f"word/media/image{i}.emf": f"DISTINCT-EMF-{i}".encode() for i in range(5)}
+        docx = _docx_with_referenced_vector_media(media)
+        converter = FakeConverter(PNG_SIGNATURE + b"png")
+
+        calls = {"n": 0}
+
+        def fake_monotonic() -> float:
+            # 1st call = started; 2nd = first part's budget check (elapsed 0, ok);
+            # every later call reports the budget blown.
+            calls["n"] += 1
+            return 1000.0 if calls["n"] <= 2 else 5000.0
+
+        with mock.patch.object(image_normalize.time, "monotonic", fake_monotonic):
+            with self.assertLogs("nda_automation.docx_image_normalize", level="WARNING"):
+                result = normalize_docx_emf_wmf_images(
+                    docx, converter=converter, image_cache=None
+                )
+
+        self.assertEqual(len(converter.calls), 1)
+        self.assertEqual(len(_media_png_names(result)), 1)
+        self.assertEqual(len(_media_emf_names(result)), 4)
+        defaults = _content_type_defaults(result)
+        self.assertEqual(defaults.get("emf"), "image/x-emf")
+        self.assertEqual(defaults.get("png"), PNG_CONTENT_TYPE)
+        _assert_every_part_has_content_type(self, result)
+        self._assert_python_docx_opens(result)
+
+    def test_all_converted_drops_vector_defaults_byte_identical(self):
+        # No survivors: every vector Default is dropped (unchanged pre-cap
+        # behavior). The frozen-golden byte-identity guard lives in
+        # SerializeXmlNamespaceLeakTests.test_golden_output_unchanged_vs_origin_main;
+        # here we assert the no-survivor branch drops emf and keeps png.
+        media = {f"word/media/image{i}.emf": f"DISTINCT-EMF-{i}".encode() for i in range(3)}
+        docx = _docx_with_referenced_vector_media(media)
+        converter = FakeConverter(PNG_SIGNATURE + b"png")
+        result = normalize_docx_emf_wmf_images(docx, converter=converter, image_cache=None)
+
+        self.assertEqual(len(_media_emf_names(result)), 0)
+        self.assertEqual(len(_media_png_names(result)), 3)
+        defaults = _content_type_defaults(result)
+        self.assertNotIn("emf", defaults)
+        self.assertEqual(defaults.get("png"), PNG_CONTENT_TYPE)
+        _assert_every_part_has_content_type(self, result)
+
+    def test_mixed_emf_wmf_drops_only_the_fully_converted_extension(self):
+        # A .wmf and a .emf part; cap=1 with the .wmf FIRST -> wmf converts (no wmf
+        # survives -> wmf Default dropped) while the emf is skipped (survives ->
+        # emf Default retained). Proves the drop is per-extension, not all-or-none.
+        media = {
+            "word/media/logo.wmf": b"WMF-BYTES",
+            "word/media/pic.emf": b"EMF-BYTES",
+        }
+        docx = _docx_with_referenced_vector_media(media)
+        converter = FakeConverter(PNG_SIGNATURE + b"png")
+        with self.assertLogs("nda_automation.docx_image_normalize", level="WARNING"):
+            result = normalize_docx_emf_wmf_images(
+                docx, converter=converter, image_cache=None, max_images=1
+            )
+
+        self.assertEqual(_media_wmf_names(result), [])  # wmf converted away
+        self.assertEqual(_media_png_names(result), ["word/media/logo.png"])
+        self.assertEqual(_media_emf_names(result), ["word/media/pic.emf"])  # survivor
+        defaults = _content_type_defaults(result)
+        self.assertNotIn("wmf", defaults)  # dropped -- no wmf part remains
+        self.assertEqual(defaults.get("emf"), "image/x-emf")  # retained for survivor
+        self.assertEqual(defaults.get("png"), PNG_CONTENT_TYPE)
+        _assert_every_part_has_content_type(self, result)
+        self._assert_python_docx_opens(result)
+
+    def _assert_python_docx_opens(self, docx_bytes: bytes) -> None:
+        try:
+            import docx  # type: ignore[import-not-found]
+        except ImportError:
+            self.skipTest("python-docx not installed")
+        # A strict OPC reader walks every relationship + content type; it raises on
+        # a part with no declared content type. Opening without error is the
+        # end-to-end validity proof.
+        docx.Document(BytesIO(docx_bytes))
 
 
 class SerializeXmlNamespaceLeakTests(unittest.TestCase):
