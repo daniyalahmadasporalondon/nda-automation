@@ -71,6 +71,23 @@ MAX_PAGE_PIXMAP_BYTES = 96 * 1024 * 1024
 MIN_PAGE_IMAGE_DPI = 36
 RASTERIZED_PIXMAP_CHANNELS = 3  # RGB, alpha=False; pinned via fitz.csRGB at render
 
+# Process-wide rasterization concurrency bound. The per-page pixmap budget
+# (MAX_PAGE_PIXMAP_BYTES = 96 MiB) and MAX_RASTERIZED_PAGES cap bound a SINGLE
+# render, and the MatterRenderCoordinator dedupes concurrent renders of the SAME
+# matter -- but nothing bounded rasterize ACROSS matters. N users opening N
+# different matters ran N concurrent full-document rasterize loops, each
+# transiently holding a ~96 MiB pixmap PLUS its same-order PNG encode buffer, so
+# N could stack ~N * ~200 MiB with no ceiling -- the top OOM risk on the 2 GiB /
+# single-CPU box. We serialize rasterize to ONE slot process-wide: peak pixmap
+# memory is a single page's budget regardless of how many matters are viewed at
+# once. soffice conversion uses 2 slots, but each of those is RLIMIT_AS-capped at
+# 1 GiB in a separate process; rasterize runs IN-PROCESS against the shared Python
+# heap, so 1 (not 2) is the deliberate choice. A viewer that cannot get the slot
+# within the wait window gets the RENDERING status the FE poller already retries
+# on -- never a 500 and never an unbounded wait.
+MAX_CONCURRENT_RASTERIZE_RENDERS = 1
+RASTERIZE_QUEUE_WAIT_SECONDS = 5.0
+
 
 def _resolve_default_page_image_dpi() -> int:
     """Preview DPI default, overridable via NDA_PAGE_IMAGE_DPI.
@@ -287,6 +304,12 @@ class PdfPageRenderer(Protocol):
 # Bounds concurrent soffice processes process-wide. BoundedSemaphore so an
 # over-release is a programming error rather than silently widening the cap.
 _SOFFICE_CONVERSION_SEMAPHORE = threading.BoundedSemaphore(MAX_CONCURRENT_SOFFICE_CONVERSIONS)
+
+# Bounds concurrent PyMuPDF rasterize loops process-wide (see the
+# MAX_CONCURRENT_RASTERIZE_RENDERS rationale). Same idiom as the soffice
+# semaphore: a bounded acquire with a timeout, degrading to a retryable status
+# rather than blocking unbounded. BoundedSemaphore so an over-release trips loudly.
+_RASTERIZE_SEMAPHORE = threading.BoundedSemaphore(MAX_CONCURRENT_RASTERIZE_RENDERS)
 
 
 def _soffice_resource_preexec() -> None:  # pragma: no cover - runs in the child
@@ -1038,6 +1061,28 @@ def render_pdf_to_page_image_manifest(
         return result
 
     renderer_name = getattr(active_renderer, "name", "unknown")
+    # Process-wide rasterize backpressure. The memory-heavy rasterize loop runs
+    # under a single-slot semaphore so N matters cannot rasterize concurrently and
+    # OOM the box. A caller that cannot acquire within the wait window gets the
+    # RENDERING status the FE poller already retries on (NOT a 500, NOT an
+    # unbounded wait). The per-matter dedupe (MatterRenderCoordinator) is unchanged
+    # and orthogonal -- this bounds concurrency ACROSS matters.
+    if not _RASTERIZE_SEMAPHORE.acquire(timeout=RASTERIZE_QUEUE_WAIT_SECONDS):
+        LOGGER.info(
+            "PDF rasterize at capacity (%d slot(s)); returning RENDERING for cache_key %s",
+            MAX_CONCURRENT_RASTERIZE_RENDERS,
+            cache_key,
+        )
+        return _page_image_error_result(
+            cache_key=cache_key,
+            cache_dir=cache_root,
+            pdf_path=pdf_path,
+            manifest_path=manifest_path,
+            dpi=dpi,
+            code="page_render_busy",
+            message="PDF page image rendering is at capacity; please retry shortly.",
+            status=RENDERING_STATUS,
+        )
     try:
         page_dir.mkdir(parents=True, exist_ok=True)
         rendered_pages = active_renderer.render_pdf_to_page_images(pdf_path, page_dir, dpi=dpi)
@@ -1115,6 +1160,11 @@ def render_pdf_to_page_image_manifest(
             code="page_render_failed",
             message=f"PDF page image rendering failed: {_truncate_error_detail(str(exc))}",
         )
+    finally:
+        # Released on EVERY exit that acquired the slot (success return above, or
+        # any except path falling through here). The acquire-timeout path returned
+        # earlier without acquiring, so it never reaches this release.
+        _RASTERIZE_SEMAPHORE.release()
     _persist_page_image_failure_metadata(result, pdf_sha256=pdf_sha256, renderer_name=renderer_name)
     return result
 
