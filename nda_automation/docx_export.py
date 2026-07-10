@@ -42,6 +42,8 @@ from .redline_xml import (
     replace_redline_has_run_model,
 )
 from .docx_xml import (
+    CONTENT_TYPES_NS,
+    REL_NS,
     UnsafeDocxXmlError,
     W_NS,
     _content_type_tag,
@@ -1497,7 +1499,7 @@ def _package_rels_xml_with_document(relationships_xml: bytes | None) -> bytes:
         namespaces = {}
 
     _ensure_relationship_target(relationships_root, OFFICE_DOCUMENT_RELATIONSHIP_TYPE, "word/document.xml")
-    return _xml_bytes(relationships_root, namespace_declarations=namespaces)
+    return _xml_bytes(relationships_root, namespace_declarations=namespaces, default_namespace=REL_NS)
 
 
 def _document_rels_xml(*, include_comments: bool = False) -> str:
@@ -1556,7 +1558,7 @@ def _document_rels_xml_with_settings(relationships_xml: bytes | None, *, has_com
         _ensure_relationship_target(
             relationships_root, COMMENTS_EXTENDED_RELATIONSHIP_TYPE, "commentsExtended.xml"
         )
-    return _xml_bytes(relationships_root, namespace_declarations=namespaces)
+    return _xml_bytes(relationships_root, namespace_declarations=namespaces, default_namespace=REL_NS)
 
 
 def _content_types_xml_with_settings(
@@ -1585,7 +1587,7 @@ def _content_types_xml_with_settings(
         _ensure_content_type_override(
             content_types_root, "/word/commentsExtended.xml", COMMENTS_EXTENDED_CONTENT_TYPE
         )
-    return _xml_bytes(content_types_root, namespace_declarations=namespaces)
+    return _xml_bytes(content_types_root, namespace_declarations=namespaces, default_namespace=CONTENT_TYPES_NS)
 
 
 def _ensure_relationship_target(relationships_root: ET.Element, relationship_type: str, target: str) -> None:

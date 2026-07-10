@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import codecs
+import contextlib
 import re
+import threading
 import xml.etree.ElementTree as ET
 from io import BytesIO
-from typing import Dict
+from typing import Dict, Iterator
 
 UNSAFE_XML_DECLARATION_MESSAGE = "The Word document contains unsupported XML DTD/entity declarations."
 _UNSAFE_XML_DECLARATION = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
@@ -123,6 +125,42 @@ CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types
 ET.register_namespace("w", W_NS)
 ET.register_namespace("r", R_NS)
 
+# ``ET.register_namespace`` mutates a PROCESS-GLOBAL map (``ET._namespace_map``).
+# The two WordprocessingML prefixes above are registered ONCE at import and never
+# change, which is safe. But the OPC package parts (``[Content_Types].xml``,
+# ``_rels/.rels``, ``word/_rels/document.xml.rels``) use their namespace as the
+# UNPREFIXED default -- and their elements carry non-namespaced attributes
+# (``Id``/``Type``/``Target``/``PartName``/...), which makes ElementTree's
+# ``default_namespace=`` serialization argument raise. The only way to emit
+# ``xmlns="..."`` (default) for those roots is to register the empty prefix for
+# their URI, which must be done on the global map. To keep that global mutation
+# from (a) racing with concurrent reviewed-DOCX -> PDF conversions (the app is
+# threaded and runs conversions 2-concurrently) and (b) leaking across calls, we
+# snapshot/restore the whole map under a lock for the duration of a single
+# serialization. See ``_default_namespace_registration``.
+_NAMESPACE_MAP_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _default_namespace_registration(uri: str) -> Iterator[None]:
+    """Temporarily register ``uri`` as the DEFAULT (unprefixed) namespace, then
+    restore the previous global ``ET._namespace_map`` in a ``finally``.
+
+    Held under ``_NAMESPACE_MAP_LOCK`` so the register -> serialize -> restore
+    cycle is atomic with respect to any other thread doing the same thing: two
+    concurrent callers registering the empty prefix for DIFFERENT URIs can never
+    observe each other's half-registered state, and the global map is guaranteed
+    to be returned to exactly its prior contents even if serialization raises.
+    """
+    with _NAMESPACE_MAP_LOCK:
+        saved = dict(ET._namespace_map)
+        try:
+            ET.register_namespace("", uri)
+            yield
+        finally:
+            ET._namespace_map.clear()
+            ET._namespace_map.update(saved)
+
 INVALID_XML_CHAR_PATTERN = re.compile(
     "[\x00-\x08\x0B\x0C\x0E-\x1F"
     "\uD800-\uDFFF"
@@ -234,9 +272,27 @@ def _can_preserve_namespace_prefix(prefix: str) -> bool:
     return bool(XML_NAMESPACE_PREFIX_PATTERN.fullmatch(prefix))
 
 
-def _xml_bytes(root: ET.Element, *, namespace_declarations: Dict[str, str] | None = None) -> bytes:
+def _xml_bytes(
+    root: ET.Element,
+    *,
+    namespace_declarations: Dict[str, str] | None = None,
+    default_namespace: str | None = None,
+) -> bytes:
+    """Serialize ``root`` to UTF-8 XML bytes.
+
+    ``default_namespace`` (used for OPC package parts) makes that URI serialize as
+    the UNPREFIXED default (``xmlns="..."``) instead of an ElementTree-invented
+    ``ns0:`` prefix, matching the canonical shape the source packages use and that
+    both Word and LibreOffice accept. When it is ``None`` the serialization path is
+    byte-for-byte identical to before -- the WordprocessingML ``document.xml`` etc.
+    take this path and are unaffected.
+    """
     _strip_invalid_xml_chars_from_tree(root)
-    xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    if default_namespace:
+        with _default_namespace_registration(default_namespace):
+            xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    else:
+        xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
     if namespace_declarations:
         xml = _ensure_root_namespace_declarations(xml, namespace_declarations)
     return xml
