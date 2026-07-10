@@ -85,12 +85,28 @@ def handle_gmail_connect_callback(handler, *, send_body: bool = True) -> None:
     role = str((state_record.get("metadata") or {}).get("role") or "all")
     try:
         token_response = google_connection.exchange_oauth_code(code, redirect_uri=_gmail_redirect_uri(handler))
+        # POLICY gates run BEFORE any token is written, so a rejected connect
+        # persists nothing: verify the connected mailbox's identity and enforce
+        # the domain allowlist on it. The verified email is display metadata +
+        # the allowlist subject only -- the tokens still bind to owner_user_id.
+        connected_email = google_connection.verify_connected_identity(token_response)
         connected_roles = google_connection.save_user_oauth_token(
             owner_user_id,
             token_response,
             role=role,
         )
+        # Record the connected mailbox as display metadata (the aspora-people
+        # external_user_id). Best-effort: a good token connect must never fail
+        # because the display label could not be written -- the live Gmail
+        # profile call still surfaces the address.
+        try:
+            google_connection.save_connection_metadata(owner_user_id, connected_email=connected_email)
+        except google_connection.GoogleConnectionError:
+            pass
         gmail_integration._clear_profile_cache_for_owner(owner_user_id)
+    except google_connection.GoogleConnectionNotAllowedError as error:
+        handler._send_json({"error": str(error)}, status=403, send_body=send_body)
+        return
     except gmail_integration.GmailIntegrationError as error:
         handler._send_json({"error": str(error)}, status=502, send_body=send_body)
         return
@@ -127,6 +143,14 @@ def handle_gmail_disconnect(handler) -> None:
     role = str(payload.get("role") or "all").strip().lower()
     try:
         removed = google_connection.disconnect_user_oauth(owner_user_id, role=role)
+        # A full disconnect ("all", the single toggle's Off) also drops this
+        # session's connected-mailbox display record so a later reconnect starts
+        # clean. A role-specific disconnect leaves it (the mailbox is unchanged).
+        if role in {"all", "both"}:
+            try:
+                google_connection.clear_connection_metadata(owner_user_id)
+            except google_connection.GoogleConnectionError:
+                pass
         gmail_integration._clear_profile_cache_for_owner(owner_user_id)
         status = gmail_integration.gmail_status(owner_user_id=owner_user_id)
     except gmail_integration.GmailIntegrationError as error:

@@ -4,7 +4,9 @@ import json
 import os
 from urllib.parse import parse_qs, urlparse
 
-from nda_automation import google_connection, matter_store
+import pytest
+
+from nda_automation import google_connection, google_identity, http_auth, matter_store
 
 
 class _FakeServer:
@@ -17,15 +19,37 @@ class _FakeHandler:
         self.server = _FakeServer()
 
 
-def test_connected_owner_user_id_requires_google_provider():
+def test_connected_owner_user_id_is_provider_agnostic():
+    # aspora-people model: ANY authenticated session connects under its OWN id,
+    # regardless of provider. The connected mailbox never becomes the owner key.
     assert google_connection.connected_owner_user_id(
         {"provider": "google", "email": "alice@example.com"},
         owner_user_id="google:alice",
     ) == "google:alice"
+    # An SSO / Okta session connects under ITS OWN id (not a google: id).
+    assert google_connection.connected_owner_user_id(
+        {"provider": "okta", "email": "alice@corp.example.com"},
+        owner_user_id="okta:alice",
+    ) == "okta:alice"
     assert google_connection.connected_owner_user_id(
         {"provider": "basic", "email": "alice@example.com"},
         owner_user_id="basic:alice",
+    ) == "basic:alice"
+
+
+def test_connected_owner_user_id_refuses_empty_owner_never_wildcards():
+    # Empty/whitespace owner -> "" (never a wildcard): re-asserts the ownerless
+    # contract and keeps the env/local single-tenant fallback reachable.
+    assert google_connection.connected_owner_user_id(
+        {"provider": "google", "email": "alice@example.com"},
+        owner_user_id="",
     ) == ""
+    assert google_connection.connected_owner_user_id(
+        {"provider": "okta", "email": "alice@example.com"},
+        owner_user_id="   ",
+    ) == ""
+    # No session object at all -> "" (no-login / server-global mode).
+    assert google_connection.connected_owner_user_id(None, owner_user_id="google:alice") == ""
 
 
 def test_request_base_url_prefers_forwarded_headers():
@@ -269,10 +293,74 @@ def test_build_authorization_url_uses_google_scopes_and_login_hint(monkeypatch):
     assert parsed.netloc == "accounts.google.com"
     assert query["client_id"] == ["client-123"]
     assert query["redirect_uri"] == ["https://nda.example.com/auth/drive/callback"]
-    assert query["scope"] == ["https://www.googleapis.com/auth/drive.file"]
+    # The identity scopes (openid+email) are requested ALONGSIDE the role scope so
+    # the exchange returns a verifiable ID token; the role scope still follows.
+    assert query["scope"] == ["openid email https://www.googleapis.com/auth/drive.file"]
     assert query["state"] == ["state-token"]
     assert query["prompt"] == ["select_account consent"]
     assert query["login_hint"] == ["alice@example.com"]
+
+
+# --------------------------------------------------------------------------
+# verify_connected_identity: the connect-time identity + domain gate.
+# --------------------------------------------------------------------------
+def _stub_verify_id_token(monkeypatch, *, email):
+    monkeypatch.setattr(
+        google_identity,
+        "verify_google_id_token",
+        lambda id_token, **_kwargs: {"email": email, "sub": "sub-123"},
+    )
+
+
+def test_verify_connected_identity_rejects_absent_id_token(monkeypatch):
+    def _boom(id_token, **_kwargs):
+        raise google_identity.GoogleIdentityError("no id token")
+
+    monkeypatch.setattr(google_identity, "verify_google_id_token", _boom)
+    with pytest.raises(google_connection.GoogleConnectionIdentityError):
+        google_connection.verify_connected_identity({"access_token": "a"})
+
+
+def test_verify_connected_identity_returns_email_when_allowlist_unset(monkeypatch):
+    monkeypatch.delenv(http_auth.ALLOWED_EMAIL_DOMAINS_ENV, raising=False)
+    monkeypatch.delenv(http_auth.ALLOWED_EMAILS_ENV, raising=False)
+    _stub_verify_id_token(monkeypatch, email="anyone@wherever.example")
+
+    assert (
+        google_connection.verify_connected_identity({"id_token": "tok"})
+        == "anyone@wherever.example"
+    )
+
+
+def test_verify_connected_identity_enforces_domain_allowlist(monkeypatch):
+    monkeypatch.setenv(http_auth.ALLOWED_EMAIL_DOMAINS_ENV, "aspora.com")
+    monkeypatch.delenv(http_auth.ALLOWED_EMAILS_ENV, raising=False)
+
+    _stub_verify_id_token(monkeypatch, email="ops@aspora.com")
+    assert google_connection.verify_connected_identity({"id_token": "tok"}) == "ops@aspora.com"
+
+    _stub_verify_id_token(monkeypatch, email="stranger@evil.example")
+    with pytest.raises(google_connection.GoogleConnectionNotAllowedError) as excinfo:
+        google_connection.verify_connected_identity({"id_token": "tok"})
+    # The rejection names the rejected address.
+    assert "stranger@evil.example" in str(excinfo.value)
+
+
+def test_connection_metadata_roundtrip_and_clear(tmp_path, monkeypatch):
+    monkeypatch.setattr(matter_store, "DATA_DIR", tmp_path)
+
+    assert google_connection.connection_metadata_email("google:alice") == ""
+    google_connection.save_connection_metadata("google:alice", connected_email="alice@aspora.com")
+
+    meta_path = google_connection.user_connection_metadata_path("google:alice")
+    assert meta_path.is_file()
+    assert google_connection.connection_metadata_email("google:alice") == "alice@aspora.com"
+    # Metadata lives BESIDE the tokens, never inside them.
+    assert meta_path.name == google_connection.CONNECTION_METADATA_FILENAME
+
+    google_connection.clear_connection_metadata("google:alice")
+    assert not meta_path.exists()
+    assert google_connection.connection_metadata_email("google:alice") == ""
 
 
 def test_write_token_atomically_preserves_existing_token_on_replace_failure(tmp_path, monkeypatch):

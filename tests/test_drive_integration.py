@@ -1631,7 +1631,12 @@ class DriveRouteTests(unittest.TestCase):
                 connection.close()
         self.assertIn(status, (302, 303, 307))
         self.assertTrue(location.startswith("https://accounts.google.com"))
-        self.assertIn("scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file", location)
+        # The consent now also requests the identity scopes (openid+email) so the
+        # exchange returns a verifiable ID token; the drive.file role scope is
+        # still present (just no longer the first scope in the value).
+        self.assertIn("drive.file", location)
+        self.assertIn("openid", location)
+        self.assertIn("email", location)
         self.assertNotIn("gmail", location)
 
 

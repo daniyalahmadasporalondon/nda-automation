@@ -5184,8 +5184,18 @@ class ServerTests(unittest.TestCase):
                 state = parse_qs(parsed_start.query)["state"][0]
                 with patch(
                     "nda_automation.routes.gmail.google_connection.exchange_oauth_code",
-                    return_value={"access_token": "access-token", "refresh_token": "refresh-token"},
-                ) as exchange_code:
+                    return_value={
+                        "access_token": "access-token",
+                        "refresh_token": "refresh-token",
+                        "id_token": "identity-token",
+                    },
+                ) as exchange_code, patch(
+                    # The connect verifies the returned ID token names the picked
+                    # mailbox (metadata + domain gate). Stub the verification so the
+                    # callback does not reach out to Google's tokeninfo endpoint.
+                    "nda_automation.routes.gmail.google_connection.verify_connected_identity",
+                    return_value="alice@example.com",
+                ):
                     with patch.object(gmail_integration, "_clear_profile_cache_for_owner") as clear_profile_cache:
                         callback_status, callback_payload, callback_headers = self.request_with_headers(
                             "GET",
@@ -5242,6 +5252,9 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("access-token", json.dumps(status_payload))
         self.assertEqual(status_status, 200)
         self.assertTrue(status_payload["gmail"]["user_scoped"])
+        # "Connected as <email>": the connected mailbox recorded as display
+        # metadata at connect time is surfaced on the status payload.
+        self.assertEqual(status_payload["gmail"]["connected_email"], "alice@example.com")
         self.assertEqual(status_payload["gmail"]["setup"]["state"], "ready_to_connect")
         self.assertEqual(status_payload["gmail"]["inbound"]["token"]["source"], "user_data")
         self.assertEqual(status_payload["gmail"]["outbound"]["token"]["source"], "user_data")

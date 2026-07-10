@@ -422,6 +422,10 @@ def gmail_status(owner_user_id: str = "") -> dict[str, Any]:
         "sync": _gmail_sync_status_payload(owner_user_id, settings),
         "account_match": True,
         "user_scoped": bool(owner_user_id),
+        # The connected mailbox recorded at connect time (aspora-people display
+        # metadata). Surfaced so the Admin card can show "Connected as <email>"
+        # cheaply, without waiting on a live Gmail profile call.
+        "connected_email": google_connection.connection_metadata_email(owner_user_id) if owner_user_id else "",
         "setup": google_connection.connection_setup_status(
             owner_user_id=owner_user_id,
             connect_url="/auth/gmail/start",

@@ -21,6 +21,7 @@ per-user action is NOT 403-gated and is scoped to the caller's own id.
 from __future__ import annotations
 
 import io
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -31,6 +32,9 @@ from nda_automation import (
     docusign_integration,
     drive_integration,
     gmail_integration,
+    google_connection,
+    google_identity,
+    matter_store,
     user_store,
 )
 from nda_automation.artifact_registry import ACTOR_HUMAN, ROLE_REVIEWED, SOURCE_GENERATED
@@ -56,10 +60,20 @@ class _FakeServer:
 class _FakeHandler:
     """A signed-in NON-admin Google session on a remote (non-loopback) host."""
 
-    def __init__(self, repo, *, owner=USER_A, payload=None, path="/", host=NONADMIN_HOST):
+    def __init__(
+        self,
+        repo,
+        *,
+        owner=USER_A,
+        payload=None,
+        path="/",
+        host=NONADMIN_HOST,
+        provider="google",
+        email="alice@example.com",
+    ):
         self.matter_repository = repo
         self.current_user_id = owner
-        self.current_user = {"id": owner, "provider": "google", "email": "alice@example.com"}
+        self.current_user = {"id": owner, "provider": provider, "email": email}
         self._payload = payload
         self.path = path
         self.server = _FakeServer(host)
@@ -318,3 +332,221 @@ def test_nonadmin_cannot_send_another_users_matter_for_signature(repo, monkeypat
     # B's matter was never sent (no signature workflow stamped on it).
     stored = repo.get_matter(other_matter, owner_user_id=USER_B)
     assert docusign_routes.docusign_workflow.SIGNATURE_FIELD not in stored
+
+
+# --------------------------------------------------------------------------
+# SIMPLE Gmail connect (aspora-people model): connect is provider-agnostic, the
+# tokens bind to the SESSION's OWN id, and the connected mailbox is captured as
+# display metadata + the domain-gate subject only -- the tenant NEVER moves.
+# --------------------------------------------------------------------------
+def _connect_gmail(
+    repo,
+    tmp_path,
+    monkeypatch,
+    *,
+    owner,
+    provider="google",
+    session_email="user@example.com",
+    connected_email=None,
+    exchange=None,
+    id_token_valid=True,
+):
+    """Drive the REAL /auth/gmail/start -> /auth/gmail/callback against a session.
+
+    Stubs only the two network hops (the code->token exchange and Google's ID
+    token verification); the identity + domain gate runs for real.
+    """
+    connected_email = session_email if connected_email is None else connected_email
+    monkeypatch.setattr(matter_store, "DATA_DIR", tmp_path)
+    monkeypatch.setenv("NDA_GOOGLE_OAUTH_CLIENT_ID", "client-123")
+    monkeypatch.setenv("NDA_GOOGLE_OAUTH_CLIENT_SECRET", "secret-xyz")
+    if exchange is None:
+        exchange = {"access_token": "at", "refresh_token": "rt", "id_token": "idtok"}
+    monkeypatch.setattr(google_connection, "exchange_oauth_code", lambda code, *, redirect_uri: dict(exchange))
+    if id_token_valid:
+        monkeypatch.setattr(
+            google_identity,
+            "verify_google_id_token",
+            lambda id_token, **_kw: {"email": connected_email, "sub": "connected-sub"},
+        )
+    else:
+        def _raise(id_token, **_kw):
+            raise google_identity.GoogleIdentityError("id token invalid")
+
+        monkeypatch.setattr(google_identity, "verify_google_id_token", _raise)
+
+    start = _FakeHandler(
+        repo, owner=owner, provider=provider, email=session_email, path="/auth/gmail/start?role=all"
+    )
+    gmail_routes.handle_gmail_connect_start(start)
+    assert start.status == 302, start.response
+    state = parse_qs(urlparse(start.redirect_to).query)["state"][0]
+
+    callback = _FakeHandler(
+        repo,
+        owner=owner,
+        provider=provider,
+        email=session_email,
+        path=f"/auth/gmail/callback?code=code&state={state}",
+    )
+    gmail_routes.handle_gmail_connect_callback(callback)
+    return callback
+
+
+def test_google_session_connects_own_mailbox_tokens_under_session_id(repo, tmp_path, monkeypatch):
+    """(a) A Google session connects its OWN mailbox: tokens land under the
+    session id (today's behavior), and the connected mailbox is recorded as
+    display metadata under that same id -- the owner key is never the mailbox."""
+    callback = _connect_gmail(
+        repo, tmp_path, monkeypatch, owner=USER_A, provider="google",
+        session_email="alice@example.com", connected_email="alice@example.com",
+    )
+    assert callback.status == 302, callback.response
+    assert google_connection.user_token_path_for_role("inbound", USER_A).is_file()
+    assert google_connection.user_token_path_for_role("outbound", USER_A).is_file()
+    # The connected mailbox is NOT a token owner: no dir named after the email.
+    assert not (tmp_path / "users" / "google" / "alice@example.com").exists()
+    assert google_connection.connection_metadata_email(USER_A) == "alice@example.com"
+
+
+def test_sso_session_connects_under_its_own_id(repo, tmp_path, monkeypatch):
+    """(b) A NON-google (SSO) session connects: tokens key to ITS OWN id, and its
+    matters isolate to that id. No google:<sub> tenant is involved."""
+    sso_owner = "sso:okta-bob"
+    callback = _connect_gmail(
+        repo, tmp_path, monkeypatch, owner=sso_owner, provider="okta",
+        session_email="bob@corp.example", connected_email="bob@gmail.example",
+    )
+    assert callback.status == 302, callback.response
+    for role in ("inbound", "outbound", "drive"):
+        assert google_connection.user_token_path_for_role(role, sso_owner).is_file()
+    # Owner key is the SSO session id, NOT the connected Google mailbox.
+    assert not (tmp_path / "users" / "google" / "bob@gmail.example").exists()
+    assert google_connection.connection_metadata_email(sso_owner) == "bob@gmail.example"
+    # Its matters/ledger/cursor all key to that same id: an owned matter isolates.
+    matter = repo.create_matter(
+        source_filename="n.docx", document_bytes=b"x", extracted_text="t",
+        review_result={}, triage={}, owner_user_id=sso_owner,
+    )
+    assert repo.get_matter(matter["id"], owner_user_id=sso_owner) is not None
+    assert repo.get_matter(matter["id"], owner_user_id="google:someone-else") is None
+
+
+def test_absent_id_token_rejects_and_writes_nothing(repo, tmp_path, monkeypatch):
+    """(c) An unverifiable/absent ID token rejects the connect and writes NOTHING
+    (no tokens, no metadata) -- fail closed."""
+    callback = _connect_gmail(
+        repo, tmp_path, monkeypatch, owner=USER_A, provider="google",
+        connected_email="alice@example.com",
+        exchange={"access_token": "at", "refresh_token": "rt"},  # NO id_token
+        id_token_valid=False,
+    )
+    assert callback.status == 502, callback.response
+    assert not (tmp_path / "users" / "google" / USER_A).exists()
+    assert google_connection.connection_metadata_email(USER_A) == ""
+
+
+def test_domain_allowlist_unset_allows_any_mailbox(repo, tmp_path, monkeypatch):
+    """(d.1) Allowlist UNSET -> any connected mailbox is accepted (preserves the
+    default Render behavior; do NOT fail closed on an unconfigured allowlist)."""
+    monkeypatch.delenv("NDA_ALLOWED_EMAIL_DOMAINS", raising=False)
+    monkeypatch.delenv("NDA_ALLOWED_EMAILS", raising=False)
+    callback = _connect_gmail(
+        repo, tmp_path, monkeypatch, owner=USER_A, provider="google",
+        connected_email="anyone@wherever.example",
+    )
+    assert callback.status == 302, callback.response
+    assert google_connection.user_token_path_for_role("inbound", USER_A).is_file()
+
+
+def test_domain_allowlist_set_in_domain_connects(repo, tmp_path, monkeypatch):
+    """(d.2) Allowlist SET + in-domain mailbox -> connects."""
+    monkeypatch.setenv("NDA_ALLOWED_EMAIL_DOMAINS", "aspora.com")
+    monkeypatch.delenv("NDA_ALLOWED_EMAILS", raising=False)
+    callback = _connect_gmail(
+        repo, tmp_path, monkeypatch, owner=USER_A, provider="google",
+        connected_email="ops@aspora.com",
+    )
+    assert callback.status == 302, callback.response
+    assert google_connection.user_token_path_for_role("inbound", USER_A).is_file()
+    assert google_connection.connection_metadata_email(USER_A) == "ops@aspora.com"
+
+
+def test_domain_allowlist_set_out_of_domain_rejects_nothing_written(repo, tmp_path, monkeypatch):
+    """(d.3) Allowlist SET + out-of-domain mailbox -> 403, NOTHING written, and
+    the error names the rejected address."""
+    monkeypatch.setenv("NDA_ALLOWED_EMAIL_DOMAINS", "aspora.com")
+    monkeypatch.delenv("NDA_ALLOWED_EMAILS", raising=False)
+    callback = _connect_gmail(
+        repo, tmp_path, monkeypatch, owner=USER_A, provider="google",
+        connected_email="stranger@evil.example",
+    )
+    assert callback.status == 403, callback.response
+    assert "stranger@evil.example" in str(callback.response.get("error", ""))
+    assert not (tmp_path / "users" / "google" / USER_A).exists()
+    assert google_connection.connection_metadata_email(USER_A) == ""
+
+
+def test_empty_session_user_id_refuses_connect_and_owner_never_wildcards(repo, monkeypatch):
+    """(e) An empty/whitespace session user id cannot connect, and the matter
+    owner-match never treats a real owner (or an ownerless matter) as a wildcard
+    for an authenticated caller."""
+    monkeypatch.setenv("NDA_GOOGLE_OAUTH_CLIENT_ID", "client-123")
+    monkeypatch.setenv("NDA_GOOGLE_OAUTH_CLIENT_SECRET", "secret-xyz")
+    handler = _FakeHandler(repo, owner="   ", provider="google", path="/auth/gmail/start?role=all")
+    gmail_routes.handle_gmail_connect_start(handler)
+    assert handler.status == 403, handler.response
+    # Cross-tenant isolation is intact: an owned matter matches only its owner,
+    # and an ownerless matter is never served to an authenticated caller.
+    assert matter_store._matter_owner_matches({"owner_user_id": "sso:alice"}, "sso:alice") is True
+    assert matter_store._matter_owner_matches({"owner_user_id": "sso:alice"}, "sso:bob") is False
+    assert matter_store._matter_owner_matches({}, "sso:alice") is False
+
+
+def test_google_session_connecting_a_different_mailbox_keeps_tenancy(repo, tmp_path, monkeypatch):
+    """(f) The aspora-people semantic: a Google session may connect a DIFFERENT
+    mailbox. The tokens still key to the SESSION's id, "connected as" shows the
+    other mailbox, and the session's matter list is UNCHANGED (no tenancy move)."""
+    matter = repo.create_matter(
+        source_filename="n.docx", document_bytes=b"x", extracted_text="t",
+        review_result={}, triage={}, owner_user_id=USER_A,
+    )
+    before = [record["id"] for record in repo.list_matters(owner_user_id=USER_A)]
+
+    callback = _connect_gmail(
+        repo, tmp_path, monkeypatch, owner=USER_A, provider="google",
+        session_email="alice@example.com", connected_email="other@othermail.example",
+    )
+    assert callback.status == 302, callback.response
+    # Tokens STILL under the session id; connected-as shows the OTHER mailbox.
+    assert google_connection.user_token_path_for_role("inbound", USER_A).is_file()
+    assert not (tmp_path / "users" / "google" / "other@othermail.example").exists()
+    assert google_connection.connection_metadata_email(USER_A) == "other@othermail.example"
+    # Tenancy did NOT move: the matter list is unchanged and still owned by USER_A.
+    after = [record["id"] for record in repo.list_matters(owner_user_id=USER_A)]
+    assert after == before
+    assert repo.get_matter(matter["id"], owner_user_id=USER_A) is not None
+
+
+def test_disconnect_removes_only_the_session_tokens(repo, tmp_path, monkeypatch):
+    """(g) Disconnect removes ONLY the session's own tokens (and its metadata);
+    another user's tokens are never touched."""
+    callback = _connect_gmail(
+        repo, tmp_path, monkeypatch, owner=USER_A, provider="google",
+        session_email="alice@example.com", connected_email="alice@example.com",
+    )
+    assert callback.status == 302, callback.response
+
+    # A different user's token exists and must survive USER_A's disconnect.
+    other_inbound = google_connection.user_token_path_for_role("inbound", USER_B)
+    other_inbound.parent.mkdir(parents=True, exist_ok=True)
+    other_inbound.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(gmail_integration, "gmail_status", lambda owner_user_id="": {"ok": True})
+    handler = _FakeHandler(repo, owner=USER_A, provider="google", payload={"role": "all"})
+    gmail_routes.handle_gmail_disconnect(handler)
+
+    assert handler.status == 200, handler.response
+    assert not google_connection.user_token_path_for_role("inbound", USER_A).exists()
+    assert google_connection.connection_metadata_email(USER_A) == ""
+    assert other_inbound.exists()  # USER_B untouched

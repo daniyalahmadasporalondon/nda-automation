@@ -161,7 +161,14 @@ def handle_drive_connect_callback(handler, *, send_body: bool = True) -> None:
         return
     try:
         token_response = google_connection.exchange_oauth_code(code, redirect_uri=_drive_redirect_uri(handler))
+        # Same identity + domain gate as the Gmail connect: verify the connected
+        # account BEFORE persisting the Drive token, so a rejected connect writes
+        # nothing.
+        google_connection.verify_connected_identity(token_response)
         google_connection.save_user_oauth_token(owner_user_id, token_response, role="drive")
+    except google_connection.GoogleConnectionNotAllowedError as error:
+        handler._send_json({"error": str(error)}, status=403, send_body=send_body)
+        return
     except google_connection.GoogleConnectionError as error:
         handler._send_json({"error": str(error)}, status=502, send_body=send_body)
         return

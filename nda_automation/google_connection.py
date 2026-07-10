@@ -32,6 +32,19 @@ ROLE_LOCAL_TOKEN_FILENAME = {
 }
 GOOGLE_OAUTH_AUTH_URL = google_identity.GOOGLE_AUTH_URL
 GOOGLE_OAUTH_TOKEN_URL = google_identity.GOOGLE_TOKEN_URL
+# Identity scopes requested ALONGSIDE the role scopes on every connect consent,
+# so the token exchange returns a verifiable ID token naming the account the
+# user actually picked. The callback verifies that ID token to (a) record the
+# connected mailbox email as DISPLAY metadata and (b) enforce the domain gate.
+# These ride the consent URL only -- they grant no Gmail/Drive capability and are
+# deliberately NOT part of oauth_scopes_for_role, so stored-token scope checks
+# are unchanged. Crucially, the verified identity NEVER becomes the token owner
+# key: tokens always bind to the session's own user id (the aspora-people model).
+CONNECT_IDENTITY_SCOPES = ("openid", "email")
+# Per-owner display record of WHICH mailbox is connected (the aspora-people
+# ``external_user_id``). Stored beside the tokens, never inside them, so it can
+# never perturb ``Credentials.from_authorized_user_file``.
+CONNECTION_METADATA_FILENAME = "connection-meta.json"
 GOOGLE_OAUTH_SCOPES_BY_ROLE = {
     "inbound": ("https://www.googleapis.com/auth/gmail.readonly",),
     # gmail.send authorizes sending, but resolving the outbound account reads
@@ -51,10 +64,42 @@ class GoogleConnectionError(RuntimeError):
     pass
 
 
+class GoogleConnectionIdentityError(GoogleConnectionError):
+    """The connected Google account could not be verified.
+
+    Raised when the connect token exchange returned no ID token, or the ID token
+    fails verification. A connect that raises this writes NOTHING (no tokens, no
+    metadata): the identity gate runs BEFORE any persistence, so it fails closed.
+    """
+
+
+class GoogleConnectionNotAllowedError(GoogleConnectionError):
+    """The connected mailbox is not permitted by the app allowlist.
+
+    Distinct from a verification failure so the route can answer 403 (a policy
+    denial the operator can fix by allowlisting the address) rather than 502.
+    """
+
+
 def connected_owner_user_id(current_user: object, *, owner_user_id: str) -> str:
-    if isinstance(current_user, Mapping) and current_user.get("provider") == "google":
-        return str(owner_user_id or "")
-    return ""
+    """The owner id under which THIS session's Google tokens are read/written.
+
+    Provider-agnostic (the aspora-people model): ANY authenticated session --
+    ``google:<sub>``, ``okta:<sub>``, ``sso:<sub>``, basic, ... -- connects
+    Google under its OWN user id. The tokens bind to the session's own tenant;
+    the connected mailbox identity is captured as display metadata only, never
+    as the owner key, and the tenant never moves.
+
+    Empty/whitespace owner -> "" (NEVER a wildcard): this re-asserts the
+    ownerless contract AND keeps the env/local single-tenant token fallback
+    reachable for no-login deployments (where the owner is legitimately "").
+    """
+    owner = str(owner_user_id or "").strip()
+    if not owner:
+        return ""
+    if not isinstance(current_user, Mapping):
+        return ""
+    return owner
 
 
 def login_hint(current_user: object) -> str:
@@ -237,6 +282,13 @@ def build_authorization_url(
 ) -> str:
     if not google_identity.google_oauth_configured():
         raise GoogleConnectionError("Google OAuth is not configured.")
+    # Prepend the identity scopes so the exchange returns a verifiable ID token
+    # naming the connected account; the role scopes follow and are what actually
+    # authorize Gmail/Drive access.
+    scopes = list(CONNECT_IDENTITY_SCOPES)
+    for scope in oauth_scopes_for_role(role):
+        if scope not in scopes:
+            scopes.append(scope)
     params = {
         "access_type": "offline",
         "client_id": google_identity.google_client_id(),
@@ -244,7 +296,7 @@ def build_authorization_url(
         "prompt": "select_account consent",
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": " ".join(oauth_scopes_for_role(role)),
+        "scope": " ".join(scopes),
         "state": state,
     }
     if login_hint:
@@ -277,6 +329,91 @@ def exchange_oauth_code(code: str, *, redirect_uri: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise GoogleConnectionError("Google OAuth token exchange failed.")
     return payload
+
+
+def verify_connected_identity(token_response: Mapping[str, Any]) -> str:
+    """Verify the connect ID token and return the connected mailbox email.
+
+    Runs the two POLICY gates that must pass BEFORE any token is persisted, so a
+    rejected connect writes nothing (fail closed):
+
+    1. The exchange must have returned an ID token that verifies against Google
+       (:func:`google_identity.verify_google_id_token`). Absent/unverifiable ->
+       :class:`GoogleConnectionIdentityError`.
+    2. The verified email must be permitted by the app allowlist (the SAME
+       machinery sign-in uses, ``http_auth.google_email_allowed``). Unset/empty
+       allowlist -> allow any mailbox (preserves Render behavior); set and the
+       email is not allowed -> :class:`GoogleConnectionNotAllowedError`, naming
+       the rejected address.
+
+    The returned email is DISPLAY metadata (the aspora-people ``external_user_id``)
+    and the allowlist subject -- it never becomes the token owner key.
+    """
+    # Imported lazily to keep this module importable before the auth layer and to
+    # avoid any import-order coupling (http_auth pulls app_settings lazily too).
+    from . import http_auth
+
+    id_token = str(token_response.get("id_token") or "").strip()
+    try:
+        claims = google_identity.verify_google_id_token(id_token)
+    except google_identity.GoogleIdentityError as exc:
+        raise GoogleConnectionIdentityError(
+            "Could not verify the connected Google account. Reconnect and grant access to your email address."
+        ) from exc
+    email = str(claims.get("email") or "").strip()
+    if not email:
+        raise GoogleConnectionIdentityError("The connected Google account did not return an email address.")
+    if not http_auth.google_email_allowed(email):
+        raise GoogleConnectionNotAllowedError(
+            f"The Google account {email} is not allowed to connect. Ask your admin to add it to the access list."
+        )
+    return email
+
+
+def user_connection_metadata_path(owner_user_id: str) -> Path:
+    owner_segment = clean_user_token_segment(owner_user_id)
+    if owner_segment in {"", ".", ".."}:
+        raise GoogleConnectionError("A valid signed-in user is required to store Google connection metadata.")
+    return matter_store.DATA_DIR / "users" / "google" / owner_segment / CONNECTION_METADATA_FILENAME
+
+
+def save_connection_metadata(owner_user_id: str, *, connected_email: str) -> None:
+    """Record the connected mailbox email as the session-owner's display metadata.
+
+    Keyed to the session's OWN user id (never the connected Google identity), so
+    it mirrors exactly where the tokens live. Stored beside the tokens, never in
+    them.
+    """
+    owner_user_id = clean_user_token_segment(owner_user_id)
+    if not owner_user_id:
+        raise GoogleConnectionError("A signed-in user is required to record Google connection metadata.")
+    payload = {"connected_email": str(connected_email or "").strip()}
+    write_token_atomically(user_connection_metadata_path(owner_user_id), json.dumps(payload, indent=2) + "\n")
+
+
+def read_connection_metadata(owner_user_id: str) -> dict[str, Any]:
+    owner_user_id = clean_user_token_segment(owner_user_id)
+    if not owner_user_id:
+        return {}
+    return read_token_json(user_connection_metadata_path(owner_user_id))
+
+
+def connection_metadata_email(owner_user_id: str) -> str:
+    return str(read_connection_metadata(owner_user_id).get("connected_email") or "")
+
+
+def clear_connection_metadata(owner_user_id: str) -> None:
+    owner_user_id = clean_user_token_segment(owner_user_id)
+    if not owner_user_id:
+        return
+    metadata_path = user_connection_metadata_path(owner_user_id)
+    try:
+        metadata_path.unlink()
+        fsync_parent_directory(metadata_path)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise GoogleConnectionError("Google connection metadata could not be removed.") from exc
 
 
 def save_user_oauth_token(owner_user_id: str, token_response: dict[str, Any], *, role: str = "all") -> list[str]:
