@@ -35,6 +35,9 @@ from . import artifact_registry
 
 # Cache the Playbook-sourced value/alias -> option-id map so per-matter projection
 # (the dashboard list view is a hot path) does not re-read the Playbook each call.
+# Invalidated via reset_caches() by playbook_authoring publish/save/restore, so a
+# republish takes effect without a restart. PER-PROCESS only: a multi-process
+# deploy would need hash-keyed staleness detection instead.
 _OPTION_LOOKUP_CACHE: dict[str, str] | None = None
 _OPTION_IDS_CACHE: tuple[str, ...] | None = None
 # option_id (lowercase) -> the Playbook label to show in the UI's interpreted line.

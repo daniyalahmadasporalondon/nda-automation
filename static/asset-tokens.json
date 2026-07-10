@@ -276,16 +276,16 @@
     "v": "20260622docxphase2-1"
   },
   "js/review-workstation-rendering.js": {
-    "sha256": "8f837c01a7b5cd897274d90457cf58dc8c8680295b308073058883a1a86ee15a",
-    "v": "20260709hotfix1"
+    "sha256": "27c1d685afe8c839110950ed3ef0410db9d1448bd344f131ec95e61119a07911",
+    "v": "20260709openredline1"
   },
   "js/review-workstation-source.js": {
     "sha256": "dc075665414f8a245e0e0b1f7f6d8b3b689ad9ea54138dcac1348cfc07660105",
     "v": "20260706onboard1"
   },
   "js/review-workstation-viewer.js": {
-    "sha256": "e0a63e335a4ed52b2704722c03786395b263a8a6d7ad7978fb2791fdd8edf0c0",
-    "v": "20260626editordur1"
+    "sha256": "7bc95fa49641dbf123b4261189a32367f6647d0cceec8c0aabb527bd3053c8b4",
+    "v": "20260709openredline1"
   },
   "js/send-document.js": {
     "sha256": "9707788775c3c70cf853cf1f6a851c24b351248f9d76b02f30a1008dc4ce2ec5",

@@ -1113,7 +1113,14 @@ function loadMatterIntoReview(matter) {
   setDocumentTitle(matter.document_title || matter.source_filename || DEFAULT_DOCUMENT_TITLE);
   setCounterpartyMeta(MatterUtils.counterpartyEmail(matter, state.gmailStatus));
   renderCounterpartyConfirmation(matter);
-  renderResult(reviewResult, matter.extracted_text || reviewResult.extracted_text || "");
+  // Pass the saved redline draft into renderResult so the INITIAL view-mode
+  // decision (defaultDocumentViewModeForReviewResult) can see it: a matter with
+  // saved redline work opens on Redline even when its PDF source would otherwise
+  // prefer the Original surface. The draft signal must ride along here because
+  // the mode is computed inside renderResult BEFORE applyMatterRedlineDraft runs.
+  renderResult(reviewResult, matter.extracted_text || reviewResult.extracted_text || "", {
+    redlineDraft: matter.redline_draft,
+  });
   applyMatterRedlineDraft(matter.redline_draft);
   renderReviewRefreshNotice(matter.review_refresh);
   // The freshness file-meta line follows the SAME (a)/(b)/(c) contract as the

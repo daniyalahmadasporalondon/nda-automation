@@ -26,11 +26,13 @@ function sanitizeReviewRedlines(rawEdits) {
   }
 }
 
-function renderResult(result, reviewedText) {
+function renderResult(result, reviewedText, options = {}) {
   pendingReviewSendMatterId = null;
   state.reviewDocumentRender = reviewDocumentRenderState(result);
   state.latestReviewResult = result;
-  state.documentViewMode = defaultDocumentViewModeForReviewResult(result, state.reviewDocumentRender);
+  state.documentViewMode = defaultDocumentViewModeForReviewResult(result, state.reviewDocumentRender, {
+    redlineDraft: options.redlineDraft,
+  });
   syncDocumentViewModeButtons();
   state.reviewClauses = result.clauses || [];
   state.reviewParagraphs = result.paragraphs || [];
@@ -69,8 +71,21 @@ function renderResult(result, reviewedText) {
   requestMatterDocumentRenderPreview();
 }
 
-function defaultDocumentViewModeForReviewResult(result, renderState) {
+function defaultDocumentViewModeForReviewResult(result, renderState, redlineSignals) {
+  // A reviewed matter opens on the REDLINE view: if the review produced redline
+  // edits, or the user saved a redline draft on this matter, the redline work is
+  // the point of opening it -- that outranks the sourceFallback/fidelity
+  // preference for the guaranteed-faithful Original surface (which stays the
+  // default for UNREVIEWED PDF sources). Manual view switching is untouched:
+  // this only picks the INITIAL mode.
+  if (reviewResultHasRedlineWork(result, redlineSignals)) return VIEW_MODE_REDLINE;
   return reviewResultPrefersOriginalSurface(result, renderState) ? VIEW_MODE_ORIGINAL : VIEW_MODE_REDLINE;
+}
+
+function reviewResultHasRedlineWork(result, redlineSignals) {
+  if (Array.isArray(result?.redline_edits) && result.redline_edits.length > 0) return true;
+  const draft = redlineSignals && typeof redlineSignals === "object" ? redlineSignals.redlineDraft : null;
+  return Boolean(draft && typeof draft === "object");
 }
 
 function syncDocumentViewModeButtons() {
