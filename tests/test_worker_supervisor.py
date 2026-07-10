@@ -17,7 +17,9 @@ Opt-out: NDA_SKIP_PROCESS_SMOKE=1 skips the (slow) real-subprocess cases.
 """
 from __future__ import annotations
 
+import http.client
 import io
+import json
 import os
 import signal
 import socket
@@ -29,7 +31,9 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 from xml.sax.saxutils import escape as escape_xml
 
 import pytest
@@ -683,3 +687,362 @@ def test_two_processes_write_matter_store_concurrently_without_corruption() -> N
             f"expected {2 * per_writer} matters after concurrent writes, got {total} "
             "(lost update / corruption under the store flock)"
         )
+
+
+# =========================================================================== #
+# Slow-flap detector + supervision status() (fix/worker-breaker-visibility)
+#
+# The fast breaker (5 deaths/60s) STOPS restarting a storming child; the new
+# slow-flap detector (10 deaths/3600s) reports the child "flapping" but KEEPS
+# restarting it. status() is the structured state the health surfaces read.
+# =========================================================================== #
+def test_status_running_when_no_deaths_recorded() -> None:
+    sup, _spawns = _make_supervisor()
+    status = sup.status()
+    assert status["state"] == "running"
+    assert status["deaths_last_hour"] == 0
+    assert status["last_exit_code"] is None
+
+
+def test_status_restarting_after_a_single_recent_death() -> None:
+    # One death inside the fast window, well below either threshold: the child is
+    # on the backoff ladder, not degraded. running/restarting must NOT alarm.
+    sup, _spawns = _make_supervisor()
+    with sup._state_lock:
+        sup._last_exit_code = 3
+        sup._record_death(sup._clock())
+    status = sup.status()
+    assert status["state"] == "restarting"
+    assert status["deaths_last_hour"] == 1
+    assert status["last_exit_code"] == 3
+    assert server._worker_is_degraded(status) is False
+
+
+def test_status_flapping_when_slow_threshold_crossed_without_fast_storm() -> None:
+    # Deaths spread ~5 min apart: 10 land inside the rolling hour (=> flapping)
+    # but never 5 inside any 60s window (=> the fast breaker never trips). This is
+    # EXACTLY the slow-flap the fast breaker misses.
+    clock = {"t": 1000.0}
+    sup = server.WorkerSupervisor(
+        spawn=lambda: None,
+        clock=lambda: clock["t"],
+        crash_window=60.0,
+        crash_threshold=5,
+        slow_flap_window=3600.0,
+        slow_flap_threshold=10,
+    )
+    for _ in range(10):
+        with sup._state_lock:
+            sup._record_death(clock["t"])
+        clock["t"] += 300.0  # next death 5 minutes later
+    status = sup.status()
+    assert status["state"] == "flapping"
+    assert status["deaths_last_hour"] == 10
+    assert status["deaths_last_window"] < 5  # never 5-in-60s -> fast breaker safe
+    assert sup.breaker_tripped is False  # slow-flap does NOT trip the breaker
+    assert server._worker_is_degraded(status) is True
+
+
+def test_status_breaker_tripped_is_latched() -> None:
+    sup, _spawns = _make_supervisor()
+    sup.breaker_tripped = True
+    status = sup.status()
+    assert status["state"] == "breaker_tripped"
+    assert server._worker_is_degraded(status) is True
+
+
+def test_slow_flap_keeps_restarting_the_real_monitor_loop() -> None:
+    """Drive the ACTUAL monitor loop: crossing the slow-flap threshold reports
+    ``flapping`` (degraded) yet keeps respawning -- unlike the fast breaker, which
+    would have returned and stopped restarting. Clock/sleep/spawn are faked so no
+    wall-clock minutes and no real processes are needed (a real child dying slowly
+    enough to avoid the 5-in-60s fast breaker would take minutes to reach 10
+    deaths -- impractical in a unit test; this proves the SEMANTICS deterministically).
+    """
+    # A clock that advances 150s per CALL. The loop calls it twice per iteration
+    # (spawned_at, now), so successive deaths land 300s apart: sparse enough that
+    # the fast 5-in-60s breaker never trips, dense enough that 10 land in an hour.
+    tick = {"t": 0.0}
+
+    def _clock() -> float:
+        value = tick["t"]
+        tick["t"] += 150.0
+        return value
+
+    spawns: list[object] = []
+
+    def _spawn() -> _FakeChild:
+        child = _FakeChild()
+        spawns.append(child)
+        return child
+
+    sup = server.WorkerSupervisor(
+        spawn=_spawn,
+        backoff_initial=1.0,
+        backoff_cap=30.0,
+        healthy_uptime=60.0,
+        crash_window=60.0,
+        crash_threshold=5,
+        slow_flap_window=3600.0,
+        slow_flap_threshold=10,
+        clock=_clock,
+    )
+
+    # Stop the loop after 12 respawns so we can observe restarts CONTINUING past
+    # the 10-death flap threshold (a fast-breaker trip would have stopped at 5).
+    def _sleep(_delay: float) -> bool:
+        if len(spawns) >= 12:
+            sup._stop.set()
+            return True
+        return False
+
+    sup._sleep = _sleep
+    sup._child = sup._spawn()
+    sup._monitor_loop()
+
+    assert sup.breaker_tripped is False, "slow-flap must NOT trip the fast breaker"
+    assert len(spawns) >= 11, "restarts must CONTINUE through a slow flap"
+    # By now well over 10 deaths sit in the rolling hour -> flapping + degraded.
+    status = sup.status()
+    assert status["state"] == "flapping"
+    assert status["deaths_last_hour"] >= 10
+    assert server._worker_is_degraded(status) is True
+
+
+# --------------------------------------------------------------------------- #
+# _worker_status_payload(): what the health surfaces read when there is (not) a
+# live supervisor in THIS process.
+# --------------------------------------------------------------------------- #
+def test_worker_status_payload_disabled_without_supervisor(monkeypatch: pytest.MonkeyPatch) -> None:
+    # role=all + NDA_WORKER_PROCESS=0 (or the pre-attach window): the scheduler
+    # runs in-process, there is no supervised child -> "disabled", NOT broken.
+    monkeypatch.setattr(server, "_WORKER_SUPERVISOR", None)
+    monkeypatch.setenv(app_settings.PROCESS_ROLE_ENV, "all")
+    payload = server._worker_status_payload()
+    assert payload == {"state": "disabled"}
+    assert server._worker_is_degraded(payload) is False
+
+
+def test_worker_status_payload_external_for_web_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    # role=web: the worker is a SEPARATE container with its own /healthz.
+    monkeypatch.setattr(server, "_WORKER_SUPERVISOR", None)
+    monkeypatch.setenv(app_settings.PROCESS_ROLE_ENV, "web")
+    payload = server._worker_status_payload()
+    assert payload == {"state": "external"}
+    assert server._worker_is_degraded(payload) is False
+
+
+def test_worker_status_payload_returns_live_supervisor_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    sup, _spawns = _make_supervisor()
+    sup.breaker_tripped = True
+    monkeypatch.setattr(server, "_WORKER_SUPERVISOR", sup)
+    payload = server._worker_status_payload()
+    assert payload["state"] == "breaker_tripped"
+
+
+# --------------------------------------------------------------------------- #
+# HTTP surfaces: /healthz stays 200 (liveness), /readyz carries the degraded
+# worker signal, and the admin health card escalates -- served by the REAL app
+# handler.
+# --------------------------------------------------------------------------- #
+class _QuietAppHandler(server.NdaAutomationHandler):
+    def log_message(self, *args, **kwargs):  # keep test output clean
+        return
+
+
+def _serve_app():
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), _QuietAppHandler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    return httpd, thread
+
+
+def _get_json(port: int, path: str) -> tuple[int, dict]:
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        connection.request("GET", path)
+        response = connection.getresponse()
+        raw = response.read()
+        return response.status, (json.loads(raw.decode("utf-8")) if raw else {})
+    finally:
+        connection.close()
+
+
+def test_healthz_and_readyz_report_running_worker_no_false_alarm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A HEALTHY supervised worker: /healthz 200 + /readyz 200, both carrying
+    # worker.state="running", and NOTHING is surfaced as degraded (no false alarm).
+    sup, _spawns = _make_supervisor()  # no deaths recorded -> running
+    monkeypatch.setattr(server, "_WORKER_SUPERVISOR", sup)
+    httpd, _thread = _serve_app()
+    try:
+        port = httpd.server_address[1]
+        h_status, h_body = _get_json(port, "/healthz")
+        r_status, r_body = _get_json(port, "/readyz")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    assert h_status == 200
+    assert h_body["status"] == "ok"
+    assert h_body["worker"]["state"] == "running"
+    assert r_status == 200
+    assert r_body["status"] == "ok"
+    assert r_body["worker"]["state"] == "running"
+
+
+def test_readyz_degraded_when_worker_flapping_but_healthz_stays_200(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Inject a flapping supervisor via a stub status(); /readyz must go 503, but
+    # /healthz -- the liveness/deploy gate -- must STAY 200 with the state for info.
+    class _Flapping:
+        def status(self):
+            return {"state": "flapping", "deaths_last_hour": 11, "last_exit_code": 1}
+
+    monkeypatch.setattr(server, "_WORKER_SUPERVISOR", _Flapping())
+    httpd, _thread = _serve_app()
+    try:
+        port = httpd.server_address[1]
+        h_status, h_body = _get_json(port, "/healthz")
+        r_status, r_body = _get_json(port, "/readyz")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    assert h_status == 200, "liveness must NEVER 503 on a sick worker"
+    assert h_body["worker"]["state"] == "flapping"
+    assert r_status == 503
+    assert r_body["status"] == "degraded"
+    assert r_body["worker"]["state"] == "flapping"
+
+
+def test_readyz_ok_when_worker_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    # NDA_WORKER_PROCESS=0 path: no supervisor, role=all -> "disabled", NOT
+    # degraded, so /readyz stays 200 (a deliberately-off worker is not a fault).
+    monkeypatch.setattr(server, "_WORKER_SUPERVISOR", None)
+    monkeypatch.setenv(app_settings.PROCESS_ROLE_ENV, "all")
+    httpd, _thread = _serve_app()
+    try:
+        port = httpd.server_address[1]
+        r_status, r_body = _get_json(port, "/readyz")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    assert r_status == 200
+    assert r_body["status"] == "ok"
+    assert r_body["worker"]["state"] == "disabled"
+
+
+@_skip_subprocess
+def test_fast_breaker_trip_visible_on_endpoints_and_healthz_stays_200() -> None:
+    """A REAL worker child that dies instantly and forever trips the fast breaker
+    (restarts STOP). The endpoints must then SURFACE it -- /readyz 503 with
+    worker.state=breaker_tripped -- while /healthz STAYS 200 (killing liveness on
+    a sick worker would make Render/k8s kill a healthy web server). Proves the
+    silent-failure the adversarial gate found is now visible over HTTP.
+    """
+    spawned: list[subprocess.Popen] = []
+
+    def _spawn() -> subprocess.Popen:
+        proc = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(9)"])
+        spawned.append(proc)
+        return proc
+
+    sup = server.WorkerSupervisor(
+        spawn=_spawn,
+        backoff_initial=0.02,
+        backoff_cap=0.05,
+        crash_threshold=3,  # 3 instant deaths -> breaker latches
+    )
+    sup._child = sup._spawn()
+    sup._monitor_loop()  # runs synchronously; returns once the breaker latches
+
+    httpd = None
+    try:
+        assert sup.breaker_tripped is True
+        assert sup.status()["state"] == "breaker_tripped"
+
+        with patch.object(server, "_WORKER_SUPERVISOR", sup):
+            httpd, _thread = _serve_app()
+            port = httpd.server_address[1]
+            h_status, h_body = _get_json(port, "/healthz")
+            r_status, r_body = _get_json(port, "/readyz")
+
+        # Liveness stays UP so the platform never kills the healthy web process.
+        assert h_status == 200, "healthz must stay 200 while the web process lives"
+        assert h_body["status"] == "ok"
+        assert h_body["worker"]["state"] == "breaker_tripped"
+        # Readiness carries the degraded signal an operator/LB can act on.
+        assert r_status == 503
+        assert r_body["status"] == "degraded"
+        assert r_body["worker"]["state"] == "breaker_tripped"
+        assert r_body["worker"]["last_exit_code"] == 9
+    finally:
+        if httpd is not None:
+            httpd.shutdown()
+            httpd.server_close()
+        # No survivor: every spawned child (all sys.exit(9)) must be dead + reaped.
+        for proc in spawned:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=10)
+        for proc in spawned:
+            assert proc.poll() is not None, f"child {proc.pid} survived the test"
+
+
+# --------------------------------------------------------------------------- #
+# Admin "System health" card: a degraded worker escalates the EXISTING health
+# block (status pill + alerts) the card already renders; a healthy worker leaves
+# it byte-identical (no false alarms, no new UI surface).
+# --------------------------------------------------------------------------- #
+def test_admin_health_unchanged_when_worker_healthy(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nda_automation.routes import admin as admin_routes
+
+    base = {
+        "status": "ok",
+        "alerts": ["No AI-review or generation failure thresholds crossed."],
+    }
+    monkeypatch.setattr(server, "_WORKER_SUPERVISOR", None)
+    monkeypatch.setenv(app_settings.PROCESS_ROLE_ENV, "all")  # -> disabled, not degraded
+    health = dict(base)
+    health["alerts"] = list(base["alerts"])
+    admin_routes._augment_health_with_worker(health)
+    assert health["status"] == "ok"
+    assert health["alerts"] == base["alerts"]
+
+
+def test_admin_health_escalates_to_alert_on_breaker_trip(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nda_automation.routes import admin as admin_routes
+
+    class _Tripped:
+        def status(self):
+            return {"state": "breaker_tripped", "deaths_last_hour": 6, "last_exit_code": 1}
+
+    monkeypatch.setattr(server, "_WORKER_SUPERVISOR", _Tripped())
+    health = {
+        "status": "ok",
+        "alerts": ["No AI-review or generation failure thresholds crossed."],
+    }
+    admin_routes._augment_health_with_worker(health)
+    assert health["status"] == "alert"
+    assert len(health["alerts"]) == 1
+    assert "crash-storm" in health["alerts"][0]
+    assert "DOWN" in health["alerts"][0]
+
+
+def test_admin_health_flap_warns_and_preserves_existing_ai_alert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nda_automation.routes import admin as admin_routes
+
+    class _Flapping:
+        def status(self):
+            return {"state": "flapping", "deaths_last_hour": 12, "last_exit_code": 1}
+
+    monkeypatch.setattr(server, "_WORKER_SUPERVISOR", _Flapping())
+    ai_alert = "AI review has fail-closed 3 times since start."
+    health = {"status": "warn", "alerts": [ai_alert]}
+    admin_routes._augment_health_with_worker(health)
+    assert health["status"] == "warn"  # flap is warn; existing warn preserved
+    assert health["alerts"][0].startswith("Inbound NDA intake worker is flapping")
+    assert ai_alert in health["alerts"]  # the AI alert is not dropped

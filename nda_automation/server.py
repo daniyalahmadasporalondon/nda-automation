@@ -670,6 +670,13 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
                 "queue_depth": queue_depth,
                 "used_fraction": used_fraction,
                 "generation_in_flight": generation_in_flight,
+                # Supervised-worker state is carried for INFO only: a dead/flapping
+                # worker child means Gmail intake is down, but LIVENESS of THIS web
+                # process is unaffected, so /healthz stays 200 no matter what the
+                # worker is doing (it gates Render/k8s promotion -- failing it on a
+                # sick worker would KILL a healthy web server). The degraded signal
+                # lives on /readyz + the admin health card. Never raises.
+                "worker": _worker_status_payload(),
             }
             self._send_json(payload, status=200, send_body=send_body)
         except Exception:  # fail-open: a probe bug must never take liveness down
@@ -698,11 +705,21 @@ class NdaAutomationHandler(SimpleHTTPRequestHandler):
             if used_fraction is not None and used_fraction >= warn_fraction:
                 degraded = True
 
+            # The supervised worker child runs inbound Gmail intake. If its
+            # crash-storm breaker has tripped (restarts STOPPED) or it is
+            # slow-flapping, intake is not healthy: /readyz -- the readiness probe,
+            # NOT the deploy-gating /healthz -- must say so. running/restarting/
+            # disabled/external do NOT degrade readiness (no false alarms).
+            worker = _worker_status_payload()
+            if _worker_is_degraded(worker):
+                degraded = True
+
             payload: dict[str, object] = {
                 "status": "degraded" if degraded else "ok",
                 "queue_depth": queue_depth,
                 "used_fraction": used_fraction,
                 "generation_in_flight": generation_in_flight,
+                "worker": worker,
             }
             status = 503 if degraded else 200
             self._send_json(payload, status=status, send_body=send_body)
@@ -1836,7 +1853,13 @@ def main() -> None:
         # that work can never starve web request handling (the "Atul brick" 502
         # incident class). NDA_WORKER_PROCESS=0 reverts to the single-process
         # monolith path below.
+        global _WORKER_SUPERVISOR
         supervisor = WorkerSupervisor()
+        # Publish the live supervisor BEFORE start() so the web parent's
+        # /healthz + /readyz + admin health card can read its supervised state
+        # from the very first probe -- the whole point of this fix is that a
+        # dead/flapping worker child is VISIBLE over HTTP, not just in stdout.
+        _WORKER_SUPERVISOR = supervisor
         supervisor.start()
         print(
             f"nda-automation running at http://{args.host}:{args.port} "

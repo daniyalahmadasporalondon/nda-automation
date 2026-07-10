@@ -45,16 +45,81 @@ def handle_telemetry(handler, *, send_body: bool = True) -> None:
     # derived health block additively alongside the unchanged telemetry block.
     snapshot = telemetry.snapshot()
     counters = snapshot.get("counters", {})
+    health = telemetry.health_summary(counters)
+    # Fold the supervised worker child's state into the SAME health block the
+    # admin "System health" card already renders (status pill + alerts list), so a
+    # dead/flapping Gmail-intake worker turns that card red where the operator
+    # already looks -- rather than hiding in a stdout line or a raw /readyz probe.
+    _augment_health_with_worker(health)
     handler._send_json(
         {
             "telemetry": snapshot,
-            "health": telemetry.health_summary(counters),
+            "health": health,
             # USD AI-spend rollup (per-feature), surfaced beside health. Admin-gated
             # by require_admin above -- spend/usage is never exposed to non-admins.
             "ai_cost": telemetry.ai_cost_summary(counters),
         },
         send_body=send_body,
     )
+
+
+# Health "status" severities, lowest to highest; mirrors telemetry.health_summary.
+_HEALTH_SEVERITY = {"ok": 0, "warn": 1, "alert": 2}
+
+
+def _augment_health_with_worker(health: dict[str, Any]) -> None:
+    """Escalate the health block when the supervised Gmail-intake worker is sick.
+
+    Additive and pattern-following: it reuses the health card's EXISTING
+    ``status`` pill and ``alerts`` list rather than inventing a new UI surface, so
+    no frontend/static change is needed. Only a DEGRADED worker mutates anything --
+    a healthy/disabled/external worker leaves the block byte-identical (no false
+    alarms; warning fatigue would destroy the signal). Fail-open: any error while
+    reading the worker state leaves the AI-review health untouched.
+
+    Maps the supervisor state to the card's severity:
+      * ``breaker_tripped`` -> ``alert`` (restarts STOPPED; intake is DOWN);
+      * ``flapping``        -> ``warn``  (still restarting, but chronically unstable).
+    """
+    try:
+        # Lazy import: server imports this routes module at load time, so a
+        # top-level ``import server`` here would be circular. At request time the
+        # module is fully loaded.
+        from .. import server
+
+        worker = server._worker_status_payload()
+        if not server._worker_is_degraded(worker):
+            return
+        state = worker.get("state")
+        deaths = worker.get("deaths_last_hour")
+    except Exception:  # pragma: no cover - fail-open: never break telemetry
+        return
+
+    if state == "breaker_tripped":
+        level = "alert"
+        message = (
+            "Inbound NDA intake worker tripped its crash-storm circuit breaker and "
+            "is NO LONGER being restarted -- Gmail intake is DOWN until the worker "
+            "process is fixed and the service redeployed."
+        )
+    else:  # "flapping"
+        level = "warn"
+        message = (
+            f"Inbound NDA intake worker is flapping ({deaths} crashes in the last "
+            "hour). It keeps restarting, but intake is unstable -- investigate the "
+            "worker child's crash cause."
+        )
+
+    existing = health.get("alerts")
+    existing_list = list(existing) if isinstance(existing, list) else []
+    # When AI-review health was "ok", the only alert is the all-clear placeholder;
+    # drop it so a real problem is not buried under "nothing crossed".
+    if _HEALTH_SEVERITY.get(str(health.get("status")), 0) == 0:
+        health["alerts"] = [message]
+    else:
+        health["alerts"] = [message] + existing_list
+    if _HEALTH_SEVERITY.get(level, 0) > _HEALTH_SEVERITY.get(str(health.get("status")), 0):
+        health["status"] = level
 
 
 def handle_ai_availability(handler, *, send_body: bool = True) -> None:
