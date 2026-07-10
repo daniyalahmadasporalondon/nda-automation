@@ -568,11 +568,11 @@ def test_supervisor_restarts_a_dying_real_child_with_backoff() -> None:
     increasing backoff, and a BOUNDED restart count over the window (a tight
     loop would produce dozens in the same span).
     """
-    spawned: list[int] = []
+    spawned: list[subprocess.Popen] = []
 
     def _spawn() -> subprocess.Popen:
         proc = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(3)"])
-        spawned.append(proc.pid)
+        spawned.append(proc)
         return proc
 
     sup = server.WorkerSupervisor(
@@ -581,16 +581,22 @@ def test_supervisor_restarts_a_dying_real_child_with_backoff() -> None:
         backoff_cap=2.0,
         crash_threshold=1000,  # don't let the breaker end the test early
     )
-    sup.start()
-    time.sleep(2.5)
-    sup.stop()
+    try:
+        sup.start()
+        time.sleep(2.5)
+    finally:
+        sup.stop()  # ALWAYS stop the monitor + reap, even if an assert throws
 
-    assert len(spawned) >= 2, "supervisor should have restarted the dying child"
-    assert len(spawned) < 15, f"restart count {len(spawned)} looks like a tight loop"
-    assert len(set(spawned)) == len(spawned), "each restart must be a fresh process"
+    pids = [proc.pid for proc in spawned]
+    assert len(pids) >= 2, "supervisor should have restarted the dying child"
+    assert len(pids) < 15, f"restart count {len(pids)} looks like a tight loop"
+    assert len(set(pids)) == len(pids), "each restart must be a fresh process"
     # Strictly-increasing backoff prefix (until the cap), never a flat 0.
     assert sup.restart_delays == sorted(sup.restart_delays)
     assert sup.restart_delays and sup.restart_delays[0] == 0.3
+    # No survivor: every spawned child (all sys.exit(3)) is dead + reaped.
+    for proc in spawned:
+        assert proc.poll() is not None, f"spawned child {proc.pid} still alive after stop()"
 
 
 # =========================================================================== #
@@ -649,9 +655,16 @@ def test_two_processes_write_matter_store_concurrently_without_corruption() -> N
 
         writers = [_writer("A"), _writer("B")]
         outputs = []
-        for writer in writers:
-            out, _ = writer.communicate(input=docx, timeout=180)
-            outputs.append((writer.returncode, out.decode("utf-8", "replace")))
+        try:
+            for writer in writers:
+                out, _ = writer.communicate(input=docx, timeout=180)
+                outputs.append((writer.returncode, out.decode("utf-8", "replace")))
+        finally:
+            # No survivor: kill + reap any writer still alive (e.g. a timeout).
+            for writer in writers:
+                if writer.poll() is None:
+                    writer.kill()
+                    writer.wait(timeout=10)
         for rc, out in outputs:
             assert rc == 0, f"concurrent writer failed rc={rc}:\n{out}"
 

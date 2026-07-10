@@ -1536,16 +1536,28 @@ class WorkerSupervisor:
 
         Idempotent. SIGTERM the child, wait ``grace`` seconds, then SIGKILL and
         reap. Never leaves a zombie or an orphan.
+
+        Ordering closes the spawn-vs-stop race: (1) set the stop flag, (2)
+        terminate the current child -- this unblocks the monitor's ``child.wait``
+        so it sees the flag and exits WITHOUT respawning, (3) JOIN the monitor so
+        no further spawn can happen, (4) terminate once more to reap a child that
+        the monitor spawned in the tiny window between its stop-check and its
+        respawn. Without the post-join sweep that raced child would leak.
         """
         grace = self._stop_grace if grace is None else grace
         self._stop.set()
+        self._terminate_current_child(grace)
+        monitor = self._monitor
+        if monitor is not None and monitor is not threading.current_thread():
+            monitor.join(timeout=grace + 5)
+        # Post-join sweep: reap any child the monitor spawned in the race window.
+        self._terminate_current_child(grace)
+
+    def _terminate_current_child(self, grace: float) -> None:
         child = self._child
         self._child = None
         if child is not None:
             self._terminate_child(child, grace)
-        monitor = self._monitor
-        if monitor is not None and monitor is not threading.current_thread():
-            monitor.join(timeout=grace + 5)
 
     def _terminate_child(self, child, grace: float) -> None:
         if child.poll() is not None:
