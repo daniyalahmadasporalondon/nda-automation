@@ -34,6 +34,7 @@ from nda_automation.docx_xml import (
     CONTENT_TYPES_NS,
     REL_NS,
     W_NS as W_NS_URI,
+    _default_namespace_registration,
     _w_tag,
     _xml_bytes,
 )
@@ -200,6 +201,97 @@ class OpcDefaultNamespaceSerializationTests(unittest.TestCase):
         self.assertEqual(errors, [], errors[0].args[0] if errors else "")
         # The global map must be exactly what it was before -- no leaked "" entry,
         # no leaked OPC-namespace mapping.
+        self.assertEqual(dict(ET._namespace_map), map_before)
+
+
+class DefaultNamespaceRegistrationSurgicalRestoreTests(unittest.TestCase):
+    """``_default_namespace_registration`` must restore ``ET._namespace_map``
+    SURGICALLY -- undoing only the entries its ``register_namespace`` touched --
+    and must NEVER ``clear()`` the whole map.
+
+    A bulk ``clear()`` momentarily EMPTIES the process-global map. The adversarial
+    gate proved that empties window crashes a concurrent *unlocked*
+    ``register_namespace`` (its internal ``del _namespace_map[k]`` loop hits
+    ``KeyError``) -- a 500 on the live reviewed-docx / matters-download serve paths
+    -- and can leak an ``ns0:`` prefix onto an unrelated serialization mid-window.
+    """
+
+    def test_restore_never_calls_clear_on_the_global_map(self):
+        class _NoClearDict(dict):
+            def clear(self):  # type: ignore[override]
+                raise AssertionError(
+                    "_default_namespace_registration must not clear() the global namespace map"
+                )
+
+        original = ET._namespace_map
+        ET._namespace_map = _NoClearDict(original)
+        try:
+            with _default_namespace_registration(CONTENT_TYPES_NS):
+                self.assertEqual(ET._namespace_map.get(CONTENT_TYPES_NS), "")
+        finally:
+            restored = dict(ET._namespace_map)
+            ET._namespace_map = original
+            original.clear()
+            original.update(restored)
+        # The empty-prefix mapping we introduced is gone; nothing leaked.
+        self.assertNotEqual(ET._namespace_map.get(CONTENT_TYPES_NS), "")
+
+    def test_prior_prefix_for_same_uri_is_restored_exactly(self):
+        map_before = dict(ET._namespace_map)
+        sentinel_uri = "urn:nda-test:surgical-restore-same-uri"
+        ET.register_namespace("sret", sentinel_uri)  # a prior prefix we must not lose
+        try:
+            with _default_namespace_registration(sentinel_uri):
+                self.assertEqual(ET._namespace_map.get(sentinel_uri), "")
+            # The prior prefix for this exact uri is restored, not dropped.
+            self.assertEqual(ET._namespace_map.get(sentinel_uri), "sret")
+        finally:
+            ET._namespace_map.pop(sentinel_uri, None)
+        self.assertEqual(dict(ET._namespace_map), map_before)
+
+    def test_unrelated_entry_never_absent_during_concurrent_restore(self):
+        # A pre-existing entry UNRELATED to the registered uri (different key,
+        # non-empty prefix) must never be observed missing while another thread
+        # runs the register/restore cycle. Under the old bulk-clear restore a
+        # reader would catch it absent; under surgical restore it is untouched.
+        map_before = dict(ET._namespace_map)
+        sentinel_uri = "urn:nda-test:sentinel-never-absent"
+        ET.register_namespace("nvr", sentinel_uri)
+        missing_observed: list[bool] = []
+        stop = threading.Event()
+
+        def reader() -> None:
+            while not stop.is_set():
+                if sentinel_uri not in ET._namespace_map:
+                    missing_observed.append(True)
+
+        def writer() -> None:
+            for _ in range(3000):
+                with _default_namespace_registration(CONTENT_TYPES_NS):
+                    pass
+
+        reader_thread = threading.Thread(target=reader)
+        reader_thread.start()
+        try:
+            writer()
+        finally:
+            stop.set()
+            reader_thread.join()
+        try:
+            self.assertEqual(
+                missing_observed,
+                [],
+                "a pre-existing unrelated entry disappeared from ET._namespace_map during restore",
+            )
+        finally:
+            ET._namespace_map.pop(sentinel_uri, None)
+        self.assertEqual(dict(ET._namespace_map), map_before)
+
+    def test_map_restored_when_body_raises(self):
+        map_before = dict(ET._namespace_map)
+        with self.assertRaises(RuntimeError):
+            with _default_namespace_registration(CONTENT_TYPES_NS):
+                raise RuntimeError("boom")
         self.assertEqual(dict(ET._namespace_map), map_before)
 
 

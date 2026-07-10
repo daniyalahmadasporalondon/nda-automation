@@ -136,30 +136,57 @@ ET.register_namespace("r", R_NS)
 # their URI, which must be done on the global map. To keep that global mutation
 # from (a) racing with concurrent reviewed-DOCX -> PDF conversions (the app is
 # threaded and runs conversions 2-concurrently) and (b) leaking across calls, we
-# snapshot/restore the whole map under a lock for the duration of a single
+# register under a lock and restore SURGICALLY -- undoing only the exact entries
+# our ``register_namespace`` touched -- for the duration of a single
 # serialization. See ``_default_namespace_registration``.
+#
+# This lock is shared with ``docx_image_normalize._serialize_xml`` (which routes
+# its own empty-prefix registration through this same context manager), so the
+# two families of OPC serialization (redline OPC parts vs image-normalize
+# content-types) never mutate ``ET._namespace_map`` concurrently. It is a plain
+# (non-reentrant) ``Lock`` on purpose: no code path nests a second registration
+# inside a held one. If that ever changes, make it an ``RLock``.
 _NAMESPACE_MAP_LOCK = threading.Lock()
 
 
 @contextlib.contextmanager
 def _default_namespace_registration(uri: str) -> Iterator[None]:
     """Temporarily register ``uri`` as the DEFAULT (unprefixed) namespace, then
-    restore the previous global ``ET._namespace_map`` in a ``finally``.
+    restore the global ``ET._namespace_map`` SURGICALLY in a ``finally``.
 
     Held under ``_NAMESPACE_MAP_LOCK`` so the register -> serialize -> restore
     cycle is atomic with respect to any other thread doing the same thing: two
     concurrent callers registering the empty prefix for DIFFERENT URIs can never
-    observe each other's half-registered state, and the global map is guaranteed
-    to be returned to exactly its prior contents even if serialization raises.
+    observe each other's half-registered state, and the map is guaranteed to be
+    returned to exactly its prior contents even if serialization raises.
+
+    The restore does NOT ``clear()`` the map. ``clear()`` would momentarily EMPTY
+    the entire process-global map between two bytecode ops, and any *unlocked*
+    ``ET.register_namespace`` running concurrently (e.g. ``_register_xml_namespaces``
+    while parsing another document) iterates a snapshot of the keys and does
+    ``del _namespace_map[k]`` -- if ``clear()`` removed those keys first that
+    raises ``KeyError`` (a 500 on the live serve paths). Instead we record exactly
+    the entries ``register_namespace("", uri)`` deletes (every entry whose key is
+    ``uri`` or whose value is the empty prefix) and reinstate only those, plus we
+    drop the ``uri -> ""`` mapping we introduced. Pre-existing, unrelated entries
+    are never removed at any observable moment.
     """
     with _NAMESPACE_MAP_LOCK:
-        saved = dict(ET._namespace_map)
+        namespace_map = ET._namespace_map
+        # ``register_namespace("", uri)`` deletes every entry whose key == uri or
+        # whose value == "" (the empty prefix), then sets ``namespace_map[uri] = ""``.
+        # Capture precisely that deleted set so we can put it back untouched.
+        removed = {k: v for k, v in namespace_map.items() if k == uri or v == ""}
         try:
             ET.register_namespace("", uri)
             yield
         finally:
-            ET._namespace_map.clear()
-            ET._namespace_map.update(saved)
+            # Drop the ``uri -> ""`` mapping we added (unless ``uri`` had a prior
+            # value, in which case the re-add below restores it), then reinstate
+            # exactly the entries register_namespace removed. Never ``clear()``.
+            if uri not in removed:
+                namespace_map.pop(uri, None)
+            namespace_map.update(removed)
 
 INVALID_XML_CHAR_PATTERN = re.compile(
     "[\x00-\x08\x0B\x0C\x0E-\x1F"

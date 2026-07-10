@@ -45,6 +45,8 @@ from typing import Callable
 import xml.etree.ElementTree as ET
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from .docx_xml import _default_namespace_registration
+
 CONTENT_TYPES_PART = "[Content_Types].xml"
 CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 RELATIONSHIPS_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
@@ -279,8 +281,17 @@ def _rewrite_content_types(data: bytes, rename_map: dict[str, str]) -> bytes:
 def _serialize_xml(root: ET.Element, *, default_ns: str) -> bytes:
     # Register the element's namespace as the default so the serialized package
     # part keeps the expected unprefixed shape OPC consumers expect.
-    ET.register_namespace("", default_ns)
-    body = ET.tostring(root, encoding="utf-8")
+    #
+    # ``ET.register_namespace`` mutates the PROCESS-GLOBAL ``ET._namespace_map``.
+    # Doing it unscoped would (a) permanently change the prefix every later
+    # ElementTree serialization anywhere in the process emits, and (b) race with
+    # any other thread registering the empty prefix for a DIFFERENT uri (the app
+    # renders documents 2-concurrently), cross-contaminating output. Route it
+    # through the shared, lock-held snapshot/restore context manager so the map is
+    # always returned to its prior contents -- even on exception -- and concurrent
+    # serializations of different default namespaces cannot interleave.
+    with _default_namespace_registration(default_ns):
+        body = ET.tostring(root, encoding="utf-8")
     if not body.lstrip().startswith(b"<?xml"):
         body = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n' + body
     return body
