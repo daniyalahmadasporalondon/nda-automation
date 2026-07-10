@@ -442,11 +442,24 @@ class _ImageConversionCache:
                 except OSError:
                     pass
                 return
-            # Eviction runs INSIDE the try: a prune/eviction error must degrade to
-            # a no-op, never escape _disk_put to the (unguarded) serve call site.
-            self._enforce_disk_bound(cache_dir, keep=path)
         except OSError:
+            # Cache dir unwritable / disk full (ENOSPC) on the WRITE: silent
+            # no-op. This is routine (a full or read-only /var/data) and must not
+            # spam the log on every serve, nor escape to the call site.
             return
+        # Eviction is best-effort maintenance AFTER a successful publish. A prune
+        # error must NEVER escape to the (unguarded) serve call site, so it
+        # degrades to "leave the cache un-pruned this round" with a WARNING. Catch
+        # broadly (not just OSError): keep.resolve() can raise RuntimeError on a
+        # symlink loop, etc.
+        try:
+            self._enforce_disk_bound(cache_dir, keep=path)
+        except Exception:
+            LOGGER.warning(
+                "image-normalize cache eviction failed; cache left un-pruned this "
+                "round.",
+                exc_info=True,
+            )
 
     def _enforce_disk_bound(self, cache_dir: Path, *, keep: Path) -> None:
         """Evict least-recently-used cache files (by mtime) beyond the bound.
