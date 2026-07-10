@@ -173,6 +173,50 @@ function buildRenderedHost(window, paragraphTexts, { headerText, footerText, tra
   return host;
 }
 
+// A DOCX-like host that can build REAL tracked-change runs (<ins>/<del>) inside a
+// block -- the surface the CLEAN-fallback fixtures never exercised (prod aborted on
+// exactly this). Each block descriptor is either:
+//   - a string  -> a plain <p> (or a blank spacer when "")
+//   - { runs: [...] } where each run is { t: "text"|"ins"|"del", s: "..." }
+//       t:"text" -> a bare text node
+//       t:"ins"  -> an <ins><span>s</span></ins> (docx-preview's insertion shape)
+//       t:"del"  -> a <del><span>s</span></del> (docx-preview's deletion shape)
+// The <span> wrapper mirrors docx-preview (<ins><span>A</span></ins>) so the
+// ins-skipping walk is exercised against a nested subtree, not a flat text node.
+function buildTrackedHost(window, blocks, { footerText } = {}) {
+  const host = window.document.createElement("div");
+  const docx = window.document.createElement("div");
+  docx.className = "docx";
+  blocks.forEach((block) => {
+    const p = window.document.createElement("p");
+    if (typeof block === "string") {
+      if (block !== "") p.textContent = block;
+    } else if (block && Array.isArray(block.runs)) {
+      block.runs.forEach((run) => {
+        if (run.t === "ins" || run.t === "del") {
+          const el = window.document.createElement(run.t);
+          const span = window.document.createElement("span");
+          span.textContent = run.s;
+          el.appendChild(span);
+          p.appendChild(el);
+        } else {
+          p.appendChild(window.document.createTextNode(run.s));
+        }
+      });
+    }
+    docx.appendChild(p);
+  });
+  if (footerText) {
+    const footer = window.document.createElement("footer");
+    const fp = window.document.createElement("p");
+    fp.textContent = footerText;
+    footer.appendChild(fp);
+    docx.appendChild(footer);
+  }
+  host.appendChild(docx);
+  return host;
+}
+
 // ===========================================================================
 // M1: the GUARD is now ORDERED TEXT ALIGNMENT (deliberate contract change).
 //
@@ -822,66 +866,97 @@ function testAdversarialGateProbes() {
 }
 
 // ===========================================================================
-// M12 (NEW): THE MOORWAND FIXTURE -- the exact live-prod shape that aborted with
-// `count_mismatch rendered=81 structured=43` for weeks. Encodes the real arrays'
-// anatomy (extracted from Render prod 2026-07-10): 81 rendered blocks of which 37
-// are blank <w:p> spacers and one is a punctuation-only "." straggler; 43 review
-// paragraphs of which 3 are FOOTER lines with NO source_index (their text lives
-// in the DOM's excluded <footer> region); one filled-in-value insertion run
-// (i6 "and: Registered No.:..." -> "and: Vance Inc Registered No.:..." + a
-// wrapped address line contributing ZERO structured tokens); two wrapped-line
-// clause runs (i13/i14); signature-block insertions ("Parth Pramendra Garg",
-// "CEO"). The alignment MUST COMMIT and anchor every named run correctly.
+// M12: THE REAL MOORWAND TRACKED-SURFACE FIXTURE -- captured LIVE 2026-07-10 from
+// the ACTUAL faithful tracked surface (not the clean fallback the prior fixtures
+// used). This is the exact shape that aborted in prod even AFTER the text aligner
+// shipped:
+//     faithful_mapping_aborted: alignment_unmatched unit=10 cursor=14 of=81
+//     faithful_mapping_aborted: redline_faithful_fallback:tracked
+// Root cause: a SUB-WORD tracked change. docx-preview renders "agreements ->
+// Agreements" as <ins>A</ins><del>a</del>greements with NO whitespace boundary, so
+// the raw-textContent matcher fused the token into "aagreements" -- matching neither
+// the model's "agreements" nor the accepted "Agreements". Because unit 10 has a
+// source_index it is not waivable -> hard abort. The CLEAN-fallback fixtures never
+// carried <ins>/<del> DOM, so this interleaving was never exercised and the shipped
+// tests passed while prod aborted.
+//
+// This fixture builds the REAL 81 rendered blocks with REAL <ins>/<del> nodes:
+//   - 38 blank <w:p> spacers
+//   - pure-<ins> whole-new-paragraph blocks 8, 43, 54 (become EMPTY under
+//     ins-stripping -> furniture, consume no unit)
+//   - sub-word ins/del at block 14 (i11 "agreements"->"Agreements") and block 38
+//     (i24 "receiving"->"Receiving", "(2)"->"(3)", phrase swaps)
+//   - whole-word insertions at 7 (i6 "Vance Inc"), 76 (i38 "Parth Pramendra Garg"),
+//     78 (i39 "CEO")
+//   - a whole-paragraph deletion at 29 (i20, entirely struck through)
+//   - 43 review paragraphs: 40 body (distinct source_index) + 3 footer lines with
+//     NO source_index (their text lives in the excluded <footer>).
+// The alignment MUST now COMMIT: units=43, 40 bound body runs, 3 footers waived,
+// and every named anchor lands on the right block. The ins/del-bearing blocks are
+// MAPPED read-only (tracked_changes), never editable.
 // ===========================================================================
 function testMoorwandLiveFixture() {
   // ---- structured (43): body i1-i40 with source_index, footers i41-43 without.
+  // The model text is the ORIGINAL (revision-aware extract: <ins> dropped, <del>
+  // restored) -- i.e. what state.reviewParagraphs holds. UNTRUNCATED, matching the
+  // live capture in moorwand-TRACKED-fixture.md.
   const body = [
     "MUTUAL CONFIDENTIALITY AND NON-DISCLOSURE AGREEMENT",
     '(the "Agreement")',
     "Made and entered into",
     "BETWEEN:",
-    'Moorwand Limited (Registered No.08491211) with offices located at Fora, 3 Lloyds Avenue, London EC3N 3DS ("MOORWAND")',
-    "and: Registered No.: with offices located at:",
+    'Moorwand Limited (Registered No.08491211) with offices located at Fora, 3 Lloyds Avenue, London, EC3N 3DS ("MOORWAND")',
+    "and: \t\t Registered No.: \t with offices located at:",
     '("COMPANY").',
-    'Effective as of the day of 2026 (the "Effective Date").',
-    "WHEREAS, in the course of business discussions, COMPANY and MOORWAND may disclose confidential information to each other;",
-    "WHEREAS, as a condition to such disclosure, each Party agrees to protect the other's confidential information;",
-    "NOW, THEREFORE, IN CONSIDERATION of the mutual Agreements contained herein, the Parties agree as follows:",
-    "Confidential Information means any tangible or intangible information disclosed by one Party to the other Party.",
-    // i13: wrapped over TWO rendered lines (16+17).
-    "Confidential Information does not include information that: (i) is already known to the Receiving Party; or (ii) is or later becomes generally available to the public through no fault of the Receiving",
-    // i14: wrapped over TWO rendered lines (20+21).
-    "Receiving Party; or (iii) Receiving Party develops independently without reference to the Confidential Information, provided that such independent development shall be on the Receiving Party's own time and record.",
-    "The obligations in this Agreement shall not apply to any information that the Disclosing Party agrees in writing is free of such restrictions.",
-    "The Receiving Party agrees (i) to adopt measures to protect the Confidential Information no less protective than for its own.",
-    "The Receiving Party may use the Disclosing Party's Confidential Information solely for the Purpose.",
-    "A Receiving Party may disclose Confidential Information if compelled by law, subject to notice requirements.",
-    "The Parties shall promptly advise each other in writing of any misappropriation or",
-    "unauthorised disclosure of Confidential Information by any person which may come to its attention.",
-    "The Parties agree that, in the event of a breach of this Agreement, damages may not be an adequate remedy and equitable relief may be sought.",
-    "The provisions of this Agreement shall remain in full force and effect for a period of five (5) years from the Effective Date.",
-    "No Party may assign its rights under this Agreement without the prior written consent of the other Party.",
-    "This Agreement expresses the entire agreement between the Parties with respect to its subject matter.",
-    "Save and except as expressly provided in this Agreement, no rights are granted.",
-    "This Agreement may be executed in one or more counterparts, each of which shall be deemed an original.",
-    "Unless expressly provided in this Agreement, no term of this Agreement is enforceable by a person who is not a party to it.",
-    "This Agreement and all matters arising from it shall be governed by the laws of England and Wales.",
-    "In the event that any of the provisions of this Agreement are held to be unenforceable, the remainder shall continue in effect.",
-    "This Agreement has been signed on the date appearing on page one.",
+    'Effective as of the \tday of \t 2026 (the "Effective Date").',
+    'WHEREAS, in the course of business discussions, COMPANY and MOORWAND (each a "Party" and together the "Parties") shall disclose certain confidential and proprietary information to each other in connection with a proposed business relationship between COMPANY and MOORWAND (the "BUSINESS"); and',
+    'WHEREAS, as a condition to such disclosure, each Party (each, a "Disclosing Party") seeks to bind the other Party (each, a "Receiving Party") to obligations of confidentiality and limited use with respect to the information it discloses.',
+    // i11 (index 10): the SUB-WORD abort unit ("agreements"->"Agreements").
+    "NOW, THEREFORE, IN CONSIDERATION of the mutual agreements contained herein and the agreement to exchange information as contemplated hereunder, the Parties agree as follows:",
+    "Confidential Information means any tangible or intangible information or materials possessed by a Party in whatever form or format relating to the Disclosing Party or its actual or proposed information systems, other business, financial or accounting systems, business procedures or methods, business plans, financial products, marketing plans, results of operations, customers, markets, prospective customers, contracts (actual and proposed) with third parties or personnel directly or indirectly disclosed by the Disclosing Party to the Receiving Party during or in the course of discussions or correspondence arising out of or related to the BUSINESS whether received before or after the Effective Date. Confidential Information includes all information owned by a third party and disclosed by a Disclosing Party hereunder.",
+    "Confidential Information does not include information that (i) was in the Receiving Party's possession prior to receiving the Confidential Information from the Disclosing",
+    "Party; or (ii) is or later becomes generally available to the public through no fault of the",
+    "Receiving Party; or (iii) Receiving Party develops internally without benefit of or reference to Disclosing Party's Confidential Information (burden of proving",
+    "independent development shall be on the Receiving Party); or (iv) Receiving Party receives from a third party who has the right to disclose such information.",
+    "The Receiving Party agrees (i) to adopt measures to protect the confidentiality, limited use and proprietary nature of the Confidential Information at least as restrictive as those it adopts for its own confidential information of similar importance and in any event, no less than reasonable; (ii) to disclose Confidential Information to only those of its directors, officers, agents, employees, corporate affiliates and third parties retained by the Receiving Party who have a need to know such information in order for the Receiving Party to accomplish the purposes set forth in Paragraph 4 hereof and who are made aware of the confidentiality provisions of this Agreement (and in the case of a third party, who have signed a binding undertaking of confidentiality and non-use substantially equivalent to this Agreement), and (iii) to not use Confidential Information for any purpose except as permitted by Paragraph 4. A Receiving Party shall be responsible to the Disclosing Party for any unauthorised use or disclosure of Confidential Information by any party to whom Receiving Party has disclosed such information.",
+    "The Receiving Party may use the Disclosing Party's Confidential Information for the sole purpose of evaluating, negotiating and, in its discretion, carrying out the proposed BUSINESS. Except with the prior written consent of the Disclosing Party, the Receiving Party shall not disclose Confidential Information to any third party other than in confidence to its own employees or professional advisers (and then only to the extent that such disclosure is necessary for the carrying out the proposed BUSINESS). The Recipient shall ensure that all people to whom the Confidential Information is disclosed are aware of and bound by the terms of this Agreement as if they were a Party to this Agreement.",
+    "A Receiving Party may disclose Confidential Information pursuant to a request by an applicable regulatory authority, or where the disclosure is requested and is protected by law or if they are required by law or pursuant to an order of a Court of competent jurisdiction to disclose Confidential Information, provided, however, in any such event the Receiving Party shall, unless prevented by law: (i) promptly notify the Disclosing Party; (ii) consult with the Disclosing Party as to the advisability of taking steps to resist or narrow such request; and (iii) if so requested, cooperate with the Disclosing Party in seeking a protective order or other appropriate remedy.",
+    // i20 (index 19): the WHOLE-PARAGRAPH deletion (rendered entirely struck).
+    "The provisions of this Agreement shall not apply to information which the Receiving Party can show was lawfully in its possession before its disclosure, information the Recipient obtained from a third party who is free at law to disclose it.",
+    "The Parties shall promptly advise each other in writing if they learn of any authorised or unauthorised use or authorised disclosure (pursuant to provisions 4 and 5) or",
+    "unauthorised disclosure of Confidential Information by any of their directors, officers, employees, corporate affiliates, agents or by any third party.",
+    "The Parties agree that, in the event of a breach of this Agreement, monetary damages may not be a sufficient remedy and in addition to any other legal remedy, the non- breaching Party shall be entitled to equitable remedies, including injunctive relief. In the event that any Party takes legal action as a result of a breach of this Agreement, the non-breaching Party shall be entitled to recover reasonable legal fees and expenses incurred in connection with such legal action in the event that it prevails in one or more of its claims",
+    // i24 (index 23): sub-word + phrase-swap tracked block.
+    "The provisions of this Agreement shall remain in full force and effect beginning as of the Effective Date and shall continue with respect to a Receiving Party for as long as it retains the Confidential Information in its possession and for two (2) years thereafter. A receiving Party shall return or destroy all copies of the Disclosing Party's Confidential Information to the Disclosing Party within ten (10) days after the Disclosing Party's request.",
+    "No Party may assign its rights under this Agreement without the prior written consent of the other Party. This Agreement will be binding upon the successors, heirs and permitted assigns of the Parties.",
+    "This Agreement expresses the entire agreement between the Parties and supersedes all prior understandings and discussions between the Parties. This Agreement may only be modified, changed or amended by a writing executed by the Parties. A waiver of any provision of this Agreement shall not be deemed a waiver of any other provision and shall not be binding unless it is in writing and executed by the Party making such waiver.",
+    "This Agreement may be executed in one or more counterparts, each of which shall be deemed an original, but all of which together constitute one and the same instrument.",
+    "Unless expressly provided in this Agreement, no term of this Agreement is enforceable pursuant to the Contracts (Rights of Third Parties) Act 1999 by any person who is not a party to it.",
+    // i29 (index 28): governing law.
+    "This Agreement and all matters arising from it shall be governed by and construed in accordance with the Laws of England and Wales and each party irrevocably submits to the non-exclusive jurisdiction of England.",
+    "This Agreement has been signed on the date appearing on page 1",
     "Moorwand Limited",
     "Signed",
     "Authorised Signatory Name Position/Title",
     "Date",
     "Luc Gueriane CEO",
     '("COMPANY").',
-    "Signed __________________",
+    "Signed \t\t\t __________________",
+    // i38 (index 37): "Authorised Signatory" + inserted signatory name.
     "Authorised Signatory",
+    // i39 (index 38): "Position/Title" + inserted "CEO".
     "Position/Title",
-    "Date __________________",
+    "Date \t\t\t\t __________________",
   ];
-  const footerLine = "Moorwand Ltd | Registered office address: Fora, 3 Lloyds Avenue | London EC3N 3DS";
+  assert.equal(body.length, 40, "fixture anatomy: 40 body paragraphs");
+  // Real source_index values from the live capture (note the GAPS -- the extractor's
+  // ordering signal is not contiguous). All distinct -> no block_split unit.
+  const SI = [1, 2, 3, 5, 7, 8, 10, 11, 13, 14, 15, 16, 17, 18, 20, 21, 23, 25, 27,
+    29, 31, 33, 35, 37, 38, 40, 45, 47, 49, 56, 58, 60, 62, 63, 64, 70, 72, 74, 76, 78];
+  assert.equal(SI.length, 40, "fixture anatomy: 40 source_index values");
+  const footerLine = "Moorwand Ltd | Registered office address: Fora, 3 Lloyds Avenue | London | EC3N 3DS, United Kingdom | www.moorwand.com Registered in England and Wales | Company No. 08491211";
   const reviewParagraphs = [
-    ...body.map((text, i) => ({ id: `i${i + 1}`, index: i, source_index: i, text })),
+    ...body.map((text, i) => ({ id: `i${i + 1}`, index: i, source_index: SI[i], text })),
     // Footers: NO source_index (exactly as extracted from prod).
     { id: "i41", index: 40, text: footerLine },
     { id: "i42", index: 41, text: footerLine },
@@ -889,179 +964,264 @@ function testMoorwandLiveFixture() {
   ];
   assert.equal(reviewParagraphs.length, 43, "fixture anatomy: 43 structured paragraphs");
 
-  // ---- rendered (81): the docx-preview block stream, blanks and all.
+  // ---- rendered (81): the docx-preview block stream WITH real <ins>/<del>.
+  // Special blocks are run descriptors ({ runs }); the rest are plain model text or
+  // "" spacers. Each special block's ins-stripped (del-kept) projection reconstructs
+  // the model text it maps to -- the whole point of the fix.
+  const B = ""; // blank spacer
+  // block 7 (i6): filled-in counterparty "Vance Inc" (whole-word insertion).
+  const block7 = { runs: [
+    { t: "text", s: "and: " },
+    { t: "ins", s: "Vance Inc" },
+    { t: "text", s: " Registered No.: with offices located at:" },
+  ] };
+  // block 8: pure-<ins> whole new paragraph (a filled-in address) -> EMPTY when
+  // ins-stripped -> furniture, owns no unit.
+  const block8 = { runs: [
+    { t: "ins", s: " Office no. 1271 Register 08, 1000 N. West Street Suite 1200 Wilmington Delaware- 19801, United States of America" },
+  ] };
+  // block 14 (i11): THE sub-word abort. <ins>A</ins><del>a</del>greements x2.
+  const block14 = { runs: [
+    { t: "text", s: "NOW, THEREFORE, IN CONSIDERATION of the mutual " },
+    { t: "ins", s: "A" },
+    { t: "del", s: "a" },
+    { t: "text", s: "greements contained herein and the " },
+    { t: "ins", s: "A" },
+    { t: "del", s: "a" },
+    { t: "text", s: "greement to exchange information as contemplated hereunder, the Parties agree as follows:" },
+  ] };
+  // block 29 (i20): whole-paragraph deletion (entire text inside <del>, kept when
+  // ins-stripped so the model still matches; tracked_changes locks it).
+  const block29 = { runs: [{ t: "del", s: body[19] }] };
+  // block 38 (i24): sub-word ("(2)"->"(3)", "receiving"->"Receiving") + phrase swaps.
+  // ins-stripped (del kept, ins dropped) reconstructs body[23] exactly.
+  const block38 = { runs: [
+    { t: "text", s: "The provisions of this Agreement shall remain in full force and effect beginning as of the Effective Date and shall continue " },
+    { t: "ins", s: "for a period of one (1) year " },
+    { t: "del", s: "with respect to a Receiving Party for as long as it retains the Confidential Information in its possession" },
+    { t: "ins", s: " obligation to protect Confidential Information shall survive" },
+    { t: "text", s: " and for " },
+    { t: "ins", s: "three" },
+    { t: "del", s: "two" },
+    { t: "text", s: " (" },
+    { t: "ins", s: "3" },
+    { t: "del", s: "2" },
+    { t: "text", s: ") years thereafter. A " },
+    { t: "ins", s: "R" },
+    { t: "del", s: "r" },
+    { t: "text", s: "eceiving Party shall return or destroy all copies of the Disclosing Party's Confidential Information to the Disclosing Party within ten (10) days after the Disclosing Party's request." },
+  ] };
+  // blocks 43 / 54: pure-<ins> whole new paragraphs -> furniture.
+  const block43 = { runs: [{ t: "ins", s: "Save and except as expressly provided in this Agreement, no warranties of any kind are given with respect to the Confidential Information disclosed under this Agreement or any use thereof. In no event shall either Party be liable to the other for amounts representing loss of profits or loss of business, under this Agreement. In no event shall the Disclosing Party be liable for any direct, indirect, special or consequential damages in connection with or arising out of the Confidential Information or the Receiving Party's use thereof." }] };
+  const block54 = { runs: [{ t: "ins", s: "In the event that any of the provisions of this Agreement shall be held by a court or other tribunal of competent jurisdiction to be unenforceable, the remaining portions hereof shall remain in full force and effect." }] };
+  // block 76 (i38): "Authorised Signatory" + inserted name.
+  const block76 = { runs: [
+    { t: "text", s: "Authorised Signatory " },
+    { t: "ins", s: "Parth Pramendra Garg " },
+  ] };
+  // block 78 (i39): "Position/Title" + inserted "CEO".
+  const block78 = { runs: [
+    { t: "text", s: "Position/Title " },
+    { t: "ins", s: "CEO" },
+  ] };
+
   const rendered = [
     /* 0*/ body[0],
     /* 1*/ body[1],
     /* 2*/ body[2],
-    /* 3*/ "",
+    /* 3*/ B,
     /* 4*/ body[3],
-    /* 5*/ "",
+    /* 5*/ B,
     /* 6*/ body[4],
-    // i6 with the FILLED-IN counterparty ("Vance Inc") + a wrapped address line
-    // that contributes ZERO structured tokens (pure insertion block).
-    /* 7*/ "and: Vance Inc Registered No.: with offices located at:",
-    /* 8*/ " Office no. 1271 Register 08, 1000 N. West Street Suite 1200, Wilmington, Delaware 19801",
-    /* 9*/ body[6],
-    /*10*/ body[7],
-    /*11*/ "",
-    /*12*/ body[8],
-    /*13*/ body[9],
-    /*14*/ body[10],
-    /*15*/ body[11],
-    // i13 wrapped across two visual lines.
-    /*16*/ "Confidential Information does not include information that: (i) is already known to the Receiving",
-    /*17*/ "Party; or (ii) is or later becomes generally available to the public through no fault of the Receiving",
-    /*18*/ "",
-    /*19*/ "",
-    // i14 wrapped across two visual lines.
-    /*20*/ "Receiving Party; or (iii) Receiving Party develops independently without reference to the Confidential Information, provided that such",
-    /*21*/ "independent development shall be on the Receiving Party's own time and record.",
-    /*22*/ body[14],
-    /*23*/ "",
-    /*24*/ body[15],
-    /*25*/ "",
-    /*26*/ body[16],
-    /*27*/ "",
-    /*28*/ body[17],
-    /*29*/ "",
-    /*30*/ ".", // the live punctuation-only straggler
-    /*31*/ "",
-    /*32*/ body[18],
-    /*33*/ "",
-    /*34*/ "",
-    /*35*/ body[19],
-    /*36*/ "",
-    /*37*/ body[20],
-    /*38*/ "",
-    /*39*/ body[21],
-    /*40*/ body[22],
-    /*41*/ "",
-    /*42*/ body[23],
-    /*43*/ "",
-    /*44*/ body[24],
-    /*45*/ "",
-    /*46*/ "",
-    /*47*/ body[25],
-    /*48*/ "",
-    /*49*/ body[26],
-    /*50*/ "",
-    /*51*/ "",
-    /*52*/ body[27],
-    /*53*/ "",
-    /*54*/ "",
-    /*55*/ body[28],
-    /*56*/ "",
-    /*57*/ "",
-    /*58*/ "",
-    /*59*/ body[29],
-    /*60*/ "",
-    /*61*/ body[30],
-    /*62*/ "",
-    /*63*/ body[31],
-    /*64*/ "",
-    /*65*/ body[32],
-    /*66*/ body[33],
-    /*67*/ body[34],
-    /*68*/ "",
-    /*69*/ "",
-    /*70*/ "",
-    /*71*/ body[35],
-    /*72*/ "",
-    /*73*/ body[36],
-    /*74*/ "",
-    // Signature-block insertions (filled-in name/title).
-    /*75*/ "Authorised Signatory Parth Pramendra Garg ",
-    /*76*/ "",
-    /*77*/ "Position/Title CEO",
-    /*78*/ "",
-    /*79*/ "",
-    /*80*/ body[39],
+    /* 7*/ block7, // i6 (ins "Vance Inc")
+    /* 8*/ block8, // pure-ins furniture
+    /* 9*/ body[6], // i7
+    /*10*/ body[7], // i8
+    /*11*/ B,
+    /*12*/ body[8], // i9
+    /*13*/ body[9], // i10
+    /*14*/ block14, // i11 (sub-word abort)
+    /*15*/ body[11], // i12
+    /*16*/ body[12], // i13
+    /*17*/ body[13], // i14
+    /*18*/ B,
+    /*19*/ B,
+    /*20*/ body[14], // i15
+    /*21*/ body[15], // i16
+    /*22*/ B,
+    /*23*/ body[16], // i17
+    /*24*/ B,
+    /*25*/ body[17], // i18
+    /*26*/ B,
+    /*27*/ body[18], // i19
+    /*28*/ B,
+    /*29*/ block29, // i20 (whole-para del)
+    /*30*/ B,
+    /*31*/ body[20], // i21
+    /*32*/ B,
+    /*33*/ B,
+    /*34*/ body[21], // i22
+    /*35*/ B,
+    /*36*/ body[22], // i23
+    /*37*/ B,
+    /*38*/ block38, // i24 (sub-word + phrase)
+    /*39*/ body[24], // i25
+    /*40*/ B,
+    /*41*/ body[25], // i26
+    /*42*/ B,
+    /*43*/ block43, // pure-ins furniture
+    /*44*/ B,
+    /*45*/ B,
+    /*46*/ body[26], // i27
+    /*47*/ B,
+    /*48*/ body[27], // i28
+    /*49*/ B,
+    /*50*/ B,
+    /*51*/ body[28], // i29 (governing law)
+    /*52*/ B,
+    /*53*/ B,
+    /*54*/ block54, // pure-ins furniture
+    /*55*/ B,
+    /*56*/ B,
+    /*57*/ B,
+    /*58*/ body[29], // i30
+    /*59*/ B,
+    /*60*/ body[30], // i31
+    /*61*/ B,
+    /*62*/ body[31], // i32
+    /*63*/ B,
+    /*64*/ body[32], // i33
+    /*65*/ body[33], // i34
+    /*66*/ body[34], // i35
+    /*67*/ B,
+    /*68*/ B,
+    /*69*/ B,
+    /*70*/ B,
+    /*71*/ B,
+    /*72*/ body[35], // i36
+    /*73*/ B,
+    /*74*/ body[36], // i37
+    /*75*/ B,
+    /*76*/ block76, // i38 (ins name)
+    /*77*/ B,
+    /*78*/ block78, // i39 (ins CEO)
+    /*79*/ B,
+    /*80*/ body[39], // i40
   ];
   assert.equal(rendered.length, 81, "fixture anatomy: 81 rendered blocks");
-  assert.equal(rendered.filter((t) => t === "").length, 37, "fixture anatomy: 37 blank spacers");
+  assert.equal(rendered.filter((t) => t === "").length, 38, "fixture anatomy: 38 blank spacers");
 
   const reviewClauses = [
-    { id: "c-gov", clause_type: "governing_law", matched_paragraph_ids: ["i28"], status: "pass" },
+    { id: "c-gov", clause_type: "governing_law", matched_paragraph_ids: ["i29"], status: "pass" },
     { id: "c-parties", clause_type: "parties", matched_paragraph_ids: ["i6"], status: "review" },
+    { id: "c-term", clause_type: "term", matched_paragraph_ids: ["i24"], status: "review" },
   ];
   const { sandbox, window } = freshSandbox({ reviewParagraphs, reviewClauses });
-  const host = buildRenderedHost(window, rendered, { footerText: footerLine });
+  const host = buildTrackedHost(window, rendered, { footerText: footerLine });
   const bind = get(sandbox, "bindFaithfulDocxInteractions");
   const committed = bind(host, "redline");
   assert.equal(committed, true,
-    "THE LIVE MOORWAND SHAPE MUST COMMIT (this exact document aborted count_mismatch 81/43 in prod)");
+    "THE LIVE TRACKED MOORWAND SHAPE MUST COMMIT (this exact document aborted "
+    + "alignment_unmatched unit=10 on the sub-word ins/del at block 14 in prod)");
 
   const ps = Array.from(host.querySelectorAll(".docx p")).filter((el) => !el.closest("header,footer"));
+  assert.equal(ps.length, 81, "all 81 body blocks present (footer excluded)");
   const idAt = (i) => ps[i].getAttribute("data-paragraph-id");
-  // i5 -> ONE block, exact text -> stays editable.
-  assert.equal(idAt(6), "i5", "i5 anchors its single block");
-  // i6 -> a 2-block run: the filled-in line (primary) AND the wrapped
-  // pure-insertion address line (clause hooks, no duplicate paragraph id).
-  assert.equal(idAt(7), "i6", "i6 anchors its primary (filled-in insertion) line");
-  assert.equal(idAt(8), null, "the absorbed address line carries NO duplicate paragraph id");
-  assert.equal(ps[8].getAttribute("data-clause-ids"), "c-parties",
-    "the absorbed address line still carries i6's clause hooks (click coverage)");
-  ps[8].dispatchEvent(new window.Event("click", { bubbles: true }));
-  assert.equal(sandbox.__selectedClauseId, "c-parties",
-    "clicking the filled-in address line selects i6's clause (no dead zone)");
-  // i6's run is multi-block AND insertion-tolerated -> read-only everywhere.
-  assert.equal(ps[7].getAttribute("data-faithful-lock-reason"), "run_split", "i6's multi-block run is edit-locked");
-  assert.equal(ps[7].querySelector(".faithful-paragraph-editable").getAttribute("contenteditable"), "false");
-  assert.equal(idAt(9), "i7", "the paragraph AFTER the insertion run still anchors correctly");
-  // i13/i14 -> wrapped 2-block runs (primary anchor + clause-hooked continuation).
-  assert.equal(idAt(16), "i13");
-  assert.equal(idAt(17), null, "i13's wrapped second line joins the run without a duplicate id");
-  assert.ok(ps[17].classList.contains("studio-doc-paragraph"), "i13's second line is part of the mapped run");
-  assert.equal(ps[17].getAttribute("data-faithful-lock-reason"), "run_split");
-  assert.equal(idAt(20), "i14");
-  assert.equal(ps[21].getAttribute("data-faithful-lock-reason"), "run_split",
-    "i14's wrapped second line joins its run (locked)");
-  // The governing-law clause lands on the governing-law paragraph (no mis-attach
-  // across the 38 skipped furniture blocks).
-  const govBlock = ps.find((p) => p.getAttribute("data-paragraph-id") === "i28");
-  assert.ok(govBlock, "i28 (governing law) is mapped");
-  assert.equal(govBlock.getAttribute("data-clause-ids"), "c-gov", "governing-law clause anchors on i28");
-  assert.match(govBlock.textContent, /governed by the laws of England and Wales/,
-    "i28's block really is the governing-law text");
-  // Signature insertions bind to the right paragraphs -- but are EDIT-LOCKED
-  // (text_drift): the rendered text carries filled-in tokens the model lacks, so
-  // an in-place edit would sync the rendered variant over the model text.
-  const signatory = ps.find((p) => p.getAttribute("data-paragraph-id") === "i38");
-  assert.match(signatory.textContent, /Parth Pramendra Garg/, "i38 binds the filled-in signatory line");
-  assert.equal(signatory.getAttribute("data-faithful-lock-reason"), "text_drift",
-    "an insertion-tolerated single block is edit-locked (text_drift), never editable");
-  assert.equal(signatory.querySelector(".faithful-paragraph-editable").getAttribute("contenteditable"), "false");
-  const title = ps.find((p) => p.getAttribute("data-paragraph-id") === "i39");
-  assert.match(title.textContent, /Position\/Title CEO/, "i39 binds the filled-in title line");
-  assert.equal(title.getAttribute("data-faithful-lock-reason"), "text_drift", "i39 locked (text_drift)");
-  // Every blank block and the "." straggler stay unstamped.
-  rendered.forEach((text, i) => {
-    if (text === "" || text === ".") {
-      assert.equal(idAt(i), null, `furniture block ${i} (${JSON.stringify(text)}) must stay unstamped`);
-      assert.equal(ps[i].getAttribute("data-clause-ids"), null,
-        `furniture block ${i} carries no clause hooks`);
-    }
+  const lockAt = (i) => ps[i].getAttribute("data-faithful-lock-reason");
+  const editableAt = (i) => {
+    const ed = ps[i].querySelector(".faithful-paragraph-editable");
+    return ed && ed.getAttribute("contenteditable") === "true";
+  };
+
+  // --- THE FIX: the sub-word tracked block 14 (i11) now BINDS and is read-only. ---
+  assert.equal(idAt(14), "i11", "block 14 (the sub-word abort unit) now anchors i11");
+  assert.equal(lockAt(14), "tracked_changes", "block 14 is read-only for tracked_changes");
+  assert.equal(editableAt(14), false, "block 14 is never editable");
+  assert.match(ps[14].textContent, /mutual Aagreements contained/,
+    "block 14's DISPLAY text keeps the garbled fused ins+del (proves we matched the "
+    + "ORIGINAL, not the displayed, text)");
+
+  // --- units / runs / waived / editable / tracked-locked commit numbers. --------
+  // 40 body units bind 1:1; 3 footers waived. Locked-for-tracked blocks: 7, 14, 29,
+  // 38, 76, 78 (six ins/del-bearing body blocks). No run_split/block_split here.
+  const boundIds = ps.map((_, i) => idAt(i)).filter(Boolean);
+  assert.equal(boundIds.length, 40, "exactly 40 body blocks are anchored (1:1)");
+  assert.equal(boundIds.length, new Set(boundIds).size, "no duplicate data-paragraph-id anywhere");
+  for (let n = 1; n <= 40; n += 1) {
+    assert.ok(boundIds.includes(`i${n}`), `body paragraph i${n} is bound`);
+  }
+  const trackedBlocks = [7, 14, 29, 38, 76, 78];
+  trackedBlocks.forEach((i) => {
+    assert.equal(lockAt(i), "tracked_changes", `block ${i} locked tracked_changes`);
+    assert.equal(editableAt(i), false, `block ${i} not editable`);
   });
-  // The FOOTER paragraphs (no source_index; text lives in the excluded <footer>)
-  // are tolerated as unmatched: they bind NOTHING and must not abort the mapping.
+  // Exactly the six ins/del blocks carry the tracked_changes lock.
+  const trackedLockCount = ps.filter((p) => p.getAttribute("data-faithful-lock-reason") === "tracked_changes").length;
+  assert.equal(trackedLockCount, 6, "exactly 6 blocks locked for tracked changes");
+  // 40 body - 6 tracked = 34 editable single-block prose.
+  const editableCount = ps.filter((_, i) => editableAt(i)).length;
+  assert.equal(editableCount, 34, "34 clean single-block prose paragraphs stay editable");
+
+  // --- pure-<ins> blocks 8/43/54 are FURNITURE (empty match text). --------------
+  // DECISION: they have NO model counterpart (state.reviewParagraphs never included
+  // them), so under ins-stripping they are empty and treated as blank spacers --
+  // unstamped, non-interactive, owning no unit. Whole-new counterparty paragraphs
+  // that could not be attributed to any clause must NOT carry another paragraph's
+  // hooks; they render, but read-only and hook-free (same as trailing decoration).
+  [8, 43, 54].forEach((i) => {
+    assert.equal(idAt(i), null, `pure-ins block ${i} owns no paragraph id (furniture)`);
+    assert.equal(ps[i].getAttribute("data-clause-ids"), null, `pure-ins block ${i} carries no clause hooks`);
+    assert.equal(ps[i].querySelector("[contenteditable]"), null, `pure-ins block ${i} is never editable`);
+  });
+  // The paragraph AFTER each pure-ins block still anchors correctly (no unit stolen).
+  assert.equal(idAt(9), "i7", "the block after the pure-ins address line anchors i7");
+  assert.equal(idAt(46), "i27", "the block after the pure-ins liability paragraph anchors i27");
+  assert.equal(idAt(58), "i30", "the block after the pure-ins severability paragraph anchors i30");
+
+  // --- i6: whole-word "Vance Inc" insertion -> single block, tracked-locked. -----
+  assert.equal(idAt(7), "i6", "block 7 anchors i6 (filled-in counterparty)");
+  assert.equal(ps[7].getAttribute("data-clause-ids"), "c-parties", "i6 carries the parties clause");
+  assert.equal(lockAt(7), "tracked_changes", "the ins-bearing i6 block is read-only");
+
+  // --- whole-paragraph deletion (block 29 / i20) binds, locked, del text present. -
+  assert.equal(idAt(29), "i20", "block 29 (whole-para deletion) anchors i20");
+  assert.equal(lockAt(29), "tracked_changes", "the deleted paragraph is read-only");
+  assert.match(ps[29].textContent, /shall not apply to information/,
+    "block 29's deleted text is still present (del retained on the display surface)");
+
+  // --- governing-law clause lands on i29 (no mis-attach across 38 blanks). -------
+  assert.equal(idAt(51), "i29", "block 51 anchors i29 (governing law)");
+  assert.equal(ps[51].getAttribute("data-clause-ids"), "c-gov", "governing-law clause anchors i29");
+  assert.match(ps[51].textContent, /governed by and construed in accordance with the Laws of England and Wales/,
+    "block 51 really is the governing-law text");
+
+  // --- signature-block insertions bind, tracked-locked. -------------------------
+  assert.equal(idAt(76), "i38", "block 76 anchors i38 (Authorised Signatory + name)");
+  assert.match(ps[76].textContent, /Parth Pramendra Garg/, "i38 keeps the inserted signatory name");
+  assert.equal(lockAt(76), "tracked_changes", "i38 (ins) is read-only");
+  assert.equal(idAt(78), "i39", "block 78 anchors i39 (Position/Title + CEO)");
+  assert.match(ps[78].textContent, /CEO/, "i39 keeps the inserted title");
+  assert.equal(lockAt(78), "tracked_changes", "i39 (ins) is read-only");
+
+  // --- footers waived: bind nothing, never abort. -------------------------------
   for (const fid of ["i41", "i42", "i43"]) {
     assert.equal(ps.find((p) => p.getAttribute("data-paragraph-id") === fid), undefined,
-      `${fid} (footer) binds no body block`);
+      `${fid} (footer, no source_index) binds no body block`);
   }
   const footerEl = host.querySelector("footer p");
   assert.equal(footerEl.getAttribute("data-paragraph-id"), null, "the <footer> DOM itself is never stamped");
-  // Exactly ONE data-paragraph-id per structured paragraph across the surface.
-  const allIds = Array.from(host.querySelectorAll("[data-paragraph-id]"))
-    .map((el) => el.getAttribute("data-paragraph-id"));
-  assert.equal(allIds.length, new Set(allIds).size, "no duplicate data-paragraph-id anywhere");
-  // Single-block exact prose stays editable (blanks must not degrade mapping quality).
-  const prose = ps.find((p) => p.getAttribute("data-paragraph-id") === "i12");
-  assert.equal(prose.querySelector(".faithful-paragraph-editable").getAttribute("contenteditable"), "true",
-    "single-block exact prose stays rich-editable");
 
-  console.log("PASS M12: the LIVE Moorwand 81-vs-43 shape commits with correct anchors "
-    + "(blanks + '.' skipped; insertion + wrapped runs locked; footers tolerated unmatched).");
+  // --- every blank stays unstamped. ---------------------------------------------
+  rendered.forEach((block, i) => {
+    if (block === "") {
+      assert.equal(idAt(i), null, `blank block ${i} stays unstamped`);
+      assert.equal(ps[i].getAttribute("data-clause-ids"), null, `blank block ${i} carries no clause hooks`);
+    }
+  });
+
+  console.log("PASS M12: the REAL Moorwand TRACKED surface commits (sub-word ins/del at "
+    + "14/38 now aligned + read-only; pure-ins 8/43/54 furniture; 40 bound, 3 footers "
+    + "waived, 6 tracked-locked, 34 editable).");
 }
 
 // ===========================================================================
@@ -1242,7 +1402,11 @@ function testPreLockedClasses() {
   // safe prose paragraph stays editable.
   const reviewParagraphs = [
     { id: "p-safe", index: 0, source_index: 0, text: "Plain prose that round-trips cleanly here." },
-    { id: "p-tracked", index: 1, source_index: 1, text: "The term is five years from the date." },
+    // p-tracked is a REAL word replacement (delete "two" / insert "five"). The model
+    // text is the ORIGINAL ("two"), exactly what the backend's revision-aware extract
+    // holds, so the ins-stripped matcher reconstructs it and aligns; the block is then
+    // hard-locked by the tracked_changes class (never editable).
+    { id: "p-tracked", index: 1, source_index: 1, text: "The term is two years from the date." },
     { id: "p-table", index: 2, source_index: 2, text: "A cell paragraph inside a table." },
     { id: "p-link", index: 3, source_index: 3, text: "See the policy for the details." },
     // Block split: two model paragraphs share source_index 4.
@@ -1260,9 +1424,13 @@ function testPreLockedClasses() {
   const pSafe = window.document.createElement("p");
   pSafe.textContent = "Plain prose that round-trips cleanly here.";
   docx.appendChild(pSafe);
-  // tracked changes (ins/del)
+  // tracked changes: delete "two", insert "five" -> "The term is twofive years..."
+  // on the display surface; ins-stripped (del kept) reconstructs the model "two".
   const pTracked = window.document.createElement("p");
   pTracked.appendChild(window.document.createTextNode("The term is "));
+  const del = window.document.createElement("del");
+  del.textContent = "two";
+  pTracked.appendChild(del);
   const ins = window.document.createElement("ins");
   ins.textContent = "five";
   pTracked.appendChild(ins);
@@ -1328,6 +1496,152 @@ function testPreLockedClasses() {
   console.log("PASS M8: tracked-change / table-cell / non-text-inline / block-split are MAPPED read-only + edit-locked; safe prose stays editable.");
 }
 
+// ===========================================================================
+// M14: SUB-WORD tracked change (THE root cause). A single block renders
+// "agreements -> Agreements" as <ins>A</ins><del>a</del>greements with NO token
+// boundary. Proves:
+//   - the MATCHER text (faithfulParagraphMatchText: ins dropped, del kept)
+//     reconstructs the clean original token "agreements" -> the unit ALIGNS;
+//   - the DISPLAY text (faithfulParagraphText: ins + del) carries the fused
+//     "aagreements" (what an edit would sync) -> the drift guard has the right
+//     reference;
+//   - the paragraph is NOT editable and carries the tracked_changes lock reason.
+// This is the exact case that fused into "aagreements" and hard-aborted in prod.
+// ===========================================================================
+function testSubWordTrackedChange() {
+  const { sandbox, window } = freshSandbox({
+    reviewParagraphs: [
+      { id: "p0", index: 0, source_index: 0, text: "Made and entered into" },
+      { id: "p1", index: 1, source_index: 1, text: "of the mutual agreements contained herein" },
+    ],
+  });
+  const studioDocumentRender = get(sandbox, "studioDocumentRender");
+  const host = buildTrackedHost(window, [
+    "Made and entered into",
+    { runs: [
+      { t: "text", s: "of the mutual " },
+      { t: "ins", s: "A" },
+      { t: "del", s: "a" },
+      { t: "text", s: "greements contained herein" },
+    ] },
+  ]);
+  studioDocumentRender.appendChild(host);
+
+  const block = Array.from(host.querySelectorAll(".docx p"))[1];
+  const matchText = get(sandbox, "faithfulParagraphMatchText");
+  const displayText = get(sandbox, "faithfulParagraphText");
+  const tokensOf = get(sandbox, "faithfulTokens");
+  // Matcher token stream contains the clean whole word "agreements".
+  const matchTokens = tokensOf(matchText(block));
+  assert.ok(matchTokens.includes("agreements"),
+    `matcher token stream contains the reconstructed original "agreements" (got ${JSON.stringify(matchTokens)})`);
+  assert.ok(!matchTokens.includes("aagreements"), "matcher never sees the fused token");
+  // Display text carries the fused ins+del token (what an in-place edit would sync).
+  assert.match(displayText(block), /mutual Aagreements contained/,
+    "display text keeps the garbled fused ins+del token");
+
+  const committed = get(sandbox, "bindFaithfulDocxInteractions")(host, "redline");
+  assert.equal(committed, true, "the sub-word tracked block now COMMITS (no abort)");
+  const frame = host.querySelector('[data-paragraph-id="p1"]');
+  assert.ok(frame, "the sub-word block is MAPPED (frame present)");
+  assert.equal(frame.getAttribute("data-faithful-lock-reason"), "tracked_changes",
+    "the sub-word block carries the tracked_changes lock reason");
+  assert.equal(frame.querySelector(".faithful-paragraph-editable").getAttribute("contenteditable"), "false",
+    "the sub-word block is NEVER editable");
+
+  console.log("PASS M14: sub-word ins/del aligns on the ORIGINAL token; display keeps the fused text; block locked (tracked_changes).");
+}
+
+// ===========================================================================
+// M15: WORD-REPLACEMENT tracked change. <del>Confidential</del><ins>Proprietary</ins>
+// where the MODEL holds the ORIGINAL word "Confidential". Proves the ins-stripped
+// matcher (del KEPT) reads "Confidential" and matches -- del-stripping would wrongly
+// read "Proprietary" and fail. Block is locked (tracked_changes).
+// ===========================================================================
+function testWordReplacementTrackedChange() {
+  const { sandbox, window } = freshSandbox({
+    reviewParagraphs: [
+      { id: "p1", index: 0, source_index: 0, text: "The Confidential Information shall be protected." },
+    ],
+  });
+  const studioDocumentRender = get(sandbox, "studioDocumentRender");
+  const host = buildTrackedHost(window, [
+    { runs: [
+      { t: "text", s: "The " },
+      { t: "del", s: "Confidential" },
+      { t: "ins", s: "Proprietary" },
+      { t: "text", s: " Information shall be protected." },
+    ] },
+  ]);
+  studioDocumentRender.appendChild(host);
+
+  const block = Array.from(host.querySelectorAll(".docx p"))[0];
+  const matchText = get(sandbox, "faithfulParagraphMatchText");
+  const tokensOf = get(sandbox, "faithfulTokens");
+  const matchTokens = tokensOf(matchText(block));
+  assert.ok(matchTokens.includes("confidential"),
+    "matcher (del kept, ins dropped) reads the ORIGINAL 'Confidential' the model holds");
+  assert.ok(!matchTokens.includes("proprietary"),
+    "matcher never reads the inserted replacement 'Proprietary' (del-stripping would -- that is the trap)");
+
+  const committed = get(sandbox, "bindFaithfulDocxInteractions")(host, "redline");
+  assert.equal(committed, true, "the word-replacement block matches the model and COMMITS");
+  const frame = host.querySelector('[data-paragraph-id="p1"]');
+  assert.equal(frame.getAttribute("data-faithful-lock-reason"), "tracked_changes", "block locked (tracked_changes)");
+  assert.equal(frame.querySelector(".faithful-paragraph-editable").getAttribute("contenteditable"), "false",
+    "word-replacement block is not editable");
+
+  console.log("PASS M15: word-replacement matcher reads the model's ORIGINAL word (del kept); block locked.");
+}
+
+// ===========================================================================
+// M16: PURE-<ins> block is FURNITURE. A whole new counterparty paragraph has NO
+// model counterpart; under ins-stripping it is empty and is skipped exactly like a
+// blank spacer -- it consumes NO unit, owns NO paragraph id, carries NO clause
+// hooks, and is not editable. The neighbours still anchor correctly.
+// DECISION: pure-ins blocks are NOT owned/stamped (unattributable text must never
+// carry another paragraph's hooks). They render, read-only and hook-free.
+// ===========================================================================
+function testPureInsertionFurniture() {
+  const { sandbox, window } = freshSandbox({
+    reviewParagraphs: [
+      { id: "s1", index: 0, source_index: 0, text: "Alpha paragraph." },
+      { id: "s2", index: 1, source_index: 1, text: "Beta paragraph." },
+    ],
+    reviewClauses: [{ id: "cA", matched_paragraph_ids: ["s1"] }],
+  });
+  const studioDocumentRender = get(sandbox, "studioDocumentRender");
+  // A blank-separated pure-<ins> block between the two model paragraphs.
+  const host = buildTrackedHost(window, [
+    "Alpha paragraph.",
+    "",
+    { runs: [{ t: "ins", s: "Wholly new inserted counterparty paragraph with several words." }] },
+    "",
+    "Beta paragraph.",
+  ]);
+  studioDocumentRender.appendChild(host);
+
+  const matchText = get(sandbox, "faithfulParagraphMatchText");
+  const insBlock = Array.from(host.querySelectorAll(".docx p"))[2];
+  assert.equal(matchText(insBlock).trim(), "", "pure-ins block has EMPTY match text under ins-stripping");
+
+  const committed = get(sandbox, "bindFaithfulDocxInteractions")(host, "redline");
+  assert.equal(committed, true, "the pure-ins block does not abort the mapping");
+  const ps = Array.from(host.querySelectorAll(".docx p"));
+  const ids = ps.map((p) => p.getAttribute("data-paragraph-id"));
+  assert.deepEqual(ids, ["s1", null, null, null, "s2"],
+    "pure-ins block owns no id; s1/s2 keep their blocks (no unit consumed)");
+  assert.equal(ps[2].getAttribute("data-clause-ids"), null, "pure-ins furniture carries no clause hooks");
+  assert.equal(ps[2].querySelector("[contenteditable]"), null, "pure-ins furniture is never editable");
+  // s1 and s2 are clean single-block prose -> still editable.
+  assert.equal(ps[0].querySelector(".faithful-paragraph-editable").getAttribute("contenteditable"), "true",
+    "the paragraph before the insert stays editable");
+  assert.equal(ps[4].querySelector(".faithful-paragraph-editable").getAttribute("contenteditable"), "true",
+    "the paragraph after the insert stays editable");
+
+  console.log("PASS M16: pure-<ins> block is empty-match furniture -- no unit, no id, no hooks, not editable; neighbours anchor.");
+}
+
 testGuardPortsReference();
 testHappyPathMappingAndClauseIds();
 testAlignmentCommitAndAbortContracts();
@@ -1340,6 +1654,9 @@ testWrappedLineRuns();
 testEmptyParagraphFurniture();
 testSharedBlockUnit();
 testAdversarialGateProbes();
+testSubWordTrackedChange();
+testWordReplacementTrackedChange();
+testPureInsertionFurniture();
 testMoorwandLiveFixture();
 console.log("\nALL PASS: faithful-mapping (alignment guard / runs / clause ids / abort hygiene / "
   + "round-trip / read-back / toggle / gate probes / Moorwand live fixture).");

@@ -5093,6 +5093,29 @@ function faithfulParagraphText(el) {
   return faithfulEditableTextContent(el);
 }
 
+// MATCHER-footing text of a rendered paragraph: the full editable text MINUS its
+// <ins> subtrees, KEEPING its <del> subtrees. This reconstructs the ORIGINAL text
+// the review model holds -- state.reviewParagraphs comes from the backend's
+// docx_text._collect_revision_aware_text, which DROPS insertions and RESTORES
+// deletions. Feeding the aligner this (instead of the raw textContent) is what
+// lets a SUB-WORD tracked change align: docx-preview renders "agreements ->
+// Agreements" as <ins>A</ins><del>a</del>greements with NO token boundary, so the
+// raw textContent fuses into "aagreements" (matching neither the original nor the
+// accepted word); the ins-stripped, del-kept reading is the clean original
+// "agreements", an exact ordered match with the model.
+//
+// del-stripping would be WRONG: a delete "Confidential"/insert "Proprietary"
+// replacement has the model holding "Confidential"; the ins-stripped surface reads
+// "Confidential" (match), while a del-stripped surface would read "Proprietary".
+//
+// This is ONLY the matcher text. The DISPLAY text (faithfulParagraphText, ins AND
+// del present) is what an in-place edit would actually sync into paragraph.text, so
+// the edit-lock's text_drift gate must compare THAT, never this -- the two readings
+// are kept explicitly separate (matchText vs displayText) at the call site.
+function faithfulParagraphMatchText(el) {
+  return faithfulEditableTextContent(el, { skipInsertions: true });
+}
+
 // SHARED faithful-text normalizer: produces the text the way docx_text extraction +
 // editableParagraphText (viewer.js) both see it, so capturedRunsFromFaithfulEditable
 // and paragraph.text are compared on the SAME footing. The silent trap the
@@ -5101,8 +5124,14 @@ function faithfulParagraphText(el) {
 // NBSP->space. We mirror that exactly: <br>/<cr>-rendered breaks -> "\n", rendered
 // tab spans -> "\t", NBSP -> space. Used for the re-tile invariant + the read-back
 // assert (which then ABORTS to reconstruction on any residual mismatch).
-function faithfulEditableTextContent(el) {
+function faithfulEditableTextContent(el, options) {
   if (!el) return "";
+  // MATCHER footing (opt-in): DROP <ins> subtrees, KEEP <del> subtrees, so the read
+  // reconstructs the ORIGINAL text (mirrors docx_text._collect_revision_aware_text).
+  // Default (undefined/false) preserves the legacy behaviour -- FULL text including
+  // both ins and del -- which is the DISPLAY text an edit would sync and the
+  // read-back invariant's reference. See faithfulParagraphMatchText for the why.
+  const skipInsertions = Boolean(options && options.skipInsertions);
   let text = "";
   const ownerDoc = el.ownerDocument || (typeof document !== "undefined" ? document : null);
   const walk = (node) => {
@@ -5110,6 +5139,9 @@ function faithfulEditableTextContent(el) {
     // Element fast-paths for the structural characters docx_text emits.
     if (node.nodeType === 1) {
       const tag = String(node.tagName || "").toUpperCase();
+      // MATCHER only: skip <ins> subtrees exactly as the comment chrome is skipped
+      // below, so an inserted run contributes NO text to the original-footing read.
+      if (skipInsertions && tag === "INS") return;
       // Skip the contenteditable=false chrome (comment tools / verdict badge / note).
       if (node.classList && (node.classList.contains("paragraph-comment-tools")
         || node.classList.contains("paragraph-verdict-badge")
@@ -5211,9 +5243,26 @@ function bindFaithfulDocxInteractions(container, viewMode) {
   // Structured paragraphs with no source_index (footer lines the review model
   // keeps but faithfulMappableParagraphs excludes) may be tolerated as unmatched
   // holes -- see the waiver discriminator inside the aligner.
-  const renderedTexts = rendered.map(faithfulParagraphText);
+  // TWO DISTINCT text readings per rendered block, kept EXPLICITLY separate because
+  // they answer different questions and must never be conflated:
+  //   - matchText (renderedMatchTexts): textContent MINUS <ins> subtrees (deletions
+  //     KEPT), reconstructing the ORIGINAL the model holds. Feeds the ALIGNER and
+  //     the block-split member attribution -- the same original-text footing as
+  //     state.reviewParagraphs, so a SUB-WORD tracked change ("agreements ->
+  //     Agreements", rendered <ins>A</ins><del>a</del>greements) reads as the clean
+  //     original token instead of the fused "aagreements" and aligns.
+  //   - displayText (renderedDisplayTexts): the FULL text (ins AND del) an in-place
+  //     edit would sync into paragraph.text. Feeds the edit-lock's text_drift gate
+  //     ONLY -- if it fed the aligner, a tracked block would falsely fail to align;
+  //     if the drift gate used matchText, an ins/del block would compare EQUAL to
+  //     the model and be wrongly made editable, and a later edit would sync the
+  //     visible (ins+del) text and corrupt the outbound redline. (Tracked blocks are
+  //     additionally hard-locked by faithfulParagraphEditLockReason's tracked_changes
+  //     class below -- text_drift is a second, independent guard, never the only one.)
+  const renderedMatchTexts = rendered.map(faithfulParagraphMatchText);
+  const renderedDisplayTexts = rendered.map(faithfulParagraphText);
   const units = faithfulStructuredUnits(structured);
-  const alignment = faithfulAlignRenderedToStructured(renderedTexts, units);
+  const alignment = faithfulAlignRenderedToStructured(renderedMatchTexts, units);
   if (!alignment) {
     return false;
   }
@@ -5260,6 +5309,7 @@ function bindFaithfulDocxInteractions(container, viewMode) {
   //    whole paragraph on edit, and an insertion-tolerated block would sync the
   //    rendered variant (e.g. "... Vance Inc ...") over the model text.
   let editableCount = 0;
+  let trackedLocked = 0; // blocks read-only for tracked_changes (live-verification counter)
   units.forEach((unit, unitIndex) => {
     const run = alignment[unitIndex];
     if (!run || !run.matched || !run.blocks.length) return; // tolerated hole / blank unit: binds nothing
@@ -5281,7 +5331,9 @@ function bindFaithfulDocxInteractions(container, viewMode) {
     } else if (members.length === blockEls.length) {
       const pairwise = blockEls.every((blockEl, i) => {
         const memberText = String(members[i]?.text || "");
-        const blockText = renderedTexts[run.blocks[i]];
+        // Attribution is a MATCH question -- compare on the same original-text
+        // footing the aligner used (ins-stripped), never the display text.
+        const blockText = renderedMatchTexts[run.blocks[i]];
         return faithfulNormalizeText(blockText) === faithfulNormalizeText(memberText)
           || faithfulIsTokenSubsequence(memberText, blockText)
           || faithfulIsTokenSubsequence(blockText, memberText);
@@ -5312,8 +5364,11 @@ function bindFaithfulDocxInteractions(container, viewMode) {
       // model text lacks (filled-in values / inline inserts). Editing it would
       // sync the RENDERED variant over the model text, so the editability bar is
       // strict normalized EQUALITY, not the subsequence match that aligned it.
+      // MUST compare the DISPLAY text (what an edit would actually sync), NOT the
+      // ins-stripped matchText: an ins/del block reads EQUAL to the model under
+      // ins-stripping, so matchText here would wrongly clear the drift lock.
       if (!runLockReason && memberBlockCount === 1
-        && faithfulNormalizeText(renderedTexts[run.blocks[i]])
+        && faithfulNormalizeText(renderedDisplayTexts[run.blocks[i]])
           !== faithfulNormalizeText(String(paragraph?.text || ""))) {
         runLockReason = "text_drift";
       }
@@ -5378,6 +5433,7 @@ function bindFaithfulDocxInteractions(container, viewMode) {
           editable.setAttribute("contenteditable", "false");
           el.classList.add("faithful-edit-locked");
           if (lockReason) el.setAttribute("data-faithful-lock-reason", lockReason);
+          if (lockReason === "tracked_changes") trackedLocked += 1;
         }
       }
     });
@@ -5394,7 +5450,8 @@ function bindFaithfulDocxInteractions(container, viewMode) {
     // eslint-disable-next-line no-console
     console.info(
       `faithful_mapping_committed units=${units.length} runs=${matchedRuns} waived=${waived} `
-      + `blocks_bound=${boundBlocks} blocks_total=${rendered.length} editable=${editableCount}`,
+      + `blocks_bound=${boundBlocks} blocks_total=${rendered.length} editable=${editableCount} `
+      + `tracked_locked=${trackedLocked}`,
     );
   } catch (_loggingError) {
     // telemetry is advisory; never let it break the commit

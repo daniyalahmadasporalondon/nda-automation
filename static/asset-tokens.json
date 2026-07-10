@@ -276,8 +276,8 @@
     "v": "20260622docxphase2-1"
   },
   "js/review-workstation-rendering.js": {
-    "sha256": "b4f1223bca1a61a94b18393f13b20c09b270b47f442aee7c357a6b00b6e3503e",
-    "v": "20260710faithfulalign1"
+    "sha256": "4e4d9fbd007b05e2dc8202be93594e10d34000648ca3a62525859b01dd02674a",
+    "v": "20260710insstrip1"
   },
   "js/review-workstation-source.js": {
     "sha256": "dc075665414f8a245e0e0b1f7f6d8b3b689ad9ea54138dcac1348cfc07660105",
