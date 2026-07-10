@@ -1372,6 +1372,27 @@ _WORKER_HEALTHY_UPTIME_SECONDS = 60.0
 # trips the breaker (restarts STOP; web keeps serving).
 _WORKER_CRASH_WINDOW_SECONDS = 60.0
 _WORKER_CRASH_THRESHOLD = 5
+# Slow-flap detector: the fast breaker above only catches a TIGHT storm (5 deaths
+# inside 60s). A worker that crashes SLOWLY -- e.g. OOM-killed every ~15-30s --
+# never lands 5 deaths in any single 60s window, so it would restart-loop forever
+# at the backoff cap while the fast breaker (and an always-200 /healthz) stayed
+# quiet: intake flaps invisibly. This LONGER rolling window catches that. At >=
+# _WORKER_SLOW_FLAP_THRESHOLD deaths inside _WORKER_SLOW_FLAP_WINDOW_SECONDS the
+# worker is reported "flapping" (degraded on /readyz + the admin health card),
+# but -- unlike the fast breaker -- restarts CONTINUE: a slow-flapping child
+# still makes some inbound progress between crashes, so we keep it limping and
+# make the instability VISIBLE rather than killing intake outright.
+#
+# Numbers: 1 hour and 10 deaths. A healthy worker resets its backoff ladder after
+# 60s of uptime, so genuine one-off crashes are rare (well under 10/hour); a
+# deploy/config reload or a single transient dependency hiccup restarts it once
+# or twice, not ten times. 10 deaths inside a rolling hour means the child is up
+# for < ~6 minutes at a time on average -- sustained instability -- yet spread
+# thinly enough (as slow as one death every ~6 min) to never trip the fast
+# 5-in-60s breaker. So 10/hour sits above benign restart noise and below the fast
+# breaker's implied rate, catching exactly the slow-flap the fast breaker misses.
+_WORKER_SLOW_FLAP_WINDOW_SECONDS = 3600.0
+_WORKER_SLOW_FLAP_THRESHOLD = 10
 # Grace after SIGTERM before the child is SIGKILLed on shutdown.
 _WORKER_STOP_GRACE_SECONDS = 10.0
 
@@ -1444,6 +1465,8 @@ class WorkerSupervisor:
         healthy_uptime: float = _WORKER_HEALTHY_UPTIME_SECONDS,
         crash_window: float = _WORKER_CRASH_WINDOW_SECONDS,
         crash_threshold: int = _WORKER_CRASH_THRESHOLD,
+        slow_flap_window: float = _WORKER_SLOW_FLAP_WINDOW_SECONDS,
+        slow_flap_threshold: int = _WORKER_SLOW_FLAP_THRESHOLD,
         stop_grace: float = _WORKER_STOP_GRACE_SECONDS,
         clock=time.monotonic,
         sleep=None,
@@ -1454,6 +1477,8 @@ class WorkerSupervisor:
         self._healthy_uptime = healthy_uptime
         self._crash_window = crash_window
         self._crash_threshold = crash_threshold
+        self._slow_flap_window = slow_flap_window
+        self._slow_flap_threshold = slow_flap_threshold
         self._stop_grace = stop_grace
         self._clock = clock
         self._stop = threading.Event()
@@ -1462,8 +1487,15 @@ class WorkerSupervisor:
         self._sleep = sleep if sleep is not None else self._stop.wait
         self._child: object | None = None
         self._monitor: threading.Thread | None = None
+        # One death log, pruned to the LONGER (slow-flap) window; the fast breaker
+        # counts the subset inside its own shorter window. A lock guards it so the
+        # health endpoints (served on the parent's HTTP threads) can read a
+        # consistent snapshot while the monitor thread mutates it.
         self._deaths: "deque[float]" = deque()
+        self._state_lock = threading.Lock()
         self._consecutive_failures = 0
+        self._last_exit_code: int | None = None
+        self._slow_flap_logged = False
         # Observable state (asserted by tests / useful in logs):
         self.breaker_tripped = False
         self.restart_delays: list[float] = []
@@ -1494,30 +1526,57 @@ class WorkerSupervisor:
                 return
             now = self._clock()
             uptime = now - spawned_at
-            self._record_death(now)
-            if len(self._deaths) >= self._crash_threshold:
-                self.breaker_tripped = True
+            with self._state_lock:
+                self._last_exit_code = returncode
+                self._record_death(now)
+                deaths_fast = self._deaths_within(self._crash_window, now)
+                deaths_slow = self._deaths_within(self._slow_flap_window, now)
+            if deaths_fast >= self._crash_threshold:
+                with self._state_lock:
+                    self.breaker_tripped = True
                 self._child = None
                 print(
                     "WORKER SUPERVISOR: crash storm -- worker child died "
-                    f"{len(self._deaths)} times within {self._crash_window:.0f}s "
+                    f"{deaths_fast} times within {self._crash_window:.0f}s "
                     f"(last rc={returncode}). NOT restarting; web serving "
-                    f"continues. Set {WORKER_PROCESS_ENV}=0 and investigate.",
+                    "continues -- but INBOUND NDA INTAKE IS NOW STOPPED "
+                    "(surfaced on /readyz as worker.state=breaker_tripped and on "
+                    f"the admin health card). Set {WORKER_PROCESS_ENV}=0 and "
+                    "investigate.",
                     flush=True,
                 )
                 return
-            if uptime >= self._healthy_uptime:
-                self._consecutive_failures = 0
+            # Slow-flap: deaths too sparse to trip the fast breaker but frequent
+            # enough over the long window that intake is chronically unstable.
+            # Log it ONCE, loudly, but KEEP restarting -- a limping worker still
+            # makes some inbound progress, and the endpoints/UI carry the standing
+            # "flapping" signal so the instability is not invisible.
+            if deaths_slow >= self._slow_flap_threshold and not self._slow_flap_logged:
+                self._slow_flap_logged = True
+                print(
+                    "WORKER SUPERVISOR: worker child is SLOW-FLAPPING -- "
+                    f"{deaths_slow} deaths within {self._slow_flap_window / 60:.0f} "
+                    f"min (last rc={returncode}); below the fast crash-storm "
+                    "threshold so restarts CONTINUE, but inbound NDA intake is "
+                    "unstable (surfaced on /readyz as worker.state=flapping and on "
+                    "the admin health card).",
+                    flush=True,
+                )
+            with self._state_lock:
+                if uptime >= self._healthy_uptime:
+                    self._consecutive_failures = 0
+                    self._slow_flap_logged = False  # a healthy run re-arms the log
+                failure_number = self._consecutive_failures + 1
+                self._consecutive_failures = failure_number
             delay = min(
                 self._backoff_cap,
-                self._backoff_initial * (2 ** self._consecutive_failures),
+                self._backoff_initial * (2 ** (failure_number - 1)),
             )
-            self._consecutive_failures += 1
             self.restart_delays.append(delay)
             print(
                 f"WORKER SUPERVISOR: worker child exited (rc={returncode}, "
                 f"uptime={uptime:.1f}s); restarting in {delay:.1f}s "
-                f"(failure #{self._consecutive_failures}).",
+                f"(failure #{failure_number}).",
                 flush=True,
             )
             if self._sleep(delay):
@@ -1527,9 +1586,55 @@ class WorkerSupervisor:
             self._child = self._spawn()
 
     def _record_death(self, now: float) -> None:
+        # Caller holds ``self._state_lock``. Prune to the LONGER (slow-flap)
+        # window; the fast breaker counts the subset inside its shorter window.
         self._deaths.append(now)
-        while self._deaths and now - self._deaths[0] > self._crash_window:
+        horizon = max(self._crash_window, self._slow_flap_window)
+        while self._deaths and now - self._deaths[0] > horizon:
             self._deaths.popleft()
+
+    def _deaths_within(self, window: float, now: float) -> int:
+        # Caller holds ``self._state_lock``.
+        return sum(1 for moment in self._deaths if now - moment <= window)
+
+    def status(self) -> dict[str, object]:
+        """Structured, human-actionable supervision state for the health surfaces.
+
+        Read by the web parent's /healthz + /readyz and the admin health card so a
+        dead/flapping worker is VISIBLE without shell access to the container --
+        the failure mode a lone stdout log line could not fix. ``state`` is one of:
+
+          * ``running``        -- child alive, no recent deaths;
+          * ``restarting``     -- crashed recently, on the backoff ladder;
+          * ``flapping``       -- slow-flapping (degraded), restarts continuing;
+          * ``breaker_tripped``-- crash-storm breaker latched, restarts STOPPED.
+
+        Only ``flapping`` and ``breaker_tripped`` are treated as degraded.
+        """
+        now = self._clock()
+        with self._state_lock:
+            tripped = self.breaker_tripped
+            deaths_fast = self._deaths_within(self._crash_window, now)
+            deaths_slow = self._deaths_within(self._slow_flap_window, now)
+            last_exit_code = self._last_exit_code
+            consecutive_failures = self._consecutive_failures
+        if tripped:
+            state = "breaker_tripped"
+        elif deaths_slow >= self._slow_flap_threshold:
+            state = "flapping"
+        elif deaths_fast > 0:
+            state = "restarting"
+        else:
+            state = "running"
+        return {
+            "state": state,
+            "deaths_last_hour": deaths_slow,
+            "deaths_last_window": deaths_fast,
+            "crash_window_seconds": self._crash_window,
+            "slow_flap_window_seconds": self._slow_flap_window,
+            "last_exit_code": last_exit_code,
+            "consecutive_failures": consecutive_failures,
+        }
 
     def stop(self, *, grace: float | None = None) -> None:
         """Signal the monitor to quit and terminate + reap the child.
@@ -1584,6 +1689,57 @@ class WorkerSupervisor:
             pass
         except (ProcessLookupError, OSError):  # pragma: no cover - already reaped
             pass
+
+
+# The live role="all" worker supervisor, set by ``main()`` when the web parent
+# starts its supervised worker child. It is READ by the web parent's /healthz +
+# /readyz and the admin telemetry health block so the worker child's supervised
+# state is VISIBLE to an operator over HTTP -- the whole point of this fix, since
+# a crash-storm breaker trip previously announced itself only in a stdout log
+# line. Stays ``None`` in every other topology: role="web" (the worker is a
+# SEPARATE container with its own /healthz), role="worker" (this process IS the
+# worker), and role="all" with NDA_WORKER_PROCESS=0 (the scheduler runs in-process
+# and there is no supervised child to be sick).
+_WORKER_SUPERVISOR: "WorkerSupervisor | None" = None
+
+# ``worker.state`` values that mean inbound intake is NOT healthy. Only these two
+# mark /readyz degraded; running/restarting/disabled/external must NOT (no false
+# alarms -- warning fatigue would destroy the signal).
+_WORKER_DEGRADED_STATES = frozenset({"breaker_tripped", "flapping"})
+
+
+def _worker_status_payload() -> dict[str, object]:
+    """Structured worker-child supervision state for the health surfaces.
+
+    Never raises: the health endpoints fold this in and must stay fail-open. When
+    a supervisor is running in THIS process its live ``status()`` is returned;
+    otherwise the state explains WHY there is no supervised child so an operator
+    can tell a deliberately-disabled worker from a broken one:
+
+      * ``external`` -- role="web": the worker is a separate container/process
+        with its own /healthz; this process does not supervise it.
+      * ``disabled`` -- role="all" with NDA_WORKER_PROCESS=0: the Gmail scheduler
+        runs IN this process (intake is running, just not in a child), so there
+        is nothing to be sick. Also the momentary pre-attach startup window.
+    """
+    supervisor = _WORKER_SUPERVISOR
+    if supervisor is not None:
+        try:
+            return supervisor.status()
+        except Exception:  # pragma: no cover - status() is itself defensive
+            return {"state": "unknown"}
+    try:
+        role = app_settings.process_role()
+    except Exception:
+        role = app_settings.PROCESS_ROLE_ALL
+    if role == app_settings.PROCESS_ROLE_WEB:
+        return {"state": "external"}
+    return {"state": "disabled"}
+
+
+def _worker_is_degraded(worker: object) -> bool:
+    """Whether a ``_worker_status_payload`` dict means inbound intake is unhealthy."""
+    return isinstance(worker, dict) and worker.get("state") in _WORKER_DEGRADED_STATES
 
 
 def _serve_forever_with_shutdown(server: ThreadingHTTPServer, supervisor: "WorkerSupervisor") -> None:
