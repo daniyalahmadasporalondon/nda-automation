@@ -750,9 +750,16 @@ def _ground_evidence_quote(
         anchor_id = _first_paragraph_containing(first_segment, ordered_paragraphs)
         if anchor_id is not None:
             return anchor_id, None
-        # Defensive: the span grounds across paragraphs but no single paragraph
-        # holds the first segment whole (it too crosses a boundary). Anchor to the
-        # first reviewed paragraph so the citation still points somewhere real.
+        # Defensive: the span grounds across paragraphs but no single paragraph holds
+        # the first segment whole (it too crosses a boundary). Prefer the paragraph the
+        # model actually CITED when it exists -- that is the model's stated location and
+        # the paragraph a boundary-spanning quote starts in, so it is a far better
+        # anchor than the top-of-document fallback (relevant once a DOCX clause split
+        # across <w:p> is merged for the model, which invites boundary-spanning quotes).
+        if cited_paragraph_id and cited_paragraph_id in paragraph_by_id:
+            return cited_paragraph_id, None
+        # No cited paragraph to fall back on: anchor to the first reviewed paragraph so
+        # the citation still points somewhere real.
         if ordered_paragraphs:
             return ordered_paragraphs[0][0], None
 
