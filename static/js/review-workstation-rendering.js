@@ -6018,6 +6018,26 @@ function requestMatterDocumentRenderPreview() {
   // displayed over a faithful view anyway (see the resolve handler below).
   if (!faithfulDocxSurfaceActiveForCurrentView()) renderStudioDocumentHighlights();
 
+  pollMatterDocumentRenderStatus(matterId, sequence, 0);
+}
+
+// A cold render resolves ASYNCHRONOUSLY on the backend: /render-status returns
+// status:"rendering" (rendering_in_progress_payload) until PyMuPDF/soffice
+// finishes rasterizing the ORIGINAL source. A SINGLE-SHOT fetch that saw
+// "rendering" used to null the whole render state out (normalizedRenderStatus ->
+// "unavailable" -> normalizeReviewDocumentRender returns null) and discard the
+// working_docx_ready flag riding on that payload -- silently disabling the
+// converted-PDF faithful auto-on lane AND dead-ending a cold PDF Original on a
+// blank surface with no re-poll. This re-polls a still-"loading" render with a
+// capped linear backoff until it resolves to ready/error (or the attempt cap is
+// hit, after which the last state -- typically "loading" -- stands rather than
+// looping forever). The sequence + matter-id staleness guards drop a poll whose
+// matter/request has been superseded.
+const RENDER_STATUS_POLL_MAX_ATTEMPTS = 24;
+const RENDER_STATUS_POLL_BASE_DELAY_MS = 1500;
+const RENDER_STATUS_POLL_MAX_DELAY_MS = 6000;
+
+function pollMatterDocumentRenderStatus(matterId, sequence, attempt) {
   fetch(`/api/matters/${encodeURIComponent(matterId)}/render-status`)
     .then(async (response) => {
       const payload = await response.json();
@@ -6030,9 +6050,30 @@ function requestMatterDocumentRenderPreview() {
     })
     .then((payload) => {
       if (sequence !== reviewDocumentRenderRequestSequence || state.selectedMatter?.id !== matterId) return;
-      state.reviewDocumentRender = normalizeReviewDocumentRender(
+      const nextRender = normalizeReviewDocumentRender(
         payload.document_render || payload.rendered_document || payload.pdf_render || null,
       );
+      // STILL RENDERING: the backend has not finished rasterizing the ORIGINAL
+      // source yet ("rendering"/"queued"/... all normalize to "loading"). Re-poll
+      // with backoff instead of committing this transient state -- committing it
+      // and repainting would either blank the pane (null render) or flip the
+      // pager to a partial state. The "loading" placeholder set by the caller
+      // stays on screen while we wait. working_docx_ready is preserved on the
+      // final commit below.
+      if (nextRender && nextRender.status === "loading" && attempt + 1 < RENDER_STATUS_POLL_MAX_ATTEMPTS) {
+        const delay = Math.min(
+          RENDER_STATUS_POLL_BASE_DELAY_MS * (attempt + 1),
+          RENDER_STATUS_POLL_MAX_DELAY_MS,
+        );
+        setTimeout(() => {
+          // Re-check staleness before the next poll: the user may have moved on
+          // (or a fresh request superseded this one) during the backoff wait.
+          if (sequence !== reviewDocumentRenderRequestSequence || state.selectedMatter?.id !== matterId) return;
+          pollMatterDocumentRenderStatus(matterId, sequence, attempt + 1);
+        }, delay);
+        return;
+      }
+      state.reviewDocumentRender = nextRender;
       // RENDER-CLOBBER GUARD (root-cause fix): the backend rasterizes the
       // ORIGINAL source document, so on a cold cache this resolves SECONDS after
       // the review painted -- by which time the faithful redline/clean upgrade
@@ -6173,7 +6214,14 @@ function normalizedRenderStatus(status, pdfUrl, pages = []) {
   if (["ready", "complete", "completed", "available", "success"].includes(normalized) && (pdfUrl || hasPages)) return "ready";
   if (["failed", "error"].includes(normalized)) return "error";
   if (normalized === "unavailable") return "unavailable";
-  if (["queued", "pending", "processing", "running", "loading"].includes(normalized)) return "loading";
+  // "rendering" is the backend's in-flight signal (document_rendering.RENDERING_STATUS,
+  // "background render in flight; poller should retry") carried by
+  // rendering_in_progress_payload -- it has no pdf_url/pages yet but DOES carry
+  // working_docx_ready. It MUST normalize to "loading" (not fall through to the
+  // "unavailable" tail below, which nulls the whole render state out and discards
+  // working_docx_ready, silently disabling the converted-PDF faithful auto-on lane
+  // and dead-ending a cold PDF Original). The caller re-polls a "loading" state.
+  if (["queued", "pending", "processing", "running", "rendering", "loading"].includes(normalized)) return "loading";
   return pdfUrl || hasPages ? "ready" : "unavailable";
 }
 
