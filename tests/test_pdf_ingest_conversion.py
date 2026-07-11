@@ -6,6 +6,7 @@ paragraphs; fail-open keeps the legacy PDF matter when conversion is unavailable
 """
 from __future__ import annotations
 
+import importlib.util
 from io import BytesIO
 from pathlib import Path
 
@@ -19,6 +20,9 @@ from nda_automation import (
     pdf_ingest_conversion,
 )
 from nda_automation.matter_repository import InMemoryMatterRepository
+
+_FITZ_AVAILABLE = importlib.util.find_spec("fitz") is not None
+requires_fitz = pytest.mark.skipif(not _FITZ_AVAILABLE, reason="PyMuPDF is not installed")
 
 PDF_BYTES = b"%PDF-1.7\nfake pdf\n%%EOF\n"
 
@@ -1208,6 +1212,137 @@ def test_rerun_is_safe_and_resumes(monkeypatch):
     third = ingestion_service.run_pdf_docx_backfill(repository=repo)
     assert third["total"] == 0
     assert third["converted"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Rotated (/Rotate 90) PDF normalization
+# --------------------------------------------------------------------------- #
+def _rotated_text_pdf(paragraphs, *, rotation=90) -> bytes:
+    """A single-page text-layer PDF whose page carries a /Rotate flag."""
+    import fitz
+
+    document = fitz.open()
+    page = document.new_page(width=612, height=792)
+    y = 100
+    for text in paragraphs:
+        page.insert_text((72, y), text, fontsize=11)
+        y += 40
+    if rotation:
+        page.set_rotation(rotation)
+    data = document.tobytes()
+    document.close()
+    return data
+
+
+class _RotationSensitiveConverter:
+    """Faithfully models pdf2docx's rotation bug: an input page carrying a non-zero
+    /Rotate reconstructs to an EMPTY DOCX (the text blocks fall out of bounds); an
+    upright page reconstructs to the real body."""
+
+    name = "rotation-sensitive-stub"
+
+    def __init__(self, paragraphs):
+        self._paragraphs = paragraphs
+
+    def is_available(self):
+        return True
+
+    def convert_pdf_to_docx(self, source_path: Path, output_path: Path):
+        import fitz
+
+        document = fitz.open(str(source_path))
+        rotated = any(int(getattr(page, "rotation", 0) or 0) % 360 for page in document)
+        document.close()
+        output_path.write_bytes(make_docx([] if rotated else self._paragraphs))
+
+
+@requires_fitz
+def test_normalize_pdf_rotation_derotates_and_preserves_text():
+    import fitz
+
+    data = _rotated_text_pdf(RECON_PARAGRAPHS, rotation=90)
+    source = fitz.open(stream=data, filetype="pdf")
+    assert source.load_page(0).rotation == 90  # the fixture really is rotated
+    source.close()
+
+    normalized = pdf_ingest_conversion._normalize_pdf_rotation(data)
+    check = fitz.open(stream=normalized, filetype="pdf")
+    page = check.load_page(0)
+    assert page.rotation == 0  # baked into upright geometry
+    text = page.get_text()
+    check.close()
+    # Text survives the re-draw (selectable, not rasterized).
+    for paragraph in RECON_PARAGRAPHS:
+        assert paragraph.split()[0] in text
+
+
+@requires_fitz
+def test_normalize_pdf_rotation_is_a_noop_for_unrotated_pdf():
+    data = _rotated_text_pdf(RECON_PARAGRAPHS, rotation=0)
+    # No page rotated -> the ORIGINAL bytes are returned unchanged (byte-identical).
+    assert pdf_ingest_conversion._normalize_pdf_rotation(data) is data
+
+
+@requires_fitz
+def test_rotated_pdf_reconstructs_non_empty_after_derotation():
+    data = _rotated_text_pdf(RECON_PARAGRAPHS, rotation=90)
+    converter = _RotationSensitiveConverter(RECON_PARAGRAPHS)
+
+    # Sanity: the stub really models the bug -- on the RAW rotated bytes the
+    # reconstructed body is EMPTY (which is exactly the empty-DOCX failure).
+    raw_recon = pdf_docx_reconstruction.reconstruct_pdf_to_docx(
+        data, "rotated.pdf", converter=converter
+    )
+    assert not any(
+        norm for (_i, _t, norm) in pdf_ingest_conversion.reconstructed_body_index(raw_recon.data)
+    )
+
+    # With the fix, convert_pdf_matter_to_docx de-rotates first, so the converter
+    # sees an upright page and the reconstruction is NON-EMPTY + fully mapped.
+    result = pdf_ingest_conversion.convert_pdf_matter_to_docx(
+        data, "rotated.pdf", _pypdf_paragraphs(), converter=converter
+    )
+    assert result.mapped_count == len(RECON_PARAGRAPHS)
+    body = pdf_ingest_conversion.reconstructed_body_index(result.docx_bytes)
+    assert any(norm for (_i, _t, norm) in body)
+
+
+# --------------------------------------------------------------------------- #
+# Ligature folding across the extraction + matching layers
+# --------------------------------------------------------------------------- #
+def test_ligature_pypdf_text_maps_to_ascii_reconstruction_and_is_folded():
+    ascii_para = "Confidential Information means all disclosed data at all times."
+    ligature_para = "Conﬁdential Information means all disclosed data at all times."  # ﬁ
+    assert "ﬁ" in ligature_para  # the fixture really carries the ligature glyph
+
+    reconstructed_index = pdf_ingest_conversion.reconstructed_body_index(make_docx([ascii_para]))
+    pypdf_paragraphs = [
+        {"id": "p1", "text": ligature_para, "source_index": 1, "source_part": "pdf"}
+    ]
+    mapped, mapped_count, unmapped = pdf_ingest_conversion.map_paragraphs_to_reconstruction(
+        pypdf_paragraphs, reconstructed_index
+    )
+    # The ligature paragraph maps to its ASCII-spelled reconstructed twin (folded
+    # normalization makes both sides compare equal) -- no unmapped, no empty-body.
+    assert mapped_count == 1
+    assert unmapped == 0
+    assert mapped[0]["source_index"] == reconstructed_index[0][0]
+    assert "source_part" not in mapped[0]
+    # The RETAINED review text is folded to ASCII (no ligature codepoint survives).
+    assert "ﬁ" not in mapped[0]["text"]
+    assert mapped[0]["text"] == ascii_para
+
+
+def test_ligatures_folded_consistently_across_layers():
+    from nda_automation.checks.common import _normalize
+    from nda_automation.docx_xml import _normalize_paragraph_text, fold_ligatures
+
+    ligated = "Conﬁdential Inﬂuence Oﬀer Aﬃliate Suﬄe"  # ﬁ ﬂ ﬀ ﬃ ﬄ
+    assert fold_ligatures(ligated) == "Confidential Influence Offer Affiliate Suffle"
+    # Matching layer (checks): a plain-ASCII clause regex now sees folded text.
+    assert _normalize("Conﬁdential") == "confidential"
+    # Mapping/normalization layer (docx_xml): folded + whitespace-collapsed.
+    assert _normalize_paragraph_text("Conﬁdential   text") == "Confidential text"
 
 
 if __name__ == "__main__":
