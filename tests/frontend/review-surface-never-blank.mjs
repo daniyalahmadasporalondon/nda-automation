@@ -330,7 +330,73 @@ async function testNeverBlankSwapAndStaleAsync() {
     + "stale-async drops (matter change + view change).");
 }
 
+// ===========================================================================
+// D5: reconstruction-floor guard on the ORIGINAL surface
+// (renderOriginalDocumentSurface). A PDF-source matter can report status
+// "ready" + a pdfUrl but NO page images (pages:[]) with preferred_render_mode
+// "source_pdf_preview", where the /render-pdf iframe paints NEARLY BLANK. The
+// Original view suppresses the text reconstruction and paints this surface
+// full-width, so the blank iframe leaves the whole pane empty. When a usable
+// source-fidelity reconstruction exists AND the metadata prefers the source
+// surface, the pdfUrl iframe branch must yield to that reconstruction.
+// ===========================================================================
+function testOriginalReconstructionFloorGuard() {
+  const { sandbox } = freshSandbox();
+  const renderOriginalDocumentSurface = vm.runInContext("renderOriginalDocumentSurface", sandbox);
+  const normalizeReviewDocumentRender = vm.runInContext("normalizeReviewDocumentRender", sandbox);
+
+  const readyPdfNoPages = normalizeReviewDocumentRender({
+    status: "ready",
+    pdf_url: "/api/matters/m1/render-pdf",
+    pages: [],
+    source_label: "Original PDF",
+  });
+
+  const sourceFidelity = {
+    render_model: "source_blocks",
+    preferred_render_mode: "source_pdf_preview",
+    source_type: "pdf",
+    summary: {},
+    capabilities: {},
+    blocks: [
+      { id: "p1", type: "paragraph", text: "The Receiving Party shall keep all information confidential." },
+      { id: "p2", type: "paragraph", text: "This Agreement is governed by the laws of England and Wales." },
+    ],
+  };
+
+  // WITH a preferred source-fidelity reconstruction: the guard fires -> the
+  // reconstruction (studio source-fidelity) surface is painted, NOT the iframe.
+  sandbox.state.latestReviewResult = { source_fidelity: sourceFidelity };
+  const guarded = renderOriginalDocumentSurface(readyPdfNoPages);
+  assert.ok(!/<iframe/.test(guarded),
+    "D5: ready+pdfUrl+empty-pages+source_pdf_preview must NOT paint a blank iframe");
+  assert.ok(/data-source-fidelity-document/.test(guarded),
+    "D5: it must fall through to the source-fidelity reconstruction surface");
+  assert.ok(/Receiving Party/.test(guarded),
+    "D5: the reconstruction must carry the extracted document text (non-blank floor)");
+
+  // WITHOUT a reconstruction floor: the pdfUrl iframe is still the right surface
+  // (a genuinely-painting PDF preview must be unchanged).
+  sandbox.state.latestReviewResult = null;
+  const unguarded = renderOriginalDocumentSurface(readyPdfNoPages);
+  assert.ok(/<iframe/.test(unguarded),
+    "D5: with no reconstruction floor the pdfUrl iframe must still paint");
+
+  // Reconstruction present but metadata does NOT prefer the source surface: the
+  // pdfUrl iframe still wins (guard only diverts source_pdf_preview-style modes).
+  sandbox.state.latestReviewResult = {
+    source_fidelity: { ...sourceFidelity, preferred_render_mode: "reconstruction" },
+  };
+  const notPreferred = renderOriginalDocumentSurface(readyPdfNoPages);
+  assert.ok(/<iframe/.test(notPreferred),
+    "D5: a non-source-preferred reconstruction must not divert the pdfUrl iframe");
+
+  console.log("PASS D5: reconstruction-floor guard -- source_pdf_preview + empty pages falls "
+    + "through to the reconstruction; pdfUrl iframe unchanged when no floor is preferred.");
+}
+
 testPerModeNonBlankMatrix();
 testPageImageBlankFix();
+testOriginalReconstructionFloorGuard();
 await testNeverBlankSwapAndStaleAsync();
 console.log("\nALL PASS: review-surface-never-blank regression locks");
