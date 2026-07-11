@@ -190,6 +190,50 @@ finally:
 
 PDF_DOCX_CHILD_UNAVAILABLE_RETURNCODE = 3
 
+# Sanitize the pdf2docx child's stderr before it reaches a user-facing error. The
+# child can emit a full Python traceback (absolute tmp paths + source-line
+# snippets) plus pdf2docx's own [INFO]/[WARNING] log lines; surfacing that verbatim
+# leaks internal filesystem paths and buries the actual cause in log noise. We keep
+# only a final exception-summary line with any filesystem paths redacted.
+_MAX_RECONSTRUCTION_DETAIL_CHARS = 200
+_RECONSTRUCTION_LOG_PREFIX = re.compile(r"^\[(?:INFO|WARNING|DEBUG|ERROR|CRITICAL)\]", re.IGNORECASE)
+_RECONSTRUCTION_TRACEBACK_HEADER = re.compile(r"^Traceback \(most recent call last\):")
+_RECONSTRUCTION_EXCEPTION_LINE = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception|Warning|Interrupt):")
+# Absolute POSIX (/foo/bar) or Windows (C:\foo\bar) path tokens.
+_RECONSTRUCTION_PATH_TOKEN = re.compile(r"(?:/[^\s'\"]+|[A-Za-z]:\\[^\s'\"]+)")
+
+
+def _sanitize_reconstruction_stderr(raw: str) -> str:
+    """Reduce a pdf2docx child's decoded stderr to a short, safe detail string.
+
+    Drops [INFO]/[WARNING]/... log lines, the ``Traceback`` header, and every
+    indented traceback frame / source snippet; from what remains it prefers the
+    final exception-summary line ("SomeError: message"), redacts filesystem paths to
+    ``<path>``, collapses whitespace and truncates. Returns "" when nothing safe is
+    left (the caller then surfaces only the generic failure message)."""
+    kept: list[str] = []
+    for line in str(raw or "").splitlines():
+        # Indented lines are traceback File-frames and their source snippets: drop.
+        if line != line.lstrip():
+            continue
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _RECONSTRUCTION_LOG_PREFIX.match(stripped):
+            continue
+        if _RECONSTRUCTION_TRACEBACK_HEADER.match(stripped):
+            continue
+        kept.append(stripped)
+    if not kept:
+        return ""
+    summary = next(
+        (line for line in reversed(kept) if _RECONSTRUCTION_EXCEPTION_LINE.match(line)),
+        kept[-1],
+    )
+    summary = _RECONSTRUCTION_PATH_TOKEN.sub("<path>", summary)
+    summary = re.sub(r"\s+", " ", summary).strip()
+    return summary[:_MAX_RECONSTRUCTION_DETAIL_CHARS].strip()
+
 
 class Pdf2DocxConverter:
     """Subprocess-isolated pdf2docx converter.
@@ -231,7 +275,9 @@ class Pdf2DocxConverter:
         if returncode == PDF_DOCX_CHILD_UNAVAILABLE_RETURNCODE:
             raise PdfDocxReconstructionUnavailableError(PDF_DOCX_RECONSTRUCTION_UNAVAILABLE_MESSAGE)
         if returncode != 0:
-            detail = stderr_bytes.decode("utf-8", errors="replace").strip()
+            detail = _sanitize_reconstruction_stderr(
+                stderr_bytes.decode("utf-8", errors="replace")
+            )
             raise PdfDocxReconstructionFailedError(
                 PDF_DOCX_RECONSTRUCTION_FAILED_MESSAGE + (f" ({detail})" if detail else "")
             )
