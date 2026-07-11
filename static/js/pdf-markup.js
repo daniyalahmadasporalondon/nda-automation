@@ -109,9 +109,15 @@ function createPdfMarkupController({
     const surface = root();
     if (!surface) return;
     const matterId = selectedMatterId();
-    if (!matterId || !isPdfMatter()) {
-      // Original view is up but there's nothing to annotate (no PDF matter):
-      // make sure no stale toolbar/overlays linger.
+    // Only mount over a REAL page-image surface. The Original view can also
+    // render as a bare PDF iframe, a source-fidelity reconstruction, or an
+    // "unavailable" fallback panel — surfaces that carry the [data-original-surface]
+    // root but NO annotatable page tiles ([data-review-render-page]). Gate on the
+    // actual presence of page tiles so the toolbar never appears on a surface
+    // where there is nothing to annotate.
+    if (!matterId || !isPdfMatter() || pageElements().length === 0) {
+      // Original view is up but there's nothing to annotate: make sure no stale
+      // toolbar/overlays linger.
       teardown();
       return;
     }
@@ -573,8 +579,14 @@ function createPdfMarkupController({
       })
       .catch(() => {
         if (sequence !== markup.loadSequence || selectedMatterId() !== matterId) return;
+        // A transient load failure must NOT be remembered as "this matter has no
+        // annotations": leaving loadedMatterId stamped would make
+        // onOriginalSurfaceRendered treat the matter as already-loaded and never
+        // re-fetch for the rest of the session. Only a genuine success
+        // (completeLoad) stamps the id; here we clear it so the next Original
+        // render retries the load.
         markup.annotations = [];
-        markup.loadedMatterId = matterId;
+        markup.loadedMatterId = null;
         if (markup.mounted) renderAllOverlays();
         showError("Could not load saved annotations.");
       });
