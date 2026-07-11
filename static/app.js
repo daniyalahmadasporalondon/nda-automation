@@ -671,8 +671,25 @@ const pdfMarkupController = createPdfMarkupController({
   // because it is bridged by a deferred module that runs after this load-time
   // construction; passing it here would capture an undefined reference.
   getSurfaceRoot: () => studioDocumentRender?.querySelector("[data-original-surface]") || null,
-  matterIsPdf: () => Boolean(state.selectedMatter?.id),
+  // D8: PDF markup tools mount over the Original PDF page-images and their
+  // marked-up download is a source-PDF-only endpoint (400s for DOCX). Gating on
+  // `.id` alone offered the tools on EVERY matter — including DOCX ones — so this
+  // now actually tests that the selected matter's source is a PDF.
+  matterIsPdf: () => selectedMatterIsPdfSource(),
 });
+
+// True only when the selected matter's SOURCE document is a real PDF (not DOCX or
+// other). Mirrors review-workstation-rendering's matterIsPdfSource() filename
+// sniff so PDF-only affordances (markup tools, annotated-PDF recovery) agree on
+// what "a PDF matter" is, with an inline fallback so the gate still holds if that
+// global isn't present (e.g. an isolated test harness).
+function selectedMatterIsPdfSource() {
+  const matter = state.selectedMatter;
+  if (!matter?.id) return false;
+  if (typeof matterIsPdfSource === "function") return Boolean(matterIsPdfSource(matter));
+  const filename = String(matter.source_filename || matter.attachment_filename || "").trim();
+  return /\.pdf$/i.test(filename);
+}
 
 // "Send for signature" — the DocuSign e-signature action on a reviewed/approved
 // matter. The chooser is a modal; the always-visible signature-status badge lives
@@ -1081,6 +1098,19 @@ function reviewErrorFromPayload(payload, fallbackMessage) {
     error.needsConnect = true;
     if (payload.connect_url) error.connectUrl = String(payload.connect_url);
   }
+  // D4: carry the reviewed-PDF export RECOVERY pointer through to the caller's
+  // catch. When a PDF-source redline can't be produced faithfully, the backend
+  // (redline_export_service.PdfSourceRedlineUnavailableError) returns a 503 with a
+  // `recovery.endpoint` template pointing at the source-PDF annotation export.
+  // Previously this was dropped here, so the reviewer dead-ended on a red error
+  // with no way to fetch the marked-up source PDF.
+  if (payload?.recovery && typeof payload.recovery === "object" && payload.recovery.endpoint) {
+    error.recovery = {
+      endpoint: String(payload.recovery.endpoint),
+      message: payload.recovery.message ? String(payload.recovery.message) : "",
+      path: payload.recovery.path ? String(payload.recovery.path) : "",
+    };
+  }
   return error;
 }
 
@@ -1125,6 +1155,50 @@ function downloadFilename(response) {
   const contentDisposition = response.headers.get("Content-Disposition") || "";
   const match = contentDisposition.match(/filename="?([^";]+)"?/i);
   return match ? match[1] : "";
+}
+
+// D6: shared, ok-checked download for SERVER URLs. A bare `downloadUrl` (an
+// <a download> click) saves WHATEVER the server returns under the requested
+// filename — including a 4xx/5xx JSON error body — so a failed export lands on
+// disk as a broken ".pdf"/".docx". This fetches the URL first, verifies
+// response.ok AND that the body is a real file (not a JSON/HTML error page), and
+// only then triggers the browser download from bytes in hand. On any failure it
+// throws an Error carrying the server's message (via reviewErrorFromPayload) so
+// the caller can surface it instead of saving garbage. blob:/data: URLs already
+// hold in-hand bytes (no server round-trip, no error body) and bypass the check.
+// Callers that today use `downloadUrl(serverUrl, ...)` can adopt this to get the
+// same guard for free.
+async function downloadUrlGuarded(url, filename) {
+  if (typeof url === "string" && /^(blob:|data:)/i.test(url)) {
+    downloadUrl(url, filename);
+    return;
+  }
+  const response = await fetch(url, { headers: { Accept: "application/octet-stream" } });
+  if (!response.ok) {
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (_parseError) {
+      payload = null;
+    }
+    throw reviewErrorFromPayload(payload, `Download failed (${response.status}).`);
+  }
+  const contentType = String(response.headers.get("Content-Type") || "").toLowerCase();
+  if (contentType.includes("application/json") || contentType.includes("text/html")) {
+    // 200 OK but the body is a structured error / HTML page, not the file. Do NOT
+    // save it under the requested name — read the message and surface it instead.
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (_parseError) {
+      payload = null;
+    }
+    throw reviewErrorFromPayload(payload, "The server did not return a downloadable file.");
+  }
+  const blob = await response.blob();
+  // Prefer the server's Content-Disposition filename when it provides one.
+  const serverFilename = downloadFilename(response);
+  downloadBlob(blob, serverFilename || filename);
 }
 
 // onGenerate seam for the draft-intake "Generate NDA" button. POSTs the captured
@@ -1361,7 +1435,7 @@ async function downloadGeneratedNda(generated, { sourceButton } = {}) {
           },
           downloadMenu.contractChoice(sourcePdf, {
             label: "PDF",
-            onSelect: (choice) => downloadUrl(choice.url, choice.filename || "generated-nda.pdf"),
+            onSelect: (choice) => downloadGeneratedPdf(choice),
             unavailableReason: generated.matterId
               ? "PDF is not available for this generated NDA yet."
               : "PDF is available after the NDA is saved.",
@@ -1372,6 +1446,18 @@ async function downloadGeneratedNda(generated, { sourceButton } = {}) {
     return;
   }
   await downloadGeneratedDocx(generated);
+}
+
+// D6: the generated-NDA PDF is a server URL, so it goes through the ok-checked
+// guard too — a 4xx/5xx JSON error body must surface as a notice, not be saved as
+// a broken "generated-nda.pdf".
+async function downloadGeneratedPdf(choice) {
+  if (!choice?.url) return;
+  try {
+    await downloadUrlGuarded(choice.url, choice.filename || "generated-nda.pdf");
+  } catch (error) {
+    notificationsController.notify("Download failed", error?.message || "The PDF could not be downloaded.");
+  }
 }
 
 async function downloadGeneratedDocx(generated) {
