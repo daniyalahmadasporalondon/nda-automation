@@ -657,5 +657,35 @@ def test_reviewed_docx_native_docx_coverage_failure_stays_500(monkeypatch, chang
     assert body.get("error") == redline_export_service.DOCX_HEALTH_CLIENT_MESSAGE
 
 
+# --------------------------------------------------------------------------- #
+# Approach-C reviewed download filename: the substituted working DOCX bytes carry
+# the redline anchor, but the DOWNLOAD name must come from the ORIGINAL source NDA
+# name -- not the internal working artifact name (e.g. "02_working_docx.docx"),
+# which produced an unrecognizable "..working_docx-redlined.docx" download.
+# --------------------------------------------------------------------------- #
+def test_approach_c_reviewed_filename_preserves_original_source_name():
+    matter_id = _seed_approved_matter_with_redline(source_docx=False, working_docx=True)
+    stored = matter_store.get_matter(matter_id, owner_user_id="owner-1")
+    # Original upload is a PDF; a working DOCX artifact was registered for anchoring.
+    assert stored["source_filename"] == "mutual-nda.pdf"
+    working = artifact_registry.latest_artifact_for_role(stored, artifact_registry.ROLE_WORKING)
+    assert working is not None
+    # The internal working artifact name is the lifecycle stage name, NOT the NDA name.
+    assert "working" in (working.name or "")
+
+    export = redline_export_service.build_matter_redline(
+        matter_id,
+        approval.reviewed_docx_payload(stored),
+        persist=False,
+        owner_user_id="owner-1",
+    )
+
+    # The download is named from the ORIGINAL source NDA ("mutual-nda.pdf" ->
+    # "mutual-nda-redlined.docx"), keeping the redlined suffix -- recognizable, and
+    # never leaking the internal working artifact name.
+    assert export.filename == "mutual-nda-redlined.docx"
+    assert "working" not in export.filename
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

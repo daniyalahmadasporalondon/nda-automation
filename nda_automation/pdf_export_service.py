@@ -11,6 +11,7 @@ from . import (
     document_rendering,
     matter_render_job,
     pdf_docx_reconstruction,
+    workflow,
 )
 from .matter_repository import DiskMatterRepository, MatterRepository
 
@@ -106,6 +107,27 @@ def matter_reviewed_pdf_download_url(matter_id: str) -> str:
     return f"/api/matters/{quote(matter_id, safe='')}/reviewed-pdf" if matter_id else ""
 
 
+def matter_reviewed_export_ready(matter: dict[str, Any]) -> bool:
+    """Whether a matter's reviewed redline exports (DOCX/PDF) should be offered.
+
+    Approval is the reviewer sign-off that first makes the reviewed artifact
+    downloadable. Executing the NDA (DocuSign completion / manual mark -- status
+    ``fully_signed`` / ``executed``) is a strictly LATER lifecycle state that
+    presupposes that approval, so a SIGNED matter must keep its reviewed export
+    downloadable rather than losing it. This never widens access to an UNREVIEWED
+    matter: a matter cannot reach approved or executed without a completed review,
+    and the reviewed-artifact build still fails closed when no redline can be
+    composed. Kept as the single source of truth so the download-menu contract and
+    the /reviewed-pdf route agree on the allowed states.
+    """
+    status = str(matter.get("status") or "").strip().lower()
+    if status in (workflow.STATUS_APPROVED, workflow.STATUS_FULLY_SIGNED):
+        return True
+    if matter.get("approved_at"):
+        return True
+    return workflow.is_matter_executed(matter)
+
+
 def public_matter_document_downloads(
     matter: dict[str, Any],
     *,
@@ -123,7 +145,9 @@ def public_matter_document_downloads(
     source_is_docx = source_ext == ".docx"
     source_is_pdf = source_ext == ".pdf"
     generated = str(matter.get("source_type") or "") == "generated"
-    reviewed_ready = str(matter.get("status") or "") == "approved"
+    # Reviewed exports stay downloadable once the matter is approved AND after it is
+    # executed/fully_signed -- a signed NDA must not lose its reviewed redline (D5).
+    reviewed_ready = matter_reviewed_export_ready(matter)
     reviewed_source_supported = reviewed_ready and source_is_docx
     health = converter_health(converter)
     pdf_docx_health = pdf_docx_converter_health(pdf_docx_converter)

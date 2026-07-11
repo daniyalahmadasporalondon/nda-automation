@@ -83,6 +83,46 @@ def test_source_redline_renderer_reports_content_validation_errors():
     assert result.valid is False
 
 
+def test_open_health_validated_exactly_once_per_export(monkeypatch):
+    """Dedup guard: ``validate_docx_open_health`` must run ONCE per export, not twice.
+
+    It was previously called both inside ``build_source_redline_package`` (which
+    RAISES on failure) AND again in ``render_source_redline_package`` on the same
+    bytes. Counting across every binding the export path can reach proves the check
+    now runs a single time (it was 2 before the dedup).
+    """
+    from nda_automation import docx_health, source_redline_docx
+
+    calls = {"n": 0}
+    real = docx_health.validate_docx_open_health
+
+    def counting(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    # The surviving caller binds it via ``from .docx_health import ...``; patch that
+    # binding. Also patch the renderer's binding IF it re-imports it (it must not
+    # after the dedup) so a reintroduced duplicate would push the count back to 2.
+    monkeypatch.setattr(source_redline_docx, "validate_docx_open_health", counting)
+    if hasattr(docx_package_renderer, "validate_docx_open_health"):
+        monkeypatch.setattr(docx_package_renderer, "validate_docx_open_health", counting)
+
+    source_docx = _source_docx(["This Agreement shall be governed by the laws of California."])
+    paragraphs = extract_docx_paragraphs(source_docx)
+    review_result = _review_result(paragraphs)
+    review_result["extracted_text"] = "\n\n".join(paragraph["text"] for paragraph in paragraphs)
+
+    result = docx_package_renderer.render_source_redline_package(
+        source_docx,
+        review_result,
+        expected_source_text=review_result["extracted_text"],
+        expected_redline_edits=review_result["redline_edits"],
+    )
+
+    assert result.valid is True
+    assert calls["n"] == 1
+
+
 def _reorder_body_paragraphs(docx_bytes: bytes) -> bytes:
     """Reverse the order of the body <w:p> paragraphs while preserving every other
     package part (rels/content-types/sectPr) so the result stays HEALTH-valid but
