@@ -1188,3 +1188,17 @@ def test_endpoint_shard_rejoin_must_be_boolean():
     handler = _run({"shard_rejoin": "yes"})
     assert handler.status == 400
     assert "shard_rejoin" in handler.response["error"]
+
+
+def test_persisting_run_with_shard_rejoin_is_structurally_refused(_isolated_store):
+    # STRUCTURAL guard (not a route convention): the reflow is measurement-only, so
+    # any PERSISTING run (measure_only False) with shard_rejoin True must raise
+    # BEFORE it can write, regardless of dry_run.
+    _shard_garbled_matter()
+    before = _store_snapshot(_isolated_store)
+    with pytest.raises(ValueError):
+        garble_backfill.run_garble_backfill(dry_run=False, measure_only=False, shard_rejoin=True)
+    with pytest.raises(ValueError):
+        garble_backfill.run_garble_backfill(dry_run=True, measure_only=False, shard_rejoin=True)
+    # Nothing was written by the refused calls.
+    assert _store_snapshot(_isolated_store) == before

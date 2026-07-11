@@ -20,10 +20,12 @@ These tests prove, through the REAL pypdf pipeline:
 
 from __future__ import annotations
 
+import re
 import unittest
 from io import BytesIO
 
 from nda_automation import pdf_text
+from nda_automation.pdf_text import GeoLine
 from nda_automation.pdf_text import (
     extract_pdf_paragraphs,
     shard_rejoin_enabled,
@@ -87,6 +89,40 @@ def _two_cell_table(rows, x_left=72, x_right=320, y_top=700, step=-16):
     return _positioned_pdf(ops)
 
 
+def _x_advancing_outline(markers, x0=72, indent=18, y_top=700, step=-14):
+    """Outline markers each on their OWN line, x ADVANCING to the right per line
+    (indented sub-levels) and y descending a full line — the adversarial case where
+    a pure x-advancement rule would wrongly collapse separate lines into one. The
+    per-line y-step equals a true shard line's per-fragment y-step, so only the
+    horizontal NON-contiguity (an indent gap, not edge-to-edge) keeps them split."""
+    ops = []
+    x = x0
+    y = y_top
+    for marker in markers:
+        ops.append(f"/F1 10 Tf 1 0 0 1 {round(x, 2)} {round(y, 2)} Tm ({_escape_pdf_text(marker)}) Tj")
+        x += indent
+        y += step
+    return _positioned_pdf(ops)
+
+
+def _two_level_bullets(x_top=72, x_sub=110, y_top=700, step=-14):
+    """A two-level list: each top item followed by two deeper-indented sub-items,
+    every entry on its own line. A sub-item sits a large gap to the RIGHT of the
+    top item above it, so an x-only rule would append it to the top item's line."""
+    ops = []
+    y = y_top
+    seq = [
+        ("A", x_top), ("a1", x_sub), ("a2", x_sub),
+        ("B", x_top), ("b1", x_sub), ("b2", x_sub),
+        ("C", x_top), ("c1", x_sub), ("c2", x_sub),
+        ("D", x_top), ("d1", x_sub), ("d2", x_sub),
+    ]
+    for text, x in seq:
+        ops.append(f"/F1 10 Tf 1 0 0 1 {x} {round(y, 2)} Tm ({_escape_pdf_text(text)}) Tj")
+        y += step
+    return _positioned_pdf(ops)
+
+
 NORMAL_PDF = make_pdf_lines([
     "1. CONFIDENTIALITY",
     "The receiving party shall keep all Confidential Information secret at all times and forever.",
@@ -116,6 +152,33 @@ class ShardFragmentDetectionTests(unittest.TestCase):
                    + [chunk("Confidentiality obligations survive termination.")]
                    + [chunk(f) for f in ["en", "ta", "ti", "on", "ok"]])
         )
+
+
+@requires_pypdf
+class ShardReflowAdoptionGateTests(unittest.TestCase):
+    """The adoption gate rejects a reflow that is not a confident improvement."""
+
+    def _lines(self, *texts):
+        return [GeoLine(text=t, left_x=None, y=None, font_size=None) for t in texts]
+
+    def test_rejected_when_short_line_count_not_reduced(self):
+        baseline = self._lines("a", "b", "c")
+        reflowed = self._lines("x", "y", "z")  # same short-line count
+        self.assertFalse(pdf_text._reflow_is_adopted(reflowed, baseline))
+
+    def test_rejected_when_a_line_is_implausibly_long(self):
+        baseline = self._lines(*(["ab"] * 20))
+        giant = "x" * (pdf_text._SHARD_REFLOW_MAX_LINE_CHARS + 1)
+        self.assertFalse(pdf_text._reflow_is_adopted(self._lines(giant), baseline))
+
+    def test_rejected_when_glyph_multiset_differs(self):
+        baseline = self._lines("ab", "cd", "ef", "gh")
+        # Fewer short lines and short enough, but a glyph was dropped -> reject.
+        self.assertFalse(pdf_text._reflow_is_adopted(self._lines("abcdef"), baseline))
+
+    def test_adopted_when_reduces_and_preserves(self):
+        baseline = self._lines("ab", "cd", "ef", "gh")
+        self.assertTrue(pdf_text._reflow_is_adopted(self._lines("abcdefgh"), baseline))
 
 
 @requires_pypdf
@@ -215,12 +278,50 @@ class ShardRejoinSafetyTests(unittest.TestCase):
         self.assertIn("1.", on)
         self.assertIn("14.", on)
 
+    def test_x_advancing_outline_markers_stay_separate_lines(self):
+        # The headline regression: markers whose x ADVANCES down the page (and whose
+        # y-step equals a true shard line's) must NOT collapse into one line.
+        markers = ["1.", "a.", "i.", "A.", "(1)", "2.", "b.", "ii.", "B.", "(2)", "3.", "c."]
+        pdf = _x_advancing_outline(markers)
+        off = _texts(pdf)
+        with shard_rejoin_forced(True):
+            on = _texts(pdf)
+        self.assertEqual(off, on)
+        # Each marker survives as its own line; none were run together.
+        self.assertEqual(len(on), len(markers), on)
+        self.assertNotIn(" ", "".join(on).replace(".", "").replace("(", "").replace(")", ""))
+
+    def test_two_level_bullet_list_top_and_sub_items_stay_separate(self):
+        pdf = _two_level_bullets()
+        off = _texts(pdf)
+        with shard_rejoin_forced(True):
+            on = _texts(pdf)
+        self.assertEqual(off, on)
+        # No top item absorbed its deeper-indented sub-item (e.g. 'A a1').
+        self.assertNotIn("A a1", on)
+        self.assertIn("a1", on)
+        self.assertIn("A", on)
+
     def test_two_cell_table_rows_are_not_merged(self):
         pdf = _two_cell_table([(f"A{n}", f"B{n}") for n in range(1, 10)])
         off = _texts(pdf)
         with shard_rejoin_forced(True):
             on = _texts(pdf)
         self.assertEqual(off, on)
+
+    def test_healed_shard_line_does_not_run_separate_words_together(self):
+        # A smeared prose line whose word boundaries carry a real space must heal
+        # WITHOUT fusing adjacent words. The reflow may over-split WITHIN a word (the
+        # accepted under-heal), which only ever ADDS spaces — so no maximal alphabetic
+        # run can ever equal two drawn words concatenated. If a boundary space were
+        # dropped, that fused run WOULD appear; we assert it never does.
+        words = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima".split()
+        pdf = make_pdf_shard_fragmented(lines=[" ".join(words)])
+        with shard_rejoin_forced(True):
+            texts = _texts(pdf)
+        runs = set(re.findall(r"[A-Za-z]+", " ".join(texts)))
+        for first, second in zip(words, words[1:]):
+            self.assertNotIn(first + second, runs, texts)  # e.g. 'alphabravo'
 
     def test_per_glyph_signature_page_is_unaffected(self):
         # The per-glyph detector fires FIRST (flat pypdf fallback), so the shard

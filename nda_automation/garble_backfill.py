@@ -337,15 +337,16 @@ def _measure_matter(
         entry["action"] = "would_heal"
 
 
-def _heal_matter(
-    matter: dict[str, Any], entry: dict[str, Any], *, shard_rejoin: bool = False
-) -> None:
-    """Re-extract ONE matter through the fixed extractor and persist the healed
+def _heal_matter(matter: dict[str, Any], entry: dict[str, Any]) -> None:
+    """Re-extract ONE matter through the fixed extractor and PERSIST the healed
     text. Mutates ``entry`` (action/error fields) only; every failure path is
     caught by the caller's per-matter guard so one matter never aborts the run.
 
-    ``shard_rejoin`` (default False -> execute path UNCHANGED) forces the
-    DEFAULT-OFF shard-fragment reflow on for this matter's re-extraction only.
+    STRUCTURALLY reflow-free: healing ALWAYS re-extracts with the shard-fragment
+    reflow OFF (``shard_rejoin=False``). The reflow is measurement-only until it is
+    proven on the real corpus; a persist path can never invoke it. The dangerous
+    ``shard_rejoin and not measure_only`` combination is refused up-front in
+    ``run_garble_backfill``, and this function has no shard_rejoin lever at all.
     """
     matter_id = str(matter.get("id") or "")
     old_text = str(matter.get("extracted_text") or "")
@@ -357,7 +358,7 @@ def _heal_matter(
         return
 
     filename = str(matter.get("stored_filename") or matter.get("source_filename") or "")
-    paragraphs = _reextract_paragraphs(filename, document_bytes, shard_rejoin=shard_rejoin)
+    paragraphs = _reextract_paragraphs(filename, document_bytes, shard_rejoin=False)
     new_text = extracted_text_from_paragraphs(paragraphs)
 
     if new_text == old_text:
@@ -518,6 +519,16 @@ def run_garble_backfill(
     per-matter progress snapshot for the GET status route; a synchronous dry-run
     never publishes, so it can't clobber the last execute run's status.
     """
+    # STRUCTURAL WRITE GUARD (not a route convention): the shard-fragment reflow is
+    # measurement-only until proven on the real corpus, so it may never run on a
+    # PERSISTING pass. ``measure_only`` writes nothing; anything else with
+    # ``shard_rejoin`` set could persist a reflowed re-extraction, so refuse it
+    # here regardless of the caller. (dry_run+measure_only is the sanctioned combo.)
+    if shard_rejoin and not measure_only:
+        raise ValueError(
+            "shard_rejoin re-extraction is measurement-only (measure_only=True); "
+            "refusing to run a persisting backfill with shard_rejoin enabled."
+        )
     limit = max(1, min(int(limit), GARBLE_BACKFILL_MAX_LIMIT))
     matters = matter_store.list_matters("")
     entries: list[dict[str, Any]] = []
@@ -603,7 +614,8 @@ def run_garble_backfill(
                 # NON-MUTATING: re-extract + report a would-heal verdict, no write.
                 _measure_matter(fresh, entry, shard_rejoin=shard_rejoin)
             else:
-                _heal_matter(fresh, entry, shard_rejoin=shard_rejoin)
+                # PERSISTING path: structurally reflow-free (see the guard above).
+                _heal_matter(fresh, entry)
         except Exception as error:  # noqa: BLE001 - atomic per matter: collect, continue.
             LOGGER.warning(
                 "Garble backfill: healing matter %s failed; continuing", matter_id, exc_info=True

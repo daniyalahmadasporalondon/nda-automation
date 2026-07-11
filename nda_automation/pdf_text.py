@@ -277,6 +277,19 @@ _GARBLE_RUN_MIN = 6
 # pages can never trip it.
 _SHARD_CHUNK_MAX_LEN = 4
 _SHARD_CHUNK_RUN_MIN = 10
+# The reflow extends the current visual line with the next fragment ONLY when it
+# TILES onto the running right edge — its left x sits within this many em of where
+# the previous fragment ends. A smeared line's pieces are horizontally contiguous
+# (edge-to-edge or one word space, measured at <= 0.28em on the real fixture); an
+# indented outline marker / a deeper list level / a table cell sits a much larger
+# gap away (>= 0.58em measured), so it starts a NEW line. Chosen from the fixture
+# measurements to sit ABOVE a word space and BELOW the smallest legit indent, and
+# kept tight so the bias is toward SPLITTING (under-heal) when ambiguous.
+_SHARD_HGAP_MAX_EM = 0.4
+# A reflowed line longer than this many characters is implausible for a single
+# wrapped visual line (page-width prose wraps near ~90) — it signals the reflow
+# collapsed several lines into one, so the adoption gate rejects it.
+_SHARD_REFLOW_MAX_LINE_CHARS = 250
 # Env flag: default OFF. Any of 1/true/yes/on (case-insensitive) enables it.
 _SHARD_REJOIN_ENV = "NDA_PDF_SHARD_REJOIN"
 # Per-call override (thread/async-safe) so the admin dry-run measurement can force
@@ -917,7 +930,7 @@ def _extract_geo_lines(page: Any) -> tuple[list[GeoLine], dict[str, object]]:
         # short-token column does not reduce -> the reflow is rejected here).
         if shard_rejoin_enabled() and _chunks_are_shard_fragmented(chunks):
             reflowed = [line for line in _reflow_shard_chunks(chunks) if line.text]
-            if reflowed and _short_line_count(reflowed) < _short_line_count(geo_lines):
+            if _reflow_is_adopted(reflowed, geo_lines):
                 shard_signal = _default_page_signal()
                 shard_signal["confidence"] = 0.6
                 shard_signal["reasons"] = ["shard_fragment_rejoined"]
@@ -1350,18 +1363,25 @@ def _reflow_shard_chunks(
 ) -> list[GeoLine]:
     """Reassemble a shard-fragmented page's chunks into visual lines.
 
-    Segments the chunks (in DRAWING ORDER, which pypdf emits in reading order) into
-    lines by the ONE robust signal that survives the drifting baselines: a fragment
-    whose x does NOT advance past the previous fragment starts a NEW line. Within a
-    line the converter draws fragments left-to-right (x strictly increasing), so
-    consecutive advancing fragments belong to the SAME visual line; when x resets
-    left (a wrap / a new logical line) a new line begins.
+    Scans the chunks in DRAWING ORDER (pypdf emits them in reading order) and
+    extends the current visual line with the next fragment ONLY when that fragment
+    is a genuine continuation of a single smeared line. It starts a NEW line when
+    ANY of three geometry signals says the fragment is a separate element — biasing
+    toward SPLITTING (a missed merge just leaves garble; a false merge corrupts a
+    real document):
 
-    This is what makes the reflow SAFE against a genuine vertical column of short
-    tokens (a numbered-list gutter, a table code column, stacked initials): those
-    share one x (non-advancing), so every item stays on its own line and the
-    caller's strict-reduction guard then rejects the reflow, leaving the page
-    byte-identical to the flag-off output.
+      1. x does NOT advance (``x <= prev_x``) — a left reset / vertical column
+         (numbered-list gutter, table code column, stacked initials).
+      2. the fragment does NOT TILE onto the running right edge — its left x sits
+         more than ``_SHARD_HGAP_MAX_EM`` em past where the previous fragment ends.
+         A smeared line's pieces are horizontally contiguous (edge-to-edge or one
+         word space); an indented outline marker / a deeper list level / a table
+         cell sits a much larger gap away. THIS is the discriminator that pure
+         y-geometry cannot provide: the per-fragment y-step DOWN a smeared line and
+         the y-step BETWEEN separate short-line markers are identical, so only
+         horizontal contiguity tells a continuation from a fresh indented line.
+      3. the fragment's baseline jumps UP past ``_SAME_LINE_Y_TOLERANCE`` — a
+         reading-order break (a descending smeared line never climbs back up).
 
     Each segmented line is joined with ``_join_line_chunks`` (the same producer-side
     join the normal path uses), which restores word spacing from the leading/
@@ -1372,16 +1392,30 @@ def _reflow_shard_chunks(
     line_buckets: list[list[tuple[float, float, Optional[float], str]]] = []
     current: list[tuple[float, float, Optional[float], str]] = []
     prev_x: Optional[float] = None
+    prev_right: Optional[float] = None
+    prev_y: Optional[float] = None
     for chunk in chunks:
         x = float(chunk[0])
-        if prev_x is not None and x <= prev_x + _GAP_EPSILON:
-            # x did not advance -> this fragment starts a new visual line.
+        y = float(chunk[1])
+        size = chunk[2]
+        unit = size if (size and size > 0) else _ADJACENCY_FALLBACK_FONT_PT
+        start_new = False
+        if prev_x is not None:
+            if x <= prev_x + _GAP_EPSILON:
+                start_new = True  # (1) x did not advance -> new line.
+            elif prev_right is not None and (x - prev_right) > _SHARD_HGAP_MAX_EM * float(unit):
+                start_new = True  # (2) not horizontally contiguous -> new line.
+            elif prev_y is not None and (y - prev_y) > _SAME_LINE_Y_TOLERANCE:
+                start_new = True  # (3) baseline jumped UP -> reading-order break.
+        if start_new:
             if current:
                 line_buckets.append(current)
             current = [chunk]
         else:
             current.append(chunk)
         prev_x = x
+        prev_right = x + _estimate_text_width(chunk[3].strip(), size)
+        prev_y = y
     if current:
         line_buckets.append(current)
 
@@ -1397,6 +1431,37 @@ def _reflow_shard_chunks(
         # and keeps the ``pdf_confident`` trust tier CLOSED for the page.
         geo_lines.append(GeoLine(text=text, left_x=None, y=None, font_size=None))
     return geo_lines
+
+
+def _reflow_is_adopted(reflowed: list[GeoLine], baseline: list[GeoLine]) -> bool:
+    """Adopt a shard reflow only when it is confidently an improvement, not merely
+    a shorter line count. Three independent gates, each rejecting a distinct way a
+    reflow could be WRONG (a false merge corrupts a real document, so every doubt
+    resolves to reject / leave-garbled):
+
+      * STRICT SHARD REDUCTION — the reflow must produce strictly fewer <=2-char
+        short lines than the normal grouping. A layout the reflow could not stitch
+        (a vertical column, an indented outline) yields the same short lines and is
+        rejected here, leaving the page byte-identical to the flag-off output.
+      * NO IMPLAUSIBLE LINE — no reflowed line exceeds ``_SHARD_REFLOW_MAX_LINE_
+        CHARS``. A single wrapped visual line is page-width prose; a line far longer
+        means the reflow collapsed several lines together (the corruption mode).
+      * CHARACTER-PRESERVING — the reflow only REGROUPS chunks, so its non-whitespace
+        glyph multiset must equal the normal grouping's exactly. Any drift means a
+        bug dropped or duplicated text; refuse rather than persist corrupted text."""
+    if not reflowed:
+        return False
+    if _short_line_count(reflowed) >= _short_line_count(baseline):
+        return False
+    if any(len(line.text) > _SHARD_REFLOW_MAX_LINE_CHARS for line in reflowed):
+        return False
+
+    def _glyph_multiset(lines: list[GeoLine]) -> list[str]:
+        return sorted("".join("".join(line.text.split()) for line in lines))
+
+    if _glyph_multiset(reflowed) != _glyph_multiset(baseline):
+        return False
+    return True
 
 
 def _group_chunks_into_lines(
