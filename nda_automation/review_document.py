@@ -12,6 +12,8 @@ Paragraph = Dict[str, object]
 SPLIT_CONTINUATION_KEY = "split_continuation"
 SPLIT_PARENT_NUMBER_KEY = "split_parent_number"
 STRUCTURAL_METADATA_KEYS = (
+    "alignment",
+    "font",
     "fontSize",
     "heading_level",
     "indent_left",

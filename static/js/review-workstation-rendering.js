@@ -6403,6 +6403,45 @@ function sourceFidelityStyleLabel(styleName) {
   return "";
 }
 
+const SOURCE_FIDELITY_TEXT_ALIGNMENTS = new Set(["left", "center", "right", "justify"]);
+
+// The source paragraph's own alignment + base font, mapped to inline CSS on the
+// reconstruction DISPLAY container only. STYLE-ONLY by construction: `text-align`
+// and `font-family` are presentational and never appear in the element's
+// innerText, so they can never leak into `paragraph.text` or the outbound redline
+// (this <p> is display-only anyway -- it carries no contenteditable / editable id).
+// Both values are UNTRUSTED (they come from an uploaded DOCX): alignment is
+// whitelisted to four keywords, and the font NAME is sanitised to a plain typeface
+// token before it can reach `font-family`, so a hostile value cannot inject an
+// extra declaration. Returns "" (no attribute) when neither is set, so a paragraph
+// with no captured alignment/font renders exactly as before (source default: left).
+function sourceFidelityParagraphStyleAttribute(style) {
+  const declarations = [];
+  const alignment = String(style?.alignment || "").trim().toLowerCase();
+  if (SOURCE_FIDELITY_TEXT_ALIGNMENTS.has(alignment)) {
+    declarations.push(`text-align:${alignment}`);
+  }
+  const fontFamily = sourceFidelityFontFamily(style?.font);
+  if (fontFamily) declarations.push(`font-family:${fontFamily}`);
+  if (!declarations.length) return "";
+  return ` style="${escapeHtml(declarations.join(";"))}"`;
+}
+
+// A source font NAME is untrusted. Accept only a plain typeface token -- letters,
+// digits, spaces, and the punctuation real font names use (. & -) -- and reject
+// anything carrying CSS metacharacters (;:(){}"'<>) or the `url` token so it can
+// never smuggle a second declaration into the inline style. The accepted name maps
+// to the shared display font stack (fontCssStackForName), falling back to a quoted
+// single family when that helper is unavailable.
+function sourceFidelityFontFamily(value) {
+  const name = String(value || "").trim();
+  if (!name) return "";
+  if (/[;:(){}"'<>]/.test(name) || /url/i.test(name)) return "";
+  if (!/^[A-Za-z0-9 .&-]+$/.test(name)) return "";
+  if (typeof fontCssStackForName === "function") return fontCssStackForName(name);
+  return /\s/.test(name) ? `'${name}'` : name;
+}
+
 function renderSourceFidelityParagraphBlock(block) {
   const paragraphId = String(block?.id || "").trim();
   const text = String(block?.text || "").trim();
@@ -6411,8 +6450,9 @@ function renderSourceFidelityParagraphBlock(block) {
   const styleLabel = sourceFidelityStyleLabel(styleName);
   const classes = ["source-fidelity-paragraph", styleLabel ? "has-style" : ""].filter(Boolean).join(" ");
   const body = sourceFidelityParagraphBody(block);
+  const styleAttribute = sourceFidelityParagraphStyleAttribute(style);
   return `
-    <p class="${classes}" ${paragraphId ? `data-paragraph-id="${escapeHtml(paragraphId)}"` : ""}>
+    <p class="${classes}"${styleAttribute} ${paragraphId ? `data-paragraph-id="${escapeHtml(paragraphId)}"` : ""}>
       ${styleLabel ? `<span class="source-fidelity-style">${escapeHtml(styleLabel)}</span>` : ""}
       ${body || escapeHtml(text)}
     </p>

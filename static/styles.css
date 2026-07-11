@@ -5391,6 +5391,31 @@ textarea::placeholder {
   align-items: stretch;
 }
 
+/* Side-by-Side: give every compare row the SAME full width regardless of its
+   nesting depth. A doc-list / source-indent inset otherwise shifts and shrinks
+   indented rows so the two columns no longer line up. The nesting cue is
+   deliberately traded away here (columns must align); it is untouched in
+   Redline / Clean / Original, which never carry `.doc-sxs-paragraph`, and the
+   editable surface is not the SxS compare view. Two indent sources:
+     1. the FRAME's `.doc-list*` padding (CSS): a tie-specificity rule placed
+        after those rules wins by source order -- no !important needed;
+     2. the BODY wrapper's `padding-left` (an INLINE source-indent emitted by
+        paragraphFormatStyle): only `!important` can reset an inline style, and
+        it is scoped under `.doc-sxs-paragraph` so Redline/Clean bodies keep it. */
+.studio-doc-paragraph.doc-sxs-paragraph {
+  padding-left: 4px;
+}
+
+.doc-sxs-paragraph .studio-doc-paragraph-body {
+  padding-left: 0 !important;
+}
+
+.doc-sxs-paragraph .clause-sxs {
+  margin-left: 0;
+  max-width: none;
+  width: 100%;
+}
+
 .clause-sxs-col {
   background: var(--bg-soft);
   border: 1px solid var(--border);
