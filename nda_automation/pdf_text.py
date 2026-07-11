@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import contextvars
+import os
 import re
 import unicodedata
+from contextlib import contextmanager
 from dataclasses import dataclass
 from statistics import median
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Iterator
 
 from .document_limits import MAX_DOCUMENT_BYTES
 from .review_document import Paragraph
@@ -242,6 +245,72 @@ _ADJACENCY_TOLERANCE_EM = 0.2
 # spaced "N D A" title is only a run of 3, so the threshold spares it.
 _GARBLE_SHORT_TOKEN_MAX_LEN = 2
 _GARBLE_RUN_MIN = 6
+
+# --- SHARD-FRAGMENT rejoin (SECOND garble class; DEFAULT-OFF behind a flag) ----
+# The per-glyph fix above (``_chunks_are_glyph_fragmented`` -> flat pypdf fallback)
+# heals a page drawn ONE GLYPH per Tm+Tj: its detector is a run of >= 6 consecutive
+# LEN-1 chunks. A DISTINCT class survives it: a page drawn in SHORT MULTI-CHAR
+# fragments (2-5 char kern/word pieces), each positioned at its own drifting
+# baseline. Because every fragment is >= 2 chars the single-char run test never
+# fires, so the flat fallback is NOT taken; the visitor-geometry path then buckets
+# each fragment onto its own baseline (drift > _SAME_LINE_Y_TOLERANCE) and, where
+# the vertical gap exceeds the wrap pitch, _starts_new_pdf_paragraph splits each
+# into its own paragraph -> a long RUN of <= 2-char "shard" paragraphs
+# (exploded_count == 0, longest_shard_run 11-20 on the real corpus). The backfill
+# detector (garble_backfill.garble_fingerprint) FLAGS this (shard_run >= 6) but
+# re-extraction reproduces the same shards, so it can never heal it.
+#
+# The rejoin below is a SEPARATE, DEFAULT-OFF remedy. When enabled it detects the
+# shard shape on a page's chunks and REFLOWS a run of short, x-advancing fragments
+# back into their visual line (reusing _join_line_chunks, which restores word
+# spacing from the boundary whitespace the visitor preserved). It is adopted for a
+# page ONLY when it strictly REDUCES that page's short-line count, so it can never
+# make a page worse. A genuine VERTICAL column of short tokens (a numbered-list
+# gutter, a table code column, stacked initials) has NON-advancing x between items,
+# so the reflow leaves every item on its own line -> the count does not drop -> the
+# reflow is rejected and the page is byte-identical to the flag-off output.
+#
+# A "shard chunk" is a positioned chunk of 1..N stripped chars; the page is
+# shard-fragmented when >= _SHARD_CHUNK_RUN_MIN of them occur consecutively in
+# drawing order. The run minimum is deliberately high (a real letter-spaced NDA
+# title "N D A" is a run of 3; a short list marker column is a handful) so ordinary
+# pages can never trip it.
+_SHARD_CHUNK_MAX_LEN = 4
+_SHARD_CHUNK_RUN_MIN = 10
+# Env flag: default OFF. Any of 1/true/yes/on (case-insensitive) enables it.
+_SHARD_REJOIN_ENV = "NDA_PDF_SHARD_REJOIN"
+# Per-call override (thread/async-safe) so the admin dry-run measurement can force
+# the reflow ON for one re-extraction pass WITHOUT mutating global env or changing
+# any other caller's behavior. None => defer to the env flag.
+_SHARD_REJOIN_OVERRIDE: "contextvars.ContextVar[Optional[bool]]" = contextvars.ContextVar(
+    "nda_pdf_shard_rejoin_override", default=None
+)
+
+
+def shard_rejoin_enabled() -> bool:
+    """True when the DEFAULT-OFF shard-fragment reflow is active for this call.
+
+    A per-call override (``shard_rejoin_forced``) wins over the process env flag so
+    the backfill dry-run can measure would-heal without touching global state; when
+    no override is set this reads ``NDA_PDF_SHARD_REJOIN`` (default OFF)."""
+    override = _SHARD_REJOIN_OVERRIDE.get()
+    if override is not None:
+        return bool(override)
+    return os.environ.get(_SHARD_REJOIN_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+@contextmanager
+def shard_rejoin_forced(enabled: bool = True) -> "Iterator[None]":
+    """Force ``shard_rejoin_enabled()`` to ``enabled`` for the duration of the block.
+
+    Used by the admin backfill's shard-rejoin dry-run to re-extract with the reflow
+    ON for a MEASUREMENT pass only. Restores the prior value on exit (nesting-safe),
+    so it never leaks the flag to unrelated work on the same thread."""
+    token = _SHARD_REJOIN_OVERRIDE.set(bool(enabled))
+    try:
+        yield
+    finally:
+        _SHARD_REJOIN_OVERRIDE.reset(token)
 
 
 @dataclass(frozen=True)
@@ -840,6 +909,19 @@ def _extract_geo_lines(page: Any) -> tuple[list[GeoLine], dict[str, object]]:
         for region in regions:
             geo_lines.extend(_group_chunks_into_lines(region))
         geo_lines = [line for line in geo_lines if line.text]
+        # SHARD-FRAGMENT reflow (SECOND garble class; DEFAULT-OFF behind the flag).
+        # ``shard_rejoin_enabled()`` short-circuits to False in the common case, so
+        # with the flag off this whole branch is inert and the output below is
+        # byte-identical. When on, it reflows a shard-fragmented page and adopts the
+        # result ONLY if it strictly reduces the page's short-line count (a vertical
+        # short-token column does not reduce -> the reflow is rejected here).
+        if shard_rejoin_enabled() and _chunks_are_shard_fragmented(chunks):
+            reflowed = [line for line in _reflow_shard_chunks(chunks) if line.text]
+            if reflowed and _short_line_count(reflowed) < _short_line_count(geo_lines):
+                shard_signal = _default_page_signal()
+                shard_signal["confidence"] = 0.6
+                shard_signal["reasons"] = ["shard_fragment_rejoined"]
+                return reflowed, shard_signal
         if geo_lines:
             return geo_lines, page_signal
 
@@ -1227,6 +1309,94 @@ def _chunks_are_glyph_fragmented(
         else:
             run = 0
     return False
+
+
+def _chunks_are_shard_fragmented(
+    chunks: list[tuple[float, float, Optional[float], str]],
+) -> bool:
+    """True when the page draws its text in SHORT MULTI-CHAR fragments (the second
+    garble class the per-glyph fix does not reach).
+
+    A run test in DRAWING ORDER, the multi-char sibling of
+    ``_chunks_are_glyph_fragmented``: >= ``_SHARD_CHUNK_RUN_MIN`` consecutive chunks
+    of 1..``_SHARD_CHUNK_MAX_LEN`` stripped characters. Whole-line word-processor
+    output draws long runs per operation, so an ordinary page's short-chunk runs
+    stay tiny; only a page positioned fragment-by-fragment chains this many short
+    chunks. Kept deliberately high so a letter-spaced heading or a short marker
+    column never trips it. This is ONLY consulted when ``shard_rejoin_enabled()``,
+    so with the flag off it never influences extraction."""
+
+    run = 0
+    for _x, _y, _size, text in chunks:
+        if 1 <= len(text.strip()) <= _SHARD_CHUNK_MAX_LEN:
+            run += 1
+            if run >= _SHARD_CHUNK_RUN_MIN:
+                return True
+        else:
+            run = 0
+    return False
+
+
+def _short_line_count(lines: list[GeoLine]) -> int:
+    """Count lines whose stripped text is <= _SHARD_CHUNK_MAX_LEN chars.
+
+    A proxy for the shard fingerprint at the GeoLine layer: the reflow is adopted
+    only when it strictly lowers this count, so it can never make a page worse."""
+    return sum(1 for line in lines if len(line.text.strip()) <= _SHARD_CHUNK_MAX_LEN)
+
+
+def _reflow_shard_chunks(
+    chunks: list[tuple[float, float, Optional[float], str]],
+) -> list[GeoLine]:
+    """Reassemble a shard-fragmented page's chunks into visual lines.
+
+    Segments the chunks (in DRAWING ORDER, which pypdf emits in reading order) into
+    lines by the ONE robust signal that survives the drifting baselines: a fragment
+    whose x does NOT advance past the previous fragment starts a NEW line. Within a
+    line the converter draws fragments left-to-right (x strictly increasing), so
+    consecutive advancing fragments belong to the SAME visual line; when x resets
+    left (a wrap / a new logical line) a new line begins.
+
+    This is what makes the reflow SAFE against a genuine vertical column of short
+    tokens (a numbered-list gutter, a table code column, stacked initials): those
+    share one x (non-advancing), so every item stays on its own line and the
+    caller's strict-reduction guard then rejects the reflow, leaving the page
+    byte-identical to the flag-off output.
+
+    Each segmented line is joined with ``_join_line_chunks`` (the same producer-side
+    join the normal path uses), which restores word spacing from the leading/
+    trailing boundary whitespace the visitor preserved on each chunk. The resulting
+    GeoLines carry NO reliable heading geometry, so the ``pdf_confident`` trust tier
+    stays closed for the page — the same safe degradation as the flat fallback."""
+
+    line_buckets: list[list[tuple[float, float, Optional[float], str]]] = []
+    current: list[tuple[float, float, Optional[float], str]] = []
+    prev_x: Optional[float] = None
+    for chunk in chunks:
+        x = float(chunk[0])
+        if prev_x is not None and x <= prev_x + _GAP_EPSILON:
+            # x did not advance -> this fragment starts a new visual line.
+            if current:
+                line_buckets.append(current)
+            current = [chunk]
+        else:
+            current.append(chunk)
+        prev_x = x
+    if current:
+        line_buckets.append(current)
+
+    geo_lines: list[GeoLine] = []
+    for bucket in line_buckets:
+        text = _join_line_chunks(bucket)
+        if not text:
+            continue
+        # NO geometry on a reconstructed line: the reflow rebuilt this text from
+        # drifting per-fragment baselines, so its position/font are not a
+        # trustworthy heading signal. Emitting geometry-less lines (like the flat
+        # glyph-fragment fallback) fails the splitter safe (fragment, never merge)
+        # and keeps the ``pdf_confident`` trust tier CLOSED for the page.
+        geo_lines.append(GeoLine(text=text, left_x=None, y=None, font_size=None))
+    return geo_lines
 
 
 def _group_chunks_into_lines(

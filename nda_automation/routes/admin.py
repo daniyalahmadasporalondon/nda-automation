@@ -988,8 +988,47 @@ def handle_matters_garble_backfill(handler) -> None:
         )
         return
 
+    shard_rejoin = payload.get("shard_rejoin", False)
+    if not isinstance(shard_rejoin, bool):
+        handler._send_json({"error": "shard_rejoin must be true or false."}, status=400)
+        return
+
     limit = _garble_backfill_limit(handler, payload)
     if limit is None:
+        return
+
+    if shard_rejoin:
+        # SHARD-REJOIN MEASUREMENT (would-heal sizing, WRITES NOTHING). Re-extracts
+        # each candidate's bytes with the DEFAULT-OFF shard reflow forced on, so it
+        # is minutes of GIL-heavy pypdf CPU: it runs on the SAME background daemon
+        # thread as the execute run (never the request thread), and the caller polls
+        # the status route for the report. Mutates nothing (measure_only=True), so
+        # no "confirm" is required and the default execute path is untouched.
+        telemetry.increment("garble_backfill_shard_measure_requests")
+        result = garble_backfill.start_garble_backfill_async(
+            limit=limit, shard_rejoin=True, measure_only=True
+        )
+        if not result.get("started"):
+            handler._send_json(
+                {
+                    "error": "A garble backfill run is already in flight.",
+                    "run_id": result.get("run_id", ""),
+                    "status": garble_backfill.garble_backfill_status(),
+                },
+                status=409,
+            )
+            return
+        handler._send_json(
+            {
+                "started": True,
+                "measure_only": True,
+                "shard_rejoin": True,
+                "run_id": result.get("run_id", ""),
+                "poll": "/api/admin/matters/garble-backfill/status",
+                "status": garble_backfill.garble_backfill_status(),
+            },
+            status=202,
+        )
         return
 
     telemetry.increment("garble_backfill_requests")

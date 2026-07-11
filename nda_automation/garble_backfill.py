@@ -72,6 +72,7 @@ garbled = exploded_count >= 2  OR  (exploded_count >= 1 AND shard_run >= 3)
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 from datetime import datetime, timezone
@@ -274,15 +275,78 @@ def matter_garble_assessment(matter: dict[str, Any]) -> dict[str, Any]:
     return entry
 
 
-def _heal_matter(matter: dict[str, Any], entry: dict[str, Any]) -> None:
-    """Re-extract ONE matter through the fixed extractor and persist the healed
-    text. Mutates ``entry`` (action/error fields) only; every failure path is
-    caught by the caller's per-matter guard so one matter never aborts the run.
-    """
+def _shard_rejoin_context(shard_rejoin: bool):
+    """Force the DEFAULT-OFF PDF shard-fragment reflow ON for the wrapped
+    re-extraction when ``shard_rejoin`` is True; otherwise a no-op that leaves the
+    extractor's own env-flag default in force (byte-identical re-extraction).
+
+    Local import keeps this module import-light and avoids a load cycle."""
+    if not shard_rejoin:
+        return contextlib.nullcontext()
+    from . import pdf_text  # noqa: PLC0415
+
+    return pdf_text.shard_rejoin_forced(True)
+
+
+def _reextract_paragraphs(
+    filename: str, document_bytes: bytes, *, shard_rejoin: bool
+) -> list[dict[str, Any]]:
+    """Re-extract paragraphs through the SAME seam ingest uses, optionally forcing
+    the shard-fragment reflow on for this pass only."""
     # Local import: keeps this module import-light (mirrors routes/admin.py's
     # local ingestion_service imports) and avoids a module-load cycle.
     from .ingestion_service import extract_document  # noqa: PLC0415
 
+    with _shard_rejoin_context(shard_rejoin):
+        # include_visual_profile=False is the documented cheap variant (Gmail-poll
+        # path): paragraphs are byte-identical and the visual profile is recomputed
+        # on demand. extract_document -> extract_pdf_document enforces the existing
+        # per-doc caps (MAX_PDF_PAGES, byte + extracted-character ceilings), so no
+        # extra cap is layered here. Deterministic pypdf work only — never an AI call.
+        _document_type, paragraphs, _quality = extract_document(
+            filename, document_bytes, include_visual_profile=False
+        )
+    return paragraphs
+
+
+def _measure_matter(
+    matter: dict[str, Any], entry: dict[str, Any], *, shard_rejoin: bool
+) -> None:
+    """MEASURE-ONLY re-extraction: report what an execute run WOULD do, writing
+    NOTHING. Reads the original bytes and re-extracts (optionally with the
+    shard-fragment reflow forced on), then records the resulting fingerprint and a
+    would-heal verdict. Never calls ``update_matter_extracted_text`` and never
+    rebuilds the working DOCX — this exists purely so an operator can size the
+    shard-rejoin win on the real corpus BEFORE any mutation."""
+    old_text = str(matter.get("extracted_text") or "")
+    document_bytes = matter_store.get_source_document_bytes(matter)
+    if not document_bytes:
+        entry["action"] = "skipped_missing_bytes"
+        return
+    filename = str(matter.get("stored_filename") or matter.get("source_filename") or "")
+    paragraphs = _reextract_paragraphs(filename, document_bytes, shard_rejoin=shard_rejoin)
+    new_text = extracted_text_from_paragraphs(paragraphs)
+    after = garble_fingerprint(stored_paragraph_blocks(new_text))
+    entry["fingerprint_after"] = after
+    entry["new_paragraphs"] = len(paragraphs)
+    if new_text == old_text:
+        entry["action"] = "measure_unchanged"
+    elif after["garbled"]:
+        entry["action"] = "measure_still_garbled"
+    else:
+        entry["action"] = "would_heal"
+
+
+def _heal_matter(
+    matter: dict[str, Any], entry: dict[str, Any], *, shard_rejoin: bool = False
+) -> None:
+    """Re-extract ONE matter through the fixed extractor and persist the healed
+    text. Mutates ``entry`` (action/error fields) only; every failure path is
+    caught by the caller's per-matter guard so one matter never aborts the run.
+
+    ``shard_rejoin`` (default False -> execute path UNCHANGED) forces the
+    DEFAULT-OFF shard-fragment reflow on for this matter's re-extraction only.
+    """
     matter_id = str(matter.get("id") or "")
     old_text = str(matter.get("extracted_text") or "")
 
@@ -293,15 +357,7 @@ def _heal_matter(matter: dict[str, Any], entry: dict[str, Any]) -> None:
         return
 
     filename = str(matter.get("stored_filename") or matter.get("source_filename") or "")
-    # The SAME extraction seam ingest uses. include_visual_profile=False is the
-    # documented cheap variant (Gmail-poll path): paragraphs are byte-identical
-    # and the visual profile is recomputed on demand for the source preview.
-    # extract_document -> extract_pdf_document enforces the existing per-doc caps
-    # (MAX_PDF_PAGES, byte + extracted-character ceilings), so no extra cap is
-    # layered here. Deterministic pypdf work only — never an AI call.
-    _document_type, paragraphs, _quality = extract_document(
-        filename, document_bytes, include_visual_profile=False
-    )
+    paragraphs = _reextract_paragraphs(filename, document_bytes, shard_rejoin=shard_rejoin)
     new_text = extracted_text_from_paragraphs(paragraphs)
 
     if new_text == old_text:
@@ -435,6 +491,8 @@ def run_garble_backfill(
     dry_run: bool = True,
     limit: int = GARBLE_BACKFILL_DEFAULT_LIMIT,
     status_run_id: str = "",
+    shard_rejoin: bool = False,
+    measure_only: bool = False,
 ) -> dict[str, Any]:
     """Scan the whole store for garble-fingerprinted PDF matters; heal up to
     ``limit`` of them when ``dry_run`` is False. SERIAL — no thread fan-out.
@@ -445,6 +503,16 @@ def run_garble_backfill(
     fingerprint immediately before healing, so a matter healed by a concurrent
     run (or edited meanwhile) is skipped, and processes matters one at a time,
     collecting per-matter failures into the report instead of aborting.
+
+    ``shard_rejoin`` forces the DEFAULT-OFF PDF shard-fragment reflow on for every
+    re-extraction in this run. ``measure_only`` (implies no mutation) re-extracts
+    each selected candidate and reports a would-heal verdict WITHOUT writing — the
+    hook that sizes the shard-rejoin win on the real corpus before any mutation.
+    ``measure_only`` re-reads document bytes and runs pypdf, so — like the execute
+    path — it must be driven off the request thread (via
+    ``start_garble_backfill_async``); the plain synchronous dry-run
+    (``measure_only=False``) stays record-reads-only and cheap. Neither flag
+    changes the default execute path: both default False.
 
     ``status_run_id`` (set only by ``start_garble_backfill_async``) publishes a
     per-matter progress snapshot for the GET status route; a synchronous dry-run
@@ -479,6 +547,8 @@ def run_garble_backfill(
 
     report: dict[str, Any] = {
         "dry_run": bool(dry_run),
+        "measure_only": bool(measure_only),
+        "shard_rejoin": bool(shard_rejoin),
         "scanned": len(matters),
         "garbled_matched": garbled_matched,
         "selected": selected,
@@ -494,10 +564,18 @@ def run_garble_backfill(
         "docx_rebuilt": 0,
         "docx_rebuild_failed": 0,
         "failed": 0,
+        # MEASURE-ONLY tallies (no mutation): what an execute run with the current
+        # settings WOULD do, sized against the real corpus.
+        "would_heal": 0,
+        "measure_still_garbled": 0,
+        "measure_unchanged": 0,
         "matters": entries,
         "errors": [],
     }
-    if dry_run:
+    # A plain synchronous dry-run is record-reads-only: return before touching any
+    # document bytes. A measure-only pass DELIBERATELY re-extracts (still writing
+    # nothing) and so continues into the loop below.
+    if dry_run and not measure_only:
         return report
 
     processed = 0
@@ -521,7 +599,11 @@ def run_garble_backfill(
                 entry["action"] = "excluded_executed"
                 report["excluded_executed"] += 1
                 continue
-            _heal_matter(fresh, entry)
+            if measure_only:
+                # NON-MUTATING: re-extract + report a would-heal verdict, no write.
+                _measure_matter(fresh, entry, shard_rejoin=shard_rejoin)
+            else:
+                _heal_matter(fresh, entry, shard_rejoin=shard_rejoin)
         except Exception as error:  # noqa: BLE001 - atomic per matter: collect, continue.
             LOGGER.warning(
                 "Garble backfill: healing matter %s failed; continuing", matter_id, exc_info=True
@@ -549,6 +631,12 @@ def run_garble_backfill(
             report["write_conflicts"] += 1
         elif action == "excluded_executed_late":
             report["excluded_executed_late"] += 1
+        elif action == "would_heal":
+            report["would_heal"] += 1
+        elif action == "measure_still_garbled":
+            report["measure_still_garbled"] += 1
+        elif action == "measure_unchanged":
+            report["measure_unchanged"] += 1
         processed += 1
         if status_run_id:
             _publish_status({
@@ -594,8 +682,19 @@ def garble_backfill_status() -> dict[str, Any]:
         return dict(_LAST_STATUS)
 
 
-def start_garble_backfill_async(*, limit: int = GARBLE_BACKFILL_DEFAULT_LIMIT) -> dict[str, Any]:
-    """Start an EXECUTE run on a background daemon thread; return immediately.
+def start_garble_backfill_async(
+    *,
+    limit: int = GARBLE_BACKFILL_DEFAULT_LIMIT,
+    shard_rejoin: bool = False,
+    measure_only: bool = False,
+) -> dict[str, Any]:
+    """Start a background daemon-thread run; return immediately.
+
+    Defaults to an EXECUTE run (mutating). ``measure_only=True`` runs the
+    NON-MUTATING shard-rejoin measurement instead (re-extract + would-heal tally,
+    no writes) — kept on the background thread because it re-reads bytes and runs
+    pypdf, the same GIL-heavy CPU the execute path must keep off the request
+    thread. ``shard_rejoin`` forces the shard-fragment reflow on for the run.
 
     Returns ``{"started": bool, "run_id": str, "already_running": bool}``. At
     most one run at a time (it is serial by design): a second trigger while one
@@ -608,19 +707,27 @@ def start_garble_backfill_async(*, limit: int = GARBLE_BACKFILL_DEFAULT_LIMIT) -
                 run_id = str(_LAST_STATUS.get("run_id") or "")
             return {"started": False, "run_id": run_id, "already_running": True}
         _RUNNING = True
-    run_id = datetime.now(timezone.utc).strftime("garble-backfill-%Y%m%dT%H%M%SZ")
+    prefix = "garble-measure" if measure_only else "garble-backfill"
+    run_id = datetime.now(timezone.utc).strftime(f"{prefix}-%Y%m%dT%H%M%SZ")
     _publish_status({"state": "running", "run_id": run_id, "processed": 0})
 
     def _run() -> None:
         global _RUNNING
         try:
-            report = run_garble_backfill(dry_run=False, limit=limit, status_run_id=run_id)
+            report = run_garble_backfill(
+                dry_run=measure_only,
+                limit=limit,
+                status_run_id=run_id,
+                shard_rejoin=shard_rejoin,
+                measure_only=measure_only,
+            )
             _publish_status({
                 "state": "done",
                 "run_id": run_id,
                 "processed": report["selected"],
                 "selected": report["selected"],
                 "healed": report["healed"],
+                "would_heal": report["would_heal"],
                 "failed": report["failed"],
                 "report": report,
             })
@@ -631,6 +738,6 @@ def start_garble_backfill_async(*, limit: int = GARBLE_BACKFILL_DEFAULT_LIMIT) -
             with _RUN_LOCK:
                 _RUNNING = False
 
-    thread = threading.Thread(target=_run, name="garble-backfill", daemon=True)
+    thread = threading.Thread(target=_run, name=prefix, daemon=True)
     thread.start()
     return {"started": True, "run_id": run_id, "already_running": False}

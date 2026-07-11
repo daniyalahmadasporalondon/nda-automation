@@ -2759,6 +2759,71 @@ def make_pdf_normal_body_plus_glyph_signature_page():
     return _pdf_package(objects)
 
 
+def _shard_fragment_ops(text, x0, y0, font_size, frag_len, ystep):
+    """Content-stream ops drawing ``text`` in SHORT MULTI-CHAR fragments (``frag_len``
+    chars each) ONE Tm+Tj per fragment, at true Helvetica advances, with each
+    fragment stepping DOWN one baseline (``ystep`` points, |ystep| chosen to exceed
+    the wrap pitch so the visitor-geometry splitter puts each fragment on its own
+    paragraph). x still advances left-to-right within the line, so the reading order
+    is preserved. This is the SHARD-fragment garble class the per-glyph fix misses:
+    every fragment is >= 2 chars, so the single-char run detector never fires."""
+
+    ops = []
+    cursor = x0
+    y = y0
+    index = 0
+    while index < len(text):
+        frag = text[index:index + frag_len]
+        if frag.strip():
+            ops.append(
+                f"/F1 {font_size} Tf 1 0 0 1 {round(cursor, 2)} {round(y, 2)} Tm "
+                f"({_escape_pdf_text(frag)}) Tj"
+            )
+        cursor += sum(font_size * _HELVETICA_WIDTHS[c] / 1000.0 for c in frag)
+        y += ystep
+        index += frag_len
+    return ops
+
+
+# The mangled-in-prod SHARD shape: a converter that positions body text a couple of
+# characters at a time on drifting baselines. exploded_count == 0 (no 6-in-a-row
+# single glyphs), a long run of <= 2-char shard paragraphs on the current extractor.
+_SHARD_BODY_LINES = [
+    "This Agreement is made between the parties for the protection of Confidential Information",
+    "The receiving party shall not disclose any Confidential Information to third parties anywhere",
+    "The obligations of confidentiality shall survive the termination of this Agreement entirely",
+    "Each party shall use the same degree of care to protect the disclosing party information",
+    "Nothing in this Agreement grants any license under any intellectual property rights of a party",
+]
+
+
+def make_pdf_shard_fragmented(lines=None, *, frag_len=2, ystep=-14, line_gap=22):
+    """Single page whose body is drawn in short multi-char fragments on drifting
+    baselines — the SHARD-fragment garble class. Through the REAL pypdf pipeline
+    this extracts (on the current extractor) as a long run of <= 2-char paragraphs
+    with exploded_count == 0; the DEFAULT-OFF ``NDA_PDF_SHARD_REJOIN`` reflow stitches
+    it back into coherent lines."""
+
+    lines = _SHARD_BODY_LINES if lines is None else lines
+    operations = ["BT"]
+    y_top = 740
+    for line in lines:
+        operations += _shard_fragment_ops(line, 72, y_top, 10, frag_len, ystep)
+        # Next logical line starts below the whole staircase of this one, resetting x.
+        y_top = y_top + ystep * ((len(line) + frag_len - 1) // frag_len) - line_gap
+    operations.append("ET")
+    stream = " ".join(operations) + "\n"
+    objects = [
+        "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n",
+        "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n",
+        "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        "/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >> endobj\n",
+        f"4 0 obj << /Length {len(stream.encode('latin-1'))} >> stream\n{stream}endstream endobj\n",
+        "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n",
+    ]
+    return _pdf_package(objects)
+
+
 # WinAnsi (CP1252) byte for the punctuation that Word emits as smart quotes / dashes and
 # that pypdf decodes back to these Unicode code points. Used to reproduce a real
 # smart-quoted PDF through the byte layer (not by writing the Unicode char directly).

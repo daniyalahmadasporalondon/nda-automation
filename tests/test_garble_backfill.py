@@ -52,7 +52,11 @@ from nda_automation.review_result_contract import extracted_text_from_paragraphs
 from nda_automation.routes import admin as admin_routes
 from nda_automation.routes import matters as matters_routes
 
-from test_pdf_text import make_pdf, make_pdf_glyph_fragmented_signature_page
+from test_pdf_text import (
+    make_pdf,
+    make_pdf_glyph_fragmented_signature_page,
+    make_pdf_shard_fragmented,
+)
 
 OWNER = "google:111"
 ADMIN_USER = {"id": "google:999", "provider": "google", "email": "admin@example.com", "name": "Admin"}
@@ -90,6 +94,13 @@ def _pre_fix_extracted_text(pdf_bytes: bytes) -> str:
 
 
 GARBLED_TEXT = _pre_fix_extracted_text(GARBLED_PDF_BYTES)
+
+# SHARD-fragment garble (the SECOND class). Its stored text is simply the current
+# extractor's output for the shard fixture (flag OFF) — a long run of <= 2-char
+# shard paragraphs — so re-extraction with the flag OFF reproduces it (still
+# garbled), while the DEFAULT-OFF reflow heals it.
+SHARD_PDF_BYTES = make_pdf_shard_fragmented()
+SHARD_TEXT = extracted_text_from_paragraphs(pdf_text.extract_pdf_paragraphs(SHARD_PDF_BYTES))
 
 
 # --- store fixtures -----------------------------------------------------------
@@ -1089,3 +1100,91 @@ def test_approval_landing_during_reconstruction_vetoes_the_rebuild_write(monkeyp
     # The heal itself stands (it committed before the approval landed).
     blocks = garble_backfill.stored_paragraph_blocks(fresh["extracted_text"])
     assert garble_backfill.garble_fingerprint(blocks)["garbled"] is False
+
+
+# --- SHARD-REJOIN dry-run measurement hook (writes NOTHING) -------------------
+def _shard_garbled_matter(**overrides):
+    """A PDF-source matter whose STORED text is shard-garbled and whose retained
+    bytes re-extract as shards under the flag OFF, but heal under the reflow."""
+    return _store_matter(
+        filename="Shard NDA.pdf",
+        extracted_text=SHARD_TEXT,
+        document_bytes=SHARD_PDF_BYTES,
+        review_result=_ai_review_snapshot(SHARD_TEXT),
+        **overrides,
+    )
+
+
+def test_shard_matter_is_detected_as_a_candidate():
+    matter = _shard_garbled_matter()
+    fingerprint = garble_backfill.garble_fingerprint(
+        garble_backfill.stored_paragraph_blocks(matter["extracted_text"])
+    )
+    assert fingerprint["exploded_count"] == 0
+    assert fingerprint["longest_shard_run"] >= 8
+    assert garble_backfill.matter_garble_assessment(matter)["candidate"] is True
+
+
+def test_measure_only_with_shard_rejoin_reports_would_heal_and_writes_nothing(_isolated_store):
+    _shard_garbled_matter()
+    before = _store_snapshot(_isolated_store)
+    report = garble_backfill.run_garble_backfill(
+        dry_run=True, measure_only=True, shard_rejoin=True
+    )
+    # The measurement re-extracts with the reflow ON and reports a would-heal.
+    assert report["measure_only"] is True
+    assert report["shard_rejoin"] is True
+    assert report["would_heal"] == 1
+    assert report["measure_still_garbled"] == 0
+    entry = next(m for m in report["matters"] if m.get("action") == "would_heal")
+    assert entry["fingerprint_after"]["garbled"] is False
+    # NOTHING was written: the store is byte-identical.
+    assert _store_snapshot(_isolated_store) == before
+
+
+def test_measure_only_without_shard_rejoin_does_not_heal(_isolated_store):
+    _shard_garbled_matter()
+    report = garble_backfill.run_garble_backfill(
+        dry_run=True, measure_only=True, shard_rejoin=False
+    )
+    # Re-extraction WITHOUT the reflow reproduces the stored shards (identical to
+    # the stored text here): no would-heal. It lands as unchanged/still-garbled,
+    # never healed.
+    assert report["would_heal"] == 0
+    assert report["measure_unchanged"] + report["measure_still_garbled"] == 1
+
+
+def test_execute_default_does_not_heal_shards_and_leaves_the_record(_isolated_store):
+    # The DEFAULT execute path (shard_rejoin False) is unchanged: re-extraction
+    # reproduces the stored shards, so it heals NOTHING and writes nothing.
+    matter = _shard_garbled_matter()
+    before = _store_snapshot(_isolated_store)
+    report = garble_backfill.run_garble_backfill(dry_run=False)
+    assert report["healed"] == 0
+    assert report["unchanged"] + report["still_garbled"] == 1
+    assert _store_snapshot(_isolated_store) == before
+    fresh = matter_store.get_matter(matter["id"], owner_user_id="")
+    assert fresh["extracted_text"] == SHARD_TEXT
+
+
+def test_endpoint_shard_rejoin_true_kicks_measure_run_and_writes_nothing(_isolated_store):
+    # POST .../garble-backfill with shard_rejoin:true starts a background measure
+    # run (thread patched inline) and mutates nothing; the report carries would_heal.
+    _shard_garbled_matter()
+    before = _store_snapshot(_isolated_store)
+    handler = _run({"shard_rejoin": True})
+    assert handler.status == 202
+    assert handler.response["started"] is True
+    assert handler.response["measure_only"] is True
+    assert handler.response["shard_rejoin"] is True
+    status = garble_backfill.garble_backfill_status()
+    assert status["state"] == "done"
+    assert status["report"]["would_heal"] == 1
+    assert status["report"]["measure_only"] is True
+    assert _store_snapshot(_isolated_store) == before
+
+
+def test_endpoint_shard_rejoin_must_be_boolean():
+    handler = _run({"shard_rejoin": "yes"})
+    assert handler.status == 400
+    assert "shard_rejoin" in handler.response["error"]
