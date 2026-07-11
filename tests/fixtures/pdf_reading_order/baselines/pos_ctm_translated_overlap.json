@@ -1,19 +1,27 @@
 {
-  "extracted_text": "Block A line one at the true top of the page. Block B line one that actually renders lower down.\n\nBlock A line two immediately below it. Block B line two that actually renders lower down.",
+  "extracted_text": "Block A line one at the true top of the page.\n\nBlock A line two immediately below it.\n\nBlock B line one that actually renders lower down.\n\nBlock B line two that actually renders lower down.",
   "name": "pos_ctm_translated_overlap",
   "paragraphs": [
     {
       "page_number": 1,
-      "text": "Block A line one at the true top of the page. Block B line one that actually renders lower down."
+      "text": "Block A line one at the true top of the page."
     },
     {
       "page_number": 1,
-      "text": "Block A line two immediately below it. Block B line two that actually renders lower down."
+      "text": "Block A line two immediately below it."
+    },
+    {
+      "page_number": 1,
+      "text": "Block B line one that actually renders lower down."
+    },
+    {
+      "page_number": 1,
+      "text": "Block B line two that actually renders lower down."
     }
   ],
   "quality": {
-    "extracted_characters": 187,
-    "extracted_paragraphs": 2,
+    "extracted_characters": 189,
+    "extracted_paragraphs": 4,
     "page_count": 1,
     "pages_with_text": 1,
     "pages_without_text": 0,

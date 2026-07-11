@@ -27,6 +27,10 @@
       {
         "message": "The PDF produced a small amount of extractable text; review the source carefully.",
         "type": "pdf_sparse_text"
+      },
+      {
+        "message": "The PDF text appears letter-spaced or fragmented; the reviewer may be reading scrambled words. Check the original source.",
+        "type": "pdf_fragmented_text"
       }
     ]
   }

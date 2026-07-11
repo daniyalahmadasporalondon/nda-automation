@@ -1,71 +1,131 @@
 {
-  "extracted_text": "1. Confidential Information means any 3. The obligations of confidentiality\n\nand all non-public information disclosed shall survive termination of this\n\nby one party to the other, whether oral Agreement for a period of five years\n\nor written, marked confidential. from the date of disclosure.\n\n2. The Receiving Party shall hold the 4. Nothing in this Agreement grants the\n\nConfidential Information in strict Receiving Party any licence or right in\n\nconfidence and not disclose it to any the Confidential Information other than\n\nthird party without prior written consent. as expressly set out herein.\n\n5. Each party shall promptly notify the 7. The parties submit to the exclusive\n\nother of any unauthorised disclosure of jurisdiction of the courts of England\n\nthe Confidential Information of which it and Wales in respect of any dispute\n\nbecomes aware. arising out of this Agreement.\n\n6. This Agreement shall be governed by 8. This Agreement constitutes the entire\n\nand construed in accordance with the agreement between the parties relating\n\nlaws of England and Wales. to its subject matter.",
+  "extracted_text": "1. Confidential Information means any\n\nand all non-public information disclosed\n\nby one party to the other, whether oral\n\nor written, marked confidential.\n\n2. The Receiving Party shall hold the\n\nConfidential Information in strict\n\nconfidence and not disclose it to any\n\nthird party without prior written consent.\n\n3. The obligations of confidentiality\n\nshall survive termination of this\n\nAgreement for a period of five years\n\nfrom the date of disclosure.\n\n4. Nothing in this Agreement grants the\n\nReceiving Party any licence or right in\n\nthe Confidential Information other than\n\nas expressly set out herein.\n\n5. Each party shall promptly notify the\n\nother of any unauthorised disclosure of\n\nthe Confidential Information of which it\n\nbecomes aware.\n\n6. This Agreement shall be governed by\n\nand construed in accordance with the\n\nlaws of England and Wales.\n\n7. The parties submit to the exclusive\n\njurisdiction of the courts of England\n\nand Wales in respect of any dispute\n\narising out of this Agreement.\n\n8. This Agreement constitutes the entire\n\nagreement between the parties relating\n\nto its subject matter.",
   "name": "pos_two_column_clean",
   "paragraphs": [
     {
       "page_number": 1,
-      "text": "1. Confidential Information means any 3. The obligations of confidentiality"
+      "text": "1. Confidential Information means any"
     },
     {
       "page_number": 1,
-      "text": "and all non-public information disclosed shall survive termination of this"
+      "text": "and all non-public information disclosed"
     },
     {
       "page_number": 1,
-      "text": "by one party to the other, whether oral Agreement for a period of five years"
+      "text": "by one party to the other, whether oral"
     },
     {
       "page_number": 1,
-      "text": "or written, marked confidential. from the date of disclosure."
+      "text": "or written, marked confidential."
     },
     {
       "page_number": 1,
-      "text": "2. The Receiving Party shall hold the 4. Nothing in this Agreement grants the"
+      "text": "2. The Receiving Party shall hold the"
     },
     {
       "page_number": 1,
-      "text": "Confidential Information in strict Receiving Party any licence or right in"
+      "text": "Confidential Information in strict"
     },
     {
       "page_number": 1,
-      "text": "confidence and not disclose it to any the Confidential Information other than"
+      "text": "confidence and not disclose it to any"
     },
     {
       "page_number": 1,
-      "text": "third party without prior written consent. as expressly set out herein."
+      "text": "third party without prior written consent."
+    },
+    {
+      "page_number": 1,
+      "text": "3. The obligations of confidentiality"
+    },
+    {
+      "page_number": 1,
+      "text": "shall survive termination of this"
+    },
+    {
+      "page_number": 1,
+      "text": "Agreement for a period of five years"
+    },
+    {
+      "page_number": 1,
+      "text": "from the date of disclosure."
+    },
+    {
+      "page_number": 1,
+      "text": "4. Nothing in this Agreement grants the"
+    },
+    {
+      "page_number": 1,
+      "text": "Receiving Party any licence or right in"
+    },
+    {
+      "page_number": 1,
+      "text": "the Confidential Information other than"
+    },
+    {
+      "page_number": 1,
+      "text": "as expressly set out herein."
     },
     {
       "page_number": 2,
-      "text": "5. Each party shall promptly notify the 7. The parties submit to the exclusive"
+      "text": "5. Each party shall promptly notify the"
     },
     {
       "page_number": 2,
-      "text": "other of any unauthorised disclosure of jurisdiction of the courts of England"
+      "text": "other of any unauthorised disclosure of"
     },
     {
       "page_number": 2,
-      "text": "the Confidential Information of which it and Wales in respect of any dispute"
+      "text": "the Confidential Information of which it"
     },
     {
       "page_number": 2,
-      "text": "becomes aware. arising out of this Agreement."
+      "text": "becomes aware."
     },
     {
       "page_number": 2,
-      "text": "6. This Agreement shall be governed by 8. This Agreement constitutes the entire"
+      "text": "6. This Agreement shall be governed by"
     },
     {
       "page_number": 2,
-      "text": "and construed in accordance with the agreement between the parties relating"
+      "text": "and construed in accordance with the"
     },
     {
       "page_number": 2,
-      "text": "laws of England and Wales. to its subject matter."
+      "text": "laws of England and Wales."
+    },
+    {
+      "page_number": 2,
+      "text": "7. The parties submit to the exclusive"
+    },
+    {
+      "page_number": 2,
+      "text": "jurisdiction of the courts of England"
+    },
+    {
+      "page_number": 2,
+      "text": "and Wales in respect of any dispute"
+    },
+    {
+      "page_number": 2,
+      "text": "arising out of this Agreement."
+    },
+    {
+      "page_number": 2,
+      "text": "8. This Agreement constitutes the entire"
+    },
+    {
+      "page_number": 2,
+      "text": "agreement between the parties relating"
+    },
+    {
+      "page_number": 2,
+      "text": "to its subject matter."
     }
   ],
   "quality": {
-    "extracted_characters": 1092,
-    "extracted_paragraphs": 15,
+    "extracted_characters": 1107,
+    "extracted_paragraphs": 30,
     "page_count": 2,
     "pages_with_text": 2,
     "pages_without_text": 0,
@@ -75,6 +135,11 @@
       "status": "ready",
       "visual_features": []
     },
-    "warnings": []
+    "warnings": [
+      {
+        "message": "The PDF layout could not be fully verified (possible multi-column or overlay); confirm the reading order against the original source.",
+        "type": "pdf_reading_order_uncertain"
+      }
+    ]
   }
 }
