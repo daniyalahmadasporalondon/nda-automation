@@ -123,6 +123,93 @@ def _two_level_bullets(x_top=72, x_sub=110, y_top=700, step=-14):
     return _positioned_pdf(ops)
 
 
+def _helvetica_width(text, font_size):
+    return sum(font_size * _HELVETICA_WIDTHS[c] / 1000.0 for c in text)
+
+
+def _shard_line_ops(text, x0, y_top, *, frag_len=2, ystep=-4.0, font_size=10, scale=1.0):
+    """Draw ``text`` as a smeared shard line: ``frag_len``-char fragments, one Tm+Tj
+    each, x advancing at ``scale`` x the true Helvetica advance (``scale`` < 1 = a
+    NARROWER real font than the digest assumes) and y drifting DOWN by ``ystep``
+    (> _SAME_LINE_Y_TOLERANCE so the baseline grouping shards it). Returns
+    ``(ops, last_x, last_frag, y_after)``."""
+    ops = []
+    cursor = float(x0)
+    y = float(y_top)
+    last_x = cursor
+    last_frag = ""
+    index = 0
+    while index < len(text):
+        frag = text[index:index + frag_len]
+        if frag.strip():
+            ops.append(
+                f"/F1 {font_size} Tf 1 0 0 1 {round(cursor, 3)} {round(y, 3)} Tm "
+                f"({_escape_pdf_text(frag)}) Tj"
+            )
+            last_x = cursor
+            last_frag = frag
+        cursor += scale * _helvetica_width(frag, font_size)
+        y += ystep
+        index += frag_len
+    return ops, last_x, last_frag, y
+
+
+def _bottom_up_shard_page(lines, *, frag_len=2, ystep=-4.0, band_gap=24, y_top=700, font_size=10):
+    """Stack ``lines`` top-to-bottom as smeared shard lines, but EMIT them bottom-up
+    (last visual line drawn first). A drawing-order reflow would reassemble them
+    reversed; the reading-order emit must recover the correct top-to-bottom order."""
+    tops = []
+    y = float(y_top)
+    for line in lines:
+        nfrags = (len(line) + frag_len - 1) // frag_len
+        tops.append(y)
+        y -= abs(ystep) * max(0, nfrags - 1) + band_gap
+    ops = []
+    for line, top in reversed(list(zip(lines, tops))):  # bottom (lowest top) first
+        line_ops, _lx, _lf, _y = _shard_line_ops(
+            line, 72, top, frag_len=frag_len, ystep=ystep, font_size=font_size
+        )
+        ops += line_ops
+    return _positioned_pdf(ops)
+
+
+def _fused_word_page(word, *, frag_len=2, ystep=-4.0, font_size=10, y_top=700):
+    """A single SPACELESS word drawn edge-to-edge in Helvetica shard fragments. The
+    reflow would weld it into one spaceless token; when ``word`` is long enough that
+    token is an implausible 'megaword' the readability backstop must reject."""
+    ops, _lx, _lf, _y = _shard_line_ops(word, 72, y_top, frag_len=frag_len, ystep=ystep, font_size=font_size)
+    return _positioned_pdf(ops)
+
+
+def _narrow_word_then_separate(*, scale=0.6, font_size=10, ystep=-4.0, x0=72, y_top=700, gap_extra=17.0):
+    """A smeared word laid out at a NARROWER advance than Helvetica (``scale``),
+    followed by a GENUINELY-SEPARATE short element ('SEP') placed a real gap away.
+    The gap is tuned to fall in the trap window: the font-agnostic Helvetica digest
+    OVER-estimates the word's right edge and would MERGE 'SEP' onto the word's line,
+    but the observed-scale calibration keeps them separate. Returns
+    ``(pdf, last_word_x, last_word_frag, sep_x, font_size)``."""
+    word_units = ["aa"] * 10 + ["mm"]
+    ops = []
+    cursor = float(x0)
+    y = float(y_top)
+    last_x = cursor
+    last_frag = ""
+    for frag in word_units:
+        ops.append(
+            f"/F1 {font_size} Tf 1 0 0 1 {round(cursor, 3)} {round(y, 3)} Tm "
+            f"({_escape_pdf_text(frag)}) Tj"
+        )
+        last_x = cursor
+        last_frag = frag
+        cursor += scale * _helvetica_width(frag, font_size)
+        y += ystep
+    sep_x = last_x + gap_extra
+    ops.append(
+        f"/F1 {font_size} Tf 1 0 0 1 {round(sep_x, 3)} {round(y, 3)} Tm ({_escape_pdf_text('SEP')}) Tj"
+    )
+    return _positioned_pdf(ops), last_x, last_frag, sep_x, font_size
+
+
 NORMAL_PDF = make_pdf_lines([
     "1. CONFIDENTIALITY",
     "The receiving party shall keep all Confidential Information secret at all times and forever.",
@@ -179,6 +266,27 @@ class ShardReflowAdoptionGateTests(unittest.TestCase):
     def test_adopted_when_reduces_and_preserves(self):
         baseline = self._lines("ab", "cd", "ef", "gh")
         self.assertTrue(pdf_text._reflow_is_adopted(self._lines("abcdefgh"), baseline))
+
+    def test_rejected_when_reading_order_is_reversed(self):
+        # Fewer short lines and the SAME glyph multiset, but the reflow emitted its
+        # content out of reading order: the sequence check (baseline is in -y,x
+        # order) rejects it. The order-blind multiset gate would have ADOPTED this.
+        baseline = self._lines("ab", "cd", "ef", "gh")  # reading order: ab cd ef gh
+        self.assertFalse(pdf_text._reflow_is_adopted(self._lines("ghefcdab"), baseline))
+        # The correctly-ordered reflow of the same glyphs is adopted.
+        self.assertTrue(pdf_text._reflow_is_adopted(self._lines("abcdefgh"), baseline))
+
+    def test_rejected_when_a_word_is_fused_into_a_megaword(self):
+        # Reduces the short-line count AND preserves the reading sequence, but a
+        # dropped inter-word space welded a spaceless run longer than the plausible
+        # word cap. The whitespace-insensitive sequence check cannot see it; the
+        # megaword backstop must reject.
+        fused = "a" * (pdf_text._SHARD_MAX_WORD_CHARS + 1)
+        baseline = self._lines(*(["a"] * len(fused)))
+        self.assertFalse(pdf_text._reflow_is_adopted(self._lines(fused), baseline))
+        # The same characters split at a plausible word boundary are adopted.
+        spaced = self._lines("a" * 10, "a" * 10, "a" * (len(fused) - 20))
+        self.assertTrue(pdf_text._reflow_is_adopted(spaced, baseline))
 
 
 @requires_pypdf
@@ -333,6 +441,81 @@ class ShardRejoinSafetyTests(unittest.TestCase):
         self.assertEqual(off, on)
         self.assertIn("CEO", on)
         self.assertEqual([t for t in on if len(t) <= 2], [])
+
+
+@requires_pypdf
+class ShardReflowGateFixTests(unittest.TestCase):
+    """The four confirmed gate holes, each proven through the REAL pypdf pipeline."""
+
+    def test_fix1_bottom_up_page_heals_in_reading_order(self):
+        # A page whose visual lines are DRAWN bottom-up must reassemble top-to-bottom
+        # (reading order), not in drawing order. Distinct leading markers pin the order.
+        lines = [
+            "AAAA alpha bravo charlie delta",
+            "BBBB echo foxtrot golf hotel",
+            "CCCC india juliet kilo lima",
+        ]
+        pdf = _bottom_up_shard_page(lines)
+        with shard_rejoin_forced(True):
+            texts = _texts(pdf)
+        joined = " ".join(texts)
+        # Healed (the shard fingerprint is gone)...
+        self.assertFalse(_fingerprint_from_texts(texts)["garbled"], texts)
+        # ...AND in the correct reading order A, then B, then C.
+        idx_a, idx_b, idx_c = joined.index("AAAA"), joined.index("BBBB"), joined.index("CCCC")
+        self.assertLess(idx_a, idx_b, texts)
+        self.assertLess(idx_b, idx_c, texts)
+
+    def test_fix2_word_fusion_produces_no_spaceless_megaword(self):
+        # A spaceless word drawn edge-to-edge would weld into a >30-char megaword.
+        # The readability backstop rejects that reflow (flag ON == flag OFF), so no
+        # fused megaword ever reaches the review (accepted under-heal).
+        word = "confidentialinformationprotectionobligations"  # 44 chars, no spaces
+        self.assertGreater(len(word), pdf_text._SHARD_MAX_WORD_CHARS)
+        pdf = _fused_word_page(word)
+        off = _texts(pdf)
+        with shard_rejoin_forced(True):
+            on = _texts(pdf)
+        # Rejected: identical to flag-off, and no spaceless megaword persisted.
+        self.assertEqual(off, on)
+        self.assertFalse(pdf_text.text_has_implausible_megaword("\n\n".join(on)), on)
+
+    def test_fix3_narrow_font_separate_element_is_not_merged(self):
+        # A narrower-than-Helvetica word followed by a genuinely-separate element,
+        # at a gap the font-agnostic digest would BRIDGE but the observed-scale
+        # calibration keeps split.
+        pdf, last_x, last_frag, sep_x, font_size = _narrow_word_then_separate()
+        # Document the trap: the Helvetica estimate's right edge is close enough that
+        # the OLD (uncalibrated) continuation test would have merged 'SEP'.
+        est_right = last_x + pdf_text._estimate_text_width(last_frag, font_size)
+        budget = pdf_text._SHARD_HGAP_MAX_EM * font_size
+        self.assertLessEqual(sep_x - est_right, budget)  # a raw digest WOULD merge
+        with shard_rejoin_forced(True):
+            texts = _texts(pdf)
+        merged_word = "a" * 20 + "mm"
+        self.assertIn(merged_word, texts)  # the narrow word still heals as one line
+        self.assertIn("SEP", texts)  # the separate element kept its own line
+        # 'SEP' is never glued onto another line (no false merge).
+        self.assertFalse(any("SEP" in t and t != "SEP" for t in texts), texts)
+
+    def test_fix4_true_shard_fixture_still_heals_under_the_new_gate(self):
+        # The whole point: the real shard fixture must STILL heal through the
+        # rebuilt (reading-order + word-spacing) adoption gate.
+        pdf = make_pdf_shard_fragmented()
+        off = _texts(pdf)
+        self.assertTrue(_fingerprint_from_texts(off)["garbled"])  # garbled with flag off
+        with shard_rejoin_forced(True):
+            on = _texts(pdf)
+        self.assertFalse(_fingerprint_from_texts(on)["garbled"], on)  # healed with flag on
+        # Characters recovered IN reading order (whitespace-insensitive: the reflow
+        # may add the occasional spurious space after a capital, which never fuses).
+        recovered = "".join("".join(t.split()) for t in on)
+        for word in ("Agreement", "Confidential", "confidentiality", "termination"):
+            self.assertIn(word, recovered, on)
+
+
+def _fingerprint_from_texts(texts):
+    return garble_fingerprint(stored_paragraph_blocks("\n\n".join(texts)))
 
 
 if __name__ == "__main__":

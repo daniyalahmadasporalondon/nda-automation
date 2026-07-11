@@ -1193,7 +1193,8 @@ def test_endpoint_shard_rejoin_must_be_boolean():
 def test_persisting_run_with_shard_rejoin_is_structurally_refused(_isolated_store):
     # STRUCTURAL guard (not a route convention): the reflow is measurement-only, so
     # any PERSISTING run (measure_only False) with shard_rejoin True must raise
-    # BEFORE it can write, regardless of dry_run.
+    # BEFORE it can write, regardless of dry_run — UNLESS the explicit persist
+    # opt-in is set (tested separately below).
     _shard_garbled_matter()
     before = _store_snapshot(_isolated_store)
     with pytest.raises(ValueError):
@@ -1202,3 +1203,104 @@ def test_persisting_run_with_shard_rejoin_is_structurally_refused(_isolated_stor
         garble_backfill.run_garble_backfill(dry_run=True, measure_only=False, shard_rejoin=True)
     # Nothing was written by the refused calls.
     assert _store_snapshot(_isolated_store) == before
+
+
+# --- SHARD heal-PERSIST path (default-OFF, doubly gated) ----------------------
+def test_reflow_healed_text_is_readable_gate():
+    """Gate (b) unit: readable iff NOT garbled AND no fused megaword; empty is not."""
+    good = "The parties shall keep all Confidential Information secret at all times."
+    assert garble_backfill._reflow_healed_text_is_readable(good) is True
+    # A fused spaceless 'megaword' longer than the plausible word cap -> not readable.
+    bad = "The parties " + ("x" * (pdf_text._SHARD_MAX_WORD_CHARS + 5))
+    assert garble_backfill._reflow_healed_text_is_readable(bad) is False
+    # Still shard-garbled text -> not readable.
+    still_garbled = "\n\n".join(["C", "E", "O"] * 4)
+    assert garble_backfill._reflow_healed_text_is_readable(still_garbled) is False
+    # Empty -> not readable.
+    assert garble_backfill._reflow_healed_text_is_readable("") is False
+
+
+def test_persist_opt_in_refuses_inconsistent_combinations(_isolated_store):
+    """The persist opt-in must be paired with shard_rejoin, exclude measure_only,
+    and require dry_run False — every inconsistent combination raises before scan."""
+    _shard_garbled_matter()
+    before = _store_snapshot(_isolated_store)
+    with pytest.raises(ValueError):  # opt-in without the reflow
+        garble_backfill.run_garble_backfill(dry_run=False, persist_shard_rejoin=True)
+    with pytest.raises(ValueError):  # opt-in cannot combine with measurement
+        garble_backfill.run_garble_backfill(
+            dry_run=False, measure_only=True, shard_rejoin=True, persist_shard_rejoin=True
+        )
+    with pytest.raises(ValueError):  # persisting is a mutation: dry_run must be False
+        garble_backfill.run_garble_backfill(
+            dry_run=True, shard_rejoin=True, persist_shard_rejoin=True
+        )
+    assert _store_snapshot(_isolated_store) == before
+
+
+def test_persist_shard_rejoin_heals_and_writes_when_readable(_isolated_store):
+    """Opted-in AND readability-gated: the shard matter is healed and PERSISTED,
+    the review is flagged stale by the existing contract, others untouched."""
+    matter = _shard_garbled_matter()
+    normal = _normal_matter()
+    normal_before = (matter_store._matter_records_dir() / f"{normal['id']}.json").read_bytes()
+
+    report = garble_backfill.run_garble_backfill(
+        dry_run=False, shard_rejoin=True, persist_shard_rejoin=True
+    )
+    assert report["persist_shard_rejoin"] is True
+    assert report["healed"] == 1
+    assert report["reflow_unreadable"] == 0
+    assert report["matters"][0]["action"] == "healed"
+
+    fresh = matter_store.get_matter(matter["id"], owner_user_id="")
+    blocks = garble_backfill.stored_paragraph_blocks(fresh["extracted_text"])
+    assert garble_backfill.garble_fingerprint(blocks)["garbled"] is False
+    assert fresh["extracted_text"] != SHARD_TEXT
+    # No fused megaword slipped through the persist gate.
+    assert not pdf_text.text_has_implausible_megaword(fresh["extracted_text"])
+    # The untouched review is flagged stale by the EXISTING contract.
+    assert matters_routes._matter_review_text_changed(fresh, fresh["review_result"]) is True
+    # Other matters byte-identical.
+    assert (matter_store._matter_records_dir() / f"{normal['id']}.json").read_bytes() == normal_before
+
+
+def test_persist_refuses_write_when_readability_backstop_fails(_isolated_store, monkeypatch):
+    """Gate (b) end-to-end: the reflow HEALS (adopted in-extractor), but force the
+    persist-time readability backstop to reject the healed text; the run must write
+    NOTHING (action reflow_unreadable). Patching the garble_backfill-layer gate (not
+    the megaword primitive) isolates the persist gate from the adoption gate — which
+    also uses the megaword check, defence in depth."""
+    matter = _shard_garbled_matter()
+    before = _store_snapshot(_isolated_store)
+    monkeypatch.setattr(garble_backfill, "_reflow_healed_text_is_readable", lambda new_text: False)
+
+    report = garble_backfill.run_garble_backfill(
+        dry_run=False, shard_rejoin=True, persist_shard_rejoin=True
+    )
+    assert report["healed"] == 0
+    assert report["reflow_unreadable"] == 1
+    assert report["matters"][0]["action"] == "reflow_unreadable"
+    # Nothing written: store byte-identical, stored text still the garbled shards.
+    assert _store_snapshot(_isolated_store) == before
+    assert matter_store.get_matter(matter["id"], owner_user_id="")["extracted_text"] == SHARD_TEXT
+
+
+def test_persist_shard_rejoin_still_excludes_executed_or_approved(_isolated_store):
+    """The executed/approved exclusion holds on the persist path too: a protected
+    shard matter is listed but never written, while an unprotected sibling heals."""
+    protected = _shard_garbled_matter(
+        status="approved", approver="counsel@example.com", approved_at="2026-06-20T00:00:00+00:00"
+    )
+    healable = _shard_garbled_matter()
+    protected_before = (matter_store._matter_records_dir() / f"{protected['id']}.json").read_bytes()
+
+    report = garble_backfill.run_garble_backfill(
+        dry_run=False, shard_rejoin=True, persist_shard_rejoin=True
+    )
+    assert report["excluded_executed"] == 1
+    assert report["healed"] == 1
+    by_id = {entry["id"]: entry for entry in report["matters"]}
+    assert by_id[protected["id"]]["action"] == "excluded_executed"
+    assert by_id[healable["id"]]["action"] == "healed"
+    assert (matter_store._matter_records_dir() / f"{protected['id']}.json").read_bytes() == protected_before
