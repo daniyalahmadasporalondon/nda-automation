@@ -4491,7 +4491,16 @@ function maybeUpgradeSurfaceToFaithfulDocx(viewMode) {
   // floor) and do not fetch/swap the persisted faithful surface. It re-engages on the
   // next render after the draft is saved (redlineDraftDirty back to false). We also
   // skip the cold-start lazy-load kick here: there is nothing to upgrade TO yet.
-  if (state.redlineDraftDirty) return;
+  //
+  // D3: a bare `return` here is a SILENT faithful->reconstruction downgrade --
+  // visually indistinguishable from the "review silently reverted to the original"
+  // bug the reviewer spent a day on. Paint a visible notice explaining WHY the
+  // faithful document isn't shown (unsaved edits) before returning, so the
+  // reconstruction-floor state is explicit rather than mysterious.
+  if (state.redlineDraftDirty) {
+    paintReconstructionFaithfulNotice("dirty_draft", viewMode);
+    return;
+  }
 
   const plan = selectFaithfulRenderPlan(
     state.selectedMatter,
@@ -4685,7 +4694,14 @@ function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequ
     candidates.push({ url: `/api/matters/${encodedId}/working-docx`, renderChanges: false, label: "original" });
   }
 
-  if (!candidates.length) return; // no faithful bytes available -> reconstruction stands.
+  if (!candidates.length) {
+    // No faithful bytes available at all (a true scanned/empty case) -> the
+    // reconstruction floor stands. D9: announce it instead of returning silently --
+    // a bare return here is the same invisible faithful->reconstruction downgrade
+    // the reviewer can't tell apart from a bug.
+    paintReconstructionFaithfulNotice("faithful_unavailable", failedViewMode, failureReason);
+    return;
+  }
 
   // Swap in a READ-ONLY faithful surface (no interactive redline overlay),
   // announced TWICE: the existing once-per-key transient toast
@@ -4736,14 +4752,20 @@ function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequ
         ? "Showing redlines read-only"
         : "Showing the document read-only";
       noticeDetail.textContent =
-        `${redlineFallbackReasonText(failureReason)} The document below is the real `
+        `${redlineFallbackReasonText(failureReason, failedViewMode)} The document below is the real `
         + `${candidate.label === "tracked" ? "tracked-changes (redline)" : "accepted (clean)"} version, `
         + "shown read-only; use the structured view for clause-by-clause interaction.";
     } else {
       const showingLabel = candidate.label === "clean" ? "accepted (clean)" : "original";
-      noticeTitle.textContent = "Tracked redlines couldn't be displayed";
+      // D11: the title must match the FAILED view. The Redline tab shows tracked
+      // changes; the Clean tab shows the accepted (clean) document -- a hardcoded
+      // "Tracked redlines couldn't be displayed" is wrong (and alarming) on the
+      // Clean tab, where no tracked redlines were ever meant to appear.
+      noticeTitle.textContent = String(failedViewMode) === String(VIEW_MODE_CLEAN)
+        ? "The clean document couldn't be displayed"
+        : "Tracked redlines couldn't be displayed";
       noticeDetail.textContent =
-        `${redlineFallbackReasonText(failureReason)} Showing the faithful ${showingLabel} document instead.`;
+        `${redlineFallbackReasonText(failureReason, failedViewMode)} Showing the faithful ${showingLabel} document instead.`;
     }
     noticeText.appendChild(noticeTitle);
     noticeText.appendChild(noticeDetail);
@@ -4773,7 +4795,19 @@ function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequ
 
   // Try the candidates in order; the first that paints into a detached host wins.
   const tryCandidate = (index) => {
-    if (index >= candidates.length) return; // exhausted -> reconstruction stands (never blank).
+    if (index >= candidates.length) {
+      // Every faithful candidate failed to paint -> the reconstruction floor
+      // stands (never blank). D9: surface that the faithful document couldn't be
+      // shown, guarded on still being on this view/matter so a moved-on reviewer
+      // never gets a stale notice. Without it the reviewer silently sees the
+      // reconstruction after every faithful path exhausted -- a hidden downgrade.
+      if (sequence === reviewDocumentRenderRequestSequence
+        && state.selectedMatter?.id === matterId
+        && (state.documentViewMode || VIEW_MODE_REDLINE) === failedViewMode) {
+        paintReconstructionFaithfulNotice("faithful_unavailable", failedViewMode, failureReason);
+      }
+      return; // exhausted -> reconstruction stands (never blank).
+    }
     // Staleness recheck before each attempt: the user may have moved on.
     if (sequence !== reviewDocumentRenderRequestSequence) return;
     if (state.selectedMatter?.id !== matterId) return;
@@ -4815,21 +4849,102 @@ function attemptFaithfulRedlineFallback(faithful, failedViewMode, matterId, sequ
 // failure class. The faithful bridge collapses HTTP failures (409 no-artifact,
 // 500 coverage gate, 404) into "no_bytes", so that is the server-fetch class;
 // "mapping_aborted" is the 1:1 overlay guard; the rest are render-side failures.
-function redlineFallbackReasonText(failureReason) {
+//
+// D11: worded by the VIEW that failed. The Redline tab composes the TRACKED-changes
+// document; the Clean tab composes the ACCEPTED-changes (clean) document. A
+// hardcoded "tracked-changes" mis-describes a Clean-view failure, so failedViewMode
+// selects the document noun.
+function redlineFallbackReasonText(failureReason, failedViewMode) {
   const reason = String(failureReason || "");
+  const docNoun = String(failedViewMode) === String(VIEW_MODE_CLEAN)
+    ? "accepted (clean)"
+    : "tracked-changes";
   if (reason === "no_bytes") {
-    return "The reviewed (tracked-changes) document could not be fetched from the server.";
+    return `The reviewed (${docNoun}) document could not be fetched from the server.`;
   }
   if (reason === "mapping_aborted") {
-    // NOTE: the tracked-changes DOCUMENT usually still displays (read-only, via
-    // the pre-rendered fallback candidate) -- what failed is mapping its
-    // paragraphs to interactive hooks. Word it accordingly.
-    return "The tracked changes could not be safely mapped for interaction.";
+    // NOTE: the reviewed DOCUMENT usually still displays (read-only, via the
+    // pre-rendered fallback candidate) -- what failed is mapping its paragraphs to
+    // interactive hooks. Word it accordingly (view-agnostic).
+    return "The reviewed document could not be safely mapped for interaction.";
   }
   if (reason === "render_threw" || reason === "empty_render" || reason === "upgrade_threw") {
-    return "The reviewed (tracked-changes) document could not be rendered.";
+    return `The reviewed (${docNoun}) document could not be rendered.`;
   }
-  return "The reviewed (tracked-changes) document could not be displayed.";
+  return `The reviewed (${docNoun}) document could not be displayed.`;
+}
+
+// D3/D9: paint a PERSISTENT notice strip at the TOP of the already-painted
+// reconstruction floor, explaining WHY the faithful (real-DOCX) surface is not on
+// screen. Without it, a faithful->reconstruction downgrade is a SILENT visual
+// revert -- indistinguishable from the "review silently reverted to the original"
+// bug the reviewer spent a day chasing. The reconstruction underneath is the
+// never-blank, fully-editable, fully-correct floor, so this is advisory, not an
+// error surface.
+//
+// `kind`:
+//   "dirty_draft"          unsaved in-session edits block the persisted faithful
+//                          swap (D3) -- resolved by saving the draft.
+//   "faithful_unavailable" every faithful candidate failed to render (D9) --
+//                          offers a retry that re-runs the render path.
+// `viewMode` words it for the failing view; `failureReason` (optional) refines the
+// wording for the faithful_unavailable case.
+//
+// Built with DOM APIs + textContent (NOT innerHTML + escapeHtml) for the same
+// reason commitFallbackSurface is: escapeHtml is a deferred window-bridge global
+// that may be absent in a classic-script/test embedding, so a bare call throws.
+// Idempotent within a paint: renderStudioDocumentHighlights repaints
+// studioDocumentRender.innerHTML wholesale, so the strip is re-created each render
+// and never stacks; the guard below is belt-and-braces against a double call.
+function paintReconstructionFaithfulNotice(kind, viewMode, failureReason) {
+  if (typeof studioDocumentRender === "undefined" || !studioDocumentRender) return;
+  if (studioDocumentRender.querySelector("[data-faithful-reconstruction-notice]")) return;
+  const viewLabel = String(viewMode) === String(VIEW_MODE_CLEAN) ? "clean" : "redline";
+
+  const notice = document.createElement("div");
+  notice.className = "review-faithful-fallback-notice review-faithful-reconstruction-notice";
+  notice.setAttribute("data-faithful-reconstruction-notice", String(kind || ""));
+  notice.setAttribute("role", "status");
+
+  const noticeText = document.createElement("div");
+  noticeText.className = "review-faithful-fallback-notice-text";
+  const noticeTitle = document.createElement("strong");
+  const noticeDetail = document.createElement("span");
+
+  if (kind === "dirty_draft") {
+    noticeTitle.textContent = "Showing the editable reconstruction";
+    noticeDetail.textContent =
+      `You have unsaved edits, so the faithful ${viewLabel} document isn't shown `
+      + "(it would hide your in-progress changes on screen). Save the draft to switch "
+      + "back to the faithful view; your edits and export are unaffected.";
+  } else {
+    noticeTitle.textContent = "Showing the editable reconstruction";
+    const why = failureReason ? `${redlineFallbackReasonText(failureReason, viewMode)} ` : "";
+    noticeDetail.textContent =
+      `${why}The faithful ${viewLabel} document couldn't be rendered right now, so the `
+      + "editable reconstruction is shown instead. Your review and export are unaffected.";
+  }
+  noticeText.appendChild(noticeTitle);
+  noticeText.appendChild(noticeDetail);
+  notice.appendChild(noticeText);
+
+  // A retry affordance only for the faithful_unavailable case: re-running the
+  // render path re-attempts the faithful upgrade end-to-end. The dirty-draft case
+  // is resolved by SAVING (retrying would just hit the same guard), so it carries
+  // no button.
+  if (kind !== "dirty_draft") {
+    const retryButton = document.createElement("button");
+    retryButton.type = "button";
+    retryButton.className = "review-faithful-fallback-retry";
+    retryButton.setAttribute("data-faithful-reconstruction-retry", "");
+    retryButton.textContent = "Retry faithful view";
+    retryButton.addEventListener("click", () => {
+      renderStudioDocumentHighlights();
+    });
+    notice.appendChild(retryButton);
+  }
+
+  studioDocumentRender.insertBefore(notice, studioDocumentRender.firstChild);
 }
 
 // The transient-toast half of the fallback announcement (the persistent half is

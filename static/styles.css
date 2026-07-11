@@ -3967,6 +3967,23 @@ h3 {
   background: #ffedd5;
 }
 
+/* D3/D9: advisory strip painted at the top of the reconstruction floor when the
+   faithful (real-DOCX) surface can't be shown -- unsaved edits (dirty_draft) or an
+   exhausted faithful render (faithful_unavailable). Reuses the fallback-notice
+   layout above; without a visible strip a faithful->reconstruction downgrade looks
+   identical to the "review silently reverted" bug. The dirty-draft variant is
+   tinted informational (blue) because it is an expected, self-resolving state (save
+   to restore the faithful view), not a failure; faithful_unavailable keeps the
+   amber fallback look and carries a retry. */
+.review-faithful-reconstruction-notice[data-faithful-reconstruction-notice="dirty_draft"] {
+  background: #eff6ff;
+  border-color: rgba(59, 130, 246, 0.45);
+}
+
+.review-faithful-reconstruction-notice[data-faithful-reconstruction-notice="dirty_draft"] strong {
+  color: #1e40af;
+}
+
 .review-pdf-frame {
   background: #ffffff;
   border: 1px solid rgba(148, 163, 184, 0.45);
