@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>nda automation</title>
     <link rel="stylesheet" href="/static/styles.css?v=20260711renderbatchstyl">
+    <link rel="stylesheet" href="/static/styles.css?v=20260711readorder1">
 
     <link rel="stylesheet" href="/static/css/repository.css?v=20260707adminob1">
     <link rel="stylesheet" href="/static/css/corpus.css?v=20260619onboard1">
@@ -583,6 +584,15 @@
                surface that explains WHY an overlay flipped the matter to Needs
                Review and blocked send. -->
           <section id="studioOverlayBanner" class="studio-overlay-banner" role="alert" aria-live="polite" hidden></section>
+
+          <!-- Extraction reading-order banner: a matter-level notice that the source
+               document could NOT be read cleanly (a scrambled / multi-column / letter-
+               spaced PDF). Populated by renderExtractionQualityBanner() from the review
+               result's extraction_reading_order confidence block; stays hidden for a
+               clean extraction so a normal single-column NDA shows no notice. Tells the
+               reviewer to check the clauses against the original source before relying on
+               the verdict -- the surface that makes degraded extraction no longer silent. -->
+          <section id="studioExtractionBanner" class="studio-overlay-banner extraction-quality" role="alert" aria-live="polite" hidden></section>
 
           <section class="studio-grid">
             <section class="studio-document">
@@ -2447,6 +2457,7 @@
     <script src="/static/js/review-workstation-actions.js?v=20260623reviewtabv2-2"></script>
     <script src="/static/js/review-workstation-source.js?v=20260706onboard1"></script>
     <script src="/static/js/review-workstation-rendering.js?v=20260711renderbatchrevi"></script>
+    <script src="/static/js/review-workstation-rendering.js?v=20260711readorder1"></script>
     <script src="/static/js/review-workstation-format.js?v=20260622docxphase2-1"></script>
     <script src="/static/js/review-workstation-viewer.js?v=20260711renderbatchrevi"></script>
     <script src="/static/js/viewer-controls.js?v=20260709clobber1"></script>

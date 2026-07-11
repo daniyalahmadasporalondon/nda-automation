@@ -31,6 +31,7 @@ from .review_engine import (
 )
 from .review_result_contract import (
     attach_document_source,
+    carry_reading_order_signal,
     extracted_text_from_paragraphs,
     review_result_paragraphs,
 )
@@ -1000,6 +1001,64 @@ def _run_review_body_with_deadline(
     )
 
 
+def _attach_reading_order_signal(
+    review_result: dict[str, Any],
+    matter: dict[str, Any],
+    *,
+    repository: MatterRepository,
+    matter_id: str,
+    owner_user_id: str,
+    telemetry: ModuleType,
+) -> None:
+    """Ride the extractor's reading-order confidence signal onto a review result.
+
+    Re-derives the reading-order block for a PDF matter from its ORIGINAL source bytes
+    (the same deterministic pypdf pass ingest ran -- ``include_visual_profile=False`` so
+    no second PyMuPDF parse) and carries it onto the review result via
+    ``carry_reading_order_signal``. On a DEGRADED extraction it also emits a structured,
+    greppable server log + telemetry so a future backfill can find every affected matter.
+
+    Reading-order degradation is a PDF-extraction concern only: non-PDF matters (native
+    DOCX) are skipped -- no re-parse, no signal, no banner. FULLY FAIL-OPEN: any error
+    (missing bytes, extraction failure) leaves ``review_result`` exactly as produced.
+    """
+    try:
+        source_filename = str(
+            matter.get("source_filename") or matter.get("stored_filename") or ""
+        )
+        if not source_filename.lower().endswith(".pdf"):
+            return
+        document_bytes = repository.get_source_document_bytes(matter)
+        if not document_bytes:
+            return
+        _document_type, _paragraphs, extraction_quality = extract_document(
+            source_filename, document_bytes, include_visual_profile=False
+        )
+        reading_order = carry_reading_order_signal(review_result, extraction_quality)
+    except Exception:  # pragma: no cover - defensive; the review must never fail on this
+        LOGGER.debug(
+            "Reading-order signal attach failed for matter %s; review left untouched",
+            matter_id,
+            exc_info=True,
+        )
+        return
+    if not isinstance(reading_order, dict) or not reading_order.get("degraded"):
+        return
+    telemetry.increment("pdf_reading_order_degraded")
+    LOGGER.warning(
+        "pdf reading-order degraded matter=%s owner=%s confidence=%s columns=%s "
+        "reorder_applied=%s garbled=%s reasons=%s -- the reviewer is reading text that "
+        "could not be extracted cleanly; a source-check banner was surfaced",
+        matter_id,
+        str(owner_user_id or ""),
+        reading_order.get("reading_order_confidence"),
+        reading_order.get("columns_detected"),
+        reading_order.get("reorder_applied"),
+        reading_order.get("garbled"),
+        ",".join(str(reason) for reason in (reading_order.get("reasons") or [])),
+    )
+
+
 def _perform_inbound_ai_review_body(
     matter_id: str,
     *,
@@ -1120,6 +1179,22 @@ def _perform_inbound_ai_review_body(
         _record_inbound_review_failure(matter_id, repository=repository, owner_user_id=owner_user_id)
         LOGGER.warning("Inbound AI review failed for matter %s", matter_id, exc_info=True)
         return
+
+    # READING-ORDER VISIBILITY. The on-demand review engine above produced a verdict
+    # over the extracted text WITHOUT any notion of whether that text was read cleanly.
+    # Re-derive the extractor's reading-order confidence signal here and ride it on the
+    # review result so a scrambled / multi-column / letter-spaced PDF surfaces a LOUD,
+    # non-dismissable banner to the human -- rather than a silent verdict over garbled
+    # clauses. Fully FAIL-OPEN: any failure leaves the review untouched (no signal is
+    # strictly better than a broken review).
+    _attach_reading_order_signal(
+        review_result,
+        matter,
+        repository=repository,
+        matter_id=matter_id,
+        owner_user_id=owner_user_id,
+        telemetry=telemetry,
+    )
 
     # PERSIST-POINT RIGHT OF WAY. The drain-time gate (_inbound_review_pool_handler)
     # only stops a review from STARTING. A review that was already mid-flight when a
