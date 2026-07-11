@@ -85,6 +85,29 @@ def _send_reviewed_docx_not_modified(handler, etag: str) -> None:
     handler._send_json({}, status=304, headers={"ETag": etag}, send_body=False)
 
 
+# Headers that describe a *download body* (its MIME type + save-as filename). A
+# JSON error response must NEVER carry these: a stray ``Content-Type: application/pdf``
+# / ``Content-Disposition: attachment; filename="...pdf"`` forwarded from a failed
+# export would make the client save the JSON error blob AS a .pdf. ``_send_json``
+# already sets ``Content-Type: application/json`` up front, but it then appends any
+# forwarded headers verbatim (no de-dup), so a body-typing header would double-emit
+# and mislabel the error. Error branches that forward an upstream error's headers
+# (e.g. a PdfExportError carrying Retry-After) run them through this filter first so
+# only transport hints (Retry-After, etc.) survive -- never a body content-type.
+_BODY_CONTENT_HEADERS = {"content-type", "content-disposition"}
+
+
+def _json_safe_error_headers(headers: dict[str, str] | None) -> dict[str, str]:
+    """Drop any body-describing headers so a JSON error is never typed as a download."""
+    if not headers:
+        return {}
+    return {
+        key: value
+        for key, value in headers.items()
+        if str(key).strip().lower() not in _BODY_CONTENT_HEADERS
+    }
+
+
 def parse_clause_decision_path(path: str) -> tuple[str, str] | None:
     """Split /api/matters/{id}/clauses/{clauseId}/decision into its two ids."""
     prefix = "/api/matters/"
@@ -657,7 +680,15 @@ def handle_matter_reviewed_pdf(handler, path: str, *, send_body: bool = True) ->
             owner_user_id=owner_user_id,
         )
     except pdf_export_service.PdfExportError as error:
-        handler._send_json(error.payload, status=error.status, headers=error.headers, send_body=send_body)
+        # Forward only transport hints (Retry-After, etc.) from the failed export --
+        # NEVER a body Content-Type/Content-Disposition, so this JSON error can never
+        # be served (or saved by the client) as a .pdf-typed download.
+        handler._send_json(
+            error.payload,
+            status=error.status,
+            headers=_json_safe_error_headers(error.headers),
+            send_body=send_body,
+        )
         return
     except redline_export_service.StaleMatterReviewError as error:
         handler._send_json(
