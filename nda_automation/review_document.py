@@ -26,6 +26,13 @@ STRUCTURAL_METADATA_KEYS = (
     # mapping can read it; stripping it here left both blind to real PDF typography.
     "pdf_geometry",
     "runs",
+    # DOCX source display metadata (docx_text.py). ``footnotes``/``comments`` carry
+    # a character ``offset`` into the WHOLE extracted paragraph's text, so -- like
+    # ``runs`` -- they are dropped from a piece produced by a soft-return split
+    # (their offsets no longer address the piece). Display-only: never enters the
+    # paragraph text, the verdict engine, or the outbound redline.
+    "footnotes",
+    "comments",
     "source_kind",
     "source_part",
     "source_index",
@@ -35,6 +42,9 @@ STRUCTURAL_METADATA_KEYS = (
     "style_name",
     "table",
 )
+# Whole-paragraph metadata whose character offsets stop addressing the text once a
+# paragraph is re-split into parts; dropped from every non-whole piece.
+_WHOLE_PARAGRAPH_OFFSET_KEYS = ("runs", "footnotes", "comments")
 
 
 class ParagraphAlignmentError(ValueError):
@@ -113,11 +123,13 @@ def align_document_paragraphs(paragraphs: List[Paragraph], source_text: str) -> 
             for key in STRUCTURAL_METADATA_KEYS:
                 if key in paragraph:
                     aligned_paragraph[key] = paragraph[key]
-            # ``runs`` describes the whole extracted paragraph. If that paragraph
-            # was re-split into parts here, the run breakdown no longer matches a
-            # part, so drop it and fall back to the part's flat text.
-            if "runs" in aligned_paragraph and (was_split or paragraph_text != whole_text):
-                del aligned_paragraph["runs"]
+            # ``runs`` (and the footnote/comment offset metadata) describe the whole
+            # extracted paragraph. If that paragraph was re-split into parts here, a
+            # whole-paragraph character offset no longer matches a part, so drop them
+            # and fall back to the part's flat text.
+            if was_split or paragraph_text != whole_text:
+                for offset_key in _WHOLE_PARAGRAPH_OFFSET_KEYS:
+                    aligned_paragraph.pop(offset_key, None)
             # Stamp split provenance on continuation pieces (every piece after the
             # first non-empty one). This is the structural signal the unified
             # detector consults so a wrapped continuation of clause 5 is never
