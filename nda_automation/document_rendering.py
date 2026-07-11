@@ -450,6 +450,91 @@ def _kill_process_group(process: subprocess.Popen) -> None:
             pass
 
 
+def _form_widget_has_value(widget: Any) -> bool:
+    """True when a form-field widget carries a value worth baking into the page.
+
+    A checkbox/radio *off* state (``Off``/``/Off``) and an empty value carry no
+    information for the reviewer, so they are not treated as "filled" — an empty
+    template must stay byte-identical (see ``_flatten_acroform_widgets``).
+    """
+    value = getattr(widget, "field_value", None)
+    if value is None or value is False:
+        return False
+    if value is True:
+        # A checked checkbox/radio exports as True in fitz; it renders a mark.
+        return True
+    text = str(value).strip()
+    if not text:
+        return False
+    if text in ("Off", "/Off"):
+        return False
+    return True
+
+
+def _flatten_acroform_widgets(document: Any, fitz_module: Any) -> bool:
+    """Bake filled AcroForm (fillable-PDF) field values into page content.
+
+    A fillable NDA carries the party's entries — names, dates, amounts, checkbox
+    marks — in interactive form-field ``/V`` values that live ONLY in widget
+    annotations, not in the page content stream. The rasterized "Original" page a
+    reviewer sees is therefore a BLANK template unless those values are rendered
+    in. ``fitz.Document.bake(widgets=True)`` draws each field's value into the page
+    content at its widget ``/Rect`` on the correct page — text fields, checkbox
+    marks and choice-field selections alike — using the field's own appearance, so
+    the reviewer sees the COMPLETED document.
+
+    CONSERVATIVE + fail-open by construction:
+
+      * No-op (returns ``False``, document untouched) when the PDF has no AcroForm,
+        or when no widget carries a value — so a NORMAL PDF and an EMPTY template
+        both rasterize byte-identically.
+      * ``bake(annots=False, ...)`` bakes ONLY the form widgets; every other
+        annotation is left exactly as the existing rasterize path rendered it.
+      * Any error leaves the document untouched and returns ``False``; rasterize
+        then proceeds exactly as before (and the values still reach the AI via the
+        extractor's "Form field values" section — the B1 fallback).
+
+    Returns ``True`` only when a bake actually ran.
+    """
+
+    try:
+        if not getattr(document, "is_form_pdf", False):
+            return False
+    except Exception:
+        return False
+
+    # Only bake when at least one widget is actually filled. Iterating widgets is
+    # cheap relative to rasterizing and guarantees an all-empty form template is
+    # never mutated (byte-identical).
+    try:
+        has_value = False
+        for page in document:
+            widgets = page.widgets()
+            if not widgets:
+                continue
+            for widget in widgets:
+                if _form_widget_has_value(widget):
+                    has_value = True
+                    break
+            if has_value:
+                break
+        if not has_value:
+            return False
+    except Exception:
+        return False
+
+    try:
+        # widgets=True bakes form-field appearances into content; annots=False so
+        # non-widget annotations keep the exact rendering the rasterize path
+        # already produced. fitz regenerates a missing/stale appearance from /V
+        # during the bake, so a value shows even when the source appearance stream
+        # was blank (the classic "filled form renders empty" case).
+        document.bake(annots=False, widgets=True)
+        return True
+    except Exception:
+        return False
+
+
 class PyMuPdfPageRenderer:
     name = "pymupdf"
 
@@ -475,6 +560,12 @@ class PyMuPdfPageRenderer:
         with _suppressed_mupdf_errors(self._fitz):
             document = self._fitz.open(str(pdf_path))
             try:
+                # Fillable-PDF prefill: bake filled AcroForm field values into the
+                # page content BEFORE rasterizing so a fillable NDA renders as a
+                # COMPLETED document (the party's names/dates/amounts appear in the
+                # blanks), not a blank template. No-op + byte-identical for a normal
+                # PDF (no AcroForm) or an empty template; never raises.
+                _flatten_acroform_widgets(document, self._fitz)
                 page_count = getattr(document, "page_count", None)
                 if page_count is None:
                     page_count = len(document)
