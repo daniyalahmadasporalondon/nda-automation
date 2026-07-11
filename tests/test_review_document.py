@@ -102,6 +102,44 @@ class ReviewDocumentTests(unittest.TestCase):
         self.assertEqual(aligned[0]["runs"][2]["strike"], True)
         self.assertEqual(aligned[0]["runs"][3]["highlight"], "yellow")
 
+    def test_align_preserves_paragraph_alignment_and_font(self):
+        # The extractor stamps a paragraph's from-state alignment ("both"->justify)
+        # and base font name. These are additive STYLE metadata: they must survive
+        # align_document_paragraphs so the reconstruction/source-fidelity renderers
+        # can honour them, and they must NEVER alter the paragraph's ``text`` (the
+        # outbound-redline surface reads ``text``/innerText, not these keys).
+        source_text = "Confidentiality Agreement"
+        extracted_paragraphs = [
+            {
+                "source_index": 1,
+                "source_kind": "paragraph",
+                "text": "Confidentiality Agreement",
+                "alignment": "center",
+                "font": "Times New Roman",
+            },
+        ]
+
+        aligned = align_document_paragraphs(extracted_paragraphs, source_text)
+
+        self.assertEqual(aligned[0]["alignment"], "center")
+        self.assertEqual(aligned[0]["font"], "Times New Roman")
+        # The style keys are metadata only -- the text the redline targets is
+        # byte-identical to the source, with no alignment/font token injected.
+        self.assertEqual(aligned[0]["text"], "Confidentiality Agreement")
+
+    def test_align_leaves_alignment_and_font_absent_when_source_omits_them(self):
+        # Additive: a paragraph the extractor did not tag stays untouched, so the
+        # renderer falls back to the source default (left) and the app font.
+        source_text = "Body paragraph."
+        extracted_paragraphs = [
+            {"source_index": 1, "source_kind": "paragraph", "text": "Body paragraph."},
+        ]
+
+        aligned = align_document_paragraphs(extracted_paragraphs, source_text)
+
+        self.assertNotIn("alignment", aligned[0])
+        self.assertNotIn("font", aligned[0])
+
     def test_align_preserves_pdf_page_number_metadata(self):
         source_text = "First PDF block.\n\nSecond PDF block."
         extracted_paragraphs = [

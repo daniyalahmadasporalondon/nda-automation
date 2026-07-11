@@ -208,3 +208,55 @@ def test_review_matter_exposes_additive_source_fidelity_contract():
     assert payload["review_result"]["paragraphs"][0]["table"]["cell_index"] == 1
     assert payload["source_fidelity"]["capabilities"]["structured_tables"] is True
     assert payload["source_fidelity"]["blocks"][0]["type"] == "table"
+
+
+def test_source_fidelity_exposes_paragraph_alignment_and_font_in_style():
+    # The extractor-captured paragraph alignment ("both"->justify) and base font
+    # are additive STYLE facts. Once they survive the review_document allowlist
+    # they must reach the source-fidelity block's ``style`` so the reconstruction
+    # renderer can emit inline text-align / font-family. A paragraph that carries
+    # neither exposes no such keys, so the renderer falls back to the source
+    # default (left) and the app font.
+    review_result = {
+        "source": {"type": "docx"},
+        "paragraphs": [
+            {
+                "id": "p1",
+                "index": 1,
+                "text": "Confidentiality Agreement",
+                "source_kind": "paragraph",
+                "alignment": "center",
+                "font": "Times New Roman",
+            },
+            {
+                "id": "p2",
+                "index": 2,
+                "text": "Justified body clause text.",
+                "source_kind": "paragraph",
+                "alignment": "justify",
+            },
+            {
+                "id": "p3",
+                "index": 3,
+                "text": "Unstyled paragraph.",
+                "source_kind": "paragraph",
+            },
+        ],
+    }
+
+    payload = source_fidelity_payload(review_result, source=review_result["source"])
+    blocks = payload["blocks"]
+
+    assert blocks[0]["style"]["alignment"] == "center"
+    assert blocks[0]["style"]["font"] == "Times New Roman"
+    assert blocks[1]["style"]["alignment"] == "justify"
+    assert "font" not in blocks[1].get("style", {})
+    # A paragraph with no alignment/font exposes no such style keys.
+    assert "alignment" not in blocks[2].get("style", {})
+    assert "font" not in blocks[2].get("style", {})
+    # Style facts never mutate the paragraph text the redline targets.
+    assert [block["text"] for block in blocks] == [
+        "Confidentiality Agreement",
+        "Justified body clause text.",
+        "Unstyled paragraph.",
+    ]

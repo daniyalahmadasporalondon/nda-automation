@@ -47,6 +47,11 @@ SUPPLEMENTAL_SOURCE_KIND = "supplemental"
 DocxParagraph = Dict[str, object]
 NumberingDefinitions = Dict[str, object]
 StyleDefinitions = Dict[str, Dict[str, object]]
+# Word paragraph styles inherit via ``<w:basedOn>``; the chain is normally 1-3
+# deep (e.g. "Title" -> "Normal"). Cap the walk so a hand-crafted cyclic or
+# absurdly long basedOn cannot spin the resolver.
+MAX_STYLE_CHAIN_DEPTH = 32
+DocDefaults = Dict[str, object]
 
 
 class DocxExtractionError(ValueError):
@@ -288,7 +293,7 @@ def _decode_zip_filename(filename: bytes, flags: int) -> str:
 
 def _extract_main_document_paragraphs(document: ZipFile) -> List[DocxParagraph]:
     root = _read_xml_part(document, "word/document.xml", missing_message="The Word document is missing its main document body.")
-    styles = _read_styles(document)
+    styles, doc_defaults = _read_styles(document)
     numbering = _read_numbering(document)
     numbering_state: Dict[str, Dict[int, int]] = {}
     paragraphs: List[DocxParagraph] = []
@@ -300,6 +305,7 @@ def _extract_main_document_paragraphs(document: ZipFile) -> List[DocxParagraph]:
                 text,
                 source_index=indexed.source_index,
                 styles=styles,
+                doc_defaults=doc_defaults,
                 numbering=numbering,
                 numbering_state=numbering_state,
                 table_context=indexed.table_context,
@@ -321,9 +327,9 @@ def _extract_main_document_paragraphs(document: ZipFile) -> List[DocxParagraph]:
 
 def _extract_supplemental_paragraphs(document: ZipFile) -> List[DocxParagraph]:
     paragraphs: List[DocxParagraph] = []
+    styles, doc_defaults = _read_styles(document)
     for part_name in sorted(_supplemental_part_names(document)):
         root = _read_xml_part(document, part_name)
-        styles = _read_styles(document)
         source_part = _source_part_label(part_name)
         for paragraph in root.iter(f"{WORD_NS}p"):
             text = _paragraph_text(paragraph)
@@ -333,6 +339,7 @@ def _extract_supplemental_paragraphs(document: ZipFile) -> List[DocxParagraph]:
                     text,
                     source_part=source_part,
                     styles=styles,
+                    doc_defaults=doc_defaults,
                     numbering={},
                     numbering_state={},
                 ))
@@ -422,6 +429,7 @@ def _paragraph_record(
     styles: StyleDefinitions,
     numbering: NumberingDefinitions,
     numbering_state: Dict[str, Dict[int, int]],
+    doc_defaults: DocDefaults | None = None,
     source_index: int | None = None,
     source_part: str | None = None,
     table_context: Dict[str, object] | None = None,
@@ -472,11 +480,11 @@ def _paragraph_record(
     if indent_left is not None:
         record["indent_left"] = indent_left
 
-    alignment = _paragraph_alignment(ppr)
+    alignment = _paragraph_alignment(ppr, styles, style_id, doc_defaults)
     if alignment:
         record["alignment"] = alignment
 
-    font = _paragraph_font(paragraph)
+    font = _paragraph_font(paragraph, styles, style_id, doc_defaults)
     if font:
         record["font"] = font
 
@@ -560,12 +568,12 @@ def _table_cell_width(tcpr: ET.Element) -> Dict[str, object]:
     return record
 
 
-def _paragraph_alignment(ppr: ET.Element | None) -> str | None:
-    """The paragraph's from-state alignment, mapped to left/center/right/justify.
+def _jc_alignment(ppr: ET.Element | None) -> str | None:
+    """Map a ``<w:pPr>/<w:jc w:val>`` to left/center/right/justify, or ``None``.
 
-    Read from ``<w:pPr>/<w:jc w:val>``; Word's ``both`` is justified text. Only
-    returned when present, so the field stays additive and absent on paragraphs
-    that inherit alignment from their style."""
+    Word's ``both`` is justified text; ``start``/``end`` are the bidi-aware
+    aliases for left/right. Shared by the inline paragraph reader and the style /
+    docDefaults readers so the same mapping applies wherever a ``<w:jc>`` lives."""
     if ppr is None:
         return None
     value = _val(ppr.find(f"{WORD_NS}jc")).strip().lower()
@@ -582,23 +590,97 @@ def _paragraph_alignment(ppr: ET.Element | None) -> str | None:
     return None
 
 
-def _paragraph_font(paragraph: ET.Element) -> str | None:
-    """The paragraph's dominant-run font name (``<w:rPr>/<w:rFonts w:ascii>``).
+def _inline_paragraph_font(paragraph: ET.Element) -> str | None:
+    """The paragraph's dominant-run INLINE font name (``<w:rPr>/<w:rFonts w:ascii>``).
 
     Reuses the same first-run-with-rPr "dominant run" heuristic the redline
     emitter uses, so the captured from-state font matches what carries through a
-    tracked change. Only returned when present."""
+    tracked change. Only returned when a run names an explicit face."""
     for run in paragraph.iter(f"{WORD_NS}r"):
         rpr = run.find(f"{WORD_NS}rPr")
         if rpr is None:
             continue
-        rfonts = rpr.find(f"{WORD_NS}rFonts")
-        if rfonts is None:
-            continue
-        ascii_font = _attr(rfonts, "ascii").strip()
+        ascii_font = _run_font(rpr)
         if ascii_font:
             return ascii_font
     return None
+
+
+def _resolve_style_chain_string(
+    styles: StyleDefinitions,
+    style_id: str | None,
+    key: str,
+) -> str | None:
+    """First non-empty string ``key`` (e.g. "alignment"/"font") on the paragraph's
+    style, walking ``<w:basedOn>`` toward the root.
+
+    Word resolves inherited properties up the ``basedOn`` chain (a "Title" style
+    that only sets centering still inherits "Normal"'s font). We stop at the first
+    ancestor that defines ``key``. A visited set + hard depth cap make a cyclic or
+    pathological chain terminate."""
+    if not style_id or not isinstance(styles, dict):
+        return None
+    seen: set[str] = set()
+    current: str | None = style_id
+    depth = 0
+    while current and current not in seen and depth < MAX_STYLE_CHAIN_DEPTH:
+        seen.add(current)
+        depth += 1
+        record = styles.get(current)
+        if not isinstance(record, dict):
+            break
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+        based_on = record.get("based_on")
+        current = based_on if isinstance(based_on, str) and based_on else None
+    return None
+
+
+def _paragraph_alignment(
+    ppr: ET.Element | None,
+    styles: StyleDefinitions,
+    style_id: str | None,
+    doc_defaults: DocDefaults | None,
+) -> str | None:
+    """The paragraph's EFFECTIVE alignment, mapped to left/center/right/justify.
+
+    Resolves Word's cascade conservatively: an inline ``<w:pPr>/<w:jc>`` always
+    wins; only when it is absent do we fall back to the paragraph style's own
+    ``<w:jc>`` (walking ``basedOn``) and finally the document default
+    (``<w:docDefaults>/<w:pPrDefault>/<w:pPr>/<w:jc>``). Returned only when some
+    layer sets it, so the field stays additive and absent on left-default text."""
+    inline = _jc_alignment(ppr)
+    if inline:
+        return inline
+    style_value = _resolve_style_chain_string(styles, style_id, "alignment")
+    if style_value:
+        return style_value
+    default = doc_defaults.get("alignment") if isinstance(doc_defaults, dict) else None
+    return default if isinstance(default, str) and default else None
+
+
+def _paragraph_font(
+    paragraph: ET.Element,
+    styles: StyleDefinitions,
+    style_id: str | None,
+    doc_defaults: DocDefaults | None,
+) -> str | None:
+    """The paragraph's EFFECTIVE base font name.
+
+    Resolves Word's cascade conservatively: an inline run ``<w:rFonts w:ascii>``
+    always wins (dominant-run heuristic); only when no run names a face do we fall
+    back to the paragraph style's ``<w:rPr>/<w:rFonts>`` (walking ``basedOn``) and
+    finally the document default (``<w:docDefaults>/<w:rPrDefault>/<w:rPr>/<w:rFonts>``).
+    Returned only when some layer names a font, so the field stays additive."""
+    inline = _inline_paragraph_font(paragraph)
+    if inline:
+        return inline
+    style_value = _resolve_style_chain_string(styles, style_id, "font")
+    if style_value:
+        return style_value
+    default = doc_defaults.get("font") if isinstance(doc_defaults, dict) else None
+    return default if isinstance(default, str) and default else None
 
 
 def _paragraph_font_size(paragraph: ET.Element, ppr: ET.Element | None) -> int | None:
@@ -625,11 +707,20 @@ def _paragraph_font_size(paragraph: ET.Element, ppr: ET.Element | None) -> int |
     return None
 
 
-def _read_styles(document: ZipFile) -> StyleDefinitions:
+def _read_styles(document: ZipFile) -> tuple[StyleDefinitions, DocDefaults]:
+    """Parse ``word/styles.xml`` into (paragraph-style records, document defaults).
+
+    Each style record additionally carries the presentational facts a paragraph
+    can inherit -- ``based_on`` (the ``<w:basedOn>`` parent, so the cascade can be
+    walked), ``alignment`` (the style's ``<w:pPr>/<w:jc>``) and ``font`` (the
+    style's ``<w:rPr>/<w:rFonts w:ascii>``) -- so ``_paragraph_alignment`` /
+    ``_paragraph_font`` can fall back to the style when the paragraph sets nothing
+    inline. The document-wide defaults (``<w:docDefaults>``) are returned
+    separately as the bottom of that cascade."""
     try:
         root = _read_xml_part(document, "word/styles.xml")
     except DocxExtractionError:
-        return {}
+        return {}, {}
 
     styles: StyleDefinitions = {}
     for style in root.findall(f"{WORD_NS}style"):
@@ -643,14 +734,47 @@ def _read_styles(document: ZipFile) -> StyleDefinitions:
         name = _val(style.find(f"{WORD_NS}name"))
         if name:
             record["name"] = name
+        based_on = _val(style.find(f"{WORD_NS}basedOn")).strip()
+        if based_on:
+            record["based_on"] = based_on
         outline_level = _outline_level(ppr)
         if outline_level is not None:
             record["outline_level"] = outline_level
         numbering = _num_pr(ppr)
         if numbering:
             record["numbering"] = numbering
+        alignment = _jc_alignment(ppr)
+        if alignment:
+            record["alignment"] = alignment
+        style_font = _run_font(style.find(f"{WORD_NS}rPr"))
+        if style_font:
+            record["font"] = style_font
         styles[style_id] = record
-    return styles
+    return styles, _read_doc_defaults(root)
+
+
+def _read_doc_defaults(styles_root: ET.Element) -> DocDefaults:
+    """The document-wide run/paragraph defaults from ``<w:docDefaults>``.
+
+    Word's inheritance bottoms out here: a run with no explicit font and no style
+    font still renders in ``<w:rPrDefault>/<w:rPr>/<w:rFonts w:ascii>``, and a
+    document may set a default justification in ``<w:pPrDefault>/<w:pPr>/<w:jc>``.
+    Only present keys are returned, so the fallback stays additive."""
+    defaults = styles_root.find(f"{WORD_NS}docDefaults")
+    if defaults is None:
+        return {}
+    record: DocDefaults = {}
+    rpr_default = defaults.find(f"{WORD_NS}rPrDefault")
+    if rpr_default is not None:
+        default_font = _run_font(rpr_default.find(f"{WORD_NS}rPr"))
+        if default_font:
+            record["font"] = default_font
+    ppr_default = defaults.find(f"{WORD_NS}pPrDefault")
+    if ppr_default is not None:
+        default_alignment = _jc_alignment(ppr_default.find(f"{WORD_NS}pPr"))
+        if default_alignment:
+            record["alignment"] = default_alignment
+    return record
 
 
 def _read_numbering(document: ZipFile) -> NumberingDefinitions:
