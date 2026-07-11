@@ -4442,13 +4442,17 @@ function maybeUpgradeOriginalSurfaceToFaithfulDocx() {
       showStudioDocumentRender();
       // D2: the innerHTML swap above DESTROYED the page-image surface the PDF
       // markup controller had mounted its toolbar + annotation layers onto
-      // (notifyPdfMarkupOriginalRendered ran back at the page-image paint). Without
-      // re-notifying, a converted-PDF matter that upgrades to the faithful DOCX
-      // Original would silently lose its markup toolbar. The new faithful wrapper
-      // still carries data-original-surface, so getSurfaceRoot() resolves to it:
-      // re-notify so the controller re-mounts the toolbar (and re-loads/repositions
-      // annotations) onto the live faithful surface instead of leaving the reviewer
-      // with no markup.
+      // (notifyPdfMarkupOriginalRendered ran back at the page-image paint), leaving
+      // a detached toolbar node + a live hostResizeObserver pointing at removed DOM.
+      // The new faithful wrapper still carries data-original-surface, so re-notifying
+      // runs the markup lifecycle against it. The faithful DOCX reconstruction is a
+      // REFLOWED surface with no [data-review-render-page] tiles, so the controller
+      // takes its page-less path and cleanly TEARS DOWN the page-markup toolbar
+      // (disconnecting the leaked observer and removing the stale node) rather than
+      // re-mounting it. That is intended: page-coordinate PDF markup is meaningless
+      // on a reflowed DOCX, so a converted-PDF matter that upgrades to faithful DOCX
+      // is left without the page-markup toolbar (a clean, no-leak teardown, decided
+      // acceptable 2026-07-11) — not the leaky detached toolbar the old swap left.
       notifyPdfMarkupOriginalRendered();
     })
     .catch((error) => {
