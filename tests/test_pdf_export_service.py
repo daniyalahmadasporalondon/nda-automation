@@ -272,6 +272,72 @@ def test_build_docx_pdf_export_reports_unavailable_converter():
         raise AssertionError("expected converter-unavailable PDF export error")
 
 
+# --------------------------------------------------------------------------- #
+# D5: a matter's reviewed exports must stay downloadable once it is approved AND
+# after it is executed / fully_signed. Approval mints the reviewed artifact;
+# executing is a strictly later, approval-presupposing state, so a SIGNED matter
+# must not lose its reviewed redline. Never widen access to an unreviewed matter.
+# --------------------------------------------------------------------------- #
+def test_matter_reviewed_export_ready_covers_approved_and_executed_states():
+    ready = pdf_export_service.matter_reviewed_export_ready
+    # Approved (canonical sign-off) -- ready.
+    assert ready({"status": "approved"}) is True
+    # Approved via timestamp only (no status string) -- ready.
+    assert ready({"approved_at": "2026-07-11T00:00:00+00:00"}) is True
+    # Executed / fully signed (strictly later than approval) -- STILL ready (D5).
+    assert ready({"status": "fully_signed"}) is True
+    assert ready({"executed": True}) is True
+    assert ready({"executed_at": "2026-07-11T00:00:00+00:00"}) is True
+    # Reviewed-but-unapproved / in-flight -- NOT ready (no widening to unreviewed).
+    assert ready({"status": "awaiting_human", "review_result": {"clauses": []}}) is False
+    assert ready({"status": "active"}) is False
+    assert ready({}) is False
+
+
+def test_public_matter_document_downloads_available_for_executed_matter():
+    # A DOCX-source matter that has been EXECUTED (fully_signed) -- NOT status
+    # "approved" -- must still offer its reviewed DOCX/PDF downloads (D5).
+    downloads = pdf_export_service.public_matter_document_downloads(
+        {
+            "id": "matter-exec",
+            "source_filename": "Acme NDA.docx",
+            "status": "fully_signed",
+            "executed": True,
+        },
+        converter=AvailableConverter(),
+    )
+
+    reviewed = downloads["reviewed"]["formats"]
+    assert reviewed["docx"]["available"] is True
+    assert reviewed["docx"]["download_url"] == "/api/matters/matter-exec/reviewed-docx"
+    assert reviewed["docx"]["filename"] == "Acme-NDA-redlined.docx"
+    assert reviewed["pdf"]["available"] is True
+    assert reviewed["pdf"]["download_url"] == "/api/matters/matter-exec/reviewed-pdf"
+    # No false "available after approved" copy for an already-executed matter.
+    assert "unavailable_reason" not in reviewed["docx"]
+    assert "unavailable_reason" not in reviewed["pdf"]
+
+
+def test_public_matter_document_downloads_blocks_reviewed_before_approval():
+    # A reviewed-but-unapproved matter still hides reviewed exports and shows the
+    # honest pre-approval copy -- the gate is only extended PAST approval, not before.
+    downloads = pdf_export_service.public_matter_document_downloads(
+        {
+            "id": "matter-pending",
+            "source_filename": "Acme NDA.docx",
+            "status": "awaiting_human",
+            "review_result": {"clauses": []},
+        },
+        converter=AvailableConverter(),
+    )
+
+    reviewed = downloads["reviewed"]["formats"]
+    assert reviewed["docx"]["available"] is False
+    assert reviewed["pdf"]["available"] is False
+    assert "approved" in reviewed["docx"]["unavailable_reason"]
+    assert "approved" in reviewed["pdf"]["unavailable_reason"]
+
+
 def test_build_matter_pdf_source_docx_export_reconstructs_pdf_source():
     class Repository:
         def get_matter(self, matter_id, *, owner_user_id=""):

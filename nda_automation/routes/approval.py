@@ -660,7 +660,11 @@ def handle_matter_reviewed_pdf(handler, path: str, *, send_body: bool = True) ->
     if matter is None:
         handler._send_json({"error": "NDA not found."}, status=404, send_body=send_body)
         return
-    if str(matter.get("status") or "") != approval.MATTER_STATUS_APPROVED:
+    # Available once the matter is approved AND thereafter -- an executed /
+    # fully_signed matter (a strictly later, approval-presupposing state) must keep
+    # its reviewed PDF downloadable rather than 409-ing (D5). The shared predicate
+    # is the single source of truth also used by the download-menu contract.
+    if not pdf_export_service.matter_reviewed_export_ready(matter):
         handler._send_json(
             {"error": "Reviewed PDF is available only after the NDA is approved."},
             status=409,
