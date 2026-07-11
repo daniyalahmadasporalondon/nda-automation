@@ -172,6 +172,13 @@ function recordViewerEditHistoryEntry(editable) {
   const beforeText = editable.dataset.editStartText ?? currentParagraphText(paragraphId);
   const afterText = editableParagraphText(editable);
   if (beforeText === afterText) return;
+  // Mirror syncViewerParagraphEdit's normalize-equal guard: if the touched text differs
+  // from the STORED paragraph text only in rendering noise (the uppercased <w:caps/> title
+  // or a tab shown as an em-space), the sync treats the paragraph as unchanged and emits no
+  // redline -- so there is nothing to undo. Recording an entry here would let a later Undo
+  // write the DISPLAY text into paragraph.text, reintroducing exactly the corruption the
+  // sync guard prevents. (previousText is captured from editStartText, i.e. display space.)
+  if (faithfulNormalizeText(afterText) === faithfulNormalizeText(currentParagraphText(paragraphId))) return;
 
   pushReviewEditHistoryEntry({
     paragraphId,
@@ -382,6 +389,23 @@ function syncViewerParagraphEdit(editable) {
   // reappears — so we deliberately do NOT delete the runs.)
   const oldText = String(paragraph.text || "");
   const newText = editableParagraphText(editable);
+
+  // SILENT-OUTBOUND-CORRUPTION GUARD. editableParagraphText() reads editable.innerText,
+  // which is the RENDERED text, and docx-preview injects display-only substitutions the
+  // faithful edit-lock deliberately tolerates: a <w:caps/> title stored lower-case but
+  // DISPLAYED uppercase, or a tab rendered as an em-space (U+2003). Those paragraphs pass
+  // the lock (bindFaithfulDocxInteractions' text_drift gate) precisely because it compares
+  // display vs stored under faithfulNormalizeText (collapse whitespace + lower-case), so
+  // they are editable -- and then merely focusing or trivially touching one would sync the
+  // uppercase / em-space innerText over paragraph.text, and manualExportRedlines() would
+  // emit a REPLACE_PARAGRAPH the operator never typed, rewriting case/whitespace in the
+  // SENT contract. Apply the SAME normalization the gate uses: when the new innerText is
+  // normalization-EQUAL to the stored text, the "edit" carries only rendering noise, not an
+  // operator change, so treat the paragraph as UNCHANGED -- do NOT overwrite paragraph.text
+  // and do NOT emit a redline. A genuine text change (normalized text actually differs)
+  // still falls through and syncs exactly as before.
+  if (faithfulNormalizeText(newText) === faithfulNormalizeText(oldText)) return;
+
   const runs = Array.isArray(paragraph.runs) ? paragraph.runs : null;
   const runsWereValid = runs && runs.map((run) => String(run?.text || "")).join("") === oldText;
   const runsFormatted = runs && runs.some((run) => run && (run.bold || run.italic || String(run.font || "").trim()));

@@ -284,8 +284,8 @@
     "v": "20260706onboard1"
   },
   "js/review-workstation-viewer.js": {
-    "sha256": "7bc95fa49641dbf123b4261189a32367f6647d0cceec8c0aabb527bd3053c8b4",
-    "v": "20260709openredline1"
+    "sha256": "6b666192284254e6be7194a409e51d6fd4ec417d242b91fbf87a6c01e22d2760",
+    "v": "20260711redlineguard1"
   },
   "js/send-document.js": {
     "sha256": "9707788775c3c70cf853cf1f6a851c24b351248f9d76b02f30a1008dc4ce2ec5",
