@@ -400,7 +400,20 @@ def _heal_matter(
     if new_text == old_text:
         entry["action"] = "unchanged"
         return
-    if shard_rejoin:
+    # Gate B (the reflow READABILITY BACKSTOP: not garbled AND no fused megaword)
+    # must run whenever the shard-fragment reflow was EFFECTIVELY active during the
+    # re-extraction above -- not only under the persist opt-in (``shard_rejoin``
+    # param), but ALSO whenever ``NDA_PDF_SHARD_REJOIN`` is set in the environment
+    # (``pdf_text.shard_rejoin_enabled()``). Keying this on the parameter alone left
+    # an env-dependent bypass: with that env flag set, the plain confirm-gated
+    # execute path (shard_rejoin=False) reflowed yet fell through to the
+    # fingerprint-only check below, which is BLIND to a fused megaword -- so a heal
+    # that welded two words together on a dropped inter-word space could be
+    # persisted. Defense-in-depth: re-key on the EFFECTIVE reflow state to close it.
+    from . import pdf_text  # noqa: PLC0415 - local, mirrors the other lazy imports.
+
+    reflow_effectively_active = bool(shard_rejoin) or pdf_text.shard_rejoin_enabled()
+    if reflow_effectively_active:
         # PERSIST gate (b): the reflowed re-extraction must clear the readability
         # backstop (not garbled AND no fused megaword) before it may be written.
         if not _reflow_healed_text_is_readable(new_text):
