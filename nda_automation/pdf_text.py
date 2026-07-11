@@ -290,6 +290,16 @@ _SHARD_HGAP_MAX_EM = 0.4
 # wrapped visual line (page-width prose wraps near ~90) — it signals the reflow
 # collapsed several lines into one, so the adoption gate rejects it.
 _SHARD_REFLOW_MAX_LINE_CHARS = 250
+# A single run of this many consecutive ALPHANUMERIC characters with NO break is
+# implausible for one real word (the longest NDA terms — "confidentiality",
+# "indemnification" — run ~15; 30 leaves generous headroom). A reflow that drops a
+# positioning-only inter-word gap tighter than ``_ADJACENCY_TOLERANCE_EM`` fuses
+# two words into such a "megaword"; the glyph-multiset / reading-order checks are
+# whitespace-insensitive and CANNOT see the dropped space, so the readability
+# backstop rejects any reflow (and any persisted heal) that contains one. The bias
+# is to UNDER-heal: a rare genuinely-long token is left garbled rather than risk
+# persisting a fused word — under-heal is fine, corrupt is never fine.
+_SHARD_MAX_WORD_CHARS = 30
 # Env flag: default OFF. Any of 1/true/yes/on (case-insensitive) enables it.
 _SHARD_REJOIN_ENV = "NDA_PDF_SHARD_REJOIN"
 # Per-call override (thread/async-safe) so the admin dry-run measurement can force
@@ -1373,13 +1383,16 @@ def _reflow_shard_chunks(
       1. x does NOT advance (``x <= prev_x``) — a left reset / vertical column
          (numbered-list gutter, table code column, stacked initials).
       2. the fragment does NOT TILE onto the running right edge — its left x sits
-         more than ``_SHARD_HGAP_MAX_EM`` em past where the previous fragment ends.
-         A smeared line's pieces are horizontally contiguous (edge-to-edge or one
-         word space); an indented outline marker / a deeper list level / a table
-         cell sits a much larger gap away. THIS is the discriminator that pure
-         y-geometry cannot provide: the per-fragment y-step DOWN a smeared line and
-         the y-step BETWEEN separate short-line markers are identical, so only
-         horizontal contiguity tells a continuation from a fresh indented line.
+         more than ``_SHARD_HGAP_MAX_EM`` em past where the previous fragment ends,
+         where "ends" is a right edge CALIBRATED to the observed font scale (not the
+         raw Helvetica digest, which over-estimates narrow fonts and would merge
+         separate elements — defect 3). A smeared line's pieces are horizontally
+         contiguous (edge-to-edge or one word space); an indented outline marker /
+         a deeper list level / a table cell sits a much larger gap away. THIS is the
+         discriminator that pure y-geometry cannot provide: the per-fragment y-step
+         DOWN a smeared line and the y-step BETWEEN separate short-line markers are
+         identical, so only horizontal contiguity tells a continuation from a fresh
+         indented line.
       3. the fragment's baseline jumps UP past ``_SAME_LINE_Y_TOLERANCE`` — a
          reading-order break (a descending smeared line never climbs back up).
 
@@ -1392,18 +1405,35 @@ def _reflow_shard_chunks(
     line_buckets: list[list[tuple[float, float, Optional[float], str]]] = []
     current: list[tuple[float, float, Optional[float], str]] = []
     prev_x: Optional[float] = None
-    prev_right: Optional[float] = None
+    prev_est_width: Optional[float] = None
     prev_y: Optional[float] = None
+    # Observed actual/estimated width RATIOS for the contiguous joins made so far on
+    # the CURRENT line (defect 3, narrow-font wrong-merge). ``prev_est_width`` is a
+    # font-AGNOSTIC Helvetica digest; on a narrower real font it OVER-estimates the
+    # right edge, inflating the ~4pt continuation budget (~6.7pt observed) so two
+    # genuinely-separate short elements MERGE. Each edge-to-edge join observes
+    # ``actual_step / estimated_width`` — the font's true scale relative to the
+    # digest — and the median ratio CALIBRATES the predicted right edge to THIS
+    # document's font. The digest's per-glyph SHAPE is preserved (a wide 'W' is
+    # still predicted wide); only its font-agnostic SCALE — the actual defect — is
+    # corrected. On the Helvetica fixture the ratio is exactly 1.0, so the predicted
+    # edge equals the old estimate and the true-shard heal is byte-identical.
+    line_ratios: list[float] = []
     for chunk in chunks:
         x = float(chunk[0])
         y = float(chunk[1])
         size = chunk[2]
         unit = size if (size and size > 0) else _ADJACENCY_FALLBACK_FONT_PT
+        est_width = _estimate_text_width(chunk[3].strip(), size)
         start_new = False
         if prev_x is not None:
+            ratio = median(line_ratios) if line_ratios else 1.0
+            if not (ratio > 0):
+                ratio = 1.0
+            predicted_prev_right = prev_x + ratio * (prev_est_width or 0.0)
             if x <= prev_x + _GAP_EPSILON:
                 start_new = True  # (1) x did not advance -> new line.
-            elif prev_right is not None and (x - prev_right) > _SHARD_HGAP_MAX_EM * float(unit):
+            elif (x - predicted_prev_right) > _SHARD_HGAP_MAX_EM * float(unit):
                 start_new = True  # (2) not horizontally contiguous -> new line.
             elif prev_y is not None and (y - prev_y) > _SAME_LINE_Y_TOLERANCE:
                 start_new = True  # (3) baseline jumped UP -> reading-order break.
@@ -1411,13 +1441,35 @@ def _reflow_shard_chunks(
             if current:
                 line_buckets.append(current)
             current = [chunk]
+            line_ratios = []
         else:
+            # A contiguous join: record the font's observed scale so the NEXT
+            # continuation test is calibrated. Skips the first chunk (prev_x None)
+            # and any non-advancing / zero-width step (kerning overlap, blanks).
+            if prev_x is not None and prev_est_width and prev_est_width > 0:
+                step = x - prev_x
+                if step > 0:
+                    line_ratios.append(step / prev_est_width)
             current.append(chunk)
         prev_x = x
-        prev_right = x + _estimate_text_width(chunk[3].strip(), size)
+        prev_est_width = est_width
         prev_y = y
     if current:
         line_buckets.append(current)
+
+    # READING-ORDER emit (defect 1, reorder-blind). Segmentation above runs in
+    # DRAWING order — it must, to measure horizontal contiguity from prev_x — but a
+    # page drawn bottom-up would then emit its clauses REVERSED. Sort the finished
+    # line buckets into reading order (top-to-bottom by each line's TOPMOST baseline,
+    # then left-to-right) so the reconstruction matches the reading order
+    # ``_group_chunks_into_lines`` produces and the adoption gate verifies. A normal
+    # top-down page is already in this order, so the sort is a stable no-op there.
+    line_buckets.sort(
+        key=lambda bucket: (
+            -max(float(c[1]) for c in bucket),
+            min(float(c[0]) for c in bucket),
+        )
+    )
 
     geo_lines: list[GeoLine] = []
     for bucket in line_buckets:
@@ -1433,33 +1485,77 @@ def _reflow_shard_chunks(
     return geo_lines
 
 
+def longest_spaceless_alnum_run(text: str) -> int:
+    """Longest run of consecutive ALPHANUMERIC characters uninterrupted by
+    whitespace or punctuation — the fused-word ('megaword') signal. Spaces,
+    hyphens and underscores all break the run, so 'non-disclosure' and a
+    '______' signing line never register; only letters/digits welded edge to
+    edge with a dropped space do."""
+    longest = 0
+    run = 0
+    for char in text:
+        if char.isalnum():
+            run += 1
+            if run > longest:
+                longest = run
+        else:
+            run = 0
+    return longest
+
+
+def text_has_implausible_megaword(text: str) -> bool:
+    """True when ``text`` carries a spaceless alphanumeric run longer than
+    ``_SHARD_MAX_WORD_CHARS`` — an implausibly fused word. The shard reflow's
+    readability backstop uses this at BOTH the in-extractor adoption gate (below)
+    and the persist-time gate (``garble_backfill``), so ``garbled == False`` on a
+    persisted heal actually implies word-spacing was preserved."""
+    return longest_spaceless_alnum_run(text) > _SHARD_MAX_WORD_CHARS
+
+
+def _reflow_reading_sequence(lines: list[GeoLine]) -> str:
+    """Non-whitespace characters in EMITTED line order — the readability gate's
+    reading-order fingerprint. The baseline grouping is in reading order (-y, x),
+    so any reorder the reflow introduced changes this sequence and is rejected."""
+    return "".join("".join(line.text.split()) for line in lines)
+
+
 def _reflow_is_adopted(reflowed: list[GeoLine], baseline: list[GeoLine]) -> bool:
-    """Adopt a shard reflow only when it is confidently an improvement, not merely
-    a shorter line count. Three independent gates, each rejecting a distinct way a
+    """Adopt a shard reflow only when it is confidently READABLE, not merely a
+    shorter line count. Four independent gates, each rejecting a distinct way a
     reflow could be WRONG (a false merge corrupts a real document, so every doubt
     resolves to reject / leave-garbled):
 
-      * STRICT SHARD REDUCTION — the reflow must produce strictly fewer <=2-char
-        short lines than the normal grouping. A layout the reflow could not stitch
-        (a vertical column, an indented outline) yields the same short lines and is
+      * STRICT SHARD REDUCTION — the reflow must produce strictly fewer short
+        lines than the normal grouping. A layout the reflow could not stitch (a
+        vertical column, an indented outline) yields the same short lines and is
         rejected here, leaving the page byte-identical to the flag-off output.
       * NO IMPLAUSIBLE LINE — no reflowed line exceeds ``_SHARD_REFLOW_MAX_LINE_
         CHARS``. A single wrapped visual line is page-width prose; a line far longer
-        means the reflow collapsed several lines together (the corruption mode).
-      * CHARACTER-PRESERVING — the reflow only REGROUPS chunks, so its non-whitespace
-        glyph multiset must equal the normal grouping's exactly. Any drift means a
-        bug dropped or duplicated text; refuse rather than persist corrupted text."""
+        means the reflow collapsed several lines together (a corruption mode).
+      * READING-ORDER PRESERVED — the non-whitespace character SEQUENCE, in emitted
+        line order, must equal the baseline's. The baseline is grouped in reading
+        order (-y, x), so a reflow that emitted its lines out of order (defect 1)
+        produces a different sequence and is rejected. This REPLACES the old
+        character-multiset check, which SORTED the glyphs and so was invariant under
+        both reorder AND fusion (it was tautological — baseline and reflow share one
+        chunk list). Sequence equality still guarantees character-preservation (a
+        dropped/duplicated glyph changes the sequence too), and additionally catches
+        reordering.
+      * WORD-SPACING PRESERVED — no reflowed line contains an implausible spaceless
+        'megaword' (defect 2). A positioning-only inter-word gap tighter than
+        ``_ADJACENCY_TOLERANCE_EM`` collapses the space, fusing two words; the
+        whitespace-insensitive sequence check cannot see it, so this gate rejects a
+        reflow whose word boundaries were destroyed. Under-heal (leave garbled)
+        rather than persist a fused word."""
     if not reflowed:
         return False
     if _short_line_count(reflowed) >= _short_line_count(baseline):
         return False
     if any(len(line.text) > _SHARD_REFLOW_MAX_LINE_CHARS for line in reflowed):
         return False
-
-    def _glyph_multiset(lines: list[GeoLine]) -> list[str]:
-        return sorted("".join("".join(line.text.split()) for line in lines))
-
-    if _glyph_multiset(reflowed) != _glyph_multiset(baseline):
+    if _reflow_reading_sequence(reflowed) != _reflow_reading_sequence(baseline):
+        return False
+    if any(text_has_implausible_megaword(line.text) for line in reflowed):
         return False
     return True
 
