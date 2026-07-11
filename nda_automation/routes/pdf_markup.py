@@ -23,6 +23,7 @@ from .. import pdf_markup, telemetry
 from ..annotated_pdf_export import (
     ANNOTATED_PDF_MIME,
     ANNOTATED_PDF_VERIFICATION_HEADER,
+    AnnotatedPdfExportError,
     annotated_pdf_download_filename,
     build_matter_annotated_pdf,
 )
@@ -233,12 +234,17 @@ def handle_annotated_pdf(handler, path: str, *, send_body: bool = True) -> None:
     """Recovery export: source PDF with the REVIEW redlines baked on as annotations.
 
     This is the fallback offered by ``PdfSourceRedlineUnavailableError`` when the
-    DOCX redline path fails closed for a PDF-source NDA. Because it is a recovery
-    route, it must never dead-end: when the review highlights cannot be anchored
-    (or the review is missing/stale, or PyMuPDF is unavailable) we fall back to
-    returning the unmodified source PDF rather than erroring. We only surface an
-    error when there is no usable PDF to return at all (matter not found, the
-    source is not a PDF, or the source bytes are missing from storage).
+    DOCX redline path fails closed for a PDF-source NDA.
+
+    When the review highlights CANNOT be produced (no anchorable review text, a
+    missing/stale review, an unavailable optional dependency, a render failure)
+    we fail LOUD with a terminal ``422`` error -- we do NOT silently hand back the
+    unmodified source PDF under a ``200`` attachment. A success-typed original is a
+    correctness trap: the caller downloads bytes that read as the redlined NDA but
+    carry no redlines at all. A ``200`` from this route therefore ALWAYS means "the
+    annotated PDF was produced"; anything else is a non-success the caller must
+    handle. We still surface the earlier ``4xx`` guards when there is no usable PDF
+    to annotate (matter not found, source is not a PDF, source bytes missing).
     """
     matter_id = parse_matter_id(path, suffix="/annotated-pdf")
     if matter_id is None:
@@ -274,33 +280,47 @@ def handle_annotated_pdf(handler, path: str, *, send_body: bool = True) -> None:
         )
         return
 
-    annotation_count = 0
-    fallback = False
     try:
         export = build_matter_annotated_pdf(
             matter_id, repository=repository, owner_user_id=owner_user_id
         )
-        data = export.data
-        filename = export.filename
-        annotation_count = export.annotation_count
-    except Exception:
+    except Exception as error:
         # The redline annotations could not be produced (no anchorable review
         # text, stale/missing review, missing optional dependency, render
-        # failure). The whole point of this route is a working fallback after
-        # the DOCX redline path failed -- so return the original source PDF.
-        telemetry.increment("annotated_pdf_export_fallback_source")
-        data = source_bytes
-        filename = annotated_pdf_download_filename(source_filename)
-        fallback = True
+        # failure). Do NOT quietly serve the UNMODIFIED source PDF under a 200:
+        # that reads to the caller as the redlined export but carries no redlines
+        # (a silent-wrong-bytes trap). Fail LOUD with a terminal 422 the caller
+        # must handle, and deliberately WITHHOLD the original so it can never be
+        # mistaken for the annotated output.
+        telemetry.increment("annotated_pdf_export_failed")
+        detail = str(error).strip() if isinstance(error, AnnotatedPdfExportError) else ""
+        message = detail or (
+            "The annotated PDF could not be produced for this NDA: the review "
+            "highlights could not be anchored onto the source PDF."
+        )
+        handler._send_json(
+            {
+                "error": message,
+                "error_code": "annotated_pdf_unavailable",
+                # Machine-checkable acknowledgement that the source PDF was NOT
+                # substituted for the (unavailable) redlined export.
+                "annotated_pdf_fallback": "source-original-withheld",
+            },
+            status=422,
+            headers={"X-PDF-Annotation-Fallback": "source-original-withheld"},
+            send_body=send_body,
+        )
+        return
 
+    telemetry.increment("annotated_pdf_export_succeeded")
     handler._send_download(
-        data,
-        filename,
+        export.data,
+        export.filename,
         ANNOTATED_PDF_MIME,
         headers={
             "X-Export-Verified": ANNOTATED_PDF_VERIFICATION_HEADER,
-            "X-PDF-Annotation-Count": str(annotation_count),
-            "X-PDF-Annotation-Fallback": "source-original" if fallback else "none",
+            "X-PDF-Annotation-Count": str(export.annotation_count),
+            "X-PDF-Annotation-Fallback": "none",
         },
         send_body=send_body,
     )
