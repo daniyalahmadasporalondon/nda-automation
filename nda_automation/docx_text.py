@@ -407,6 +407,15 @@ def iter_indexed_body_paragraphs(root: ET.Element) -> Iterable[IndexedBodyParagr
                     raise DocxExtractionError(DOCX_TABLE_NESTING_MESSAGE)
                 table_counter += 1
                 table_index = table_counter
+                # Merged-cell geometry (w:gridSpan / w:vMerge) is resolved for the
+                # WHOLE table up front so the horizontal colspan and the vertical
+                # rowspan (which is anchored on the "restart" cell but spelled out
+                # across later rows) are known before any cell is yielded.
+                span_map = _table_span_map(child)
+                # A table nested inside a cell keeps a back-pointer to the enclosing
+                # cell so the reconstruction can place it INSIDE that cell rather than
+                # as a flat sibling table. Top-level tables have no parent.
+                parent_ref = _table_cell_parent_ref(table_context)
                 row_index = 0
                 for row in _children(child, "tr"):
                     row_index += 1
@@ -421,9 +430,18 @@ def iter_indexed_body_paragraphs(root: ET.Element) -> Iterable[IndexedBodyParagr
                         cell_style = _table_cell_style(cell)
                         if cell_style:
                             cell_context["cell_style"] = cell_style
-                        yield from walk(cell, {
-                            **cell_context,
-                        }, nested_table_depth)
+                        spans = span_map.get((row_index, cell_index), {})
+                        col_span = spans.get("col_span")
+                        if isinstance(col_span, int) and col_span > 1:
+                            cell_context["col_span"] = col_span
+                        row_span = spans.get("row_span")
+                        if isinstance(row_span, int) and row_span > 1:
+                            cell_context["row_span"] = row_span
+                        if spans.get("v_merge") == "continue":
+                            cell_context["v_merge"] = "continue"
+                        if parent_ref is not None:
+                            cell_context["parent"] = parent_ref
+                        yield from walk(cell, cell_context, nested_table_depth)
             else:
                 yield from walk(child, table_context, table_depth)
 
@@ -539,6 +557,134 @@ def _advance_numbering_for_empty_paragraph(
     if not paragraph_numbering:
         return
     _numbering_record(paragraph_numbering, numbering, numbering_state)
+
+
+def _cell_grid_span(cell: ET.Element) -> int:
+    """Horizontal merge width of a ``<w:tc>`` (``w:gridSpan`` -> colspan).
+
+    A cell with ``<w:gridSpan w:val="N"/>`` occupies N grid columns. Absent or
+    malformed markup means the ordinary single-column cell (1). The value is
+    clamped to >= 1 so a broken document can never produce a zero/negative span.
+    """
+    tcpr = cell.find(f"{WORD_NS}tcPr")
+    if tcpr is None:
+        return 1
+    grid_span = tcpr.find(f"{WORD_NS}gridSpan")
+    value = _int_or_none(_val(grid_span)) if grid_span is not None else None
+    return value if isinstance(value, int) and value >= 1 else 1
+
+
+def _cell_vmerge_state(cell: ET.Element) -> str | None:
+    """Vertical-merge role of a ``<w:tc>`` (``w:vMerge``).
+
+    ``<w:vMerge w:val="restart"/>`` STARTS a vertical merge; ``<w:vMerge/>`` or
+    ``<w:vMerge w:val="continue"/>`` is a CONTINUATION cell that Word folds up
+    into the restart cell above it in the same grid column. Returns ``"restart"``,
+    ``"continue"``, or ``None`` when the cell takes part in no vertical merge.
+    """
+    tcpr = cell.find(f"{WORD_NS}tcPr")
+    if tcpr is None:
+        return None
+    v_merge = tcpr.find(f"{WORD_NS}vMerge")
+    if v_merge is None:
+        return None
+    return "restart" if _val(v_merge).strip().lower() == "restart" else "continue"
+
+
+def _table_span_map(tbl: ET.Element) -> Dict[tuple[int, int], Dict[str, object]]:
+    """Resolve ``w:gridSpan``/``w:vMerge`` for one table into per-cell spans.
+
+    Returns ``{(row_index, cell_index): {"col_span", "row_span", "v_merge"}}``
+    (both indices 1-based, matching :func:`iter_indexed_body_paragraphs`). Only
+    the keys that apply are set: ``col_span`` from ``w:gridSpan``, ``v_merge`` for
+    continuation cells, and ``row_span`` on the restart cell that begins a vertical
+    merge.
+
+    The rowspan is computed by walking the grid COLUMN each cell starts at
+    (accounting for the running width of earlier gridSpan cells in the row), then
+    counting how many following rows carry a ``vMerge`` continuation at that same
+    starting column. This keeps the rowspan correct even when horizontal and
+    vertical merges are mixed in one table.
+    """
+    rows = _children(tbl, "tr")
+    # First pass: for every cell, its 0-based starting grid column and its span/merge.
+    grid: List[List[Dict[str, object]]] = []
+    for row in rows:
+        col_cursor = 0
+        row_cells: List[Dict[str, object]] = []
+        for cell_ordinal, cell in enumerate(_children(row, "tc"), start=1):
+            grid_span = _cell_grid_span(cell)
+            v_merge = _cell_vmerge_state(cell)
+            row_cells.append(
+                {
+                    "cell_index": cell_ordinal,
+                    "start_col": col_cursor,
+                    "col_span": grid_span,
+                    "v_merge": v_merge,
+                }
+            )
+            col_cursor += grid_span
+        grid.append(row_cells)
+
+    span_map: Dict[tuple[int, int], Dict[str, object]] = {}
+    for row_ordinal, row_cells in enumerate(grid, start=1):
+        for cell in row_cells:
+            entry: Dict[str, object] = {}
+            col_span = int(cell["col_span"])
+            if col_span > 1:
+                entry["col_span"] = col_span
+            v_merge = cell["v_merge"]
+            if v_merge == "continue":
+                entry["v_merge"] = "continue"
+            elif v_merge == "restart":
+                row_span = _vmerge_row_span(grid, row_ordinal - 1, int(cell["start_col"]))
+                if row_span > 1:
+                    entry["row_span"] = row_span
+            if entry:
+                span_map[(row_ordinal, int(cell["cell_index"]))] = entry
+    return span_map
+
+
+def _vmerge_row_span(grid: List[List[Dict[str, object]]], start_row: int, start_col: int) -> int:
+    """Rows a vertical-merge restart cell spans, counting continuation rows below.
+
+    ``grid`` is the per-row cell list from :func:`_table_span_map`; ``start_row``
+    is the 0-based row of the restart cell and ``start_col`` its 0-based grid
+    column. Following rows extend the span while they carry a ``vMerge``
+    continuation cell that begins at the SAME grid column; the first row that does
+    not breaks the run.
+    """
+    span = 1
+    for row_cells in grid[start_row + 1 :]:
+        match = next((cell for cell in row_cells if int(cell["start_col"]) == start_col), None)
+        if match is None or match["v_merge"] != "continue":
+            break
+        span += 1
+    return span
+
+
+def _table_cell_parent_ref(table_context: Dict[str, object] | None) -> Dict[str, object] | None:
+    """Back-pointer to the enclosing cell for a nested table's cells.
+
+    When a ``<w:tbl>`` sits inside a ``<w:tc>``, the walk is already carrying that
+    outer cell's ``table_context``. We keep only the coordinates needed to place
+    the nested table back inside its parent cell (``table_index``/``row_index``/
+    ``cell_index``) plus the outer cell's own ``parent`` so a table nested two or
+    more levels deep resolves through the full chain. Returns ``None`` at the top
+    level (no enclosing cell)."""
+    if not table_context:
+        return None
+    ref: Dict[str, object] = {}
+    for key in ("table_index", "row_index", "cell_index"):
+        value = table_context.get(key)
+        if value is not None:
+            ref[key] = value
+    if not ref:
+        return None
+    grandparent = table_context.get("parent")
+    if isinstance(grandparent, dict):
+        ref["parent"] = grandparent
+    return ref
 
 
 def _table_cell_style(cell: ET.Element) -> Dict[str, object]:
