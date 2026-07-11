@@ -4948,6 +4948,21 @@ h3 {
   cursor: default;
 }
 
+/* Layout-integrity floor for docx-preview's own paragraphs. docx-preview reads a
+   paragraph's right indent off the Word style and emits it as `margin-inline-end`
+   on the <p>; inside a two-column section (column-count:2, ~278px/col) a large
+   right indent (e.g. the Moorwand signature block's ~233pt) can drive the content
+   box negative, at which point the text wraps ONE GLYPH PER LINE ("Luc Gueriane
+   CEO" stacked vertically). Flooring the paragraph's inline size at min-content
+   means an over-large margin makes the text OVERFLOW the narrow column instead of
+   collapsing per-glyph. This is a no-op on normal paragraphs (their column is
+   already wider than their longest word), so only the pathological squeeze changes.
+   Scoped to `.docx` (docx-preview's section class) so it never reaches the
+   `.studio-*` reconstruction, which is a separate render path. */
+.review-faithful-surface .docx p {
+  min-inline-size: min-content;
+}
+
 .faithful-edit-locked-note {
   background: rgba(245, 158, 11, 0.08);
   border-left: 2px solid rgba(245, 158, 11, 0.5);
