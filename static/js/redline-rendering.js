@@ -317,7 +317,7 @@ function renderParagraphFrame(model, { body, classes = [], badge = "" }) {
   const structureAttributes = paragraphStructureAttributes(model.paragraph);
   return renderStudioParagraphFrame({
     badge,
-    body: applyParagraphFormatToBody(model, body),
+    body: applyParagraphFormatToBody(model, body) + renderSourceAnnotations(model.paragraph),
     classes: [...classes, ...paragraphStructureClasses(model.paragraph)],
     clauseIds: model.ids,
     commentCount: model.commentCount,
@@ -401,6 +401,49 @@ function runOpSummary(op) {
     return "Baseline (selection)";
   }
   return "";
+}
+
+// Renders the DOCX source's own footnotes/endnotes and embedded Word comments as
+// read-only margin annotations BELOW the paragraph body. These are display
+// metadata read off the source (docx_text.py associates each with its anchor
+// paragraph); they are contenteditable=false and live OUTSIDE the editable body,
+// so they never enter the paragraph's text, its run reconstruction, or the
+// outbound redline. A paragraph with neither returns "" -- so an ordinary
+// agreement renders exactly as before.
+function renderSourceAnnotations(paragraph) {
+  if (!paragraph || typeof paragraph !== "object") return "";
+  const notes = [];
+
+  const footnotes = Array.isArray(paragraph.footnotes) ? paragraph.footnotes : [];
+  footnotes.forEach((footnote) => {
+    if (!footnote || typeof footnote !== "object") return;
+    const kind = String(footnote.kind || "footnote") === "endnote" ? "Endnote" : "Footnote";
+    const marker = String(footnote.id || "").trim();
+    const label = marker ? `${kind} ${marker}` : kind;
+    const text = String(footnote.text || "").trim();
+    notes.push(`
+      <div class="paragraph-source-note paragraph-source-footnote" data-source-note contenteditable="false">
+        <span class="paragraph-source-note-tag">${escapeHtml(label)}</span>
+        <span class="paragraph-source-note-text">${text ? escapeHtml(text) : "(note text unavailable)"}</span>
+      </div>`);
+  });
+
+  const comments = Array.isArray(paragraph.comments) ? paragraph.comments : [];
+  comments.forEach((comment) => {
+    if (!comment || typeof comment !== "object") return;
+    const author = String(comment.author || "").trim();
+    const tag = author ? `Comment - ${author}` : "Comment";
+    const quoted = String(comment.quoted_text || "").trim();
+    const text = String(comment.text || "").trim();
+    notes.push(`
+      <div class="paragraph-source-note paragraph-source-comment" data-source-note contenteditable="false">
+        <span class="paragraph-source-note-tag">${escapeHtml(tag)}</span>
+        ${quoted ? `<span class="paragraph-source-note-quote">&ldquo;${escapeHtml(quoted)}&rdquo;</span>` : ""}
+        <span class="paragraph-source-note-text">${text ? escapeHtml(text) : ""}</span>
+      </div>`);
+  });
+
+  return notes.join("");
 }
 
 function renderStudioParagraphFrame({ body, classes = [], clauseIds = "", commentCount = 0, paragraphId = "", selected = false, attributes = "", badge = "" }) {

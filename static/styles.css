@@ -7464,6 +7464,47 @@ button.active-clause-status:hover {
   margin-top: 6px;
 }
 
+/* Read-only margin notes surfacing the DOCX source's own footnotes/endnotes and
+   embedded Word comments beside the paragraph they anchor to. Display metadata
+   only -- never part of the editable body or the outbound redline. */
+.paragraph-source-note {
+  border-left: 3px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-panel);
+  color: var(--muted, var(--ink));
+  display: grid;
+  gap: 3px;
+  font-size: 12px;
+  line-height: 1.45;
+  margin-top: 6px;
+  padding: 6px 10px;
+}
+
+.paragraph-source-comment {
+  border-left-color: #c79a3a;
+}
+
+.paragraph-source-footnote {
+  border-left-color: #6b8fb5;
+}
+
+.paragraph-source-note-tag {
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.paragraph-source-note-quote {
+  font-style: italic;
+  opacity: 0.85;
+}
+
+.paragraph-source-note-text {
+  white-space: pre-wrap;
+}
+
 .proposed-redline-block {
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);

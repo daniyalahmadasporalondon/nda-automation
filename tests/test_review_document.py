@@ -49,6 +49,48 @@ class ReviewDocumentTests(unittest.TestCase):
         self.assertNotIn("runs", aligned[0])
         self.assertNotIn("runs", aligned[1])
 
+    def test_align_carries_footnote_and_comment_display_metadata(self):
+        # The DOCX source's footnotes/embedded comments must survive alignment so
+        # the reviewer surface can show them; they are additive display metadata.
+        source_text = "The term survives for five years."
+        footnotes = [{"id": "2", "kind": "footnote", "offset": 17, "text": "Trade secrets only."}]
+        comments = [{"id": "1", "author": "Counsel", "text": "Add a carve-out.", "offset": 0}]
+        extracted_paragraphs = [
+            {
+                "source_index": 1,
+                "source_kind": "paragraph",
+                "text": "The term survives for five years.",
+                "footnotes": footnotes,
+                "comments": comments,
+            },
+        ]
+
+        aligned = align_document_paragraphs(extracted_paragraphs, source_text)
+
+        self.assertEqual(aligned[0]["footnotes"], footnotes)
+        self.assertEqual(aligned[0]["comments"], comments)
+
+    def test_align_drops_footnote_and_comment_metadata_when_paragraph_is_resplit(self):
+        # Their offsets address the WHOLE paragraph; a soft-return split invalidates
+        # them, so -- like runs -- they are dropped rather than duplicated wrongly.
+        source_text = "First block.\n\nSecond block."
+        extracted_paragraphs = [
+            {
+                "source_index": 1,
+                "source_kind": "paragraph",
+                "text": "First block.\n\nSecond block.",
+                "footnotes": [{"id": "1", "kind": "footnote", "offset": 5, "text": "Note."}],
+                "comments": [{"id": "1", "text": "A comment.", "offset": 0}],
+            },
+        ]
+
+        aligned = align_document_paragraphs(extracted_paragraphs, source_text)
+
+        self.assertEqual([paragraph["text"] for paragraph in aligned], ["First block.", "Second block."])
+        for paragraph in aligned:
+            self.assertNotIn("footnotes", paragraph)
+            self.assertNotIn("comments", paragraph)
+
     def test_align_preserves_run_and_paragraph_font_sizes(self):
         source_text = "Plain bold text."
         runs = [
