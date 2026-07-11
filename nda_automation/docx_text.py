@@ -50,6 +50,11 @@ SUPPLEMENTAL_PART_PREFIXES = (
 # compares the export against the extracted text must scope the expected side
 # to the body and exclude paragraphs carrying this marker.
 SUPPLEMENTAL_SOURCE_KIND = "supplemental"
+# Word footnote/endnote parts hold two book-keeping notes per part -- a
+# ``separator`` and a ``continuationSeparator`` (usually w:id="-1"/"0") -- that
+# carry the horizontal rule Word draws above continued notes, NOT reviewable
+# content. They must never be surfaced as a real footnote.
+FOOTNOTE_BOOKKEEPING_TYPES = {"separator", "continuationSeparator"}
 DocxParagraph = Dict[str, object]
 NumberingDefinitions = Dict[str, object]
 StyleDefinitions = Dict[str, Dict[str, object]]
@@ -309,11 +314,27 @@ def _extract_main_document_paragraphs(document: ZipFile) -> List[DocxParagraph]:
     styles, doc_defaults = _read_styles(document)
     numbering = _read_numbering(document)
     numbering_state: Dict[str, Dict[int, int]] = {}
+    footnote_texts = _read_note_texts(document, "word/footnotes.xml", "footnote")
+    endnote_texts = _read_note_texts(document, "word/endnotes.xml", "endnote")
+    comment_records = _read_comment_records(document)
+    # Comment ranges (w:commentRangeStart/End) can span several paragraphs, so the
+    # open-range set is carried across the body walk below rather than resolved
+    # per-paragraph. This mutable set names every comment id whose range opened in
+    # an earlier paragraph and has not yet closed.
+    open_comment_ids: "Dict[str, None]" = {}
     paragraphs: List[DocxParagraph] = []
     for indexed in iter_indexed_body_paragraphs(root):
         text = _paragraph_text(indexed.paragraph)
+        annotations = _paragraph_annotation_metadata(
+            indexed.paragraph,
+            text,
+            footnote_texts=footnote_texts,
+            endnote_texts=endnote_texts,
+            comment_records=comment_records,
+            open_comment_ids=open_comment_ids,
+        )
         if text:
-            paragraphs.append(_paragraph_record(
+            record = _paragraph_record(
                 indexed.paragraph,
                 text,
                 source_index=indexed.source_index,
@@ -322,7 +343,12 @@ def _extract_main_document_paragraphs(document: ZipFile) -> List[DocxParagraph]:
                 numbering=numbering,
                 numbering_state=numbering_state,
                 table_context=indexed.table_context,
-            ))
+            )
+            if annotations.get("footnotes"):
+                record["footnotes"] = annotations["footnotes"]
+            if annotations.get("comments"):
+                record["comments"] = annotations["comments"]
+            paragraphs.append(record)
         else:
             # A blank Word-numbered paragraph still consumes the next number in its
             # ``(numId, ilvl)`` sequence, so we advance the shared counter here even
@@ -357,6 +383,236 @@ def _extract_supplemental_paragraphs(document: ZipFile) -> List[DocxParagraph]:
                     numbering_state={},
                 ))
     return paragraphs
+
+
+def _read_optional_xml_part(document: ZipFile, part_name: str) -> ET.Element | None:
+    """Parse a DOCX part if present, else ``None``.
+
+    Footnotes / endnotes / comments are optional parts: a plain agreement has
+    none, and the caller must degrade to "no annotations" rather than raise. The
+    part still passes the same XXE / entity-expansion rejection every other part
+    does (via ``_read_xml_part``); only a genuinely absent part returns ``None``.
+    """
+    if part_name not in document.namelist():
+        return None
+    return _read_xml_part(document, part_name)
+
+
+def _read_note_texts(document: ZipFile, part_name: str, kind: str) -> Dict[str, Dict[str, str]]:
+    """Map a foot/endnote id -> ``{"text", "kind"}`` for real (non-separator) notes.
+
+    The ``separator`` / ``continuationSeparator`` book-keeping notes (the rule Word
+    draws above continued notes) carry no reviewable content and are dropped. Text
+    is collected revision-aware so a tracked change inside a note reads as the
+    in-force baseline, exactly like body text.
+    """
+    root = _read_optional_xml_part(document, part_name)
+    if root is None:
+        return {}
+    notes: Dict[str, Dict[str, str]] = {}
+    for note in root:
+        if note.tag != f"{WORD_NS}{kind}":
+            continue
+        note_type = _attr(note, "type").strip()
+        if note_type in FOOTNOTE_BOOKKEEPING_TYPES:
+            continue
+        note_id = _attr(note, "id").strip()
+        if not note_id:
+            continue
+        text = _note_text(note)
+        if text:
+            notes[note_id] = {"text": text, "kind": kind}
+    return notes
+
+
+def _note_text(note: ET.Element) -> str:
+    """Join a note's paragraphs into one reviewable string (blank paragraphs dropped)."""
+    lines: List[str] = []
+    for paragraph in note.iter(f"{WORD_NS}p"):
+        paragraph_text = _paragraph_text(paragraph)
+        if paragraph_text:
+            lines.append(paragraph_text)
+    return "\n".join(lines).strip()
+
+
+def _read_comment_records(document: ZipFile) -> Dict[str, Dict[str, str]]:
+    """Map comment id -> ``{"author", "date", "text"}`` from ``word/comments.xml``.
+
+    Read for DISPLAY only: comment text is deliberately kept out of the extracted
+    body text and the verdict engine (a comment like "add a non-circumvention
+    covenant" must not manufacture a clause hit the agreement never makes). It is
+    surfaced to the reviewer as a margin annotation keyed to the ranged paragraph.
+    """
+    root = _read_optional_xml_part(document, "word/comments.xml")
+    if root is None:
+        return {}
+    records: Dict[str, Dict[str, str]] = {}
+    for comment in root.findall(f"{WORD_NS}comment"):
+        comment_id = _attr(comment, "id").strip()
+        if not comment_id:
+            continue
+        text = _note_text(comment)
+        record: Dict[str, str] = {"text": text}
+        author = _attr(comment, "author").strip()
+        if author:
+            record["author"] = author
+        date = _attr(comment, "date").strip()
+        if date:
+            record["date"] = date
+        records[comment_id] = record
+    return records
+
+
+class _ParagraphAnnotationScan(NamedTuple):
+    """Positions of note references and comment-range markers within one paragraph.
+
+    Offsets are character indexes into the paragraph's revision-aware in-force text
+    (the same text ``_paragraph_text`` returns), so a marker can be placed inline on
+    the display surface without ever mutating ``paragraph.text``.
+    """
+
+    note_refs: List[tuple]  # (offset, kind, note_id)
+    comment_starts: List[tuple]  # (offset, comment_id)
+    comment_ends: List[tuple]  # (offset, comment_id)
+    comment_refs: List[str]  # comment_id
+
+
+def _scan_paragraph_annotations(paragraph: ET.Element) -> _ParagraphAnnotationScan:
+    """Walk a paragraph collecting note-reference and comment-range positions.
+
+    Mirrors ``_collect_revision_aware_text`` exactly for text accounting -- it skips
+    ``w:ins`` / ``w:moveTo`` (not in the in-force baseline) and takes the modern
+    ``mc:Choice`` branch of an ``mc:AlternateContent`` -- so every recorded offset
+    lines up with the character offsets of ``_paragraph_text``.
+    """
+    note_refs: List[tuple] = []
+    comment_starts: List[tuple] = []
+    comment_ends: List[tuple] = []
+    comment_refs: List[str] = []
+    offset = [0]
+
+    def walk(node: ET.Element) -> None:
+        tag = node.tag
+        if tag in (f"{WORD_NS}ins", f"{WORD_NS}moveTo"):
+            return
+        if tag == f"{WORD_NS}t" or tag == f"{WORD_NS}delText":
+            if node.text:
+                offset[0] += len(node.text)
+            return
+        if tag in {f"{WORD_NS}tab", f"{WORD_NS}br", f"{WORD_NS}cr"}:
+            offset[0] += 1
+            return
+        if tag == f"{WORD_NS}footnoteReference":
+            note_refs.append((offset[0], "footnote", _attr(node, "id").strip()))
+            return
+        if tag == f"{WORD_NS}endnoteReference":
+            note_refs.append((offset[0], "endnote", _attr(node, "id").strip()))
+            return
+        if tag == f"{WORD_NS}commentRangeStart":
+            comment_starts.append((offset[0], _attr(node, "id").strip()))
+            return
+        if tag == f"{WORD_NS}commentRangeEnd":
+            comment_ends.append((offset[0], _attr(node, "id").strip()))
+            return
+        if tag == f"{WORD_NS}commentReference":
+            comment_refs.append(_attr(node, "id").strip())
+            return
+
+        children = list(node)
+        if tag == f"{MC_NS}AlternateContent" and any(child.tag == f"{MC_NS}Choice" for child in children):
+            children = [child for child in children if child.tag != f"{MC_NS}Fallback"]
+        for child in children:
+            walk(child)
+
+    walk(paragraph)
+    return _ParagraphAnnotationScan(note_refs, comment_starts, comment_ends, comment_refs)
+
+
+def _paragraph_annotation_metadata(
+    paragraph: ET.Element,
+    text: str,
+    *,
+    footnote_texts: Dict[str, Dict[str, str]],
+    endnote_texts: Dict[str, Dict[str, str]],
+    comment_records: Dict[str, Dict[str, str]],
+    open_comment_ids: Dict[str, None],
+) -> Dict[str, List[dict]]:
+    """Resolve a paragraph's footnote/endnote references and overlapping comments.
+
+    Returns ``{"footnotes": [...], "comments": [...]}`` (either omitted when empty).
+    ``open_comment_ids`` is MUTATED to carry unbalanced comment ranges into the next
+    paragraph, so a comment spanning several paragraphs is associated with every
+    paragraph its range covers -- not only the one holding its start.
+
+    Nothing here touches ``text``: markers are additive display metadata carrying a
+    character ``offset`` into ``text`` so the reader sees WHICH span the note or
+    comment hangs off, while the reviewable text stays byte-identical.
+    """
+    scan = _scan_paragraph_annotations(paragraph)
+    result: Dict[str, List[dict]] = {}
+
+    footnotes: List[dict] = []
+    for note_offset, kind, note_id in scan.note_refs:
+        note = (footnote_texts if kind == "footnote" else endnote_texts).get(note_id)
+        entry: dict = {"id": note_id, "kind": kind, "offset": note_offset}
+        if note:
+            entry["text"] = note["text"]
+        footnotes.append(entry)
+    if footnotes:
+        result["footnotes"] = footnotes
+
+    # Which comment ids touch THIS paragraph: any range that was already open on
+    # entry, any that starts here, and any bare commentReference on it.
+    starts_here = {comment_id for _offset, comment_id in scan.comment_starts if comment_id}
+    ends_here = {comment_id for _offset, comment_id in scan.comment_ends if comment_id}
+    touched: "Dict[str, None]" = {}
+    for comment_id in open_comment_ids:
+        touched.setdefault(comment_id, None)
+    for _offset, comment_id in scan.comment_starts:
+        if comment_id:
+            touched.setdefault(comment_id, None)
+    for comment_id in scan.comment_refs:
+        if comment_id:
+            touched.setdefault(comment_id, None)
+
+    start_offsets = {comment_id: offset for offset, comment_id in scan.comment_starts if comment_id}
+    end_offsets = {comment_id: offset for offset, comment_id in scan.comment_ends if comment_id}
+
+    comments: List[dict] = []
+    for comment_id in touched:
+        record = comment_records.get(comment_id)
+        if record is None:
+            continue
+        entry = {"id": comment_id, "text": record.get("text", "")}
+        if record.get("author"):
+            entry["author"] = record["author"]
+        if record.get("date"):
+            entry["date"] = record["date"]
+        start_offset = start_offsets.get(comment_id)
+        if start_offset is not None:
+            entry["offset"] = start_offset
+        # When both ends of the range sit in THIS paragraph, carry the exact quoted
+        # span so the reviewer sees precisely what the counterparty flagged.
+        if comment_id in start_offsets and comment_id in end_offsets:
+            span_start = start_offsets[comment_id]
+            span_end = end_offsets[comment_id]
+            if 0 <= span_start <= span_end <= len(text):
+                quoted = text[span_start:span_end].strip()
+                if quoted:
+                    entry["quoted_text"] = quoted
+        comments.append(entry)
+    if comments:
+        result["comments"] = comments
+
+    # Advance the cross-paragraph open set: add ranges opened here, drop ones closed
+    # here. A range closed in the same paragraph it opened never becomes "open".
+    for comment_id in starts_here:
+        if comment_id not in ends_here:
+            open_comment_ids.setdefault(comment_id, None)
+    for comment_id in ends_here:
+        open_comment_ids.pop(comment_id, None)
+
+    return result
 
 
 class IndexedBodyParagraph(NamedTuple):
