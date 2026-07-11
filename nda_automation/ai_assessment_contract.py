@@ -7,6 +7,7 @@ from copy import deepcopy
 from typing import Any
 
 from . import telemetry
+from .clause_fragment_merge import merge_continuation_fragments
 from .checks.common import (
     ISSUE_TYPE_MISSING,
     ISSUE_TYPE_NONE,
@@ -357,6 +358,14 @@ def validate_ai_clause_assessment(
         if str(paragraph.get("id") or "")
     ]
     paragraph_by_id = dict(ordered_paragraphs)
+    # The model reviewed a MERGED view of DOCX continuation fragments (the packet
+    # builder re-joins a <w:p>-split clause into one record under the head id), so a
+    # span anchor the model returns can straddle two fragments -- and would silently
+    # vanish when `apply_span` searches a single fragment. Re-derive the same merge
+    # here (deterministic, packet-only) so `_lower_span_edit` can recognise a genuine
+    # cross-fragment anchor and surface it as a VISIBLE manual redline instead of a
+    # silent drop. Maps EACH member id -> the joined group text; multi-member only.
+    merged_group_texts = _merged_group_texts(paragraphs)
     valid_clause_id_set = {str(clause_id).strip() for clause_id in valid_clause_ids if str(clause_id).strip()}
 
     clause_id = _required_text(assessment, "clause_id", location, errors)
@@ -376,13 +385,14 @@ def validate_ai_clause_assessment(
     confidence = _required_confidence(assessment, location, errors)
     blocks_send = _required_bool(assessment, "blocks_send", location, errors)
     evidence = _validated_evidence(assessment, paragraph_by_id, ordered_paragraphs, location, errors)
-    proposed_edits, all_edits_degraded = _validated_proposed_edits(
+    proposed_edits, all_edits_degraded, any_boundary_manual = _validated_proposed_edits(
         assessment,
         paragraph_by_id,
         location,
         errors,
         payload_version=payload_version,
         playbook_clause=clauses_by_id.get(clause_id),
+        merged_group_texts=merged_group_texts,
     )
     # The first edit is the legacy "primary" redline that existing readers (e.g.
     # ``ai_first_assessment.proposed_redline_action``) consume; keep it in the
@@ -406,6 +416,15 @@ def validate_ai_clause_assessment(
         rationale = _with_degrade_note(rationale)
         if decision in {CLAUSE_DECISION_FAIL, CLAUSE_DECISION_REVIEW}:
             manual_redline_needed = True
+    # A span whose anchor STRADDLES a merged fragment boundary cannot be applied on a
+    # single fragment, so it degrades to a no-op like any unanchorable edit. But unlike
+    # a fabricated anchor, this is a REAL cut the reviewer must make by hand -- and when
+    # OTHER edits on the clause are actionable, ``all_edits_degraded`` is False and the
+    # boundary edit would vanish with no trace. Force the manual-redline flag whenever
+    # any boundary-spanning edit degraded, so the reviewer always SEES it (never a
+    # silent drop). Still only meaningful on a bad clause (FAIL/REVIEW).
+    if any_boundary_manual and decision in {CLAUSE_DECISION_FAIL, CLAUSE_DECISION_REVIEW}:
+        manual_redline_needed = True
 
     has_actionable_edit = any(
         edit.get("action") != AI_REDLINE_NO_CHANGE for edit in proposed_edits
@@ -1008,37 +1027,45 @@ def _validated_proposed_edits(
     *,
     payload_version: int,
     playbook_clause: Mapping[str, Any] | None = None,
-) -> tuple[list[dict[str, Any]], bool]:
+    merged_group_texts: Mapping[str, str] | None = None,
+) -> tuple[list[dict[str, Any]], bool, bool]:
     """Validate and normalize the proposed edit list (v2 singular or v3 list).
 
-    Returns ``(edits, all_degraded)``: a list of cleaned paragraph-level edits
-    (spans already lowered to ``replace_paragraph``), and a flag that is True only
-    when at least one edit was present but EVERY actionable edit degraded to a
-    no-op (so the caller downgrades the clause to human review).
+    Returns ``(edits, all_degraded, any_boundary_manual)``: the cleaned
+    paragraph-level edits (spans already lowered to ``replace_paragraph``); a flag
+    that is True only when at least one edit was present but EVERY actionable edit
+    degraded to a no-op (so the caller downgrades the clause to human review); and a
+    flag that is True when any edit degraded because its span anchor STRADDLED a
+    merged fragment boundary (so the caller can surface a visible manual redline even
+    when sibling edits remain actionable).
     """
     raw_edits, source_error = _raw_proposed_edits(assessment, location, payload_version)
     if source_error is not None:
         errors.append(source_error)
-        return [{"action": ""}], False
+        return [{"action": ""}], False, False
     if not raw_edits:
         # No redline supplied at all. Mirror the historical empty-object behaviour:
         # a single no_change edit, which the coupling checks treat as "no action".
-        return [{"action": AI_REDLINE_NO_CHANGE}], False
+        return [{"action": AI_REDLINE_NO_CHANGE}], False, False
 
     cleaned_edits: list[dict[str, Any]] = []
     actionable_count = 0
     degraded_count = 0
+    any_boundary_manual = False
     for index, raw_edit in enumerate(raw_edits):
         edit_location = location if len(raw_edits) == 1 else f"{location}.proposed_edits[{index}]"
-        cleaned, degraded = _validated_single_edit(
+        cleaned, degraded, boundary_manual = _validated_single_edit(
             raw_edit,
             paragraph_by_id,
             edit_location,
             errors,
             payload_version=payload_version,
             playbook_clause=playbook_clause,
+            merged_group_texts=merged_group_texts,
         )
         cleaned_edits.append(cleaned)
+        if boundary_manual:
+            any_boundary_manual = True
         if degraded:
             degraded_count += 1
             actionable_count += 1
@@ -1046,7 +1073,32 @@ def _validated_proposed_edits(
             actionable_count += 1
 
     all_edits_degraded = actionable_count > 0 and degraded_count == actionable_count
-    return cleaned_edits, all_edits_degraded
+    return cleaned_edits, all_edits_degraded, any_boundary_manual
+
+
+def _merged_group_texts(paragraphs: Sequence[Paragraph]) -> dict[str, str]:
+    """Map each fragment id in a MULTI-fragment merge group to its joined group text.
+
+    Deterministic and packet-only: re-runs the same continuation merge the packet
+    builder used, then, for every group with more than one member, records the
+    merged (single-space-joined) text under EVERY member id. Singleton groups are
+    omitted so a non-merged paragraph is never treated as a boundary case (the
+    single-fragment anchor path stays byte-identical).
+    """
+    model_paragraphs, groups = merge_continuation_fragments(paragraphs)
+    merged_text_by_head = {
+        str(paragraph.get("id") or ""): str(paragraph.get("text") or "")
+        for paragraph in model_paragraphs
+    }
+    result: dict[str, str] = {}
+    for member_id, group in groups.items():
+        if len(group) < 2:
+            continue
+        head_id = str(group[0])
+        joined = merged_text_by_head.get(head_id)
+        if joined:
+            result[str(member_id)] = joined
+    return result
 
 
 def _raw_proposed_edits(
@@ -1084,12 +1136,16 @@ def _validated_single_edit(
     *,
     payload_version: int,
     playbook_clause: Mapping[str, Any] | None = None,
-) -> tuple[dict[str, Any], bool]:
+    merged_group_texts: Mapping[str, str] | None = None,
+) -> tuple[dict[str, Any], bool, bool]:
     """Validate a single edit object and lower any span action.
 
-    Returns ``(cleaned_edit, degraded)``. ``degraded`` is True when the edit was an
-    actionable redline that could not be realized (no Playbook wording, or a span
-    whose anchor was not found) and was collapsed to a no_change no-op.
+    Returns ``(cleaned_edit, degraded, boundary_manual)``. ``degraded`` is True when
+    the edit was an actionable redline that could not be realized (no Playbook
+    wording, or a span whose anchor was not found) and was collapsed to a no_change
+    no-op. ``boundary_manual`` is True when the reason the span degraded is that its
+    anchor STRADDLES a merged fragment boundary (a real cut the reviewer must make by
+    hand), so the caller can surface a visible manual redline rather than a silent drop.
     """
     allowed_keys = {
         "action",
@@ -1125,7 +1181,7 @@ def _validated_single_edit(
             _rationale = proposed_redline.get("rationale")
             if isinstance(_rationale, str) and _rationale.strip():
                 cleaned_drop["rationale"] = _rationale.strip()
-            return cleaned_drop, True
+            return cleaned_drop, True, False
 
     paragraph_id = str(proposed_redline.get("paragraph_id") or "").strip()
     jurisdiction = str(proposed_redline.get("jurisdiction") or "").strip()
@@ -1148,7 +1204,7 @@ def _validated_single_edit(
 
     # ---- Span lowering (strike_span / replace_span -> replace_paragraph) ----
     if action in AI_REDLINE_SPAN_ACTIONS:
-        lowered = _lower_span_edit(
+        lowered, boundary_manual = _lower_span_edit(
             action,
             paragraph_id,
             anchor_quote,
@@ -1156,14 +1212,17 @@ def _validated_single_edit(
             paragraph_by_id,
             location,
             errors,
+            merged_group_texts=merged_group_texts,
         )
         if lowered is None:
             # Anchor not found / structurally unusable: degrade THIS edit to a
             # no-op. The caller downgrades the clause to review if ALL edits degrade.
+            # A boundary-straddling anchor degrades too, but flags boundary_manual so
+            # the reviewer is told to make the cut by hand instead of it vanishing.
             cleaned: dict[str, Any] = {"action": AI_REDLINE_NO_CHANGE}
             if rationale:
                 cleaned["rationale"] = rationale
-            return cleaned, True
+            return cleaned, True, boundary_manual
         span_action = action
         span_anchor = anchor_quote
         span_replacement = text if action == AI_REDLINE_REPLACE_SPAN else ""
@@ -1209,7 +1268,7 @@ def _validated_single_edit(
         cleaned["span_anchor_quote"] = span_anchor
         if span_action == AI_REDLINE_REPLACE_SPAN:
             cleaned["span_replacement"] = span_replacement
-    return cleaned, degraded_no_text
+    return cleaned, degraded_no_text, False
 
 
 def _lower_span_edit(
@@ -1220,36 +1279,75 @@ def _lower_span_edit(
     paragraph_by_id: Mapping[str, str],
     location: str,
     errors: list[str],
-) -> str | None:
+    *,
+    merged_group_texts: Mapping[str, str] | None = None,
+) -> tuple[str | None, bool]:
     """Lower a span edit to the replacement text for a whole-paragraph replace.
 
-    Returns the new paragraph text (paragraph with the span cut/substituted), or
-    ``None`` when the edit is structurally unusable (missing/unknown paragraph_id,
-    missing anchor_quote, or an anchor that does not appear verbatim). A structural
-    contract violation (missing/unknown id, missing anchor) records an ``errors``
-    entry; an unanchorable-but-well-formed span does NOT (it degrades to review).
+    Returns ``(new_text, boundary_manual)``. ``new_text`` is the new paragraph text
+    (paragraph with the span cut/substituted), or ``None`` when the edit is
+    structurally unusable (missing/unknown paragraph_id, missing anchor_quote, or an
+    anchor that does not appear verbatim). A structural contract violation
+    (missing/unknown id, missing anchor) records an ``errors`` entry; an
+    unanchorable-but-well-formed span does NOT (it degrades to review).
+
+    ``boundary_manual`` is True only when the anchor fails to locate inside its single
+    cited fragment but DOES resolve, uniquely, against the JOINED merged-group text --
+    i.e. it straddles a DOCX continuation-fragment boundary. That is a real edit the
+    reviewer must make by hand; the caller surfaces it as a visible manual redline
+    rather than dropping it silently. We deliberately do NOT reconstruct text across
+    fragments here (that risks corrupting the outbound redline); we only make the
+    dropped cut visible.
     """
     if not paragraph_id:
         errors.append(f"{location}: paragraph_id is required for {action}")
-        return None
+        return None, False
     paragraph_text = paragraph_by_id.get(paragraph_id)
     if paragraph_text is None:
         errors.append(f"{location}: paragraph_id does not exist: {paragraph_id}")
-        return None
+        return None, False
     if not anchor_quote:
         errors.append(f"{location}: anchor_quote is required for {action}")
-        return None
+        return None, False
     span_replacement = replacement if action == AI_REDLINE_REPLACE_SPAN else ""
     new_text = apply_span(paragraph_text, anchor_quote, span_replacement)
     if new_text is None:
-        # Well-formed but the anchor could not be located verbatim: a no-op
-        # degrade, NOT a contract error (the clause is downgraded to review).
-        return None
+        # Well-formed but the anchor could not be located verbatim in this fragment.
+        # Before degrading to a plain no-op, check whether the anchor is a genuine
+        # cross-fragment cut: it resolves, uniquely and word-boundary aligned, in the
+        # JOINED merged-group text. If so, flag it so the reviewer SEES a manual
+        # redline (never a silent drop). Otherwise it is a plain unanchorable degrade.
+        boundary_manual = _anchor_spans_merged_boundary(
+            paragraph_id, anchor_quote, merged_group_texts
+        )
+        return None, boundary_manual
     if new_text == paragraph_text:
         # The span resolved to a no-change (e.g. replace with identical text):
         # treat as a degrade so it does not masquerade as an actionable redline.
-        return None
-    return new_text
+        return None, False
+    return new_text, False
+
+
+def _anchor_spans_merged_boundary(
+    paragraph_id: str,
+    anchor_quote: str,
+    merged_group_texts: Mapping[str, str] | None,
+) -> bool:
+    """Whether ``anchor_quote`` is a genuine cross-fragment cut in a merged group.
+
+    True only when the cited fragment belongs to a MULTI-fragment merge group and the
+    anchor locates uniquely (word-boundary aligned) in that group's JOINED text --
+    exactly the anchor `apply_span` could not find inside the single fragment. Uses the
+    same ``_locate_span_offsets`` guards (glyph fold, uniqueness, word boundary) as the
+    single-fragment path, so a fabricated or ambiguous anchor is NOT mistaken for a
+    boundary cut. Purely diagnostic: it never edits text.
+    """
+    if not merged_group_texts:
+        return False
+    joined = merged_group_texts.get(paragraph_id)
+    if not joined:
+        return False
+    return _locate_span_offsets(joined, anchor_quote) is not None
 
 
 def _paragraph_ids_for_quote(quote: str, paragraph_by_id: Mapping[str, str]) -> list[str]:

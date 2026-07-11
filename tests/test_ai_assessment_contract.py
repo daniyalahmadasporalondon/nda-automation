@@ -675,6 +675,20 @@ def _span_paragraphs():
     return split_document_paragraphs(SPAN_SOURCE_TEXT)
 
 
+# Two <w:p> fragments that the continuation merge re-joins into one clause: the head
+# ("... shall not solicit, hire, or circumvent") ends mid-sentence, the tail continues
+# it in lower case. A span anchor like "circumvent the Disclosing Party" therefore
+# STRADDLES the p1/p2 boundary and cannot be applied on either fragment alone.
+BOUNDARY_SPAN_SOURCE_TEXT = "\n\n".join([
+    "The Receiving Party shall not solicit, hire, or circumvent",
+    "the Disclosing Party for two years, which is unreasonable.",
+])
+
+
+def _boundary_span_paragraphs():
+    return split_document_paragraphs(BOUNDARY_SPAN_SOURCE_TEXT)
+
+
 def _span_assessment(**overrides):
     # non_circumvention is a prohibited/dynamic clause; use it so the catch-all
     # restraint is the natural span target.
@@ -799,6 +813,71 @@ class CategoryASpanAndListContractTests(unittest.TestCase):
         self.assertTrue(clause["manual_redline_needed"])
         self.assertFalse(clause["blocks_send"])
         self.assertEqual(clause["proposed_edits"][0]["action"], AI_REDLINE_NO_CHANGE)
+
+    def test_boundary_spanning_span_is_visible_manual_not_silently_dropped(self):
+        """A3c: a span whose anchor STRADDLES a merged fragment boundary cannot be
+        applied on a single fragment, so it degrades to a no-op -- but it must flag
+        manual_redline_needed so the reviewer SEES the cut, EVEN when a sibling edit on
+        the same clause remains actionable (the silent-drop bug)."""
+        paragraphs = _boundary_span_paragraphs()
+        assessment = _span_assessment(
+            schema_version=3,
+            proposed_edits=[
+                # Actionable: the anchor sits wholly inside the head fragment.
+                {"action": "strike_span", "paragraph_id": "p1", "anchor_quote": "solicit, hire, or circumvent"},
+                # Boundary-straddling: "circumvent" is in p1, "the Disclosing Party" in p2.
+                {"action": "strike_span", "paragraph_id": "p1", "anchor_quote": "circumvent the Disclosing Party"},
+            ],
+        )
+        cleaned = self._validate(assessment, paragraphs=paragraphs)
+        clause = cleaned["non_circumvention"]
+        # The verdict survives and the reviewer is told to make the boundary cut by hand.
+        self.assertEqual(clause["decision"], "fail")
+        self.assertTrue(clause["manual_redline_needed"])
+        edits = clause["proposed_edits"]
+        # The sibling edit still applies (not clobbered by the degraded boundary edit).
+        actionable = [e for e in edits if e["action"] == "replace_paragraph"]
+        self.assertEqual(len(actionable), 1)
+        self.assertNotIn("solicit, hire, or circumvent", actionable[0]["text"])
+        # The boundary edit degraded to a no-op -- NO text was reconstructed across the
+        # boundary (that would risk a corrupt outbound redline); it is safely manual.
+        self.assertTrue(any(e["action"] == AI_REDLINE_NO_CHANGE for e in edits))
+
+    def test_boundary_span_alone_keeps_fail_and_flags_manual(self):
+        """The lone boundary-straddling span degrades but keeps the FAIL and surfaces a
+        visible manual redline (never a silent pass or drop)."""
+        paragraphs = _boundary_span_paragraphs()
+        assessment = _span_assessment(
+            schema_version=3,
+            proposed_edits=[
+                {"action": "strike_span", "paragraph_id": "p1", "anchor_quote": "circumvent the Disclosing Party"},
+            ],
+        )
+        cleaned = self._validate(assessment, paragraphs=paragraphs)
+        clause = cleaned["non_circumvention"]
+        self.assertEqual(clause["decision"], "fail")
+        self.assertTrue(clause["manual_redline_needed"])
+        self.assertEqual(clause["proposed_edits"][0]["action"], AI_REDLINE_NO_CHANGE)
+
+    def test_fabricated_anchor_is_not_mistaken_for_a_boundary_cut(self):
+        """A truly fabricated anchor (absent from the joined merged-group text too) must
+        NOT be treated as a boundary cut: with a sibling actionable edit it degrades
+        silently as before (manual_redline_needed stays unset), so the boundary path
+        cannot be abused to force a manual flag on hallucinated anchors."""
+        paragraphs = _boundary_span_paragraphs()
+        assessment = _span_assessment(
+            schema_version=3,
+            proposed_edits=[
+                {"action": "strike_span", "paragraph_id": "p1", "anchor_quote": "solicit, hire, or circumvent"},
+                {"action": "strike_span", "paragraph_id": "p1", "anchor_quote": "this phrase is nowhere in the clause"},
+            ],
+        )
+        cleaned = self._validate(assessment, paragraphs=paragraphs)
+        clause = cleaned["non_circumvention"]
+        self.assertEqual(clause["decision"], "fail")
+        # Sibling edit actionable -> not all degraded; fabricated anchor is not a
+        # boundary cut, so no manual flag is forced.
+        self.assertNotIn("manual_redline_needed", clause)
 
     def test_span_action_under_schema_version_two_degrades_the_clause(self):
         assessment = _span_assessment(
@@ -956,7 +1035,7 @@ class NonStringReplacementContractTests(unittest.TestCase):
         from nda_automation.ai_assessment_contract import _validated_single_edit
 
         errors: list[str] = []
-        cleaned, degraded = _validated_single_edit(
+        cleaned, degraded, _boundary = _validated_single_edit(
             {"action": REDLINE_REPLACE_PARAGRAPH, "paragraph_id": "p1", "replacement": {"x": 1}},
             {"p1": "Some paragraph text."},
             "clause.proposed_redline",
@@ -973,7 +1052,7 @@ class NonStringReplacementContractTests(unittest.TestCase):
         from nda_automation.ai_assessment_contract import _validated_single_edit
 
         errors: list[str] = []
-        cleaned, degraded = _validated_single_edit(
+        cleaned, degraded, _boundary = _validated_single_edit(
             {
                 "action": "replace_span",
                 "paragraph_id": "p1",
