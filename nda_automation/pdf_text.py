@@ -186,6 +186,52 @@ _OVERLAY_MIN_GAP_EM = 2.0
 # sure I read this in the right order".
 _WIDTH_ESTIMATE_CEILING = 0.8
 
+# --- HORIZONTAL ADJACENCY: the garble PRODUCER fix (defect 4, join side) ------
+# ``_merge_line_bucket`` joins the same-baseline chunks of one visual line. The old
+# code forced a space between EVERY pair, so a word the PDF producer split into
+# edge-to-edge chunks ("(", "COMPANY", ")" / "NON", "-", "DISCLOSURE") came back as
+# "( COMPANY )" / "NON - DISCLOSURE". The join now DEFAULTS to a space (preserving
+# the legacy behavior for everything ambiguous — column reorders, tables, newline-
+# separated cells) and SUPPRESSES it only when two chunks are PROVABLY adjacent:
+#   1. neither boundary carries the whitespace pypdf itself inserted for a real word
+#      gap (surfaced as leading/trailing space on the raw chunk text), AND
+#   2. the next chunk's left edge sits right where this chunk's estimated right edge
+#      is — no real horizontal gap.
+# Right edges are estimated per character from a proportional-Latin advance digest
+# (Helvetica AFM / 1000). The estimate only ever DECIDES A SPACE vs NO-SPACE within
+# a line; it never adds, drops or reorders a character. Per-character advance widths
+# (fraction of em); default 0.5em for anything unlisted.
+_GLYPH_ADVANCE_EM = {
+    "!": 0.278, '"': 0.355, "#": 0.556, "$": 0.556, "%": 0.889, "&": 0.667,
+    "'": 0.191, "(": 0.333, ")": 0.333, "*": 0.389, "+": 0.584, ",": 0.278,
+    "-": 0.333, ".": 0.278, "/": 0.278, ":": 0.278, ";": 0.278, "<": 0.584,
+    "=": 0.584, ">": 0.584, "?": 0.556, "@": 1.015, "[": 0.278, "\\": 0.278,
+    "]": 0.278, "^": 0.469, "_": 0.556, "`": 0.333, "{": 0.334, "|": 0.260,
+    "}": 0.334, "~": 0.584,
+    "0": 0.556, "1": 0.556, "2": 0.556, "3": 0.556, "4": 0.556, "5": 0.556,
+    "6": 0.556, "7": 0.556, "8": 0.556, "9": 0.556,
+    "A": 0.667, "B": 0.667, "C": 0.722, "D": 0.722, "E": 0.667, "F": 0.611,
+    "G": 0.778, "H": 0.722, "I": 0.278, "J": 0.500, "K": 0.667, "L": 0.556,
+    "M": 0.833, "N": 0.722, "O": 0.778, "P": 0.667, "Q": 0.778, "R": 0.722,
+    "S": 0.667, "T": 0.611, "U": 0.722, "V": 0.667, "W": 0.944, "X": 0.667,
+    "Y": 0.667, "Z": 0.611,
+    "a": 0.556, "b": 0.556, "c": 0.500, "d": 0.556, "e": 0.556, "f": 0.278,
+    "g": 0.556, "h": 0.556, "i": 0.222, "j": 0.222, "k": 0.500, "l": 0.222,
+    "m": 0.833, "n": 0.556, "o": 0.556, "p": 0.556, "q": 0.556, "r": 0.333,
+    "s": 0.500, "t": 0.278, "u": 0.556, "v": 0.500, "w": 0.722, "x": 0.500,
+    "y": 0.500, "z": 0.500,
+}
+_DEFAULT_GLYPH_ADVANCE_EM = 0.5
+# Font size assumed when a chunk carries none, so the point gap and the point
+# tolerance are computed in one unit.
+_ADJACENCY_FALLBACK_FONT_PT = 11.0
+# The next chunk is "adjacent" when its left edge is within this many em of the
+# estimated right edge. Kept BELOW a real word space (~0.28em) so a genuine gap is
+# never swallowed, and comfortably ABOVE the ~0 gap of true edge-to-edge chunks;
+# the DEFAULT-to-space policy means any width-estimate error only ever KEEPS a space
+# (the pre-fix behavior), never merges two words.
+_ADJACENCY_TOLERANCE_EM = 0.2
+
 # --- LETTER-SPACED / FRAGMENTED garble detection (defect 4, gaps a & b) -----
 # ``_garbled_text_ratio`` counts only NON-alphanumeric symbols, so a letter-spaced
 # run ("I N W I T N E S S W H E R E O F") or a kern/ligature-fragmented run
@@ -576,9 +622,19 @@ def _extract_geo_lines(page: Any) -> tuple[list[GeoLine], dict[str, object]]:
     rotated_flag = {"seen": False}
 
     def _visitor(text: str, cm: Any, tm: Any, _font_dict: Any, font_size: Any) -> None:
-        cleaned = " ".join(str(text).split())
-        if not cleaned:
+        raw = str(text)
+        collapsed = " ".join(raw.split())
+        if not collapsed:
             return
+        # Preserve the space/no-space decision pypdf already made at this chunk's
+        # boundaries (encoded as leading/trailing whitespace) so _merge_line_bucket
+        # can reproduce it and NOT force a space between edge-to-edge chunks (the
+        # garble PRODUCER fix, defect 4). Internal whitespace is still collapsed. All
+        # OTHER consumers measure the TRIMMED text (see _chunk_width /
+        # _chunks_are_glyph_fragmented), so this boundary space changes nothing else.
+        lead = " " if raw[:1].isspace() else ""
+        trail = " " if raw[-1:].isspace() else ""
+        cleaned = f"{lead}{collapsed}{trail}"
         try:
             x, y, rotated = _compose_translation(tm, cm)
         except (TypeError, ValueError, IndexError):
@@ -688,7 +744,9 @@ def _distinct_baselines(chunks: list[Chunk]) -> list[float]:
 
 def _chunk_width(chunk: Chunk, body_font: float) -> float:
     size = chunk[2] or body_font
-    return max(1.0, len(chunk[3])) * float(size) * _MEAN_ADVANCE_EM
+    # Trim boundary whitespace (the visitor now preserves it for the line-join) so
+    # the width estimate counts only rendered glyphs, as before.
+    return max(1.0, len(chunk[3].strip())) * float(size) * _MEAN_ADVANCE_EM
 
 
 def _partition_page_regions(
@@ -983,7 +1041,10 @@ def _chunks_are_glyph_fragmented(
 
     run = 0
     for _x, _y, _size, text in chunks:
-        if len(text) == 1:
+        # Measure the TRIMMED glyph (the visitor may carry a boundary space for the
+        # line-join): a letter-spaced per-glyph run reports chunks like " I" whose
+        # single rendered glyph must still count as a length-1 fragment.
+        if len(text.strip()) == 1:
             run += 1
             if run >= _GLYPH_FRAGMENT_RUN_MIN:
                 return True
@@ -1019,12 +1080,59 @@ def _group_chunks_into_lines(
 
 def _merge_line_bucket(bucket: list[tuple[float, float, Optional[float], str]]) -> GeoLine:
     bucket = sorted(bucket, key=lambda chunk: chunk[0])
-    text = " ".join(" ".join(chunk[3].split()) for chunk in bucket if chunk[3].split())
+    text = _join_line_chunks(bucket)
     left_x = min((chunk[0] for chunk in bucket), default=None)
     y = bucket[0][1] if bucket else None
     sizes = [chunk[2] for chunk in bucket if chunk[2] is not None]
     font_size = max(sizes) if sizes else None
     return GeoLine(text=text, left_x=left_x, y=y, font_size=font_size)
+
+
+def _estimate_text_width(text: str, font_size: Optional[float]) -> float:
+    """Rendered width of ``text`` in points from proportional-Latin advances."""
+    size = font_size if (font_size and font_size > 0) else _ADJACENCY_FALLBACK_FONT_PT
+    em = sum(_GLYPH_ADVANCE_EM.get(char, _DEFAULT_GLYPH_ADVANCE_EM) for char in text)
+    return em * float(size)
+
+
+def _join_line_chunks(bucket: list[tuple[float, float, Optional[float], str]]) -> str:
+    """Join a visual line's x-sorted chunks (GARBLE PRODUCER fix, defect 4).
+
+    DEFAULTS to a space between chunks (the legacy behavior, so column reorders,
+    tables and newline-separated cells stay byte-identical) and SUPPRESSES the space
+    only for a pair that is provably edge-to-edge: neither side carries pypdf's own
+    word-gap whitespace AND the next chunk begins within ``_ADJACENCY_TOLERANCE_EM``
+    of this chunk's estimated right edge. Internal whitespace is collapsed; the
+    result is stripped.
+    """
+
+    pieces: list[str] = []
+    prev_x: Optional[float] = None
+    prev_size: Optional[float] = None
+    prev_trimmed: str = ""
+    prev_had_trailing_space = False
+    for x, _y, size, raw in bucket:
+        collapsed = " ".join(raw.split())
+        if not collapsed:
+            continue
+        has_leading = raw[:1].isspace()
+        has_trailing = raw[-1:].isspace()
+        if pieces:
+            prev_right = (prev_x or 0.0) + _estimate_text_width(prev_trimmed, prev_size)
+            unit = prev_size if (prev_size and prev_size > 0) else _ADJACENCY_FALLBACK_FONT_PT
+            adjacent = (
+                not prev_had_trailing_space
+                and not has_leading
+                and (x - prev_right) <= _ADJACENCY_TOLERANCE_EM * float(unit)
+            )
+            if not adjacent:
+                pieces.append(" ")
+        pieces.append(collapsed)
+        prev_x = x
+        prev_size = size
+        prev_trimmed = collapsed
+        prev_had_trailing_space = has_trailing
+    return "".join(pieces).strip()
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -1332,12 +1440,22 @@ def _starts_new_pdf_paragraph(
         return True
 
     # --- No geometry for this line pair (visitor never fired, or one line lacks a
-    # baseline): we cannot tell a wrap from a clause boundary, so we must fail SAFE
-    # (fragment, never merge). Keep the one pairing that is structurally a single
-    # marker — a bare standalone clause number immediately followed by its title —
-    # joined; SPLIT every other line break. Fragmenting one clause into several is
-    # acceptable; merging two is not. ---
+    # baseline): we cannot tell a wrap from a clause boundary from spacing, so we
+    # fail SAFE (fragment, never merge) EXCEPT for the pairings that are structurally
+    # a single clause. Fragmenting one clause into several is acceptable; merging two
+    # is not. ---
+    # Keep the bare standalone clause number joined to the title/body it introduces.
     if _is_standalone_clause_number(previous.text):
+        return False
+    # OVER-FRAGMENTATION fix (defect 6): a flat-fallback page split at EVERY line
+    # break, blowing one wrapped clause into many one-line paragraphs (~3x the DOCX
+    # count). Merge the one pairing that is UNAMBIGUOUSLY a single wrapped sentence —
+    # the SAME conservative rule the geometry path's JOIN 3 and the DOCX clause-merge
+    # use: the previous line did NOT finish a sentence (no terminal punctuation) AND
+    # this line is a lowercase continuation. A new clause never opens with a bare
+    # lowercase letter and a finished sentence always splits, so this can never merge
+    # two distinct clauses; every other line break still splits.
+    if not _ends_sentence(previous.text) and _is_lowercase_continuation(line.text):
         return False
     return True
 

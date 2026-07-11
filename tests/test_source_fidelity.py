@@ -88,6 +88,62 @@ def test_source_fidelity_groups_table_cells_and_preserves_color_runs():
     assert table["rows"][1]["cells"][0]["paragraph_ids"] == ["p4"]
 
 
+def test_pdf_geometry_maps_into_block_style_font_size_and_relative_indent():
+    # D3 STRUCTURAL CARRY: a PDF paragraph's pdf_geometry (font_size/left_x) must
+    # surface in block.style under the renderer's key names (fontSize / indent_left),
+    # with left_x converted to a page-relative indent (0 at the text margin, matching
+    # the DOCX field). Body text at the margin gets NO indent; the nested sub-clause
+    # keeps a positive one; the heading keeps its larger font size.
+    review_result = {
+        "source": {"type": "pdf"},
+        "paragraphs": [
+            {
+                "id": "p1", "index": 1, "text": "1. CONFIDENTIALITY", "source_part": "pdf",
+                "page_number": 1,
+                "pdf_geometry": {"font_size": 14.0, "left_x": 72.0, "body_font": 11.0,
+                                 "heading_font_ratio": 14.0 / 11.0},
+            },
+            {
+                "id": "p2", "index": 2, "text": "The Receiving Party shall hold it in confidence.",
+                "source_part": "pdf", "page_number": 1,
+                "pdf_geometry": {"font_size": 11.0, "left_x": 72.0, "body_font": 11.0},
+            },
+            {
+                "id": "p3", "index": 3, "text": "(a) a nested sub-clause set further in.",
+                "source_part": "pdf", "page_number": 1,
+                "pdf_geometry": {"font_size": 11.0, "left_x": 108.0, "body_font": 11.0},
+            },
+        ],
+    }
+
+    payload = source_fidelity_payload(review_result, source=review_result["source"])
+    blocks = {block["paragraph_id"]: block for block in payload["blocks"]}
+
+    # Heading: larger font size carried; sits at the margin so no indent.
+    assert blocks["p1"]["style"]["fontSize"] == 14
+    assert "indent_left" not in blocks["p1"].get("style", {})
+    # Body text at the margin: font size carried, indent normalized to 0 (dropped).
+    assert blocks["p2"]["style"]["fontSize"] == 11
+    assert "indent_left" not in blocks["p2"].get("style", {})
+    # Nested sub-clause: 108 - 72 = 36pt relative indent surfaced.
+    assert blocks["p3"]["style"]["indent_left"] == 36
+
+
+def test_pdf_paragraph_without_geometry_carries_no_derived_typography():
+    # A flat-fallback PDF paragraph (no pdf_geometry) surfaces no DERIVED typography
+    # (fontSize / indent_left) — we only expose font size and indent we can prove.
+    review_result = {
+        "source": {"type": "pdf"},
+        "paragraphs": [
+            {"id": "p1", "index": 1, "text": "flat text.", "source_part": "pdf", "page_number": 1},
+        ],
+    }
+    payload = source_fidelity_payload(review_result, source=review_result["source"])
+    style = payload["blocks"][0].get("style", {})
+    assert "fontSize" not in style
+    assert "indent_left" not in style
+
+
 def test_source_fidelity_marks_pdf_as_source_preview_limited():
     review_result = {
         "source": {
