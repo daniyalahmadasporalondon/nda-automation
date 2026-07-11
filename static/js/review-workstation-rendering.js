@@ -6198,7 +6198,22 @@ function renderOriginalDocumentSurface(renderState) {
     `;
   }
 
-  if (status === "ready" && pdfUrl) {
+  // RECONSTRUCTION-FLOOR GUARD. A PDF-source matter can report status "ready"
+  // with a pdfUrl but NO page images (pages:[]) -- e.g. preferred_render_mode
+  // "source_pdf_preview", where the /render-pdf iframe paints NEARLY BLANK.
+  // Unlike the non-Original views, the Original view suppresses the text
+  // reconstruction and paints THIS surface full-width, so a blank iframe leaves
+  // the whole pane empty. When a usable source-fidelity reconstruction exists
+  // AND the render metadata prefers the source surface, we must fall THROUGH to
+  // that reconstruction (the extracted-text studio surface) rather than paint an
+  // empty framed box. The pdfUrl iframe still stands whenever there is no
+  // reconstruction floor to fall to, or the metadata does not prefer it -- so a
+  // genuinely-painting PDF preview is unchanged.
+  const sourceFidelity = state.latestReviewResult?.source_fidelity;
+  const reconstructionFloorPreferred = sourceFidelityPreviewAvailable(sourceFidelity)
+    && sourceFidelityPrefersOriginalSurface(sourceFidelity);
+
+  if (status === "ready" && pdfUrl && !reconstructionFloorPreferred) {
     return `
       <section class="review-original-surface ready" data-review-pdf-surface data-original-surface data-render-status="ready" aria-label="Original document preview">
         <div class="review-pdf-status">
@@ -6210,7 +6225,6 @@ function renderOriginalDocumentSurface(renderState) {
     `;
   }
 
-  const sourceFidelity = state.latestReviewResult?.source_fidelity;
   if (sourceFidelityPreviewAvailable(sourceFidelity)) {
     return renderSourceFidelitySurface(sourceFidelity, renderState, status);
   }
