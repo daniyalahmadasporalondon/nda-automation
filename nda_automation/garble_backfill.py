@@ -309,6 +309,31 @@ def _reextract_paragraphs(
     return paragraphs
 
 
+def _reflow_healed_text_is_readable(new_text: str) -> bool:
+    """The shard-reflow READABILITY BACKSTOP, applied to a whole re-extracted
+    document's text before it may be reported as a would-heal or PERSISTED.
+
+    Two conditions, both required (bias to NOT persist — any doubt returns False):
+
+    * NOT GARBLED by the fingerprint (the shard/exploded shape is gone), AND
+    * NO IMPLAUSIBLE MEGAWORD — no spaceless alphanumeric run longer than
+      ``pdf_text._SHARD_MAX_WORD_CHARS``. The per-page adoption gate already
+      rejects a fused reflow, but a dropped inter-word space is invisible to the
+      garble fingerprint, so this is an independent second line of defence at the
+      persist boundary: a heal that welded two words together is refused, not
+      written. Empty text is never readable.
+
+    This is the concrete gate (b) the persist path is doubly-gated on."""
+    from . import pdf_text  # noqa: PLC0415 - local, mirrors the other lazy imports.
+
+    blocks = stored_paragraph_blocks(new_text)
+    if not blocks:
+        return False
+    if garble_fingerprint(blocks)["garbled"]:
+        return False
+    return not pdf_text.text_has_implausible_megaword(new_text)
+
+
 def _measure_matter(
     matter: dict[str, Any], entry: dict[str, Any], *, shard_rejoin: bool
 ) -> None:
@@ -331,22 +356,33 @@ def _measure_matter(
     entry["new_paragraphs"] = len(paragraphs)
     if new_text == old_text:
         entry["action"] = "measure_unchanged"
-    elif after["garbled"]:
-        entry["action"] = "measure_still_garbled"
-    else:
+    elif _reflow_healed_text_is_readable(new_text):
+        # would_heal is gated on the SAME readability backstop the persist path
+        # enforces (not garbled AND no fused megaword), so the measurement is an
+        # HONEST size of what a persisting run would actually write — not the old
+        # over-estimate that counted a fused/garbled re-extraction as a heal.
         entry["action"] = "would_heal"
+    else:
+        entry["action"] = "measure_still_garbled"
 
 
-def _heal_matter(matter: dict[str, Any], entry: dict[str, Any]) -> None:
+def _heal_matter(
+    matter: dict[str, Any], entry: dict[str, Any], *, shard_rejoin: bool = False
+) -> None:
     """Re-extract ONE matter through the fixed extractor and PERSIST the healed
     text. Mutates ``entry`` (action/error fields) only; every failure path is
     caught by the caller's per-matter guard so one matter never aborts the run.
 
-    STRUCTURALLY reflow-free: healing ALWAYS re-extracts with the shard-fragment
-    reflow OFF (``shard_rejoin=False``). The reflow is measurement-only until it is
-    proven on the real corpus; a persist path can never invoke it. The dangerous
-    ``shard_rejoin and not measure_only`` combination is refused up-front in
-    ``run_garble_backfill``, and this function has no shard_rejoin lever at all.
+    DEFAULT reflow-free (``shard_rejoin=False``): the per-glyph heal re-extracts
+    with the shard-fragment reflow OFF and gates on the garble fingerprint alone —
+    byte-identical to the proven path.
+
+    OPT-IN persist path (``shard_rejoin=True``, reachable ONLY via
+    ``run_garble_backfill(persist_shard_rejoin=True)`` — see the structural guards
+    there): re-extracts WITH the reflow on and gates the write on the stronger
+    READABILITY BACKSTOP (``_reflow_healed_text_is_readable`` — not garbled AND no
+    fused megaword), so a reflowed re-extraction is persisted only when it is
+    genuinely reviewable. Bias to NOT persist: any doubt reports and skips.
     """
     matter_id = str(matter.get("id") or "")
     old_text = str(matter.get("extracted_text") or "")
@@ -358,13 +394,19 @@ def _heal_matter(matter: dict[str, Any], entry: dict[str, Any]) -> None:
         return
 
     filename = str(matter.get("stored_filename") or matter.get("source_filename") or "")
-    paragraphs = _reextract_paragraphs(filename, document_bytes, shard_rejoin=False)
+    paragraphs = _reextract_paragraphs(filename, document_bytes, shard_rejoin=shard_rejoin)
     new_text = extracted_text_from_paragraphs(paragraphs)
 
     if new_text == old_text:
         entry["action"] = "unchanged"
         return
-    if garble_fingerprint(stored_paragraph_blocks(new_text))["garbled"]:
+    if shard_rejoin:
+        # PERSIST gate (b): the reflowed re-extraction must clear the readability
+        # backstop (not garbled AND no fused megaword) before it may be written.
+        if not _reflow_healed_text_is_readable(new_text):
+            entry["action"] = "reflow_unreadable"
+            return
+    elif garble_fingerprint(stored_paragraph_blocks(new_text))["garbled"]:
         # The fixed extractor did not produce coherent text for this document
         # (a different degradation class). Swapping garble for garble is churn
         # with no benefit — report it for a human instead. NO write.
@@ -494,6 +536,7 @@ def run_garble_backfill(
     status_run_id: str = "",
     shard_rejoin: bool = False,
     measure_only: bool = False,
+    persist_shard_rejoin: bool = False,
 ) -> dict[str, Any]:
     """Scan the whole store for garble-fingerprinted PDF matters; heal up to
     ``limit`` of them when ``dry_run`` is False. SERIAL — no thread fan-out.
@@ -512,23 +555,48 @@ def run_garble_backfill(
     ``measure_only`` re-reads document bytes and runs pypdf, so — like the execute
     path — it must be driven off the request thread (via
     ``start_garble_backfill_async``); the plain synchronous dry-run
-    (``measure_only=False``) stays record-reads-only and cheap. Neither flag
-    changes the default execute path: both default False.
+    (``measure_only=False``) stays record-reads-only and cheap.
+
+    ``persist_shard_rejoin`` is the SEPARATE, explicit opt-in that lets a
+    reflow-on re-extraction actually PERSIST (heal-for-real). It is distinct from
+    the measurement flag by design and DOUBLY gated: (a) the caller must set it AND
+    ``shard_rejoin`` (measurement flag alone can never write a reflow), and (b) each
+    matter's reflowed re-extraction must clear the readability backstop in
+    ``_heal_matter`` before it is written. Default False keeps the reflow
+    measurement-only; a persisting run with ``shard_rejoin`` but WITHOUT this opt-in
+    is still structurally refused below. ``measure_only``, ``shard_rejoin`` and the
+    default execute path all stay unchanged: every extra flag defaults False.
 
     ``status_run_id`` (set only by ``start_garble_backfill_async``) publishes a
     per-matter progress snapshot for the GET status route; a synchronous dry-run
     never publishes, so it can't clobber the last execute run's status.
     """
-    # STRUCTURAL WRITE GUARD (not a route convention): the shard-fragment reflow is
-    # measurement-only until proven on the real corpus, so it may never run on a
-    # PERSISTING pass. ``measure_only`` writes nothing; anything else with
-    # ``shard_rejoin`` set could persist a reflowed re-extraction, so refuse it
-    # here regardless of the caller. (dry_run+measure_only is the sanctioned combo.)
-    if shard_rejoin and not measure_only:
+    # STRUCTURAL WRITE GUARDS (not a route convention): the shard-fragment reflow is
+    # measurement-only BY DEFAULT and may PERSIST only under the explicit, separate
+    # ``persist_shard_rejoin`` opt-in — never the measurement flag alone.
+    #
+    #  * ``shard_rejoin`` on a PERSISTING pass (``measure_only`` False) without the
+    #    persist opt-in is refused: measurement is the only sanctioned reflow write
+    #    surface unless a caller deliberately opts in. (dry_run+measure_only is the
+    #    sanctioned MEASURE combo.)
+    #  * The persist opt-in itself must be paired with ``shard_rejoin`` (persisting a
+    #    reflow makes no sense with the reflow off) and is mutually exclusive with
+    #    ``measure_only`` (you cannot both measure and persist) and with ``dry_run``
+    #    (persisting IS a mutation). Any inconsistent combination raises BEFORE the
+    #    scan, so nothing is ever half-written.
+    if shard_rejoin and not measure_only and not persist_shard_rejoin:
         raise ValueError(
-            "shard_rejoin re-extraction is measurement-only (measure_only=True); "
-            "refusing to run a persisting backfill with shard_rejoin enabled."
+            "shard_rejoin re-extraction is measurement-only (measure_only=True) "
+            "unless persist_shard_rejoin=True is explicitly set; refusing to run a "
+            "persisting backfill with shard_rejoin enabled."
         )
+    if persist_shard_rejoin:
+        if not shard_rejoin:
+            raise ValueError("persist_shard_rejoin requires shard_rejoin=True.")
+        if measure_only:
+            raise ValueError("persist_shard_rejoin cannot combine with measure_only.")
+        if dry_run:
+            raise ValueError("persist_shard_rejoin is a persisting run; dry_run must be False.")
     limit = max(1, min(int(limit), GARBLE_BACKFILL_MAX_LIMIT))
     matters = matter_store.list_matters("")
     entries: list[dict[str, Any]] = []
@@ -560,6 +628,7 @@ def run_garble_backfill(
         "dry_run": bool(dry_run),
         "measure_only": bool(measure_only),
         "shard_rejoin": bool(shard_rejoin),
+        "persist_shard_rejoin": bool(persist_shard_rejoin),
         "scanned": len(matters),
         "garbled_matched": garbled_matched,
         "selected": selected,
@@ -568,6 +637,7 @@ def run_garble_backfill(
         "healed": 0,
         "unchanged": 0,
         "still_garbled": 0,
+        "reflow_unreadable": 0,
         "skipped_missing_bytes": 0,
         "write_conflicts": 0,
         "no_longer_garbled": 0,
@@ -614,8 +684,10 @@ def run_garble_backfill(
                 # NON-MUTATING: re-extract + report a would-heal verdict, no write.
                 _measure_matter(fresh, entry, shard_rejoin=shard_rejoin)
             else:
-                # PERSISTING path: structurally reflow-free (see the guard above).
-                _heal_matter(fresh, entry)
+                # PERSISTING path. Reflow-free by default; the reflow is threaded in
+                # ONLY under the explicit persist opt-in (guarded above), and even
+                # then _heal_matter gates the write on the readability backstop.
+                _heal_matter(fresh, entry, shard_rejoin=persist_shard_rejoin)
         except Exception as error:  # noqa: BLE001 - atomic per matter: collect, continue.
             LOGGER.warning(
                 "Garble backfill: healing matter %s failed; continuing", matter_id, exc_info=True
@@ -637,6 +709,8 @@ def run_garble_backfill(
             report["unchanged"] += 1
         elif action == "still_garbled":
             report["still_garbled"] += 1
+        elif action == "reflow_unreadable":
+            report["reflow_unreadable"] += 1
         elif action == "skipped_missing_bytes":
             report["skipped_missing_bytes"] += 1
         elif action == "write_conflict":
@@ -699,6 +773,7 @@ def start_garble_backfill_async(
     limit: int = GARBLE_BACKFILL_DEFAULT_LIMIT,
     shard_rejoin: bool = False,
     measure_only: bool = False,
+    persist_shard_rejoin: bool = False,
 ) -> dict[str, Any]:
     """Start a background daemon-thread run; return immediately.
 
@@ -707,6 +782,14 @@ def start_garble_backfill_async(
     no writes) — kept on the background thread because it re-reads bytes and runs
     pypdf, the same GIL-heavy CPU the execute path must keep off the request
     thread. ``shard_rejoin`` forces the shard-fragment reflow on for the run.
+
+    ``persist_shard_rejoin=True`` (paired with ``shard_rejoin=True``) is the
+    explicit opt-in that lets a reflow-on re-extraction actually PERSIST, gated per
+    matter by the readability backstop in ``_heal_matter``; it stays a background
+    run for the same GIL-heavy-CPU reason. No HTTP route exposes this opt-in yet —
+    it is deliberately code-level only until the reflow is proven on the real
+    corpus — so an operator drives a real heal through this seam, not the endpoint.
+    ``run_garble_backfill`` structurally refuses every inconsistent combination.
 
     Returns ``{"started": bool, "run_id": str, "already_running": bool}``. At
     most one run at a time (it is serial by design): a second trigger while one
@@ -719,7 +802,12 @@ def start_garble_backfill_async(
                 run_id = str(_LAST_STATUS.get("run_id") or "")
             return {"started": False, "run_id": run_id, "already_running": True}
         _RUNNING = True
-    prefix = "garble-measure" if measure_only else "garble-backfill"
+    if persist_shard_rejoin:
+        prefix = "garble-persist"
+    elif measure_only:
+        prefix = "garble-measure"
+    else:
+        prefix = "garble-backfill"
     run_id = datetime.now(timezone.utc).strftime(f"{prefix}-%Y%m%dT%H%M%SZ")
     _publish_status({"state": "running", "run_id": run_id, "processed": 0})
 
@@ -732,6 +820,7 @@ def start_garble_backfill_async(
                 status_run_id=run_id,
                 shard_rejoin=shard_rejoin,
                 measure_only=measure_only,
+                persist_shard_rejoin=persist_shard_rejoin,
             )
             _publish_status({
                 "state": "done",
