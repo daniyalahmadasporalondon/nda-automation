@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .docx_export import SourceRedlinePackage
-from .docx_health import validate_docx_open_health, verify_export_content_coverage
+from .docx_health import verify_export_content_coverage
 from .source_redline_docx import build_source_redline_package
 
 
@@ -84,17 +84,19 @@ def render_source_redline_package(
         )
     )
     data = package.data
-    health_errors = validate_docx_open_health(data, require_styles=False)
-    content_errors = (
-        []
-        if health_errors
-        else verify_export_content_coverage(
-            data,
-            expected_source_text,
-            expected_redline_edits=expected_redline_edits,
-            clean_fills=clean_fills,
-            source_docx=source_docx,
-        )
+    # Open-health is validated exactly ONCE, inside build_source_redline_package,
+    # which RAISES DocxExportError on any failure. So by the time we hold the package
+    # here the bytes are already health-valid -- re-running validate_docx_open_health
+    # on the same bytes with the same args was pure duplication. health_errors stays []
+    # (the inner gate guarantees it), leaving .valid and the content short-circuit
+    # unchanged while content coverage still runs.
+    health_errors: list[str] = []
+    content_errors = verify_export_content_coverage(
+        data,
+        expected_source_text,
+        expected_redline_edits=expected_redline_edits,
+        clean_fills=clean_fills,
+        source_docx=source_docx,
     )
     return DocxPackageRenderResult(
         data=data,
