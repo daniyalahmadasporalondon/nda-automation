@@ -236,6 +236,68 @@ function faithfulDocxVisibleTextLength(container) {
   return String(container.textContent || "").trim().length;
 }
 
+// ---------------------------------------------------------------------------
+// V1 FIX (display-only): repair docx-preview's Symbol-font bullet "tofu".
+// ---------------------------------------------------------------------------
+// Word stores a bulleted list's marker as a numbering level whose lvlText is a
+// Symbol/Wingdings private-use glyph (the classic round bullet is U+F0B7 in the
+// Symbol font). docx-preview faithfully emits that as a pseudo-element rule --
+// `p.docx-num-<id>-<lvl>::before { content: ""; font-family: Symbol; ... }`.
+// The glyph only exists in the Symbol TrueType font; no WEB font ships that
+// private-use codepoint, so every bullet paints as a missing-glyph "tofu" box (▯).
+//
+// We repair it by rewriting ONLY docx-preview's own injected <style> text inside
+// the faithful surface: swap each known Symbol/Wingdings marker codepoint for its
+// real Unicode equivalent and drop the Symbol-family font-family in that same rule
+// so the substitute is painted by an ordinary web font instead of re-tofu-ing.
+//
+// SAFETY: this touches docx-preview's generated STYLESHEET (CSS `content` of a
+// ::before marker) only. It never reads or writes a document text node, the
+// captured/editable paragraph text, the reconstruction, or the outbound redline --
+// the marker is CSS-generated content that is not part of any paragraph's text. So
+// it is strictly display-only (redline-SAFE) and scoped to the faithful container.
+const FAITHFUL_DOCX_SYMBOL_BULLET_MAP = {
+  "": "•", // Symbol   filled round bullet   -> • (the U+F0B7 tofu case)
+  "": "▪", // Wingdings filled small square  -> ▪
+  "": "▪", // Wingdings filled square        -> ▪
+  "": "›", // Wingdings arrowhead            -> ›
+  "": "✓", // Wingdings check mark           -> ✓
+  "": "❖", // Wingdings filled diamond        -> ❖
+};
+
+function faithfulDocxRemapSymbolBullets(container) {
+  if (!container || typeof container.querySelectorAll !== "function") return;
+  let styles;
+  try {
+    styles = container.querySelectorAll("style");
+  } catch (_error) {
+    return; // never let a marker cosmetic fix break the render
+  }
+  const bulletChars = Object.keys(FAITHFUL_DOCX_SYMBOL_BULLET_MAP);
+  for (let index = 0; index < styles.length; index += 1) {
+    const el = styles[index];
+    const css = el.textContent;
+    if (!css) continue;
+    if (!bulletChars.some((ch) => css.indexOf(ch) !== -1)) continue;
+    // Rewrite ONLY the individual rule blocks that carry a marker glyph. In the
+    // injected (flat, un-nested) docx-preview stylesheet the only place these
+    // private-use chars appear is the numbering `::before { content: … }` rule, so
+    // matching per brace-block keeps every real document-font rule untouched.
+    const next = css.replace(/\{[^{}]*\}/g, (block) => {
+      if (!bulletChars.some((ch) => block.indexOf(ch) !== -1)) return block;
+      let out = block;
+      bulletChars.forEach((ch) => {
+        out = out.split(ch).join(FAITHFUL_DOCX_SYMBOL_BULLET_MAP[ch]);
+      });
+      // Strip the marker's Symbol/Wingdings font so the substitute glyph is painted
+      // by an available web font (otherwise "•" could tofu again in the same font).
+      out = out.replace(/font-family\s*:[^;}]*;?/gi, "");
+      return out;
+    });
+    if (next !== css) el.textContent = next;
+  }
+}
+
 // Render the real DOCX faithfully into `container`. Returns a result object:
 //   { ok: true }                              -> faithful render painted, use it
 //   { ok: false, reason, error? }             -> caller MUST fall back
@@ -309,6 +371,14 @@ async function renderFaithfulDocx(container, source, options) {
     if (styleHost) container.appendChild(styleHost);
     container.appendChild(scratch);
   }
+  // Repair Symbol/Wingdings bullet "tofu" on the adopted render (display-only; see
+  // faithfulDocxRemapSymbolBullets). Guarded so a cosmetic failure never fails the
+  // render -- the faithful surface is already proven-good at this point.
+  try {
+    faithfulDocxRemapSymbolBullets(container);
+  } catch (_error) {
+    // ignore: the bullet marker cosmetic must never break a good render
+  }
   return { ok: true };
 }
 
@@ -331,6 +401,7 @@ if (typeof module !== "undefined" && module.exports) {
     ensureFaithfulDocxLibs,
     faithfulDocxContainerHasContent,
     faithfulDocxNormalizeBytes,
+    faithfulDocxRemapSymbolBullets,
     faithfulDocxRenderEnabled,
     faithfulDocxRenderOptions,
     faithfulDocxVisibleTextLength,

@@ -92,8 +92,8 @@
     "v": "20260621nda1"
   },
   "js/docx-faithful-render.js": {
-    "sha256": "7a1d61082235a3f6affe439b3e6b999c2cbe1838721c0c4056a9030166eaf64d",
-    "v": "20260623cachefix1"
+    "sha256": "41eca68ff52cd9db1189cbd3c5de72652eda3f28abef06cda283f7b0ec863c2b",
+    "v": "20260711febullet1"
   },
   "js/draft-intake.js": {
     "sha256": "f48ac4482b7a3d2cd5fe5c2abcbb3dee8271bd89237e8dc4e09c3cf0727be6ba",
@@ -276,8 +276,8 @@
     "v": "20260622docxphase2-1"
   },
   "js/review-workstation-rendering.js": {
-    "sha256": "1b8ca1cbfc3be3e9e5d95c91b2934d666363d1aba4d0a898449cad3638893a42",
-    "v": "20260711pdfbatchreview"
+    "sha256": "53c5e175acc1013caedbf4727cb70030dcf821ff828525784364d3e70e318982",
+    "v": "20260711renderbatchrevi"
   },
   "js/review-workstation-source.js": {
     "sha256": "dc075665414f8a245e0e0b1f7f6d8b3b689ad9ea54138dcac1348cfc07660105",
@@ -296,7 +296,7 @@
     "v": "20260709clobber1"
   },
   "styles.css": {
-    "sha256": "e84b1a82e42a88228be04d638d772018c5ad4a86e110201934545ed7af3ca579",
-    "v": "20260711pdfbatchstyles"
+    "sha256": "7712dcc47296eab540762b1c581a1e42caebca1b06cdf977c4e0b10c0e7e0b93",
+    "v": "20260711sxsbracefix1"
   }
 }

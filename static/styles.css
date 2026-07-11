@@ -4964,6 +4964,7 @@ h3 {
 .review-faithful-surface .docx img {
   max-inline-size: 100%;
   height: auto !important;
+}
 /* Layout-integrity floor for docx-preview's own paragraphs. docx-preview reads a
    paragraph's right indent off the Word style and emits it as `margin-inline-end`
    on the <p>; inside a two-column section (column-count:2, ~278px/col) a large
