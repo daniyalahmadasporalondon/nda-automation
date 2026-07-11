@@ -27,6 +27,16 @@ PyMuPDF's page coordinate system *also* has its origin at the TOP-LEFT
 
 For a comment point we use ``fitz.Point(x * W, y * H)``.
 
+Rotated pages
+-------------
+``page.rect`` already reflects the page's ``/Rotate``, so ``x, y, w, h`` map onto
+the DISPLAYED (rotated) page the reviewer actually drew against. PyMuPDF, however,
+stores annotation geometry in the page's UNROTATED coordinate system, so the
+derived point/quad is pushed back through ``page.derotation_matrix`` before the
+annotation is added -- otherwise a highlight on a ``/Rotate 90`` page bakes at the
+wrong place. The derotation matrix is the identity on an upright page, so this is
+a no-op there.
+
 Everything in this module is a *pure* helper: it never stamps ``created_at`` or
 assigns an ``id`` (those are server responsibilities done in the route, so the
 helpers stay deterministic and unit-testable).
@@ -217,6 +227,9 @@ def bake_user_annotations(source_pdf: bytes, annotations: list) -> bytes:
                 continue
 
             page = document[page_index]
+            # ``page.rect`` already reflects the page's /Rotate, so its width and
+            # height are the DISPLAYED dimensions the reviewer drew against; the
+            # normalized coords map straight onto them.
             width = page.rect.width
             height = page.rect.height
             px0 = rect["x"] * width
@@ -226,8 +239,16 @@ def bake_user_annotations(source_pdf: bytes, annotations: list) -> bytes:
             text = normalize_text(raw.get("text"))
             color = _hex_to_rgb(str(raw.get("color") or "")) if raw.get("color") else None
 
+            # PyMuPDF stores annotation geometry in the page's UNROTATED coordinate
+            # system, so a point/box expressed in DISPLAYED coords must be pushed
+            # back through the page's derotation matrix or it bakes at the wrong
+            # place on a /Rotate 90/180/270 page. The matrix is the identity on an
+            # upright page, so this leaves the common (unrotated) case unchanged.
+            derotation = page.derotation_matrix
+
             if annotation_type == "comment":
-                annot = page.add_text_annot(fitz.Point(px0, py0), text)
+                point = fitz.Point(px0, py0) * derotation
+                annot = page.add_text_annot(point, text)
                 annot.set_info(content=text)
                 annot.update()
                 continue
@@ -237,10 +258,16 @@ def bake_user_annotations(source_pdf: bytes, annotations: list) -> bytes:
                 # A zero-area box can't carry a highlight/strikeout; skip it
                 # rather than emitting a degenerate annotation.
                 continue
+            # Derotate the QUAD (not the bare Rect): a quad preserves the four
+            # corners' order, so the highlight/strikeout banding stays aligned with
+            # the original horizontal text run after rotation. Derotating a Rect
+            # would swap width<->height on a 90/270 page and smear the markup
+            # across the page.
+            quad = box.quad * derotation
             if annotation_type == "highlight":
-                annot = page.add_highlight_annot(box)
+                annot = page.add_highlight_annot(quad)
             else:  # strikethrough
-                annot = page.add_strikeout_annot(box)
+                annot = page.add_strikeout_annot(quad)
             if color is not None:
                 annot.set_colors(stroke=color)
             if text:

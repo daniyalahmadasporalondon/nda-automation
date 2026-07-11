@@ -189,6 +189,77 @@ class BakeUserAnnotationsTests(unittest.TestCase):
         finally:
             document.close()
 
+    def _rotated_pdf_bytes(self, rotation=90):
+        fitz = _fitz()
+        document = fitz.open()
+        page = document.new_page(width=612, height=792)  # portrait mediabox
+        page.set_rotation(rotation)
+        data = document.write()
+        document.close()
+        return data
+
+    def _colored_pixel_bbox(self, page, predicate):
+        """bbox (in DISPLAYED pixels) of pixels matching ``predicate(r,g,b)``."""
+        pix = page.get_pixmap(dpi=72)  # get_pixmap applies the page's rotation
+        width, height, channels, samples, stride = (
+            pix.width, pix.height, pix.n, pix.samples, pix.stride
+        )
+        min_x = min_y = 10 ** 9
+        max_x = max_y = -1
+        count = 0
+        for py in range(height):
+            base = py * stride
+            for px in range(width):
+                index = base + px * channels
+                if predicate(samples[index], samples[index + 1], samples[index + 2]):
+                    min_x = min(min_x, px)
+                    max_x = max(max_x, px)
+                    min_y = min(min_y, py)
+                    max_y = max(max_y, py)
+                    count += 1
+        return {"w": width, "h": height, "x0": min_x, "y0": min_y, "x1": max_x, "y1": max_y, "count": count}
+
+    def test_bake_highlight_lands_correctly_on_rotate_90_page(self):
+        # D12: a /Rotate 90 page must derotate annotation coords, or the highlight
+        # bakes in the wrong place. The reviewer draws a top-left band against the
+        # DISPLAYED (rotated) page; after baking + rendering (rotation applied) the
+        # yellow highlight must render in the DISPLAYED top-left, NOT smeared to the
+        # far right as the pre-fix (no-derotation) code did.
+        fitz = _fitz()
+        source = self._rotated_pdf_bytes(rotation=90)
+        annotations = [
+            {
+                "id": "hl",
+                "page": 1,
+                "type": "highlight",
+                "rect": {"x": 0.05, "y": 0.05, "w": 0.30, "h": 0.05},
+                "color": "#ffcc00",
+            }
+        ]
+
+        baked = pdf_markup.bake_user_annotations(source, annotations)
+        document = fitz.open(stream=baked, filetype="pdf")
+        try:
+            page = document[0]
+            self.assertEqual(page.rotation, 90)
+            # Displayed dimensions are the rotated ones (width/height swapped).
+            displayed_w, displayed_h = page.rect.width, page.rect.height
+            self.assertGreater(displayed_w, displayed_h)  # landscape after /Rotate 90
+            self.assertEqual(len(list(page.annots() or [])), 1)
+            box = self._colored_pixel_bbox(page, lambda r, g, b: r > 200 and g > 180 and b < 130)
+            self.assertGreater(box["count"], 0, "highlight did not render any yellow pixels")
+            # The highlight must sit in the DISPLAYED top-left band the reviewer drew.
+            self.assertAlmostEqual(box["x0"], 0.05 * box["w"], delta=15)
+            self.assertAlmostEqual(box["x1"], 0.35 * box["w"], delta=15)
+            self.assertAlmostEqual(box["y0"], 0.05 * box["h"], delta=15)
+            self.assertAlmostEqual(box["y1"], 0.10 * box["h"], delta=15)
+            # Guard against the regression: the buggy no-derotation path put the
+            # highlight against the far-right edge (center x > width/2).
+            center_x = (box["x0"] + box["x1"]) / 2
+            self.assertLess(center_x, box["w"] / 2, "highlight smeared to the wrong side of a rotated page")
+        finally:
+            document.close()
+
     def test_bake_empty_list_returns_valid_pdf(self):
         fitz = _fitz()
         source = _sample_pdf_bytes()
