@@ -286,6 +286,127 @@ class DocxTextTests(unittest.TestCase):
         # A flush paragraph keeps the additive contract: no indent_left key.
         self.assertNotIn("indent_left", paragraphs[2])
 
+    def test_resolves_alignment_and_font_from_style_and_doc_defaults_cascade(self):
+        # AUDIT D8/D9: alignment/font are captured only INLINE unless we also read
+        # the Word style cascade. A "Title" style that centers at the STYLE level
+        # (never on the paragraph) and a body font that lives on the "Normal"
+        # style / docDefaults must still surface. The cascade is: inline jc/rFonts
+        # -> the paragraph style -> its ``basedOn`` ancestors -> docDefaults.
+        document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>Centered by style, font by inheritance</w:t></w:r></w:p>
+    <w:p><w:pPr><w:pStyle w:val="BodyText"/></w:pPr><w:r><w:t>Body font from its own style, no jc anywhere</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Plain paragraph, no style</w:t></w:r></w:p>
+  </w:body>
+</w:document>"""
+        # docDefaults = the bottom of the cascade (Calibri, no default jc).
+        # Normal sets font Cambria; Title basedOn Normal sets only jc=center (so
+        # its font must inherit Cambria); BodyText basedOn Normal sets only its own
+        # font Arial (so its alignment stays unset -- nothing in its chain has jc).
+        styles_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:docDefaults>
+    <w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri"/></w:rPr></w:rPrDefault>
+    <w:pPrDefault><w:pPr/></w:pPrDefault>
+  </w:docDefaults>
+  <w:style w:type="paragraph" w:styleId="Normal">
+    <w:name w:val="Normal"/>
+    <w:rPr><w:rFonts w:ascii="Cambria"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Title">
+    <w:name w:val="Title"/>
+    <w:basedOn w:val="Normal"/>
+    <w:pPr><w:jc w:val="center"/></w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="BodyText">
+    <w:name w:val="Body Text"/>
+    <w:basedOn w:val="Normal"/>
+    <w:rPr><w:rFonts w:ascii="Arial"/></w:rPr>
+  </w:style>
+</w:styles>"""
+        data = make_zip(
+            {"word/document.xml": document_xml, "word/styles.xml": styles_xml},
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        # Title: jc lives on the style, font is inherited from Normal via basedOn.
+        self.assertEqual(paragraphs[0]["alignment"], "center")
+        self.assertEqual(paragraphs[0]["font"], "Cambria")
+        # BodyText: its own style font, and NO alignment (additive -- nothing in
+        # its style chain or docDefaults sets jc).
+        self.assertEqual(paragraphs[1]["font"], "Arial")
+        self.assertNotIn("alignment", paragraphs[1])
+        # Plain paragraph with no style bottoms out at the docDefaults font.
+        self.assertEqual(paragraphs[2]["font"], "Calibri")
+        self.assertNotIn("alignment", paragraphs[2])
+        # STYLE-ONLY invariant: the cascade never mutates the paragraph text the
+        # outbound redline targets.
+        self.assertEqual(
+            [paragraph["text"] for paragraph in paragraphs],
+            [
+                "Centered by style, font by inheritance",
+                "Body font from its own style, no jc anywhere",
+                "Plain paragraph, no style",
+            ],
+        )
+
+    def test_inline_alignment_and_font_win_over_style_cascade(self):
+        # Conservative fallback: the inline value ALWAYS wins. A paragraph that
+        # sets its own jc/rFonts must keep them even when its style names others.
+        document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:pStyle w:val="Fancy"/><w:jc w:val="right"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Courier New"/></w:rPr><w:t>Inline right + Courier</w:t></w:r></w:p>
+  </w:body>
+</w:document>"""
+        styles_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri"/></w:rPr></w:rPrDefault></w:docDefaults>
+  <w:style w:type="paragraph" w:styleId="Fancy">
+    <w:name w:val="Fancy"/>
+    <w:pPr><w:jc w:val="center"/></w:pPr>
+    <w:rPr><w:rFonts w:ascii="Arial"/></w:rPr>
+  </w:style>
+</w:styles>"""
+        data = make_zip(
+            {"word/document.xml": document_xml, "word/styles.xml": styles_xml},
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(paragraphs[0]["alignment"], "right")
+        self.assertEqual(paragraphs[0]["font"], "Courier New")
+
+    def test_style_cascade_terminates_on_cyclic_based_on(self):
+        # A hand-crafted cyclic ``basedOn`` (A -> B -> A) must not spin the
+        # resolver; the depth cap + visited set bail out and the paragraph simply
+        # gets no inherited alignment/font.
+        document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:pStyle w:val="A"/></w:pPr><w:r><w:t>Cyclic style paragraph</w:t></w:r></w:p>
+  </w:body>
+</w:document>"""
+        styles_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="A"><w:name w:val="A"/><w:basedOn w:val="B"/></w:style>
+  <w:style w:type="paragraph" w:styleId="B"><w:name w:val="B"/><w:basedOn w:val="A"/></w:style>
+</w:styles>"""
+        data = make_zip(
+            {"word/document.xml": document_xml, "word/styles.xml": styles_xml},
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(paragraphs[0]["text"], "Cyclic style paragraph")
+        self.assertNotIn("alignment", paragraphs[0])
+        self.assertNotIn("font", paragraphs[0])
+
     def test_extracts_run_color_highlight_strike_and_vert_align(self):
         document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
