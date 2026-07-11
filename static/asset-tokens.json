@@ -276,8 +276,8 @@
     "v": "20260622docxphase2-1"
   },
   "js/review-workstation-rendering.js": {
-    "sha256": "1b8ca1cbfc3be3e9e5d95c91b2934d666363d1aba4d0a898449cad3638893a42",
-    "v": "20260711pdfbatchreview"
+    "sha256": "be51841229f46ae81ed95f2c82a2c8c998d3aa1e86106b4b4d6c3fb9f834f43b",
+    "v": "20260711tablespans"
   },
   "js/review-workstation-source.js": {
     "sha256": "dc075665414f8a245e0e0b1f7f6d8b3b689ad9ea54138dcac1348cfc07660105",
@@ -296,7 +296,7 @@
     "v": "20260709clobber1"
   },
   "styles.css": {
-    "sha256": "3d091c68c31c76d92cb548f52af2cd38e30ed1a9c0dc749150fd134f9ec4c8ab",
-    "v": "20260711shipallstyles"
+    "sha256": "3ec30ad72933100017eea0d55f57a0d8f2f04fbb58f2200cb4b96e9e5a89c616",
+    "v": "20260711tablespans"
   }
 }
