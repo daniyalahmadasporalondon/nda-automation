@@ -1,7 +1,7 @@
 {
   "app.js": {
-    "sha256": "03fad5e101a80c6bcb4fe6e5cf7cd9ddbace5261dce75ddb7f353b9a8524bb57",
-    "v": "20260708noinbox2"
+    "sha256": "1a7098e2bf886b5437f77fd836965dc4f5e731a079d0c255d3cd0160f451db53",
+    "v": "20260711phaseb"
   },
   "css/corpus.css": {
     "sha256": "b352644bdd179bc240ade82a32c8ba9ef6062adbe80cf7359e321492aca40a61",
@@ -216,8 +216,8 @@
     "v": "20260617persist1"
   },
   "js/pdf-markup.js": {
-    "sha256": "1e9d04e8f28ad7e0fdb817706076c5a7857737cdbc0791ab2dc6a077c23d4678",
-    "v": "20260623cachefix1"
+    "sha256": "eccec4a3cf26c6ca1f39240aa43e32964b57fb5882aff6c7ee5ef8d967a68d93",
+    "v": "20260711phaseb"
   },
   "js/playbook-draft-runtime.js": {
     "sha256": "5cbc93fb512a263cceacb463e0fc5589272bcaf5d9421e8ba01499af07a13a67",
@@ -268,16 +268,16 @@
     "v": "20260617occ1"
   },
   "js/review-workstation-actions.js": {
-    "sha256": "4429e23189102bdae3953a9d675da20ebd7eba671d49de5095ee0472d7024f87",
-    "v": "20260623reviewtabv2-2"
+    "sha256": "24189a001707247dc633fbc1421c87353839e90006b5d70a40fe11d23e20465b",
+    "v": "20260711phaseb-2"
   },
   "js/review-workstation-format.js": {
     "sha256": "cd8b4787340f3b19c10eed0032a971edaabac2e6a65242cc9e75f45cfac4eb04",
     "v": "20260622docxphase2-1"
   },
   "js/review-workstation-rendering.js": {
-    "sha256": "be51841229f46ae81ed95f2c82a2c8c998d3aa1e86106b4b4d6c3fb9f834f43b",
-    "v": "20260711parkedall"
+    "sha256": "7544b5f12d1080b0b4a7d8b4afa96cac17740822e74f0a853863f6d54d9f7100",
+    "v": "20260711phaseb"
   },
   "js/review-workstation-source.js": {
     "sha256": "dc075665414f8a245e0e0b1f7f6d8b3b689ad9ea54138dcac1348cfc07660105",
@@ -296,7 +296,7 @@
     "v": "20260709clobber1"
   },
   "styles.css": {
-    "sha256": "839a1fd00eb995f5d7ec11beca23346ecc1a820efc88302e568a75f143726788",
-    "v": "20260711parkedall"
+    "sha256": "7c051b14800d217a444be18c5d83c0d3fbb4b373c0302d629699ee0519adeb5b",
+    "v": "20260711phaseb"
   }
 }
