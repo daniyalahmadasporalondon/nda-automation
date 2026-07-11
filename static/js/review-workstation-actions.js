@@ -742,7 +742,31 @@ async function downloadReviewPdf(choice) {
   }
   const filename = choice.filename || "reviewed-document.pdf";
   setFileMeta(`Downloading ${filename}.`);
-  downloadUrl(choice.url, filename);
+  // D6: go through the ok-checked guard so a 4xx/5xx JSON error body is surfaced
+  // as an error instead of being saved to disk as a broken ".pdf". D4: if the
+  // failure carries a reviewed-PDF `recovery` pointer, offer the marked-up
+  // source-PDF fallback rather than dead-ending.
+  try {
+    await guardedDownload(choice.url, filename);
+    setFileMeta(`Downloaded ${filename}.`);
+  } catch (error) {
+    if (isStaleReviewError(error)) {
+      handleStaleReviewOperationError(error, "Download could not run.");
+    } else {
+      renderOperationError(error, "Download could not run.");
+      renderExportRecoveryAction(error);
+    }
+  }
+}
+
+// Thin bridge to app.js's shared ok-checked download guard (downloadUrlGuarded).
+// Kept as a wrapper so a missing global surfaces a clear error instead of a
+// ReferenceError — and never silently falls back to a bare, unchecked save.
+async function guardedDownload(url, filename) {
+  if (typeof downloadUrlGuarded !== "function") {
+    throw new Error("Download is unavailable right now — reload the page and try again.");
+  }
+  return downloadUrlGuarded(url, filename);
 }
 
 async function exportReviewDocx() {
@@ -848,6 +872,9 @@ async function exportReviewDocx() {
       handleStaleReviewOperationError(error, "Export could not run.");
     } else {
       renderOperationError(error, "Export could not run.");
+      // D4: a reviewed-PDF export that can't produce a faithful redline returns a
+      // `recovery` pointer — offer the marked-up source PDF instead of dead-ending.
+      renderExportRecoveryAction(error);
     }
   } finally {
     studioExportButton.title = "Download";
@@ -2126,6 +2153,64 @@ function renderExportSuccess(filename, savedPath, savedUrl, verification, fallba
   } else if (savedPath) {
     studioFileMeta.append(document.createTextNode(` ${savedPath}`));
   }
+}
+
+// D4: when a reviewed-PDF export can't produce a faithful redline, the backend
+// returns a 503 with a `recovery.endpoint` pointing at the source-PDF annotation
+// export (redline_export_service.PdfSourceRedlineUnavailableError). Surface that
+// as a clickable action in the file-meta line so the reviewer can still fetch the
+// marked-up source PDF instead of dead-ending on the error. No-op when the error
+// carries no recovery pointer or no matter is selected. Fetches through the same
+// ok-checked guard (guardedDownload) so a failed recovery never saves garbage.
+function renderExportRecoveryAction(error) {
+  const recovery = error?.recovery;
+  const endpointTemplate = recovery && typeof recovery.endpoint === "string" ? recovery.endpoint.trim() : "";
+  if (!endpointTemplate) return;
+  const matterId = state.selectedMatter?.id;
+  if (!matterId) return;
+  const endpoint = endpointTemplate.replace("{matter_id}", encodeURIComponent(String(matterId)));
+  const filename = annotatedPdfRecoveryFilename();
+  const message = String(recovery.message || "").trim()
+    || "Download the source PDF with the proposed changes marked up as annotations.";
+  if (!studioFileMeta) return;
+  studioFileMeta.textContent = "";
+  const summary = document.createElement("span");
+  summary.className = "export-recovery";
+  summary.textContent = `${message} `;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "export-recovery-action";
+  button.textContent = "Download marked-up PDF";
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    setFileMeta(`Downloading ${filename}.`);
+    try {
+      await guardedDownload(endpoint, filename);
+      setFileMeta(`Downloaded ${filename}.`);
+    } catch (downloadError) {
+      renderOperationError(downloadError, "Marked-up PDF could not download.");
+    } finally {
+      button.disabled = false;
+    }
+  });
+  summary.append(button);
+  studioFileMeta.append(summary);
+}
+
+// A safe download name for the recovered marked-up source PDF, derived from the
+// matter's source filename (mirrors pdf-markup's marked-up naming). The server's
+// Content-Disposition wins over this inside guardedDownload when present.
+function annotatedPdfRecoveryFilename() {
+  const base = String(
+    state.selectedMatter?.source_filename || state.selectedMatter?.attachment_filename || "nda",
+  ).trim();
+  const stem = base.replace(/\.[^.]*$/, "") || "nda";
+  const safe = Array.from(stem)
+    .map((character) => (/[a-z0-9_-]/i.test(character) ? character : "-"))
+    .join("")
+    .replace(/^[-_]+/g, "")
+    .replace(/[-_]+$/g, "");
+  return `${safe || "nda"}-marked-up.pdf`;
 }
 
 function suggestedExportFilename() {
