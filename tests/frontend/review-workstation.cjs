@@ -79,6 +79,7 @@ const tests = [
   ["keeps the checked radio on the staged export option while the entity law is advisory-only", testRadioCheckedTracksStagedExportNotRecommendation],
   ["keeps the governing-law concurrence mismatch advisory and never force-fails the backend verdict", testGovlawConcurrenceIsAdvisoryNotAForceFail],
   ["surfaces additive review-overlay reasons in a banner and on the targeted clause, escaped", testReviewOverlayFindingsAreVisibleAndEscaped],
+  ["surfaces a loud extraction-quality banner for a degraded read and nothing for a clean one", testExtractionQualityBannerVisibility],
   ["reads the overall verdict from the authoritative review_state, not clause counts", testOverallVerdictReadsReviewState],
   ["toggles per-clause reviewed state from the lane", testPerClauseReviewedToggle],
   ["updates the review status summary after human sign-off", testReviewedMatterStatusSummary],
@@ -8579,6 +8580,76 @@ async function testReviewOverlayFindingsAreVisibleAndEscaped(page) {
   // as an entity, not as a child element).
   const bannerHtml = await banner.evaluate((node) => node.innerHTML);
   assert.ok(bannerHtml.includes("&lt;img"), "the overlay HTML is rendered as escaped text");
+}
+
+async function testExtractionQualityBannerVisibility(page) {
+  // 1) A CLEAN single-column extraction (or none at all) shows NO banner. This is the
+  //    anti-warning-fatigue guarantee: a normal NDA must surface nothing.
+  await loadReviewWithMatter(page, {
+    result: {
+      extraction_reading_order: {
+        reading_order_confidence: 1.0,
+        columns_detected: 1,
+        reorder_applied: false,
+        garbled: false,
+        degraded: false,
+        reasons: [],
+      },
+    },
+  });
+  assert.equal(
+    await page.locator("#studioExtractionBanner").evaluate((node) => node.hidden),
+    true,
+    "a clean single-column extraction must not surface an extraction-quality banner",
+  );
+
+  // 2) A DEGRADED, letter-spaced/garbled read (< 0.5 confidence) shows the LOUD banner,
+  //    escalated to the strong tier, naming WHY and telling the reviewer to check source.
+  await loadReviewWithMatter(page, {
+    result: {
+      extraction_reading_order: {
+        reading_order_confidence: 0.3,
+        columns_detected: 1,
+        reorder_applied: false,
+        garbled: true,
+        degraded: true,
+        reasons: ["fragmented_or_letterspaced_text"],
+      },
+    },
+  });
+  const banner = page.locator("#studioExtractionBanner");
+  await page.waitForSelector("#studioExtractionBanner:not([hidden])");
+  await assertTextContains(banner, "could not be read cleanly");
+  await assertTextContains(banner, "original source document");
+  await assertTextContains(banner, "letter-spaced or fragmented");
+  assert.equal(
+    await banner.evaluate((node) => node.classList.contains("strong")),
+    true,
+    "a < 0.5 confidence read escalates the banner to the strong (red) tier",
+  );
+
+  // 3) A multi-column degraded read (0.5–0.8) shows the caution banner naming columns,
+  //    and is NOT escalated to the strong tier.
+  await loadReviewWithMatter(page, {
+    result: {
+      extraction_reading_order: {
+        reading_order_confidence: 0.7,
+        columns_detected: 2,
+        reorder_applied: true,
+        garbled: false,
+        degraded: true,
+        reasons: ["column_reconstructed"],
+      },
+    },
+  });
+  await page.waitForSelector("#studioExtractionBanner:not([hidden])");
+  await assertTextContains(banner, "may not have been read cleanly");
+  await assertTextContains(banner, "Multiple text columns");
+  assert.equal(
+    await banner.evaluate((node) => node.classList.contains("strong")),
+    false,
+    "a 0.5–0.8 confidence read stays on the caution (amber) tier, not the strong tier",
+  );
 }
 
 async function testOverallVerdictReadsReviewState(page) {

@@ -257,3 +257,120 @@ def test_review_result_paragraphs_returns_cleaned_paragraphs_or_none():
     ]
     assert review_result_paragraphs({"paragraphs": []}) is None
     assert review_result_paragraphs(None) is None
+
+
+# --- Reading-order confidence carry (the "make degraded extraction loud" seam) -----
+
+from nda_automation.review_result_contract import (  # noqa: E402
+    READING_ORDER_RESULT_FIELD,
+    carry_reading_order_signal,
+    reading_order_signal,
+)
+
+
+def _degraded_reading_order_quality(*, garbled=False, columns=2, confidence=0.4):
+    """An extraction-quality report whose reading-order block is DEGRADED, shaped
+    exactly like nda_automation.pdf_text._reading_order_signal emits it."""
+    reasons = ["fragmented_or_letterspaced_text"] if garbled else ["column_reconstructed"]
+    warning_type = "pdf_fragmented_text" if garbled else "pdf_reading_order_uncertain"
+    return {
+        "page_count": 2,
+        "warnings": [
+            {"type": "pdf_sparse_text", "message": "unrelated warning stays out of scope"},
+            {"type": warning_type, "message": "Check the original source."},
+        ],
+        "reading_order": {
+            "reading_order_confidence": confidence,
+            "columns_detected": columns,
+            "reorder_applied": True,
+            "garbled": garbled,
+            "degraded": True,
+            "reasons": reasons,
+        },
+    }
+
+
+def _clean_reading_order_quality():
+    return {
+        "page_count": 1,
+        "warnings": [],
+        "reading_order": {
+            "reading_order_confidence": 1.0,
+            "columns_detected": 1,
+            "reorder_applied": False,
+            "garbled": False,
+            "degraded": False,
+            "reasons": [],
+        },
+    }
+
+
+def test_reading_order_signal_returns_block_only_when_present():
+    assert reading_order_signal(_clean_reading_order_quality())["columns_detected"] == 1
+    assert reading_order_signal({"warnings": []}) is None  # docx / no reading order
+    assert reading_order_signal(None) is None
+    assert reading_order_signal({"reading_order": "bad"}) is None
+
+
+def test_carry_reading_order_degraded_sets_field_and_lifts_only_its_own_warning():
+    result = {"clauses": []}
+    quality = _degraded_reading_order_quality()
+
+    block = carry_reading_order_signal(result, quality)
+
+    assert block is quality["reading_order"]
+    assert result[READING_ORDER_RESULT_FIELD]["degraded"] is True
+    # ONLY the reading-order warning is lifted; the unrelated pdf_sparse_text is NOT.
+    lifted_types = [w["type"] for w in result["review_warnings"]]
+    assert lifted_types == ["pdf_reading_order_uncertain"]
+
+
+def test_carry_reading_order_garbled_lifts_fragmented_warning():
+    result = {"clauses": []}
+    carry_reading_order_signal(result, _degraded_reading_order_quality(garbled=True))
+    assert [w["type"] for w in result["review_warnings"]] == ["pdf_fragmented_text"]
+    assert result[READING_ORDER_RESULT_FIELD]["garbled"] is True
+
+
+def test_carry_reading_order_clean_sets_field_but_adds_no_warning():
+    result = {"clauses": []}
+    block = carry_reading_order_signal(result, _clean_reading_order_quality())
+    assert block["degraded"] is False
+    # Field present (provenance) but NO banner-driving warning: a clean single-column
+    # NDA must surface nothing to the reviewer -- warning fatigue would gut the feature.
+    assert result[READING_ORDER_RESULT_FIELD]["reading_order_confidence"] == 1.0
+    assert "review_warnings" not in result
+
+
+def test_carry_reading_order_missing_block_is_a_no_op():
+    result = {"clauses": []}
+    assert carry_reading_order_signal(result, {"page_count": 1, "warnings": []}) is None
+    assert READING_ORDER_RESULT_FIELD not in result
+    assert "review_warnings" not in result
+
+
+def test_carry_reading_order_is_idempotent_and_dedupes_the_warning():
+    result = {"clauses": []}
+    quality = _degraded_reading_order_quality()
+    carry_reading_order_signal(result, quality)
+    carry_reading_order_signal(result, quality)  # calling twice must not double it
+    assert [w["type"] for w in result["review_warnings"]] == ["pdf_reading_order_uncertain"]
+
+
+def test_attach_document_source_rides_reading_order_field_without_doubling_warning():
+    # The eager path lifts ALL warnings via _append_extraction_warnings AND sets the
+    # first-class field via carry_reading_order_signal -- the reading-order warning must
+    # appear exactly once, not twice.
+    result = {"clauses": []}
+    attach_document_source(
+        result,
+        filename="NDA.pdf",
+        document_type="pdf",
+        extracted_paragraphs=[{"id": "p1", "text": "Body."}],
+        extraction_quality=_degraded_reading_order_quality(),
+    )
+    assert result[READING_ORDER_RESULT_FIELD]["degraded"] is True
+    ro_warnings = [w for w in result["review_warnings"] if w["type"] == "pdf_reading_order_uncertain"]
+    assert len(ro_warnings) == 1
+    # And it is retrievable at the seam the eager path also stores it under.
+    assert result["source"]["extraction_quality"]["reading_order"]["columns_detected"] == 2

@@ -7682,6 +7682,22 @@ button.active-clause-status:hover {
   color: var(--amber-ink);
 }
 
+/* Extraction reading-order banner: shares the overlay-banner layout. The default
+   (caution, 0.5–0.8 confidence) keeps the amber look; the .strong modifier (< 0.5
+   confidence -- the document could not be read cleanly) escalates to the red tier so
+   the reviewer cannot mistake it for a routine notice. */
+.studio-overlay-banner.extraction-quality.strong {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  border-left-color: var(--red);
+  color: var(--red-ink);
+}
+
+.studio-overlay-banner.extraction-quality.strong .studio-overlay-banner-head strong,
+.studio-overlay-banner.extraction-quality.strong .studio-overlay-banner-list li {
+  color: var(--red-ink);
+}
+
 /* Per-clause overlay finding: attaches the overlay reason to its target clause so a
    clause an overlay flagged no longer renders a bare green/pass with no reason. */
 .studio-detail-block.clause-overlay-finding {

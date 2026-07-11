@@ -479,6 +479,7 @@ function renderStudioResult(result) {
   if (typeof setReviewWorkspaceSkeleton === "function") setReviewWorkspaceSkeleton(false);
   updateReviewOnboarding();
   renderReviewOverlayBanner();
+  renderExtractionQualityBanner();
   renderStudioSummary(clauses);
   renderStudioClauseLane();
   renderStudioDetail();
@@ -587,6 +588,83 @@ function renderReviewOverlayBanner() {
     <div class="studio-overlay-banner-head">
       <strong>${escapeHtml(heading)}</strong>
       <span>Needs review before send.</span>
+    </div>
+    <ul class="studio-overlay-banner-list">${items}</ul>
+  `;
+  banner.hidden = false;
+}
+
+// Reading-order extraction-quality banner. The backend rides the extractor's
+// reading-order confidence block on the review result under `extraction_reading_order`
+// (a first-class field, sibling of playbook_version). When that block reports
+// `degraded` (confidence < 0.8 -- a scrambled / multi-column / letter-spaced PDF the
+// extractor could not read cleanly) we surface a LOUD, matter-level banner telling the
+// reviewer WHY and to check the source document -- the whole point of the fix is that
+// degraded extraction is no longer silent. A CLEAN extraction (no block, or
+// degraded=false) renders NOTHING: the banner stays hidden and emptied, so a normal
+// single-column NDA shows no notice at all (warning fatigue would gut the feature).
+// SECURITY: no document-derived text is interpolated -- messages are fixed strings
+// keyed off the categorical reasons/flags -- but confidence is still coerced to a number.
+function extractionReadingOrderSignal() {
+  const signal = state.latestReviewResult?.extraction_reading_order;
+  return signal && typeof signal === "object" ? signal : null;
+}
+
+function extractionQualityReasonMessages(signal) {
+  const reasons = Array.isArray(signal?.reasons) ? signal.reasons : [];
+  const messages = [];
+  const push = (message) => {
+    if (message && !messages.includes(message)) messages.push(message);
+  };
+  if (signal?.garbled || reasons.includes("fragmented_or_letterspaced_text")) {
+    push("Text looks letter-spaced or fragmented — words may be scrambled.");
+  }
+  const columns = Number(signal?.columns_detected);
+  if (
+    (Number.isFinite(columns) && columns > 1) ||
+    reasons.includes("column_reconstructed") ||
+    reasons.some((reason) => String(reason || "").startsWith("possible_multi_column"))
+  ) {
+    push("Multiple text columns were detected — clauses may be read out of order.");
+  }
+  if (signal?.reorder_applied || reasons.includes("stamped_overlay_order_unknown")) {
+    push("A stamped overlay or reordered block was found — reading order is uncertain.");
+  }
+  if (reasons.includes("cm_rotation_or_skew")) {
+    push("Rotated or skewed content was found — extraction may be unreliable.");
+  }
+  if (!messages.length) {
+    push("The document could not be read cleanly.");
+  }
+  return messages;
+}
+
+function renderExtractionQualityBanner() {
+  const banner = document.getElementById("studioExtractionBanner");
+  if (!banner) return;
+  const signal = extractionReadingOrderSignal();
+  if (!signal || !signal.degraded) {
+    banner.hidden = true;
+    banner.innerHTML = "";
+    banner.classList.remove("strong");
+    return;
+  }
+  const confidence = Number(signal.reading_order_confidence);
+  // Two human tiers: < 0.5 is a STRONG "do not trust the reading order" warning
+  // (red), 0.5–0.8 is a caution (amber, the shared overlay-banner look). >= 0.8 is
+  // never degraded so it never reaches here.
+  const strong = Number.isFinite(confidence) && confidence < 0.5;
+  banner.classList.toggle("strong", strong);
+  const heading = strong
+    ? "This document could not be read cleanly"
+    : "This document may not have been read cleanly";
+  const items = extractionQualityReasonMessages(signal)
+    .map((message) => `<li>${escapeHtml(message)}</li>`)
+    .join("");
+  banner.innerHTML = `
+    <div class="studio-overlay-banner-head">
+      <strong>${escapeHtml(heading)}</strong>
+      <span>Check the clauses against the original source document before you rely on this review.</span>
     </div>
     <ul class="studio-overlay-banner-list">${items}</ul>
   `;

@@ -462,6 +462,10 @@ def attach_document_source(
     if extraction_quality:
         review_result["source"]["extraction_quality"] = extraction_quality
         _append_extraction_warnings(review_result, extraction_quality)
+        # Reading-order confidence rides as a first-class field too. The warning was
+        # already lifted by _append_extraction_warnings above; carry_reading_order_signal
+        # dedupes, so this only adds the stable READING_ORDER_RESULT_FIELD the banner reads.
+        carry_reading_order_signal(review_result, extraction_quality)
         _apply_tracked_changes_marker(review_result, extraction_quality)
     review_result["extracted_text"] = resolved_text
     review_result["source_fidelity"] = source_fidelity_payload(review_result, source=review_result["source"])
@@ -521,3 +525,85 @@ def _append_extraction_warnings(
     review_warnings = review_result.setdefault("review_warnings", [])
     if isinstance(review_warnings, list):
         review_warnings.extend(warnings)
+
+
+# The extraction-quality warning ``type``s the reading-order confidence signal owns.
+# These are the ONLY warnings this carry lifts onto a review result (every OTHER
+# extraction warning -- sparse text, visual-fidelity, etc. -- is out of scope here so
+# this feature can never newly flood the review with unrelated notices).
+READING_ORDER_WARNING_TYPES = ("pdf_fragmented_text", "pdf_reading_order_uncertain")
+
+# The stable, first-class field the reading-order confidence block rides on the review
+# result under (a sibling of ``playbook_version`` provenance). The frontend banner keys
+# off exactly this field; the server-side log/backfill query it here too.
+READING_ORDER_RESULT_FIELD = "extraction_reading_order"
+
+
+def reading_order_signal(extraction_quality: object) -> dict[str, Any] | None:
+    """Return the reading-order confidence block from an extraction-quality report.
+
+    ``None`` when the report is missing/malformed or carries no reading-order block
+    (e.g. a DOCX matter, where reading order is not a concept). Pure read; no mutation.
+    """
+    if not isinstance(extraction_quality, dict):
+        return None
+    reading_order = extraction_quality.get("reading_order")
+    if not isinstance(reading_order, dict):
+        return None
+    return reading_order
+
+
+def carry_reading_order_signal(
+    review_result: dict[str, Any],
+    extraction_quality: object,
+) -> dict[str, Any] | None:
+    """Carry the extractor's reading-order confidence block onto a review result.
+
+    This is the second half of the reading-order fix: the extractor already emits a
+    first-class confidence report (``quality["reading_order"]``) whose ``degraded``
+    flag means "we could not read this document cleanly". Here we make that signal
+    RIDE the review result so the human reviewer -- not just a log line -- sees it.
+
+    Behaviour (additive + idempotent + safe to call from every review path):
+
+    * Sets ``review_result[READING_ORDER_RESULT_FIELD]`` to the block whenever one
+      exists, so downstream (the frontend banner, a future backfill) reads ONE stable
+      location regardless of which path produced the review.
+    * ONLY when the block is ``degraded`` does it also lift the extractor's
+      reading-order warning onto ``review_result["review_warnings"]`` (deduped by
+      ``(type, message)`` so calling this after ``_append_extraction_warnings`` never
+      doubles it). A CLEAN extraction (confidence >= 0.8, ``degraded`` False) adds NO
+      warning -- warning fatigue would destroy the entire value of the feature.
+
+    Returns the reading-order block it acted on (for the caller's log/telemetry), or
+    ``None`` when there was nothing to carry.
+    """
+    reading_order = reading_order_signal(extraction_quality)
+    if reading_order is None:
+        return None
+    review_result[READING_ORDER_RESULT_FIELD] = reading_order
+    if not reading_order.get("degraded"):
+        return reading_order
+    assert isinstance(extraction_quality, dict)  # narrowed by reading_order_signal
+    warnings = extraction_quality.get("warnings")
+    lifted = [
+        warning
+        for warning in (warnings or [])
+        if isinstance(warning, dict) and warning.get("type") in READING_ORDER_WARNING_TYPES
+    ]
+    if not lifted:
+        return reading_order
+    review_warnings = review_result.setdefault("review_warnings", [])
+    if not isinstance(review_warnings, list):
+        return reading_order
+    seen = {
+        (warning.get("type"), warning.get("message"))
+        for warning in review_warnings
+        if isinstance(warning, dict)
+    }
+    for warning in lifted:
+        key = (warning.get("type"), warning.get("message"))
+        if key not in seen:
+            review_warnings.append(warning)
+            seen.add(key)
+    return reading_order
