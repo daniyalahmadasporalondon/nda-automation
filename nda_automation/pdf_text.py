@@ -129,6 +129,74 @@ _WRAP_PITCH_FLOOR_POINTS = 13.2
 # error in the gap >= threshold comparisons.
 _GAP_EPSILON = 0.5
 
+# --- REGION / COLUMN reading-order reconstruction (defects 1, 2 & 3) --------
+# The reviewer historically saw text bucketed by BASELINE y ONLY, then joined
+# with " ". On a two-column page that interleaves clauses across the gutter
+# ("1. Confidential Information ... 3. The obligations of ...") and on a stamped
+# overlay it splices the stamp into the sentence — SILENTLY. We instead partition
+# each page into regions (columns / body / overlay) and read each region in full
+# before the next, keeping the LEGACY per-region grouping so a single-column page
+# is byte-identical to today.
+#
+# There are NO true glyph widths at the pypdf visitor layer, so a chunk's right
+# edge is ESTIMATED as ``char_count * font_size * _MEAN_ADVANCE_EM``. The estimate
+# is used ONLY to locate a wide empty vertical corridor (a gutter); it never adds,
+# drops or reorders text WITHIN a line, so a modest error is absorbed by the wide-
+# gutter requirement. ~0.5em is the empirical average advance of proportional
+# Latin body text (Times/Helvetica digest ~0.5).
+_MEAN_ADVANCE_EM = 0.5
+# A designed inter-column gutter is typically 18-36pt (>=2em at 11pt). 2em exceeds
+# any inter-word space (~0.25em) or justified word space (rarely >1.5em) and the
+# usual list indent (2-4em, but only at a line start — never a full-height
+# corridor). Below 2em a gutter cannot be told apart from ordinary spacing.
+_GUTTER_MIN_WIDTH_EM = 2.0
+_GUTTER_MIN_WIDTH_PAGE_FRAC = 0.03
+# The corridor must stay empty across >= this fraction of the baselines it spans.
+# In a real two-column region nearly every body row respects the gutter; the slack
+# tolerates the occasional full-width heading/figure that bridges it.
+_GUTTER_COVERAGE_FRAC = 0.85
+# Both sides of a split must carry real prose. Signature labels ("Name:" ~6),
+# page numbers (~10) and short table codes fall below; sentences clear it. This is
+# THE gate that spares a borderless term|definition or party|address table (whose
+# short cells never reach 15) while passing genuine two-column body text.
+_SIDE_MIN_MEDIAN_CHARS = 15
+# The whole multi-column region needs at least this many baselines, and each column
+# at least ``_COLUMN_MIN_BASELINES``. Below 6 the coverage fraction has too few
+# samples and the false-positive population (2-cell address block, Name/Date sig
+# line) dominates.
+_MIN_REGION_BASELINES = 6
+_COLUMN_MIN_BASELINES = 3
+# The gutter's vertical extent must cover >= this fraction of the page's TEXT
+# height (not the physical page — a two-column body can be short). A top-of-page
+# two-cell block or a bottom signature block occupies only a small slice.
+_REGION_HEIGHT_FRAC = 0.5
+# Recursion caps for 3+/unbalanced columns. A band that resolves into more than
+# _MAX_COLUMNS candidate columns is treated as tabular and NOT linearized.
+_MAX_COLUMNS = 3
+_MAX_COLUMN_DEPTH = 3
+# A STAMPED OVERLAY (an "EXECUTED" stamp at a larger font, far to the right of the
+# body sentence it sits on) must not splice into that sentence. We pull a chunk out
+# of its baseline ONLY when it is BOTH markedly larger than the page body font AND
+# separated by a wide horizontal gap from the body text on that baseline — the
+# unmistakable overlay signature, never a same-font two-cell table row.
+_OVERLAY_FONT_FACTOR = 1.5
+_OVERLAY_MIN_GAP_EM = 2.0
+# WIDTH-ESTIMATE ceiling: a borderless column reorder relies on ESTIMATED widths,
+# so even a crisp split is capped here — the honest "I am fairly, not perfectly,
+# sure I read this in the right order".
+_WIDTH_ESTIMATE_CEILING = 0.8
+
+# --- LETTER-SPACED / FRAGMENTED garble detection (defect 4, gaps a & b) -----
+# ``_garbled_text_ratio`` counts only NON-alphanumeric symbols, so a letter-spaced
+# run ("I N W I T N E S S W H E R E O F") or a kern/ligature-fragmented run
+# ("IN WI TN ES S WH ER EO F") scores 0.0 and never trips it. We add a run test on
+# the EXTRACTED text: the longest run of consecutive SHORT alphabetic tokens (<= 2
+# chars). Real prose never chains many such tokens (English 2-letter words scatter
+# among longer ones); a fragmented run is almost entirely short tokens. A legitimate
+# spaced "N D A" title is only a run of 3, so the threshold spares it.
+_GARBLE_SHORT_TOKEN_MAX_LEN = 2
+_GARBLE_RUN_MIN = 6
+
 
 @dataclass(frozen=True)
 class PdfExtraction:
@@ -216,11 +284,13 @@ def extract_pdf_document(data: bytes, *, include_visual_profile: bool = True) ->
     pages_with_text = 0
     extracted_character_count = 0
     repeated_margins: set[str] = set()
+    page_signals: list[dict[str, object]] = []
     for page in reader.pages:
         try:
-            geo_lines = _extract_geo_lines(page)
+            geo_lines, page_signal = _extract_geo_lines(page)
         except Exception as exc:
             raise PdfExtractionError("The PDF text could not be extracted.") from exc
+        page_signals.append(page_signal)
         extracted_character_count += sum(len(geo_line.text) for geo_line in geo_lines)
         if extracted_character_count > MAX_PDF_EXTRACTED_CHARACTERS:
             raise PdfExtractionError(
@@ -279,6 +349,7 @@ def extract_pdf_document(data: bytes, *, include_visual_profile: bool = True) ->
         # requires_source_preview) so _pdf_quality_report and source_fidelity treat
         # this as 'not-yet-computed' — fail-open, and recomputed on demand later.
         visual_profile = _deferred_visual_profile()
+    reading_order = _reading_order_signal(page_signals, extracted_text)
     quality = _pdf_quality_report(
         page_count=page_count,
         pages_with_text=pages_with_text,
@@ -287,6 +358,7 @@ def extract_pdf_document(data: bytes, *, include_visual_profile: bool = True) ->
         paragraph_count=len(paragraphs),
         repeated_margin_count=len(repeated_margins),
         visual_profile=visual_profile,
+        reading_order=reading_order,
     )
     # ADDITIVE, default-OFF table recovery. When NDA_TABLE_AUGMENTATION_ENABLED is
     # unset/false this is a strict no-op (the quality block is returned unchanged
@@ -435,29 +507,91 @@ def _guard_pdf_image_pixel_area(data: bytes, page_count: int) -> None:
                 pass
 
 
-def _extract_geo_lines(page: Any) -> list[GeoLine]:
-    """Extract per-line text plus the geometry ``visitor_text`` exposes.
+def _compose_translation(tm: Any, cm: Any) -> tuple[float, float, bool]:
+    """Device baseline origin (x, y) of a text chunk, composing tm THROUGH cm.
+
+    pypdf's ``visitor_text`` hands us BOTH the text matrix ``tm`` and the current
+    transformation matrix ``cm`` (the graphics-state ``q .. cm .. Q`` transform).
+    The old code read ``tm[4]/tm[5]`` and DROPPED ``cm`` entirely, so any block
+    drawn under its own ``cm`` translation/scale (a stamped overlay, a watermark,
+    a shifted content group) collapsed onto the wrong baseline.
+
+    The device translation is the translation row of the composed matrix
+    ``tm x cm`` under pypdf's row-vector convention (a point row-vector is
+    multiplied ON THE LEFT). ORDER MATTERS: ``tm x cm`` (text placed, THEN the
+    graphics transform applied) is correct; ``cm x tm`` is wrong. For a
+    translation-only ``cm`` both orders give the same answer, which is exactly why
+    a wrong order stays hidden until a SCALING/ROTATING ``cm`` — precisely the
+    stamped-overlay/watermark inputs this fix targets (see the regression test).
+
+    Returns ``(x, y, rotated)`` where ``rotated`` is True when either matrix
+    carries a non-trivial rotation/skew (off-diagonal terms), so the caller can
+    refuse to trust horizontal column geometry for that chunk.
+    """
+
+    def _six(m: Any) -> tuple[float, float, float, float, float, float]:
+        return (
+            float(m[0]), float(m[1]), float(m[2]),
+            float(m[3]), float(m[4]), float(m[5]),
+        )
+
+    ta, tb, tc, td, te, tf = _six(tm)
+    if cm is None:
+        ca, cb, cc, cd, ce, cf = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    else:
+        ca, cb, cc, cd, ce, cf = _six(cm)
+    # Translation row of (tm x cm): (te, tf, 1) transformed by cm.
+    x = te * ca + tf * cc + ce
+    y = te * cb + tf * cd + cf
+    rotated = (
+        abs(tb) > 1e-6 or abs(tc) > 1e-6 or abs(cb) > 1e-6 or abs(cc) > 1e-6
+    )
+    return x, y, rotated
+
+
+def _page_width(page: Any) -> Optional[float]:
+    try:
+        box = page.mediabox
+        return float(box.width)
+    except Exception:
+        return None
+
+
+def _extract_geo_lines(page: Any) -> tuple[list[GeoLine], dict[str, object]]:
+    """Extract per-line text plus a per-page reading-order confidence signal.
 
     pypdf's ``visitor_text`` callback fires once per drawn text chunk with the
-    text-matrix translation (start x via ``tm[4]``, baseline y via ``tm[5]``)
-    and the font size. We group those chunks into visual lines by baseline y so
-    the splitter can use vertical gaps, indentation and font size — the only
-    geometric signals reliably available at this layer. If the visitor yields
-    nothing usable we fall back to flat ``extract_text`` lines with no geometry,
-    which keeps the never-merge-safe text heuristics in force.
+    text matrix ``tm``, the current transformation matrix ``cm`` and the font
+    size. We compose ``tm x cm`` for the true device baseline (defect 3), then
+    partition the page's chunks into REGIONS (columns / body / stamped overlay)
+    and read each region fully before the next (defects 1 & 2). A single-column
+    page yields exactly ONE region and is byte-identical to the legacy path.
+
+    Returns ``(geo_lines, page_signal)``. ``page_signal`` is a small serializable
+    dict carrying the per-page reading-order confidence and reasons; the caller
+    folds every page's signal into the document quality report.
     """
 
     chunks: list[tuple[float, float, Optional[float], str]] = []
+    rotated_flag = {"seen": False}
 
-    def _visitor(text: str, _cm: Any, tm: Any, _font_dict: Any, font_size: Any) -> None:
+    def _visitor(text: str, cm: Any, tm: Any, _font_dict: Any, font_size: Any) -> None:
         cleaned = " ".join(str(text).split())
         if not cleaned:
             return
         try:
-            x = float(tm[4])
-            y = float(tm[5])
+            x, y, rotated = _compose_translation(tm, cm)
         except (TypeError, ValueError, IndexError):
-            return
+            # Fall back to the raw text-matrix translation if composition fails,
+            # never worse than the pre-fix behavior.
+            try:
+                x = float(tm[4])
+                y = float(tm[5])
+                rotated = False
+            except (TypeError, ValueError, IndexError):
+                return
+        if rotated:
+            rotated_flag["seen"] = True
         size = _safe_float(font_size)
         chunks.append((x, y, size, cleaned))
 
@@ -466,9 +600,16 @@ def _extract_geo_lines(page: Any) -> list[GeoLine]:
     except Exception:
         chunks = []
 
-    geo_lines = _group_chunks_into_lines(chunks)
-    if geo_lines and not _chunks_are_glyph_fragmented(chunks):
-        return geo_lines
+    if chunks and not _chunks_are_glyph_fragmented(chunks):
+        regions, page_signal = _partition_page_regions(
+            chunks, _page_width(page), rotated_flag["seen"]
+        )
+        geo_lines: list[GeoLine] = []
+        for region in regions:
+            geo_lines.extend(_group_chunks_into_lines(region))
+        geo_lines = [line for line in geo_lines if line.text]
+        if geo_lines:
+            return geo_lines, page_signal
 
     # Fallback: flat text with no coordinates so the splitter relies purely on
     # never-merge-safe text rules. Taken in two cases:
@@ -490,16 +631,335 @@ def _extract_geo_lines(page: Any) -> list[GeoLine]:
     #    the page, which only fail-safes the splitter into per-line paragraphs
     #    (fragmenting, never merging) and keeps the ``pdf_confident`` trust tier
     #    closed — the documented safe degradation.
+    # The flat-text fallback carries NO reliable geometry, so no reorder is
+    # attempted (single implicit region) and the reading-order confidence for the
+    # page stays clean; a letter-spaced/fragmented page is caught separately by the
+    # document-level garble detector on the joined extracted text.
+    fallback_signal = _default_page_signal()
     try:
         page_text = page.extract_text() or ""
     except Exception:
         page_text = ""
     flat_lines = [GeoLine(text=line, left_x=None, y=None, font_size=None) for line in _normalized_lines(page_text)]
     if flat_lines:
-        return flat_lines
+        return flat_lines, fallback_signal
     # A glyph-fragmented page whose flat extraction came back empty: mangled
     # grouped text still beats silently dropping the page's text entirely.
-    return geo_lines
+    return _group_chunks_into_lines(chunks), fallback_signal
+
+
+Chunk = tuple  # (x, y, size, text) — device baseline origin, font size, text
+
+
+def _default_page_signal() -> dict[str, object]:
+    """A clean single-column page: full confidence, nothing reordered."""
+    return {
+        "columns": 1,
+        "reorder": False,
+        "overlay": False,
+        "rotated": False,
+        "confidence": 1.0,
+        "reasons": [],
+    }
+
+
+def _chunk_dominant_font(chunks: list[Chunk]) -> float:
+    sizes = [c[2] for c in chunks if c[2]]
+    if not sizes:
+        return 11.0
+    # Mode-ish: the most common rounded size is the body font; ties -> smaller.
+    counts: dict[float, int] = {}
+    for s in sizes:
+        key = round(float(s), 1)
+        counts[key] = counts.get(key, 0) + 1
+    best = max(counts.items(), key=lambda kv: (kv[1], -kv[0]))
+    return best[0]
+
+
+def _distinct_baselines(chunks: list[Chunk]) -> list[float]:
+    ys = sorted({round(float(c[1]), 1) for c in chunks}, reverse=True)
+    merged: list[float] = []
+    for y in ys:
+        if merged and abs(merged[-1] - y) <= _SAME_LINE_Y_TOLERANCE:
+            continue
+        merged.append(y)
+    return merged
+
+
+def _chunk_width(chunk: Chunk, body_font: float) -> float:
+    size = chunk[2] or body_font
+    return max(1.0, len(chunk[3])) * float(size) * _MEAN_ADVANCE_EM
+
+
+def _partition_page_regions(
+    chunks: list[Chunk],
+    page_width: Optional[float],
+    rotated: bool,
+) -> tuple[list[list[Chunk]], dict[str, object]]:
+    """Partition a page's chunks into reading-order regions + a confidence signal.
+
+    Order of operations, each strictly conservative (a false split newly corrupts a
+    document that reads correctly today, so every destructive step has a HIGH bar
+    while the confidence FLAG has a LOW bar):
+
+      1. Rotation/skew -> refuse column geometry, one region, low confidence.
+      2. Pull stamped OVERLAY chunks (markedly larger font + wide gap on a body
+         baseline) into their own trailing region so they never splice into a
+         sentence.
+      3. Recursively split the remaining body into COLUMNS on a wide, mostly-empty
+         vertical gutter, gated so no single-column layout can ever be split.
+
+    When nothing fires, returns ``[chunks]`` unchanged -> byte-identical output.
+    """
+
+    signal = _default_page_signal()
+    if rotated:
+        signal["rotated"] = True
+        signal["confidence"] = 0.4
+        signal["reasons"] = ["cm_rotation_or_skew"]
+        return [chunks], signal
+
+    body_font = _chunk_dominant_font(chunks)
+    body_chunks, overlay_chunks = _pull_overlay_chunks(chunks, body_font)
+
+    regions, col_conf, col_reasons, near_miss = _recursive_column_split(
+        body_chunks, page_width, body_font, _text_height(body_chunks), depth=0
+    )
+    if len(regions) > 1:
+        signal["reorder"] = True
+        signal["columns"] = len(regions)
+        signal["confidence"] = min(signal["confidence"], col_conf)
+        signal["reasons"].extend(col_reasons)
+    elif near_miss:
+        # A candidate gutter cleared the flag bar but missed the reorder bar: we do
+        # NOT reorder (status-quo text, byte-safe) but we say so, loudly.
+        signal["confidence"] = min(signal["confidence"], 0.5)
+        signal["reasons"].extend(near_miss)
+
+    if overlay_chunks:
+        regions = list(regions) + [overlay_chunks]
+        signal["overlay"] = True
+        signal["confidence"] = min(signal["confidence"], 0.6)
+        signal["reasons"].append("stamped_overlay_order_unknown")
+
+    # Dedupe reasons preserving order.
+    seen: set = set()
+    signal["reasons"] = [r for r in signal["reasons"] if not (r in seen or seen.add(r))]
+    return regions, signal
+
+
+def _text_height(chunks: list[Chunk]) -> float:
+    ys = [float(c[1]) for c in chunks]
+    if not ys:
+        return 0.0
+    return max(ys) - min(ys)
+
+
+def _pull_overlay_chunks(
+    chunks: list[Chunk], body_font: float
+) -> tuple[list[Chunk], list[Chunk]]:
+    """Separate stamped-overlay chunks from body chunks.
+
+    An overlay chunk is markedly LARGER than the body font AND sits a wide
+    horizontal gap away from smaller (body) text on the SAME baseline. Both
+    conditions are required, so a centered title alone on its own baseline (no
+    body text beside it) and a same-font two-cell table row (no font jump) are
+    NEVER pulled — they stay in the body, byte-identical.
+    """
+
+    # Bucket by baseline.
+    buckets: dict[float, list[Chunk]] = {}
+    order = sorted(chunks, key=lambda c: (-float(c[1]), float(c[0])))
+    for c in order:
+        placed = False
+        for by in buckets:
+            if abs(by - float(c[1])) <= _SAME_LINE_Y_TOLERANCE:
+                buckets[by].append(c)
+                placed = True
+                break
+        if not placed:
+            buckets[float(c[1])] = [c]
+
+    overlays: list[Chunk] = []
+    overlay_ids: set[int] = set()
+    for _by, bucket in buckets.items():
+        smaller = [c for c in bucket if c[2] and c[2] < _OVERLAY_FONT_FACTOR * body_font]
+        if not smaller:
+            continue
+        for c in bucket:
+            if not c[2] or c[2] < _OVERLAY_FONT_FACTOR * body_font:
+                continue
+            cx = float(c[0])
+            cx_end = cx + _chunk_width(c, body_font)
+            # Horizontal gap to the nearest smaller (body) chunk on this baseline.
+            gap = None
+            for s in smaller:
+                sx = float(s[0])
+                sx_end = sx + _chunk_width(s, body_font)
+                if cx >= sx_end:
+                    d = cx - sx_end
+                elif sx >= cx_end:
+                    d = sx - cx_end
+                else:
+                    d = 0.0  # overlapping -> not a side-by-side overlay gap
+                gap = d if gap is None else min(gap, d)
+            if gap is not None and gap >= _OVERLAY_MIN_GAP_EM * (c[2] or body_font):
+                overlays.append(c)
+                overlay_ids.add(id(c))
+
+    if not overlays:
+        return chunks, []
+    body = [c for c in chunks if id(c) not in overlay_ids]
+    return body, overlays
+
+
+def _recursive_column_split(
+    chunks: list[Chunk],
+    page_width: Optional[float],
+    body_font: float,
+    total_text_height: float,
+    depth: int,
+) -> tuple[list[list[Chunk]], float, list[str], list[str]]:
+    """Recursively split ``chunks`` into left-to-right column regions.
+
+    Returns ``(regions, confidence, reasons, near_miss_reasons)``. ``regions`` is
+    ``[chunks]`` (a single region) when no confident split is found; the caller
+    treats ``len(regions) == 1`` as "no reorder". Recursion resolves 3+/unbalanced
+    columns; a band that fans into more than ``_MAX_COLUMNS`` columns is treated as
+    tabular and left unsplit (row-major).
+    """
+
+    if depth >= _MAX_COLUMN_DEPTH:
+        return [chunks], 1.0, [], []
+    kind, payload = _find_one_gutter(chunks, page_width, body_font, total_text_height)
+    if kind == "near_miss":
+        return [chunks], 1.0, [], list(payload)
+    if kind != "split":
+        return [chunks], 1.0, [], []
+    left, right, conf = payload
+    left_regions, lc, lr, lnm = _recursive_column_split(
+        left, page_width, body_font, total_text_height, depth + 1
+    )
+    right_regions, rc, rr, rnm = _recursive_column_split(
+        right, page_width, body_font, total_text_height, depth + 1
+    )
+    regions = list(left_regions) + list(right_regions)
+    if len(regions) > _MAX_COLUMNS:
+        # Too many columns for prose: treat as tabular, do not linearize.
+        return [chunks], 1.0, [], []
+    confidence = min(conf, lc, rc)
+    reasons = ["column_reconstructed"] + lr + rr
+    return regions, confidence, reasons, lnm + rnm
+
+
+def _find_one_gutter(
+    chunks: list[Chunk],
+    page_width: Optional[float],
+    body_font: float,
+    total_text_height: float,
+) -> tuple[str, Any]:
+    """Find ONE vertical gutter splitting ``chunks`` into a left and right column.
+
+    Returns one of:
+      ``("split", (left, right, confidence))``  -> a confident, gated split.
+      ``("near_miss", [reason, ...])``          -> a candidate gutter that cleared
+                                                   the low FLAG bar but missed the
+                                                   high REORDER bar; do NOT reorder.
+      ``("none", None)``                        -> no candidate at all.
+
+    ALL of these gates must pass for a split, each killing a distinct false-positive
+    class:
+      * gutter width  >= max(2em, 3% page)  -> justified inter-word gaps, list
+        indents, wide margins.
+      * both sides median line length >= 15 -> Name:/Date: sig lines, page-number
+        columns, term|definition and party|address 2-cell tables.
+      * each side >= 3 baselines, region >= 6 baselines -> 2-cell blocks.
+      * corridor empty across >= 85% of baselines -> centered titles, right-aligned
+        folios (empty on only one row).
+      * gutter vertical extent >= 50% of page text height -> top/bottom short blocks.
+    """
+
+    baselines = _distinct_baselines(chunks)
+    if len(baselines) < _MIN_REGION_BASELINES:
+        return ("none", None)
+
+    intervals = [
+        (float(c[0]), float(c[0]) + _chunk_width(c, body_font)) for c in chunks
+    ]
+    # Union the x-intervals and find the widest empty corridor between covered runs.
+    covered = sorted(intervals)
+    merged: list[list[float]] = []
+    for a, b in covered:
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    if len(merged) < 2:
+        return ("none", None)
+    gaps = [(merged[i][1], merged[i + 1][0]) for i in range(len(merged) - 1)]
+    g0, g1 = max(gaps, key=lambda g: g[1] - g[0])
+    width = g1 - g0
+
+    page_w = page_width or 612.0
+    min_width = max(_GUTTER_MIN_WIDTH_EM * body_font, _GUTTER_MIN_WIDTH_PAGE_FRAC * page_w)
+    if width < min_width:
+        if width >= 0.7 * min_width:
+            return ("near_miss", ["possible_multi_column_narrow_gutter"])
+        return ("none", None)
+    g_mid = (g0 + g1) / 2.0
+    left = [c for c in chunks if float(c[0]) < g_mid]
+    right = [c for c in chunks if float(c[0]) >= g_mid]
+    if not left or not right:
+        return ("none", None)
+
+    left_baselines = _distinct_baselines(left)
+    right_baselines = _distinct_baselines(right)
+    if len(left_baselines) < _COLUMN_MIN_BASELINES or len(right_baselines) < _COLUMN_MIN_BASELINES:
+        return ("none", None)
+
+    left_lines = _group_chunks_into_lines(left)
+    right_lines = _group_chunks_into_lines(right)
+    left_med = median([len(l.text) for l in left_lines]) if left_lines else 0
+    right_med = median([len(l.text) for l in right_lines]) if right_lines else 0
+    if left_med < _SIDE_MIN_MEDIAN_CHARS or right_med < _SIDE_MIN_MEDIAN_CHARS:
+        # Short cells on a side -> a table/sig block, not two-column prose.
+        if min(left_med, right_med) >= 0.7 * _SIDE_MIN_MEDIAN_CHARS:
+            return ("near_miss", ["possible_multi_column_short_side"])
+        return ("none", None)
+
+    # Coverage: a baseline "violates" the gutter when a chunk spans across it.
+    spanning = 0
+    for by in baselines:
+        row = [c for c in chunks if abs(float(c[1]) - by) <= _SAME_LINE_Y_TOLERANCE]
+        crosses = any(
+            float(c[0]) < g0 and (float(c[0]) + _chunk_width(c, body_font)) > g1
+            for c in row
+        )
+        if crosses:
+            spanning += 1
+    coverage = 1.0 - spanning / max(1, len(baselines))
+    if coverage < _GUTTER_COVERAGE_FRAC:
+        if coverage >= _GUTTER_COVERAGE_FRAC - 0.1:
+            return ("near_miss", ["possible_multi_column_low_coverage"])
+        return ("none", None)
+
+    # Vertical extent of the gutter vs the page's total text height.
+    gutter_extent = _text_height(left + right)
+    if total_text_height > 0 and gutter_extent / total_text_height < _REGION_HEIGHT_FRAC:
+        return ("none", None)
+
+    # Confidence: crisp, wide, fully-clear gutter approaches the width-estimate
+    # ceiling; a gutter exactly at threshold scores 0 and fires the loud banner.
+    gutter_sharpness = _clamp((width - min_width) / min_width, 0.0, 1.0)
+    coverage_margin = _clamp(
+        (coverage - _GUTTER_COVERAGE_FRAC) / (1.0 - _GUTTER_COVERAGE_FRAC), 0.0, 1.0
+    )
+    confidence = _WIDTH_ESTIMATE_CEILING * (0.5 + 0.5 * min(gutter_sharpness, coverage_margin))
+    return ("split", (left, right, confidence))
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
 
 
 def _chunks_are_glyph_fragmented(
@@ -1117,6 +1577,77 @@ def _is_non_substantive_margin_line(line: str) -> bool:
     )
 
 
+def _letterspaced_garble_run(text: str) -> int:
+    """Longest run of consecutive SHORT alphabetic tokens in the extracted text.
+
+    This is the signal ``_garbled_text_ratio`` is structurally blind to: a page
+    whose text is letter-spaced ("I N W I T N E S S W H E R E O F") or fragmented
+    into kern/ligature pairs ("IN WI TN ES S WH ER EO F") is ALL short alphabetic
+    tokens, yet contains zero unusual SYMBOLS, so the symbol-ratio scores 0.0.
+
+    A token counts as SHORT when, stripped of surrounding punctuation, it is purely
+    alphabetic and <= ``_GARBLE_SHORT_TOKEN_MAX_LEN`` characters. Any longer token
+    (or a digit/marker token) breaks the run. Real prose scatters long words among
+    its 1-2 letter words, so its runs stay tiny; a legitimate spaced "N D A" title
+    is only a run of 3 — below ``_GARBLE_RUN_MIN`` — so it is never flagged.
+    """
+
+    best = 0
+    run = 0
+    for raw in text.split():
+        stripped = raw.strip(".,;:!?()[]{}'\"“”‘’/-–—")
+        if stripped.isalpha() and len(stripped) <= _GARBLE_SHORT_TOKEN_MAX_LEN:
+            run += 1
+            best = max(best, run)
+        else:
+            run = 0
+    return best
+
+
+def _reading_order_signal(
+    page_signals: list[dict[str, object]], extracted_text: str
+) -> dict[str, object]:
+    """Fold per-page reading-order signals + garble detection into ONE contract.
+
+    This is the first-class confidence value the extractor returns (under
+    ``quality["reading_order"]``) for the visibility layer to surface to the human
+    reviewer. Document confidence is the MIN over pages (the worst page governs).
+    See the module docstring / return for the precise, stable contract.
+    """
+
+    confidence = 1.0
+    columns = 1
+    reorder = False
+    reasons: list[str] = []
+    for sig in page_signals:
+        try:
+            confidence = min(confidence, float(sig.get("confidence", 1.0)))
+            columns = max(columns, int(sig.get("columns", 1)))
+        except (TypeError, ValueError):
+            pass
+        if sig.get("reorder") or sig.get("overlay"):
+            reorder = True
+        for reason in sig.get("reasons", []) or []:
+            reasons.append(str(reason))
+
+    garble_run = _letterspaced_garble_run(extracted_text)
+    garbled = garble_run >= _GARBLE_RUN_MIN
+    if garbled:
+        confidence = min(confidence, 0.3)
+        reasons.append("fragmented_or_letterspaced_text")
+
+    seen: set = set()
+    reasons = [r for r in reasons if not (r in seen or seen.add(r))]
+    return {
+        "reading_order_confidence": round(confidence, 3),
+        "columns_detected": columns,
+        "reorder_applied": reorder,
+        "garbled": garbled,
+        "degraded": confidence < 0.8,
+        "reasons": reasons,
+    }
+
+
 def _pdf_quality_report(
     *,
     page_count: int,
@@ -1126,6 +1657,7 @@ def _pdf_quality_report(
     paragraph_count: int,
     repeated_margin_count: int,
     visual_profile: dict[str, object] | None = None,
+    reading_order: dict[str, object] | None = None,
 ) -> dict[str, object]:
     extracted_characters = len(extracted_text)
     warnings: list[dict[str, object]] = []
@@ -1157,6 +1689,26 @@ def _pdf_quality_report(
                 "cannot preserve. Use the original PDF/page preview for layout review."
             ),
         })
+    # Reading-order / layout confidence warning. Appended LAST and ONLY when the
+    # signal is degraded, so a clean single-column page (confidence 1.0) adds no
+    # warning and stays byte-identical to the pre-fix report.
+    if reading_order and reading_order.get("degraded"):
+        if reading_order.get("garbled"):
+            warnings.append({
+                "type": "pdf_fragmented_text",
+                "message": (
+                    "The PDF text appears letter-spaced or fragmented; the reviewer may be reading "
+                    "scrambled words. Check the original source."
+                ),
+            })
+        else:
+            warnings.append({
+                "type": "pdf_reading_order_uncertain",
+                "message": (
+                    "The PDF layout could not be fully verified (possible multi-column or overlay); "
+                    "confirm the reading order against the original source."
+                ),
+            })
     quality: dict[str, object] = {
         "page_count": page_count,
         "pages_with_text": pages_with_text,
@@ -1168,6 +1720,8 @@ def _pdf_quality_report(
     }
     if visual_profile:
         quality["visual_profile"] = visual_profile
+    if reading_order is not None:
+        quality["reading_order"] = reading_order
     return quality
 
 

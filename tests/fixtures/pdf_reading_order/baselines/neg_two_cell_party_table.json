@@ -1,0 +1,33 @@
+{
+  "extracted_text": "Disclosing Party: Registered Office:\n\nAcme Holdings Limited 1 High Street, London EC1A 1AA",
+  "name": "neg_two_cell_party_table",
+  "paragraphs": [
+    {
+      "page_number": 1,
+      "text": "Disclosing Party: Registered Office:"
+    },
+    {
+      "page_number": 1,
+      "text": "Acme Holdings Limited 1 High Street, London EC1A 1AA"
+    }
+  ],
+  "quality": {
+    "extracted_characters": 90,
+    "extracted_paragraphs": 2,
+    "page_count": 1,
+    "pages_with_text": 1,
+    "pages_without_text": 0,
+    "repeated_margin_lines_removed": 0,
+    "visual_profile": {
+      "requires_source_preview": false,
+      "status": "ready",
+      "visual_features": []
+    },
+    "warnings": [
+      {
+        "message": "The PDF produced a small amount of extractable text; review the source carefully.",
+        "type": "pdf_sparse_text"
+      }
+    ]
+  }
+}

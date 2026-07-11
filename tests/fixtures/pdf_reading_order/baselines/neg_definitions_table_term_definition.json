@@ -1,0 +1,41 @@
+{
+  "extracted_text": "\"Confidential Information\" means any non-public information disclosed\n\n\"Purpose\" means the evaluation of a potential transaction\n\n\"Effective Date\" means the date of last signature below\n\n\"Representatives\" means directors, officers, employees and advisers",
+  "name": "neg_definitions_table_term_definition",
+  "paragraphs": [
+    {
+      "page_number": 1,
+      "text": "\"Confidential Information\" means any non-public information disclosed"
+    },
+    {
+      "page_number": 1,
+      "text": "\"Purpose\" means the evaluation of a potential transaction"
+    },
+    {
+      "page_number": 1,
+      "text": "\"Effective Date\" means the date of last signature below"
+    },
+    {
+      "page_number": 1,
+      "text": "\"Representatives\" means directors, officers, employees and advisers"
+    }
+  ],
+  "quality": {
+    "extracted_characters": 254,
+    "extracted_paragraphs": 4,
+    "page_count": 1,
+    "pages_with_text": 1,
+    "pages_without_text": 0,
+    "repeated_margin_lines_removed": 0,
+    "visual_profile": {
+      "requires_source_preview": false,
+      "status": "ready",
+      "visual_features": []
+    },
+    "warnings": [
+      {
+        "message": "The PDF produced a small amount of extractable text; review the source carefully.",
+        "type": "pdf_sparse_text"
+      }
+    ]
+  }
+}

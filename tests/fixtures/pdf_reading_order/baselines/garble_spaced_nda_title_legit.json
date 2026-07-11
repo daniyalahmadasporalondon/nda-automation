@@ -1,0 +1,37 @@
+{
+  "extracted_text": "N D A\n\nThis Non-Disclosure Agreement sets out the terms on which the parties\n\nwill exchange confidential information for the stated Purpose.",
+  "name": "garble_spaced_nda_title_legit",
+  "paragraphs": [
+    {
+      "page_number": 1,
+      "text": "N D A"
+    },
+    {
+      "page_number": 1,
+      "text": "This Non-Disclosure Agreement sets out the terms on which the parties"
+    },
+    {
+      "page_number": 1,
+      "text": "will exchange confidential information for the stated Purpose."
+    }
+  ],
+  "quality": {
+    "extracted_characters": 140,
+    "extracted_paragraphs": 3,
+    "page_count": 1,
+    "pages_with_text": 1,
+    "pages_without_text": 0,
+    "repeated_margin_lines_removed": 0,
+    "visual_profile": {
+      "requires_source_preview": false,
+      "status": "ready",
+      "visual_features": []
+    },
+    "warnings": [
+      {
+        "message": "The PDF produced a small amount of extractable text; review the source carefully.",
+        "type": "pdf_sparse_text"
+      }
+    ]
+  }
+}

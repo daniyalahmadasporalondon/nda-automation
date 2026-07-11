@@ -1,0 +1,49 @@
+{
+  "extracted_text": "This Agreement is entered into by the parties and\n\nshall be binding upon their successors and assigns\n\nas of the date first written above and remains in\n\nfull force until terminated in accordance herewith.\n\nEXECUTED",
+  "name": "pos_stamped_executed_overlay",
+  "paragraphs": [
+    {
+      "page_number": 1,
+      "text": "This Agreement is entered into by the parties and"
+    },
+    {
+      "page_number": 1,
+      "text": "shall be binding upon their successors and assigns"
+    },
+    {
+      "page_number": 1,
+      "text": "as of the date first written above and remains in"
+    },
+    {
+      "page_number": 1,
+      "text": "full force until terminated in accordance herewith."
+    },
+    {
+      "page_number": 1,
+      "text": "EXECUTED"
+    }
+  ],
+  "quality": {
+    "extracted_characters": 215,
+    "extracted_paragraphs": 5,
+    "page_count": 1,
+    "pages_with_text": 1,
+    "pages_without_text": 0,
+    "repeated_margin_lines_removed": 0,
+    "visual_profile": {
+      "requires_source_preview": false,
+      "status": "ready",
+      "visual_features": []
+    },
+    "warnings": [
+      {
+        "message": "The PDF produced a small amount of extractable text; review the source carefully.",
+        "type": "pdf_sparse_text"
+      },
+      {
+        "message": "The PDF layout could not be fully verified (possible multi-column or overlay); confirm the reading order against the original source.",
+        "type": "pdf_reading_order_uncertain"
+      }
+    ]
+  }
+}

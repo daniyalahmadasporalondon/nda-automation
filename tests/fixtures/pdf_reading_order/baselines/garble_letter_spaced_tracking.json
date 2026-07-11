@@ -1,0 +1,37 @@
+{
+  "extracted_text": "I N W I T N E S S W H E R E O F t h e p a r t i e s h a v e e x e c u t e d\n\nthis Agreement as of the Effective Date.",
+  "name": "garble_letter_spaced_tracking",
+  "paragraphs": [
+    {
+      "page_number": 1,
+      "text": "I N W I T N E S S W H E R E O F t h e p a r t i e s h a v e e x e c u t e d"
+    },
+    {
+      "page_number": 1,
+      "text": "this Agreement as of the Effective Date."
+    }
+  ],
+  "quality": {
+    "extracted_characters": 117,
+    "extracted_paragraphs": 2,
+    "page_count": 1,
+    "pages_with_text": 1,
+    "pages_without_text": 0,
+    "repeated_margin_lines_removed": 0,
+    "visual_profile": {
+      "requires_source_preview": false,
+      "status": "ready",
+      "visual_features": []
+    },
+    "warnings": [
+      {
+        "message": "The PDF produced a small amount of extractable text; review the source carefully.",
+        "type": "pdf_sparse_text"
+      },
+      {
+        "message": "The PDF text appears letter-spaced or fragmented; the reviewer may be reading scrambled words. Check the original source.",
+        "type": "pdf_fragmented_text"
+      }
+    ]
+  }
+}

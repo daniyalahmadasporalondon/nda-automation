@@ -1,0 +1,87 @@
+{
+  "garble_letter_spaced_tracking": {
+    "category": "garble_open_a",
+    "gate": "documented_to_change_after_fix",
+    "expected_behavior": "Expanded-tracking 'IN WITNESS WHEREOF'; extract_text fallback re-inserts spaces -> garble. Confidence signal must fire (gap a)."
+  },
+  "garble_ligature_kern_pairs": {
+    "category": "garble_open_b",
+    "gate": "documented_to_change_after_fix",
+    "expected_behavior": "2-3 char kern-pair chunks under the 6-single-glyph threshold; routes to ' '.join, undetected today. Confidence signal must fire (gap b)."
+  },
+  "garble_per_glyph_normal_advance": {
+    "category": "garble_fixed",
+    "gate": "documented_to_change_after_fix",
+    "expected_behavior": "Per-glyph signature overlay -- already handled on main (glyph-fragment detector). Regression anchor."
+  },
+  "garble_spaced_nda_title_legit": {
+    "category": "garble_trap",
+    "gate": "must_be_byte_identical",
+    "expected_behavior": "Legit 'N D A' spaced title. Must NOT be flagged as garble (guardrail)."
+  },
+  "neg_definitions_table_term_definition": {
+    "category": "negative",
+    "gate": "must_be_byte_identical",
+    "expected_behavior": "Term | definition table -- DELIBERATELY classified negative (see builder docstring). Must stay byte-identical."
+  },
+  "neg_justified_large_interword": {
+    "category": "negative",
+    "gate": "must_be_byte_identical",
+    "expected_behavior": "Justified prose with wide inter-word gaps. Big whitespace must not read as a gutter."
+  },
+  "neg_numbered_list_far_left_number": {
+    "category": "negative",
+    "gate": "must_be_byte_identical",
+    "expected_behavior": "Hanging-indent numbered list; lone left number must not be read as a column."
+  },
+  "neg_right_aligned_page_number": {
+    "category": "negative",
+    "gate": "must_be_byte_identical",
+    "expected_behavior": "Footer text left + right-aligned page number on one baseline. Must stay as-is."
+  },
+  "neg_signature_name_left_date_right": {
+    "category": "negative",
+    "gate": "must_be_byte_identical",
+    "expected_behavior": "'Name: ___' left / 'Date: ___' right on one baseline. One logical line; must stay merged."
+  },
+  "neg_single_col_wide_margins_centered_title": {
+    "category": "negative",
+    "gate": "must_be_byte_identical",
+    "expected_behavior": "Single column, wide margins, centered title. Must NOT be split."
+  },
+  "neg_two_cell_party_table": {
+    "category": "negative",
+    "gate": "must_be_byte_identical",
+    "expected_behavior": "Party name | registered address two-cell row. Must stay as-is."
+  },
+  "pos_ctm_translated_overlap": {
+    "category": "positive",
+    "gate": "documented_to_change_after_fix",
+    "expected_behavior": "cm-translated block vs untranslated block; fix must honor the CTM so the two blocks do not collapse onto one baseline."
+  },
+  "pos_stamped_executed_overlay": {
+    "category": "positive",
+    "gate": "documented_to_change_after_fix",
+    "expected_behavior": "'EXECUTED' stamp on a body baseline; fix must not splice the stamp into the sentence."
+  },
+  "pos_table_3col_5row": {
+    "category": "positive",
+    "gate": "documented_to_change_after_fix",
+    "expected_behavior": "3-col x 5-row table; fix must keep cells from fusing across columns into one line."
+  },
+  "pos_two_column_clean": {
+    "category": "positive",
+    "gate": "documented_to_change_after_fix",
+    "expected_behavior": "2-page two-column NDA; correct order is clauses 1..8 down each column then across. Baseline interleaves across the gutter."
+  },
+  "pos_two_column_unbalanced_last": {
+    "category": "positive",
+    "gate": "documented_to_change_after_fix",
+    "expected_behavior": "Two-column, left column full / right column half. Fix must read left column fully then right, without fabricating a right partner for the trailing left-only lines."
+  },
+  "real_inbound_nda_sample": {
+    "category": "real_negative",
+    "gate": "must_be_byte_identical",
+    "expected_behavior": "The one real PDF in the repo: 1 page, single column, word-chunked, no tables. Extraction must stay byte-identical (no false-positive regression on a real document)."
+  }
+}

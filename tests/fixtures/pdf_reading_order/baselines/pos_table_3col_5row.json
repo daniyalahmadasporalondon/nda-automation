@@ -1,0 +1,45 @@
+{
+  "extracted_text": "Clause Requirement Status\n\nDefinition Mark all disclosures confidential Agreed\n\nTerm Three years from Effective Date Agreed\n\nGoverning Law England and Wales Agreed\n\nNon-solicit Twelve month restriction Rejected",
+  "name": "pos_table_3col_5row",
+  "paragraphs": [
+    {
+      "page_number": 1,
+      "text": "Clause Requirement Status"
+    },
+    {
+      "page_number": 1,
+      "text": "Definition Mark all disclosures confidential Agreed"
+    },
+    {
+      "page_number": 1,
+      "text": "Term Three years from Effective Date Agreed"
+    },
+    {
+      "page_number": 1,
+      "text": "Governing Law England and Wales Agreed"
+    },
+    {
+      "page_number": 1,
+      "text": "Non-solicit Twelve month restriction Rejected"
+    }
+  ],
+  "quality": {
+    "extracted_characters": 210,
+    "extracted_paragraphs": 5,
+    "page_count": 1,
+    "pages_with_text": 1,
+    "pages_without_text": 0,
+    "repeated_margin_lines_removed": 0,
+    "visual_profile": {
+      "requires_source_preview": false,
+      "status": "ready",
+      "visual_features": []
+    },
+    "warnings": [
+      {
+        "message": "The PDF produced a small amount of extractable text; review the source carefully.",
+        "type": "pdf_sparse_text"
+      }
+    ]
+  }
+}

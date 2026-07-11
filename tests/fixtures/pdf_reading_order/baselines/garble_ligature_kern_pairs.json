@@ -1,0 +1,37 @@
+{
+  "extracted_text": "IN WI TN ES S WH ER EO F the par ties\n\nhave duly executed this Agreement on the date shown.",
+  "name": "garble_ligature_kern_pairs",
+  "paragraphs": [
+    {
+      "page_number": 1,
+      "text": "IN WI TN ES S WH ER EO F the par ties"
+    },
+    {
+      "page_number": 1,
+      "text": "have duly executed this Agreement on the date shown."
+    }
+  ],
+  "quality": {
+    "extracted_characters": 91,
+    "extracted_paragraphs": 2,
+    "page_count": 1,
+    "pages_with_text": 1,
+    "pages_without_text": 0,
+    "repeated_margin_lines_removed": 0,
+    "visual_profile": {
+      "requires_source_preview": false,
+      "status": "ready",
+      "visual_features": []
+    },
+    "warnings": [
+      {
+        "message": "The PDF produced a small amount of extractable text; review the source carefully.",
+        "type": "pdf_sparse_text"
+      },
+      {
+        "message": "The PDF text appears letter-spaced or fragmented; the reviewer may be reading scrambled words. Check the original source.",
+        "type": "pdf_fragmented_text"
+      }
+    ]
+  }
+}

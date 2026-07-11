@@ -1,0 +1,93 @@
+{
+  "extracted_text": "1. Confidential Information means any\n\nnon-public information disclosed by the\n\nDisclosing Party to the Receiving Party.\n\n2. The Receiving Party shall use the\n\nConfidential Information solely for the\n\nPurpose and for no other purpose.\n\n3. The Receiving Party shall protect the\n\nConfidential Information using no less\n\nthan a reasonable degree of care.\n\n4. Upon request the Receiving Party shall\n\nreturn or destroy all Confidential\n\nInformation in its possession.\n\n5. This Agreement shall remain in force\n\nfor a period of three years from the\n\nEffective Date.\n\n6. Neither party shall be liable for any\n\nindirect or consequential loss.",
+  "name": "pos_two_column_unbalanced_last",
+  "paragraphs": [
+    {
+      "page_number": 1,
+      "text": "1. Confidential Information means any"
+    },
+    {
+      "page_number": 1,
+      "text": "non-public information disclosed by the"
+    },
+    {
+      "page_number": 1,
+      "text": "Disclosing Party to the Receiving Party."
+    },
+    {
+      "page_number": 1,
+      "text": "2. The Receiving Party shall use the"
+    },
+    {
+      "page_number": 1,
+      "text": "Confidential Information solely for the"
+    },
+    {
+      "page_number": 1,
+      "text": "Purpose and for no other purpose."
+    },
+    {
+      "page_number": 1,
+      "text": "3. The Receiving Party shall protect the"
+    },
+    {
+      "page_number": 1,
+      "text": "Confidential Information using no less"
+    },
+    {
+      "page_number": 1,
+      "text": "than a reasonable degree of care."
+    },
+    {
+      "page_number": 1,
+      "text": "4. Upon request the Receiving Party shall"
+    },
+    {
+      "page_number": 1,
+      "text": "return or destroy all Confidential"
+    },
+    {
+      "page_number": 1,
+      "text": "Information in its possession."
+    },
+    {
+      "page_number": 1,
+      "text": "5. This Agreement shall remain in force"
+    },
+    {
+      "page_number": 1,
+      "text": "for a period of three years from the"
+    },
+    {
+      "page_number": 1,
+      "text": "Effective Date."
+    },
+    {
+      "page_number": 1,
+      "text": "6. Neither party shall be liable for any"
+    },
+    {
+      "page_number": 1,
+      "text": "indirect or consequential loss."
+    }
+  ],
+  "quality": {
+    "extracted_characters": 633,
+    "extracted_paragraphs": 17,
+    "page_count": 1,
+    "pages_with_text": 1,
+    "pages_without_text": 0,
+    "repeated_margin_lines_removed": 0,
+    "visual_profile": {
+      "requires_source_preview": false,
+      "status": "ready",
+      "visual_features": []
+    },
+    "warnings": [
+      {
+        "message": "The PDF layout could not be fully verified (possible multi-column or overlay); confirm the reading order against the original source.",
+        "type": "pdf_reading_order_uncertain"
+      }
+    ]
+  }
+}

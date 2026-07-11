@@ -1,0 +1,49 @@
+{
+  "extracted_text": "MUTUAL NON-DISCLOSURE AGREEMENT\n\nThis Mutual Non-Disclosure Agreement is entered into between the parties\n\nidentified below for the purpose of exploring a potential business\n\nrelationship. Each party may disclose confidential information to the other.\n\nThe parties agree to protect such information and to use it solely for the\n\nstated purpose and for no other purpose whatsoever.",
+  "name": "neg_single_col_wide_margins_centered_title",
+  "paragraphs": [
+    {
+      "page_number": 1,
+      "text": "MUTUAL NON-DISCLOSURE AGREEMENT"
+    },
+    {
+      "page_number": 1,
+      "text": "This Mutual Non-Disclosure Agreement is entered into between the parties"
+    },
+    {
+      "page_number": 1,
+      "text": "identified below for the purpose of exploring a potential business"
+    },
+    {
+      "page_number": 1,
+      "text": "relationship. Each party may disclose confidential information to the other."
+    },
+    {
+      "page_number": 1,
+      "text": "The parties agree to protect such information and to use it solely for the"
+    },
+    {
+      "page_number": 1,
+      "text": "stated purpose and for no other purpose whatsoever."
+    }
+  ],
+  "quality": {
+    "extracted_characters": 380,
+    "extracted_paragraphs": 6,
+    "page_count": 1,
+    "pages_with_text": 1,
+    "pages_without_text": 0,
+    "repeated_margin_lines_removed": 0,
+    "visual_profile": {
+      "requires_source_preview": false,
+      "status": "ready",
+      "visual_features": []
+    },
+    "warnings": [
+      {
+        "message": "The PDF produced a small amount of extractable text; review the source carefully.",
+        "type": "pdf_sparse_text"
+      }
+    ]
+  }
+}

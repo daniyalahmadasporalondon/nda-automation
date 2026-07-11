@@ -1,0 +1,41 @@
+{
+  "extracted_text": "Signed for and on behalf of the Disclosing Party:\n\nName: ______________________ Date: ______________\n\nSignature: __________________ Title: ______________",
+  "name": "neg_signature_name_left_date_right",
+  "paragraphs": [
+    {
+      "page_number": 1,
+      "text": "Signed for and on behalf of the Disclosing Party:"
+    },
+    {
+      "page_number": 1,
+      "text": "Name: ______________________ Date: ______________"
+    },
+    {
+      "page_number": 1,
+      "text": "Signature: __________________ Title: ______________"
+    }
+  ],
+  "quality": {
+    "extracted_characters": 153,
+    "extracted_paragraphs": 3,
+    "page_count": 1,
+    "pages_with_text": 1,
+    "pages_without_text": 0,
+    "repeated_margin_lines_removed": 0,
+    "visual_profile": {
+      "requires_source_preview": false,
+      "status": "ready",
+      "visual_features": []
+    },
+    "warnings": [
+      {
+        "message": "The PDF produced a small amount of extractable text; review the source carefully.",
+        "type": "pdf_sparse_text"
+      },
+      {
+        "message": "The PDF extraction contains an unusual amount of symbols or spacing.",
+        "type": "pdf_garbled_text"
+      }
+    ]
+  }
+}
