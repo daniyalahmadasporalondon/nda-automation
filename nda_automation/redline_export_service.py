@@ -571,7 +571,16 @@ def _review_result_for_export(
         )
         if working_bytes is not None and working_filename:
             source_document_bytes = working_bytes
-            source_filename = working_filename
+            # Substitute the working DOCX bytes so the export takes the exact-index
+            # native-DOCX branch, but keep the ORIGINAL source NDA name for the
+            # download filename. Reusing ``working_filename`` (the internal working
+            # artifact name, e.g. "NN_working_docx.docx") produced a download named
+            # "NN_working_docx-redlined.docx" that lost the real NDA name. Derive a
+            # .docx-suffixed name from the original source filename so the export
+            # still routes to the DOCX branch AND downloads recognizably. Falls back
+            # to the working artifact name when the original source name is missing.
+            original_stem = Path(source_filename).stem
+            source_filename = f"{original_stem}.docx" if original_stem else working_filename
         _apply_saved_redline_draft(payload, matter)
         submitted_text = _submitted_matter_source_text(payload)
         if _matter_source_text_changed(submitted_text, matter, review_result):
