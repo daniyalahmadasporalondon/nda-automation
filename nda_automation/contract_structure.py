@@ -861,12 +861,21 @@ def _source_metadata(paragraph: Paragraph) -> Dict[str, object] | None:
 
 
 def _source_structure_number(paragraph: Paragraph) -> str:
+    numbering = paragraph.get("numbering")
     direct_number = paragraph.get("structure_number")
     if isinstance(direct_number, str) and direct_number.strip():
         cleaned = _clean_source_number(direct_number)
         if cleaned:
             return cleaned
-    numbering = paragraph.get("numbering")
+        # An explicit structure number the grammar rejects (e.g. a nested
+        # "1.(c)(i)") must NOT be re-derived from the raw numbering label -- the
+        # contract folds such a paragraph into its parent (see the AirIndia
+        # sub-clause test). The ONE exception is a custom ``lvlText`` template
+        # ("Article %1"), whose rendered label is otherwise unrecognisable: recover
+        # the number from the template only (D12), never from the plain label.
+        if isinstance(numbering, dict):
+            return _number_from_level_text(numbering)
+        return ""
     if not isinstance(numbering, dict):
         return ""
     number_format = str(numbering.get("format") or "")

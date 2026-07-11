@@ -493,6 +493,75 @@ class ContractStructureTests(unittest.TestCase):
         self.assertIn("paragraphs", enriched)
         self.assertEqual(enriched["contract_structure"]["sections"][0]["label"], "Clause 1")
 
+    def test_custom_lvltext_section_is_recognised_via_level_text(self):
+        # D12: a custom ``lvlText`` renders the label "Article 1", whose
+        # ``structure_number`` ("Article 1") the dotted-number grammar rejects. The
+        # section must still be recognised by recovering the bare number "1" from the
+        # ``level_text`` template ("Article %1"), not dropped or mis-levelled.
+        paragraphs = [
+            {
+                "id": "a1",
+                "index": 1,
+                "text": "Confidentiality.",
+                "source_index": 1,
+                "source_kind": "paragraph",
+                "numbering": {"num_id": "10", "level": 0, "format": "decimal", "label": "Article 1", "level_text": "Article %1", "value": 1},
+                "structure_label": "Article 1",
+                "structure_number": "Article 1",
+            },
+            {
+                "id": "a1body",
+                "index": 2,
+                "text": "Each party keeps the other's Confidential Information confidential.",
+                "source_index": 2,
+                "source_kind": "paragraph",
+            },
+        ]
+
+        structure = build_contract_structure(paragraphs)
+        numbered = [s for s in structure["sections"] if s.get("number")]
+
+        self.assertEqual(len(numbered), 1)
+        self.assertEqual(numbered[0]["number"], "1")
+        self.assertEqual(numbered[0]["level"], 1)
+        self.assertIn("a1body", numbered[0]["paragraph_ids"])
+
+    def test_nested_parenthetical_structure_number_folds_not_promoted(self):
+        # Regression guard: an explicit nested ``structure_number`` the grammar
+        # rejects ("1.(c)(i)") with no custom ``level_text`` must NOT be re-derived
+        # from the raw numbering label ("(i)") and promoted to its own section -- it
+        # folds into its parent (the D12 recovery is level_text-only).
+        paragraphs = [
+            {
+                "id": "c1c",
+                "index": 1,
+                "text": "(c) limit access to Representatives, who must:",
+                "source_index": 1,
+                "source_kind": "paragraph",
+                "numbering": {"num_id": "42", "level": 1, "format": "lowerLetter", "label": "(c)", "value": 3},
+                "structure_label": "(c)",
+                "structure_number": "1.(c)",
+            },
+            {
+                "id": "c1ci",
+                "index": 2,
+                "text": "(i) be bound by confidentiality; and",
+                "source_index": 2,
+                "source_kind": "paragraph",
+                "numbering": {"num_id": "42", "level": 2, "format": "lowerRoman", "label": "(i)", "value": 1},
+                "structure_label": "(i)",
+                "structure_number": "1.(c)(i)",
+            },
+        ]
+
+        structure = build_contract_structure(paragraphs)
+        by_number = {s.get("number"): s for s in structure["sections"] if s.get("number")}
+
+        # The nested (i) item is not its own numbered section; it folds into (c).
+        self.assertNotIn("(i)", by_number)
+        self.assertIn("1.(c)", by_number)
+        self.assertIn("c1ci", by_number["1.(c)"]["paragraph_ids"])
+
 
 class SoftReturnContinuationStructureTests(unittest.TestCase):
     """End-to-end (align_document_paragraphs -> build_contract_structure) coverage

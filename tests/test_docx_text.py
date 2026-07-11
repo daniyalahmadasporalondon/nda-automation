@@ -286,6 +286,136 @@ class DocxTextTests(unittest.TestCase):
         # A flush paragraph keeps the additive contract: no indent_left key.
         self.assertNotIn("indent_left", paragraphs[2])
 
+    def test_blank_numbered_paragraph_still_advances_the_counter(self):
+        # D10: Word counts an EMPTY numbered ``<w:p>`` -- it consumes the next value
+        # in its ``(numId, ilvl)`` sequence, so the visible clause after it numbers
+        # one higher. The empty paragraph surfaces no clause (we drop empties), but
+        # the shared counter must still advance or every following clause is ONE LOW.
+        document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="7"/></w:numPr></w:pPr><w:r><w:t>First visible clause.</w:t></w:r></w:p>
+    <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="7"/></w:numPr></w:pPr></w:p>
+    <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="7"/></w:numPr></w:pPr><w:r><w:t>Third clause after a blank numbered item.</w:t></w:r></w:p>
+  </w:body>
+</w:document>"""
+        numbering_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="4">
+    <w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="7"><w:abstractNumId w:val="4"/></w:num>
+</w:numbering>"""
+        data = make_zip(
+            {"word/document.xml": document_xml, "word/numbering.xml": numbering_xml},
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        # The empty <w:p> is dropped (no phantom clause), so only two paragraphs
+        # surface -- but the blank item consumed "2", so the visible clauses are 1
+        # and 3, matching what Word prints (contiguity holds against Word's numbers).
+        self.assertEqual(len(paragraphs), 2)
+        self.assertEqual(paragraphs[0]["numbering"]["label"], "1.")
+        self.assertEqual(paragraphs[1]["numbering"]["label"], "3.")
+        # The number is metadata only; it never leaks into the paragraph text.
+        self.assertEqual(paragraphs[1]["text"], "Third clause after a blank numbered item.")
+        self.assertNotIn("3", paragraphs[1]["text"])
+
+    def test_blank_numbered_paragraph_advance_is_per_list(self):
+        # The counter is keyed per ``(numId, ilvl)``: advancing a blank item on one
+        # list must never disturb an unrelated list's sequence.
+        document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="7"/></w:numPr></w:pPr><w:r><w:t>List A clause one.</w:t></w:r></w:p>
+    <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="8"/></w:numPr></w:pPr></w:p>
+    <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="7"/></w:numPr></w:pPr><w:r><w:t>List A clause two.</w:t></w:r></w:p>
+  </w:body>
+</w:document>"""
+        numbering_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="4">
+    <w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="7"><w:abstractNumId w:val="4"/></w:num>
+  <w:num w:numId="8"><w:abstractNumId w:val="4"/></w:num>
+</w:numbering>"""
+        data = make_zip(
+            {"word/document.xml": document_xml, "word/numbering.xml": numbering_xml},
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        # The blank item on list 8 does not touch list 7, so list 7 stays 1, 2.
+        self.assertEqual(paragraphs[0]["numbering"]["label"], "1.")
+        self.assertEqual(paragraphs[1]["numbering"]["label"], "2.")
+
+    def test_start_override_restarts_the_counter_for_one_num_instance(self):
+        # D11: a ``<w:lvlOverride>/<w:startOverride>`` restarts a level's counter at
+        # N for ONE ``<w:num>`` instance. Two num instances share the abstract, but
+        # instance 9 restarts at 5, so its first clause numbers 5 then increments.
+        document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="9"/></w:numPr></w:pPr><w:r><w:t>Restarted clause A.</w:t></w:r></w:p>
+    <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="9"/></w:numPr></w:pPr><w:r><w:t>Restarted clause B.</w:t></w:r></w:p>
+  </w:body>
+</w:document>"""
+        numbering_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="4">
+    <w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="9">
+    <w:abstractNumId w:val="4"/>
+    <w:lvlOverride w:ilvl="0"><w:startOverride w:val="5"/></w:lvlOverride>
+  </w:num>
+</w:numbering>"""
+        data = make_zip(
+            {"word/document.xml": document_xml, "word/numbering.xml": numbering_xml},
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(paragraphs[0]["numbering"]["label"], "5.")
+        self.assertEqual(paragraphs[1]["numbering"]["label"], "6.")
+
+    def test_custom_lvltext_template_renders_into_the_label(self):
+        # D12: a custom ``lvlText`` ("Article %1") mixes a literal word with the
+        # counter. The rendered label carries the word verbatim, and level_text is
+        # surfaced so the Structure tab can recover the bare number from it.
+        document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="10"/></w:numPr></w:pPr><w:r><w:t>Confidential Information.</w:t></w:r></w:p>
+    <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="10"/></w:numPr></w:pPr><w:r><w:t>Term and Termination.</w:t></w:r></w:p>
+  </w:body>
+</w:document>"""
+        numbering_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="5">
+    <w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="Article %1"/></w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="10"><w:abstractNumId w:val="5"/></w:num>
+</w:numbering>"""
+        data = make_zip(
+            {"word/document.xml": document_xml, "word/numbering.xml": numbering_xml},
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(paragraphs[0]["numbering"]["label"], "Article 1")
+        self.assertEqual(paragraphs[0]["numbering"]["level_text"], "Article %1")
+        self.assertEqual(paragraphs[1]["numbering"]["label"], "Article 2")
+        # The label is metadata; the paragraph text is the run content only.
+        self.assertEqual(paragraphs[0]["text"], "Confidential Information.")
+        self.assertNotIn("Article", paragraphs[0]["text"])
+
     def test_extracts_run_color_highlight_strike_and_vert_align(self):
         document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
