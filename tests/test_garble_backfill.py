@@ -64,16 +64,28 @@ GARBLED_PDF_BYTES = make_pdf_glyph_fragmented_signature_page()
 NORMAL_PDF_BYTES = make_pdf("The parties agree to keep all Confidential Information secret at all times.")
 
 
+def _legacy_join_line_chunks(bucket):
+    """The PRE-D4 line-chunk join: always a single space between chunks, so a
+    per-glyph line explodes into ``M o r w a n d`` (the historical garbled shape)."""
+    return " ".join(" ".join(chunk[3].split()) for chunk in bucket if chunk[3].split())
+
+
 def _pre_fix_extracted_text(pdf_bytes: bytes) -> str:
     """The text the PRE-FIX extractor stored for these bytes: run the current
-    extractor with the per-glyph demotion disabled (the exact code path old
-    imports took), reproducing the historical garbled stored shape."""
+    extractor with BOTH garble suppressors disabled -- the per-glyph demotion
+    (``_GLYPH_FRAGMENT_RUN_MIN``) AND the D4 adjacency join (``_join_line_chunks``)
+    -- reproducing the historical garbled stored shape this tool exists to heal.
+    Both must be neutralized: D4 fixed garble at a different layer than the
+    demotion toggle, so disabling only the demotion now yields clean text."""
     original = pdf_text._GLYPH_FRAGMENT_RUN_MIN
+    original_join = pdf_text._join_line_chunks
     pdf_text._GLYPH_FRAGMENT_RUN_MIN = 10**9
+    pdf_text._join_line_chunks = _legacy_join_line_chunks
     try:
         paragraphs = pdf_text.extract_pdf_paragraphs(pdf_bytes)
     finally:
         pdf_text._GLYPH_FRAGMENT_RUN_MIN = original
+        pdf_text._join_line_chunks = original_join
     return extracted_text_from_paragraphs(paragraphs)
 
 
