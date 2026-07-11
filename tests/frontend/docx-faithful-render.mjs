@@ -280,7 +280,49 @@ async function testEmptyBodyGuard() {
     + "visible-text excludes <style>; live container left intact.");
 }
 
+// ---------------------------------------------------------------------------
+// (D) Symbol-font bullet "tofu" remap (V1 fix): docx-preview emits a bullet
+// marker as `p.docx-num-*::before { content: ""; font-family: Symbol }`.
+// U+F0B7 is a Symbol-font private-use glyph no web font ships, so it paints as a
+// missing-glyph box. faithfulDocxRemapSymbolBullets must, on the faithful surface's
+// injected <style> ONLY, swap the glyph for a real bullet and drop the Symbol font,
+// while leaving unrelated rules (a numbered list, a real document font) untouched.
+async function testSymbolBulletRemap() {
+  const dom = new JSDOM("<!doctype html><html><body></body></html>");
+  const { window } = dom;
+  const mod = loadFaithfulModule(window, makeLocalStorage({}));
+
+  const bullet = String.fromCharCode(0xF0B7);
+  const container = window.document.createElement("div");
+  const style = window.document.createElement("style");
+  style.textContent =
+    `p.docx-num-1-0:before { content: "${bullet}"; counter-increment: docx-num-1-0; font-family: Symbol; font-size: 10pt }\n`
+    + `p.docx-num-2-0:before { content: "1." counter(docx-num-2-0, decimal); font-family: "Times New Roman" }\n`
+    + `.docx span { font-family: Symbol }`;
+  container.appendChild(style);
+
+  mod.faithfulDocxRemapSymbolBullets(container);
+  const css = style.textContent;
+
+  assert.equal(css.indexOf(bullet), -1, "the U+F0B7 tofu glyph must be gone");
+  assert.ok(css.includes("•"), "the marker must become a real bullet '•'");
+  // The Symbol font is stripped from the BULLET rule (so the substitute renders)...
+  assert.ok(!/docx-num-1-0:before\s*\{[^}]*Symbol/.test(css),
+    "Symbol font-family must be dropped from the bullet ::before rule");
+  assert.ok(/docx-num-1-0:before\s*\{[^}]*font-size:\s*10pt/.test(css),
+    "non-font-family declarations in the bullet rule must survive");
+  // ...but the numbered-list rule (no marker glyph) keeps its real document font,
+  // and an unrelated Symbol-font rule with no marker glyph is left entirely alone.
+  assert.ok(css.includes("Times New Roman"), "the numbered-list font must be untouched");
+  assert.ok(/\.docx span \{ font-family: Symbol \}/.test(css),
+    "an unrelated Symbol-font rule (no marker glyph) must be left untouched");
+
+  console.log("PASS (D) Symbol-bullet remap: U+F0B7 -> '•', Symbol font dropped from the "
+    + "marker rule only; numbered-list + unrelated Symbol rules untouched.");
+}
+
 await testTrackedChangesRender();
 await testFallbackContract();
 await testEmptyBodyGuard();
+await testSymbolBulletRemap();
 console.log("\nALL PASS: docx-faithful-render headless validation");
