@@ -4440,6 +4440,16 @@ function maybeUpgradeOriginalSurfaceToFaithfulDocx() {
       studioDocumentRender.innerHTML = "";
       studioDocumentRender.appendChild(wrapper);
       showStudioDocumentRender();
+      // D2: the innerHTML swap above DESTROYED the page-image surface the PDF
+      // markup controller had mounted its toolbar + annotation layers onto
+      // (notifyPdfMarkupOriginalRendered ran back at the page-image paint). Without
+      // re-notifying, a converted-PDF matter that upgrades to the faithful DOCX
+      // Original would silently lose its markup toolbar. The new faithful wrapper
+      // still carries data-original-surface, so getSurfaceRoot() resolves to it:
+      // re-notify so the controller re-mounts the toolbar (and re-loads/repositions
+      // annotations) onto the live faithful surface instead of leaving the reviewer
+      // with no markup.
+      notifyPdfMarkupOriginalRendered();
     })
     .catch((error) => {
       // Belt-and-braces: render() is contracted never to throw, but if it somehow
@@ -6018,85 +6028,84 @@ function requestMatterDocumentRenderPreview() {
   // displayed over a faithful view anyway (see the resolve handler below).
   if (!faithfulDocxSurfaceActiveForCurrentView()) renderStudioDocumentHighlights();
 
-  pollMatterDocumentRenderStatus(matterId, sequence, 0);
-}
-
-// A cold render resolves ASYNCHRONOUSLY on the backend: /render-status returns
-// status:"rendering" (rendering_in_progress_payload) until PyMuPDF/soffice
-// finishes rasterizing the ORIGINAL source. A SINGLE-SHOT fetch that saw
-// "rendering" used to null the whole render state out (normalizedRenderStatus ->
-// "unavailable" -> normalizeReviewDocumentRender returns null) and discard the
-// working_docx_ready flag riding on that payload -- silently disabling the
-// converted-PDF faithful auto-on lane AND dead-ending a cold PDF Original on a
-// blank surface with no re-poll. This re-polls a still-"loading" render with a
-// capped linear backoff until it resolves to ready/error (or the attempt cap is
-// hit, after which the last state -- typically "loading" -- stands rather than
-// looping forever). The sequence + matter-id staleness guards drop a poll whose
-// matter/request has been superseded.
-const RENDER_STATUS_POLL_MAX_ATTEMPTS = 24;
-const RENDER_STATUS_POLL_BASE_DELAY_MS = 1500;
-const RENDER_STATUS_POLL_MAX_DELAY_MS = 6000;
-
-function pollMatterDocumentRenderStatus(matterId, sequence, attempt) {
-  fetch(`/api/matters/${encodeURIComponent(matterId)}/render-status`)
-    .then(async (response) => {
-      const payload = await response.json();
-      if (!response.ok) {
-        const error = reviewErrorFromPayload(payload, "PDF preview could not load.");
-        error.payload = payload;
-        throw error;
-      }
-      return payload;
-    })
-    .then((payload) => {
-      if (sequence !== reviewDocumentRenderRequestSequence || state.selectedMatter?.id !== matterId) return;
-      const nextRender = normalizeReviewDocumentRender(
-        payload.document_render || payload.rendered_document || payload.pdf_render || null,
-      );
-      // STILL RENDERING: the backend has not finished rasterizing the ORIGINAL
-      // source yet ("rendering"/"queued"/... all normalize to "loading"). Re-poll
-      // with backoff instead of committing this transient state -- committing it
-      // and repainting would either blank the pane (null render) or flip the
-      // pager to a partial state. The "loading" placeholder set by the caller
-      // stays on screen while we wait. working_docx_ready is preserved on the
-      // final commit below.
-      if (nextRender && nextRender.status === "loading" && attempt + 1 < RENDER_STATUS_POLL_MAX_ATTEMPTS) {
-        const delay = Math.min(
-          RENDER_STATUS_POLL_BASE_DELAY_MS * (attempt + 1),
-          RENDER_STATUS_POLL_MAX_DELAY_MS,
+  // D1 RE-POLL. A cold render resolves ASYNCHRONOUSLY on the backend:
+  // /render-status returns status:"rendering" (rendering_in_progress_payload)
+  // until PyMuPDF/soffice finishes rasterizing the ORIGINAL source. A SINGLE-SHOT
+  // fetch that saw "rendering" used to null the whole render state out
+  // (normalizedRenderStatus -> "unavailable" -> normalizeReviewDocumentRender
+  // returns null) and discard the working_docx_ready flag riding on that payload
+  // -- silently disabling the converted-PDF faithful auto-on lane AND dead-ending
+  // a cold PDF Original on a blank surface with no re-poll. `poll` below re-polls a
+  // still-"loading" render with a capped linear backoff until it resolves to
+  // ready/error (or the attempt cap, after which the last state stands rather than
+  // looping forever); the sequence + matter-id staleness guards drop a poll whose
+  // matter/request has been superseded.
+  //
+  // Kept NESTED in requestMatterDocumentRenderPreview on purpose: the
+  // review-render-clobber.cjs brace-walk extractor pulls this function out as a
+  // SINGLE unit (the same convention attemptFaithfulRedlineFallback uses for its
+  // commitFallbackSurface helper), so the re-poll loop must live inside it.
+  const maxAttempts = 24;
+  const baseDelayMs = 1500;
+  const maxDelayMs = 6000;
+  const poll = (attempt) => {
+    fetch(`/api/matters/${encodeURIComponent(matterId)}/render-status`)
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) {
+          const error = reviewErrorFromPayload(payload, "PDF preview could not load.");
+          error.payload = payload;
+          throw error;
+        }
+        return payload;
+      })
+      .then((payload) => {
+        if (sequence !== reviewDocumentRenderRequestSequence || state.selectedMatter?.id !== matterId) return;
+        const nextRender = normalizeReviewDocumentRender(
+          payload.document_render || payload.rendered_document || payload.pdf_render || null,
         );
-        setTimeout(() => {
-          // Re-check staleness before the next poll: the user may have moved on
-          // (or a fresh request superseded this one) during the backoff wait.
-          if (sequence !== reviewDocumentRenderRequestSequence || state.selectedMatter?.id !== matterId) return;
-          pollMatterDocumentRenderStatus(matterId, sequence, attempt + 1);
-        }, delay);
-        return;
-      }
-      state.reviewDocumentRender = nextRender;
-      // RENDER-CLOBBER GUARD (root-cause fix): the backend rasterizes the
-      // ORIGINAL source document, so on a cold cache this resolves SECONDS after
-      // the review painted -- by which time the faithful redline/clean upgrade
-      // may already be on screen. Repainting here used to destroy that faithful
-      // surface and prepend the ORIGINAL's page tiles (the "reviewed document
-      // silently reverts to the original" symptom). Keep the arrived page images
-      // in state (the Original view and future paints read them from there) but
-      // do NOT repaint over a live faithful surface.
-      if (faithfulDocxSurfaceActiveForCurrentView()) return;
-      renderStudioDocumentHighlights();
-    })
-    .catch((error) => {
-      if (sequence !== reviewDocumentRenderRequestSequence || state.selectedMatter?.id !== matterId) return;
-      state.reviewDocumentRender = normalizeReviewDocumentRender({
-        error: error?.message || "PDF preview could not load.",
-        source_label: "Rendered PDF",
-        status: "error",
+        // STILL RENDERING: the backend has not finished rasterizing the ORIGINAL
+        // source yet ("rendering"/"queued"/... all normalize to "loading"). Re-poll
+        // with backoff instead of committing this transient state -- committing it
+        // and repainting would either blank the pane (null render) or flip the
+        // pager to a partial state. The "loading" placeholder set above stays on
+        // screen while we wait; working_docx_ready is preserved on the final commit.
+        if (nextRender && nextRender.status === "loading" && attempt + 1 < maxAttempts) {
+          const delay = Math.min(baseDelayMs * (attempt + 1), maxDelayMs);
+          setTimeout(() => {
+            // Re-check staleness before the next poll: the user may have moved on
+            // (or a fresh request superseded this one) during the backoff wait.
+            if (sequence !== reviewDocumentRenderRequestSequence || state.selectedMatter?.id !== matterId) return;
+            poll(attempt + 1);
+          }, delay);
+          return;
+        }
+        state.reviewDocumentRender = nextRender;
+        // RENDER-CLOBBER GUARD (root-cause fix): the backend rasterizes the
+        // ORIGINAL source document, so on a cold cache this resolves SECONDS after
+        // the review painted -- by which time the faithful redline/clean upgrade
+        // may already be on screen. Repainting here used to destroy that faithful
+        // surface and prepend the ORIGINAL's page tiles (the "reviewed document
+        // silently reverts to the original" symptom). Keep the arrived page images
+        // in state (the Original view and future paints read them from there) but
+        // do NOT repaint over a live faithful surface.
+        if (faithfulDocxSurfaceActiveForCurrentView()) return;
+        renderStudioDocumentHighlights();
+      })
+      .catch((error) => {
+        if (sequence !== reviewDocumentRenderRequestSequence || state.selectedMatter?.id !== matterId) return;
+        state.reviewDocumentRender = normalizeReviewDocumentRender({
+          error: error?.message || "PDF preview could not load.",
+          source_label: "Rendered PDF",
+          status: "error",
+        });
+        // Same guard as the resolve handler: a late render-status FAILURE must not
+        // clobber a live faithful surface with an error repaint either.
+        if (faithfulDocxSurfaceActiveForCurrentView()) return;
+        renderStudioDocumentHighlights();
       });
-      // Same guard as the resolve handler: a late render-status FAILURE must not
-      // clobber a live faithful surface with an error repaint either.
-      if (faithfulDocxSurfaceActiveForCurrentView()) return;
-      renderStudioDocumentHighlights();
-    });
+  };
+  poll(0);
 }
 
 function normalizeReviewDocumentRender(candidate) {

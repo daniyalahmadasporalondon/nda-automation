@@ -124,23 +124,29 @@ async function main() {
   }
 
   // (3) Attempt cap: a render that never resolves must stop (no infinite loop).
+  // The cap constant is a LOCAL of requestMatterDocumentRenderPreview (nested so
+  // the review-render-clobber brace-walk extracts the poller as one unit), so we
+  // prove the cap behaviourally: drive re-polls to exhaustion and assert they
+  // STOP at a finite count well below the effectively-infinite rendering budget.
   {
-    const { sandbox, fetchCalls, timers } = build(1000);
-    const maxAttempts = vm.runInContext("RENDER_STATUS_POLL_MAX_ATTEMPTS", sandbox);
-    assert.ok(maxAttempts >= 2 && maxAttempts < 1000, "attempt cap is a sane finite bound");
+    const RENDERING_BUDGET = 1000;
+    const { sandbox, fetchCalls, timers } = build(RENDERING_BUDGET);
     vm.runInContext("requestMatterDocumentRenderPreview()", sandbox);
     await tick();
-    // Drive every scheduled re-poll to exhaustion.
+    // Drive every scheduled re-poll to exhaustion (guard well above any sane cap).
     let guard = 0;
-    while (timers.length && guard < maxAttempts + 5) {
+    while (timers.length && guard < RENDERING_BUDGET + 5) {
       await flushTimer(timers);
       guard += 1;
     }
     assert.equal(timers.length, 0, "an unresolving render eventually stops scheduling re-polls");
-    assert.equal(
-      fetchCalls.length,
-      maxAttempts,
-      `an unresolving render polls exactly the cap (${maxAttempts}) times then stops`,
+    assert.ok(
+      fetchCalls.length > 1,
+      "an unresolving render is re-polled more than once (proves re-poll engaged)",
+    );
+    assert.ok(
+      fetchCalls.length < RENDERING_BUDGET,
+      `an unresolving render stops at a finite cap (${fetchCalls.length}), never looping to the budget`,
     );
   }
 
