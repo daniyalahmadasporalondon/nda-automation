@@ -232,8 +232,8 @@
     "v": "20260706warn1"
   },
   "js/redline-rendering.js": {
-    "sha256": "1c8fc0ab450e1b4f6dfb6d925a17c4971b725eeb105be86a88e046903c8a0237",
-    "v": "20260622redlineresilience1"
+    "sha256": "15c47b8c4fddc8c36870e1f6f4eddfe0bf734bd30d458ae41c1a0efe990bd5f7",
+    "v": "20260711inlinesem"
   },
   "js/repository-actions.js": {
     "sha256": "74d1eef529a69b833ae3786caf8056510ce939cacb07cc7cb516c39d8e3d2872",
@@ -296,7 +296,7 @@
     "v": "20260709clobber1"
   },
   "styles.css": {
-    "sha256": "3d091c68c31c76d92cb548f52af2cd38e30ed1a9c0dc749150fd134f9ec4c8ab",
-    "v": "20260711shipallstyles"
+    "sha256": "21b52a27c635502b7a205cf6f406d2e63d23d06fcb1f28ca047bbb4d6f117a19",
+    "v": "20260711inlinesem"
   }
 }

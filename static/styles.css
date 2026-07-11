@@ -5213,6 +5213,21 @@ h3 {
   text-decoration-color: currentColor;
 }
 
+/* Source hyperlink run: an authored link from the uploaded DOCX. Rendered as an
+   underlined accent-colored anchor, distinct from any redline/tracked-change
+   color. Display-only -- the link text is the same characters as the source. */
+.doc-run-link {
+  color: var(--purple, #5523b2);
+  text-decoration: underline;
+}
+
+/* Right-to-left paragraph direction (D4). `dir="rtl"` already flips the inline
+   reading order; align the block to the right so an RTL clause reads as it does
+   in Word. Display-only: the stored text is never reordered. */
+.studio-doc-paragraph[dir="rtl"] {
+  text-align: right;
+}
+
 .studio-doc-paragraph.has-clause {
   background: rgba(85, 35, 178, 0.045);
   cursor: pointer;
