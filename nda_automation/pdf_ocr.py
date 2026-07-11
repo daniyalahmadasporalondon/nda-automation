@@ -44,8 +44,10 @@ prior Gmail/AI cost-storm, and counterparty NDAs are confidential):
 from __future__ import annotations
 
 import base64
+import contextvars
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Callable, Optional, Protocol
@@ -85,6 +87,7 @@ NDA_PDF_OCR_MODEL_ENV = "NDA_PDF_OCR_MODEL"
 NDA_PDF_OCR_MAX_PAGES_ENV = "NDA_PDF_OCR_MAX_PAGES"
 NDA_PDF_OCR_TIMEOUT_ENV = "NDA_PDF_OCR_TIMEOUT_SECONDS"
 NDA_PDF_OCR_DPI_ENV = "NDA_PDF_OCR_DPI"
+NDA_PDF_OCR_TOTAL_BUDGET_ENV = "NDA_PDF_OCR_TOTAL_BUDGET_SECONDS"
 
 # A vision-capable default. Overridable via NDA_PDF_OCR_MODEL. Kept distinct from
 # the review model so OCR can be pointed at a cheaper vision model independently.
@@ -96,9 +99,27 @@ DEFAULT_OCR_MODEL = "google/gemini-2.5-flash"
 MAX_OCR_PAGES = 20
 DEFAULT_OCR_PAGES = 20
 
-# Per-page vision call timeout (seconds). Bounds total latency to roughly
-# pages * timeout in the worst case.
+# Per-page vision call timeout (seconds). Bounds ONE page's latency; the whole-pass
+# ceiling is DEFAULT_OCR_TOTAL_BUDGET_SECONDS below.
 DEFAULT_OCR_TIMEOUT_SECONDS = 60
+
+# TOTAL wall-clock ceiling for a whole OCR pass across ALL pages. The per-page
+# timeout alone leaves ``MAX_OCR_PAGES * per-page-timeout`` (~20 min at the
+# defaults) as the worst case -- long enough to wedge a worker on a pathological
+# scan that answers each page just under the per-page timeout. This hard cap aborts
+# the pass CLEANLY once exceeded: no in-flight page is interrupted mid-call, the
+# pages already OCR'd are KEPT, and a per-context truncation flag is set so the
+# caller can flag a partial recovery. Checked at the top of each page iteration, so
+# at least the first page always runs.
+DEFAULT_OCR_TOTAL_BUDGET_SECONDS = 300
+
+# Per-CONTEXT truncation flag: True when the most recent OCR pass on this call
+# context aborted on the total wall-clock budget before OCR'ing every eligible
+# page. A ContextVar (not a module global) so concurrent OCR passes on different
+# threads/tasks never clobber each other's flag. Reset at the start of every pass.
+_OCR_TRUNCATED: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "nda_pdf_ocr_truncated", default=False
+)
 
 # Rasterization DPI for the OCR images. 200 DPI is a good OCR/cost balance for a
 # US-Letter page (~1700x2200 px). The pixmap is still byte-budgeted below.
@@ -141,6 +162,21 @@ def _configured_max_pages() -> int:
 
 def _configured_timeout() -> int:
     return max(1, _env_int(NDA_PDF_OCR_TIMEOUT_ENV, DEFAULT_OCR_TIMEOUT_SECONDS))
+
+
+def _configured_total_budget() -> int:
+    return max(1, _env_int(NDA_PDF_OCR_TOTAL_BUDGET_ENV, DEFAULT_OCR_TOTAL_BUDGET_SECONDS))
+
+
+def ocr_run_truncated() -> bool:
+    """True iff the most recent OCR pass on THIS call context aborted on the total
+    wall-clock budget before OCR'ing every eligible page.
+
+    The caller (``pdf_text._try_ocr_fallback`` / ``_try_ocr_pages``) reads this
+    immediately after the OCR call to flag a partial recovery in the quality report.
+    Reset to False at the start of every ``ocr_pdf_text`` / ``ocr_pdf_pages`` pass."""
+
+    return bool(_OCR_TRUNCATED.get())
 
 
 def _configured_dpi() -> int:
@@ -263,6 +299,7 @@ def ocr_status() -> dict[str, object]:
         "model": _configured_model(),
         "max_pages": _configured_max_pages(),
         "timeout_seconds": _configured_timeout(),
+        "total_budget_seconds": _configured_total_budget(),
         "dpi": _configured_dpi(),
     }
 
@@ -309,7 +346,11 @@ def ocr_pdf_text(
     or whitespace-only text (that would let the AI "review" nothing).
 
     Bounded: at most ``MAX_OCR_PAGES`` pages are rasterized + OCR'd; each page's
-    pixmap is byte-budgeted; the provider call carries a per-call timeout. Any
+    pixmap is byte-budgeted; the provider call carries a per-call timeout AND the
+    whole pass is capped by a TOTAL wall-clock budget (``NDA_PDF_OCR_TOTAL_BUDGET_
+    SECONDS``) so a pathological scan cannot wedge a worker for pages*timeout. When
+    the total budget is hit the pass stops CLEANLY, keeps the pages already OCR'd,
+    and sets ``ocr_run_truncated()`` so the caller can flag a partial recovery. Any
     per-page or provider failure degrades to ``None`` (never a partial garbage
     result that masquerades as a full document) UNLESS at least one page produced
     real text -- a usable transcription of the readable pages is preferable to a
@@ -319,6 +360,7 @@ def ocr_pdf_text(
     unconfigured -> this returns None). Tests inject a deterministic provider.
     """
 
+    _OCR_TRUNCATED.set(False)
     active_provider = provider if provider is not None else resolve_ocr_provider()
     if active_provider is None:
         return None
@@ -333,6 +375,7 @@ def ocr_pdf_text(
 
     document = None
     page_texts: list[str] = []
+    deadline = time.monotonic() + _configured_total_budget()
     try:
         document = fitz_module.open(stream=data, filetype="pdf")
         page_count = int(getattr(document, "page_count", 0) or 0)
@@ -342,6 +385,10 @@ def ocr_pdf_text(
         requested_dpi = _configured_dpi()
         inspected = min(page_count, max_pages)
         for page_index in range(inspected):
+            if time.monotonic() >= deadline:
+                # Total wall-clock budget exhausted: stop cleanly, keep what we have.
+                _OCR_TRUNCATED.set(True)
+                break
             try:
                 page = document.load_page(page_index)
                 rect = page.rect
@@ -418,9 +465,13 @@ def ocr_pdf_pages(
       * BOUNDED: at most ``_configured_max_pages()`` pages are OCR'd in total (the
         same cost/latency tourniquet as ``ocr_pdf_text``), applied to the requested
         indices in ascending order; each page's pixmap is byte-budgeted; each
-        provider call carries the per-call timeout.
+        provider call carries the per-call timeout; AND the whole pass is capped by
+        the TOTAL wall-clock budget (``NDA_PDF_OCR_TOTAL_BUDGET_SECONDS``) -- once
+        exceeded the pass stops cleanly, keeps the pages already recovered, and sets
+        ``ocr_run_truncated()``.
     """
 
+    _OCR_TRUNCATED.set(False)
     wanted = sorted({int(i) for i in page_indices if int(i) >= 0})
     if not wanted:
         return {}
@@ -439,6 +490,7 @@ def ocr_pdf_pages(
 
     document = None
     recovered: dict[int, str] = {}
+    deadline = time.monotonic() + _configured_total_budget()
     try:
         document = fitz_module.open(stream=data, filetype="pdf")
         page_count = int(getattr(document, "page_count", 0) or 0)
@@ -449,6 +501,10 @@ def ocr_pdf_pages(
         budget = max_pages
         for page_index in wanted:
             if budget <= 0:
+                break
+            if time.monotonic() >= deadline:
+                # Total wall-clock budget exhausted: stop cleanly, keep recovered.
+                _OCR_TRUNCATED.set(True)
                 break
             if page_index >= page_count:
                 continue
@@ -495,14 +551,17 @@ def ocr_pdf_pages(
 
 __all__ = [
     "DEFAULT_OCR_MODEL",
+    "DEFAULT_OCR_TOTAL_BUDGET_SECONDS",
     "MAX_OCR_PAGES",
     "NDA_PDF_OCR_ENABLED_ENV",
+    "NDA_PDF_OCR_TOTAL_BUDGET_ENV",
     "OcrError",
     "OcrProvider",
     "OpenRouterVisionOcrProvider",
     "ocr_enabled",
     "ocr_pdf_pages",
     "ocr_pdf_text",
+    "ocr_run_truncated",
     "ocr_status",
     "resolve_ocr_provider",
 ]

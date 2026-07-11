@@ -35,6 +35,7 @@ class GeoLine:
 
 
 INVALID_PDF_MESSAGE = "The uploaded file is not a valid PDF document."
+EMPTY_PDF_MESSAGE = "The PDF has no pages; the file is empty or malformed. Re-export or re-scan the document."
 ENCRYPTED_PDF_MESSAGE = "The PDF is encrypted or password-protected. Remove the password before reviewing."
 PDF_SUPPORT_NOT_INSTALLED_MESSAGE = "PDF support is not installed. Install the pypdf dependency before reviewing PDF files."
 MAX_PDF_PAGES = 100
@@ -105,6 +106,33 @@ def _fitz_visual_text_flags(fitz_module: Any) -> int | None:
         return None
     _FITZ_VISUAL_TEXT_FLAGS_NO_IMAGES = flags
     return flags
+
+
+def _silence_mupdf_errors(fitz_module: Any) -> None:
+    """Stop MuPDF's C layer from printing warnings/errors to the process stdout.
+
+    A damaged or unusual PDF makes MuPDF emit C-level messages ("... cannot find
+    ... object", "syntax error ...") straight to the process stdout, polluting logs
+    and any structured/JSON output. PyMuPDF exposes a toggle to suppress that; the
+    exact spelling has moved across versions, so try the known forms and FAIL SAFE
+    (do nothing) if none is present -- suppressing warnings is best-effort, never a
+    reason to break extraction on an exotic PyMuPDF build.
+    """
+
+    for target, attribute in (
+        (fitz_module, "mupdf_display_errors"),          # some builds expose it top-level
+        (getattr(fitz_module, "TOOLS", None), "mupdf_display_errors"),  # 1.18+ via TOOLS
+    ):
+        if target is None:
+            continue
+        toggle = getattr(target, attribute, None)
+        if toggle is None:
+            continue
+        try:
+            toggle(False)
+            return
+        except Exception:  # pragma: no cover - exotic/old PyMuPDF build
+            continue
 
 # Two chunks whose baselines differ by less than this many points belong to the
 # same visual line (sub/superscript jitter, split runs on one line).
@@ -406,6 +434,12 @@ def extract_pdf_document(data: bytes, *, include_visual_profile: bool = True) ->
 
     page_geo_lines: list[list[GeoLine]] = []
     page_count = len(reader.pages)
+    if page_count <= 0:
+        # A 0-page PDF is structurally malformed -- NOT a scanned document needing
+        # OCR. Reject it honestly here; without this guard the empty page loop below
+        # produces no paragraphs and falls through to the misleading
+        # "Scanned PDFs need OCR" error, sending the user down the wrong path.
+        raise PdfExtractionError(EMPTY_PDF_MESSAGE)
     if page_count > MAX_PDF_PAGES:
         raise PdfExtractionError(f"The PDF has {page_count} pages, which exceeds the {MAX_PDF_PAGES} page review limit.")
 
@@ -706,7 +740,7 @@ def _try_ocr_fallback(data: bytes, *, page_count: int) -> PdfExtraction | None:
     """
 
     try:
-        from .pdf_ocr import ocr_pdf_text
+        from .pdf_ocr import ocr_pdf_text, ocr_run_truncated
     except Exception:
         return None
 
@@ -716,6 +750,14 @@ def _try_ocr_fallback(data: bytes, *, page_count: int) -> PdfExtraction | None:
         # ocr_pdf_text is fail-safe by contract, but belt-and-suspenders: any
         # surprise degrades to the unchanged scanned-reject.
         return None
+    # Read the truncation flag IMMEDIATELY after the call (same context): the pass
+    # may have hit its total wall-clock budget and returned only the pages OCR'd so
+    # far. We still use that partial text, but flag it so the reviewer knows the tail
+    # of the document was not transcribed.
+    try:
+        ocr_truncated = bool(ocr_run_truncated())
+    except Exception:
+        ocr_truncated = False
     if not ocr_text or not ocr_text.strip():
         return None
 
@@ -756,6 +798,19 @@ def _try_ocr_fallback(data: bytes, *, page_count: int) -> PdfExtraction | None:
                 "contain transcription errors. Verify against the original document."
             ),
         })
+        if ocr_truncated:
+            warnings.append({
+                "type": "pdf_ocr_truncated",
+                "message": (
+                    "OCR stopped at its total time budget before transcribing every "
+                    "page; the end of this document is NOT included in the review. "
+                    "Review the remaining pages against the original PDF."
+                ),
+            })
+    if ocr_truncated:
+        # Explicit machine-readable flag alongside the human warning so downstream
+        # never treats a time-truncated OCR pass as a complete transcription.
+        quality["ocr_truncated"] = True
     return PdfExtraction(paragraphs=paragraphs, quality=quality)
 
 
@@ -785,6 +840,7 @@ def _guard_pdf_image_pixel_area(data: bytes, page_count: int) -> None:
         import fitz
     except ImportError:
         return
+    _silence_mupdf_errors(fitz)
 
     document = None
     try:
@@ -2435,6 +2491,7 @@ def _pdf_visual_profile(data: bytes) -> dict[str, object]:
             "reason": "pymupdf_not_installed",
             "requires_source_preview": True,
         }
+    _silence_mupdf_errors(fitz)
 
     try:
         document = fitz.open(stream=data, filetype="pdf")
