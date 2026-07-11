@@ -502,6 +502,69 @@ def test_execute_does_not_write_when_reextraction_is_still_garbled(_isolated_sto
     assert (matter_store._matter_records_dir() / f"{garbled['id']}.json").read_bytes() == before
 
 
+# --- SHARD gate-B env-bypass hardening ----------------------------------------
+# A fused-megaword re-extraction: NOT garble-fingerprint-garbled (the fingerprint
+# is blind to a dropped inter-word space) but unreadable. It must never be persisted
+# whenever the reflow is EFFECTIVELY active -- which includes NDA_PDF_SHARD_REJOIN
+# being set in the environment, even on the plain confirm-gated execute path
+# (shard_rejoin=False).
+_FUSED_MEGAWORD = "Confidentialinformationdisclosureagreementbetweenparties"
+_MEGAWORD_PARAGRAPHS = [
+    {"id": "p1", "text": "This Agreement is made between the parties on the date shown.", "source_index": 1},
+    {"id": "p2", "text": _FUSED_MEGAWORD + " shall apply to the receiving party.", "source_index": 2},
+]
+
+
+def test_env_shard_rejoin_forces_gate_b_on_plain_execute_path(_isolated_store, monkeypatch):
+    """With NDA_PDF_SHARD_REJOIN set, the plain execute path (shard_rejoin=False)
+    reflows -- so the readability backstop (gate B) MUST run and refuse a fused
+    megaword, closing the env-dependent bypass. NOTHING is written."""
+    garbled = _garbled_matter()
+    before = (matter_store._matter_records_dir() / f"{garbled['id']}.json").read_bytes()
+
+    # Env flag makes pdf_text.shard_rejoin_enabled() True -> reflow effectively on.
+    monkeypatch.setenv("NDA_PDF_SHARD_REJOIN", "1")
+    # Re-extraction yields readable-shaped-but-fused text (fingerprint says NOT
+    # garbled; a fused megaword is present) -- the exact bypass shape.
+    monkeypatch.setattr(
+        garble_backfill,
+        "_reextract_paragraphs",
+        lambda *a, **k: [dict(p) for p in _MEGAWORD_PARAGRAPHS],
+    )
+
+    handler, report = _execute()  # confirm-gated execute -> _heal_matter(shard_rejoin=False)
+    assert handler.status == 202
+    assert report["healed"] == 0
+    assert report["matters"][0]["action"] == "reflow_unreadable"
+    # The fused re-extraction was REFUSED, not written.
+    assert (matter_store._matter_records_dir() / f"{garbled['id']}.json").read_bytes() == before
+
+
+def test_without_env_the_fingerprint_only_gate_would_persist_the_same_megaword(
+    _isolated_store, monkeypatch
+):
+    """Contrast pin: the SAME fused-megaword text, WITHOUT the env flag, is NOT
+    garble-fingerprint-garbled, so the fingerprint-only gate lets it through and
+    writes it. This is precisely the blind spot the env-keyed gate B closes -- proof
+    that NDA_PDF_SHARD_REJOIN is what flips the readability backstop on."""
+    garbled = _garbled_matter()
+    monkeypatch.delenv("NDA_PDF_SHARD_REJOIN", raising=False)
+    monkeypatch.setattr(
+        garble_backfill,
+        "_reextract_paragraphs",
+        lambda *a, **k: [dict(p) for p in _MEGAWORD_PARAGRAPHS],
+    )
+
+    handler, report = _execute()
+    assert handler.status == 202
+    # Reflow NOT effectively active -> fingerprint-only path -> the (not-garbled)
+    # megaword text is persisted as a heal. Demonstrates the bypass the env case closes.
+    assert report["matters"][0]["action"] == "healed"
+    assert report["healed"] == 1
+    record = _record(garbled["id"])
+    assert _FUSED_MEGAWORD in str(record.get("extracted_text") or "")
+
+
 # --- (d) missing bytes --------------------------------------------------------
 def test_missing_source_bytes_skips_and_reports(_isolated_store):
     garbled = _garbled_matter()

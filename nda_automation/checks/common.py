@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Dict, Iterable, List
 
+from ..docx_xml import fold_ligatures
 from ..review_document import Paragraph, STRUCTURAL_METADATA_KEYS
 
 # --- Freedom-preserving polarity guard for circumvention language ----------
@@ -529,7 +530,12 @@ def _dedupe_matched_paragraphs(matched_paragraphs: Iterable[Paragraph]) -> List[
     return selected
 
 def _normalize(text: str) -> str:
-    lowered = text.lower()
+    # Fold Unicode ligatures (ﬁ/ﬂ/ﬀ/ﬃ/ﬄ) to their ASCII components before
+    # lower-casing so a deterministic clause regex ("confidential") matches a
+    # paragraph a PDF text layer stored as "Conﬁdential". Folding upstream of the
+    # regex is the only place it helps: the checks that call _normalize then run
+    # their patterns over already-folded text.
+    lowered = fold_ligatures(text).lower()
     return re.sub(r"\s+", " ", lowered).strip()
 
 def _status_passes_clause_type(status: str, clause: Dict[str, object]) -> bool:

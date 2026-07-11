@@ -359,3 +359,116 @@ class OcrPdfPagesTests(unittest.TestCase):
             result = ocr_pdf_pages(data, [0, 1, 2, 3, 4], provider=provider)
         self.assertEqual(provider.calls, 2)
         self.assertEqual(set(result.keys()), {0, 1})
+
+
+class OcrTotalBudgetTests(unittest.TestCase):
+    """A total wall-clock budget aborts a whole OCR pass so no scan can wedge a
+    worker for pages*per-page-timeout, keeping the pages already OCR'd."""
+
+    def setUp(self):
+        # Fresh truncation flag per test (it is a per-context ContextVar).
+        pdf_ocr._OCR_TRUNCATED.set(False)
+
+    @requires_pymupdf
+    def test_ocr_pdf_text_stops_at_total_budget_and_keeps_done_pages(self):
+        data = make_image_only_pdf(pages=5)
+
+        class SlowProvider:
+            """Each page 'takes' 10s of the budget; the ContextVar-checked deadline
+            is driven by a fake monotonic clock so the test is instant + deterministic."""
+
+            def __init__(self):
+                self.calls = 0
+
+            def __call__(self, image_png):
+                self.calls += 1
+                _CLOCK[0] += 10.0  # advance the fake clock 10s per OCR'd page
+                return f"Confidential page {self.calls}."
+
+        # Fake monotonic clock: budget=15s, each page costs 10s. Pages 1,2 complete
+        # (t=10,20); the t=20>=15 check aborts before page 3 -> 2 pages OCR'd, truncated.
+        _CLOCK = [0.0]
+        provider = SlowProvider()
+        with patch.object(pdf_ocr.time, "monotonic", lambda: _CLOCK[0]), patch.dict(
+            "os.environ", {"NDA_PDF_OCR_TOTAL_BUDGET_SECONDS": "15"}
+        ):
+            text = ocr_pdf_text(data, provider=provider)
+
+        self.assertEqual(provider.calls, 2)  # only 2 of 5 pages before the budget
+        self.assertIsNotNone(text)
+        self.assertIn("page 1", text)
+        self.assertIn("page 2", text)
+        self.assertNotIn("page 3", text)
+        # The pass recorded that it truncated.
+        self.assertTrue(pdf_ocr.ocr_run_truncated())
+
+    @requires_pymupdf
+    def test_ocr_pdf_pages_stops_at_total_budget(self):
+        data = make_image_only_pdf(pages=5)
+        _CLOCK = [0.0]
+
+        class SlowProvider:
+            def __init__(self):
+                self.calls = 0
+
+            def __call__(self, image_png):
+                self.calls += 1
+                _CLOCK[0] += 10.0
+                return f"Confidential page {self.calls}."
+
+        provider = SlowProvider()
+        with patch.object(pdf_ocr.time, "monotonic", lambda: _CLOCK[0]), patch.dict(
+            "os.environ", {"NDA_PDF_OCR_TOTAL_BUDGET_SECONDS": "15"}
+        ):
+            result = ocr_pdf_pages(data, [0, 1, 2, 3, 4], provider=provider)
+
+        self.assertEqual(set(result.keys()), {0, 1})
+        self.assertTrue(pdf_ocr.ocr_run_truncated())
+
+    @requires_pymupdf
+    def test_untruncated_pass_leaves_flag_false(self):
+        data = make_image_only_pdf(pages=2)
+        provider = CountingProvider()
+        # Generous budget (the default) -> the whole pass completes, no truncation.
+        text = ocr_pdf_text(data, provider=provider)
+        self.assertIsNotNone(text)
+        self.assertEqual(provider.calls, 2)
+        self.assertFalse(pdf_ocr.ocr_run_truncated())
+
+    def test_total_budget_is_configurable_and_bounded_below(self):
+        with patch.dict("os.environ", {"NDA_PDF_OCR_TOTAL_BUDGET_SECONDS": "120"}):
+            self.assertEqual(pdf_ocr._configured_total_budget(), 120)
+        # A non-positive / garbage override falls back to the default (never <=0).
+        with patch.dict("os.environ", {"NDA_PDF_OCR_TOTAL_BUDGET_SECONDS": "0"}):
+            self.assertEqual(
+                pdf_ocr._configured_total_budget(), pdf_ocr.DEFAULT_OCR_TOTAL_BUDGET_SECONDS
+            )
+        self.assertIn("total_budget_seconds", pdf_ocr.ocr_status())
+
+    @requires_pymupdf
+    def test_extract_pdf_document_surfaces_truncation_in_quality(self):
+        """A time-truncated whole-document OCR pass still returns the pages it did
+        OCR, and flags the review so the reviewer knows the tail is missing."""
+        data = make_image_only_pdf(pages=5)
+        _CLOCK = [0.0]
+
+        class SlowProvider:
+            def __init__(self):
+                self.calls = 0
+
+            def __call__(self, image_png):
+                self.calls += 1
+                _CLOCK[0] += 10.0
+                return f"Confidential clause on page {self.calls}."
+
+        provider = SlowProvider()
+        with patch.object(pdf_ocr.time, "monotonic", lambda: _CLOCK[0]), patch.object(
+            pdf_ocr, "resolve_ocr_provider", return_value=provider
+        ), patch.dict("os.environ", {"NDA_PDF_OCR_TOTAL_BUDGET_SECONDS": "15"}):
+            extraction = extract_pdf_document(data)
+
+        # Partial recovery is used (first pages) and explicitly flagged truncated.
+        self.assertTrue(extraction.quality.get("ocr_recovered"))
+        self.assertTrue(extraction.quality.get("ocr_truncated"))
+        warning_types = {w.get("type") for w in extraction.quality.get("warnings", [])}
+        self.assertIn("pdf_ocr_truncated", warning_types)

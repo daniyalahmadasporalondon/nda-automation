@@ -1,6 +1,7 @@
 import builtins
 import importlib.util
 import resource
+import types
 import unittest
 from io import BytesIO
 from unittest.mock import patch
@@ -3376,3 +3377,72 @@ class PerPageOcrRescueTests(unittest.TestCase):
         warning_types = {w.get("type") for w in doc.quality.get("warnings", [])}
         self.assertNotIn("pdf_image_only_pages_dropped", warning_types)
         self.assertNotIn("pdf_ocr_page_recovered", warning_types)
+
+
+class ZeroPagePdfTests(unittest.TestCase):
+    """A 0-page PDF is malformed, NOT a scan needing OCR -- reject it honestly."""
+
+    @requires_pypdf
+    def test_zero_page_pdf_reports_empty_not_scanned(self):
+        writer = PdfWriter()  # no pages added
+        buffer = BytesIO()
+        writer.write(buffer)
+        data = buffer.getvalue()
+        # Sanity: this really is a valid-header 0-page PDF.
+        self.assertTrue(data.lstrip().startswith(b"%PDF-"))
+
+        with self.assertRaises(PdfExtractionError) as caught:
+            extract_pdf_document(data)
+        message = str(caught.exception)
+        # Honest message: NOT the misleading "Scanned PDFs need OCR" text.
+        self.assertEqual(message, pdf_text.EMPTY_PDF_MESSAGE)
+        self.assertNotIn("Scanned PDFs need OCR", message)
+
+
+class SilenceMupdfErrorsTests(unittest.TestCase):
+    """MuPDF C-level warnings/errors must be routed away from process stdout, with
+    a fail-safe when the running PyMuPDF lacks the toggle."""
+
+    def test_calls_the_tools_toggle_when_present(self):
+        calls = []
+
+        class _Tools:
+            def mupdf_display_errors(self, value):
+                calls.append(value)
+
+        fake_fitz = types.SimpleNamespace(TOOLS=_Tools())
+        pdf_text._silence_mupdf_errors(fake_fitz)
+        self.assertEqual(calls, [False])
+
+    def test_calls_a_top_level_toggle_when_present(self):
+        calls = []
+        fake_fitz = types.SimpleNamespace(
+            mupdf_display_errors=lambda value: calls.append(value)
+        )
+        pdf_text._silence_mupdf_errors(fake_fitz)
+        self.assertEqual(calls, [False])
+
+    def test_fail_safe_when_api_absent(self):
+        # A PyMuPDF build with neither the top-level nor TOOLS toggle: no raise.
+        fake_fitz = types.SimpleNamespace()
+        try:
+            pdf_text._silence_mupdf_errors(fake_fitz)
+        except Exception as exc:  # pragma: no cover - would be a regression
+            self.fail(f"_silence_mupdf_errors raised on a build without the API: {exc!r}")
+
+    def test_fail_safe_when_toggle_raises(self):
+        class _Tools:
+            def mupdf_display_errors(self, value):
+                raise RuntimeError("exotic build")
+
+        fake_fitz = types.SimpleNamespace(TOOLS=_Tools())
+        try:
+            pdf_text._silence_mupdf_errors(fake_fitz)
+        except Exception as exc:  # pragma: no cover - would be a regression
+            self.fail(f"_silence_mupdf_errors must swallow toggle errors: {exc!r}")
+
+    @requires_pymupdf
+    def test_real_pymupdf_toggle_does_not_raise(self):
+        import fitz
+
+        pdf_text._silence_mupdf_errors(fitz)  # must not raise on the installed build

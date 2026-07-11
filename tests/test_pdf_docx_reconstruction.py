@@ -2,6 +2,7 @@ from io import BytesIO
 from pathlib import Path
 from zipfile import ZipFile
 
+import pytest
 from docx import Document
 
 from nda_automation import pdf_docx_reconstruction, redline_export_service
@@ -193,3 +194,63 @@ def make_valid_docx(text: str = "Reconstructed PDF content") -> bytes:
     buffer = BytesIO()
     document.save(buffer)
     return buffer.getvalue()
+
+
+# --------------------------------------------------------------------------- #
+# Child stderr sanitization (no traceback / tmp paths / log noise leaks out)
+# --------------------------------------------------------------------------- #
+_RAW_CHILD_STDERR = (
+    "[INFO] Start to convert /tmp/nda-pdf-docx-abc123/source.pdf\n"
+    "[WARNING] Ignore invalid image\n"
+    "Traceback (most recent call last):\n"
+    '  File "/private/tmp/nda-pdf-docx-abc123/child.py", line 7, in <module>\n'
+    "    converter.convert(output_path, start=0, end=None)\n"
+    '  File "/usr/lib/python3.11/site-packages/pdf2docx/converter.py", line 120, in convert\n'
+    "    raise ValueError(reason)\n"
+    "ValueError: cannot parse page geometry in /tmp/nda-pdf-docx-abc123/source.pdf\n"
+)
+
+
+def test_sanitize_reconstruction_stderr_keeps_only_a_clean_exception_summary():
+    detail = pdf_docx_reconstruction._sanitize_reconstruction_stderr(_RAW_CHILD_STDERR)
+    # The exception summary survives, with the filesystem path redacted.
+    assert detail == "ValueError: cannot parse page geometry in <path>"
+    # None of the noise leaks.
+    assert "Traceback" not in detail
+    assert "[INFO]" not in detail
+    assert "[WARNING]" not in detail
+    assert "/tmp/" not in detail
+    assert "child.py" not in detail
+    assert "site-packages" not in detail
+
+
+def test_sanitize_reconstruction_stderr_returns_empty_for_pure_log_noise():
+    raw = "[INFO] Start\n[INFO] Parsing page 1\n[WARNING] nothing useful here\n"
+    assert pdf_docx_reconstruction._sanitize_reconstruction_stderr(raw) == ""
+    assert pdf_docx_reconstruction._sanitize_reconstruction_stderr("") == ""
+
+
+def test_convert_surfaces_sanitized_detail_not_raw_stderr(monkeypatch):
+    converter = pdf_docx_reconstruction.Pdf2DocxConverter()
+    # pdf2docx is not installed in CI; force availability so we reach the run path.
+    monkeypatch.setattr(converter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        pdf_docx_reconstruction,
+        "_run_pdf_docx_child",
+        lambda *args, **kwargs: (1, b"", _RAW_CHILD_STDERR.encode("utf-8")),
+    )
+
+    with pytest.raises(pdf_docx_reconstruction.PdfDocxReconstructionFailedError) as caught:
+        converter.convert_pdf_to_docx(Path("/tmp/source.pdf"), Path("/tmp/out.docx"))
+
+    message = str(caught.value)
+    assert "ValueError: cannot parse page geometry in <path>" in message
+    # The raw traceback / tmp paths / log lines never reach the surfaced error.
+    assert "Traceback" not in message
+    assert "child.py" not in message
+    assert "/tmp/nda-pdf-docx-abc123" not in message
+    assert "[INFO]" not in message
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-v"]))

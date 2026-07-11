@@ -4,8 +4,10 @@ import xml.etree.ElementTree as ET
 
 from nda_automation.docx_xml import (
     UnsafeDocxXmlError,
+    _normalize_paragraph_text,
     _register_xml_namespaces,
     _xml_bytes,
+    fold_ligatures,
     parse_docx_xml,
     reject_unsafe_docx_xml,
 )
@@ -136,6 +138,27 @@ class RegisterXmlNamespacesConcurrencyTests(unittest.TestCase):
             # Parse-time registration persists by design; clean it so the global
             # map is left as we found it for other tests.
             ET._namespace_map.pop(collide_uri, None)
+
+
+class LigatureFoldingTests(unittest.TestCase):
+    def test_fold_ligatures_maps_each_presentation_form(self):
+        self.assertEqual(fold_ligatures("Conﬁdential"), "Confidential")  # ﬁ
+        self.assertEqual(fold_ligatures("Inﬂuence"), "Influence")  # ﬂ
+        self.assertEqual(fold_ligatures("Oﬀer"), "Offer")  # ﬀ
+        self.assertEqual(fold_ligatures("Aﬃliate"), "Affiliate")  # ﬃ
+        self.assertEqual(fold_ligatures("baﬄe"), "baffle")  # ﬄ
+
+    def test_fold_ligatures_is_noop_and_idempotent_for_ascii(self):
+        self.assertEqual(fold_ligatures("Confidential"), "Confidential")
+        self.assertEqual(fold_ligatures(""), "")
+        once = fold_ligatures("Conﬁdential ﬂow")
+        self.assertEqual(fold_ligatures(once), once)  # idempotent
+
+    def test_normalize_paragraph_text_folds_before_whitespace_collapse(self):
+        self.assertEqual(
+            _normalize_paragraph_text("Conﬁdential   \n Inﬂuence"),
+            "Confidential Influence",
+        )
 
 
 if __name__ == "__main__":

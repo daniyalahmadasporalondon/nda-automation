@@ -16,6 +16,38 @@ _XML_ENCODING_DECLARATION = re.compile(
 )
 
 
+# Unicode presentation-form ligatures a PDF/DOCX text layer routinely carries in
+# place of their component letters ("Con<ﬁ>dential", "con<ﬂ>ict"). They are pure
+# GLYPH artefacts -- the semantic text is "fi"/"fl"/etc -- so a deterministic clause
+# regex written in plain ASCII ("confidential") never matches a paragraph that
+# stores the ligature codepoint, and the working-DOCX conversion's normalized text
+# comparison can diverge when one engine folds the ligature and the other does not.
+# Folding them to their ASCII components at every normalization/matching seam keeps
+# extraction, matching and the PDF->DOCX anchor mapping consistent. This is the
+# single source of truth imported by ``checks.common`` and ``pdf_ingest_conversion``.
+LIGATURE_TRANSLATION = {
+    "ﬀ": "ff",   # ﬀ
+    "ﬁ": "fi",   # ﬁ
+    "ﬂ": "fl",   # ﬂ
+    "ﬃ": "ffi",  # ﬃ
+    "ﬄ": "ffl",  # ﬄ
+    "ﬅ": "st",   # ﬅ (long-s t)
+    "ﬆ": "st",   # ﬆ
+}
+_LIGATURE_TABLE = {ord(key): value for key, value in LIGATURE_TRANSLATION.items()}
+
+
+def fold_ligatures(text: str) -> str:
+    """Replace Unicode presentation-form ligatures with their ASCII components.
+
+    ``fold_ligatures("Conﬁdential")`` -> ``"Confidential"``. Idempotent and a
+    no-op (same object semantics) for text with no ligature codepoint, so a normal
+    ASCII document is unchanged. Folds ﬀ/ﬁ/ﬂ/ﬃ/ﬄ (and the archaic ﬅ/ﬆ st-ligatures)."""
+    if not text:
+        return text
+    return text.translate(_LIGATURE_TABLE)
+
+
 class UnsafeDocxXmlError(ValueError):
     """Raised when an OOXML part contains DTD/entity declarations."""
 
@@ -245,7 +277,11 @@ def _content_type_tag(tag: str) -> str:
 
 
 def _normalize_paragraph_text(value: object) -> str:
-    return re.sub(r"\s+", " ", str(value or "")).strip()
+    # Fold ligatures BEFORE whitespace collapse so a ligature-bearing paragraph
+    # normalizes identically to its ASCII-spelled twin -- the PDF->DOCX anchor
+    # mapping compares both sides through this function, so folding here keeps a
+    # ligature PDF from failing to map (and being refused as an empty working DOCX).
+    return re.sub(r"\s+", " ", fold_ligatures(str(value or ""))).strip()
 
 
 def _word_paragraph_from_xml(paragraph_xml: str) -> ET.Element:

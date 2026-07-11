@@ -39,7 +39,7 @@ from zipfile import ZipFile
 
 from . import pdf_docx_reconstruction
 from .docx_text import iter_indexed_body_paragraphs
-from .docx_xml import _normalize_paragraph_text, _paragraph_text
+from .docx_xml import _normalize_paragraph_text, _paragraph_text, fold_ligatures
 
 # A pypdf fragment maps to a reconstructed paragraph only when their texts agree at or
 # above this confidence: normalized equality OR a token-set similarity ratio. This is
@@ -79,8 +79,16 @@ def convert_pdf_matter_to_docx(
     anchorable body text (a scanned / image-only / text-empty PDF), so an empty working
     DOCX is never registered. The caller's fail-open path keeps the PDF page-image view.
     """
+    # De-rotate BEFORE reconstruction. pdf2docx mishandles a page-level /Rotate
+    # (90/180/270): it reads text blocks in the unrotated coordinate space, so a
+    # rotated scan reconstructs to an EMPTY DOCX -- and the matter permanently loses
+    # its working DOCX / faithful render / index anchors. Baking the rotation into
+    # upright page geometry (rotation 0) first makes pdf2docx see normal, upright
+    # content. Fail-open: if PyMuPDF is missing or the PDF has no rotation, the bytes
+    # pass through unchanged (byte-identical, so caching/behavior is unaffected).
+    conversion_bytes = _normalize_pdf_rotation(pdf_bytes)
     reconstructed = pdf_docx_reconstruction.reconstruct_pdf_to_docx(
-        pdf_bytes, source_filename, converter=converter
+        conversion_bytes, source_filename, converter=converter
     )
     indexed = reconstructed_body_index(reconstructed.data)
     mapped, mapped_count, unmapped_count = map_paragraphs_to_reconstruction(
@@ -112,6 +120,61 @@ def convert_pdf_matter_to_docx(
         mapped_count=mapped_count,
         unmapped_count=unmapped_count,
     )
+
+
+def _normalize_pdf_rotation(pdf_bytes: bytes) -> bytes:
+    """Return ``pdf_bytes`` with every page's /Rotate baked into upright geometry.
+
+    A page carrying a non-zero /Rotate (90/180/270 -- a photographed or scanner-fed
+    page, or a landscape page a tool marked rotated) makes pdf2docx emit an EMPTY
+    DOCX: it lays text out in the pre-rotation coordinate space, so the blocks fall
+    outside the page and are dropped. Here we re-draw each rotated page onto a fresh
+    upright page (swapping width/height for 90/270) via PyMuPDF's ``show_pdf_page``,
+    which honors the source rotation while embedding the content as a vector form
+    XObject -- so TEXT STAYS SELECTABLE (pdf2docx can still parse it) and the result
+    has rotation 0.
+
+    Fail-open and byte-preserving: returns the ORIGINAL bytes unchanged when PyMuPDF
+    is unavailable, no page is rotated, or anything goes wrong. Only a genuinely
+    rotated PDF is rewritten, so an ordinary upright PDF is byte-identical (its cache
+    key and every downstream behavior are unaffected)."""
+    try:
+        import fitz  # type: ignore[import-not-found]
+    except Exception:
+        return pdf_bytes
+
+    source = None
+    output = None
+    try:
+        source = fitz.open(stream=pdf_bytes, filetype="pdf")
+        if not any(int(getattr(page, "rotation", 0) or 0) % 360 for page in source):
+            # No page is rotated -- leave the bytes untouched (byte-identical).
+            return pdf_bytes
+        output = fitz.open()
+        for page in source:
+            rotation = int(getattr(page, "rotation", 0) or 0) % 360
+            rect = page.rect
+            if rotation in (90, 270):
+                width, height = rect.height, rect.width
+            else:
+                width, height = rect.width, rect.height
+            new_page = output.new_page(width=width, height=height)
+            # show_pdf_page honors the source page's own rotation, drawing it
+            # upright onto the (rotation-0) target page.
+            new_page.show_pdf_page(new_page.rect, source, page.number)
+        normalized = output.tobytes()
+    except Exception:
+        # Any failure -> fall back to the original bytes; reconstruction then runs on
+        # the un-normalized PDF exactly as it did before this guard existed.
+        return pdf_bytes
+    finally:
+        for handle in (source, output):
+            if handle is not None:
+                try:
+                    handle.close()
+                except Exception:
+                    pass
+    return normalized or pdf_bytes
 
 
 def reconstructed_body_index(docx_bytes: bytes) -> list[tuple[int, str, str]]:
@@ -161,6 +224,15 @@ def map_paragraphs_to_reconstruction(
 
     for paragraph in pypdf_paragraphs:
         updated = dict(paragraph)
+        # Fold ligatures in the RETAINED review text so a converted PDF's paragraphs
+        # read "Confidential" not "Conﬁdential" -- keeping the working-DOCX review
+        # text consistent with the folded normalization the anchor mapping and the
+        # deterministic clause regexes use. A paragraph with no ligature is unchanged.
+        raw_text = paragraph.get("text")
+        if isinstance(raw_text, str):
+            folded_text = fold_ligatures(raw_text)
+            if folded_text != raw_text:
+                updated["text"] = folded_text
         target = _normalize_paragraph_text(paragraph.get("text"))
         match_position, source_index, is_subset = _best_forward_match(target, non_empty, cursor)
         if source_index is not None and match_position is not None:
