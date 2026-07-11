@@ -150,6 +150,91 @@ class DocxTextTests(unittest.TestCase):
         self.assertNotIn("non-circumvention", text)
         self.assertNotIn("comments", [paragraph.get("source_part") for paragraph in paragraphs])
 
+    def test_inline_omml_equation_text_is_included_in_clause(self):
+        # An inline equation (OMML ``m:oMath`` -> ``m:t``) carries clause text. The
+        # walk historically ignored the math namespace, so the clause reached the
+        # reviewer TRUNCATED (C1). Its literal characters must now be present.
+        data = make_zip(
+            {"word/document.xml": inline_equation_document_xml()},
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(
+            paragraphs[0]["text"],
+            "The royalty equals x=2y+1 per unit.",
+        )
+
+    def test_normal_paragraph_without_equation_is_byte_identical(self):
+        # The equation harvest only activates on an ``m:t`` node; a plain paragraph
+        # must extract exactly as before (no equation namespace, no new fields).
+        data = make_docx(["A plain confidentiality clause."])
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(
+            paragraphs,
+            [{"source_index": 1, "source_kind": "paragraph", "text": "A plain confidentiality clause."}],
+        )
+
+    def test_hyperlink_target_is_captured_on_run_without_changing_text(self):
+        data = make_zip(
+            {
+                "word/document.xml": hyperlink_document_xml(),
+                "word/_rels/document.xml.rels": hyperlink_rels_xml(),
+            },
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        # Display text is unchanged (the outbound redline path is unaffected).
+        self.assertEqual(paragraphs[0]["text"], "See the privacy policy for details.")
+        link_runs = [run for run in paragraphs[0]["runs"] if run.get("hyperlink")]
+        self.assertEqual(len(link_runs), 1)
+        self.assertEqual(link_runs[0]["text"], "privacy policy")
+        self.assertEqual(link_runs[0]["hyperlink"], "https://example.com/privacy")
+
+    def test_internal_anchor_hyperlink_is_captured(self):
+        data = make_zip(
+            {"word/document.xml": anchor_hyperlink_document_xml()},
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        link_runs = [run for run in paragraphs[0]["runs"] if run.get("hyperlink")]
+        self.assertEqual(link_runs[0]["hyperlink"], "#Section2")
+
+    def test_unsafe_scheme_hyperlink_target_is_dropped(self):
+        # A javascript:/data: target must never reach the rendered review as a
+        # live link; the target is dropped (no run link is produced for it).
+        data = make_zip(
+            {
+                "word/document.xml": hyperlink_document_xml(),
+                "word/_rels/document.xml.rels": unsafe_hyperlink_rels_xml(),
+            },
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(paragraphs[0]["text"], "See the privacy policy for details.")
+        self.assertFalse(any(run.get("hyperlink") for run in paragraphs[0].get("runs") or []))
+
+    def test_rtl_paragraph_direction_is_read(self):
+        data = make_zip(
+            {"word/document.xml": bidi_document_xml()},
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(paragraphs[0]["direction"], "rtl")
+        # A following LTR paragraph carries no direction field (additive).
+        self.assertNotIn("direction", paragraphs[1])
+
     def test_extracts_word_numbering_styles_and_table_context(self):
         data = make_structured_docx()
 
@@ -951,6 +1036,71 @@ def rich_clean_document_xml():
     <w:p><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">Bold </w:t></w:r><w:r><w:t>plain</w:t></w:r></w:p>
     <w:p><w:r><w:t>Line1</w:t><w:br/><w:t>Line2</w:t><w:tab/><w:t>Tabbed</w:t></w:r></w:p>
     <w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell text</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+  </w:body>
+</w:document>"""
+
+
+def inline_equation_document_xml():
+    # An inline OMML equation embedded mid-clause: its literal characters live in
+    # ``m:oMath`` -> ``m:r`` -> ``m:t`` and must be harvested into the clause text.
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+  <w:body>
+    <w:p>
+      <w:r><w:t xml:space="preserve">The royalty equals </w:t></w:r>
+      <m:oMath><m:r><m:t>x=2y+1</m:t></m:r></m:oMath>
+      <w:r><w:t xml:space="preserve"> per unit.</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>"""
+
+
+def hyperlink_document_xml():
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p>
+      <w:r><w:t xml:space="preserve">See the </w:t></w:r>
+      <w:hyperlink r:id="rId7"><w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>privacy policy</w:t></w:r></w:hyperlink>
+      <w:r><w:t xml:space="preserve"> for details.</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>"""
+
+
+def anchor_hyperlink_document_xml():
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:hyperlink w:anchor="Section2"><w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>Section 2</w:t></w:r></w:hyperlink>
+    </w:p>
+  </w:body>
+</w:document>"""
+
+
+def hyperlink_rels_xml():
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/privacy" TargetMode="External"/>
+</Relationships>"""
+
+
+def unsafe_hyperlink_rels_xml():
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="javascript:alert(1)" TargetMode="External"/>
+</Relationships>"""
+
+
+def bidi_document_xml():
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:bidi/></w:pPr><w:r><w:t>Right-to-left clause.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Ordinary left-to-right clause.</w:t></w:r></w:p>
   </w:body>
 </w:document>"""
 

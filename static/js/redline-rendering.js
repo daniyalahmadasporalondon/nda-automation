@@ -1100,10 +1100,47 @@ function renderFormattedRun(run, changed = false) {
   else if (vertAlign === "subscript") html = `<sub>${html}</sub>`;
   const runStyle = inlineRunStyle(run);
   if (runStyle) html = `<span style="${escapeHtml(runStyle)}">${html}</span>`;
+  // Source hyperlink: render the run's text as an anchor when the extractor
+  // captured a (safe) target. The DISPLAY TEXT is unchanged -- an <a> wrapping
+  // the same characters has the same innerText -- so the editable round-trip to
+  // paragraph.text and the outbound redline are untouched. The href is re-checked
+  // here (defense in depth over the backend whitelist) so an unexpected scheme
+  // never becomes a live link.
+  const href = safeHyperlinkHref(run?.hyperlink);
+  if (href) {
+    html = `<a href="${escapeHtml(href)}" class="doc-run-link" target="_blank" rel="noopener noreferrer nofollow">${html}</a>`;
+  }
   // Wrap a run whose formatting differs from baseline in the tracked-change
   // inline class so the manual inline format surfaces as a redline.
   if (changed) html = `<span class="inline-ins redline-format-ins" data-redline-format-ins>${html}</span>`;
   return html;
+}
+
+// Returns a hyperlink target safe to render as an `<a href>`, or "" when absent
+// or disallowed. Mirrors the backend whitelist (`_safe_hyperlink_href`): only
+// http(s)/mailto/tel, same-document anchors and relative paths pass; any other
+// explicit scheme (javascript:, data:, vbscript:, ...) is rejected so an
+// uploaded DOCX can never inject an active-scheme link.
+function safeHyperlinkHref(target) {
+  const value = String(target || "").trim();
+  if (!value) return "";
+  const lowered = value.toLowerCase();
+  if (
+    lowered.startsWith("http://")
+    || lowered.startsWith("https://")
+    || lowered.startsWith("mailto:")
+    || lowered.startsWith("tel:")
+    || value.startsWith("#")
+    || value.startsWith("/")
+    || value.startsWith("./")
+    || value.startsWith("../")
+  ) {
+    return value;
+  }
+  // Any leading `scheme:` that is not whitelisted above is unsafe; a value with
+  // no scheme is a relative reference and is allowed.
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value)) return "";
+  return value;
 }
 
 // Inline `font-family` + `font-size` + run COLOR + HIGHLIGHT for a run's own
@@ -1213,6 +1250,12 @@ function paragraphStructureAttributes(paragraph) {
     attributes.push(`data-table-index="${escapeHtml(table.table_index ?? "")}"`);
     attributes.push(`data-table-row="${escapeHtml(table.row_index ?? "")}"`);
     attributes.push(`data-table-cell="${escapeHtml(table.cell_index ?? "")}"`);
+  }
+  // Right-to-left paragraph direction (D4). `dir="rtl"` is display-only: it flips
+  // the rendered reading order to match Word / the faithful surface, but the
+  // STORED paragraph text is never reordered, so the outbound redline is safe.
+  if (String(paragraph?.direction || "").trim().toLowerCase() === "rtl") {
+    attributes.push('dir="rtl"');
   }
   return attributes.join(" ");
 }

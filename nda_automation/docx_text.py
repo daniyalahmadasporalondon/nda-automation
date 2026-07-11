@@ -6,9 +6,21 @@ from typing import Any, Dict, Iterable, List, NamedTuple
 from zipfile import BadZipFile, ZipFile
 import xml.etree.ElementTree as ET
 
-from .docx_xml import UnsafeDocxXmlError, is_docx_xml_part, parse_docx_xml, reject_unsafe_docx_xml
+from .docx_xml import R_NS, REL_NS, UnsafeDocxXmlError, is_docx_xml_part, parse_docx_xml, reject_unsafe_docx_xml
 
 WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+# Office Math Markup Language. An inline equation lives in an ``m:oMath`` subtree
+# whose literal characters are carried by ``m:t`` leaves. The revision-aware text
+# walk historically ignored this namespace entirely, so a clause containing an
+# inline equation silently lost that text -- the AI then reviewed a truncated
+# clause (C1). We harvest ``m:t`` as its literal characters so the equation text
+# reaches the reviewer.
+MATH_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+# The relationships namespace an ``r:id`` attribute lives in (on ``w:hyperlink``),
+# and the package-relationships namespace the ``.rels`` part uses for its
+# ``<Relationship>`` elements. Used to resolve a hyperlink's target URL (D3).
+R_NS_BRACED = "{" + R_NS + "}"
+REL_NS_BRACED = "{" + REL_NS + "}"
 # Markup-Compatibility-and-Extensibility namespace. An ``mc:AlternateContent``
 # block carries the SAME content twice -- an ``mc:Choice`` (the modern DrawingML
 # representation of e.g. a text box) and an ``mc:Fallback`` (the legacy VML copy
@@ -308,6 +320,7 @@ def _extract_main_document_paragraphs(document: ZipFile) -> List[DocxParagraph]:
     root = _read_xml_part(document, "word/document.xml", missing_message="The Word document is missing its main document body.")
     styles, doc_defaults = _read_styles(document)
     numbering = _read_numbering(document)
+    rels = _read_hyperlink_relationships(document, "word/_rels/document.xml.rels")
     numbering_state: Dict[str, Dict[int, int]] = {}
     paragraphs: List[DocxParagraph] = []
     for indexed in iter_indexed_body_paragraphs(root):
@@ -322,6 +335,7 @@ def _extract_main_document_paragraphs(document: ZipFile) -> List[DocxParagraph]:
                 numbering=numbering,
                 numbering_state=numbering_state,
                 table_context=indexed.table_context,
+                rels=rels,
             ))
         else:
             # A blank Word-numbered paragraph still consumes the next number in its
@@ -446,6 +460,7 @@ def _paragraph_record(
     source_index: int | None = None,
     source_part: str | None = None,
     table_context: Dict[str, object] | None = None,
+    rels: Dict[str, str] | None = None,
 ) -> DocxParagraph:
     record: DocxParagraph = {"text": text}
     if source_index is not None:
@@ -456,11 +471,20 @@ def _paragraph_record(
     if table_context:
         record["table"] = dict(table_context)
 
-    runs = _paragraph_runs(paragraph, text)
+    runs = _paragraph_runs(paragraph, text, rels)
     if runs is not None:
         record["runs"] = runs
 
     ppr = paragraph.find(f"{WORD_NS}pPr")
+
+    # Paragraph reading direction (D4). A ``<w:pPr>/<w:bidi>`` toggle marks a
+    # right-to-left paragraph; without it Word / the faithful surface render RTL
+    # but our reconstruction painted LTR. Emitted as a display-only field the
+    # renderer maps to ``dir="rtl"``; the STORED text is never reordered, so the
+    # outbound redline is unaffected. Absent (byte-identical) on LTR paragraphs.
+    direction = _paragraph_direction(ppr)
+    if direction:
+        record["direction"] = direction
     style_id = _paragraph_style_id(ppr)
     style = styles.get(style_id or "", {})
     if style_id:
@@ -1244,6 +1268,15 @@ def _collect_revision_aware_text(node: ET.Element, parts: List[str]) -> None:
         # Tracked-deleted text is still in force in the baseline; restore it.
         if node.text:
             parts.append(node.text)
+    elif tag == f"{MATH_NS}t":
+        # OMML equation text (``m:oMath`` -> ``m:r`` -> ``m:t``). The extractor
+        # historically walked only ``w:t``/``w:delText``, so an inline equation's
+        # characters were dropped and a clause carrying one reached the reviewer
+        # TRUNCATED (C1). Harvest the equation's literal characters so the clause
+        # text is complete. A document with no equations has no ``m:t`` node, so
+        # this branch never fires there -- the walk stays byte-identical.
+        if node.text:
+            parts.append(node.text)
     elif tag == f"{WORD_NS}tab":
         parts.append("\t")
     elif tag in {f"{WORD_NS}br", f"{WORD_NS}cr"}:
@@ -1260,22 +1293,35 @@ def _collect_revision_aware_text(node: ET.Element, parts: List[str]) -> None:
         _collect_revision_aware_text(child, parts)
 
 
-def _paragraph_runs(paragraph: ET.Element, text: str) -> List[Dict[str, object]] | None:
+def _paragraph_runs(
+    paragraph: ET.Element,
+    text: str,
+    rels: Dict[str, str] | None = None,
+) -> List[Dict[str, object]] | None:
     """Build a run-level breakdown of the paragraph with bold/italic/underline.
 
     Returns ``None`` (and the caller keeps only the flat ``text``) unless at least
-    one run carries formatting AND the reconstructed run text exactly matches the
-    paragraph ``text``. The strict match keeps ``runs`` purely additive: any
-    paragraph whose runs cannot be faithfully reconstructed (unusual nesting,
-    fields, etc.) falls back to the flat-text rendering with no fidelity loss.
+    one run carries formatting (or a hyperlink target) AND the reconstructed run
+    text exactly matches the paragraph ``text``. The strict match keeps ``runs``
+    purely additive: any paragraph whose runs cannot be faithfully reconstructed
+    (unusual nesting, fields, etc.) falls back to the flat-text rendering with no
+    fidelity loss.
+
+    ``rels`` maps a relationship id to its target URL so a run inside a
+    ``<w:hyperlink r:id=...>`` carries the resolved ``hyperlink`` target (D3). A
+    paragraph with no hyperlink threads ``href=None`` for every run, so the
+    ``hyperlink`` key is never added and the breakdown is byte-identical to the
+    old ``paragraph.iter(w:r)`` walk.
     """
     runs: List[Dict[str, object]] = []
     any_formatted = False
-    for run in paragraph.iter(f"{WORD_NS}r"):
+    for run, href in _iter_runs_with_hyperlink(paragraph, rels or {}):
         run_text = _run_text(run)
         if not run_text:
             continue
         formatting = _run_formatting(run)
+        if href:
+            formatting["hyperlink"] = href
         if (
             formatting["bold"]
             or formatting["italic"]
@@ -1284,6 +1330,7 @@ def _paragraph_runs(paragraph: ET.Element, text: str) -> List[Dict[str, object]]
             or formatting.get("highlight")
             or formatting.get("strike")
             or formatting.get("vertAlign")
+            or formatting.get("hyperlink")
         ):
             any_formatted = True
         if runs and _run_formatting_matches(runs[-1], formatting):
@@ -1303,6 +1350,100 @@ def _run_text(run: ET.Element) -> str:
     parts: List[str] = []
     _collect_revision_aware_text(run, parts)
     return "".join(parts)
+
+
+def _iter_runs_with_hyperlink(
+    paragraph: ET.Element,
+    rels: Dict[str, str],
+) -> Iterable[tuple[ET.Element, str | None]]:
+    """Yield every ``w:r`` run in document order paired with its hyperlink target.
+
+    ``target`` is the resolved URL/anchor when the run is inside a
+    ``<w:hyperlink>`` (D3), else ``None``. The traversal is preorder DFS -- a run
+    is yielded before its own subtree -- which visits exactly the runs, in exactly
+    the order, that ``paragraph.iter(w:r)`` did. On a paragraph with no hyperlink
+    the target is ``None`` for every run, so the caller's behaviour is unchanged.
+    """
+    def walk(node: ET.Element, href: str | None) -> Iterable[tuple[ET.Element, str | None]]:
+        for child in list(node):
+            if child.tag == f"{WORD_NS}hyperlink":
+                child_href = _hyperlink_target(child, rels) or href
+                yield from walk(child, child_href)
+            else:
+                if child.tag == f"{WORD_NS}r":
+                    yield child, href
+                yield from walk(child, href)
+
+    yield from walk(paragraph, None)
+
+
+def _hyperlink_target(hyperlink: ET.Element, rels: Dict[str, str]) -> str | None:
+    """Resolve a ``<w:hyperlink>``'s destination to a safe href, or ``None``.
+
+    An EXTERNAL hyperlink carries an ``r:id`` that keys into the part's
+    relationships (``word/_rels/document.xml.rels``); an INTERNAL one carries a
+    ``w:anchor`` naming a bookmark in the same document. Only web-safe schemes
+    (http/https/mailto/tel), same-document anchors and relative paths are
+    returned -- a ``javascript:``/``data:`` target is dropped so a malicious
+    upload cannot inject an active-scheme link into the rendered review."""
+    rid = hyperlink.get(f"{R_NS_BRACED}id")
+    if rid:
+        target = rels.get(rid)
+        if target:
+            return _safe_hyperlink_href(target)
+    anchor = _attr(hyperlink, "anchor").strip()
+    if anchor:
+        return f"#{anchor}"
+    return None
+
+
+def _safe_hyperlink_href(target: str) -> str | None:
+    """Return ``target`` if it is a safe href to render, else ``None``.
+
+    Allows http/https/mailto/tel, same-document anchors (``#...``) and relative
+    paths; rejects any other explicit URL scheme (``javascript:``, ``data:``,
+    ``vbscript:``, ...) so an uploaded DOCX cannot smuggle an active-scheme link."""
+    value = str(target or "").strip()
+    if not value:
+        return None
+    lowered = value.lower()
+    if lowered.startswith(("http://", "https://", "mailto:", "tel:", "#", "/", "./", "../")):
+        return value
+    # Any leading ``scheme:`` that is not whitelisted above is unsafe.
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:", value):
+        return None
+    return value
+
+
+def _read_hyperlink_relationships(document: ZipFile, rels_part_name: str) -> Dict[str, str]:
+    """Map relationship id -> target URL for the hyperlink relationships of a part.
+
+    Reads the OPC ``.rels`` sidecar (e.g. ``word/_rels/document.xml.rels``) and
+    keeps only ``.../hyperlink`` relationships so a ``w:hyperlink r:id`` can be
+    resolved to its destination (D3). A missing/unreadable ``.rels`` degrades to
+    an empty map (no hyperlink targets), never an error."""
+    try:
+        root = _read_xml_part(document, rels_part_name)
+    except DocxExtractionError:
+        return {}
+    rels: Dict[str, str] = {}
+    for relationship in root.findall(f"{REL_NS_BRACED}Relationship"):
+        rel_id = str(relationship.get("Id") or "").strip()
+        target = str(relationship.get("Target") or "").strip()
+        rel_type = str(relationship.get("Type") or "")
+        if rel_id and target and rel_type.endswith("/hyperlink"):
+            rels[rel_id] = target
+    return rels
+
+
+def _paragraph_direction(ppr: ET.Element | None) -> str | None:
+    """The paragraph's reading direction (``"rtl"``), or ``None`` for the LTR default.
+
+    Reads the ``<w:pPr>/<w:bidi>`` toggle (D4). Returned only when RTL, so the
+    field stays additive and absent on every ordinary left-to-right paragraph."""
+    if ppr is None:
+        return None
+    return "rtl" if _toggle_property(ppr, "bidi") else None
 
 
 def _run_formatting(run: ET.Element) -> Dict[str, object]:
@@ -1360,6 +1501,10 @@ def _run_formatting_matches(existing: Dict[str, object], formatting: Dict[str, o
     if str(existing.get("highlight") or "") != str(formatting.get("highlight") or ""):
         return False
     if str(existing.get("vertAlign") or "") != str(formatting.get("vertAlign") or ""):
+        return False
+    # A hyperlink boundary: runs with different targets (or link vs no-link) must
+    # not coalesce, so each anchor wraps exactly its own text.
+    if str(existing.get("hyperlink") or "") != str(formatting.get("hyperlink") or ""):
         return False
     # Strikethrough is a toggle boundary, mirroring bold/italic/underline.
     return bool(existing.get("strike")) == bool(formatting.get("strike"))
