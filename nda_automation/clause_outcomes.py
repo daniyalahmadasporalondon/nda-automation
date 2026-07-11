@@ -148,9 +148,21 @@ def _dynamic_clause_redlines(
         paragraphs = _matched_redline_paragraphs(clause, paragraphs_by_id)
         if not paragraphs:
             return []
-        return [
+        # A clause authored across several <w:p> (common in PDF-converted DOCX; the
+        # clause-fragment merge expands matched_paragraph_ids across EVERY fragment)
+        # must be replaced as a whole: the new wording is the entire clause, so the
+        # head fragment carries the replacement and every continuation fragment is
+        # DELETED. Replacing only the head would leave the tail limbs of the old
+        # clause dangling after the new text in the outbound redline sent to the
+        # counterparty. Mirrors the delete_paragraph path's all-fragment coverage.
+        edits: List[RedlineEdit] = [
             _redline_edit(start_number, clause, paragraphs[0], REDLINE_REPLACE_PARAGRAPH, replacement_text=wording)
         ]
+        for tail_paragraph in paragraphs[1:]:
+            edits.append(
+                _redline_edit(start_number + len(edits), clause, tail_paragraph, REDLINE_DELETE_PARAGRAPH)
+            )
+        return edits
 
     if action == REDLINE_INSERT_AFTER_PARAGRAPH and wording:
         edit = _template_redline_for_required_clause(clause, paragraphs_by_id, start_number, wording)

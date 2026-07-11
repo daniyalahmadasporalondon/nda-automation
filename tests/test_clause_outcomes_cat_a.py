@@ -66,6 +66,43 @@ class DynamicClauseHonorTests(unittest.TestCase):
         self.assertEqual(edits[0]["action"], "delete_paragraph")
         self.assertEqual(edits[0]["paragraph_id"], "p1")
 
+    def test_replace_paragraph_on_merged_clause_deletes_tail_fragments(self):
+        # A clause authored across several <w:p> (the clause-fragment merge expands
+        # matched_paragraph_ids across EVERY fragment). A replace_paragraph fallback
+        # must replace the HEAD with the whole new clause AND DELETE the continuation
+        # fragments -- otherwise the tail limbs of the OLD clause dangle after the new
+        # text in the outbound redline sent to the counterparty (audit A3a).
+        paragraphs = [
+            {"id": "p1", "index": 1, "text": "The Receiving Party agrees (i) to adopt measures and"},
+            {"id": "p2", "index": 2, "text": "(ii) to disclose only to those who need to know; or"},
+            {"id": "p3", "index": 3, "text": "(iii) to protect the information as its own."},
+        ]
+        clause = _prohibited_clause(
+            matched_paragraph_ids=["p1", "p2", "p3"],
+            fallback={
+                "redline_action": "replace_paragraph",
+                "wording": "The Receiving Party shall protect the Confidential Information.",
+            },
+        )
+        edits = _dynamic_clause_redlines(clause, _paragraphs_by_id(paragraphs), 1)
+        self.assertEqual(len(edits), 3, "head replace + one delete per tail fragment")
+        self.assertEqual(edits[0]["action"], "replace_paragraph")
+        self.assertEqual(edits[0]["paragraph_id"], "p1")
+        self.assertEqual([e["action"] for e in edits[1:]], ["delete_paragraph", "delete_paragraph"])
+        self.assertEqual([e["paragraph_id"] for e in edits[1:]], ["p2", "p3"])
+
+    def test_replace_paragraph_on_single_fragment_clause_is_unchanged(self):
+        # The common case (an unmerged single-paragraph clause) stays exactly one
+        # replace, no spurious deletes.
+        clause = _prohibited_clause(
+            matched_paragraph_ids=["p1"],
+            fallback={"redline_action": "replace_paragraph", "wording": "New text."},
+        )
+        edits = _dynamic_clause_redlines(clause, _paragraphs_by_id(), 1)
+        self.assertEqual(len(edits), 1)
+        self.assertEqual(edits[0]["action"], "replace_paragraph")
+        self.assertEqual(edits[0]["paragraph_id"], "p1")
+
     def test_ai_edits_win_over_force_delete(self):
         # When the AI authored a surgical strike, it is honored INSTEAD of the
         # whole-paragraph force-delete (the model's wording is preserved).
