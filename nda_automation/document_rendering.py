@@ -768,7 +768,60 @@ def poll_source_document_render_result(
         dpi=dpi,
     )
     job.done.wait(timeout=wait_timeout_seconds)
-    return job.result if job.is_finished() and isinstance(job.result, DocumentRenderResult) else None
+    if not job.is_finished():
+        return None
+    result = job.result
+    if isinstance(result, DocumentRenderResult):
+        # Either a READY result or a terminal error-status result -- both are
+        # terminal and safe to surface (the FE stops polling and reports status).
+        return result
+    if job.error is not None:
+        # The render raised (rather than returning an error-status result). This
+        # is a terminal failure too: synthesize an error render result so the
+        # poller surfaces a terminal state instead of restarting the render.
+        return _error_document_render_result_for_source(
+            source_bytes,
+            source_filename=source_filename,
+            content_type=content_type,
+            cache_dir=cache_dir,
+            owner_user_id=owner_user_id,
+            error=job.error,
+        )
+    # A transient no-op (e.g. converter busy -> None). Keep polling.
+    return None
+
+
+def _error_document_render_result_for_source(
+    source_bytes: bytes,
+    *,
+    source_filename: str = "",
+    content_type: str = "",
+    cache_dir: Path | None = None,
+    owner_user_id: str = "",
+    error: BaseException,
+) -> DocumentRenderResult:
+    """Build a terminal error DocumentRenderResult for a render that RAISED.
+
+    Used when the background render raised instead of returning an error-status
+    result, so a poll can report a terminal (error) state rather than looping on
+    "rendering". Carries the source's cache identity for parity with the normal
+    render results; no page manifest (there is nothing rendered to paginate).
+    """
+    source_kind = detect_source_kind(source_bytes, source_filename=source_filename, content_type=content_type)
+    source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+    cache_key = document_render_cache_key(source_bytes, source_kind=source_kind, owner_user_id=owner_user_id)
+    cache_root = document_render_cache_dir(cache_dir)
+    metadata_path = cache_entry_dir(cache_root, cache_key) / "metadata.json"
+    rendered = _error_result(
+        cache_key=cache_key,
+        source_sha256=source_sha256,
+        source_kind=source_kind,
+        cache_dir=cache_root,
+        metadata_path=metadata_path,
+        code="render_failed",
+        message=f"Document rendering failed: {_truncate_error_detail(str(error))}",
+    )
+    return DocumentRenderResult(rendered=rendered, page_manifest=None)
 
 
 def peek_page_image_manifest(
@@ -1245,7 +1298,10 @@ def ensure_source_document_render_in_flight(
         except DocxConverterBusy:
             return None
 
-    return matter_render_coordinator().ensure_in_flight(render_id, _render)
+    # Fold the source identity into the job so a retained terminal failure is
+    # invalidated once this matter's source document changes.
+    identity = hashlib.sha256(source_bytes).hexdigest()
+    return matter_render_coordinator().ensure_in_flight(render_id, _render, identity=identity)
 
 
 @dataclass
@@ -1263,9 +1319,31 @@ class RenderJob:
     result: Any = None
     error: BaseException | None = None
     started_at: float = field(default_factory=time.monotonic)
+    # Source-identity token (e.g. source sha256) captured when the job started, so
+    # a retained terminal failure for this matter can be invalidated once the
+    # matter's source changes. Empty when the caller did not supply one.
+    identity: str = ""
 
     def is_finished(self) -> bool:
         return self.done.is_set()
+
+    def is_terminal_failure(self) -> bool:
+        """True when a finished job represents a terminal render FAILURE.
+
+        A terminal failure is one that re-polling cannot resolve: the render
+        raised, or it produced a render result whose status is not READY (error /
+        unavailable / unsupported). A ``None`` result is transient backpressure
+        (e.g. the DOCX converter was busy) and is NOT terminal -- the poller
+        should retry it, not cache it as broken.
+        """
+        if not self.done.is_set():
+            return False
+        if self.error is not None:
+            return True
+        result = self.result
+        if isinstance(result, DocumentRenderResult):
+            return result.rendered.status != READY_STATUS
+        return False
 
 
 class MatterRenderCoordinator:
@@ -1280,6 +1358,12 @@ class MatterRenderCoordinator:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._jobs: dict[str, RenderJob] = {}
+        # Terminal FAILED jobs are retained here (keyed by matter_id) so a poll
+        # arriving AFTER a render failed between polls surfaces the error instead
+        # of re-spawning a fresh render -> otherwise the status endpoint can loop
+        # on "rendering" forever. A successful render is NOT retained: its warm
+        # on-disk cache is the source of truth (peek returns READY).
+        self._failed: dict[str, RenderJob] = {}
 
     def in_flight(self, matter_id: str) -> RenderJob | None:
         with self._lock:
@@ -1288,19 +1372,32 @@ class MatterRenderCoordinator:
                 return job
             return None
 
-    def ensure_in_flight(self, matter_id: str, render_fn: Any) -> RenderJob:
-        """Return the running job for matter_id, starting one if none is live.
+    def ensure_in_flight(self, matter_id: str, render_fn: Any, *, identity: str = "") -> RenderJob:
+        """Return the running (or retained-failed) job for matter_id, else start one.
 
         ``render_fn`` is a zero-arg callable performing the full convert +
         rasterize; it runs in a worker thread. If a render is already running
         for this matter the caller attaches to it (de-dup) and no new thread is
-        started.
+        started. If the last render for this matter FAILED terminally, that
+        retained failure is returned (no re-spawn) so the poller surfaces a
+        terminal error -- unless ``identity`` shows the source has changed since
+        the failure, in which case the stale failure is discarded and a fresh
+        render starts.
         """
         with self._lock:
             existing = self._jobs.get(matter_id)
             if existing is not None and not existing.is_finished():
                 return existing
-            job = RenderJob(matter_id=matter_id)
+            retained = self._failed.get(matter_id)
+            if retained is not None:
+                # A changed source (new identity) invalidates the stale failure so
+                # the fixed/replaced document can render; the same source keeps its
+                # terminal error rather than pointlessly re-rendering to fail again.
+                if identity and retained.identity and identity != retained.identity:
+                    del self._failed[matter_id]
+                else:
+                    return retained
+            job = RenderJob(matter_id=matter_id, identity=identity)
             job.thread = threading.Thread(
                 target=self._run_job,
                 args=(matter_id, job, render_fn),
@@ -1318,20 +1415,29 @@ class MatterRenderCoordinator:
             job.error = exc
         finally:
             job.done.set()
-            # Drop the finished job so the next poll re-checks the (now warm)
-            # cache and a later change can start a fresh render.
             with self._lock:
                 if self._jobs.get(matter_id) is job:
                     del self._jobs[matter_id]
+                    if job.is_terminal_failure():
+                        # Retain the terminal failure so the next poll surfaces it
+                        # (a terminal state) instead of re-spawning the render.
+                        self._failed[matter_id] = job
+                    else:
+                        # A success (warm cache) or transient no-op clears any
+                        # prior retained failure and lets a later poll re-check
+                        # the cache / start a fresh render.
+                        self._failed.pop(matter_id, None)
 
     def forget(self, matter_id: str) -> None:
         """Drop any tracked job for a matter (e.g. on matter delete)."""
         with self._lock:
             self._jobs.pop(matter_id, None)
+            self._failed.pop(matter_id, None)
 
     def reset_for_tests(self) -> None:
         with self._lock:
             self._jobs.clear()
+            self._failed.clear()
 
 
 _MATTER_RENDER_COORDINATOR = MatterRenderCoordinator()

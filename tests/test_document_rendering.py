@@ -1038,6 +1038,120 @@ class MatterRenderCoordinatorTests(unittest.TestCase):
         self.assertTrue(job.is_finished())
         self.assertIsInstance(job.error, RuntimeError)
 
+    def _error_render_result(self) -> document_rendering.DocumentRenderResult:
+        rendered = document_rendering.RenderedDocument(
+            status=document_rendering.ERROR_STATUS,
+            cache_key="cache-key",
+            source_sha256="sha",
+            source_kind="docx",
+            cache_dir=Path("."),
+            error_code="conversion_failed",
+            error_message="soffice exploded",
+        )
+        return document_rendering.DocumentRenderResult(rendered=rendered, page_manifest=None)
+
+    def test_terminal_failure_is_retained_and_next_poll_does_not_respawn(self):
+        # A render that FAILS terminally (error-status result) between polls must
+        # be retained so the next ensure_in_flight surfaces the SAME failed job
+        # instead of kicking off a fresh render (the "rendering forever" loop).
+        result = self._error_render_result()
+        calls = []
+
+        def render():
+            calls.append(1)
+            return result
+
+        first = self.coordinator.ensure_in_flight("matter_1", render, identity="v1")
+        first.thread.join(timeout=5)
+        self.assertTrue(first.is_terminal_failure())
+        # Job finished -> in_flight is None, but the retained failure is returned
+        # (same object, no second render call).
+        self.assertIsNone(self.coordinator.in_flight("matter_1"))
+        second = self.coordinator.ensure_in_flight("matter_1", render, identity="v1")
+        self.assertIs(second, first)
+        self.assertEqual(sum(calls), 1, "a retained terminal failure must not re-render")
+
+    def test_changed_source_identity_discards_retained_failure(self):
+        # If the matter's source changes (new identity) after a failure, the stale
+        # failure is discarded so the fixed/replaced document can render.
+        failing = self._error_render_result()
+
+        def render_fail():
+            return failing
+
+        def render_ok():
+            return "second-render"
+
+        first = self.coordinator.ensure_in_flight("matter_1", render_fail, identity="v1")
+        first.thread.join(timeout=5)
+        self.assertTrue(first.is_terminal_failure())
+        second = self.coordinator.ensure_in_flight("matter_1", render_ok, identity="v2")
+        second.thread.join(timeout=5)
+        self.assertIsNot(second, first)
+        self.assertEqual(second.result, "second-render")
+
+    def test_transient_none_result_is_not_retained_as_failure(self):
+        # A None result (e.g. converter busy) is transient, not terminal: it must
+        # NOT be retained -- the next poll should start a fresh render.
+        def busy():
+            return None
+
+        first = self.coordinator.ensure_in_flight("matter_1", busy, identity="v1")
+        first.thread.join(timeout=5)
+        self.assertFalse(first.is_terminal_failure())
+        second = self.coordinator.ensure_in_flight("matter_1", lambda: "retry", identity="v1")
+        second.thread.join(timeout=5)
+        self.assertIsNot(second, first)
+        self.assertEqual(second.result, "retry")
+
+    def test_poll_surfaces_terminal_status_on_next_poll_not_rendering_forever(self):
+        # End-to-end: a DOCX whose converter is unavailable fails deterministically.
+        # The FIRST poll returns the terminal error result; a SUBSEQUENT poll must
+        # ALSO return a terminal (non-"rendering") result -- surfaced from the
+        # retained failure -- rather than re-spawning the render and looping.
+        document_rendering.matter_render_coordinator().reset_for_tests()
+
+        class _CountingUnavailable:
+            name = "counting-unavailable"
+
+            def __init__(self) -> None:
+                self.checks = 0
+
+            def is_available(self) -> bool:
+                self.checks += 1
+                return False
+
+            def convert_docx_to_pdf(self, *args, **kwargs):
+                raise AssertionError("Unavailable converter must not convert.")
+
+        converter = _CountingUnavailable()
+        with tempfile.TemporaryDirectory() as cache_name:
+            cache_dir = Path(cache_name)
+
+            def poll():
+                return document_rendering.poll_source_document_render_result(
+                    "matter_err",
+                    b"PK\x03\x04 not-a-real-docx",
+                    source_filename="stub.docx",
+                    content_type=DOCX_CONTENT_TYPE,
+                    cache_dir=cache_dir,
+                    converter=converter,
+                    owner_user_id="alice",
+                    wait_timeout_seconds=5,
+                )
+
+            first = poll()
+            self.assertIsNotNone(first, "the terminal failure must be surfaced, not None")
+            self.assertNotEqual(first.rendered.status, READY_STATUS)
+            self.assertNotEqual(first.rendered.status, document_rendering.RENDERING_STATUS)
+
+            second = poll()
+            self.assertIsNotNone(second, "next poll must surface the retained terminal error")
+            self.assertNotEqual(second.rendered.status, document_rendering.RENDERING_STATUS)
+            # Retained failure => the render did NOT run a second time.
+            self.assertEqual(converter.checks, 1, "the failed render must not be re-spawned")
+        document_rendering.matter_render_coordinator().reset_for_tests()
+
     def test_peek_returns_none_until_rendered_then_the_cached_doc(self):
         pdf_bytes = b"%PDF-1.7\npeek\n%%EOF\n"
         with tempfile.TemporaryDirectory() as cache_name:

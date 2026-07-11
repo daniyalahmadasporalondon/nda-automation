@@ -554,26 +554,29 @@ class AnnotatedPdfRecoveryRouteTests(unittest.TestCase):
         finally:
             annotated.close()
 
-    def test_fallback_returns_source_pdf_when_highlights_cannot_be_built(self):
+    def test_failed_annotation_fails_loud_and_never_serves_source_as_success(self):
         # A naively-seeded review is stale (no playbook runtime), so the builder
-        # raises -- the recovery route must still hand back a usable source PDF
-        # rather than a 4xx/5xx dead-end.
+        # raises. The route must FAIL LOUD (terminal 422) and MUST NOT hand back
+        # the unmodified source PDF under a 200 "annotated" download -- that would
+        # be silent-wrong-bytes (the caller downloads what reads as the redlined
+        # NDA but carries no redlines).
         matter = self._seed_pdf_matter_with_source()
         handler = _FakeHandler(self.repo)
         pdf_markup_routes.handle_annotated_pdf(
             handler, f"/api/matters/{matter['id']}/annotated-pdf"
         )
-        self.assertEqual(handler.status, 200, handler.json)
-        self.assertIsNotNone(handler.download)
-        self.assertEqual(handler.download["content_type"], "application/pdf")
-        self.assertTrue(handler.download["data"].startswith(b"%PDF"))
+        # No success-typed download of any bytes.
+        self.assertIsNone(handler.download)
+        self.assertEqual(handler.status, 422, handler.json)
+        # Machine-checkable terminal error the caller must handle.
+        self.assertEqual(handler.json["error_code"], "annotated_pdf_unavailable")
         self.assertEqual(
-            handler.download_headers["X-PDF-Annotation-Fallback"], "source-original"
+            handler.json["annotated_pdf_fallback"], "source-original-withheld"
         )
-        self.assertEqual(handler.download_headers["X-PDF-Annotation-Count"], "0")
-        # The returned bytes are the preserved source document.
+        # The source PDF was deliberately withheld -- the error body carries no
+        # PDF bytes that could be mistaken for the redlined output.
         source_bytes = self.repo.get_source_document_bytes(matter)
-        self.assertEqual(handler.download["data"], source_bytes)
+        self.assertNotIn(source_bytes, handler.json.values())
 
     def _seed_pdf_matter_with_source(self, *, owner_user_id="owner-1"):
         return _seed_pdf_matter(self.repo, owner_user_id=owner_user_id)
