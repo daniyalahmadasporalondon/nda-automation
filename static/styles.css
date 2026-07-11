@@ -4948,6 +4948,24 @@ h3 {
   cursor: default;
 }
 
+/* Clamp wide/right-bleed images to the page content box on the faithful surface.
+   docx-preview emits `section.docx { ... overflow: hidden }` to emulate page
+   boundaries; an image carrying an inline pixel width wider than the content box
+   (a header LOGO, a full-width banner) therefore bleeds past the A4 right edge and
+   is clipped away unreachable. We CANNOT set section overflow:visible -- that would
+   leak next-page content across the page break. Instead we cap the image itself to
+   its containing block's inline size so it always fits inside the page. `max-inline-size`
+   only shrinks images that overflow (max-* wins over an inline `width` without
+   touching narrower images); `height: auto !important` overrides docx-preview's
+   inline pixel `height` so a shrunk image keeps its aspect ratio instead of squashing.
+   Scoped to `.review-faithful-surface .docx` so the reconstruction view is untouched.
+   Distinct selector from the sig-collapse `.docx p { min-inline-size: min-content }`
+   rule -- no semantic overlap. STYLE-ONLY: never alters innerText / captured text. */
+.review-faithful-surface .docx img {
+  max-inline-size: 100%;
+  height: auto !important;
+}
+
 .faithful-edit-locked-note {
   background: rgba(245, 158, 11, 0.08);
   border-left: 2px solid rgba(245, 158, 11, 0.5);
