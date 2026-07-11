@@ -129,6 +129,33 @@ class ParseTokensTests(unittest.TestCase):
         # Every parsed token is non-empty.
         self.assertTrue(all(tok for tok in tokens.values()))
 
+    def test_no_duplicate_script_or_stylesheet_tags(self):
+        # A merge/token-unify once shipped index.html referencing
+        # review-workstation-rendering.js TWICE, which re-ran its top-level
+        # `let` in the shared global scope -> a redeclaration SyntaxError that
+        # aborted the module and broke document rendering on prod. Guard against
+        # any asset being referenced by more than one <script>/<link> tag.
+        import collections
+        import re
+
+        index_html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        srcs = [
+            u.split("?")[0]
+            for u in re.findall(r'<script\b[^>]*\bsrc="([^"]+)"', index_html)
+        ]
+        hrefs = [
+            u.split("?")[0]
+            for u in re.findall(r'<link\b[^>]*\bhref="([^"]+\.css[^"]*)"', index_html)
+        ]
+        dupes = {
+            base: count
+            for base, count in collections.Counter(srcs + hrefs).items()
+            if count > 1
+        }
+        self.assertEqual(
+            dupes, {}, f"duplicate <script>/<link> tags in index.html: {dupes}"
+        )
+
 
 class WiringTests(unittest.TestCase):
     def test_guard_script_exists_and_is_executable(self):
