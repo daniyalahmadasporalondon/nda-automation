@@ -468,6 +468,83 @@ class QuoteOffsetRobustnessTests(unittest.TestCase):
         spans = _quote_spans(paragraph, "laws of Delaware")
         self.assertEqual(spans, [{"start": 16, "end": 32, "text": "laws of Delaware", "term": "laws of Delaware"}])
 
+    def test_boundary_spanning_quote_highlights_each_merged_fragment(self):
+        """A3b: an evidence quote that straddles a merged fragment boundary keeps a
+        char highlight on BOTH constituent fragments -- resolved against the joined
+        merged-group text and mapped back to each fragment's absolute offsets -- so the
+        reviewer sees WHICH words triggered the verdict instead of a whole-paragraph wash.
+        """
+        from nda_automation.ai_first_review import _structured_evidence_records
+
+        # Two <w:p> fragments the packet merged into one clause; the model grounded a
+        # quote ("disclose the Confidential Information") that crosses their boundary.
+        p1 = {"id": "p1", "text": "The Recipient shall not disclose", "start": 100, "index": 1}
+        p2 = {"id": "p2", "text": "the Confidential Information to third parties.", "start": 140, "index": 2}
+        matched = [p1, p2]
+        merge_groups = {"p1": ["p1", "p2"], "p2": ["p1", "p2"]}
+        assessment = {
+            "evidence": [
+                {"paragraph_id": "p1", "quote": "disclose the Confidential Information", "relevance": "x"}
+            ]
+        }
+        clause = {"id": "confidentiality", "decision": "review", "issue_type": "unclear"}
+
+        records = _structured_evidence_records(clause, matched, assessment, merge_groups=merge_groups)
+        spans_by_id = {r["paragraph_id"]: r["match_spans"] for r in records}
+
+        # p1 highlights only its own limb of the quote ("disclose"), at absolute offsets.
+        self.assertEqual(len(spans_by_id["p1"]), 1)
+        self.assertEqual(spans_by_id["p1"][0]["text"], "disclose")
+        self.assertEqual(spans_by_id["p1"][0]["start"], 124)
+        self.assertEqual(spans_by_id["p1"][0]["end"], 132)
+        # p2 -- which the model did NOT cite -- still gets its limb highlighted.
+        self.assertEqual(len(spans_by_id["p2"]), 1)
+        self.assertEqual(spans_by_id["p2"][0]["text"], "the Confidential Information")
+        self.assertEqual(spans_by_id["p2"][0]["start"], 140)
+        self.assertEqual(spans_by_id["p2"][0]["end"], 168)
+        # The injected join separator is never highlighted: the two limbs abut the gap
+        # but neither span covers the space between the fragments.
+        self.assertLess(spans_by_id["p1"][0]["end"], spans_by_id["p2"][0]["start"])
+
+    def test_boundary_span_helper_is_a_noop_without_merge_groups(self):
+        """Single-fragment behaviour stays byte-identical: with no merge groups a quote
+        that fits no single fragment yields NO span (the pre-existing fallback), never a
+        fabricated cross-fragment highlight."""
+        from nda_automation.ai_first_review import _structured_evidence_records
+
+        p1 = {"id": "p1", "text": "The Recipient shall not disclose", "start": 100, "index": 1}
+        p2 = {"id": "p2", "text": "the Confidential Information to third parties.", "start": 140, "index": 2}
+        assessment = {
+            "evidence": [
+                {"paragraph_id": "p1", "quote": "disclose the Confidential Information", "relevance": "x"}
+            ]
+        }
+        clause = {"id": "confidentiality", "decision": "review", "issue_type": "unclear"}
+
+        records = _structured_evidence_records(clause, [p1, p2], assessment, merge_groups=None)
+        self.assertEqual([r["match_spans"] for r in records], [[], []])
+
+    def test_boundary_span_leaves_single_fragment_quote_untouched(self):
+        """A quote that DOES fit inside its cited fragment is highlighted by the normal
+        single-fragment path even inside a merge group -- the boundary resolver only
+        fires when the single-fragment lookup came up empty."""
+        from nda_automation.ai_first_review import _structured_evidence_records
+
+        p1 = {"id": "p1", "text": "The Recipient shall not disclose", "start": 100, "index": 1}
+        p2 = {"id": "p2", "text": "the Confidential Information to third parties.", "start": 140, "index": 2}
+        merge_groups = {"p1": ["p1", "p2"], "p2": ["p1", "p2"]}
+        assessment = {
+            "evidence": [{"paragraph_id": "p1", "quote": "shall not disclose", "relevance": "x"}]
+        }
+        clause = {"id": "confidentiality", "decision": "review", "issue_type": "unclear"}
+
+        records = _structured_evidence_records(clause, [p1, p2], assessment, merge_groups=merge_groups)
+        spans_by_id = {r["paragraph_id"]: r["match_spans"] for r in records}
+        self.assertEqual(len(spans_by_id["p1"]), 1)
+        self.assertEqual(spans_by_id["p1"][0]["text"], "shall not disclose")
+        # The tail fragment was never part of this quote, so it stays unhighlighted.
+        self.assertEqual(spans_by_id["p2"], [])
+
     def test_paragraph_id_resolves_through_glyph_and_whitespace_variants(self):
         from nda_automation.ai_first_review import _paragraph_id_for_quote
 

@@ -682,11 +682,12 @@ def _clause_result_from_assessment(
     )
     what_to_fix = _assessment_fix_text(assessment, decision)
     reason_codes = _reason_codes(assessment, decision)
+    merge_groups = review_context.get("merge_groups") if isinstance(review_context, Mapping) else None
     matched_paragraphs = _matched_paragraphs(
         paragraphs,
         assessment,
         _reference_index(review_context),
-        merge_groups=review_context.get("merge_groups") if isinstance(review_context, Mapping) else None,
+        merge_groups=merge_groups,
     )
     # Category A: a clause may carry a LIST of proposed edits (v3). The compat
     # accessor reads ``proposed_edits`` when present, else wraps the legacy singular
@@ -716,6 +717,7 @@ def _clause_result_from_assessment(
         {"id": str(playbook_clause["id"]), "decision": decision, "issue_type": issue_type},
         matched_paragraphs,
         assessment,
+        merge_groups=merge_groups,
     )
     clause_type = str(playbook_clause.get("type") or "")
     grounding = build_grounding(
@@ -803,7 +805,9 @@ def _clause_result_from_assessment(
             result["term_years"] = detected_term_years
     # Re-derive structured evidence against the final clause (its decision/status
     # may have changed in the grounding downgrade above) so signal types align.
-    result["structured_evidence"] = _structured_evidence_records(result, matched_paragraphs, assessment)
+    result["structured_evidence"] = _structured_evidence_records(
+        result, matched_paragraphs, assessment, merge_groups=merge_groups
+    )
     result["grounding"] = grounding
     if citation is not None:
         result["citation"] = citation
@@ -939,6 +943,9 @@ def _refinalize_ai_first_verifier_changes(
     if not changed_ids:
         return
     paragraphs_by_id = {str(paragraph.get("id") or ""): paragraph for paragraph in document_paragraphs}
+    # Re-derive the same packet-only fragment merge so a verifier-rewritten clause whose
+    # evidence quote straddles a merged boundary keeps its char highlight on every limb.
+    _model_paragraphs, merge_groups = merge_continuation_fragments(document_paragraphs)
     for clause in clause_results:
         if str(clause.get("id") or "") not in changed_ids:
             continue
@@ -964,7 +971,9 @@ def _refinalize_ai_first_verifier_changes(
             for paragraph_id in (str(pid) for pid in clause.get("matched_paragraph_ids") or [])
             if paragraph_id in paragraphs_by_id
         ]
-        clause["structured_evidence"] = _structured_evidence_records(clause, matched_paragraphs, {})
+        clause["structured_evidence"] = _structured_evidence_records(
+            clause, matched_paragraphs, {}, merge_groups=merge_groups
+        )
         # Grounding/citation are owned by the evidence pass (#16); re-derive them from
         # the freshly rebuilt structured_evidence, before review_state/audit_trace.
         refinalize_clause_grounding(clause)
@@ -1535,13 +1544,26 @@ def _structured_evidence_records(
     clause: ClauseResult,
     matched_paragraphs: list[Paragraph],
     assessment: Mapping[str, Any],
+    merge_groups: Mapping[str, Sequence[str]] | None = None,
 ) -> list[dict[str, Any]]:
     quotes_by_paragraph_id = _quotes_by_paragraph_id(assessment, matched_paragraphs)
+    # A DOCX clause split across <w:p> is merged into ONE record for the model, so a
+    # grounded quote can straddle the boundary between two constituent fragments.
+    # `_quote_spans` searches a SINGLE fragment and finds nothing, so the reviewer
+    # loses the char highlight and the FE falls back to a whole-paragraph tone wash.
+    # Pre-resolve any such boundary-spanning quote against the JOINED merged-group
+    # text and map the char span back onto each constituent fragment's absolute
+    # offsets. A no-op for single-fragment groups (spans stay byte-identical).
+    boundary_spans = _boundary_quote_spans_by_fragment(
+        quotes_by_paragraph_id, matched_paragraphs, merge_groups
+    )
     records: list[dict[str, Any]] = []
     for index, paragraph in enumerate(matched_paragraphs, start=1):
         paragraph_id = str(paragraph.get("id") or "")
         quote = quotes_by_paragraph_id.get(paragraph_id, "")
         match_spans = _quote_spans(paragraph, quote)
+        if not match_spans and paragraph_id in boundary_spans:
+            match_spans = boundary_spans[paragraph_id]
         records.append({
             "id": f"{clause['id']}:{paragraph_id or index}:ai_first",
             "clause_id": clause["id"],
@@ -1646,6 +1668,120 @@ def _quote_spans(paragraph: Paragraph, quote: str) -> list[dict[str, Any]]:
     start = paragraph_start + offset
     end = start + length
     return [{"start": start, "end": end, "text": text[offset:offset + length], "term": quote}]
+
+
+def _boundary_quote_spans_by_fragment(
+    quotes_by_paragraph_id: Mapping[str, str],
+    matched_paragraphs: Sequence[Paragraph],
+    merge_groups: Mapping[str, Sequence[str]] | None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Highlight spans for evidence quotes that straddle a merged fragment boundary.
+
+    Returns ``{fragment_id: [span, ...]}`` only for quotes that (a) belong to a
+    multi-fragment merge group AND (b) do NOT already resolve inside their cited
+    fragment alone. Each such quote is located in the JOINED merged-group text (the
+    same single-space join the packet builder used) and its char span is mapped back
+    onto every constituent fragment it covers, in ABSOLUTE document offsets. Empty
+    when nothing merged, so single-fragment highlighting stays byte-identical.
+    """
+    if not merge_groups:
+        return {}
+    paragraph_by_id = {str(p.get("id") or ""): p for p in matched_paragraphs}
+    spans_by_fragment: dict[str, list[dict[str, Any]]] = {}
+    handled: set[tuple[tuple[str, ...], str]] = set()
+    for paragraph_id, quote in quotes_by_paragraph_id.items():
+        if not quote:
+            continue
+        group_ids = [str(member) for member in (merge_groups.get(paragraph_id) or []) if str(member)]
+        if len(group_ids) < 2:
+            # Singleton group: the single-fragment `_quote_spans` path owns it.
+            continue
+        cited = paragraph_by_id.get(paragraph_id)
+        if cited is not None and _quote_spans(cited, quote):
+            # The quote already highlights within its cited fragment; leave it.
+            continue
+        dedup_key = (tuple(group_ids), quote.casefold())
+        if dedup_key in handled:
+            continue
+        members = [paragraph_by_id.get(member_id) for member_id in group_ids]
+        if any(member is None for member in members):
+            # Not every limb of the group is in the matched set; refuse a partial map.
+            continue
+        member_spans = _map_quote_onto_group(quote, members)
+        if member_spans:
+            handled.add(dedup_key)
+            for member_id, spans in member_spans.items():
+                spans_by_fragment.setdefault(member_id, []).extend(spans)
+    return spans_by_fragment
+
+
+def _map_quote_onto_group(
+    quote: str,
+    members: Sequence[Paragraph],
+) -> dict[str, list[dict[str, Any]]]:
+    """Locate ``quote`` in the joined group text and split its span across fragments.
+
+    The group text is joined EXACTLY as the packet merge joined it -- each fragment's
+    text stripped, joined with a single space -- so a quote the model grounded against
+    the merged clause lines up here. The matched char range is intersected with each
+    fragment's window in the joined string and mapped back to that fragment's absolute
+    document offsets (``fragment.start`` indexes the fragment's own raw text). The
+    injected separator space belongs to no fragment, so it is never highlighted.
+    Returns ``{}`` when the quote cannot be located or offsets are unavailable.
+    """
+    # segments: (member, joined_start, joined_end, lead_ws_len, stripped_text)
+    segments: list[tuple[Paragraph, int, int, int, str]] = []
+    joined_parts: list[str] = []
+    cursor = 0
+    for member in members:
+        raw = str(member.get("text") or "")
+        stripped = raw.strip()
+        lead_ws = len(raw) - len(raw.lstrip())
+        if joined_parts:
+            cursor += 1  # single-space separator between fragments
+        seg_start = cursor
+        seg_end = seg_start + len(stripped)
+        segments.append((member, seg_start, seg_end, lead_ws, stripped))
+        joined_parts.append(stripped)
+        cursor = seg_end
+    joined = " ".join(joined_parts)
+
+    offset = joined.casefold().find(quote.casefold())
+    length = len(quote)
+    if offset < 0:
+        pattern = _flexible_quote_regex(quote)
+        match = pattern.search(joined) if pattern is not None else None
+        if match is None:
+            return {}
+        offset = match.start()
+        length = match.end() - match.start()
+    quote_start = offset
+    quote_end = offset + length
+
+    result: dict[str, list[dict[str, Any]]] = {}
+    for member, seg_start, seg_end, lead_ws, stripped in segments:
+        overlap_start = max(quote_start, seg_start)
+        overlap_end = min(quote_end, seg_end)
+        if overlap_start >= overlap_end:
+            continue
+        member_start = member.get("start")
+        if not isinstance(member_start, int):
+            continue
+        local_start = overlap_start - seg_start
+        local_end = overlap_end - seg_start
+        # stripped[j] sits at raw[lead_ws + j], i.e. absolute member_start + lead_ws + j.
+        abs_start = member_start + lead_ws + local_start
+        abs_end = member_start + lead_ws + local_end
+        member_id = str(member.get("id") or "")
+        if not member_id:
+            continue
+        result.setdefault(member_id, []).append({
+            "start": abs_start,
+            "end": abs_end,
+            "text": stripped[local_start:local_end],
+            "term": quote,
+        })
+    return result
 
 
 def _signal_type(clause: ClauseResult) -> str:
