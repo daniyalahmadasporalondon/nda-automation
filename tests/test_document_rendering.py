@@ -27,6 +27,8 @@ from nda_automation.document_rendering import (
     RenderedPdfPageImage,
     _budgeted_page_dpi,
     _enforce_render_cache_bound,
+    _flatten_acroform_widgets,
+    _form_widget_has_value,
     _run_soffice_command,
     _suppressed_mupdf_errors,
     cache_entry_dir,
@@ -1279,6 +1281,204 @@ class StorageExhaustionClassifierTests(unittest.TestCase):
 
         exc = OSError(_errno.EACCES, os.strerror(_errno.EACCES))
         self.assertFalse(document_rendering._is_storage_exhaustion_error(exc))
+
+
+def _plain_text_pdf_bytes() -> bytes:
+    """A NORMAL PDF (no AcroForm) — the flatten path must leave it untouched."""
+    fitz = _fitz()
+    if fitz is None:
+        raise unittest.SkipTest("PyMuPDF is not installed")
+    document = fitz.open()
+    page = document.new_page(width=400, height=300)
+    page.insert_text((50, 60), "Mutual Non-Disclosure Agreement", fontsize=12)
+    page.insert_text((50, 90), "This Agreement is entered into by the parties.", fontsize=11)
+    return document.tobytes()
+
+
+# Widget rects for the fillable fixture below, in PDF points (origin top-left).
+_TEXT_FIELD_RECT = (180, 48, 360, 70)
+_CHECKBOX_RECT = (180, 108, 200, 128)
+
+
+def _fillable_pdf_bytes(*, filled: bool) -> bytes:
+    """A fillable AcroForm PDF: one text field + one checkbox.
+
+    ``filled=True`` sets a text value ("Acme Corp Ltd") and checks the box;
+    ``filled=False`` is the same layout with an empty text field and an off
+    checkbox (the empty-template case the flatten path must not mutate).
+    """
+    fitz = _fitz()
+    if fitz is None:
+        raise unittest.SkipTest("PyMuPDF is not installed")
+    document = fitz.open()
+    page = document.new_page(width=400, height=300)
+    page.insert_text((50, 63), "Disclosing Party:", fontsize=12)
+    page.insert_text((50, 123), "Confidential:", fontsize=12)
+
+    text_widget = fitz.Widget()
+    text_widget.field_name = "party_name"
+    text_widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+    text_widget.rect = fitz.Rect(*_TEXT_FIELD_RECT)
+    text_widget.field_value = "Acme Corp Ltd" if filled else ""
+    text_widget.fill_color = (1, 1, 1)
+    text_widget.border_color = (0, 0, 0)
+    page.add_widget(text_widget)
+
+    checkbox = fitz.Widget()
+    checkbox.field_name = "is_conf"
+    checkbox.field_type = fitz.PDF_WIDGET_TYPE_CHECKBOX
+    checkbox.rect = fitz.Rect(*_CHECKBOX_RECT)
+    checkbox.field_value = bool(filled)
+    page.add_widget(checkbox)
+
+    return document.tobytes()
+
+
+def _dark_pixels_in_rect(pixmap, rect_points, scale) -> int:
+    """Count near-black pixels inside a PDF-point rect on a scaled fitz pixmap."""
+    x0, y0, x1, y1 = (int(round(v * scale)) for v in rect_points)
+    count = 0
+    for y in range(max(0, y0), min(pixmap.height, y1)):
+        for x in range(max(0, x0), min(pixmap.width, x1)):
+            r, g, b = pixmap.pixel(x, y)
+            if r < 128 and g < 128 and b < 128:
+                count += 1
+    return count
+
+
+def _first_page_png_dark_pixel_count(image_path: Path) -> int:
+    fitz = _fitz()
+    pixmap = fitz.Pixmap(str(image_path))
+    channels = pixmap.n
+    samples = pixmap.samples
+    count = 0
+    for index in range(0, len(samples), channels):
+        r, g, b = samples[index], samples[index + 1], samples[index + 2]
+        if r < 128 and g < 128 and b < 128:
+            count += 1
+    return count
+
+
+class AcroFormFlattenTests(unittest.TestCase):
+    """PDF form prefill: filled AcroForm values render baked into the page."""
+
+    def setUp(self) -> None:
+        if _fitz() is None:
+            self.skipTest("PyMuPDF is not installed")
+
+    def test_form_widget_has_value_treats_off_and_empty_as_unfilled(self):
+        class _W:
+            def __init__(self, value):
+                self.field_value = value
+
+        self.assertTrue(_form_widget_has_value(_W("Acme Corp Ltd")))
+        self.assertTrue(_form_widget_has_value(_W(True)))
+        self.assertFalse(_form_widget_has_value(_W("")))
+        self.assertFalse(_form_widget_has_value(_W("   ")))
+        self.assertFalse(_form_widget_has_value(_W(None)))
+        self.assertFalse(_form_widget_has_value(_W(False)))
+        self.assertFalse(_form_widget_has_value(_W("Off")))
+        self.assertFalse(_form_widget_has_value(_W("/Off")))
+
+    def test_flatten_bakes_text_and_checkbox_values_into_page_content(self):
+        fitz = _fitz()
+        document = fitz.open(stream=_fillable_pdf_bytes(filled=True), filetype="pdf")
+        try:
+            scale = 3.0
+            page = document[0]
+            # BEFORE: the value lives only in the widget annotation, so a
+            # content-only render (annots=False) shows blank field rects.
+            before = page.get_pixmap(matrix=fitz.Matrix(scale, scale), annots=False)
+            self.assertEqual(_dark_pixels_in_rect(before, _TEXT_FIELD_RECT, scale), 0)
+            self.assertEqual(_dark_pixels_in_rect(before, _CHECKBOX_RECT, scale), 0)
+
+            baked = _flatten_acroform_widgets(document, fitz)
+            self.assertTrue(baked)
+            self.assertFalse(document.is_form_pdf)
+
+            # AFTER: the value is baked into page CONTENT at each widget rect, so
+            # it renders even with annotation rendering turned OFF.
+            page = document[0]
+            after = page.get_pixmap(matrix=fitz.Matrix(scale, scale), annots=False)
+            self.assertGreater(
+                _dark_pixels_in_rect(after, _TEXT_FIELD_RECT, scale),
+                50,
+                "text field value should be baked into the page content at its rect",
+            )
+            self.assertGreater(
+                _dark_pixels_in_rect(after, _CHECKBOX_RECT, scale),
+                20,
+                "checked checkbox should render a mark baked into page content",
+            )
+        finally:
+            document.close()
+
+    def test_flatten_is_noop_for_normal_pdf_bytes_are_unchanged(self):
+        fitz = _fitz()
+        document = fitz.open(stream=_plain_text_pdf_bytes(), filetype="pdf")
+        try:
+            scale = 2.0
+            before_png = document[0].get_pixmap(matrix=fitz.Matrix(scale, scale)).tobytes("png")
+            baked = _flatten_acroform_widgets(document, fitz)
+            self.assertFalse(baked, "a non-form PDF must not be baked")
+            after_png = document[0].get_pixmap(matrix=fitz.Matrix(scale, scale)).tobytes("png")
+            self.assertEqual(before_png, after_png, "normal-PDF render must be byte-identical")
+        finally:
+            document.close()
+
+    def test_flatten_is_noop_for_empty_form_template(self):
+        fitz = _fitz()
+        document = fitz.open(stream=_fillable_pdf_bytes(filled=False), filetype="pdf")
+        try:
+            scale = 2.0
+            before_png = document[0].get_pixmap(matrix=fitz.Matrix(scale, scale)).tobytes("png")
+            baked = _flatten_acroform_widgets(document, fitz)
+            self.assertFalse(baked, "an all-empty form template carries no values to bake")
+            after_png = document[0].get_pixmap(matrix=fitz.Matrix(scale, scale)).tobytes("png")
+            self.assertEqual(before_png, after_png)
+        finally:
+            document.close()
+
+    def test_end_to_end_render_shows_more_ink_for_filled_form(self):
+        # The real rasterize pipeline: a filled fillable PDF must render with the
+        # values present, i.e. strictly more dark ink than the empty template of
+        # the same layout.
+        with tempfile.TemporaryDirectory() as filled_dir, tempfile.TemporaryDirectory() as empty_dir:
+            filled = render_source_document_result(
+                _fillable_pdf_bytes(filled=True),
+                source_filename="fillable-filled.pdf",
+                cache_dir=Path(filled_dir),
+                page_renderer=PyMuPdfPageRenderer(),
+                dpi=144,
+            )
+            empty = render_source_document_result(
+                _fillable_pdf_bytes(filled=False),
+                source_filename="fillable-empty.pdf",
+                cache_dir=Path(empty_dir),
+                page_renderer=PyMuPdfPageRenderer(),
+                dpi=144,
+            )
+            self.assertEqual(filled.page_manifest.status, READY_STATUS)
+            self.assertEqual(empty.page_manifest.status, READY_STATUS)
+            filled_ink = _first_page_png_dark_pixel_count(filled.page_manifest.pages[0].image_path)
+            empty_ink = _first_page_png_dark_pixel_count(empty.page_manifest.pages[0].image_path)
+            self.assertGreater(
+                filled_ink,
+                empty_ink,
+                "filled form should render more ink (the party's values) than the blank template",
+            )
+
+    def test_flatten_fails_open_when_bake_raises(self):
+        fitz = _fitz()
+        document = fitz.open(stream=_fillable_pdf_bytes(filled=True), filetype="pdf")
+        try:
+            with unittest.mock.patch.object(
+                type(document), "bake", side_effect=RuntimeError("boom")
+            ):
+                # Must swallow the error and report no bake rather than propagate.
+                self.assertFalse(_flatten_acroform_widgets(document, fitz))
+        finally:
+            document.close()
 
 
 if __name__ == "__main__":
