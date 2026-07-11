@@ -20,6 +20,11 @@ STRUCTURAL_METADATA_KEYS = (
     "numbering",
     "outline_level",
     "page_number",
+    # PDF per-paragraph geometry (heading-line font_size/left_x/body_font/ratio).
+    # Carried through alignment so BOTH the structure builder's pdf_confident trust
+    # tier (contract_structure._apply_pdf_confidence) and the source-fidelity style
+    # mapping can read it; stripping it here left both blind to real PDF typography.
+    "pdf_geometry",
     "runs",
     "source_kind",
     "source_part",

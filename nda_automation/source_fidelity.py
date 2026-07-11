@@ -80,6 +80,7 @@ def _source_blocks(paragraphs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     table_order: list[int] = []
     table_positions: dict[int, int] = {}
     table_cell_styles: dict[tuple[int, int, int], dict[str, Any]] = {}
+    indent_baselines = _pdf_indent_baselines(paragraphs)
 
     for paragraph in paragraphs:
         table = paragraph.get("table")
@@ -95,9 +96,11 @@ def _source_blocks(paragraphs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 cell_style = _table_cell_style_record(table)
                 if cell_style:
                     table_cell_styles.setdefault((table_index, row_index, cell_index), cell_style)
-                table_groups[table_index][row_index][cell_index].append(_paragraph_block(paragraph, in_table=True))
+                table_groups[table_index][row_index][cell_index].append(
+                    _paragraph_block(paragraph, in_table=True, indent_baselines=indent_baselines)
+                )
                 continue
-        blocks.append(_paragraph_block(paragraph, in_table=False))
+        blocks.append(_paragraph_block(paragraph, in_table=False, indent_baselines=indent_baselines))
 
     for table_index in table_order:
         rows = []
@@ -124,7 +127,12 @@ def _source_blocks(paragraphs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return blocks
 
 
-def _paragraph_block(paragraph: dict[str, Any], *, in_table: bool) -> dict[str, Any]:
+def _paragraph_block(
+    paragraph: dict[str, Any],
+    *,
+    in_table: bool,
+    indent_baselines: dict[Any, float] | None = None,
+) -> dict[str, Any]:
     paragraph_id = str(paragraph.get("id") or "")
     block: dict[str, Any] = {
         "type": "paragraph",
@@ -137,6 +145,10 @@ def _paragraph_block(paragraph: dict[str, Any], *, in_table: bool) -> dict[str, 
         if key in paragraph:
             block[key] = paragraph[key]
     style = _style_record(paragraph)
+    for key, value in _pdf_geometry_style(paragraph, indent_baselines or {}).items():
+        # An explicit (DOCX) style value always wins; PDF geometry only FILLS the
+        # style keys a PDF paragraph would otherwise leave blank.
+        style.setdefault(key, value)
     if style:
         block["style"] = style
     runs = _run_records(paragraph.get("runs"))
@@ -151,6 +163,58 @@ def _style_record(paragraph: dict[str, Any]) -> dict[str, Any]:
         for key in STYLE_KEYS
         if key in paragraph and paragraph[key] not in (None, "", {})
     }
+
+
+def _pdf_indent_baselines(paragraphs: list[dict[str, Any]]) -> dict[Any, float]:
+    """Per-page minimum heading ``left_x`` across the PDF paragraphs.
+
+    PDF ``left_x`` is an ABSOLUTE page coordinate (a 1-inch margin reads ~72pt),
+    whereas the renderer's ``indent_left`` is RELATIVE to the text margin (0 for
+    body text, matching the DOCX field). Subtracting each page's leftmost text
+    position turns absolute x into that relative indent, so ordinary body prose maps
+    to 0 (dropped) while a genuinely indented sub-clause keeps a positive indent.
+    """
+
+    baselines: dict[Any, float] = {}
+    for paragraph in paragraphs:
+        geometry = paragraph.get("pdf_geometry")
+        if not isinstance(geometry, dict):
+            continue
+        left_x = geometry.get("left_x")
+        if not isinstance(left_x, (int, float)) or isinstance(left_x, bool):
+            continue
+        page = paragraph.get("page_number")
+        if page not in baselines or float(left_x) < baselines[page]:
+            baselines[page] = float(left_x)
+    return baselines
+
+
+def _pdf_geometry_style(
+    paragraph: dict[str, Any], indent_baselines: dict[Any, float]
+) -> dict[str, Any]:
+    """Map a PDF paragraph's ``pdf_geometry`` into renderer style keys.
+
+    ``font_size`` -> ``fontSize`` (whole points, like the DOCX field) and ``left_x``
+    -> ``indent_left`` (relative indent in whole points, via the per-page baseline).
+    This is what lets a PDF reconstruction show real font-size/indent instead of
+    flat text. Additive style data only — never touches ``paragraph.text``.
+    """
+
+    geometry = paragraph.get("pdf_geometry")
+    if not isinstance(geometry, dict):
+        return {}
+    style: dict[str, Any] = {}
+    font_size = geometry.get("font_size")
+    if isinstance(font_size, (int, float)) and not isinstance(font_size, bool) and font_size > 0:
+        style["fontSize"] = int(round(font_size))
+    left_x = geometry.get("left_x")
+    if isinstance(left_x, (int, float)) and not isinstance(left_x, bool):
+        baseline = indent_baselines.get(paragraph.get("page_number"))
+        if isinstance(baseline, (int, float)):
+            indent = int(round(float(left_x) - baseline))
+            if indent > 0:
+                style["indent_left"] = indent
+    return style
 
 
 def _run_records(value: Any) -> list[dict[str, Any]]:

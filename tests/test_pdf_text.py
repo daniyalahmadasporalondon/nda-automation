@@ -1201,23 +1201,31 @@ class GeometrySplitterTests(unittest.TestCase):
         self.assertFalse(any("Definitions" in block and "Term" in block for block in blocks))
 
     def test_never_merge_holds_when_geometry_is_absent(self):
-        # Pathological PDF: no geometry at all. We cannot tell a wrap from a
-        # boundary, so we MUST fail safe by fragmenting rather than merging.
+        # No geometry at all: we cannot use vertical gaps. Post-D6 the flat-fallback
+        # merges ONLY an unambiguous lowercase mid-sentence continuation (previous
+        # line unfinished AND next line opens lowercase) — the DOCX clause-merge rule.
+        # A REAL clause boundary carrying a text signal (terminal punctuation on the
+        # previous line here) still splits, so the two distinct clauses never merge.
         lines = [
             GeoLine("The receiving party shall keep all information confidential and shall", None, None, None),
-            GeoLine("not use it for any purpose other than the permitted purpose", None, None, None),
+            GeoLine("not use it for any purpose other than the permitted purpose.", None, None, None),
             GeoLine("this agreement is governed by the laws of england and applies", None, None, None),
             GeoLine("to all disputes between the parties hereto", None, None, None),
         ]
 
         blocks = _split_pdf_paragraphs(lines)
 
-        # Never merge: the two distinct clauses must not share a block.
+        # Never merge across the real boundary: the two distinct clauses (separated
+        # by the terminal '.' ending the first) must not share a block.
         self.assertFalse(
             any("permitted purpose" in block and "england" in block for block in blocks)
         )
-        # Honest cost: with no geometry we fragment aggressively.
-        self.assertGreaterEqual(len(blocks), 2)
+        # The lowercase wraps within each clause DO merge (fragmentation cured): the
+        # first clause is one block, not three one-line fragments.
+        self.assertTrue(
+            any("confidential and shall not use it for any purpose" in block for block in blocks)
+        )
+        self.assertEqual(len(blocks), 2)
 
     def test_geometry_path_never_merges_across_a_clause_corpus(self):
         # Proof-style sweep: every ordered pair of distinct clauses, separated by
@@ -1301,20 +1309,22 @@ class GeometrySplitterTests(unittest.TestCase):
 
     def test_no_geometry_fallback_never_merges_two_clauses(self):
         # Geometry UNAVAILABLE (visitor never fired): GeoLines carry no coordinates.
-        # The fallback must be split-biased (accept fragmentation, never merge): it
-        # splits at every line break except a clause-number/title pairing, so two
-        # genuinely-separate clauses can never share a block.
+        # Post-D6 the fallback merges only a lowercase mid-sentence continuation, so a
+        # clause boundary that carries a text signal — here the terminal '.' ending
+        # the first clause — still splits: two genuinely-separate clauses never share
+        # a block. (Within each clause the lowercase wraps do merge, curing the
+        # per-line over-fragmentation.)
         clause_pairs = [
             (
                 "The receiving party shall keep all Confidential Information confidential and shall",
-                "not use it for any purpose other than the permitted purpose",
+                "not use it for any purpose other than the permitted purpose.",
                 "this agreement is governed by the laws of england and applies",
                 "to all disputes between the parties hereto",
                 ("permitted purpose", "england"),
             ),
             (
                 "Confidential Information means non-public information disclosed by either party",
-                "and includes all technical and commercial data",
+                "and includes all technical and commercial data.",
                 "the receiving party shall return all materials on demand",
                 "without retaining any copies thereof",
                 ("disclosed by either party", "return all materials"),
@@ -3084,3 +3094,58 @@ def make_drawings_pdf(path_count):
         f"{object_count} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n",
     ]
     return _pdf_package(objects)
+
+
+@requires_pypdf
+class PdfGarbleProducerTests(unittest.TestCase):
+    """D4: the same-baseline line join must not insert a space between chunks the
+    PDF producer drew edge-to-edge (kern/ligature/punctuation splits), while a real
+    word gap still gets its space. Built with the reading-order corpus generator's
+    helpers, whose Helvetica advance table includes punctuation so the chunks are
+    truly placed edge-to-edge in the rendered bytes."""
+
+    @staticmethod
+    def _gen():
+        from tests.fixtures.pdf_reading_order import generate_fixtures as g
+        return g
+
+    def _edge_to_edge_ops(self, g, parts, y, font_size=11.0, x0=72.0):
+        """Content-stream ops placing PARTS left-to-right at TRUE Helvetica advances
+        (edge-to-edge). A part beginning with a literal space injects a real word gap
+        (the space advance) before it."""
+        ops = []
+        cursor = x0
+        for part in parts:
+            if part.startswith(" "):
+                cursor += g._advance(" ", font_size)
+                part = part[1:]
+            ops.append(g._line_op(part, round(cursor, 2), y, font_size))
+            cursor += g._advance(part, font_size)
+        return ops
+
+    def test_adjacent_chunks_join_without_spurious_spaces(self):
+        g = self._gen()
+        ops = []
+        # "(COMPANY)" edge-to-edge, then a real gap before "LIMITED".
+        ops += self._edge_to_edge_ops(g, ["(", "COMPANY", ")", " LIMITED"], y=700)
+        # "NON-DISCLOSURE" split around the hyphen, all edge-to-edge.
+        ops += self._edge_to_edge_ops(g, ["NON", "-", "DISCLOSURE"], y=680)
+        doc = extract_pdf_document(g._build([ops]))
+        texts = [p["text"] for p in doc.paragraphs]
+        self.assertIn("(COMPANY) LIMITED", texts)
+        self.assertIn("NON-DISCLOSURE", texts)
+        # The garble the OLD producer emitted must be gone.
+        joined = "\n".join(texts)
+        self.assertNotIn("( COMPANY )", joined)
+        self.assertNotIn("NON - DISCLOSURE", joined)
+
+    def test_real_word_gap_still_separates_columns(self):
+        # A wide same-baseline gap (a two-cell row) must KEEP its space — the join
+        # defaults to a space and only suppresses it for proven adjacency.
+        g = self._gen()
+        ops = [
+            g._line_op("Disclosing Party:", 72, 700, 11.0),
+            g._line_op("Registered Office:", 340, 700, 11.0),
+        ]
+        doc = extract_pdf_document(g._build([ops]))
+        self.assertIn("Disclosing Party: Registered Office:", [p["text"] for p in doc.paragraphs])
