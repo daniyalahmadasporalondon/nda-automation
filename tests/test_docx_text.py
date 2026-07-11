@@ -611,6 +611,73 @@ class DocxTextTests(unittest.TestCase):
         )
         self.assertIsNone(detect_docx_tracked_changes(data))
 
+    def test_tracked_move_keeps_origin_drops_destination_no_duplication(self):
+        # A1: a Word "track moves" edit relocates a clause via w:moveFrom (origin,
+        # still in force) + w:moveTo (destination, not yet in force). The baseline
+        # must keep the origin text and drop the destination -- so the moved clause
+        # appears EXACTLY ONCE, not duplicated at both locations.
+        data = make_zip(
+            {"word/document.xml": tracked_move_document_xml()},
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+        texts = [paragraph["text"] for paragraph in paragraphs]
+
+        self.assertEqual(texts, ["Intro. The moved clause.", "Outro."])
+        # The clause text appears once across the whole document, at its origin.
+        self.assertEqual("\n".join(texts).count("The moved clause."), 1)
+
+    def test_tracked_move_trips_the_tracked_changes_gate(self):
+        # A1: w:moveFrom/w:moveTo are tracked changes too -- the gate must fire so a
+        # relocated clause cannot silently auto-clear. moveTo counts as an insertion
+        # (dropped from baseline), moveFrom as a deletion (restored).
+        data = make_zip(
+            {"word/document.xml": tracked_move_document_xml()},
+            compression=ZIP_DEFLATED,
+        )
+
+        quality = detect_docx_tracked_changes(data)
+
+        self.assertIsNotNone(quality)
+        self.assertTrue(quality["has_tracked_changes"])
+        self.assertEqual(quality["tracked_insertions"], 1)
+        self.assertEqual(quality["tracked_deletions"], 1)
+
+    def test_text_box_alternate_content_text_is_collected_once(self):
+        # A2: an mc:AlternateContent block carries the text box text twice (a modern
+        # mc:Choice + a legacy mc:Fallback). A conformant reader takes one branch;
+        # the extractor must not double-count the text into paragraph.text.
+        data = make_zip(
+            {"word/document.xml": text_box_alternate_content_document_xml()},
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+        texts = [paragraph["text"] for paragraph in paragraphs]
+
+        self.assertEqual(texts, ["Text box content. Body after box."])
+        self.assertEqual(texts[0].count("Text box content."), 1)
+
+    def test_baseline_font_and_size_ignore_a_tracked_inserted_run(self):
+        # D1: the paragraph font/size cascade reads the DOMINANT run, but a tracked
+        # INSERTION (w:ins) that sorts first must not win -- the baseline paragraph
+        # should report its own in-force font/size, not the counterparty's inserted
+        # Arial 14pt.
+        data = make_zip(
+            {"word/document.xml": tracked_insertion_font_document_xml()},
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(len(paragraphs), 1)
+        record = paragraphs[0]
+        # The inserted text is not in force, so only the baseline phrase survives.
+        self.assertEqual(record["text"], "baseline phrase.")
+        self.assertEqual(record["font"], "Times New Roman")
+        self.assertEqual(record["fontSize"], 12)
+
 
 def make_docx(paragraphs, *, body_xml="", extra_parts=None):
     body = "".join(
@@ -685,6 +752,64 @@ def tracked_changes_part_xml():
 <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:p><w:ins w:id="9" w:author="Counterparty"><w:r><w:t>Inserted header text.</w:t></w:r></w:ins></w:p>
 </w:hdr>"""
+
+
+def tracked_move_document_xml():
+    # "The moved clause." is relocated: w:moveFrom marks the origin (still in
+    # force), w:moveTo marks the destination (not yet in force). A correct
+    # in-force baseline keeps the origin and drops the destination.
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t xml:space="preserve">Intro. </w:t></w:r>
+      <w:moveFrom w:id="1" w:author="Counterparty" w:name="m1"><w:r><w:t>The moved clause.</w:t></w:r></w:moveFrom>
+    </w:p>
+    <w:p>
+      <w:moveTo w:id="2" w:author="Counterparty" w:name="m1"><w:r><w:t>The moved clause.</w:t></w:r></w:moveTo>
+      <w:r><w:t xml:space="preserve">Outro.</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>"""
+
+
+def text_box_alternate_content_document_xml():
+    # A text box stored as an mc:AlternateContent block: the SAME text appears in
+    # the modern mc:Choice (DrawingML) and the legacy mc:Fallback (VML) copy.
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">
+  <w:body>
+    <w:p>
+      <w:r>
+        <mc:AlternateContent>
+          <mc:Choice Requires="wps">
+            <w:drawing><w:r><w:t>Text box content.</w:t></w:r></w:drawing>
+          </mc:Choice>
+          <mc:Fallback>
+            <w:pict><w:r><w:t>Text box content.</w:t></w:r></w:pict>
+          </mc:Fallback>
+        </mc:AlternateContent>
+      </w:r>
+      <w:r><w:t xml:space="preserve"> Body after box.</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>"""
+
+
+def tracked_insertion_font_document_xml():
+    # A tracked insertion in Arial 14pt sorts BEFORE the in-force baseline run in
+    # Times New Roman 12pt. The baseline paragraph font/size must come from the
+    # in-force run, not the counterparty's inserted run.
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:ins w:id="1" w:author="Counterparty"><w:r><w:rPr><w:rFonts w:ascii="Arial"/><w:sz w:val="28"/></w:rPr><w:t xml:space="preserve">Inserted phrase </w:t></w:r></w:ins>
+      <w:r><w:rPr><w:rFonts w:ascii="Times New Roman"/><w:sz w:val="24"/></w:rPr><w:t>baseline phrase.</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>"""
 
 
 def rich_clean_document_xml():

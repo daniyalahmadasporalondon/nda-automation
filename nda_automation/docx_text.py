@@ -9,6 +9,12 @@ import xml.etree.ElementTree as ET
 from .docx_xml import UnsafeDocxXmlError, is_docx_xml_part, parse_docx_xml, reject_unsafe_docx_xml
 
 WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+# Markup-Compatibility-and-Extensibility namespace. An ``mc:AlternateContent``
+# block carries the SAME content twice -- an ``mc:Choice`` (the modern DrawingML
+# representation of e.g. a text box) and an ``mc:Fallback`` (the legacy VML copy
+# for old consumers). A conformant reader picks exactly one branch; taking both
+# double-counts the text box's text (A2).
+MC_NS = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
 MAX_DOCX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 MAX_DOCX_ENTRY_COMPRESSION_RATIO = 100
 MAX_DOCX_ZIP_ENTRIES = 4096
@@ -91,8 +97,12 @@ TRACKED_CHANGES_WARNING_MESSAGE = (
 def detect_docx_tracked_changes(data: bytes) -> dict[str, object] | None:
     """Return an extraction-quality dict if the DOCX carries unresolved redlines.
 
-    Detects tracked insertions (``w:ins``) and deletions (``w:del``) in the main
-    body and reviewable supplemental parts. Returns ``None`` for a clean document
+    Detects tracked insertions (``w:ins``) and deletions (``w:del``) plus tracked
+    MOVES (``w:moveTo`` counted as an insertion, ``w:moveFrom`` as a deletion) in
+    the main body and reviewable supplemental parts. A Word "track moves" edit
+    emits ``w:moveFrom``/``w:moveTo`` -- NOT ``w:ins``/``w:del`` -- so without the
+    move branch a relocated clause tripped no tracked-changes gate and silently
+    auto-cleared (A1). Returns ``None`` for a clean document
     so the caller attaches no quality block and raises no flag. Callers thread the
     returned dict through ``attach_document_source`` so the warning reaches the
     review surface and the document-level tracked-changes gate forces human
@@ -111,9 +121,12 @@ def detect_docx_tracked_changes(data: bytes) -> dict[str, object] | None:
                 except DocxExtractionError:
                     continue
                 for node in root.iter():
-                    if node.tag == f"{WORD_NS}ins":
+                    # ``w:moveTo`` is the destination of a tracked move (new text
+                    # not yet in force, like ``w:ins``); ``w:moveFrom`` is the
+                    # origin (still-in-force text being removed, like ``w:del``).
+                    if node.tag in (f"{WORD_NS}ins", f"{WORD_NS}moveTo"):
                         insertions += 1
-                    elif node.tag == f"{WORD_NS}del":
+                    elif node.tag in (f"{WORD_NS}del", f"{WORD_NS}moveFrom"):
                         deletions += 1
     except (BadZipFile, RecursionError, DocxExtractionError):
         return None
@@ -590,13 +603,40 @@ def _jc_alignment(ppr: ET.Element | None) -> str | None:
     return None
 
 
+def _baseline_runs(paragraph: ET.Element) -> Iterable[ET.Element]:
+    """Yield the paragraph's runs that are IN FORCE in the baseline, in document order.
+
+    Skips any run inside a tracked insertion (``w:ins``) or the destination of a
+    tracked move (``w:moveTo``): that text is not yet part of the agreement, so
+    its presentational properties (font/size) must not win the paragraph cascade.
+    Without this a tracked INSERTION in the counterparty's font could make the
+    whole baseline paragraph report that font (D1). Runs inside ``w:del`` /
+    ``w:moveFrom`` (still in force) and plain runs are yielded, exactly mirroring
+    how ``_collect_revision_aware_text`` treats each region.
+
+    On a clean paragraph (no ``w:ins``/``w:moveTo``) this yields the same runs, in
+    the same pre-order, that ``paragraph.iter(w:r)`` did -- so the resolved font /
+    size is unchanged for every non-revised document."""
+    def walk(node: ET.Element) -> Iterable[ET.Element]:
+        for child in node:
+            if child.tag in (f"{WORD_NS}ins", f"{WORD_NS}moveTo"):
+                continue
+            if child.tag == f"{WORD_NS}r":
+                yield child
+            yield from walk(child)
+
+    yield from walk(paragraph)
+
+
 def _inline_paragraph_font(paragraph: ET.Element) -> str | None:
     """The paragraph's dominant-run INLINE font name (``<w:rPr>/<w:rFonts w:ascii>``).
 
     Reuses the same first-run-with-rPr "dominant run" heuristic the redline
     emitter uses, so the captured from-state font matches what carries through a
-    tracked change. Only returned when a run names an explicit face."""
-    for run in paragraph.iter(f"{WORD_NS}r"):
+    tracked change. Runs inside a tracked insertion are ignored (see
+    ``_baseline_runs``) so the baseline paragraph does not adopt an inserted run's
+    font. Only returned when a run names an explicit face."""
+    for run in _baseline_runs(paragraph):
         rpr = run.find(f"{WORD_NS}rPr")
         if rpr is None:
             continue
@@ -689,7 +729,9 @@ def _paragraph_font_size(paragraph: ET.Element, ppr: ET.Element | None) -> int |
     Prefers the paragraph-mark run-default size (``<w:pPr>/<w:rPr>/<w:sz>``),
     which Word applies to the whole paragraph mark; otherwise falls back to the
     dominant-run size using the same first-run-with-rPr heuristic as
-    ``_paragraph_font``. Only returned when present, so the field is additive."""
+    ``_paragraph_font``. Runs inside a tracked insertion are ignored (see
+    ``_baseline_runs``) so an inserted run's size cannot win the baseline. Only
+    returned when present, so the field is additive."""
     if ppr is not None:
         mark_rpr = ppr.find(f"{WORD_NS}rPr")
         if mark_rpr is not None:
@@ -697,7 +739,7 @@ def _paragraph_font_size(paragraph: ET.Element, ppr: ET.Element | None) -> int |
             if mark_size is not None:
                 return mark_size
 
-    for run in paragraph.iter(f"{WORD_NS}r"):
+    for run in _baseline_runs(paragraph):
         rpr = run.find(f"{WORD_NS}rPr")
         if rpr is None:
             continue
@@ -1167,20 +1209,33 @@ def _collect_revision_aware_text(node: ET.Element, parts: List[str]) -> None:
     """Append a node's reviewable text, honoring tracked-change markup.
 
     The reviewed state is the CURRENT in-force baseline: tracked *insertions*
-    (``w:ins``) are not yet part of the agreement, so their text is skipped, and
-    tracked *deletions* (``w:del`` carrying ``w:delText``) are still in force, so
-    their text is restored. This mirrors ``docx_health`` (which already reads
-    ``w:delText``) and replaces the old flat ``w:t``-only walk that silently
-    yielded the "all insertions accepted, all deletions gone" hypothetical.
+    (``w:ins``, and the destination ``w:moveTo`` of a tracked move) are not yet
+    part of the agreement, so their text is skipped; tracked *deletions*
+    (``w:del`` carrying ``w:delText``) and the *origin* of a tracked move
+    (``w:moveFrom``, whose runs are still in force) are restored. Dropping
+    ``w:moveTo`` while keeping ``w:moveFrom`` removes the DUPLICATE a move
+    otherwise produces (the clause would appear at both its old and new location)
+    and leaves the moved clause exactly once, at its still-in-force origin (A1).
+    This mirrors ``docx_health`` (which already reads ``w:delText``) and replaces
+    the old flat ``w:t``-only walk that silently yielded the "all insertions
+    accepted, all deletions gone" hypothetical.
 
-    A clean document has no ``w:ins``/``w:del``/``w:delText`` anywhere, so this
-    recursion visits exactly the same ``w:t``/``w:tab``/``w:br``/``w:cr`` nodes,
-    in document order, that the previous ``.iter()`` walk did -- byte-identical
-    output. ``presence_of_tracked_changes`` flags the revision case separately.
+    An ``mc:AlternateContent`` block stores the same content twice (a modern
+    ``mc:Choice`` and a legacy ``mc:Fallback``); a conformant reader takes one
+    branch, so we recurse into ``mc:Choice`` and skip ``mc:Fallback`` -- otherwise
+    a text box's text is counted twice (A2).
+
+    A clean document has no ``w:ins``/``w:del``/``w:delText``/move/AlternateContent
+    markup anywhere, so this recursion visits exactly the same
+    ``w:t``/``w:tab``/``w:br``/``w:cr`` nodes, in document order, that the previous
+    ``.iter()`` walk did -- byte-identical output.
+    ``presence_of_tracked_changes`` flags the revision case separately.
     """
     tag = node.tag
-    if tag == f"{WORD_NS}ins":
-        # Tracked insertion: not in the in-force baseline, drop its text.
+    if tag in (f"{WORD_NS}ins", f"{WORD_NS}moveTo"):
+        # Tracked insertion / move destination: not in the in-force baseline yet,
+        # drop its text. (``w:moveFrom`` is NOT dropped -- its runs are still in
+        # force, so it falls through to the generic recursion below and is kept.)
         return
     if tag == f"{WORD_NS}t":
         if node.text:
@@ -1193,7 +1248,15 @@ def _collect_revision_aware_text(node: ET.Element, parts: List[str]) -> None:
         parts.append("\t")
     elif tag in {f"{WORD_NS}br", f"{WORD_NS}cr"}:
         parts.append("\n")
-    for child in node:
+
+    children = list(node)
+    if tag == f"{MC_NS}AlternateContent":
+        # Honor markup-compatibility: when a modern ``mc:Choice`` is present, the
+        # legacy ``mc:Fallback`` is a redundant copy of the same content -- skip it
+        # so the text box's text is collected once, not twice.
+        if any(child.tag == f"{MC_NS}Choice" for child in children):
+            children = [child for child in children if child.tag != f"{MC_NS}Fallback"]
+    for child in children:
         _collect_revision_aware_text(child, parts)
 
 
