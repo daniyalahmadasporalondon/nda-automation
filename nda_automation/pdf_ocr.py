@@ -387,6 +387,112 @@ def ocr_pdf_text(
     return assembled or None
 
 
+def ocr_pdf_pages(
+    data: bytes,
+    page_indices: "list[int] | tuple[int, ...] | set[int]",
+    *,
+    provider: Optional[OcrProvider] = None,
+    fitz_module: Any | None = None,
+) -> dict[int, str]:
+    """OCR a SPECIFIC set of pages (0-based indices) and return ``{index: text}``.
+
+    This is the PER-PAGE rescue seam for a MIXED text+image PDF: a scanned
+    signature/annex page sitting among text-layer pages would otherwise be
+    dropped, because the whole-document ``ocr_pdf_text`` fallback only fires when
+    the ENTIRE document has no text layer. ``ocr_pdf_pages`` OCRs only the named
+    (image-only) pages so a page with no text layer can be rescued even when other
+    pages have text.
+
+    Contract:
+      * Returns a dict mapping each successfully-OCR'd 0-based page index to its
+        recovered non-empty text. A page that produced no readable text, or that
+        was too large to rasterize within the byte budget, is simply ABSENT from
+        the dict (the caller then WARNS that the page's content is missing --
+        nothing is silently lost).
+      * PARTIAL results are intentional and safe here (unlike ``ocr_pdf_text``):
+        the caller names any un-rescued page in a degraded-quality warning, so a
+        provider failure part-way through returns what was gathered rather than
+        discarding good pages.
+      * NEVER RAISES. Returns ``{}`` when OCR is OFF/unconfigured, PyMuPDF is
+        missing, or nothing could be recovered.
+      * BOUNDED: at most ``_configured_max_pages()`` pages are OCR'd in total (the
+        same cost/latency tourniquet as ``ocr_pdf_text``), applied to the requested
+        indices in ascending order; each page's pixmap is byte-budgeted; each
+        provider call carries the per-call timeout.
+    """
+
+    wanted = sorted({int(i) for i in page_indices if int(i) >= 0})
+    if not wanted:
+        return {}
+
+    active_provider = provider if provider is not None else resolve_ocr_provider()
+    if active_provider is None:
+        return {}
+
+    if fitz_module is None:
+        try:
+            import fitz  # type: ignore[import-not-found]
+
+            fitz_module = fitz
+        except ImportError:
+            return {}
+
+    document = None
+    recovered: dict[int, str] = {}
+    try:
+        document = fitz_module.open(stream=data, filetype="pdf")
+        page_count = int(getattr(document, "page_count", 0) or 0)
+        if page_count <= 0:
+            return {}
+        max_pages = _configured_max_pages()
+        requested_dpi = _configured_dpi()
+        budget = max_pages
+        for page_index in wanted:
+            if budget <= 0:
+                break
+            if page_index >= page_count:
+                continue
+            try:
+                page = document.load_page(page_index)
+                rect = page.rect
+                effective_dpi = _budgeted_dpi(
+                    float(rect.width), float(rect.height), requested_dpi
+                )
+                if effective_dpi is None:
+                    # Too large to rasterize within budget -- leave it un-rescued
+                    # (the caller warns). Does NOT consume the page budget.
+                    continue
+                scale = effective_dpi / 72.0
+                matrix = fitz_module.Matrix(scale, scale)
+                pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+                image_png = pixmap.tobytes("png")
+            except Exception:
+                # One bad page must not blind the whole rescue; skip it.
+                continue
+            budget -= 1
+            try:
+                page_text = active_provider(image_png)
+            except OcrError:
+                # Provider transport/config failure -- stop OCR'ing further pages
+                # (the transport is down) but KEEP the pages already recovered;
+                # the caller warns about the rest.
+                break
+            except Exception:
+                break
+            if page_text and page_text.strip():
+                recovered[page_index] = page_text.strip()
+    except Exception:
+        return recovered
+    finally:
+        if document is not None:
+            try:
+                document.close()
+            except Exception:
+                pass
+
+    return recovered
+
+
 __all__ = [
     "DEFAULT_OCR_MODEL",
     "MAX_OCR_PAGES",
@@ -395,6 +501,7 @@ __all__ = [
     "OcrProvider",
     "OpenRouterVisionOcrProvider",
     "ocr_enabled",
+    "ocr_pdf_pages",
     "ocr_pdf_text",
     "ocr_status",
     "resolve_ocr_provider",

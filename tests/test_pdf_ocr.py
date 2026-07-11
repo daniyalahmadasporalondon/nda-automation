@@ -18,6 +18,7 @@ from nda_automation.pdf_ocr import (
     OcrError,
     OpenRouterVisionOcrProvider,
     ocr_enabled,
+    ocr_pdf_pages,
     ocr_pdf_text,
     ocr_status,
     resolve_ocr_provider,
@@ -299,3 +300,62 @@ class OpenRouterVisionProviderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OcrPdfPagesTests(unittest.TestCase):
+    """Per-PAGE OCR rescue seam (defect B2): OCR only the named image-only pages."""
+
+    @requires_pymupdf
+    def test_ocr_only_the_requested_pages(self):
+        data = make_image_only_pdf(pages=3)
+        provider = CountingProvider()
+        # Request only page index 1 (the middle page).
+        result = ocr_pdf_pages(data, [1], provider=provider)
+        self.assertEqual(provider.calls, 1)
+        self.assertEqual(set(result.keys()), {1})
+        self.assertIn("Confidential Information", result[1])
+
+    @requires_pymupdf
+    def test_returns_empty_when_no_provider(self):
+        import os
+
+        os.environ.pop("NDA_PDF_OCR_ENABLED", None)
+        data = make_image_only_pdf(pages=2)
+        self.assertEqual(ocr_pdf_pages(data, [0, 1]), {})
+
+    @requires_pymupdf
+    def test_empty_indices_returns_empty(self):
+        provider = CountingProvider()
+        self.assertEqual(ocr_pdf_pages(make_image_only_pdf(pages=1), [], provider=provider), {})
+        self.assertEqual(provider.calls, 0)
+
+    @requires_pymupdf
+    def test_partial_results_survive_a_provider_failure(self):
+        data = make_image_only_pdf(pages=3)
+
+        class FlakyProvider:
+            def __init__(self):
+                self.calls = 0
+
+            def __call__(self, image_png):
+                self.calls += 1
+                if self.calls >= 2:
+                    raise OcrError("transport down")
+                return "Confidential page one text."
+
+        provider = FlakyProvider()
+        result = ocr_pdf_pages(data, [0, 1, 2], provider=provider)
+        # Page 0 recovered before the transport failed; the rest are simply absent
+        # (the caller warns about them). No exception escapes.
+        self.assertIn(0, result)
+        self.assertNotIn(1, result)
+        self.assertNotIn(2, result)
+
+    @requires_pymupdf
+    def test_page_budget_caps_total_pages(self):
+        data = make_image_only_pdf(pages=5)
+        provider = CountingProvider()
+        with patch.dict("os.environ", {"NDA_PDF_OCR_MAX_PAGES": "2"}):
+            result = ocr_pdf_pages(data, [0, 1, 2, 3, 4], provider=provider)
+        self.assertEqual(provider.calls, 2)
+        self.assertEqual(set(result.keys()), {0, 1})
