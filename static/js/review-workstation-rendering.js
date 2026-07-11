@@ -6432,11 +6432,28 @@ function renderSourceFidelityTableCell(cell) {
     cellStyle.background ? `data-source-fidelity-cell-background="${escapeHtml(cellStyle.background)}"` : "",
     cellStyle.width ? `data-source-fidelity-cell-width="${escapeHtml(cellStyle.width)}"` : "",
   ].filter(Boolean).join(" ");
+  // Preserve merged-cell geometry: w:gridSpan -> colspan, w:vMerge -> rowspan.
+  const colSpan = sourceFidelitySpan(cell?.col_span);
+  const rowSpan = sourceFidelitySpan(cell?.row_span);
+  const spanAttributes = [
+    colSpan > 1 ? `colspan="${colSpan}"` : "",
+    rowSpan > 1 ? `rowspan="${rowSpan}"` : "",
+  ].filter(Boolean).join(" ");
+  // Cells may hold nested tables (a <w:tbl> inside a <w:tc>), so route each cell
+  // block through renderSourceFidelityBlock, which recurses into nested tables.
   return `
-    <td data-source-fidelity-paragraph-ids="${escapeHtml(paragraphIds.join(" "))}"${cellStyleAttribute}${cellStyleData ? ` ${cellStyleData}` : ""}>
-      ${blocks.length ? blocks.map(renderSourceFidelityParagraphBlock).join("") : "&nbsp;"}
+    <td data-source-fidelity-paragraph-ids="${escapeHtml(paragraphIds.join(" "))}"${spanAttributes ? ` ${spanAttributes}` : ""}${cellStyleAttribute}${cellStyleData ? ` ${cellStyleData}` : ""}>
+      ${blocks.length ? blocks.map(renderSourceFidelityBlock).join("") : "&nbsp;"}
     </td>
   `;
+}
+
+// Clamp a span value to a sane positive integer so a malformed payload can never
+// emit a colspan/rowspan of 0, a negative, or an absurdly large attribute.
+function sourceFidelitySpan(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 1) return 1;
+  return Math.min(Math.floor(numeric), 1000);
 }
 
 function sourceFidelityCellCss(cell) {

@@ -316,3 +316,122 @@ def test_source_fidelity_exposes_paragraph_alignment_and_font_in_style():
         "Justified body clause text.",
         "Unstyled paragraph.",
     ]
+
+
+def _cell_texts(cell):
+    return [block["text"] for block in cell["blocks"] if block.get("type") == "paragraph"]
+
+
+def _nested_tables(cell):
+    return [block for block in cell["blocks"] if block.get("type") == "table"]
+
+
+def test_source_fidelity_preserves_horizontal_grid_span_as_colspan():
+    # A header cell spanning both columns (col_span from w:gridSpan) must reach the
+    # rendered cell so the renderer can emit a colspan; the ordinary cells do not.
+    review_result = {
+        "source": {"type": "docx"},
+        "paragraphs": [
+            {"id": "h", "index": 1, "text": "Header", "source_kind": "table_cell",
+             "table": {"table_index": 1, "row_index": 1, "cell_index": 1, "col_span": 2}},
+            {"id": "l", "index": 2, "text": "Left", "source_kind": "table_cell",
+             "table": {"table_index": 1, "row_index": 2, "cell_index": 1}},
+            {"id": "r", "index": 3, "text": "Right", "source_kind": "table_cell",
+             "table": {"table_index": 1, "row_index": 2, "cell_index": 2}},
+        ],
+    }
+
+    payload = source_fidelity_payload(review_result, source=review_result["source"])
+    table = payload["blocks"][0]
+
+    header_cell = table["rows"][0]["cells"][0]
+    assert header_cell["col_span"] == 2
+    assert _cell_texts(header_cell) == ["Header"]
+    assert len(table["rows"][1]["cells"]) == 2
+    assert "col_span" not in table["rows"][1]["cells"][0]
+
+
+def test_source_fidelity_preserves_vertical_merge_and_folds_continuation():
+    # The restart cell carries row_span; the continuation cell (v_merge=continue)
+    # is folded away so column 2 of row 2 stays in column 2, not shifted left.
+    review_result = {
+        "source": {"type": "docx"},
+        "paragraphs": [
+            {"id": "m", "index": 1, "text": "Merged down", "source_kind": "table_cell",
+             "table": {"table_index": 1, "row_index": 1, "cell_index": 1, "row_span": 2}},
+            {"id": "a", "index": 2, "text": "Row1 col2", "source_kind": "table_cell",
+             "table": {"table_index": 1, "row_index": 1, "cell_index": 2}},
+            {"id": "c", "index": 3, "text": "hidden", "source_kind": "table_cell",
+             "table": {"table_index": 1, "row_index": 2, "cell_index": 1, "v_merge": "continue"}},
+            {"id": "b", "index": 4, "text": "Row2 col2", "source_kind": "table_cell",
+             "table": {"table_index": 1, "row_index": 2, "cell_index": 2}},
+        ],
+    }
+
+    payload = source_fidelity_payload(review_result, source=review_result["source"])
+    table = payload["blocks"][0]
+
+    restart_cell = table["rows"][0]["cells"][0]
+    assert restart_cell["row_span"] == 2
+    assert _cell_texts(restart_cell) == ["Merged down"]
+    # Row 2 has ONLY the real column-2 cell; the folded continuation is gone.
+    assert [cell["cell_index"] for cell in table["rows"][1]["cells"]] == [2]
+    assert _cell_texts(table["rows"][1]["cells"][0]) == ["Row2 col2"]
+
+
+def test_source_fidelity_nests_child_table_inside_parent_cell():
+    # A nested table (its cells carry a parent back-pointer) is emitted INSIDE the
+    # parent cell's blocks in document order, not as a flat sibling table.
+    review_result = {
+        "source": {"type": "docx"},
+        "paragraphs": [
+            {"id": "o", "index": 1, "text": "Outer cell before", "source_kind": "table_cell",
+             "table": {"table_index": 1, "row_index": 1, "cell_index": 1}},
+            {"id": "ia", "index": 2, "text": "Inner A", "source_kind": "table_cell",
+             "table": {"table_index": 2, "row_index": 1, "cell_index": 1,
+                       "parent": {"table_index": 1, "row_index": 1, "cell_index": 1}}},
+            {"id": "ib", "index": 3, "text": "Inner B", "source_kind": "table_cell",
+             "table": {"table_index": 2, "row_index": 1, "cell_index": 2,
+                       "parent": {"table_index": 1, "row_index": 1, "cell_index": 1}}},
+        ],
+    }
+
+    payload = source_fidelity_payload(review_result, source=review_result["source"])
+    blocks = payload["blocks"]
+
+    # Exactly one TOP-LEVEL table; the inner table is not a sibling.
+    assert [block["type"] for block in blocks] == ["table"]
+    outer_cell = blocks[0]["rows"][0]["cells"][0]
+    assert _cell_texts(outer_cell) == ["Outer cell before"]
+    nested = _nested_tables(outer_cell)
+    assert len(nested) == 1
+    assert nested[0]["table_index"] == 2
+    inner_texts = [
+        _cell_texts(cell)[0]
+        for cell in nested[0]["rows"][0]["cells"]
+    ]
+    assert inner_texts == ["Inner A", "Inner B"]
+    # Summary counts the nested table too.
+    assert payload["summary"]["table_count"] == 2
+
+
+def test_source_fidelity_plain_table_carries_no_span_keys():
+    # A plain 2-cell table is unchanged: cells expose no col_span/row_span keys.
+    review_result = {
+        "source": {"type": "docx"},
+        "paragraphs": [
+            {"id": "x", "index": 1, "text": "One", "source_kind": "table_cell",
+             "table": {"table_index": 1, "row_index": 1, "cell_index": 1}},
+            {"id": "y", "index": 2, "text": "Two", "source_kind": "table_cell",
+             "table": {"table_index": 1, "row_index": 1, "cell_index": 2}},
+        ],
+    }
+
+    payload = source_fidelity_payload(review_result, source=review_result["source"])
+    cells = payload["blocks"][0]["rows"][0]["cells"]
+
+    assert [cell["cell_index"] for cell in cells] == [1, 2]
+    for cell in cells:
+        assert "col_span" not in cell
+        assert "row_span" not in cell
+    assert payload["summary"]["table_count"] == 1

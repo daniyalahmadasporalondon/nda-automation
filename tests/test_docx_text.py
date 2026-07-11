@@ -122,6 +122,165 @@ class DocxTextTests(unittest.TestCase):
             },
         )
 
+    def test_extracts_horizontal_grid_span_as_col_span(self):
+        # Row 1 is a single header cell spanning both columns (w:gridSpan=2);
+        # row 2 has two ordinary cells. The header cell must carry col_span=2 so
+        # the reconstruction can emit a colspan; the ordinary cells carry none.
+        data = make_docx(
+            [],
+            body_xml="""
+            <w:tbl>
+              <w:tr>
+                <w:tc><w:tcPr><w:gridSpan w:val="2"/></w:tcPr><w:p><w:r><w:t>Header spanning two</w:t></w:r></w:p></w:tc>
+              </w:tr>
+              <w:tr>
+                <w:tc><w:p><w:r><w:t>Left</w:t></w:r></w:p></w:tc>
+                <w:tc><w:p><w:r><w:t>Right</w:t></w:r></w:p></w:tc>
+              </w:tr>
+            </w:tbl>
+            """,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(
+            paragraphs[0]["table"],
+            {"table_index": 1, "row_index": 1, "cell_index": 1, "col_span": 2},
+        )
+        self.assertEqual(paragraphs[1]["table"], {"table_index": 1, "row_index": 2, "cell_index": 1})
+        self.assertEqual(paragraphs[2]["table"], {"table_index": 1, "row_index": 2, "cell_index": 2})
+        self.assertNotIn("col_span", paragraphs[1]["table"])
+
+    def test_extracts_vertical_merge_as_row_span_and_marks_continuation(self):
+        # Column 1 is vertically merged across both rows: row 1 restarts the merge
+        # and carries the content; row 2 is a continuation cell. The restart cell
+        # must carry row_span=2, and the continuation must be marked so the
+        # reconstruction folds it into the rowspan instead of drawing a new cell.
+        data = make_docx(
+            [],
+            body_xml="""
+            <w:tbl>
+              <w:tr>
+                <w:tc><w:tcPr><w:vMerge w:val="restart"/></w:tcPr><w:p><w:r><w:t>Merged down</w:t></w:r></w:p></w:tc>
+                <w:tc><w:p><w:r><w:t>Row1 col2</w:t></w:r></w:p></w:tc>
+              </w:tr>
+              <w:tr>
+                <w:tc><w:tcPr><w:vMerge/></w:tcPr><w:p><w:r><w:t>continuation</w:t></w:r></w:p></w:tc>
+                <w:tc><w:p><w:r><w:t>Row2 col2</w:t></w:r></w:p></w:tc>
+              </w:tr>
+            </w:tbl>
+            """,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+        by_text = {paragraph["text"]: paragraph["table"] for paragraph in paragraphs}
+
+        self.assertEqual(
+            by_text["Merged down"],
+            {"table_index": 1, "row_index": 1, "cell_index": 1, "row_span": 2},
+        )
+        self.assertEqual(
+            by_text["continuation"],
+            {"table_index": 1, "row_index": 2, "cell_index": 1, "v_merge": "continue"},
+        )
+        self.assertEqual(by_text["Row2 col2"], {"table_index": 1, "row_index": 2, "cell_index": 2})
+
+    def test_row_span_survives_mixed_grid_span_in_earlier_columns(self):
+        # A vertical merge in the RIGHT column must count continuation rows by grid
+        # column, not by cell ordinal, so a wider gridSpan cell on the left cannot
+        # throw the rowspan off. Row 1: [span-2 cell][restart cell]; row 2:
+        # [cell][cell][continuation]. The restart (grid col 2) spans 2 rows.
+        data = make_docx(
+            [],
+            body_xml="""
+            <w:tbl>
+              <w:tr>
+                <w:tc><w:tcPr><w:gridSpan w:val="2"/></w:tcPr><w:p><w:r><w:t>Wide left</w:t></w:r></w:p></w:tc>
+                <w:tc><w:tcPr><w:vMerge w:val="restart"/></w:tcPr><w:p><w:r><w:t>Tall right</w:t></w:r></w:p></w:tc>
+              </w:tr>
+              <w:tr>
+                <w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc>
+                <w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc>
+                <w:tc><w:tcPr><w:vMerge/></w:tcPr><w:p><w:r><w:t>cont</w:t></w:r></w:p></w:tc>
+              </w:tr>
+            </w:tbl>
+            """,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+        by_text = {paragraph["text"]: paragraph["table"] for paragraph in paragraphs}
+
+        self.assertEqual(by_text["Wide left"]["col_span"], 2)
+        self.assertEqual(by_text["Tall right"]["row_span"], 2)
+        self.assertEqual(by_text["cont"]["v_merge"], "continue")
+
+    def test_extracts_nested_table_with_parent_back_pointer(self):
+        # A table nested inside a cell: its cells must carry a parent back-pointer
+        # to the enclosing (outer) cell so the reconstruction can nest it rather
+        # than flatten it into a sibling table. The outer cell carries no parent.
+        data = make_docx(
+            [],
+            body_xml="""
+            <w:tbl>
+              <w:tr>
+                <w:tc>
+                  <w:p><w:r><w:t>Outer cell before</w:t></w:r></w:p>
+                  <w:tbl>
+                    <w:tr>
+                      <w:tc><w:p><w:r><w:t>Inner A</w:t></w:r></w:p></w:tc>
+                      <w:tc><w:p><w:r><w:t>Inner B</w:t></w:r></w:p></w:tc>
+                    </w:tr>
+                  </w:tbl>
+                </w:tc>
+              </w:tr>
+            </w:tbl>
+            """,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+        by_text = {paragraph["text"]: paragraph["table"] for paragraph in paragraphs}
+
+        self.assertEqual(
+            by_text["Outer cell before"],
+            {"table_index": 1, "row_index": 1, "cell_index": 1},
+        )
+        self.assertNotIn("parent", by_text["Outer cell before"])
+        self.assertEqual(
+            by_text["Inner A"],
+            {
+                "table_index": 2,
+                "row_index": 1,
+                "cell_index": 1,
+                "parent": {"table_index": 1, "row_index": 1, "cell_index": 1},
+            },
+        )
+        self.assertEqual(by_text["Inner B"]["parent"], {"table_index": 1, "row_index": 1, "cell_index": 1})
+
+    def test_plain_table_cell_carries_no_span_or_parent_keys(self):
+        # A plain 2-cell row (no merges, no nesting) must be byte-for-byte the same
+        # contract as before this feature: only table_index/row_index/cell_index.
+        data = make_docx(
+            [],
+            body_xml="""
+            <w:tbl>
+              <w:tr>
+                <w:tc><w:p><w:r><w:t>Cell one</w:t></w:r></w:p></w:tc>
+                <w:tc><w:p><w:r><w:t>Cell two</w:t></w:r></w:p></w:tc>
+              </w:tr>
+            </w:tbl>
+            """,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(paragraphs[0]["table"], {"table_index": 1, "row_index": 1, "cell_index": 1})
+        self.assertEqual(paragraphs[1]["table"], {"table_index": 1, "row_index": 1, "cell_index": 2})
+        for paragraph in paragraphs:
+            self.assertNotIn("col_span", paragraph["table"])
+            self.assertNotIn("row_span", paragraph["table"])
+            self.assertNotIn("v_merge", paragraph["table"])
+            self.assertNotIn("parent", paragraph["table"])
+
     def test_comments_xml_is_excluded_from_reviewable_text(self):
         # word/comments.xml carries counterparty/reviewer annotations, not body
         # text. It must never reach the verdict engine: a comment that mentions a

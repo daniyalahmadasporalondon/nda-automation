@@ -73,14 +73,45 @@ def source_fidelity_payload(review_result: dict[str, Any], *, source: dict[str, 
 
 
 def _source_blocks(paragraphs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    blocks: list[dict[str, Any]] = []
-    table_groups: dict[int, dict[int, dict[int, list[dict[str, Any]]]]] = defaultdict(
-        lambda: defaultdict(lambda: defaultdict(list))
-    )
-    table_order: list[int] = []
-    table_positions: dict[int, int] = {}
-    table_cell_styles: dict[tuple[int, int, int], dict[str, Any]] = {}
+    """Group flat review paragraphs into ordered render blocks.
+
+    Table-cell paragraphs (``paragraph["table"]``) are folded back into a
+    structured ``{"type": "table", "rows": [...]}`` block that preserves:
+
+    * horizontal merges — ``col_span`` from ``w:gridSpan`` on the cell;
+    * vertical merges — ``row_span`` on the restart cell, with the ``v_merge:
+      "continue"`` cells folded away (never rendered as their own cell);
+    * nested tables — a ``<w:tbl>`` inside a cell (its cells carry a ``parent``
+      back-pointer) is emitted as a table block INSIDE the parent cell's blocks,
+      in document order, rather than as a flat sibling table.
+
+    A plain table with no merges or nesting is unchanged.
+    """
     indent_baselines = _pdf_indent_baselines(paragraphs)
+
+    # Ordered render items at the top level: ("paragraph", block) | ("table", ti).
+    top_items: list[tuple[str, Any]] = []
+    # Per-cell ordered items so a nested table lands at its document-order slot.
+    cell_items: dict[tuple[int, int, int], list[tuple[str, Any]]] = {}
+    cell_meta: dict[tuple[int, int, int], dict[str, Any]] = {}
+    cell_paragraph_ids: dict[tuple[int, int, int], list[str]] = {}
+    # Every (row_index, cell_index) that belongs to a table, so a table can be
+    # rebuilt even when a cell holds only a nested table (no direct paragraph).
+    table_cell_keys: dict[int, set[tuple[int, int]]] = defaultdict(set)
+    placed_tables: set[int] = set()
+
+    def place_table(table_index: int, parent: tuple[Any, ...] | None) -> None:
+        if table_index in placed_tables:
+            return
+        placed_tables.add(table_index)
+        if parent is None:
+            top_items.append(("table", table_index))
+            return
+        parent_ti, parent_ri, parent_ci, grandparent = parent
+        # Ensure the enclosing table/cell exist before nesting under them.
+        place_table(parent_ti, grandparent)
+        table_cell_keys[parent_ti].add((parent_ri, parent_ci))
+        cell_items.setdefault((parent_ti, parent_ri, parent_ci), []).append(("table", table_index))
 
     for paragraph in paragraphs:
         table = paragraph.get("table")
@@ -89,42 +120,102 @@ def _source_blocks(paragraphs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             row_index = _positive_int(table.get("row_index"))
             cell_index = _positive_int(table.get("cell_index"))
             if table_index and row_index and cell_index:
-                if table_index not in table_groups:
-                    table_order.append(table_index)
-                    table_positions[table_index] = len(blocks)
-                    blocks.append({"type": "table", "id": f"table-{table_index}", "table_index": table_index})
-                cell_style = _table_cell_style_record(table)
-                if cell_style:
-                    table_cell_styles.setdefault((table_index, row_index, cell_index), cell_style)
-                table_groups[table_index][row_index][cell_index].append(
-                    _paragraph_block(paragraph, in_table=True, indent_baselines=indent_baselines)
-                )
+                # A vertical-merge continuation cell is folded into the restart
+                # cell's rowspan; it is never rendered as a cell of its own.
+                if str(table.get("v_merge") or "").strip().lower() == "continue":
+                    continue
+                parent = _parent_key(table.get("parent"))
+                place_table(table_index, parent)
+                key = (table_index, row_index, cell_index)
+                table_cell_keys[table_index].add((row_index, cell_index))
+                if key not in cell_meta:
+                    cell_meta[key] = _cell_meta_record(table)
+                block = _paragraph_block(paragraph, in_table=True, indent_baselines=indent_baselines)
+                cell_items.setdefault(key, []).append(("paragraph", block))
+                cell_paragraph_ids.setdefault(key, []).append(str(block["paragraph_id"]))
                 continue
-        blocks.append(_paragraph_block(paragraph, in_table=False, indent_baselines=indent_baselines))
+        top_items.append(("paragraph", _paragraph_block(paragraph, in_table=False, indent_baselines=indent_baselines)))
 
-    for table_index in table_order:
-        rows = []
-        for row_index in sorted(table_groups[table_index]):
-            cells = []
-            for cell_index in sorted(table_groups[table_index][row_index]):
-                cell_blocks = table_groups[table_index][row_index][cell_index]
-                cell = {
+    def build_table(table_index: int) -> dict[str, Any]:
+        keys = table_cell_keys.get(table_index, set())
+        rows: list[dict[str, Any]] = []
+        for row_index in sorted({row for row, _ in keys}):
+            cells: list[dict[str, Any]] = []
+            for cell_index in sorted({col for row, col in keys if row == row_index}):
+                key = (table_index, row_index, cell_index)
+                cell: dict[str, Any] = {
                     "cell_index": cell_index,
-                    "paragraph_ids": [str(block["paragraph_id"]) for block in cell_blocks],
-                    "blocks": cell_blocks,
+                    "paragraph_ids": list(cell_paragraph_ids.get(key, [])),
+                    "blocks": _build_cell_blocks(cell_items.get(key, []), build_table),
                 }
-                cell_style = table_cell_styles.get((table_index, row_index, cell_index))
-                if cell_style:
-                    cell["style"] = cell_style
+                meta = cell_meta.get(key, {})
+                if meta.get("style"):
+                    cell["style"] = meta["style"]
+                if meta.get("col_span"):
+                    cell["col_span"] = meta["col_span"]
+                if meta.get("row_span"):
+                    cell["row_span"] = meta["row_span"]
                 cells.append(cell)
             rows.append({"row_index": row_index, "cells": cells})
-        blocks[table_positions[table_index]] = {
-            "type": "table",
-            "id": f"table-{table_index}",
-            "table_index": table_index,
-            "rows": rows,
-        }
+        return {"type": "table", "id": f"table-{table_index}", "table_index": table_index, "rows": rows}
+
+    blocks: list[dict[str, Any]] = []
+    for kind, value in top_items:
+        blocks.append(value if kind == "paragraph" else build_table(value))
     return blocks
+
+
+def _build_cell_blocks(items: list[tuple[str, Any]], build_table: Any) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    for kind, value in items:
+        blocks.append(value if kind == "paragraph" else build_table(value))
+    return blocks
+
+
+def _parent_key(parent: Any) -> tuple[Any, ...] | None:
+    """Normalize a nested cell's ``parent`` back-pointer into a lookup key.
+
+    Returns ``(table_index, row_index, cell_index, grandparent_key)`` so a table
+    nested two or more levels deep resolves through the full chain, or ``None``
+    when the cell is not nested / the reference is incomplete."""
+    if not isinstance(parent, dict):
+        return None
+    parent_ti = _positive_int(parent.get("table_index"))
+    parent_ri = _positive_int(parent.get("row_index"))
+    parent_ci = _positive_int(parent.get("cell_index"))
+    if not (parent_ti and parent_ri and parent_ci):
+        return None
+    return (parent_ti, parent_ri, parent_ci, _parent_key(parent.get("parent")))
+
+
+def _cell_meta_record(table: dict[str, Any]) -> dict[str, Any]:
+    meta: dict[str, Any] = {}
+    style = _table_cell_style_record(table)
+    if style:
+        meta["style"] = style
+    col_span = _positive_int(table.get("col_span"))
+    if col_span and col_span > 1:
+        meta["col_span"] = col_span
+    row_span = _positive_int(table.get("row_span"))
+    if row_span and row_span > 1:
+        meta["row_span"] = row_span
+    return meta
+
+
+def _iter_table_blocks(blocks: list[dict[str, Any]]) -> "list[dict[str, Any]]":
+    """Flatten every table block, including tables nested inside cells."""
+    found: list[dict[str, Any]] = []
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "table":
+            continue
+        found.append(block)
+        for row in block.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            for cell in row.get("cells") or []:
+                if isinstance(cell, dict):
+                    found.extend(_iter_table_blocks(cell.get("blocks") or []))
+    return found
 
 
 def _paragraph_block(
@@ -276,9 +367,8 @@ def _summary(paragraphs: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> 
                 styled_run_count += 1
             if run.get("color"):
                 color_run_count += 1
-    for block in blocks:
-        if not isinstance(block, dict) or block.get("type") != "table":
-            continue
+    table_blocks = _iter_table_blocks(blocks)
+    for block in table_blocks:
         for row in block.get("rows") or []:
             if not isinstance(row, dict):
                 continue
@@ -294,7 +384,7 @@ def _summary(paragraphs: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> 
     return {
         "paragraph_count": len(paragraphs),
         "block_count": len(blocks),
-        "table_count": sum(1 for block in blocks if block.get("type") == "table"),
+        "table_count": len(table_blocks),
         "styled_table_cell_count": styled_table_cell_count,
         "table_cell_background_count": table_cell_background_count,
         "styled_run_count": styled_run_count,

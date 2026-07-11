@@ -4171,6 +4171,18 @@ h3 {
   margin-top: 7px;
 }
 
+/* A table nested inside a cell (a <w:tbl> inside a <w:tc>) renders as its own
+   bordered table within the parent cell; give it breathing room from any cell
+   text above/beside it and let it size to the cell rather than the page. */
+.source-fidelity-table .source-fidelity-table {
+  width: auto;
+  margin: 6px 0;
+}
+
+.source-fidelity-table .source-fidelity-paragraph + .source-fidelity-table {
+  margin-top: 7px;
+}
+
 /* ---- Interactive PDF markup (Original view annotation layer) ------------- */
 
 .pdf-markup-toolbar {

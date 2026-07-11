@@ -233,7 +233,7 @@
   },
   "js/redline-rendering.js": {
     "sha256": "9422b729e5522b7494937881be06482277bec20bd9731d803e3cf50c662633da",
-    "v": "20260711deferredbatch"
+    "v": "20260711parkedall"
   },
   "js/repository-actions.js": {
     "sha256": "74d1eef529a69b833ae3786caf8056510ce939cacb07cc7cb516c39d8e3d2872",
@@ -276,8 +276,8 @@
     "v": "20260622docxphase2-1"
   },
   "js/review-workstation-rendering.js": {
-    "sha256": "1b8ca1cbfc3be3e9e5d95c91b2934d666363d1aba4d0a898449cad3638893a42",
-    "v": "20260711pdfbatchreview"
+    "sha256": "be51841229f46ae81ed95f2c82a2c8c998d3aa1e86106b4b4d6c3fb9f834f43b",
+    "v": "20260711parkedall"
   },
   "js/review-workstation-source.js": {
     "sha256": "dc075665414f8a245e0e0b1f7f6d8b3b689ad9ea54138dcac1348cfc07660105",
@@ -296,7 +296,7 @@
     "v": "20260709clobber1"
   },
   "styles.css": {
-    "sha256": "4f609f7d83d17d877c3f937dd0655ef1788dd602ccaec635d1501db6759c3338",
-    "v": "20260711deferredbatch"
+    "sha256": "839a1fd00eb995f5d7ec11beca23346ecc1a820efc88302e568a75f143726788",
+    "v": "20260711parkedall"
   }
 }
