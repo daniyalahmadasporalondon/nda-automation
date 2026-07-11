@@ -6,9 +6,21 @@ from typing import Any, Dict, Iterable, List, NamedTuple
 from zipfile import BadZipFile, ZipFile
 import xml.etree.ElementTree as ET
 
-from .docx_xml import UnsafeDocxXmlError, is_docx_xml_part, parse_docx_xml, reject_unsafe_docx_xml
+from .docx_xml import R_NS, REL_NS, UnsafeDocxXmlError, is_docx_xml_part, parse_docx_xml, reject_unsafe_docx_xml
 
 WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+# Office Math Markup Language. An inline equation lives in an ``m:oMath`` subtree
+# whose literal characters are carried by ``m:t`` leaves. The revision-aware text
+# walk historically ignored this namespace entirely, so a clause containing an
+# inline equation silently lost that text -- the AI then reviewed a truncated
+# clause (C1). We harvest ``m:t`` as its literal characters so the equation text
+# reaches the reviewer.
+MATH_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+# The relationships namespace an ``r:id`` attribute lives in (on ``w:hyperlink``),
+# and the package-relationships namespace the ``.rels`` part uses for its
+# ``<Relationship>`` elements. Used to resolve a hyperlink's target URL (D3).
+R_NS_BRACED = "{" + R_NS + "}"
+REL_NS_BRACED = "{" + REL_NS + "}"
 # Markup-Compatibility-and-Extensibility namespace. An ``mc:AlternateContent``
 # block carries the SAME content twice -- an ``mc:Choice`` (the modern DrawingML
 # representation of e.g. a text box) and an ``mc:Fallback`` (the legacy VML copy
@@ -50,6 +62,11 @@ SUPPLEMENTAL_PART_PREFIXES = (
 # compares the export against the extracted text must scope the expected side
 # to the body and exclude paragraphs carrying this marker.
 SUPPLEMENTAL_SOURCE_KIND = "supplemental"
+# Word footnote/endnote parts hold two book-keeping notes per part -- a
+# ``separator`` and a ``continuationSeparator`` (usually w:id="-1"/"0") -- that
+# carry the horizontal rule Word draws above continued notes, NOT reviewable
+# content. They must never be surfaced as a real footnote.
+FOOTNOTE_BOOKKEEPING_TYPES = {"separator", "continuationSeparator"}
 DocxParagraph = Dict[str, object]
 NumberingDefinitions = Dict[str, object]
 StyleDefinitions = Dict[str, Dict[str, object]]
@@ -308,12 +325,29 @@ def _extract_main_document_paragraphs(document: ZipFile) -> List[DocxParagraph]:
     root = _read_xml_part(document, "word/document.xml", missing_message="The Word document is missing its main document body.")
     styles, doc_defaults = _read_styles(document)
     numbering = _read_numbering(document)
+    rels = _read_hyperlink_relationships(document, "word/_rels/document.xml.rels")
     numbering_state: Dict[str, Dict[int, int]] = {}
+    footnote_texts = _read_note_texts(document, "word/footnotes.xml", "footnote")
+    endnote_texts = _read_note_texts(document, "word/endnotes.xml", "endnote")
+    comment_records = _read_comment_records(document)
+    # Comment ranges (w:commentRangeStart/End) can span several paragraphs, so the
+    # open-range set is carried across the body walk below rather than resolved
+    # per-paragraph. This mutable set names every comment id whose range opened in
+    # an earlier paragraph and has not yet closed.
+    open_comment_ids: "Dict[str, None]" = {}
     paragraphs: List[DocxParagraph] = []
     for indexed in iter_indexed_body_paragraphs(root):
         text = _paragraph_text(indexed.paragraph)
+        annotations = _paragraph_annotation_metadata(
+            indexed.paragraph,
+            text,
+            footnote_texts=footnote_texts,
+            endnote_texts=endnote_texts,
+            comment_records=comment_records,
+            open_comment_ids=open_comment_ids,
+        )
         if text:
-            paragraphs.append(_paragraph_record(
+            record = _paragraph_record(
                 indexed.paragraph,
                 text,
                 source_index=indexed.source_index,
@@ -322,7 +356,13 @@ def _extract_main_document_paragraphs(document: ZipFile) -> List[DocxParagraph]:
                 numbering=numbering,
                 numbering_state=numbering_state,
                 table_context=indexed.table_context,
-            ))
+                rels=rels,
+            )
+            if annotations.get("footnotes"):
+                record["footnotes"] = annotations["footnotes"]
+            if annotations.get("comments"):
+                record["comments"] = annotations["comments"]
+            paragraphs.append(record)
         else:
             # A blank Word-numbered paragraph still consumes the next number in its
             # ``(numId, ilvl)`` sequence, so we advance the shared counter here even
@@ -357,6 +397,236 @@ def _extract_supplemental_paragraphs(document: ZipFile) -> List[DocxParagraph]:
                     numbering_state={},
                 ))
     return paragraphs
+
+
+def _read_optional_xml_part(document: ZipFile, part_name: str) -> ET.Element | None:
+    """Parse a DOCX part if present, else ``None``.
+
+    Footnotes / endnotes / comments are optional parts: a plain agreement has
+    none, and the caller must degrade to "no annotations" rather than raise. The
+    part still passes the same XXE / entity-expansion rejection every other part
+    does (via ``_read_xml_part``); only a genuinely absent part returns ``None``.
+    """
+    if part_name not in document.namelist():
+        return None
+    return _read_xml_part(document, part_name)
+
+
+def _read_note_texts(document: ZipFile, part_name: str, kind: str) -> Dict[str, Dict[str, str]]:
+    """Map a foot/endnote id -> ``{"text", "kind"}`` for real (non-separator) notes.
+
+    The ``separator`` / ``continuationSeparator`` book-keeping notes (the rule Word
+    draws above continued notes) carry no reviewable content and are dropped. Text
+    is collected revision-aware so a tracked change inside a note reads as the
+    in-force baseline, exactly like body text.
+    """
+    root = _read_optional_xml_part(document, part_name)
+    if root is None:
+        return {}
+    notes: Dict[str, Dict[str, str]] = {}
+    for note in root:
+        if note.tag != f"{WORD_NS}{kind}":
+            continue
+        note_type = _attr(note, "type").strip()
+        if note_type in FOOTNOTE_BOOKKEEPING_TYPES:
+            continue
+        note_id = _attr(note, "id").strip()
+        if not note_id:
+            continue
+        text = _note_text(note)
+        if text:
+            notes[note_id] = {"text": text, "kind": kind}
+    return notes
+
+
+def _note_text(note: ET.Element) -> str:
+    """Join a note's paragraphs into one reviewable string (blank paragraphs dropped)."""
+    lines: List[str] = []
+    for paragraph in note.iter(f"{WORD_NS}p"):
+        paragraph_text = _paragraph_text(paragraph)
+        if paragraph_text:
+            lines.append(paragraph_text)
+    return "\n".join(lines).strip()
+
+
+def _read_comment_records(document: ZipFile) -> Dict[str, Dict[str, str]]:
+    """Map comment id -> ``{"author", "date", "text"}`` from ``word/comments.xml``.
+
+    Read for DISPLAY only: comment text is deliberately kept out of the extracted
+    body text and the verdict engine (a comment like "add a non-circumvention
+    covenant" must not manufacture a clause hit the agreement never makes). It is
+    surfaced to the reviewer as a margin annotation keyed to the ranged paragraph.
+    """
+    root = _read_optional_xml_part(document, "word/comments.xml")
+    if root is None:
+        return {}
+    records: Dict[str, Dict[str, str]] = {}
+    for comment in root.findall(f"{WORD_NS}comment"):
+        comment_id = _attr(comment, "id").strip()
+        if not comment_id:
+            continue
+        text = _note_text(comment)
+        record: Dict[str, str] = {"text": text}
+        author = _attr(comment, "author").strip()
+        if author:
+            record["author"] = author
+        date = _attr(comment, "date").strip()
+        if date:
+            record["date"] = date
+        records[comment_id] = record
+    return records
+
+
+class _ParagraphAnnotationScan(NamedTuple):
+    """Positions of note references and comment-range markers within one paragraph.
+
+    Offsets are character indexes into the paragraph's revision-aware in-force text
+    (the same text ``_paragraph_text`` returns), so a marker can be placed inline on
+    the display surface without ever mutating ``paragraph.text``.
+    """
+
+    note_refs: List[tuple]  # (offset, kind, note_id)
+    comment_starts: List[tuple]  # (offset, comment_id)
+    comment_ends: List[tuple]  # (offset, comment_id)
+    comment_refs: List[str]  # comment_id
+
+
+def _scan_paragraph_annotations(paragraph: ET.Element) -> _ParagraphAnnotationScan:
+    """Walk a paragraph collecting note-reference and comment-range positions.
+
+    Mirrors ``_collect_revision_aware_text`` exactly for text accounting -- it skips
+    ``w:ins`` / ``w:moveTo`` (not in the in-force baseline) and takes the modern
+    ``mc:Choice`` branch of an ``mc:AlternateContent`` -- so every recorded offset
+    lines up with the character offsets of ``_paragraph_text``.
+    """
+    note_refs: List[tuple] = []
+    comment_starts: List[tuple] = []
+    comment_ends: List[tuple] = []
+    comment_refs: List[str] = []
+    offset = [0]
+
+    def walk(node: ET.Element) -> None:
+        tag = node.tag
+        if tag in (f"{WORD_NS}ins", f"{WORD_NS}moveTo"):
+            return
+        if tag == f"{WORD_NS}t" or tag == f"{WORD_NS}delText":
+            if node.text:
+                offset[0] += len(node.text)
+            return
+        if tag in {f"{WORD_NS}tab", f"{WORD_NS}br", f"{WORD_NS}cr"}:
+            offset[0] += 1
+            return
+        if tag == f"{WORD_NS}footnoteReference":
+            note_refs.append((offset[0], "footnote", _attr(node, "id").strip()))
+            return
+        if tag == f"{WORD_NS}endnoteReference":
+            note_refs.append((offset[0], "endnote", _attr(node, "id").strip()))
+            return
+        if tag == f"{WORD_NS}commentRangeStart":
+            comment_starts.append((offset[0], _attr(node, "id").strip()))
+            return
+        if tag == f"{WORD_NS}commentRangeEnd":
+            comment_ends.append((offset[0], _attr(node, "id").strip()))
+            return
+        if tag == f"{WORD_NS}commentReference":
+            comment_refs.append(_attr(node, "id").strip())
+            return
+
+        children = list(node)
+        if tag == f"{MC_NS}AlternateContent" and any(child.tag == f"{MC_NS}Choice" for child in children):
+            children = [child for child in children if child.tag != f"{MC_NS}Fallback"]
+        for child in children:
+            walk(child)
+
+    walk(paragraph)
+    return _ParagraphAnnotationScan(note_refs, comment_starts, comment_ends, comment_refs)
+
+
+def _paragraph_annotation_metadata(
+    paragraph: ET.Element,
+    text: str,
+    *,
+    footnote_texts: Dict[str, Dict[str, str]],
+    endnote_texts: Dict[str, Dict[str, str]],
+    comment_records: Dict[str, Dict[str, str]],
+    open_comment_ids: Dict[str, None],
+) -> Dict[str, List[dict]]:
+    """Resolve a paragraph's footnote/endnote references and overlapping comments.
+
+    Returns ``{"footnotes": [...], "comments": [...]}`` (either omitted when empty).
+    ``open_comment_ids`` is MUTATED to carry unbalanced comment ranges into the next
+    paragraph, so a comment spanning several paragraphs is associated with every
+    paragraph its range covers -- not only the one holding its start.
+
+    Nothing here touches ``text``: markers are additive display metadata carrying a
+    character ``offset`` into ``text`` so the reader sees WHICH span the note or
+    comment hangs off, while the reviewable text stays byte-identical.
+    """
+    scan = _scan_paragraph_annotations(paragraph)
+    result: Dict[str, List[dict]] = {}
+
+    footnotes: List[dict] = []
+    for note_offset, kind, note_id in scan.note_refs:
+        note = (footnote_texts if kind == "footnote" else endnote_texts).get(note_id)
+        entry: dict = {"id": note_id, "kind": kind, "offset": note_offset}
+        if note:
+            entry["text"] = note["text"]
+        footnotes.append(entry)
+    if footnotes:
+        result["footnotes"] = footnotes
+
+    # Which comment ids touch THIS paragraph: any range that was already open on
+    # entry, any that starts here, and any bare commentReference on it.
+    starts_here = {comment_id for _offset, comment_id in scan.comment_starts if comment_id}
+    ends_here = {comment_id for _offset, comment_id in scan.comment_ends if comment_id}
+    touched: "Dict[str, None]" = {}
+    for comment_id in open_comment_ids:
+        touched.setdefault(comment_id, None)
+    for _offset, comment_id in scan.comment_starts:
+        if comment_id:
+            touched.setdefault(comment_id, None)
+    for comment_id in scan.comment_refs:
+        if comment_id:
+            touched.setdefault(comment_id, None)
+
+    start_offsets = {comment_id: offset for offset, comment_id in scan.comment_starts if comment_id}
+    end_offsets = {comment_id: offset for offset, comment_id in scan.comment_ends if comment_id}
+
+    comments: List[dict] = []
+    for comment_id in touched:
+        record = comment_records.get(comment_id)
+        if record is None:
+            continue
+        entry = {"id": comment_id, "text": record.get("text", "")}
+        if record.get("author"):
+            entry["author"] = record["author"]
+        if record.get("date"):
+            entry["date"] = record["date"]
+        start_offset = start_offsets.get(comment_id)
+        if start_offset is not None:
+            entry["offset"] = start_offset
+        # When both ends of the range sit in THIS paragraph, carry the exact quoted
+        # span so the reviewer sees precisely what the counterparty flagged.
+        if comment_id in start_offsets and comment_id in end_offsets:
+            span_start = start_offsets[comment_id]
+            span_end = end_offsets[comment_id]
+            if 0 <= span_start <= span_end <= len(text):
+                quoted = text[span_start:span_end].strip()
+                if quoted:
+                    entry["quoted_text"] = quoted
+        comments.append(entry)
+    if comments:
+        result["comments"] = comments
+
+    # Advance the cross-paragraph open set: add ranges opened here, drop ones closed
+    # here. A range closed in the same paragraph it opened never becomes "open".
+    for comment_id in starts_here:
+        if comment_id not in ends_here:
+            open_comment_ids.setdefault(comment_id, None)
+    for comment_id in ends_here:
+        open_comment_ids.pop(comment_id, None)
+
+    return result
 
 
 class IndexedBodyParagraph(NamedTuple):
@@ -446,6 +716,7 @@ def _paragraph_record(
     source_index: int | None = None,
     source_part: str | None = None,
     table_context: Dict[str, object] | None = None,
+    rels: Dict[str, str] | None = None,
 ) -> DocxParagraph:
     record: DocxParagraph = {"text": text}
     if source_index is not None:
@@ -456,11 +727,20 @@ def _paragraph_record(
     if table_context:
         record["table"] = dict(table_context)
 
-    runs = _paragraph_runs(paragraph, text)
+    runs = _paragraph_runs(paragraph, text, rels)
     if runs is not None:
         record["runs"] = runs
 
     ppr = paragraph.find(f"{WORD_NS}pPr")
+
+    # Paragraph reading direction (D4). A ``<w:pPr>/<w:bidi>`` toggle marks a
+    # right-to-left paragraph; without it Word / the faithful surface render RTL
+    # but our reconstruction painted LTR. Emitted as a display-only field the
+    # renderer maps to ``dir="rtl"``; the STORED text is never reordered, so the
+    # outbound redline is unaffected. Absent (byte-identical) on LTR paragraphs.
+    direction = _paragraph_direction(ppr)
+    if direction:
+        record["direction"] = direction
     style_id = _paragraph_style_id(ppr)
     style = styles.get(style_id or "", {})
     if style_id:
@@ -1244,6 +1524,15 @@ def _collect_revision_aware_text(node: ET.Element, parts: List[str]) -> None:
         # Tracked-deleted text is still in force in the baseline; restore it.
         if node.text:
             parts.append(node.text)
+    elif tag == f"{MATH_NS}t":
+        # OMML equation text (``m:oMath`` -> ``m:r`` -> ``m:t``). The extractor
+        # historically walked only ``w:t``/``w:delText``, so an inline equation's
+        # characters were dropped and a clause carrying one reached the reviewer
+        # TRUNCATED (C1). Harvest the equation's literal characters so the clause
+        # text is complete. A document with no equations has no ``m:t`` node, so
+        # this branch never fires there -- the walk stays byte-identical.
+        if node.text:
+            parts.append(node.text)
     elif tag == f"{WORD_NS}tab":
         parts.append("\t")
     elif tag in {f"{WORD_NS}br", f"{WORD_NS}cr"}:
@@ -1260,22 +1549,35 @@ def _collect_revision_aware_text(node: ET.Element, parts: List[str]) -> None:
         _collect_revision_aware_text(child, parts)
 
 
-def _paragraph_runs(paragraph: ET.Element, text: str) -> List[Dict[str, object]] | None:
+def _paragraph_runs(
+    paragraph: ET.Element,
+    text: str,
+    rels: Dict[str, str] | None = None,
+) -> List[Dict[str, object]] | None:
     """Build a run-level breakdown of the paragraph with bold/italic/underline.
 
     Returns ``None`` (and the caller keeps only the flat ``text``) unless at least
-    one run carries formatting AND the reconstructed run text exactly matches the
-    paragraph ``text``. The strict match keeps ``runs`` purely additive: any
-    paragraph whose runs cannot be faithfully reconstructed (unusual nesting,
-    fields, etc.) falls back to the flat-text rendering with no fidelity loss.
+    one run carries formatting (or a hyperlink target) AND the reconstructed run
+    text exactly matches the paragraph ``text``. The strict match keeps ``runs``
+    purely additive: any paragraph whose runs cannot be faithfully reconstructed
+    (unusual nesting, fields, etc.) falls back to the flat-text rendering with no
+    fidelity loss.
+
+    ``rels`` maps a relationship id to its target URL so a run inside a
+    ``<w:hyperlink r:id=...>`` carries the resolved ``hyperlink`` target (D3). A
+    paragraph with no hyperlink threads ``href=None`` for every run, so the
+    ``hyperlink`` key is never added and the breakdown is byte-identical to the
+    old ``paragraph.iter(w:r)`` walk.
     """
     runs: List[Dict[str, object]] = []
     any_formatted = False
-    for run in paragraph.iter(f"{WORD_NS}r"):
+    for run, href in _iter_runs_with_hyperlink(paragraph, rels or {}):
         run_text = _run_text(run)
         if not run_text:
             continue
         formatting = _run_formatting(run)
+        if href:
+            formatting["hyperlink"] = href
         if (
             formatting["bold"]
             or formatting["italic"]
@@ -1284,6 +1586,7 @@ def _paragraph_runs(paragraph: ET.Element, text: str) -> List[Dict[str, object]]
             or formatting.get("highlight")
             or formatting.get("strike")
             or formatting.get("vertAlign")
+            or formatting.get("hyperlink")
         ):
             any_formatted = True
         if runs and _run_formatting_matches(runs[-1], formatting):
@@ -1303,6 +1606,100 @@ def _run_text(run: ET.Element) -> str:
     parts: List[str] = []
     _collect_revision_aware_text(run, parts)
     return "".join(parts)
+
+
+def _iter_runs_with_hyperlink(
+    paragraph: ET.Element,
+    rels: Dict[str, str],
+) -> Iterable[tuple[ET.Element, str | None]]:
+    """Yield every ``w:r`` run in document order paired with its hyperlink target.
+
+    ``target`` is the resolved URL/anchor when the run is inside a
+    ``<w:hyperlink>`` (D3), else ``None``. The traversal is preorder DFS -- a run
+    is yielded before its own subtree -- which visits exactly the runs, in exactly
+    the order, that ``paragraph.iter(w:r)`` did. On a paragraph with no hyperlink
+    the target is ``None`` for every run, so the caller's behaviour is unchanged.
+    """
+    def walk(node: ET.Element, href: str | None) -> Iterable[tuple[ET.Element, str | None]]:
+        for child in list(node):
+            if child.tag == f"{WORD_NS}hyperlink":
+                child_href = _hyperlink_target(child, rels) or href
+                yield from walk(child, child_href)
+            else:
+                if child.tag == f"{WORD_NS}r":
+                    yield child, href
+                yield from walk(child, href)
+
+    yield from walk(paragraph, None)
+
+
+def _hyperlink_target(hyperlink: ET.Element, rels: Dict[str, str]) -> str | None:
+    """Resolve a ``<w:hyperlink>``'s destination to a safe href, or ``None``.
+
+    An EXTERNAL hyperlink carries an ``r:id`` that keys into the part's
+    relationships (``word/_rels/document.xml.rels``); an INTERNAL one carries a
+    ``w:anchor`` naming a bookmark in the same document. Only web-safe schemes
+    (http/https/mailto/tel), same-document anchors and relative paths are
+    returned -- a ``javascript:``/``data:`` target is dropped so a malicious
+    upload cannot inject an active-scheme link into the rendered review."""
+    rid = hyperlink.get(f"{R_NS_BRACED}id")
+    if rid:
+        target = rels.get(rid)
+        if target:
+            return _safe_hyperlink_href(target)
+    anchor = _attr(hyperlink, "anchor").strip()
+    if anchor:
+        return f"#{anchor}"
+    return None
+
+
+def _safe_hyperlink_href(target: str) -> str | None:
+    """Return ``target`` if it is a safe href to render, else ``None``.
+
+    Allows http/https/mailto/tel, same-document anchors (``#...``) and relative
+    paths; rejects any other explicit URL scheme (``javascript:``, ``data:``,
+    ``vbscript:``, ...) so an uploaded DOCX cannot smuggle an active-scheme link."""
+    value = str(target or "").strip()
+    if not value:
+        return None
+    lowered = value.lower()
+    if lowered.startswith(("http://", "https://", "mailto:", "tel:", "#", "/", "./", "../")):
+        return value
+    # Any leading ``scheme:`` that is not whitelisted above is unsafe.
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:", value):
+        return None
+    return value
+
+
+def _read_hyperlink_relationships(document: ZipFile, rels_part_name: str) -> Dict[str, str]:
+    """Map relationship id -> target URL for the hyperlink relationships of a part.
+
+    Reads the OPC ``.rels`` sidecar (e.g. ``word/_rels/document.xml.rels``) and
+    keeps only ``.../hyperlink`` relationships so a ``w:hyperlink r:id`` can be
+    resolved to its destination (D3). A missing/unreadable ``.rels`` degrades to
+    an empty map (no hyperlink targets), never an error."""
+    try:
+        root = _read_xml_part(document, rels_part_name)
+    except DocxExtractionError:
+        return {}
+    rels: Dict[str, str] = {}
+    for relationship in root.findall(f"{REL_NS_BRACED}Relationship"):
+        rel_id = str(relationship.get("Id") or "").strip()
+        target = str(relationship.get("Target") or "").strip()
+        rel_type = str(relationship.get("Type") or "")
+        if rel_id and target and rel_type.endswith("/hyperlink"):
+            rels[rel_id] = target
+    return rels
+
+
+def _paragraph_direction(ppr: ET.Element | None) -> str | None:
+    """The paragraph's reading direction (``"rtl"``), or ``None`` for the LTR default.
+
+    Reads the ``<w:pPr>/<w:bidi>`` toggle (D4). Returned only when RTL, so the
+    field stays additive and absent on every ordinary left-to-right paragraph."""
+    if ppr is None:
+        return None
+    return "rtl" if _toggle_property(ppr, "bidi") else None
 
 
 def _run_formatting(run: ET.Element) -> Dict[str, object]:
@@ -1360,6 +1757,10 @@ def _run_formatting_matches(existing: Dict[str, object], formatting: Dict[str, o
     if str(existing.get("highlight") or "") != str(formatting.get("highlight") or ""):
         return False
     if str(existing.get("vertAlign") or "") != str(formatting.get("vertAlign") or ""):
+        return False
+    # A hyperlink boundary: runs with different targets (or link vs no-link) must
+    # not coalesce, so each anchor wraps exactly its own text.
+    if str(existing.get("hyperlink") or "") != str(formatting.get("hyperlink") or ""):
         return False
     # Strikethrough is a toggle boundary, mirroring bold/italic/underline.
     return bool(existing.get("strike")) == bool(formatting.get("strike"))

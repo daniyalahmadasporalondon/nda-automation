@@ -317,7 +317,7 @@ function renderParagraphFrame(model, { body, classes = [], badge = "" }) {
   const structureAttributes = paragraphStructureAttributes(model.paragraph);
   return renderStudioParagraphFrame({
     badge,
-    body: applyParagraphFormatToBody(model, body),
+    body: applyParagraphFormatToBody(model, body) + renderSourceAnnotations(model.paragraph),
     classes: [...classes, ...paragraphStructureClasses(model.paragraph)],
     clauseIds: model.ids,
     commentCount: model.commentCount,
@@ -401,6 +401,49 @@ function runOpSummary(op) {
     return "Baseline (selection)";
   }
   return "";
+}
+
+// Renders the DOCX source's own footnotes/endnotes and embedded Word comments as
+// read-only margin annotations BELOW the paragraph body. These are display
+// metadata read off the source (docx_text.py associates each with its anchor
+// paragraph); they are contenteditable=false and live OUTSIDE the editable body,
+// so they never enter the paragraph's text, its run reconstruction, or the
+// outbound redline. A paragraph with neither returns "" -- so an ordinary
+// agreement renders exactly as before.
+function renderSourceAnnotations(paragraph) {
+  if (!paragraph || typeof paragraph !== "object") return "";
+  const notes = [];
+
+  const footnotes = Array.isArray(paragraph.footnotes) ? paragraph.footnotes : [];
+  footnotes.forEach((footnote) => {
+    if (!footnote || typeof footnote !== "object") return;
+    const kind = String(footnote.kind || "footnote") === "endnote" ? "Endnote" : "Footnote";
+    const marker = String(footnote.id || "").trim();
+    const label = marker ? `${kind} ${marker}` : kind;
+    const text = String(footnote.text || "").trim();
+    notes.push(`
+      <div class="paragraph-source-note paragraph-source-footnote" data-source-note contenteditable="false">
+        <span class="paragraph-source-note-tag">${escapeHtml(label)}</span>
+        <span class="paragraph-source-note-text">${text ? escapeHtml(text) : "(note text unavailable)"}</span>
+      </div>`);
+  });
+
+  const comments = Array.isArray(paragraph.comments) ? paragraph.comments : [];
+  comments.forEach((comment) => {
+    if (!comment || typeof comment !== "object") return;
+    const author = String(comment.author || "").trim();
+    const tag = author ? `Comment - ${author}` : "Comment";
+    const quoted = String(comment.quoted_text || "").trim();
+    const text = String(comment.text || "").trim();
+    notes.push(`
+      <div class="paragraph-source-note paragraph-source-comment" data-source-note contenteditable="false">
+        <span class="paragraph-source-note-tag">${escapeHtml(tag)}</span>
+        ${quoted ? `<span class="paragraph-source-note-quote">&ldquo;${escapeHtml(quoted)}&rdquo;</span>` : ""}
+        <span class="paragraph-source-note-text">${text ? escapeHtml(text) : ""}</span>
+      </div>`);
+  });
+
+  return notes.join("");
 }
 
 function renderStudioParagraphFrame({ body, classes = [], clauseIds = "", commentCount = 0, paragraphId = "", selected = false, attributes = "", badge = "" }) {
@@ -1100,10 +1143,47 @@ function renderFormattedRun(run, changed = false) {
   else if (vertAlign === "subscript") html = `<sub>${html}</sub>`;
   const runStyle = inlineRunStyle(run);
   if (runStyle) html = `<span style="${escapeHtml(runStyle)}">${html}</span>`;
+  // Source hyperlink: render the run's text as an anchor when the extractor
+  // captured a (safe) target. The DISPLAY TEXT is unchanged -- an <a> wrapping
+  // the same characters has the same innerText -- so the editable round-trip to
+  // paragraph.text and the outbound redline are untouched. The href is re-checked
+  // here (defense in depth over the backend whitelist) so an unexpected scheme
+  // never becomes a live link.
+  const href = safeHyperlinkHref(run?.hyperlink);
+  if (href) {
+    html = `<a href="${escapeHtml(href)}" class="doc-run-link" target="_blank" rel="noopener noreferrer nofollow">${html}</a>`;
+  }
   // Wrap a run whose formatting differs from baseline in the tracked-change
   // inline class so the manual inline format surfaces as a redline.
   if (changed) html = `<span class="inline-ins redline-format-ins" data-redline-format-ins>${html}</span>`;
   return html;
+}
+
+// Returns a hyperlink target safe to render as an `<a href>`, or "" when absent
+// or disallowed. Mirrors the backend whitelist (`_safe_hyperlink_href`): only
+// http(s)/mailto/tel, same-document anchors and relative paths pass; any other
+// explicit scheme (javascript:, data:, vbscript:, ...) is rejected so an
+// uploaded DOCX can never inject an active-scheme link.
+function safeHyperlinkHref(target) {
+  const value = String(target || "").trim();
+  if (!value) return "";
+  const lowered = value.toLowerCase();
+  if (
+    lowered.startsWith("http://")
+    || lowered.startsWith("https://")
+    || lowered.startsWith("mailto:")
+    || lowered.startsWith("tel:")
+    || value.startsWith("#")
+    || value.startsWith("/")
+    || value.startsWith("./")
+    || value.startsWith("../")
+  ) {
+    return value;
+  }
+  // Any leading `scheme:` that is not whitelisted above is unsafe; a value with
+  // no scheme is a relative reference and is allowed.
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value)) return "";
+  return value;
 }
 
 // Inline `font-family` + `font-size` + run COLOR + HIGHLIGHT for a run's own
@@ -1213,6 +1293,12 @@ function paragraphStructureAttributes(paragraph) {
     attributes.push(`data-table-index="${escapeHtml(table.table_index ?? "")}"`);
     attributes.push(`data-table-row="${escapeHtml(table.row_index ?? "")}"`);
     attributes.push(`data-table-cell="${escapeHtml(table.cell_index ?? "")}"`);
+  }
+  // Right-to-left paragraph direction (D4). `dir="rtl"` is display-only: it flips
+  // the rendered reading order to match Word / the faithful surface, but the
+  // STORED paragraph text is never reordered, so the outbound redline is safe.
+  if (String(paragraph?.direction || "").trim().toLowerCase() === "rtl") {
+    attributes.push('dir="rtl"');
   }
   return attributes.join(" ");
 }

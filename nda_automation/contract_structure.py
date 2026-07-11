@@ -39,6 +39,34 @@ OPERATIVE_SENTENCE_RE = re.compile(
 # reviewer so a recital can be weighed differently from an operative clause; it never
 # changes any decision logic. Ordering of the checks in ``_section_role`` is the
 # precedence (signature > definitions > recital > operative > body).
+# Contract-clause corroboration vocabulary. Unlike OPERATIVE_SENTENCE_RE (which is
+# a loose grammatical-verb net that also fires on ordinary marketing prose -- "is",
+# "are", "will", "not"), this is a deliberately CONTRACT-SPECIFIC lexicon: terms that
+# a real agreement's body carries in abundance but a non-contract PDF (a sales deck's
+# "1. Our Product / 2. Our Market") does not. It is the signal that lets the PDF
+# confidence path tell a genuine numbered clause apart from decorative marketing
+# numbering set in a large slide-title font. Kept broad on the contract side so a real
+# NDA is NEVER starved of a match -- the gate errs toward trusting structure.
+CONTRACT_SIGNAL_RE = re.compile(
+    r"\b(?:confidential(?:ity)?|non-?disclosure|disclos(?:e|es|ed|ure|ing)|"
+    r"proprietary|recipient|discloser|receiving\s+part(?:y|ies)|disclosing\s+part(?:y|ies)|"
+    r"parties|hereto|hereby|herein|hereof|thereto|thereof|hereunder|"
+    r"shall|agree(?:s|d|ment)?|obligations?|undertak(?:e|es|ing|ings)|covenants?|"
+    r"warrant(?:s|y|ies)?|represents?|indemnif(?:y|ies|ication)|"
+    r"governing\s+law|jurisdiction|terminat(?:e|es|ion|ing)|breach(?:es|ed)?|"
+    r"liabilit(?:y|ies)|whereas|in\s+witness|counterparts?|severab(?:le|ility)|"
+    r"waiver|binding|in\s+writing|force\s+and\s+effect|remed(?:y|ies)|"
+    r"trade\s+secrets?|intellectual\s+property)\b",
+    re.IGNORECASE,
+)
+
+# A non-contract PDF must show FEWER than this many distinct contract-signal hits
+# across the whole document before its geometric numbered/heading sections are
+# demoted from confident structure. A real NDA carries dozens of hits, so the margin
+# is enormous and the exact threshold barely matters; a low value keeps the gate from
+# ever firing on a genuine agreement.
+_PDF_CONTRACT_SIGNAL_MIN = 2
+
 RECITAL_CUE_RE = re.compile(r"\b(?:whereas|recital|background|in\s+consideration\s+of)\b", re.IGNORECASE)
 DEFINITIONS_HEADING_RE = re.compile(r"\b(?:definitions?|interpretation|defined\s+terms?)\b", re.IGNORECASE)
 SIGNATURE_CUE_RE = re.compile(
@@ -144,6 +172,8 @@ def build_contract_structure(paragraphs: List[Paragraph]) -> Dict[str, object]:
             source=candidate.source,
         ))
 
+    _demote_uncorroborated_pdf_sections(sections, document_paragraphs)
+
     aliases, ambiguous_alias_keys = _build_aliases(sections)
     reference_index = _build_reference_index(sections, aliases, ambiguous_alias_keys)
     mapped_paragraph_ids = {
@@ -236,6 +266,76 @@ def _apply_pdf_confidence(candidate: _SectionCandidate, paragraph: Paragraph) ->
     if isinstance(paragraph.get("source_index"), int):
         source["source_index"] = paragraph["source_index"]
     candidate.source = source
+
+
+def _paragraph_is_pdf_geometry(paragraph: Paragraph) -> bool:
+    """True when a paragraph carries PDF layout geometry (``pdf_geometry``), i.e. it
+    came from the geometry-aware PDF extractor rather than a DOCX or plain-text source."""
+    return isinstance(paragraph.get("pdf_geometry"), dict)
+
+
+def _paragraph_has_docx_metadata(paragraph: Paragraph) -> bool:
+    """True when a paragraph carries any DOCX structural metadata. A DOCX-sourced parse
+    is authoritative and must be left entirely untouched by the PDF demotion pass -- this
+    is the guard that keeps the pass from ever regressing a Word document."""
+    for key in ("source_kind", "style_id", "heading_level", "outline_level", "structure_number"):
+        value = paragraph.get(key)
+        if isinstance(value, (str, int)) and str(value) != "":
+            return True
+    return isinstance(paragraph.get("numbering"), dict)
+
+
+def _document_is_pdf_only(paragraphs: List[Paragraph]) -> bool:
+    """True for a document whose paragraphs come from the PDF geometry extractor and
+    carry NO DOCX structural metadata anywhere. The demotion pass only ever considers
+    such documents, so a DOCX (or DOCX-with-a-stray-PDF-paragraph) parse is never touched."""
+    if any(_paragraph_has_docx_metadata(paragraph) for paragraph in paragraphs):
+        return False
+    return any(_paragraph_is_pdf_geometry(paragraph) for paragraph in paragraphs)
+
+
+def _document_contract_signal_count(paragraphs: List[Paragraph]) -> int:
+    """Count distinct contract-clause signal hits across the whole document body. A real
+    agreement carries many; a non-contract PDF (a marketing deck) carries ~none."""
+    combined = " ".join(str(paragraph.get("text", "")) for paragraph in paragraphs)
+    return len(CONTRACT_SIGNAL_RE.findall(combined))
+
+
+def _demote_uncorroborated_pdf_sections(
+    sections: List[Dict[str, object]], paragraphs: List[Paragraph]
+) -> None:
+    """Demote confident numbered/heading sections on a NON-CONTRACT PDF in place.
+
+    Problem this closes: the PDF confidence path corroborates a geometric number by FONT
+    SIZE alone (a heading set larger than the body). On a sales deck that heuristic is
+    exactly inverted -- a slide's marketing title (``1. Our Product``) IS set in a large
+    font, so the number is wrongly promoted to a high-confidence, source-backed contract
+    clause. Font size is a heading cue, not a CONTRACT cue.
+
+    Fix: require corroborating contract-clause signals before a PDF geometric number is
+    trusted as a confident clause. When a document is PDF-only (no DOCX metadata) AND the
+    whole document shows fewer than ``_PDF_CONTRACT_SIGNAL_MIN`` contract-signal hits --
+    i.e. it is not a contract at all -- every numbered/heading section is demoted to
+    ``confidence="low"`` and stripped of its ``pdf_confident`` source-backed trust tier.
+
+    Conservative in BOTH directions:
+      * A real NDA (PDF or DOCX) carries dozens of contract signals, clears the threshold,
+        and is left completely untouched -- its clauses keep high confidence.
+      * A DOCX parse is excluded up front (``_document_is_pdf_only``), so Word documents
+        never regress.
+      * Only PDF geometric numbering on a genuinely non-contract document is demoted.
+    """
+    if not sections:
+        return
+    if not _document_is_pdf_only(paragraphs):
+        return
+    if _document_contract_signal_count(paragraphs) >= _PDF_CONTRACT_SIGNAL_MIN:
+        return
+    for section in sections:
+        if section.get("kind") in {"numbered", "heading"}:
+            if section.get("confidence") in {"high", "medium"}:
+                section["confidence"] = "low"
+            section.pop("source", None)
 
 
 def _candidate_for_paragraph(

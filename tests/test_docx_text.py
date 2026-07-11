@@ -150,6 +150,255 @@ class DocxTextTests(unittest.TestCase):
         self.assertNotIn("non-circumvention", text)
         self.assertNotIn("comments", [paragraph.get("source_part") for paragraph in paragraphs])
 
+    def test_inline_omml_equation_text_is_included_in_clause(self):
+        # An inline equation (OMML ``m:oMath`` -> ``m:t``) carries clause text. The
+        # walk historically ignored the math namespace, so the clause reached the
+        # reviewer TRUNCATED (C1). Its literal characters must now be present.
+        data = make_zip(
+            {"word/document.xml": inline_equation_document_xml()},
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(
+            paragraphs[0]["text"],
+            "The royalty equals x=2y+1 per unit.",
+        )
+
+    def test_normal_paragraph_without_equation_is_byte_identical(self):
+        # The equation harvest only activates on an ``m:t`` node; a plain paragraph
+        # must extract exactly as before (no equation namespace, no new fields).
+        data = make_docx(["A plain confidentiality clause."])
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(
+            paragraphs,
+            [{"source_index": 1, "source_kind": "paragraph", "text": "A plain confidentiality clause."}],
+        )
+
+    def test_hyperlink_target_is_captured_on_run_without_changing_text(self):
+        data = make_zip(
+            {
+                "word/document.xml": hyperlink_document_xml(),
+                "word/_rels/document.xml.rels": hyperlink_rels_xml(),
+            },
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        # Display text is unchanged (the outbound redline path is unaffected).
+        self.assertEqual(paragraphs[0]["text"], "See the privacy policy for details.")
+        link_runs = [run for run in paragraphs[0]["runs"] if run.get("hyperlink")]
+        self.assertEqual(len(link_runs), 1)
+        self.assertEqual(link_runs[0]["text"], "privacy policy")
+        self.assertEqual(link_runs[0]["hyperlink"], "https://example.com/privacy")
+
+    def test_internal_anchor_hyperlink_is_captured(self):
+        data = make_zip(
+            {"word/document.xml": anchor_hyperlink_document_xml()},
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        link_runs = [run for run in paragraphs[0]["runs"] if run.get("hyperlink")]
+        self.assertEqual(link_runs[0]["hyperlink"], "#Section2")
+
+    def test_unsafe_scheme_hyperlink_target_is_dropped(self):
+        # A javascript:/data: target must never reach the rendered review as a
+        # live link; the target is dropped (no run link is produced for it).
+        data = make_zip(
+            {
+                "word/document.xml": hyperlink_document_xml(),
+                "word/_rels/document.xml.rels": unsafe_hyperlink_rels_xml(),
+            },
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(paragraphs[0]["text"], "See the privacy policy for details.")
+        self.assertFalse(any(run.get("hyperlink") for run in paragraphs[0].get("runs") or []))
+
+    def test_rtl_paragraph_direction_is_read(self):
+        data = make_zip(
+            {"word/document.xml": bidi_document_xml()},
+            compression=ZIP_DEFLATED,
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(paragraphs[0]["direction"], "rtl")
+        # A following LTR paragraph carries no direction field (additive).
+        self.assertNotIn("direction", paragraphs[1])
+
+    def test_footnote_reference_is_associated_with_its_body_anchor(self):
+        # C3: the footnote reference marker sits inside the body run; the note text
+        # lives in word/footnotes.xml. The reader must see WHICH text the footnote
+        # hangs off, so the body paragraph carries a `footnotes` entry pinned to the
+        # character offset of the marker -- without the note text ever entering the
+        # paragraph's own reviewable text.
+        data = make_docx(
+            [],
+            body_xml=(
+                '<w:p>'
+                '<w:r><w:t xml:space="preserve">The term survives</w:t></w:r>'
+                '<w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteReference w:id="2"/></w:r>'
+                '<w:r><w:t xml:space="preserve"> for five years.</w:t></w:r>'
+                '</w:p>'
+            ),
+            extra_parts={
+                "word/footnotes.xml": footnotes_xml(
+                    {"2": "Survival is limited to trade secrets."}
+                ),
+            },
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+        body = [p for p in paragraphs if p.get("source_kind") == "paragraph"]
+
+        self.assertEqual(body[0]["text"], "The term survives for five years.")
+        self.assertEqual(
+            body[0]["footnotes"],
+            [
+                {
+                    "id": "2",
+                    "kind": "footnote",
+                    "offset": len("The term survives"),
+                    "text": "Survival is limited to trade secrets.",
+                }
+            ],
+        )
+        # The note text is a display annotation on the anchor; it must never be
+        # spliced into the reviewable paragraph text.
+        self.assertNotIn("trade secrets", body[0]["text"])
+
+    def test_footnote_separator_bookkeeping_notes_are_ignored(self):
+        # The separator / continuationSeparator notes carry no reviewable content.
+        data = make_docx(
+            [],
+            body_xml=(
+                '<w:p><w:r><w:t xml:space="preserve">See note</w:t></w:r>'
+                '<w:r><w:footnoteReference w:id="3"/></w:r></w:p>'
+            ),
+            extra_parts={
+                "word/footnotes.xml": footnotes_xml(
+                    {"3": "Real note."},
+                    include_separators=True,
+                ),
+            },
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+        body = [p for p in paragraphs if p.get("source_kind") == "paragraph"]
+
+        self.assertEqual(
+            body[0]["footnotes"],
+            [{"id": "3", "kind": "footnote", "offset": len("See note"), "text": "Real note."}],
+        )
+
+    def test_source_embedded_comment_is_surfaced_on_its_ranged_paragraph(self):
+        # C2: a Word comment (word/comments.xml + commentRangeStart/End) is invisible
+        # to the reviewer today. It must be surfaced as an annotation on the ranged
+        # paragraph -- author, date, text, and the exact quoted span -- while never
+        # reaching the paragraph text or the verdict engine.
+        data = make_docx(
+            [],
+            body_xml=(
+                '<w:p>'
+                '<w:commentRangeStart w:id="1"/>'
+                '<w:r><w:t>The Receiving Party shall keep it confidential.</w:t></w:r>'
+                '<w:commentRangeEnd w:id="1"/>'
+                '<w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="1"/></w:r>'
+                '</w:p>'
+            ),
+            extra_parts={
+                "word/comments.xml": comments_xml(
+                    [
+                        {
+                            "id": "1",
+                            "author": "Jane Counsel",
+                            "date": "2026-01-01T00:00:00Z",
+                            "text": "Please add a carve-out for compelled disclosure.",
+                        }
+                    ]
+                ),
+            },
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+        text = extract_docx_text(data)
+        body = [p for p in paragraphs if p.get("source_kind") == "paragraph"]
+
+        self.assertEqual(
+            body[0]["comments"],
+            [
+                {
+                    "id": "1",
+                    "text": "Please add a carve-out for compelled disclosure.",
+                    "author": "Jane Counsel",
+                    "date": "2026-01-01T00:00:00Z",
+                    "offset": 0,
+                    "quoted_text": "The Receiving Party shall keep it confidential.",
+                }
+            ],
+        )
+        # The comment text is display metadata only: it stays out of the reviewable
+        # text that feeds the clause checkers.
+        self.assertNotIn("carve-out", text)
+        self.assertNotIn("carve-out", body[0]["text"])
+
+    def test_comment_range_spanning_paragraphs_is_associated_with_each(self):
+        # A comment range that opens in one paragraph and closes in a later one is
+        # associated with every paragraph it covers, not only the opening one.
+        data = make_docx(
+            [],
+            body_xml=(
+                '<w:p><w:commentRangeStart w:id="7"/><w:r><w:t>First covered clause.</w:t></w:r></w:p>'
+                '<w:p><w:r><w:t>Second covered clause.</w:t></w:r></w:p>'
+                '<w:p><w:r><w:t>Third covered clause.</w:t></w:r>'
+                '<w:commentRangeEnd w:id="7"/>'
+                '<w:r><w:commentReference w:id="7"/></w:r></w:p>'
+                '<w:p><w:r><w:t>Uncovered clause.</w:t></w:r></w:p>'
+            ),
+            extra_parts={
+                "word/comments.xml": comments_xml(
+                    [{"id": "7", "author": "R", "text": "Scope note."}]
+                ),
+            },
+        )
+
+        paragraphs = extract_docx_paragraphs(data)
+        covered = [
+            p["text"] for p in paragraphs
+            if any(c["id"] == "7" for c in p.get("comments", []))
+        ]
+
+        self.assertEqual(
+            covered,
+            ["First covered clause.", "Second covered clause.", "Third covered clause."],
+        )
+
+    def test_clean_document_carries_no_annotation_keys(self):
+        # The feature is inert on a normal agreement: no footnotes/comments parts,
+        # no reference markers -> the paragraph records are exactly as before.
+        data = make_docx(["A plain confidentiality clause."])
+
+        paragraphs = extract_docx_paragraphs(data)
+
+        self.assertEqual(
+            paragraphs,
+            [
+                {
+                    "source_index": 1,
+                    "source_kind": "paragraph",
+                    "text": "A plain confidentiality clause.",
+                }
+            ],
+        )
     def test_extracts_word_numbering_styles_and_table_context(self):
         data = make_structured_docx()
 
@@ -953,6 +1202,103 @@ def rich_clean_document_xml():
     <w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell text</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
   </w:body>
 </w:document>"""
+
+
+def inline_equation_document_xml():
+    # An inline OMML equation embedded mid-clause: its literal characters live in
+    # ``m:oMath`` -> ``m:r`` -> ``m:t`` and must be harvested into the clause text.
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+  <w:body>
+    <w:p>
+      <w:r><w:t xml:space="preserve">The royalty equals </w:t></w:r>
+      <m:oMath><m:r><m:t>x=2y+1</m:t></m:r></m:oMath>
+      <w:r><w:t xml:space="preserve"> per unit.</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>"""
+
+
+def hyperlink_document_xml():
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p>
+      <w:r><w:t xml:space="preserve">See the </w:t></w:r>
+      <w:hyperlink r:id="rId7"><w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>privacy policy</w:t></w:r></w:hyperlink>
+      <w:r><w:t xml:space="preserve"> for details.</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>"""
+
+
+def anchor_hyperlink_document_xml():
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:hyperlink w:anchor="Section2"><w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>Section 2</w:t></w:r></w:hyperlink>
+    </w:p>
+  </w:body>
+</w:document>"""
+
+
+def hyperlink_rels_xml():
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/privacy" TargetMode="External"/>
+</Relationships>"""
+
+
+def unsafe_hyperlink_rels_xml():
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="javascript:alert(1)" TargetMode="External"/>
+</Relationships>"""
+
+
+def bidi_document_xml():
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:bidi/></w:pPr><w:r><w:t>Right-to-left clause.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Ordinary left-to-right clause.</w:t></w:r></w:p>
+  </w:body>
+</w:document>"""
+
+
+def footnotes_xml(notes, *, include_separators=False):
+    entries = ""
+    if include_separators:
+        entries += (
+            '<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>'
+            '<w:footnote w:type="continuationSeparator" w:id="0">'
+            '<w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>'
+        )
+    for note_id, text in notes.items():
+        entries += (
+            f'<w:footnote w:id="{note_id}"><w:p><w:r><w:t>{escape_xml(text)}</w:t></w:r></w:p></w:footnote>'
+        )
+    return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">{entries}</w:footnotes>"""
+
+
+def comments_xml(comments):
+    entries = ""
+    for comment in comments:
+        attrs = f'w:id="{comment["id"]}"'
+        if comment.get("author"):
+            attrs += f' w:author="{escape_xml(comment["author"])}"'
+        if comment.get("date"):
+            attrs += f' w:date="{escape_xml(comment["date"])}"'
+        entries += (
+            f'<w:comment {attrs}><w:p><w:r><w:t>{escape_xml(comment.get("text", ""))}'
+            f'</w:t></w:r></w:p></w:comment>'
+        )
+    return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">{entries}</w:comments>"""
 
 
 def part_xml(text):
