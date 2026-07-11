@@ -15,6 +15,7 @@ from .ai_assessment_contract import (
     validate_ai_clause_assessments,
 )
 from .checker import REVIEW_ENGINE_VERSION, _build_redline_edits, load_playbook, validate_playbook
+from .clause_fragment_merge import expand_group_members, merge_continuation_fragments
 from .checks.common import (
     ISSUE_TYPE_LABELS,
     ISSUE_TYPE_MISSING,
@@ -237,10 +238,15 @@ def reassess_single_clause(
     # was already built above the model call and is reused here).
     reference_resolver = resolve_document_references(document_paragraphs, contract_structure)
     concept_classifier = classify_document_concepts(document_paragraphs, contract_structure)
+    # Same packet-only clause-fragment merge as the full-document path: expand a merged
+    # clause's verdict onto every constituent fragment id so a re-reviewed fragmented
+    # clause highlights all its limbs.
+    _model_paragraphs, merge_groups = merge_continuation_fragments(document_paragraphs)
     review_context = {
         "contract_structure": contract_structure,
         "reference_resolver": reference_resolver,
         "concept_classifier": concept_classifier,
+        "merge_groups": merge_groups,
     }
     clause_result = _clause_result_from_assessment(
         target_clause,
@@ -426,10 +432,16 @@ def build_ai_first_review_result(
         document_paragraphs,
         enabled=verify,
     )
+    # Re-derive the SAME DOCX clause-fragment merge the packet builder used (pure
+    # function of document_paragraphs) so a verdict citing a merged clause's head id
+    # is mapped back onto EVERY constituent fragment id -- the middle limbs are then
+    # highlighted, not orphaned. document_paragraphs themselves stay unmerged.
+    _model_paragraphs, merge_groups = merge_continuation_fragments(document_paragraphs)
     review_context = {
         "contract_structure": contract_structure,
         "reference_resolver": reference_resolver,
         "concept_classifier": concept_classifier,
+        "merge_groups": merge_groups,
     }
     clause_results = [
         _clause_result_from_assessment(
@@ -671,7 +683,10 @@ def _clause_result_from_assessment(
     what_to_fix = _assessment_fix_text(assessment, decision)
     reason_codes = _reason_codes(assessment, decision)
     matched_paragraphs = _matched_paragraphs(
-        paragraphs, assessment, _reference_index(review_context)
+        paragraphs,
+        assessment,
+        _reference_index(review_context),
+        merge_groups=review_context.get("merge_groups") if isinstance(review_context, Mapping) else None,
     )
     # Category A: a clause may carry a LIST of proposed edits (v3). The compat
     # accessor reads ``proposed_edits`` when present, else wraps the legacy singular
@@ -1209,6 +1224,8 @@ def _matched_paragraphs(
     paragraphs: list[Paragraph],
     assessment: Mapping[str, Any],
     reference_index: Mapping[str, Any] | None = None,
+    *,
+    merge_groups: Mapping[str, Sequence[str]] | None = None,
 ) -> list[Paragraph]:
     paragraph_lookup = {str(paragraph.get("id") or ""): paragraph for paragraph in paragraphs}
     matched: list[Paragraph] = []
@@ -1226,6 +1243,13 @@ def _matched_paragraphs(
         # structured evidence exists, so it cannot override a real match, and a
         # reference that does not resolve to a real section seeds nothing.
         evidence_ids = _prose_anchor_paragraph_ids(assessment, paragraph_lookup, reference_index)
+    # DOCX clause-fragment merge: the model reviewed a MERGED clause and cited its head
+    # fragment id; expand that onto EVERY constituent fragment id (in document order)
+    # so the whole clause -- including the middle limbs -- carries the verdict and is
+    # highlighted, instead of the continuation limbs being orphaned. A no-op when
+    # nothing merged (identity singletons) or no groups were supplied.
+    if merge_groups:
+        evidence_ids = expand_group_members(evidence_ids, merge_groups)
     for paragraph_id in evidence_ids:
         paragraph = paragraph_lookup.get(paragraph_id)
         if not paragraph or paragraph_id in seen:

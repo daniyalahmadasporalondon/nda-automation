@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .ai_assessment_contract import AI_ASSESSMENT_CONTRACT_VERSION, AI_CLAUSE_ASSESSMENT_SCHEMA
+from .clause_fragment_merge import merge_continuation_fragments
 from .playbook_policy import build_playbook_policy_block
 from .playbook_rules import PLAYBOOK_RULES_VERSION, playbook_rules_for_ai
 from .review_document import Paragraph, align_document_paragraphs, split_document_paragraphs
@@ -264,14 +265,27 @@ def build_ai_assessment_packet(
     clause_localization: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     document_paragraphs = _review_paragraphs(source_text or "", paragraphs)
+    # DOCX clause-fragment merge (packet-only): a clause authored across several
+    # <w:p> paragraphs is reconstructed into ONE record here so the model grades the
+    # whole clause instead of half-sentences. The merge is conservative (see
+    # clause_fragment_merge -- when unsure it leaves fragments apart) and is applied
+    # ONLY to the model's view; the stored paragraphs, the review result, and the
+    # outbound redline are still built from the original unmerged fragments. The
+    # result builder re-derives the SAME merge (deterministic, same input) to map a
+    # verdict on the merged clause back onto every constituent fragment id.
+    model_paragraphs, _fragment_groups = merge_continuation_fragments(document_paragraphs)
     included_paragraphs = _fit_context_budget(
-        document_paragraphs,
+        model_paragraphs,
         max_paragraphs=max_paragraphs,
         max_chars=max_chars,
         contract_structure=contract_structure,
         playbook=playbook,
     )
-    omitted_paragraph_count = max(0, len(document_paragraphs) - len(included_paragraphs))
+    # Counts are computed over the MODEL VIEW (merged) since that is what the model
+    # actually sees and what the budget cut selects from. Merging never drops content
+    # (it only groups contiguous fragments), so a dropped merged record still forces
+    # truncated=True exactly as a dropped raw paragraph did.
+    omitted_paragraph_count = max(0, len(model_paragraphs) - len(included_paragraphs))
     clipped_paragraph_count = sum(1 for paragraph in included_paragraphs if paragraph.get("text_clipped"))
     # #4: per-paragraph structure. The contract structure is built ONCE upstream
     # (the assessor hoists it above the model call so the model can reason "this is
@@ -309,7 +323,7 @@ def build_ai_assessment_packet(
         "provider": str(provider or ""),
         "model": str(model or ""),
         "document": {
-            "paragraph_count": len(document_paragraphs),
+            "paragraph_count": len(model_paragraphs),
             "included_paragraph_count": len(included_paragraphs),
             "omitted_paragraph_count": omitted_paragraph_count,
             "clipped_paragraph_count": clipped_paragraph_count,
